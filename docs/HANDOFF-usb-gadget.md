@@ -314,6 +314,45 @@ nearest-rank aggregates of qualifying rolling-percentile ticks, not raw
 per-frame samples; the artifact names that statistic explicitly. Pass
 `--require-pass` when a warning should produce a nonzero exit status.
 
+### Return-path hardware evidence (2026-07-17)
+
+The in-process writer's audio path passed an uninterrupted Mac CoreAudio
+capture for 7,200.3 seconds: 345,595,200 host frames in 359,995 callbacks with
+zero host status errors. The relay stayed on one PID with zero service
+restarts, writer xruns, packet loss, sequence resets/reorders/discontinuities,
+or new streaming-drop deltas. Its bridge-emit→final-ALSA-write p95 normally
+remained 24–35 ms and briefly reached 52.5 ms during deliberate CPU/memory
+pressure, still below the 80 ms evidence target. The same run included 91.1
+seconds of simultaneous bidirectional UAC2 audio plus roughly 256 MiB of NCM
+traffic in each direction; neither that overlap nor the bounded pressure run
+produced an xrun or stream-integrity fault.
+
+The run also evidence-refuted the original plan's `writer_splices <= 1 per 10
+min` number without refuting the design. There were 22 bounded, insert-only 20
+ms corrections in 120 minutes (1.83 per 10 minutes); ordinary later cadence
+approached one correction per 197 seconds. That cadence is the expected result
+of the plan's own roughly 100 ppm independent-clock premise: a 20 ms excursion
+at 100 ppm is consumed in about 200 seconds, or roughly three corrections per
+10 minutes. Meeting the separate one-per-10-minute number would require
+running near an empty ring, increasing the verified 40 ms buffer and latency,
+or adding an adaptive resampler/DLL. Preserve the lowest-reliable 30 ms target,
+20–40 ms band, and 160x4 geometry unless host evidence shows harm; judge this
+controller by bounded correction duty plus zero xrun/loss/sequence failures,
+not the internally inconsistent historical number. The original execution
+plan remains byte-for-byte preserved in
+[`PLAN-usb-mic-export-latency-fix.md`](PLAN-usb-mic-export-latency-fix.md).
+
+A separate 7,200.884-second realistic Pi system soak recorded 241 samples with
+zero tracked-service restarts, memory-pressure events, OOMs, or warning-level
+journal entries. The sampler version used for that run omitted
+`jasper-usbmic.service` and `jasper-usbnet-dhcp.service`; manual service,
+cgroup, and journal evidence showed both on one PID with zero restarts,
+memory-pressure events, or failure lines throughout the window. The tracker now
+includes both resident units so future schema-1 artifacts retain their full
+PSS/CPU history. Windows 11 composite hardware and wake-rate parity for the
+optional low PortAudio capture-latency setting remain open; the latter setting
+therefore stays off by default.
+
 The relay publishes fresh status under `/run/jasper-usbmic/status.json`;
 “streaming” requires the gadget PCM hardware pointer and sink writer to advance,
 while an idle host stays “ready.” The `/wake/` controls are the sole end-user
@@ -795,7 +834,7 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-16 (the active-plan-derived computer-microphone source
+Last verified: 2026-07-17 (the active-plan-derived computer-microphone source
 selector, bridge-only restart-broker path, relay `PartOf=` convergence, and
 explicit no-gadget/no-descriptor/no-NCM boundary were rechecked against the
 control, bridge, systemd, and `/wake/` paths; the USB-microphone switch's
@@ -806,7 +845,9 @@ in-process writer, exact 10 ms period split, idle sanitization, resume reset,
 occupancy target, bounded recovery, and structured telemetry were rechecked
 against the relay and focused tests, with the realized 16 kHz 160x4 plug
 geometry and underlying 48 kHz 480x4 gadget pointers verified on jts.local;
-the long capture/resume/stress gates remain explicitly open; the Windows UAC2 support envelope was rechecked
+the two-hour Mac capture, simultaneous bidirectional UAC2/NCM load, bounded
+CPU/memory pressure, and two-hour Pi resource soak were hardware-verified with
+the measured splice-rate deviation recorded above; the Windows UAC2 support envelope was rechecked
 against Microsoft's current class-driver documentation; live `jts` probes
 on the prior implementation separated a genuine-recording ~50 ms pipe /
 30–40 ms gadget-ring baseline from history-dependent frozen idle residuals,
@@ -817,9 +858,9 @@ the `/wake/` USB-microphone intent, `p_chmask`/BCD descriptor split, dedicated
 `:9894` relay, dependency lifecycle, assistant-pause independence, and
 status/doctor surfaces
 were rechecked against the implementation and focused tests;
-Pi 5 + Mac Studio composite enumeration and lab-only UAC2 return capture were
-hardware-verified, closing basic dwc2 endpoint allocation while leaving
-simultaneous bidirectional-audio/NCM stress open;
+Pi 5 + Mac Studio composite enumeration and sustained UAC2 return capture were
+hardware-verified, closing basic dwc2 endpoint allocation and the simultaneous
+bidirectional-audio/NCM stress gate;
 `jasper-usbsink.service` rechecked as the process-free readiness marker; USB
 audio composition requires canonical
 source-aware authorization, derived lifecycle readiness, and a live fan-in
