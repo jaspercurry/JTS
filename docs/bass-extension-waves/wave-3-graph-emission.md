@@ -1,6 +1,6 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 8 (2026-07-17).** Static graph groundwork remains
+> **Revision 8 (2026-07-17; final seam amendment).** Static graph groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
 > an explicit graph-classification boundary, one predecessor-aware commit
@@ -275,10 +275,15 @@ Modify:
   necessary seam-only caller edits to
   `jasper/cli/active_speaker.py`,
   `jasper/correction/runtime_safety.py`,
+  `jasper/web/correction_setup.py`,
   `jasper/active_speaker/commissioning_{runtime,capture_producer,apply}.py`,
   `jasper/cli/doctor/audio.py`, and
   `jasper/multiroom/{active_leader_config,follower_config}.py`; do not
-  add caller-specific profile policy. Production startup/doctor hosts
+  add caller-specific profile policy. The live correction host passes
+  `lambda: cam.get_active_config_raw(best_effort=False)` into
+  `classify_active_bass_extension_graph`; it does not await or parse the
+  live graph first. Generated pre-publication YAML continues to use the
+  synchronous `desired` proof path. Production startup/doctor hosts
   thread CLI `--staged-metadata` or the existing
   `staged_metadata_path()` default into the resolver; they no longer
   call `load_staged_startup_config()` before classification. Retain
@@ -539,6 +544,8 @@ Modify:
   `tests/test_active_speaker_commissioning_runtime.py`,
   `tests/test_active_speaker_graph_evidence.py`,
   `tests/test_active_speaker_local_subwoofer.py`,
+  `tests/test_correction_setup.py`,
+  `tests/test_correction_status_and_bundles.py`,
   `tests/test_multiroom_active_leader_config.py`, and
   `tests/test_multiroom_follower_config.py`; extend only. The
   runtime-contract tests must exercise the canonical
@@ -688,6 +695,8 @@ STOP and report — do not restructure the contract to fit.
   tests/test_sound_graph_carrier.py -q
 .venv/bin/pytest tests/ -q -k "emit_gate or camilla or bass_extension"
 .venv/bin/pytest tests/test_correction_runtime_safety.py \
+  tests/test_correction_setup.py \
+  tests/test_correction_status_and_bundles.py \
   tests/test_active_speaker_cli.py \
   tests/test_active_speaker_commissioning_runtime.py \
   tests/test_multiroom_active_leader_config.py \
@@ -701,6 +710,19 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Final seam amendment (2026-07-17)** — the final independent caller
+  audit found that `jasper/correction/runtime_safety.py` alone could not
+  move live correction's already-awaited Camilla read inside the async
+  authority sandwich: the actual host is
+  `jasper/web/correction_setup.py`, and its two owning test modules were
+  outside the absolute allowlist. Rationale: allow only that host and
+  `tests/test_correction_{setup,status_and_bundles}.py` as seam edits,
+  pass its best-effort-false read as the canonical awaitable callback,
+  and retain generated pre-publication YAML on synchronous `desired`
+  proof. Rejected alternatives were keeping the live pre-read, moving
+  graph policy into the web host, broadening another correction route,
+  or adding a service/task/state/transport abstraction.
 
 - **Rev 8 (2026-07-17)** — the follow-up final gate found two concrete
   implementation mismatches in revision 7. The staged all-muted graph
