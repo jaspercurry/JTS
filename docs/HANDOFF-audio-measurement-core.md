@@ -635,10 +635,11 @@ create a second retention system.
   raw reading is itself floor-clamped (no real precision to trust either —
   the real hardware `treble` shape, entirely above a woofer's `f2`, where
   phone-mic self-noise reads as pure digital silence, so it keeps its
-  pre-fix deconvolved value). Covered bands are untouched — same bytes as
-  before. Full detail, the ground-truth validation table, and doc
-  cross-reference in active-crossover-information-design.md "Level control
-  and SNR".
+  pre-fix deconvolved value). Covered bands keep their reported level
+  unchanged (every band entry gains an additive diagnostic `basis` key
+  naming which path produced it). Full detail, the ground-truth validation
+  table, and doc cross-reference in
+  active-crossover-information-design.md "Level control and SNR".
 - **Lane B fixed-axis admission contract (2026-07-12).** Driver analysis no
   longer accepts `capture_geometry` from the browser. It derives near-field vs
   reference-axis from a complete relay proof revalidated against the active

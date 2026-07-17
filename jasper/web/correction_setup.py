@@ -685,14 +685,27 @@ def _relay_failure_message(exc: BaseException) -> str:
     just echoes ``relay.error``). Route it through the same kind of honest,
     actionable copy every other refusal gets instead.
 
+    ``CapturePageIncompatible``'s ``str(exc)`` is the raw protocol
+    diagnostic ("capture page is incompatible with this speaker (expected
+    protocol 3, observed 2, build ...)") -- right for the journal (the
+    ``event=capture_relay.page_incompatible`` log already carries the same
+    fields), wrong for the household surface. Map it to the one action that
+    fixes it: reload the phone page so it serves the current build.
+
     Every other exception falls back to ``str(exc)`` unchanged (prior
     behavior) -- not evidenced as a wizard-facing problem, so left alone
     per "scope fixes to the observed-broken path."
     """
+    from jasper.capture_relay.session import CapturePageIncompatible
     from jasper.correction.level_match import LevelMatchRefused
 
     if isinstance(exc, LevelMatchRefused):
         return exc.user_message
+    if isinstance(exc, CapturePageIncompatible):
+        return (
+            "The phone page is out of date for this speaker. "
+            "Close the phone tab and open a fresh link from this page."
+        )
     if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
         return (
             "The connection to the phone timed out mid-measurement. "

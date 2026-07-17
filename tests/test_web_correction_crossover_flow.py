@@ -9995,10 +9995,16 @@ def _drive_v3_driver_plan(
     *,
     ambient_duration_s: float = 0.0,
     play_fails_on_attempt: int | None = None,
+    stop_after_reserve: bool = False,
 ):
     """Build and return (run_and_consume, client, session, phone,
     relay_backend, progress_calls, finish_failed_calls) wired against
-    ``fixture`` (from :func:`_v3_driver_plan_fixture`)."""
+    ``fixture`` (from :func:`_v3_driver_plan_fixture`).
+
+    ``stop_after_reserve`` flips the runner's own ``stop_event`` the moment
+    the first ``reserve_repeat_attempt`` succeeds — landing a Stop in the
+    authorize→consume gap, before any tone can play."""
+    import threading
     import urllib.parse
 
     from jasper.capture_relay import session as relay_session
@@ -10109,13 +10115,18 @@ def _drive_v3_driver_plan(
 
     client = RelayClient("https://relay.test", transport=transport)
 
+    stop_event = threading.Event()
+
     def reserve_repeat_attempt():
-        return fixture.repeat_admission.reserve(
+        reservation = fixture.repeat_admission.reserve(
             fixture.comparison_set,
             target_id=fixture.repeat_target_id,
             target_fingerprint=fixture.repeat_target_fingerprint,
             path=fixture.admission_path,
         )
+        if stop_after_reserve:
+            stop_event.set()
+        return reservation
 
     finish_failed_calls: list[tuple[dict, str]] = []
 
@@ -10145,6 +10156,7 @@ def _drive_v3_driver_plan(
         comparison_set=fixture.comparison_set,
         target_fingerprint="c" * 64,
         ambient_duration_s=ambient_duration_s,
+        stop_event=stop_event,
     )
     return (
         run_and_consume,
@@ -10405,6 +10417,54 @@ async def test_v3_driver_plan_transport_failure_finishes_the_reservation(
     assert target_state["inflight"] is None
     assert target_state["status"] == "active"  # first accepted capture stands
     assert target_state["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_v3_driver_plan_stop_between_authorize_and_consume_plays_no_tone(
+    monkeypatch, tmp_path
+):
+    """A Stop landing in the authorize→consume gap (the reservation exists,
+    the tone has not started) must end the session cleanly: the runner's own
+    ``stop_requested`` polling raises ``CaptureStopped`` before ``on_armed``
+    can reach the audio player, ``finish_failed_repeat_attempt`` (the SAME
+    seam the transport-failure path above uses) settles the reservation
+    exactly once, and the phone gets ``sweep_cancelled`` — never a tone,
+    never an ``inflight`` reservation left behind."""
+
+    from jasper.capture_relay import session as relay_session
+
+    fixture = _v3_driver_plan_fixture(monkeypatch, tmp_path)
+    (
+        run_and_consume,
+        client,
+        session,
+        _phone,
+        relay_backend,
+        progress_calls,
+        finish_failed_calls,
+        play_calls,
+    ) = _drive_v3_driver_plan(monkeypatch, fixture, stop_after_reserve=True)
+
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await run_and_consume(client, session)
+
+    assert play_calls == []  # the tone never played
+    phases = relay_backend.phases(session.session_id)
+    assert "sweep_started" not in phases
+    assert phases[-1] == "sweep_cancelled"
+
+    assert len(finish_failed_calls) == 1
+    reservation, failure_type = finish_failed_calls[0]
+    assert reservation["attempt"] == 1
+    assert failure_type == "CaptureStopped"
+
+    snapshot = fixture.repeat_admission.snapshot(
+        fixture.comparison_set, path=fixture.admission_path
+    )
+    target_state = snapshot["targets"][fixture.repeat_target_id]
+    assert target_state["inflight"] is None
+    assert target_state["status"] == "active"  # attempt 1 failing is not terminal
+    assert target_state["attempts"] == 1
 
 
 def test_v3_capture_plan_progress_renders_in_the_wizard_envelope():

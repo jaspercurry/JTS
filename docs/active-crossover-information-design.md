@@ -785,8 +785,10 @@ phone mic's own noise floor at 4-12 kHz reads as pure digital silence — that
 band keeps its pre-fix deconvolved value rather than reporting a clamped
 number as a real measurement). Covered bands (bass/upper_bass/transition/mid
 in the real captures, and every band on the DEFAULT 20 Hz-20 kHz
-single-driver sweep) are completely untouched — the fix changes zero bits
-for them. This is scoped to the noise TERM only: the signal-side magnitude
+single-driver sweep) keep their reported level unchanged — the fix only adds
+the additive diagnostic `basis` key (`"deconvolved"` vs
+`"raw_ambient_fallback"`) each band entry now carries.
+This is scoped to the noise TERM only: the signal-side magnitude
 computation, the verdict vocabulary, and every consumer of the SNR block
 (`band_snr_verdicts`, `worst_band_verdict`, the W2.1-W2.3 completion-
 correction machinery above) are unchanged — their inputs simply became

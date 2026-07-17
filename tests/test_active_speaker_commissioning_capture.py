@@ -1018,6 +1018,31 @@ def _reference_axis_proof(
     }
 
 
+@pytest.mark.parametrize(
+    ("protocol", "valid"), [(1, False), (2, True), (3, True), (4, False)]
+)
+def test_placement_proof_capture_protocol_is_an_explicit_allowlist(
+    protocol, valid
+):
+    """PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS is a deliberate
+    allowlist, not a ``>= 2`` floor: protocol 1 has no acknowledgement
+    machinery for a proof to stand on, and a future protocol 4 must be a
+    deliberate addition here, never a silent pass-through (see the
+    constant's comment in jasper.active_speaker.capture_geometry)."""
+    from jasper.active_speaker.capture_geometry import (
+        placement_proof_shape_valid,
+    )
+
+    proof = {**_reference_axis_proof(), "capture_protocol_version": protocol}
+    assert placement_proof_shape_valid(
+        proof,
+        policy_id="driver_reference_axis_v1",
+        role="woofer",
+        speaker_group_id="mono",
+        target_fingerprint="c" * 64,
+    ) is valid
+
+
 def test_aggregate_three_accepted_repeats_is_normal_confidence():
     repeats = [_repeat(-30.0), _repeat(-30.3), _repeat(-29.8)]
 
