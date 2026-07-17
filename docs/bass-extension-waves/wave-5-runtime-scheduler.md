@@ -1,9 +1,9 @@
 # Wave 5 — runtime scheduler (Codex prompt)
 
-> **Revision 4 (2026-07-17) — implementation blocked.** The eventual
+> **Revision 5 (2026-07-17) — implementation blocked.** The eventual
 > R1 scheduler remains sealed-only, but no Wave 5 implementation is
 > authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` has
-> no frozen commissioning producer, and Wave 4 revision 3 now blocks
+> no frozen commissioning producer, and Wave 4 revision 4 remains blocked
 > behind a focused measured-derivation prerequisite rather than
 > inventing one. This revision also freezes scheduler behavior around
 > Wave 3's durable natural-at-rest commit/recovery boundary. Ported/PR
@@ -34,17 +34,19 @@ and every failure converges toward the natural target. Plus the live
 observability (`/state` fields, doctor drift/heartbeat checks).
 
 Accepted ported/PR profiles remain commissioned data but are not
-runtime-eligible: the scheduler reports the deferral, stays at
-`natural`, and sends no patch. This wave must not invent fixed slots,
-identity parameters, or structural patches for their changing filter
-tuples.
+runtime-eligible: the scheduler reports the typed deferral, reports no
+live profile target, and sends no patch. The ordinary baseline remains
+active; because a ported/PR `TargetSpec` includes shaping that is not in
+that graph, observability must not fabricate `current_target="natural"`.
+This wave must not invent fixed slots, identity parameters, or
+structural patches for their changing filter tuples.
 
 ## Required reading (in order)
 
 1. `docs/HANDOFF-bass-extension-plan.md` §8.2–8.4 and §10 (read
    carefully — hysteresis, rate limits, micro-steps, limiter
    coupling, and the failure ladder are specified, not designable).
-2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 4,
+2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 5,
    then Wave 1's `TargetSpec` and ported/PR family sections. Read the
    fixed-graph scope and deferral contract carefully.
 3. `jasper/volume_coordinator.py` — fully: `_dispatch`, the observer
@@ -82,18 +84,19 @@ tuples.
   `BASS_EXTENSION_RUNTIME_ADAPTER_IDS = frozenset({"sealed_v1"})`.
   If it implemented any ported/PR runtime block or structural slot
   scheme, STOP and report.
-- Confirm Wave 3's one commit owner, source-explicit graph-evidence
-  resolver, natural predecessor normalization, and correction-process
-  recovery owner exist exactly as revision 4 specifies. A pending
+- Confirm Wave 3's one commit owner, source-explicit graph-
+  classification boundary, natural predecessor normalization, and
+  correction-process
+  recovery owner exist exactly as revision 5 specifies. A pending
   apply intent must be visible in static state and must authorize only
   its two exact natural graph fingerprints. If recovery is implicit in
   GET, runs in a new process/task, or may leave a deep graph, STOP.
-- Confirm a **merged, dated replacement for Wave 4 revision 3** defines a
+- Confirm a **merged, dated replacement for Wave 4 revision 4** defines a
   deterministic evidence → `limiter_threshold_dbfs` derivation for
   every sealed target, its units/stage in the Camilla graph, refusal on
   missing evidence, and hardware-free tests; confirm Wave 4 implements
   it and accepted sealed profiles carry finite thresholds. No such
-  contract exists as of this revision: Wave 4 revision 3 explicitly
+  contract exists as of this revision: Wave 4 revision 4 explicitly
   found that its existing evidence is insufficient and blocks behind
   the focused measured-derivation prerequisite. This check therefore
   fails and Wave 5 must stop. Do not design the derivation in Wave 5.
@@ -109,22 +112,40 @@ Create:
 
 Modify (small, seam-only):
 - `jasper/volume_coordinator.py` — one optional **awaited** gate seam,
-  passed both `previous_level` and `target_level`. For every louder
-  canonical change, await `bass_extension_notify(previous_level,
-  target_level)` before the first actuator that can raise audible level
-  — Camilla master, Spotify, or Bluetooth. If retreat cannot be
-  confirmed, do not execute the louder carrier write; retain the prior
-  canonical level and surface the failure through the runtime event and
-  state. For same/quieter changes, perform the carrier write first and
-  then await best-effort convergence; failure leaves the already-safer
-  level in place. Default no-op when unregistered. Direction is derived
-  before `_level` is overwritten, not reconstructed in `_dispatch`.
-- `jasper/voice/daemon_main.py` — register one runtime with the
-  long-lived coordinator and existing 1 Hz observer.
-- `jasper/control/volume_ops.py` — register the same runtime contract
-  on each per-request coordinator; no background task or second
-  heartbeat owner. This seam is required so web/dial writes get the
-  same pre-actuator safety ordering as voice writes.
+  passed both `previous_level` and `target_level`, registered only on
+  jasper-voice's long-lived coordinator. For every louder canonical
+  change, first persist the requested target under the coordinator's
+  existing mutation lock, then await
+  `bass_extension_notify(previous_level, target_level)` before the
+  first actuator that can raise audible level — Camilla master,
+  Spotify, or Bluetooth. Publishing the target first is the
+  stale-decision invalidation: the 1 Hz reconciler can no longer read
+  the old quieter level and re-deepen between retreat and actuator.
+  If retreat cannot be confirmed, restore the prior canonical level
+  before returning and do not execute the louder carrier write. On
+  restart after target publication but before the actuator, boot must
+  run the same gate before applying that persisted louder level. For
+  same/quieter changes, perform the carrier write first and then await
+  best-effort convergence; failure leaves the already-safer level in
+  place. Default no-op when unregistered. Direction is derived before
+  `_level` is overwritten, not reconstructed in `_dispatch`.
+- `jasper/voice/daemon_main.py` — register the **only** runtime with
+  the long-lived coordinator and existing 1 Hz observer; extend the
+  existing voice control socket with one bounded absolute
+  `VOLUME_SET <0..100>` command that invokes that same coordinator and
+  returns only after its existing mutation lock covers bass gate plus
+  carrier dispatch. This is an existing-process command, not a route,
+  daemon, task, or second coordinator.
+- `jasper/control/volume_ops.py` — do **not** construct a bass runtime.
+  For every web/dial set, adjust, or unmute that resolves to an
+  accepted/current sealed profile **or a pending Wave 3 intent**,
+  delegate the resulting absolute target to voice's `VOLUME_SET`
+  command so the whole mutation has the sole owner above. If voice is
+  unavailable, a louder request fails closed without changing
+  persistence or an actuator; same/quieter may use the existing direct
+  coordinator path because it cannot require a bass deepening.
+  Missing/bypassed/deferred profiles with no pending intent retain
+  today's direct path. No other process may call `PatchConfig` for bass.
 - `jasper/voice_daemon.py` — add the runtime snapshot as the exact
   `bass_extension_runtime` object in the existing `STATUS` response.
 - `jasper/control/state_aggregate.py` — extend the `bass_extension`
@@ -140,7 +161,8 @@ Modify (small, seam-only):
   one of the intent's exact natural graphs; malformed/unproved pending
   state reports `current_target=null`. This transaction gate takes
   precedence over accepted/current profile state.
-  For accepted ported/PR profiles: `current_target="natural"`,
+  For accepted ported/PR profiles: `current_target=null`,
+  `current_extension_hz=null`,
   `runtime_armed=false`, and
   `runtime_deferred_reason="fixed_graph_not_defined"`.
   Merge live fields only from `voice_st["bass_extension_runtime"]`;
@@ -149,7 +171,7 @@ Modify (small, seam-only):
   accepted/current sealed profile reports `scheduler_alive=false`,
   `runtime_armed=false`, `current_target=null`, and
   `last_transition_at=null` (unknown is never rendered as natural).
-  Deferred ported/PR remains its static healthy natural/no-arm state
+  Deferred ported/PR remains its static healthy no-live-target state
   and does not acquire a heartbeat warning.
 - `jasper/cli/doctor/audio.py` — extend `check_bass_extension_profile`
   or add `check_bass_extension_runtime` (one CheckResult): accepted
@@ -157,15 +179,16 @@ Modify (small, seam-only):
   scheduler heartbeat stale → WARN; accepted ported/PR → OK with the
   explicit runtime-deferred detail.
 - Existing tests for the files above (extend).
-- `tests/test_control_server.py` — extend the existing per-request
-  coordinator coverage for control registration and ordering.
+- `tests/test_control_server.py` and existing voice-control-socket
+  tests — extend coverage for delegation, unavailable-voice refusal,
+  absolute-target validation, and ordering.
 
 ## Frozen behavior (`scheduler.py`, pure)
 
 ```python
 @dataclass(frozen=True)
 class SchedulerState:
-    current_target_id: str
+    current_target_id: str | None
     below_since_monotonic: float | None   # when level first went <= anchor-4
     last_deepen_monotonic: float | None
 
@@ -179,8 +202,9 @@ def select_target(profile, listening_level: int, state: SchedulerState,
     #   per decision (never jump multiple targets deeper).
     # Missing/stale/bypassed profile -> natural, always.
     # Any adapter outside the shared runtime-scope constant ->
-    # natural with reason="adapter_deferred", always; do not start
-    # dwell or deepen timers.
+    # next_target_id=None with reason="adapter_deferred", always; do
+    # not start dwell or deepen timers and do not imply that a stored
+    # TargetSpec is live.
 ```
 
 Constants as literals with names (`REEXTEND_HYSTERESIS_LEVELS = 4`,
@@ -191,12 +215,14 @@ Constants as literals with names (`REEXTEND_HYSTERESIS_LEVELS = 4`,
 
 - `ensure_bass_target(level)` — idempotent: evaluate profile
   (Wave 2), run `select_target`, and if a change is needed, execute
-  the transition. Safe to call from both hook and reconciler in any
-  process; concurrent duplicate patches of identical values are
-  acceptable by design. For ported/PR it records the deferred state
-  and returns without reading or patching CamillaDSP. Its awaited gate
-  result distinguishes `confirmed` from `failed`; a louder caller may
-  continue only on `confirmed`.
+  the transition. It is callable only by the one runtime in
+  jasper-voice. One in-process `asyncio.Lock` inside that runtime
+  serializes gate and 1 Hz decisions and their complete micro-step
+  sequences; no other process owns bass patches. For ported/PR it
+  records the deferred/no-live-target state and returns without reading
+  or patching CamillaDSP. Its awaited gate result distinguishes
+  `confirmed` from `failed`; a louder caller may continue only on
+  `confirmed`.
 - Before reading or patching live bass params, re-evaluate Wave 3's
   static state. If `apply_recovery_required=true`, do not call
   `PatchConfig`, do not start/deepen timers, and publish
@@ -204,13 +230,16 @@ Constants as literals with names (`REEXTEND_HYSTERESIS_LEVELS = 4`,
   the canonical resolver proves the live graph is one of the intent's
   exact natural fingerprints; otherwise return `failed`. Recovery is
   never a Wave 5 action.
-- The existing correction measurement gate applies to **both** the
-  1 Hz reconciler and hook-driven transitions. While it is held, no
-  Wave 5 process patches bass filters. This lets Wave 3 normalize,
-  commit, or recover the graph without a racing scheduler. On gate
-  release, the next ordinary tick re-evaluates the now-persisted
-  profile; no new cross-process lock, pause API, task, or handshake is
-  introduced.
+- The existing `MEASURE_PAUSE` command sets jasper-voice's
+  process-local correction measurement gate. Because jasper-voice is
+  now the sole bass patch owner, that existing gate applies to **both**
+  the 1 Hz reconciler and hook-driven transitions without pretending
+  it is cross-process. While held, no bass filter is patched and a
+  louder volume gate returns `failed`; same/quieter carrier changes
+  may proceed without a bass patch. This lets Wave 3 normalize, commit,
+  or recover the graph without a racing scheduler. On release, the next
+  ordinary tick re-evaluates the now-persisted profile; no new lock
+  service, pause API, task, or handshake is introduced.
 - Transition execution (R1, sealed only): interpolate
   `(freq_target, q_target)` from current to next member in N steps
   such that no step changes predicted response by more than 1 dB
@@ -235,7 +264,9 @@ Constants as literals with names (`REEXTEND_HYSTERESIS_LEVELS = 4`,
   stale/missing → step toward NATURAL (this also heals the
   reload-reset case from the Wave-0 memo). Accepted ported/PR profiles
   are a healthy no-op: do not read missing bass filters as drift and
-  do not patch. Writes a heartbeat timestamp into jasper-voice's
+  do not patch. The runtime lock serializes this tick with any
+  control-socket or voice-originated volume gate. Writes a heartbeat
+  timestamp into jasper-voice's
   in-process state, exported only through `STATUS` and then curated by
   jasper-control into `/state`.
 
@@ -257,28 +288,39 @@ add, remove, rename, or change the type of a filter.
   level; retreat is single-call immediate; re-extend requires dwell +
   interval (drive `now_monotonic` explicitly — no sleeps); transient
   dip below anchor never deepens; missing/stale/bypassed → natural;
-  accepted ported/PR → natural with `adapter_deferred` and no timers.
+  accepted ported/PR → `next_target_id=None` with
+  `adapter_deferred` and no timers.
 - Transition math: step count honors the ≤1 dB rule for the worked
   sealed family; limiter ordering (first-step on deepen, last-step on
   retreat) pinned.
 - Runtime with mocked controller: patch failure mid-transition holds
   then reconciler converges; reconciler steps toward natural on
-  unreadable params; duplicate concurrent `ensure_bass_target` calls
-  produce identical final patches (no oscillation); accepted
+  unreadable params; concurrent gate/tick calls serialize complete
+  transitions with no interleaved limiter/boost steps; accepted
   ported/PR calls never read or patch CamillaDSP. A pending apply
   intent never patches or advances timers, returns `confirmed` only
   for an exactly proved natural graph, and resumes ordinary selection
   only after the intent clears. A held correction measurement gate
-  suppresses both tick- and hook-driven patches.
+  suppresses both tick- and hook-driven patches and refuses louder
+  actuator dispatch.
 - Coordinator hook: retreat-before-louder ordering (hook fires before
   the first audible-level actuator on every rising change) — test at
-  the seam with a fake awaited runtime recording call order for
-  Camilla-master, Spotify, and Bluetooth; failure blocks the louder
-  actuator and restores the prior canonical level; no-op when
+  the seam with a fake awaited runtime recording
+  target-persist → retreat → Camilla-master/Spotify/Bluetooth order;
+  a simultaneous tick sees the new target and cannot deepen. Failure
+  blocks the louder actuator and restores the prior canonical level;
+  boot applies the gate before a persisted louder level; no-op when
   unregistered (existing coordinator tests must pass unchanged).
+- Ownership/delegation: voice-originated and delegated control volume
+  changes enter the same long-lived coordinator lock and one runtime;
+  no control-side runtime/PatchConfig is constructed. Voice-unavailable
+  louder control requests change neither persistence nor any actuator;
+  same/quieter and ineligible/deferred cases retain their specified
+  direct behavior.
 - State: accepted ported/PR preserves the commissioned profile fields,
-  reports `current_target="natural"`, `runtime_armed=false`, and the
-  exact deferred reason; sealed reports `runtime_armed=true` only
+  reports `current_target=null`, `current_extension_hz=null`,
+  `runtime_armed=false`, and the exact deferred reason; sealed reports
+  `runtime_armed=true` only
   when the accepted/current block is present, no apply intent exists,
   every target threshold is finite, and the runtime owns it. Pending
   exact-natural state is not armed; malformed pending state is unknown.
@@ -294,16 +336,17 @@ add, remove, rename, or change the type of a filter.
 ## Anti-overengineering fences
 
 Do NOT: create a daemon, thread, or standalone asyncio task (the
-runtime lives inside existing processes' existing ticks/hooks); add
-cross-process locks (idempotent convergence IS the design); persist
+runtime lives inside jasper-voice's existing ticks/hooks); add
+cross-process locks (one existing process and one in-process runtime
+lock own transitions); persist
 scheduler state to disk (it reconstructs from level + live params);
 implement R2/faders; implement signal-aware scheduling (explicit
 non-goal — the seam is `select_target` and that's where it would go
 LATER); add config/env knobs; smooth/ramp anything beyond the
 specified micro-steps (CamillaDSP's own volume ramp is not yours to
-touch); modify `runtime_balance.py`, mux, ducker, or AEC code. If
-the coordinator hook seam requires more than ~20 lines in
-`volume_coordinator.py`, your seam is wrong — stop and report.
+touch); modify `runtime_balance.py`, mux, ducker, or AEC code. Do not
+add a second bass runtime to jasper-control or make control and voice
+PatchConfig calls "converge" independently.
 Do not add ported/PR identity filters, named shaping slots, filter
 bypasses, or structural `PatchConfig` updates; that is a separately
 budgeted graph-design/proof problem, not this wave.
@@ -328,6 +371,22 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 5 (2026-07-17)** — the fresh independent review proved that
+  the process-local measurement flag cannot exclude a control-owned
+  runtime and that voice/control patchers can make opposite decisions
+  from different persisted levels; duplicate-idempotent writes were
+  therefore not established. Rationale: jasper-voice is now the sole
+  bass patch and heartbeat owner; eligible control changes delegate
+  the whole mutation through its existing UDS and long-lived
+  coordinator. Louder targets are persisted before retreat to
+  invalidate stale reconciler decisions, one in-process lock
+  serializes micro-steps, and measurement pause now covers every patch
+  owner. The same review found that the ordinary deferred graph does
+  not implement a ported/PR natural `TargetSpec`, so deferred state
+  reports `current_target=null`. Rejected alternatives were a second
+  control runtime, a new daemon/cross-process lock, a two-phase patch
+  handshake, and fabricated `natural` telemetry.
 
 - **Rev 4 (2026-07-17)** — the resumed cross-wave review found that a
   durable Wave 3 commit also needs a scheduler-side exclusion rule:

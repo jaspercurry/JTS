@@ -1,8 +1,9 @@
 # Wave 4 — commissioning backend (Codex prompt)
 
-> **Revision 3 (2026-07-17) — implementation blocked.** Accept hands
+> **Revision 4 (2026-07-17) — implementation blocked.** Accept hands
 > the desired profile in memory to Wave 3's sole profile+DSP commit
-> owner; it never persists first. The existing correction process owns
+> owner; every adapter uses the same predecessor-aware boundary and
+> never persists first. The existing correction process owns
 > synchronous recovery before readiness and mutating bass routes. The
 > current ladder/sustain/digital evidence still cannot determine a
 > Camilla-stage limiter threshold, so a focused measured-derivation
@@ -215,24 +216,29 @@ process-level claim that precedes all request dispatch, but the GET
 handler itself is read-only and there is no state-changing GET route.
 
 Accept constructs the complete desired `BassExtensionProfile` in
-memory and, for sealed profiles, enters `measurement_window()` before
+memory and, for every adapter, enters `measurement_window()` before
 passing it to Wave 3's
 `apply_bass_extension(desired_profile)`. That Wave 3 function is the
-one commit owner. **Do not call `save_bass_extension_profile`, a graph
+one predecessor-aware commit owner. **Do not call
+`save_bass_extension_profile`, a graph
 loader, or a second transaction helper first or directly.** Wave 3
 normalizes the predecessor to its persisted natural graph, snapshots
 that predecessor, proves the desired natural graph, durably records
-both, loads/readbacks DSP, publishes the desired profile, proves the
-persisted pair, and clears the intent in that order. Only after it
+both when two authorities can change, loads/readbacks DSP, durably
+publishes the desired profile, proves the persisted pair, and clears
+the intent in that order. Only after it
 returns success may the backend transition the session from `review`
 to `accepted`.
 
 Cancellation of the backend task propagates only after Wave 3 drains
-its shielded rollback. For ported/PR profiles, that same entry point
-publishes the accepted profile without a graph transaction or audio-
-isolation requirement and returns the stable runtime deferral. A
-failed accept leaves the exact predecessor profile/graph pair and the
-session in `review`.
+its shielded rollback. For a ported/PR desired profile, that same entry
+point returns the stable runtime deferral **and** removes a predecessor
+sealed block before publication. It may skip a redundant DSP load only
+when it proves the predecessor is already the exact ordinary no-block
+baseline. Wave 4 does not decide which case applies and never publishes
+a deferred profile outside the audio-isolated commit boundary. A failed
+accept leaves the exact predecessor profile/graph pair and the session
+in `review`.
 
 This revision does **not** derive or publish
 `limiter_threshold_dbfs`; the mandatory stop above applies before any
@@ -314,7 +320,7 @@ sneaky segments.
   exact recovery happens under the measurement window, GET state is
   read-only with no actions, and every POST retries recovery before its
   own mutation. Failed recovery retains the intent and blocks forward
-  work without blocking the red Stop or unrelated correction routes;
+  work without blocking the red Stop or read-only/non-DSP correction routes;
   Stop cannot clear the intent.
 - Spec builder: registry round-trip, constraints mono/48k/EC-off
   (mirror the existing builder tests).
@@ -348,6 +354,16 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 4 (2026-07-17)** — the fresh independent review found that a
+  profile-only ported/PR accept is incoherent when replacing an
+  accepted sealed profile: the sealed `bass_ext_*` pair would remain
+  live under a deferred authority state that forbids it. Rationale:
+  every accept now enters the same measurement-isolated Wave 3 commit
+  owner; that owner performs predecessor-aware sealed-block removal or
+  proves that the ordinary no-block graph is already active. Wave 4
+  still owns no graph/profile publication logic and remains blocked on
+  the measured limiter prerequisite.
 
 - **Rev 3 (2026-07-17)** — the resumed cross-wave review found that
   first-mutation recovery was not durable across a power loss, had no
