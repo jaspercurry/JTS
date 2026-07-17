@@ -702,10 +702,20 @@ The revised rule:
   evidence the solver had never seen — which converges or honestly
   oscillates with real measurements, never a canned replay.
 
-The two ways a refusal reaches the household are read from ONE stored
-predicate (`CrossoverLevelLease._target_refusal_pending`) so the
-between-set restart and the envelope's own refusal rendering can never
-disagree about "was a refusal shown for this target."
+Both surfaces read the same two stored facts — the lease's most recent
+pre-flight solve refusal (`_solve_refusal`) and the bounded-correction
+write count (`_correction_budget_exhausted`) — through separate readers:
+the between-set restart via `CrossoverLevelLease._target_refusal_pending`
+(direct reads), the envelope's refusal rendering via
+`level_match_snapshot()`'s `solve_refusal` / `solve_correction.exhausted`
+projections of those same facts
+(`crossover_envelope._active_level_solve_refusal`). Because the readers
+are separate code paths, their agreement about "was a refusal shown for
+this target" is pinned by a parity regression
+(`test_refusal_pending_predicate_parity_with_envelope_rendering`) across
+the representative states (refusal pending below the bound, exhausted
+without a fresh solve refusal, neither) rather than assumed
+structurally.
 
 Beyond the refusal-pending restart case, a target's correction state
 clears only on: its repeat set finalizing with a *sufficient* aggregate

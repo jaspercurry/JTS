@@ -839,13 +839,20 @@ class CrossoverLevelLease:
     def _target_refusal_pending(self, target_id: str) -> bool:
         """Whether ``target_id`` is currently showing a pre-flight refusal.
 
-        W2.4 (hardware run 20, 2026-07-17, jts3): the SINGLE predicate the
-        between-set restart (``invalidate_comparison_context``) and the
-        envelope's refusal rendering
+        W2.4 (hardware run 20, 2026-07-17, jts3): the between-set restart's
+        (``invalidate_comparison_context``'s) reader of the same TWO stored
+        facts -- ``self._solve_refusal`` and the
+        ``_correction_budget_exhausted`` write count -- that the envelope's
+        refusal rendering
         (``jasper.active_speaker.crossover_envelope._active_level_solve_refusal``)
-        both key off, so they can never disagree about "was a refusal shown
-        for this target." True on EITHER of the two ways a refusal reaches
-        the household:
+        independently re-derives from ``level_match_snapshot()``'s
+        ``solve_refusal`` / ``solve_correction.exhausted`` projections of
+        those same facts. The two readers are separate code paths, so their
+        agreement is pinned by a parity regression
+        (``test_refusal_pending_predicate_parity_with_envelope_rendering``
+        in tests/test_correction_crossover_backend_level_solve.py) across
+        the representative states rather than claimed structurally. True on
+        EITHER of the two ways a refusal reaches the household:
 
         * the bounded correction budget is exhausted
           (``_correction_budget_exhausted``) -- the exhausted case is always
@@ -863,6 +870,15 @@ class CrossoverLevelLease:
           ever ran; the correction wrote from set-completion evidence, not
           a rejected attempt) never sets ``_solve_refusal``, so that path
           still correctly reads as "no refusal shown" and preserves.
+
+        ``self._solve_refusal`` is single-valued by design: the guided flow
+        solves one driver at a time (sequential per-driver measurement), so
+        at most one target's pre-flight refusal is live when the restart
+        runs. In a hypothetical state where a second target's refusal had
+        been shown and then overwritten, that target would preserve its
+        correction through one restart, re-refuse on its next solve, and
+        clear on the following restart -- self-healing in one extra bounded
+        round, never latching.
 
         Run 20's defect: a refusal at writes=1 is NOT exhausted, so the old
         rule preserved the correction across the restart the refusal
@@ -960,10 +976,15 @@ class CrossoverLevelLease:
         SAME endpoint/body (``_handle_crossover_relay_level_match``'s
         non-continuing branch, the single production caller passing this
         flag). The two are distinguished by STORED STATE, never by request
-        shape, via ``_target_refusal_pending`` -- the ONE predicate this
-        method and the envelope's refusal rendering
+        shape, via ``_target_refusal_pending``, which reads the same TWO
+        stored facts (``self._solve_refusal`` and the
+        ``_correction_budget_exhausted`` write count) that the envelope's
+        refusal rendering
         (``jasper.active_speaker.crossover_envelope._active_level_solve_refusal``)
-        both read, so they can never disagree about "was a refusal shown":
+        independently re-derives from ``level_match_snapshot()``; the two
+        readers' agreement about "was a refusal shown" is pinned by a
+        parity regression
+        (``test_refusal_pending_predicate_parity_with_envelope_rendering``):
 
         * a target with NO pre-flight refusal pending keeps its signed
           adjustment, write count, measured gain/peak, and mic identity

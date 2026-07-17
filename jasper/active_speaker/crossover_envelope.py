@@ -240,10 +240,21 @@ def _active_level_solve_refusal(
     shown, at any write count," closing a dead loop where a
     room_too_noisy refusal below the exhausted threshold survived the
     restart and refused again identically with no audio played (see
-    ``CrossoverLevelLease._target_refusal_pending`` and
     ``CrossoverLevelLease.invalidate_comparison_context``'s
     ``preserve_solve_corrections`` contract), so the refusal cannot latch
     across the restart.
+
+    This function and the restart's own reader
+    (``CrossoverLevelLease._target_refusal_pending``) are SEPARATE code
+    paths over the same two stored facts: the lease stores
+    ``_solve_refusal`` and the bounded write count; this function reads
+    their snapshot projections (``solve_refusal`` /
+    ``solve_correction.exhausted``), the restart reads them directly. The
+    OR here must stay equivalent to that predicate -- their agreement
+    across the representative states is pinned by
+    ``test_refusal_pending_predicate_parity_with_envelope_rendering`` in
+    tests/test_correction_crossover_backend_level_solve.py; if you change
+    either side, that parity test is the contract to keep green.
     """
 
     refusal = _mapping(_mapping(status.get("level_match")).get("solve_refusal"))
