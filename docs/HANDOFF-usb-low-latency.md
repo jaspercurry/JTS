@@ -426,23 +426,21 @@ restarts because it avoids even that gap being spliced mid-stream.
 | off (`disabled`) | **Disarmed → USB unavailable.** Fan-in's `usbsink` lane falls back to the idle aloop (`hw:Loopback,1,3`), which nobody writes → USB source is SILENT until an `--auto` pass re-arms direct capture. No crash; observable as fan-in lane `source:"lane"`. |
 
 **Visibility gap — now CLOSED (DIRECT-lane truth).** There is no bridge
-`state.json`. The system derives USB playing directly from fan-in's identity-
+`state.json`. The system derives USB liveness directly from fan-in's identity-
 bound DIRECT lane:
 
-- **Mux DOES see USB playing.** `Mux._usbsink_playing` reads the DIRECT lane's
-  liveness counter (`usbsink_direct_frames_read`) AND its live per-period level
-  (`usbsink_direct_rms_dbfs`), and `step_combo_liveness` gates playing on
-  frames-advanced **AND** level above the shared `-60` dBFS
-  `USBSINK_PLAYING_RMS_DBFS` (the single Python-side definition in
-  `jasper/source_state.py` — the solo bridge's Rust anchor was deleted
-  2026-07-11; `test_usbsink_playing_rms_contract.py` pins the
-  mux ↔ source_state identity + value).
-  Latest-source-wins auto preemption fires on a real USB start, and — the point
-  of the level gate — a host connected but streaming digital silence (a muted
-  Zoom, an idle tab) reads `playing:false`, so it does **not** seize the speaker
-  or block auto-return to AirPlay/Spotify. fan-in's DIRECT lane keeps clocking
-  silence frames in that state, so a frames-only gate would have false-seized;
-  the level gate is what makes combo == solo.
+- **Mux DOES see USB streaming.** `Mux._usbsink_playing` reads the DIRECT lane's
+  liveness counter (`usbsink_direct_frames_read`), and `step_combo_liveness`
+  reports "streaming" purely on frames-advanced — **no audio-level gate** (the
+  old `rms_dbfs > −60` combo silence gate was removed with the sticky-session
+  rework, 2026-07-17; see `docs/HANDOFF-usbsink.md` §3.3 "Sticky sessions" and
+  the `jasper.mux` module docstring). USB is a **passive** source: it wins when
+  streaming and no explicit session is active, and never preempts an in-progress
+  AirPlay/Spotify cast — so a host streaming digital silence (a muted Zoom) can't
+  seize the speaker, but a *faint* real sound (which a level gate wrongly
+  dropped) plays fine. `USBSINK_PLAYING_RMS_DBFS` (`jasper/source_state.py`)
+  survives as the `/state` level readout only; `test_usbsink_playing_rms_contract.py`
+  now pins that mux does NOT gate arbitration on it.
 - **`/state.renderers.usbsink` reports the truth.** The projection derives
   `playing` / `rms_dbfs` from the same fan-in DIRECT-lane level. See
   `docs/HANDOFF-usbsink.md` §4.4 / §4.9.

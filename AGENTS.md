@@ -2610,16 +2610,30 @@ Dial / voice "louder" / etc. do NOT write back to the gadget mixer
 — the host slider is one-way input, mirroring AirPlay sender
 behavior. See HANDOFF-usbsink.md §3.2 for the rationale.
 
-**Source arbitration**: Auto mode is latest-source-wins via
-`jasper-mux`. When another source starts while USB is playing in auto
-mode, mux **MUTEs the fan-in usbsink lane** at its mix stage (the only
-USB-silencing primitive because fan-in owns the sole capture). In manual
-source-selection mode, fanin's selected-input gate is the
-arbiter instead; mux releases any USB mute so choosing a source does not turn
-other sources on/off. When auto mode resumes and all other sources go idle, mux
-UNMUTEs the lane so a fresh host transition (pause-then-play on Mac) can re-take
-the speaker. The lane keeps reporting its pre-mute frames/level, so a muted-but-
-streaming host still reads as "playing" (no mute→release→mute flap).
+**Source arbitration — sticky sessions (updated 2026-07-17).** USB is a
+**passive** source: in auto mode it takes the speaker whenever it is streaming
+frames AND no explicit session (AirPlay/Spotify/Bluetooth) is active. An
+explicit session that *starts* preempts USB (a deliberate cast wins), but USB
+**never** preempts an in-progress cast — otherwise an incidental host sound (a
+Slack ding) would yank a housemate's AirPlay and, because the preempted source
+is paused, never hand it back (the Sonos-line-in / AVR signal-sense pathology).
+USB re-takes the speaker when the session ends; the `/sources/` Source selector
+is the manual override. **Liveness is frames-only — there is NO audio-level
+gate.** The old `rms_dbfs > −60` "combo silence gate" was removed: it conflated
+arbitration with output-gating and dropped faint audio and cut out on
+level-driven quiet browser-video passages (a quiet stretch below −60 read as
+"stopped"). It did NOT cause the ~1-2s cold-start detect — that is the 1 Hz
+poll's 2-tick frames baseline, unchanged by this. The −60 threshold
+(`USBSINK_PLAYING_RMS_DBFS`) is display-only now (the `/state` level readout).
+Code: `_pick_winner` / `_explicit_active` / `step_combo_liveness` in
+[`jasper/mux.py`](jasper/mux.py) (module docstring has the full rationale);
+condensed write-up incl. the deferred "sustained-audio grab" toggle in
+[`docs/HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md) §3.3 "Sticky sessions".
+When another source preempts USB, mux **MUTEs the fan-in usbsink lane** at its
+mix stage (the only USB-silencing primitive — fan-in owns the capture; the
+standby daemon emits nothing) and UNMUTEs when all other sources go idle. The
+lane keeps reporting its pre-mute frames, so a muted-but-streaming host still
+reads as streaming (no mute→release→mute flap).
 
 **Debugging quick reference**:
 

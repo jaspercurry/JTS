@@ -640,6 +640,94 @@ reads the current volume value and sets that as `listening_level`.
 > [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "Arbitration
 > mechanism — now fan-in-native (combo)".
 
+#### Sticky sessions — current arbitration model (2026-07-17)
+
+**The condensed story of how USB arbitration works today and why.**
+
+*The problem we hit.* USB-in had linked complaints: faint sounds not playing at
+all, dropouts on browser video (YouTube) that Spotify never showed, and a
+startup delay. mux decided "is USB playing?" with an **audio-level gate**
+(`rms_dbfs > −60 dBFS`) plus a 1 Hz / 2-tick debounce, and only opened fan-in's
+`usbsink` lane when that gate said yes. So faint audio never crossed the
+threshold (silence), and any quiet passage below −60 for ~2 s closed the gate →
+dropout. Spotify is mastered loud and continuous, so it stayed above the gate;
+browser video isn't. The **level gate is squarely the cause of the faint-audio
+and level-driven quiet-dropout classes.** Startup is more nuanced: the level
+gate delayed only *quiet-starting* audio (a fade-in had to climb past −60); a
+normal-volume track's ~1–2 s to first sound is the **1 Hz poll's 2-tick frames
+baseline** (two samples to see the counter advance) plus the handoff and macOS's
+own USB-device resume — none of which this gate, or its removal, touches. See
+"Residual" below.
+
+*How we thought about it.* The level gate was quietly doing **two** jobs: (A)
+**arbitration** — "should USB win *against another source*?" — which is real,
+and (B) **output gating** — "is USB audible *at all*?" — which is the bug.
+The deeper asymmetry: AirPlay/Spotify/Bluetooth are explicit, long-lived
+**sessions** (starting one is a deliberate "play here" act); USB is a dumb
+**byte stream** whose intent we can only infer, and any host app (a Slack ding,
+a UI click) feeds it. Treating them symmetrically under latest-source-wins is
+the "signal-sense auto-switch" pattern that AV receivers and **Sonos line-in
+autoplay** are infamous for: an incidental signal grabs the speaker and — because
+the preempted source is paused — never hands it back. Level can't encode intent,
+and lowering the threshold only makes the false grabs *more* frequent.
+
+*Where we landed — sticky sessions.* Separate the two jobs:
+
+- **Routing is level-independent.** USB liveness is now purely "is the host
+  streaming frames to us" (`step_combo_liveness`, frames-only, brief debounce).
+  If USB is the only thing playing, we play whatever it streams — faint or loud.
+  This directly fixes the faint-audio class (it always crosses now) and the
+  level-driven quiet-passage dropout (a quiet stretch keeps the frames flowing,
+  so the lane never closes), and it lets a *quiet* start be detected at all. It
+  does **not** shorten the ~1–2 s cold-start detect for normal-volume audio —
+  that is the poll cadence, unchanged (see "Residual"). A real pause stops the
+  frames and macOS tears the stream down, so USB releases on its own.
+- **Explicit sessions outrank the passive USB stream, and are sticky.** An
+  AirPlay/Spotify/BT session that *starts* preempts USB (a deliberate cast
+  wins). But USB is a **passive** source: it takes the speaker only when no
+  explicit session is active — it **never** preempts an in-progress cast, so a
+  laptop's incidental sound can't yank a housemate's music. USB re-takes the
+  speaker when the session ends. Code: `_pick_winner` / `_explicit_active` /
+  `step_combo_liveness` in [`jasper/mux.py`](../jasper/mux.py); the mux module
+  docstring has the full rationale.
+- **Manual override** via the `/sources/` Source selector for the rare "switch
+  to my Mac mid-cast."
+
+The `−60 dBFS` threshold (`USBSINK_PLAYING_RMS_DBFS`) survives **display-only**
+— the `/state` dashboard's "is there audible content" readout — and no longer
+gates routing. (So `/state.renderers.usbsink.playing` can read `false` while a
+faint-but-streaming USB is the routed `active_source` — a deliberate,
+long-standing split: `playing` = "audible content", `active_source` = mux
+routing. This is not new drift.)
+
+*Residual / not addressed by this change.* Two things stay as they were:
+(1) the ~1–2 s cold-start detect for normal-volume audio is the **1 Hz poll +
+2-tick frames baseline**, not the level gate — shortening it (faster poll, or a
+1-tick absolute-frames-present detect) is a separate change, deliberately not
+taken here. (2) A dropout caused by the host actually **tearing the stream
+down** (frames stop — e.g. between YouTube videos, an ad transition, or a
+buffering stall that closes the device) is frames-based, so both the old and new
+code drop and re-detect it identically; this change only removes the
+**level-driven** dropout (frames flowing, level dips through a quiet passage).
+Which mechanism dominates a given host's "YouTube dropouts" is **not yet
+hardware-confirmed** on jts.local — the level-driven class is the expected common
+case for continuous in-video playback, but confirming needs the Spotify-vs-YouTube
+A/B against the fan-in event timeline.
+
+*Deliberately not built (possible future toggle): "sustained-audio grab."* If
+we ever want USB to auto-interrupt an active cast when you *deliberately* start
+playing on the host, the escape from the false-grab pathology is a **duration**
+gate — USB preempts a session only after N seconds of continuous real audio, so
+a ding can't trigger it but a song can. It reintroduces a threshold + timer and
+delays the grab a few seconds, so it would ship as an opt-in toggle, not the
+default. Noted here so the option isn't rediscovered from scratch; not
+implemented as of 2026-07-17.
+
+---
+
+The remainder of this subsection is the historical aloop-solo design (see the
+superseded callout above).
+
 Mux integration follows the AirPlay pattern with one wrinkle: we
 can't tell the host to pause. So when USB is preempted, the daemon
 silences its own output (writes zeros to `usbsink_substream`) until

@@ -439,32 +439,35 @@ async def test_usbsink_preempt_released_when_others_idle(mux, patched_probes):
 
 
 @pytest.mark.asyncio
-async def test_usbsink_pause_then_play_clears_preempt(mux, patched_probes):
-    """Host paused (RMS dropped) while preempted, then user hits
-    play again (RMS rises). The daemon publishes a fresh
-    inactive→active edge → mux sees newly_started → preempt released
-    so audio flows again. Other sources get preempted as the new
-    winner."""
+async def test_usb_pause_then_play_does_not_grab_from_active_airplay(
+    mux, patched_probes,
+):
+    """Sticky sessions: a USB pause-then-play while an AirPlay cast is active
+    must NOT grab the speaker. USB restarting is not an explicit intent to take
+    over an active session — so AirPlay stays the winner and USB stays
+    preempted (it re-takes only once the cast ends; see
+    test_usbsink_preempt_released_when_others_idle)."""
     _stub_pauses(mux)
     preempt = _stub_usbsink_preempt(mux)
 
-    # Initial: USB + AirPlay both playing, AirPlay wins, USB preempted.
+    # Initial: USB + AirPlay both playing → the cast wins, USB preempted.
     _stub_probes(patched_probes, usbsink=True, airplay=True)
     await mux._tick()
+    assert mux._winner is Source.AIRPLAY
     mux._usbsink_preempted = True
 
     # Host paused → daemon publishes playing=false. AirPlay still on.
     _stub_probes(patched_probes, usbsink=False, airplay=True)
     await mux._tick()
-    # Preempt stays on; no edge to react to.
 
-    # Host plays again → daemon publishes playing=true → newly_started.
+    # Host plays again → USB false→true edge, but AirPlay is still the active
+    # session, so USB does NOT preempt it.
     _stub_probes(patched_probes, usbsink=True, airplay=True)
     await mux._tick()
-    # USB just became the new winner → preempt cleared, AirPlay paused.
-    last_call = preempt.await_args_list[-1]
-    assert last_call.args[0] is False
-    assert mux._winner is Source.USBSINK
+    assert mux._winner is Source.AIRPLAY
+    # USB was never released back to un-preempted while the cast holds the
+    # speaker (no _usbsink_set_preempt(False) on this edge).
+    assert all(call.args[0] is not False for call in preempt.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -602,6 +605,76 @@ async def test_combo_usb_survives_single_fanin_status_miss(
     assert mux._winner is Source.USBSINK
     await mux._tick()
     assert mux._winner is Source.USBSINK
+
+
+# ----------------------------------------------------------------------
+# Sticky sessions. USB is a PASSIVE source: it takes the speaker only when no
+# explicit session (AirPlay/Spotify/BT) is active, and NEVER preempts an active
+# cast — otherwise an incidental host sound would yank a housemate's AirPlay and
+# (because we pause the preempted source) never hand it back. An explicit
+# session that STARTS still preempts USB. See jasper.mux _pick_winner /
+# _explicit_active and the module docstring.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_usb_streaming_does_not_preempt_active_airplay(
+    mux, patched_probes, monkeypatch,
+):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    # AirPlay is the established session; USB frames start advancing underneath.
+    _stub_probes(patched_probes, usbsink=False, airplay=True)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY  # the cast wins first
+
+    # USB is now streaming (frames advancing) but must NOT grab the speaker.
+    await mux._tick()
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY
+    # AirPlay was never paused to hand the speaker to USB.
+    mux._pause.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_usb_takes_over_when_airplay_session_ends(
+    mux, patched_probes, monkeypatch,
+):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False, airplay=True)
+    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000, 192_000])
+
+    await mux._tick()
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY  # sticky: USB streams but AirPlay holds
+
+    # The cast ends. USB is still streaming -> it takes the now-free speaker.
+    _stub_probes(patched_probes, usbsink=False, airplay=False)
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_auto_select_prefers_active_session_over_streaming_usb(
+    mux, patched_probes, monkeypatch,
+):
+    """Flipping to auto while AirPlay plays and USB streams must land on the
+    explicit session, not the passive USB stream."""
+    from jasper.mux import ComboLiveness
+
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False, airplay=True)
+    # Pre-seed USB as already streaming so auto_select's single probe (frames
+    # advancing 48_000 -> 96_000) reads USB active alongside the AirPlay cast.
+    mux._usbsink_combo = ComboLiveness(prev_frames=48_000, idle_ticks=0, streaming=True)
+    _make_combo_box(mux, monkeypatch, [96_000])
+
+    await mux.auto_select()
+    assert mux._winner is Source.AIRPLAY
 
 
 # ----------------------------------------------------------------------
