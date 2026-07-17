@@ -38,14 +38,19 @@ from jasper.cli.usb_mic import (
 from jasper.music_sources import Source
 from jasper.source_intent import intent_env_key
 from jasper.usb_mic import (
+    USB_MIC_LEG_KEY,
+    USB_MIC_PRIMARY_LEG,
     USB_MIC_HEADER_BYTES,
     USB_MIC_HEADER_STRUCT,
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
     build_usb_mic_status,
     read_intent,
+    read_usb_mic_leg,
+    usb_mic_leg_choices,
     usb_mic_enabled,
     write_usb_mic_enabled,
+    write_usb_mic_leg,
 )
 
 
@@ -59,6 +64,47 @@ def test_intent_is_explicit_and_atomic(tmp_path: Path) -> None:
     write_usb_mic_enabled(False, path)
     assert usb_mic_enabled(path) is False
     assert read_intent(path).valid is True
+
+
+def test_usb_mic_leg_defaults_and_preserves_enable_intent(tmp_path: Path) -> None:
+    path = tmp_path / "usb_mic.env"
+    assert read_usb_mic_leg(path) == USB_MIC_PRIMARY_LEG
+
+    write_usb_mic_enabled(True, path)
+    write_usb_mic_leg("chip_aec_210", path)
+    assert usb_mic_enabled(path) is True
+    assert read_usb_mic_leg(path) == "chip_aec_210"
+
+    write_usb_mic_enabled(False, path)
+    assert usb_mic_enabled(path) is False
+    assert read_usb_mic_leg(path) == "chip_aec_210"
+    assert USB_MIC_LEG_KEY in path.read_text()
+
+
+def test_usb_mic_leg_writer_rejects_blank_value(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        write_usb_mic_leg("  ", tmp_path / "usb_mic.env")
+
+
+def test_usb_mic_leg_choices_follow_active_chip_beam_plan() -> None:
+    choices = usb_mic_leg_choices({
+        "JASPER_XVF_CHIP_BEAM_PLAN": "xvf_square_fixed_150_210",
+    })
+
+    assert [choice["value"] for choice in choices] == [
+        "primary",
+        "chip_aec_150",
+        "chip_aec_210",
+    ]
+    assert choices[0]["label"] == "Same as JTS voice"
+    assert choices[1]["azimuth_deg"] == 150.0
+    assert usb_mic_leg_choices({}) == [
+        {
+            "value": "primary",
+            "label": "Same as JTS voice",
+            "description": "Follows the microphone stream JTS uses for voice.",
+        },
+    ]
 
 
 def test_intent_reads_reject_symlinks_and_oversized_files(

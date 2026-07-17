@@ -1184,6 +1184,111 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
     assert body["error"] == "Turn on USB Audio Input in Sources first."
 
 
+def test_usb_mic_leg_persists_then_restarts_only_aec_bridge(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    events = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    final_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "chip_aec_210",
+                "choices": choices,
+                "applied": None,
+            },
+        },
+    }
+    monkeypatch.setattr(
+        srv_mod,
+        "usb_mic_leg_choices",
+        lambda env: choices if env is os.environ else pytest.fail(
+            "choice validation must use the control process environment"
+        ),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: events.append(("write", leg)),
+    )
+
+    def fake_manage(unit, **kwargs):
+        events.append(("restart", unit, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage)
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: final_status)
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: pytest.fail("source selection must not recompose the gadget"),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_kick_aec_reconciler",
+        lambda: pytest.fail("source selection must not run the reconciler"),
+    )
+
+    status, body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert status == 200
+    assert body == final_status
+    assert events == [
+        ("write", "chip_aec_210"),
+        (
+            "restart",
+            "jasper-aec-bridge.service",
+            {
+                "verb": "restart",
+                "reason": "usb_mic_leg",
+                "no_block": True,
+                "timeout": 5.0,
+            },
+        ),
+    ]
+
+
+def test_usb_mic_leg_rejects_choice_not_advertised_by_server(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    choices = [{"value": "primary", "label": "Same as JTS voice"}]
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda _leg: pytest.fail("unavailable choice must not be persisted"),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unavailable choice must not restart any unit"
+        ),
+    )
+
+    status, body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert status == 409
+    assert body["requested_leg"] == "chip_aec_210"
+    assert body["choices"] == choices
+
+
 def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
     import jasper.control.server as srv_mod
 
@@ -5267,6 +5372,7 @@ def test_grouping_set_stays_in_token_gated_routes():
         "/system/restart/audio",
         "/mic/mute",
         "/aec/usb-mic",
+        "/aec/usb-mic-leg",
         "/grouping/set",
         "/aec/firmware/update",
     })
@@ -5276,6 +5382,7 @@ def test_usb_mic_export_stays_in_token_gated_routes():
     """Live room-audio export is a privacy mutation, not a LAN-open control."""
 
     assert "/aec/usb-mic" in _srv_mod._TOKEN_GATED_ROUTES
+    assert "/aec/usb-mic-leg" in _srv_mod._TOKEN_GATED_ROUTES
 
 
 def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):

@@ -135,8 +135,10 @@ from jasper.usb_mic import (
     INTENT_PATH as USB_MIC_INTENT_PATH,
     USB_HOST_MIC_UDP_PORT,
     USB_MIC_HEADER_STRUCT,
+    USB_MIC_LEG_KEY,
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
+    USB_MIC_PRIMARY_LEG,
     usb_mic_enabled,
 )
 from ..mics import xvf3800 as _mic_profile
@@ -308,6 +310,7 @@ class BridgeConfig:
     out_port_xvf_raw0_dtln: int
     out_port_usb_host_mic: int
     emit_usb_host_mic: bool
+    usb_mic_leg: str
     outputd_ref_udp_host: str
     outputd_ref_udp_port: int
     ref_source: str
@@ -439,6 +442,10 @@ class BridgeConfig:
             out_port_usb_host_mic=USB_HOST_MIC_UDP_PORT,
             emit_usb_host_mic=usb_mic_enabled(
                 os.environ.get("JASPER_USB_MIC_INTENT_PATH", USB_MIC_INTENT_PATH)
+            ),
+            usb_mic_leg=(
+                os.environ.get(USB_MIC_LEG_KEY, USB_MIC_PRIMARY_LEG).strip()
+                or USB_MIC_PRIMARY_LEG
             ),
             outputd_ref_udp_host=os.environ.get(
                 "JASPER_AEC_OUTPUTD_REF_UDP_HOST",
@@ -610,6 +617,7 @@ class _BridgeStats:
         beam_plan: dict[str, object],
         ports: dict[str, int],
         mic_reference_identity: dict[str, object],
+        usb_mic_source: dict[str, str] | None = None,
         mic_fingerprint: str = "",
         dac_reference_fingerprint: str = "",
     ) -> None:
@@ -622,6 +630,7 @@ class _BridgeStats:
                 "beam_plan": dict(beam_plan),
                 "ports": dict(ports),
                 "mic_reference_identity": dict(mic_reference_identity),
+                "usb_mic_source": dict(usb_mic_source or {}),
                 "mic_fingerprint": mic_fingerprint,
                 "dac_reference_fingerprint": dac_reference_fingerprint,
             }
@@ -847,6 +856,21 @@ _out_total_samples = 0
 _ref_starved_frames = 0
 
 
+def _apply_mic_output_gain(
+    pcm: bytes,
+    gain_lin: float,
+) -> tuple[bytes, int, int]:
+    """Apply the shared post-AEC gain/soft-limit and return clip counters."""
+
+    if gain_lin == 1.0:
+        return pcm, 0, 0
+    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) * gain_lin
+    clipped = int(np.sum(np.abs(arr) > 32767))
+    # tanh soft-clip: smoothly asymptotic to ±32767 instead of hard-clipping.
+    arr = 32767.0 * np.tanh(arr / 32767.0)
+    return arr.astype(np.int16).tobytes(), clipped, len(arr)
+
+
 def _env_bool(name: str, default: str) -> bool:
     return os.environ.get(name, default).strip().lower() in (
         "1", "true", "yes", "on",
@@ -875,6 +899,43 @@ def _chip_aec_primary_leg(
         level=logging.WARNING,
     )
     return fallback
+
+
+def _resolve_usb_mic_source(
+    requested: str,
+    *,
+    plan: _mic_profile.ChipBeamPlan | None,
+    production_chip_aec_enabled: bool,
+    chip_aec_primary_leg: str,
+) -> dict[str, str]:
+    """Resolve the configured selector to the physical stream being emitted."""
+
+    allowed = {USB_MIC_PRIMARY_LEG, *(plan.leg_tokens if plan else ())}
+    selection = requested if requested in allowed else USB_MIC_PRIMARY_LEG
+    if selection != requested:
+        log_event(
+            logger,
+            "usb_mic.leg_invalid",
+            value=repr(requested),
+            fallback=USB_MIC_PRIMARY_LEG,
+            beam_plan=plan.plan_id if plan else "none",
+            level=logging.WARNING,
+        )
+    if not production_chip_aec_enabled:
+        return {
+            "selection": selection,
+            "mode": "software_aec3",
+            "leg": "clean",
+        }
+    return {
+        "selection": selection,
+        "mode": "chip_aec",
+        "leg": (
+            chip_aec_primary_leg
+            if selection == USB_MIC_PRIMARY_LEG
+            else selection
+        ),
+    }
 
 
 def _cfg_value(
@@ -1810,6 +1871,15 @@ def _aec_loop(  # noqa: PLR0915
     import wave
     if production_chip_aec_enabled and (not chip_aec_qs or not chip_beam_plan):
         raise RuntimeError("chip-AEC mode requires a validated chip beam plan")
+    usb_mic_choice_plan = chip_beam_plan or _mic_profile.chip_beam_plan_from_env(
+        os.environ,
+    )
+    usb_mic_source = _resolve_usb_mic_source(
+        config.usb_mic_leg,
+        plan=usb_mic_choice_plan,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+        chip_aec_primary_leg=chip_aec_primary_leg,
+    )
     # UDP output: localhost, non-blocking sendto. Replaces the old
     # PortAudio RawOutputStream writing to hw:LoopbackAEC,0. `sendto`
     # never blocks on `lo` at our rate (~256 kbps), so the main
@@ -2124,6 +2194,10 @@ def _aec_loop(  # noqa: PLR0915
         output_parts.append(
             f"usb_host_mic={config.out_host}:{config.out_port_usb_host_mic}"
         )
+        output_parts.append(
+            "usb_host_mic_source="
+            f"{usb_mic_source['mode']}:{usb_mic_source['leg']}"
+        )
     if production_chip_aec_enabled:
         output_parts.append(f"aec_source={chip_aec_primary_leg}")
     else:
@@ -2195,6 +2269,7 @@ def _aec_loop(  # noqa: PLR0915
             "usb_mic_device": config.usb_mic_device,
             "aec3_sweep_input_source": config.aec3_sweep_input_source,
         },
+        usb_mic_source=usb_mic_source,
         mic_fingerprint=config.wake_corpus_mic_fingerprint,
         dac_reference_fingerprint=config.wake_corpus_dac_fingerprint,
     )
@@ -2214,6 +2289,7 @@ def _aec_loop(  # noqa: PLR0915
     last_ref_bytes = silence
     frames_processed = 0
     chip_primary_missing_log = _DropLogDebouncer()
+    usb_mic_leg_missing_log = _DropLogDebouncer()
 
     # Optional debug WAV writers — see `_aec_loop` docstring.
     debug_dir = os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
@@ -2436,6 +2512,28 @@ def _aec_loop(  # noqa: PLR0915
             # "attenuation" to reflect what AEC actually accomplished,
             # not how much the post-gain stage amplified the residual.
             clean_aec_only = clean
+            usb_mic_aec_only = clean_aec_only
+            usb_mic_uses_clean = True
+            selected_usb_leg = usb_mic_source["leg"]
+            if (
+                production_chip_aec_enabled
+                and selected_usb_leg != chip_aec_primary_leg
+            ):
+                selected_usb_frame = chip_frames.get(selected_usb_leg, b"")
+                if selected_usb_frame:
+                    usb_mic_aec_only = selected_usb_frame
+                    usb_mic_uses_clean = False
+                elif outcome := usb_mic_leg_missing_log.record(time.monotonic()):
+                    drops, window_sec = outcome
+                    log_event(
+                        logger,
+                        "usb_mic.leg_missing",
+                        leg=selected_usb_leg,
+                        fallback=chip_aec_primary_leg,
+                        frames=drops,
+                        window_sec=f"{window_sec:.1f}",
+                        level=logging.WARNING,
+                    )
 
             # DTLN-aec parallel processing path (optional 3rd UDP leg).
             # Runs AFTER the AEC3 engine.process so the wake loop's
@@ -2531,17 +2629,24 @@ def _aec_loop(  # noqa: PLR0915
                 except OSError as e:
                     logger.error("debug wav write failed: %s", e)
                     mic_wav = aec_wav = ref_wav = None
-            if mic_gain_lin != 1.0:
-                arr = np.frombuffer(clean, dtype=np.int16).astype(np.float32) * mic_gain_lin
-                _out_clipped_samples += int(np.sum(np.abs(arr) > 32767))
-                _out_total_samples += len(arr)
-                # tanh soft-clip: smoothly asymptotic to ±32767 instead
-                # of hard-clipping. Below ±~26000 it's near-linear.
-                arr = 32767.0 * np.tanh(arr / 32767.0)
-                clean = arr.astype(np.int16).tobytes()
+            clean, clipped_samples, total_samples = _apply_mic_output_gain(
+                clean_aec_only,
+                mic_gain_lin,
+            )
+            _out_clipped_samples += clipped_samples
+            _out_total_samples += total_samples
             on_emitter.emit(clean)
             if usb_host_mic_emitter is not None:
-                usb_host_mic_emitter.emit(clean)
+                usb_mic_clean = clean
+                if not usb_mic_uses_clean:
+                    # USB beam selection is downstream-only, but it must keep
+                    # the same output-level contract as the primary clean leg.
+                    # Its clipping does not belong in voice's out_clip metric.
+                    usb_mic_clean, _clipped, _total = _apply_mic_output_gain(
+                        usb_mic_aec_only,
+                        mic_gain_lin,
+                    )
+                usb_host_mic_emitter.emit(usb_mic_clean)
             frames_processed += 1
             _bridge_stats.inc("frames_processed")
             if heartbeat is not None:

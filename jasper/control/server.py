@@ -83,7 +83,11 @@ from ..local_sources import (
     local_source_park_units,
 )
 from ..transit.state import read_state as read_transit_state
-from ..usb_mic import write_usb_mic_enabled
+from ..usb_mic import (
+    usb_mic_leg_choices,
+    write_usb_mic_enabled,
+    write_usb_mic_leg,
+)
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..audio_profile_state import (
     normalize_audio_input_profile,
@@ -120,6 +124,7 @@ _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
 _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_requested_at: dict[str, float] = {}
 _USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
+_AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
 
 
 def _diagnostics_result_path() -> str:
@@ -348,7 +353,8 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
 # promise; grouping/set = hijacks output routing; restart/voice|audio =
 # disrupt playback + the assistant; aec/firmware/update downloads and flashes
-# microphone firmware; aec/usb-mic = starts or stops live room-audio export.
+# microphone firmware; aec/usb-mic = starts or stops live room-audio export;
+# aec/usb-mic-leg = changes which live room-audio stream reaches the computer.
 # WS1 Phase 2 added the two restart routes and made the gate mandatory
 # (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
@@ -358,6 +364,7 @@ _TOKEN_GATED_ROUTES = frozenset({
     "/system/restart/audio",
     "/mic/mute",
     "/aec/usb-mic",
+    "/aec/usb-mic-leg",
     "/grouping/set",
     "/aec/firmware/update",
 })
@@ -2941,6 +2948,78 @@ def _make_handler(
             self._send_json(_aec_full_status())
             return
 
+        def _post_aec_usb_mic_leg(self) -> None:
+            """Persist the computer-mic source, then restart its producer only."""
+
+            body = self._read_json()
+            leg = body.get("leg")
+            if not isinstance(leg, str) or not leg.strip():
+                self._send_json(
+                    {"error": "leg must be a non-empty string"}, status=400,
+                )
+                return
+            leg = leg.strip()
+            choices = usb_mic_leg_choices(os.environ)
+            allowed = {
+                str(choice.get("value") or "")
+                for choice in choices
+                if isinstance(choice, dict)
+            }
+            if leg not in allowed:
+                self._send_json(
+                    {
+                        "error": (
+                            "leg is not available for the current microphone "
+                            "profile"
+                        ),
+                        "requested_leg": leg,
+                        "choices": choices,
+                    },
+                    status=409,
+                )
+                return
+            try:
+                write_usb_mic_leg(leg)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+                return
+            except OSError as exc:
+                self._send_json(
+                    {"error": f"write usb_mic.env failed: {exc}"}, status=502,
+                )
+                return
+            log_event(
+                logger,
+                "usb_mic.leg_set",
+                leg=leg,
+                client=self.address_string(),
+            )
+            restart = restart_broker.manage_units(
+                _AEC_BRIDGE_UNIT,
+                verb="restart",
+                reason="usb_mic_leg",
+                no_block=True,
+                timeout=5.0,
+            )
+            if not restart.get("ok"):
+                failed_status = _aec_full_status()
+                self._send_json(
+                    {
+                        "error": (
+                            "Computer microphone source was saved, but the "
+                            "microphone bridge restart could not be scheduled."
+                        ),
+                        "code": "usb_mic_leg_restart_failed",
+                        "intent_saved": True,
+                        "requested_leg": leg,
+                        "usb_mic": failed_status.get("usb_mic") or {},
+                    },
+                    status=502,
+                )
+                return
+            self._send_json(_aec_full_status())
+            return
+
         def _post_aec_threshold(self) -> None:
             # Sensitivity slider on the /wake/ page. Writes
             # JASPER_WAKE_THRESHOLD into wake_model.env (same
@@ -3259,6 +3338,7 @@ def _make_handler(
             "/aec/leg": "_post_aec_leg",
             "/aec/profile": "_post_aec_profile",
             "/aec/usb-mic": "_post_aec_usb_mic",
+            "/aec/usb-mic-leg": "_post_aec_usb_mic_leg",
             "/aec/threshold": "_post_aec_threshold",
             "/aec/firmware/update": "_post_aec_firmware_update",
             "/debug": "_post_debug",

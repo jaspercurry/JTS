@@ -29,6 +29,8 @@ from .source_intent import source_intent_enabled
 
 INTENT_PATH = "/var/lib/jasper/usb_mic.env"
 INTENT_KEY = "JASPER_USB_MIC"
+USB_MIC_LEG_KEY = "JASPER_USB_MIC_LEG"
+USB_MIC_PRIMARY_LEG = "primary"
 SOURCE_INTENT_PATH = "/var/lib/jasper/source_intent.env"
 GADGET_PATH = "/sys/kernel/config/usb_gadget/jts-usb-audio"
 RELAY_STATUS_PATH = "/run/jasper-usbmic/status.json"
@@ -122,6 +124,71 @@ def write_usb_mic_enabled(
         max_bytes=_MAX_ENV_BYTES,
         lock_timeout_sec=2.0,
     )
+
+
+def read_usb_mic_leg(
+    path: str | os.PathLike[str] = INTENT_PATH,
+    *,
+    default: str = USB_MIC_PRIMARY_LEG,
+) -> str:
+    """Read the selected USB-export leg, falling back safely to primary."""
+
+    try:
+        text = read_regular_bytes_nofollow(
+            path,
+            max_bytes=_MAX_ENV_BYTES,
+        ).decode("utf-8")
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return default
+    return (read_value(text, USB_MIC_LEG_KEY) or "").strip() or default
+
+
+def write_usb_mic_leg(
+    value: str,
+    path: str | os.PathLike[str] = INTENT_PATH,
+) -> None:
+    """Persist a USB-export leg while preserving the enable-intent sibling."""
+
+    leg = value.strip()
+    if not leg:
+        raise ValueError("USB microphone leg must not be empty")
+    locked_update_env_file(
+        path,
+        {USB_MIC_LEG_KEY: leg},
+        mode=0o644,
+        group_from_parent=True,
+        lock_mode=0o660,
+        max_bytes=_MAX_ENV_BYTES,
+        lock_timeout_sec=2.0,
+    )
+
+
+def usb_mic_leg_choices(env: Mapping[str, str]) -> list[dict[str, Any]]:
+    """Return user-selectable export sources for the active chip-beam plan.
+
+    ``primary`` is feature vocabulary: it follows the stream JTS itself uses
+    for voice. Concrete beam tokens come only from the active hardware plan,
+    so a future geometry can add its own choices without changing this host.
+    """
+
+    choices: list[dict[str, Any]] = [{
+        "value": USB_MIC_PRIMARY_LEG,
+        "label": "Same as JTS voice",
+        "description": "Follows the microphone stream JTS uses for voice.",
+    }]
+    from .mics import xvf3800
+
+    plan = xvf3800.chip_beam_plan_from_env(env)
+    if plan is None:
+        return choices
+    for leg in plan.legs:
+        choices.append({
+            "value": leg.token,
+            "label": leg.label,
+            "description": f"Uses the fixed {leg.azimuth_deg:g}° hardware-AEC beam.",
+            "azimuth_deg": leg.azimuth_deg,
+        })
+    return choices
 
 
 def _read_text(path: Path) -> str:

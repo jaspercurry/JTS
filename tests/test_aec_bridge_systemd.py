@@ -61,8 +61,10 @@ def test_bridge_sources_wake_corpus_env_after_system_env() -> None:
     ]
 
     assert "-/etc/jasper/jasper.env" in env_files
+    assert "-/var/lib/jasper/usb_mic.env" in env_files
     assert "-/var/lib/jasper/wake_corpus_bridge.env" in env_files
     assert (
         env_files.index("-/etc/jasper/jasper.env")
+        < env_files.index("-/var/lib/jasper/usb_mic.env")
         < env_files.index("-/var/lib/jasper/wake_corpus_bridge.env")
     )

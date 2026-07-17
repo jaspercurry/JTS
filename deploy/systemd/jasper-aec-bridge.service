@@ -86,6 +86,10 @@ TimeoutStopSec=5s
 # (ref_gain=0 dB, mic_gain=0 dB, agc2=off) so a missing env file is
 # safe — but the production tuning values won't be applied.
 EnvironmentFile=-/etc/jasper/jasper.env
+# The /wake/ computer-microphone controls own durable export intent and the
+# selected source leg. Load it after the system env so the household choice
+# wins without granting the web/control surface write access to /etc.
+EnvironmentFile=-/var/lib/jasper/usb_mic.env
 # Corpus-recorder experiment flags live under /var/lib/jasper so the
 # sandboxed web UI can deliberately enable optional bridge outputs
 # (reference / cheap USB / DTLN) without writing to /etc.

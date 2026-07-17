@@ -50,6 +50,9 @@ VOICE_DOES_NOT_READ: dict[str, str] = {
     "/var/lib/jasper/outputd.env":
         "JASPER_OUTPUTD_* read by jasper-outputd and the AEC bridge; voice "
         "gets its TTS socket from an inline Environment= line, not this file",
+    "/var/lib/jasper/usb_mic.env":
+        "JASPER_USB_MIC* export intent read by the AEC bridge and USB-mic "
+        "relay/application path; voice keeps its independent clean stream",
     "/var/lib/jasper/wake_corpus_bridge.env":
         "JASPER_AEC_CORPUS_* read by the AEC bridge / aec-init / outputd",
 }

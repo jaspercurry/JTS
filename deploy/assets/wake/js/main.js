@@ -38,6 +38,7 @@ let profileChoices = {};
 let fusionToggles = {};
 let firmwareUpdateBusy = false;
 let usbMicBusy = false;
+let usbMicLegBusy = false;
 
 const el = (id) => document.getElementById(id);
 
@@ -184,6 +185,44 @@ function applyUsbMicStatus(s) {
     state.charAt(0).toUpperCase() + state.slice(1) + " · " + (usbMic.detail || "—"),
   );
   setText("usb-mic-notice", usbMic.notice || "—");
+
+  const source = usbMic.source_selection || {};
+  const select = el("usb-mic-leg-select");
+  const choices = Array.isArray(source.choices) ? source.choices : [];
+  const requested = typeof source.requested === "string" ? source.requested : "";
+  if (select && !usbMicLegBusy) {
+    select.replaceChildren();
+    choices.forEach((choice) => {
+      if (!choice || typeof choice.value !== "string") return;
+      const option = document.createElement("option");
+      option.value = choice.value;
+      option.textContent = choice.label || choice.value;
+      if (choice.description) option.title = choice.description;
+      select.appendChild(option);
+    });
+    if (requested && !choices.some((choice) => choice && choice.value === requested)) {
+      const unavailable = document.createElement("option");
+      unavailable.value = requested;
+      unavailable.textContent = requested + " (unavailable)";
+      unavailable.disabled = true;
+      select.appendChild(unavailable);
+    }
+    select.value = requested;
+    select.dataset.requested = requested;
+    select.disabled = choices.length === 0;
+  }
+  const requestedChoice = choices.find(
+    (choice) => choice && choice.value === requested,
+  );
+  const requestedLabel = (requestedChoice && requestedChoice.label) || requested || "—";
+  const applied = source.applied;
+  setText(
+    "usb-mic-leg-status",
+    applied
+      ? "Requested " + requestedLabel + " · Applied " +
+        (applied.effective_label || applied.leg || "—")
+      : "Requested " + requestedLabel + " · Waiting for the microphone bridge",
+  );
 }
 
 // Reconcile server state into the toggles + slider. Skips any control the user
@@ -274,6 +313,9 @@ async function pollDetection() {
     const usbMicRow = el("usb-mic-row");
     if (usbMicRow) usbMicRow.classList.add("is-disabled");
     setText("usb-mic-status", "Disconnected");
+    const usbMicLeg = el("usb-mic-leg-select");
+    if (usbMicLeg) usbMicLeg.disabled = true;
+    setText("usb-mic-leg-status", "Disconnected");
     const warning = el("mic-status-warning");
     if (warning) {
       warning.hidden = false;
@@ -349,6 +391,29 @@ async function postUsbMic(wanted) {
   }
 }
 
+async function postUsbMicLeg(leg) {
+  const select = el("usb-mic-leg-select");
+  usbMicLegBusy = true;
+  select.disabled = true;
+  setText("usb-mic-leg-status", "Applying computer microphone source…");
+  try {
+    const r = await fetch("usb-mic-leg", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ leg }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    usbMicLegBusy = false;
+    applyState(body);
+    ignorePollUntil = Date.now() + 1500;
+  } catch (err) {
+    usbMicLegBusy = false;
+    await jtsAlert("Computer microphone source change failed: " + err.message);
+    setTimeout(pollDetection, 250);
+  }
+}
+
 profileInputs().forEach((input) => {
   const profile = input.value;
   if (!input) return;
@@ -391,6 +456,13 @@ const usbMicToggle = el("usb-mic-toggle");
 if (usbMicToggle) {
   usbMicToggle.addEventListener("change", () => {
     postUsbMic(usbMicToggle.checked);
+  });
+}
+
+const usbMicLegSelect = el("usb-mic-leg-select");
+if (usbMicLegSelect) {
+  usbMicLegSelect.addEventListener("change", () => {
+    postUsbMicLeg(usbMicLegSelect.value);
   });
 }
 

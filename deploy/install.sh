@@ -1669,7 +1669,8 @@ reconcile_aec_state() {
     # fresh install never exports room audio merely because USB Audio Input is
     # enabled; the UI must record an explicit household choice first.
     if [[ ! -f "${STATE_DIR}/usb_mic.env" ]]; then
-        printf 'JASPER_USB_MIC=disabled\n' > "${STATE_DIR}/usb_mic.env"
+        printf 'JASPER_USB_MIC=disabled\nJASPER_USB_MIC_LEG=primary\n' \
+            > "${STATE_DIR}/usb_mic.env"
         chmod 0644 "${STATE_DIR}/usb_mic.env"
     fi
     # These keys live in aec_mode.env, all owned by the /wake/

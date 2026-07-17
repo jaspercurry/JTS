@@ -656,6 +656,18 @@ def fake_control():
         "/aec/usb-mic": {
             "usb_mic": {"enabled": True, "state": "starting"},
         },
+        "/aec/usb-mic-leg": {
+            "usb_mic": {
+                "source_selection": {
+                    "requested": "primary",
+                    "choices": [{
+                        "value": "primary",
+                        "label": "Same as JTS voice",
+                    }],
+                    "applied": None,
+                },
+            },
+        },
         "/aec/firmware/update": {
             "firmware_update": {
                 "state": "updating",
@@ -691,7 +703,11 @@ def fake_control():
                 parsed = json.loads(raw.decode()) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
-            if self.path in ("/aec/firmware/update", "/aec/usb-mic"):
+            if self.path in (
+                "/aec/firmware/update",
+                "/aec/usb-mic",
+                "/aec/usb-mic-leg",
+            ):
                 received.append((
                     "POST", self.path, parsed, self.headers.get("X-JTS-Token"),
                 ))
@@ -964,6 +980,26 @@ def test_usb_mic_forwards_control_token(wired_server):
     assert body["usb_mic"] == {"enabled": True, "state": "starting"}
     assert (
         "POST", "/aec/usb-mic", {"enabled": True}, "control-token",
+    ) in received
+
+
+def test_usb_mic_leg_posts_choice_and_forwards_control_token(wired_server):
+    base, received, _, _ = wired_server
+
+    status, body = _json_post_with_csrf(
+        base,
+        "/usb-mic-leg",
+        {"leg": "primary"},
+        headers={"X-JTS-Token": "control-token"},
+    )
+
+    assert status == 200
+    assert body["usb_mic"]["source_selection"]["requested"] == "primary"
+    assert (
+        "POST",
+        "/aec/usb-mic-leg",
+        {"leg": "primary"},
+        "control-token",
     ) in received
 
 

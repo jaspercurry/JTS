@@ -52,12 +52,13 @@ path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
 6. **Port role is hardware-resolved, never selected by source intent.** Toggling
    USB Audio Input cannot switch a controller between host and peripheral.
 7. **The computer microphone is explicit, subordinate, and off by default.** Its
-   durable preference is `/var/lib/jasper/usb_mic.env`; it is eligible only
+   durable enablement and source preferences are `JASPER_USB_MIC` and
+   `JASPER_USB_MIC_LEG` in `/var/lib/jasper/usb_mic.env`; it is eligible only
    while USB Audio Input is authorized/composed and an echo-cancelled AEC bridge
    profile is active. On uses UAC2 `p_chmask=1`, 48 kHz mono S16, microphone
    terminal type, and descriptor revision `0x0210`; Off uses `p_chmask=0` and
    revision `0x0200`. The distinct revision makes macOS discard the opposite
-   cached shape.
+   cached shape. Source selection never changes either descriptor.
 
 ## USB data-role policy
 
@@ -193,7 +194,7 @@ unrelated toggle does not re-enumerate this gadget. The complete transition and
 verification contract is canonical in
 [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 
-### Toggling the computer microphone from `/wake/`
+### Toggling and choosing the computer microphone from `/wake/`
 
 `/wake/` writes only the independent `JASPER_USB_MIC=enabled|disabled` intent.
 The control daemon hands the change to `jasper-usbmic-apply.service`, whose
@@ -211,6 +212,26 @@ hard start limit prevents an unbounded recompose loop, and the stable
 `event=usb_mic.recompose_failed` plus doctor drift remain the operator surface
 if all attempts fail. A later explicit switch action resets that bounded retry
 budget before scheduling its new desired state.
+
+The adjacent source selector writes `JASPER_USB_MIC_LEG`. `primary` is the
+default and follows the same production-clean stream JTS uses for voice;
+additional options are derived from the reconciler-applied `ChipBeamPlan`, not
+hard-coded into the cross-profile UI or persistence contract. The control
+endpoint rejects a choice the active plan does not advertise. At the bridge's
+USB-only emit site, an explicit chip beam receives the same post-AEC gain and
+soft-limit as `primary`; if its frame is absent for an iteration (including in
+software-AEC mode), that iteration falls back to the final `clean` frame. The
+normal `:9876` voice/session stream and all wake legs remain unchanged.
+
+This source change has a deliberately narrower restart path than the On/Off
+toggle. `/aec/usb-mic-leg` saves the preference, then asks the restart broker to
+restart only `jasper-aec-bridge.service` with reason `usb_mic_leg`.
+`jasper-usbmic.service` follows through its existing `PartOf=` relationship.
+The path does **not** invoke `jasper-usbmic-apply.service`, restart
+`jasper-usbgadget.service`, alter `p_chmask` / `bcdDevice`, re-enumerate the USB
+device, or interrupt NCM. A broker scheduling failure returns structured HTTP
+502 while reporting that intent was saved; the UI keeps requested intent and
+fresh bridge-applied source separate while the non-blocking restart converges.
 
 The relay's source queue is bounded to two 20 ms frames and drops oldest audio
 if the host is not consuming. The in-process nonblocking `pyalsaaudio` writer
@@ -278,15 +299,18 @@ per-frame samples; the artifact names that statistic explicitly. Pass
 
 The relay publishes fresh status under `/run/jasper-usbmic/status.json`;
 “streaming” requires the gadget PCM hardware pointer and sink writer to advance,
-while an idle host stays “ready.” The `/wake/` switch is the sole end-user
+while an idle host stays “ready.” The `/wake/` controls are the sole end-user
 authority for this export: pausing the JTS voice assistant does not alter or
-silence an explicitly enabled computer microphone. `/wake/`, `/aec`, logs, and
-the usbsink doctor group expose desired, advertised, relay, and streaming state.
+silence an explicitly enabled computer microphone. `/wake/` and `/aec` expose
+the requested selector separately from the fresh bridge-applied mode/leg;
+those surfaces, logs, and the usbsink doctor group also expose desired,
+advertised, relay, and streaming state.
 
 From this descriptor owner's perspective, an actual transition adds or removes
 `uac2.usb0` while leaving the network function wanted. A brief host-visible
 re-enumeration ("Playback Inactive" flicker, momentary network blip) is expected
-when a recompose is necessary and remains hardware-checklist item #5.
+when a recompose is necessary and remains hardware-checklist item #5. Changing
+only `JASPER_USB_MIC_LEG` is not such a transition and must not recompose.
 
 ### Multiroom follower parking
 
@@ -754,9 +778,13 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-16 (the USB-microphone switch's scheduler acknowledgement
-and bounded accepted-apply retry contract were rechecked against the control
-endpoint, systemd unit, README wording, and focused tests; the schema-4
+Last verified: 2026-07-16 (the active-plan-derived computer-microphone source
+selector, bridge-only restart-broker path, relay `PartOf=` convergence, and
+explicit no-gadget/no-descriptor/no-NCM boundary were rechecked against the
+control, bridge, systemd, and `/wake/` paths; the USB-microphone switch's
+scheduler acknowledgement and bounded accepted-apply retry contract were
+rechecked against the control endpoint, systemd unit, README wording, and
+focused tests; the schema-4
 in-process writer, exact 10 ms period split, idle sanitization, resume reset,
 occupancy target, bounded recovery, and structured telemetry were rechecked
 against the relay and focused tests, with the realized 16 kHz 160x4 plug
