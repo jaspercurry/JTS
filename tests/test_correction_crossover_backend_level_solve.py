@@ -516,6 +516,144 @@ def test_solve_correction_snr_shortfall_stacks_and_bounds_at_two_writes(monkeypa
     assert write4.code == level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE
 
 
+def test_exhausted_refusal_required_and_available_db_read_coherently(
+    monkeypatch,
+):
+    """W2.6 refused-event semantics nit (#1552 review): the exhausted-budget
+    ``measurement_window_unreachable`` refusal's ``required_db``/
+    ``available_db`` must mean the same thing ``room_too_noisy`` reports
+    elsewhere in the SAME ``measurement.level_solved`` event -- "required =
+    what the worst band needed, available = what the ceilings could
+    deliver" -- both real SNR figures in dB, not
+    ``level_solver.MIC_TARGET_PEAK_DBFS`` (a dBFS mic-peak TARGET) paired
+    with a raw measured mic peak (also dBFS, not a dB SNR figure) as it read
+    before this fix.
+
+    Reuses the SAME fixture as
+    test_solve_correction_snr_shortfall_stacks_and_bounds_at_two_writes: two
+    real corrections apply (write1, write2), the third is bounded away (no
+    adjustment change) but still trips the write counter into "exhausted" --
+    so write3's refusal is derived from the EXACT SAME solve_level inputs as
+    write2's SolvedLevel, and the two must therefore agree exactly."""
+
+    from jasper.audio_measurement import level_solver
+    from jasper.audio_measurement.quality_model import DRIVER as DRIVER_QUALITY_MODEL
+
+    topology, profile, targets = _safety_profile_and_targets()
+    _patch_solve_environment(monkeypatch, topology, profile)
+
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
+        locked=-20.0, gain_map_db=1.9, cap_db=-1.0, noise_floor_dbfs=-50.0
+    )
+
+    def _solve():
+        return lease._solve_driver_level(
+            "mono", "woofer", capture_geometry="near_field"
+        )
+
+    _solve()  # baseline
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    _solve()  # write1
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    write2 = _solve()
+    assert isinstance(write2, level_solver.SolvedLevel)
+
+    # Third rejection is bounded away (writes already at the cap) -- the
+    # underlying adjustment is UNCHANGED from write2's, so the exhausted
+    # refusal's coherent required/available terms must derive from THE SAME
+    # solve_level computation write2 itself made.
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    write3 = _solve()
+    assert isinstance(write3, level_solver.LevelSolveRefusal)
+    assert write3.code == level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE
+
+    required_db = level_solver.driver_solve_requirement_db(DRIVER_QUALITY_MODEL)
+    assert write3.required_db == pytest.approx(required_db)
+    assert write3.available_db == pytest.approx(
+        write2.predicted_worst_band_snr_db
+    )
+    worst_band = min(write2.band_detail, key=lambda band: band.predicted_snr_db)
+    assert write3.failing_band_hz == pytest.approx(
+        (worst_band.lo_hz, worst_band.hi_hz)
+    )
+    # Neither figure is the OLD (unit-mismatched) placeholder.
+    assert write3.required_db != pytest.approx(level_solver.MIC_TARGET_PEAK_DBFS)
+    assert write3.available_db != pytest.approx(level_solver.MIC_TARGET_PEAK_DBFS)
+
+
+def test_exhausted_refusal_derives_terms_from_a_room_too_noisy_solve(monkeypatch):
+    """When the underlying (budget-ignoring) solve would ITSELF refuse
+    (``room_too_noisy``), the exhausted refusal reuses that refusal's own
+    already-coherent required/available/failing_band terms verbatim rather
+    than re-deriving them -- covers the ``isinstance(result,
+    LevelSolveRefusal)`` branch of ``_exhausted_refusal_snr_terms``."""
+
+    from jasper.audio_measurement import level_solver
+    from jasper.web.correction_crossover_backend import _MAX_SOLVE_CORRECTION_WRITES
+
+    topology, profile, targets = _safety_profile_and_targets()
+    _patch_solve_environment(monkeypatch, topology, profile)
+
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    # Same insensitive-chain-plus-loud-room fixture as
+    # test_refused_solve_raises_and_preserves_the_lock -- unreachable even
+    # at max levers, so the underlying solve is ALWAYS a LevelSolveRefusal
+    # regardless of the correction budget.
+    lease._outcomes["near_field_driver:mono:tweeter"] = _ramp_outcome(
+        locked=-3.0, gain_map_db=-60.0, cap_db=-3.0, noise_floor_dbfs=-20.0
+    )
+
+    def _solve():
+        return lease._solve_driver_level(
+            "mono", "tweeter", capture_geometry="near_field"
+        )
+
+    room_too_noisy = _solve()
+    assert isinstance(room_too_noisy, level_solver.LevelSolveRefusal)
+    assert room_too_noisy.code == level_solver.REFUSAL_ROOM_TOO_NOISY
+
+    # The first _MAX_SOLVE_CORRECTION_WRITES rejections still WRITE a real
+    # correction (shifting the assumed ambient) even though the underlying
+    # solve stays room_too_noisy either way -- only the write COUNTER
+    # crossing the cap flips "exhausted", not whether a correction applies.
+    for _ in range(_MAX_SOLVE_CORRECTION_WRITES):
+        lease.record_solve_correction(
+            "mono", "tweeter", trigger="snr_shortfall", shortfall_db=1.0
+        )
+    assert lease._correction_budget_exhausted("mono:tweeter") is False
+    room_too_noisy_at_cap = _solve()
+    assert isinstance(room_too_noisy_at_cap, level_solver.LevelSolveRefusal)
+
+    # One more rejection bumps the write counter past the cap -- exhausted
+    # -- WITHOUT applying a third correction (the adjustment is unchanged
+    # from room_too_noisy_at_cap's), so the two solves share EXACTLY the
+    # same inputs.
+    lease.record_solve_correction(
+        "mono", "tweeter", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    assert lease._correction_budget_exhausted("mono:tweeter") is True
+
+    exhausted = _solve()
+    assert isinstance(exhausted, level_solver.LevelSolveRefusal)
+    assert exhausted.code == level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE
+    assert exhausted.required_db == pytest.approx(room_too_noisy_at_cap.required_db)
+    assert exhausted.available_db == pytest.approx(
+        room_too_noisy_at_cap.available_db
+    )
+    assert exhausted.failing_band_hz == pytest.approx(
+        room_too_noisy_at_cap.failing_band_hz
+    )
+
+
 def test_solve_correction_clip_trigger_deescalates_and_replaces_gain_source(
     monkeypatch,
 ):

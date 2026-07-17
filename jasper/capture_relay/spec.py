@@ -48,9 +48,18 @@ SCHEMA_VERSION = 1
 #
 # Protocol 3 (SPEC W2.3) is the session-spanning capture protocol: one relay
 # session covers a driver's whole repeat SET, choreographed by a `capture_plan`
-# (below). The Pi validates and runs v3 sessions, but NO shipped builder emits
-# the marker yet — the follow-up capture-page PR flips it on. A v3 spec against
-# today's page fails the page-identity check loudly before any tone can play.
+# (below). The Pi validates and runs v3 sessions; `build_crossover_sweep_spec`
+# itself stays dormant-by-default (`capture_plan=None`), but the Wave-2 Pi
+# host path (`jasper/web/correction_setup.py`'s driver-sweep relay-capture
+# handler) now DOES pass one unconditionally in code — no env gate. The
+# Wave-2 capture page (capture-page/js/main.js) implements the v3 loop and
+# advertises protocol 3, so once the Worker and page are DEPLOYED, a Pi
+# build carrying the host flip goes live for real; against an older
+# deployed page the v3 spec fails the page-identity check loudly before any
+# tone can play. The coordinator's deploy sequencing (worker → page publish
+# → the Pi host flip last) is the rollout gate — there is no code-level
+# flag. Summed/verification/level_ramp builders are untouched and stay on
+# protocol 1/2.
 CAPTURE_PROTOCOL_VERSION = 1
 SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION = 3
 SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
@@ -1287,9 +1296,13 @@ def build_crossover_sweep_spec(
     ``capture_plan`` opts the spec into the session-spanning capture protocol
     (v3, SPEC W2.3): one relay session for the driver's whole repeat set, the
     phone requesting each capture with an authenticated ``begin_capture``
-    event. **No production caller passes it yet** — the marker stays dormant
-    until the follow-up capture-page PR flips it — so the default output is
-    byte-identical to the pre-plan builder. A plan requires an
+    event. **Default (``None``) is byte-identical to the pre-plan builder** —
+    ``jasper/web/correction_setup.py``'s driver-sweep relay-capture handler
+    is the one production caller that passes it (unconditionally, for every
+    driver capture; summed/verification callers never do). The Wave-2
+    capture page implements the matching v3 loop; the coordinator's deploy
+    sequencing (worker → page publish → the Pi host flip last), not a code
+    flag, gates the rollout — see the module docstring. A plan requires an
     ``acknowledgement_binding`` (placement gates run per capture, exactly as
     today).
     """

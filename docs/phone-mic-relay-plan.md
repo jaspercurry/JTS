@@ -492,20 +492,44 @@ attempt, accepted, verdict fields}` → the phone renders "Measurement N of
 malformed begins are refused loudly; per-event replay is already blocked by the
 protocol-v2 authenticated-envelope sequence.
 
-**Page ships v3; still dormant on the Pi.** The 2026-07 Wave-2 capture page
+**Page side (Wave-2 batch):** the 2026-07 capture page
 (`capture-page/js/main.js`'s `onPlanStart`/`runPlanCapture`) implements the
-full v3 choreography — the Pi side (`jasper/capture_relay/session.py`'s
-`run_capture_plan`) has understood it since the earlier PR in this series.
-What remains dormant is the **spec side**: no shipped builder call site
-passes `capture_plan=` yet (pinned by `tests/test_capture_relay_spec.py`),
-so `CaptureSpec.capture_protocol_version` never reaches 3 in production and
-every deployed page/Pi pair still runs the byte-identical v1/v2 flow. A v3
-spec against an OLDER (pre-Wave-2) page still fails the page-identity check
-before any tone, and the page's own `version.json` now advertises
-`supported_capture_protocol_versions: [1, 2, 3]`. Deploy sequencing: Pi
-(dormant) → Worker (indexed blobs, back-compat) → page (this PR, still
-dormant — no caller emits `capture_plan` yet) → a follow-up PR flips a
-crossover call site to pass `capture_plan=`.
+full v3 choreography, and its `version.json` advertises
+`supported_capture_protocol_versions: [1, 2, 3]`. The Pi side
+(`jasper/capture_relay/session.py`'s `run_capture_plan`) has understood v3
+since the earlier PR in this series.
+
+**Host orchestrator (Wave-2 Pi finale — the flip):**
+`jasper/web/correction_crossover_flow.py`'s
+`build_crossover_relay_plan_run_and_consume` drives a driver's whole
+repeat SET over one relay session — `authorize_begin` wraps the SAME
+`repeat_admission` reservation seam the v2 per-capture path uses (budget stays
+Pi-owned, unchanged), and `consume_capture` calls the SAME
+`correction_crossover_backend.record_driver_capture` analysis/record path, so
+the closed-loop level solver (#1543/#1552) and the completion-time correction
+(#1555) run identically per capture index. `jasper/web/correction_setup.py`'s
+`_handle_crossover_relay_capture` now builds every DRIVER capture spec with a
+`capture_plan` (`capture_target=3`, `max_attempts=4`, matching
+`commissioning_capture.DEFAULT_REPEAT_TARGET` /
+`repeat_admission.MAX_ATTEMPTS` exactly) — **the marker is emitted
+unconditionally, no env gate.** Summed/verification captures and `level_ramp`
+stay on the v2 per-capture path untouched. `CapturePlan` progress (`{role,
+capture_target, accepted}`) publishes into the relay status snapshot
+(`correction_setup._publish_crossover_capture_plan_progress`) so the wizard
+envelope's passive "N of {target} done" mirror
+(`crossover_envelope._plan_measuring_verdict`, landed dormant with #1550) has
+live data once a v3 session is running.
+
+**Deploy sequencing is the only remaining gate — no code flag.** Every piece
+is now merged in code: Pi session machinery (#1550), Worker indexed blobs
+(#1550, not yet wrangler-deployed), page v3 loop + version advertisement
+(#1560), and the host flip (this PR). The coordinator sequences the actual
+rollout: Worker → page publish → **the Pi build carrying the host flip
+deploys LAST**. A v3 spec against an OLDER (pre-Wave-2) deployed page fails
+the page-identity check (`validate_capture_page`) loudly before any tone
+plays — a safe, visible failure, but the wrong order: deploying the Pi flip
+before the page publish would make every driver-sweep capture request error
+until the page catches up.
 
 ---
 

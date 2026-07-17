@@ -90,6 +90,36 @@ def _current_relay_device_key(input_device: Mapping[str, Any] | None) -> str:
     )
 
 
+def _exhausted_refusal_snr_terms(
+    result: Any, model: Any
+) -> tuple[tuple[float, float], float, float]:
+    """(failing_band_hz, required_db, available_db) for an exhausted-budget
+    refusal, coherent with what ``solve_level``'s own ``room_too_noisy``
+    refusal reports elsewhere in this event: required = what the worst band
+    needed, available = what the ceilings could deliver.
+
+    ``result`` is whatever the SAME ``solve_level`` call (run unconditionally
+    now, win or refuse) just returned. A ``LevelSolveRefusal`` already
+    carries a coherent required/available pair; a ``SolvedLevel`` (the solve
+    would have achieved or best-effort'd this time, were the budget not
+    exhausted) derives them from its own worst band — required from
+    ``driver_solve_requirement_db(model)`` (the SAME floor+margin figure the
+    solve's own ``achieved_target`` check and the completion-time correction
+    in ``record_driver_capture`` both use), available from that band's
+    ``predicted_snr_db``.
+    """
+    from jasper.audio_measurement import level_solver
+
+    if isinstance(result, level_solver.LevelSolveRefusal):
+        return result.failing_band_hz, result.required_db, result.available_db
+    worst = min(result.band_detail, key=lambda band: band.predicted_snr_db)
+    return (
+        (worst.lo_hz, worst.hi_hz),
+        level_solver.driver_solve_requirement_db(model),
+        worst.predicted_snr_db,
+    )
+
+
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_level_run import (
         CrossoverLevelRunClaim,
@@ -1146,52 +1176,6 @@ class CrossoverLevelLease:
             )
         except (ExcitationSafetyPlanError, OSError, RuntimeError, TypeError, ValueError):
             return None
-        if self._correction_budget_exhausted(target_id):
-            # W2.2/W2.3: a rejection (or, since W2.3, a completed-but-
-            # insufficient finalization -- see record_solve_correction's
-            # "completed_insufficient" trigger) past the bounded correction
-            # budget is a typed refusal, fired here -- BEFORE any tone plays
-            # -- rather than a third guessed level. The mic cannot get a
-            # clean reading at this distance/placement; that is a physical
-            # problem the solver cannot correct its way out of. The budget
-            # now persists across re-locks (W2.3), so this refusal is
-            # reachable without a fresh ramp silently resetting the counter.
-            exhausted_refusal = level_solver.LevelSolveRefusal(
-                code=level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE,
-                failing_band_hz=(permitted_band.lower_hz, permitted_band.upper_hz),
-                required_db=level_solver.MIC_TARGET_PEAK_DBFS,
-                available_db=self._solve_measured_peak_dbfs.get(
-                    target_id, level_solver.MIC_TARGET_PEAK_DBFS
-                ),
-            )
-            log_event(
-                logger,
-                "measurement.level_solved",
-                target_id=target_id,
-                role=role,
-                capture_geometry=capture_geometry,
-                gain_map_db=f"{float(gain_map_db):.1f}",
-                outcome="refused",
-                main_volume_db="",
-                commissioning_gain_db="",
-                predicted_worst_band_snr_db="",
-                failing_band_lo_hz=f"{exhausted_refusal.failing_band_hz[0]:.1f}",
-                failing_band_hi_hz=f"{exhausted_refusal.failing_band_hz[1]:.1f}",
-                required_db=f"{exhausted_refusal.required_db:.1f}",
-                available_db=f"{exhausted_refusal.available_db:.1f}",
-                adjustment_db=f"{self._solve_adjustment_db.get(target_id, 0.0):+.1f}",
-                gain_source=(
-                    "measured_band_peak"
-                    if target_id in self._solve_measured_gain_db
-                    else "tone_gain_map"
-                ),
-            )
-            self._solve_refusal = {
-                "target_id": target_id,
-                "role": role,
-                **exhausted_refusal.to_dict(),
-            }
-            return exhausted_refusal
         main_volume_cap_db = getattr(outcome.ramp, "cap_db", None)
         if (
             main_volume_cap_db is None
@@ -1245,6 +1229,64 @@ class CrossoverLevelLease:
             mic_clip_gain_map_db=mic_clip_gain_map_db,
         )
         adjustment_db = self._solve_adjustment_db.get(target_id, 0.0)
+        if self._correction_budget_exhausted(target_id):
+            # W2.2/W2.3: a rejection (or, since W2.3, a completed-but-
+            # insufficient finalization -- see record_solve_correction's
+            # "completed_insufficient" trigger) past the bounded correction
+            # budget is a typed refusal, fired here -- BEFORE any tone plays
+            # -- rather than a third guessed level. The mic cannot get a
+            # clean reading at this distance/placement; that is a physical
+            # problem the solver cannot correct its way out of. The budget
+            # now persists across re-locks (W2.3), so this refusal is
+            # reachable without a fresh ramp silently resetting the counter.
+            #
+            # required_db/available_db are derived from the SAME solve_level
+            # call above (run unconditionally now, whether or not the budget
+            # is exhausted -- it is pure math over already-loaded state, no
+            # extra I/O) rather than a mismatched-unit placeholder: a
+            # LevelSolveRefusal already carries a coherent required/available
+            # pair (matching what room_too_noisy reports); a SolvedLevel
+            # (this solve would have achieved or best-effort'd, were the
+            # budget not exhausted) derives them from its own worst band.
+            # Previously this used level_solver.MIC_TARGET_PEAK_DBFS (a
+            # dBFS mic-peak TARGET) for required_db and a raw measured mic
+            # peak (also dBFS, not dB SNR) for available_db -- neither is an
+            # SNR figure, so the two numbers were not reporting the same
+            # thing "required = what the worst band needed, available = what
+            # the ceilings could deliver" promises elsewhere in this event.
+            failing_band_hz, exhausted_required_db, exhausted_available_db = (
+                _exhausted_refusal_snr_terms(result, DRIVER_QUALITY_MODEL)
+            )
+            exhausted_refusal = level_solver.LevelSolveRefusal(
+                code=level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE,
+                failing_band_hz=failing_band_hz,
+                required_db=exhausted_required_db,
+                available_db=exhausted_available_db,
+            )
+            log_event(
+                logger,
+                "measurement.level_solved",
+                target_id=target_id,
+                role=role,
+                capture_geometry=capture_geometry,
+                gain_map_db=f"{float(gain_map_db):.1f}",
+                outcome="refused",
+                main_volume_db="",
+                commissioning_gain_db="",
+                predicted_worst_band_snr_db="",
+                failing_band_lo_hz=f"{exhausted_refusal.failing_band_hz[0]:.1f}",
+                failing_band_hi_hz=f"{exhausted_refusal.failing_band_hz[1]:.1f}",
+                required_db=f"{exhausted_refusal.required_db:.1f}",
+                available_db=f"{exhausted_refusal.available_db:.1f}",
+                adjustment_db=f"{adjustment_db:+.1f}",
+                gain_source=gain_source,
+            )
+            self._solve_refusal = {
+                "target_id": target_id,
+                "role": role,
+                **exhausted_refusal.to_dict(),
+            }
+            return exhausted_refusal
         if isinstance(result, level_solver.LevelSolveRefusal):
             log_event(
                 logger,

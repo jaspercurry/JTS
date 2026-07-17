@@ -430,6 +430,32 @@ def _get_relay_capture() -> dict[str, Any] | None:
         return dict(_relay_capture) if _relay_capture else None
 
 
+def _publish_crossover_capture_plan_progress(
+    kind_label: str, plan_progress: Mapping[str, Any]
+) -> None:
+    """Merge session-spanning capture-plan progress into the relay snapshot.
+
+    Session-spanning capture plans (protocol v3, SPEC W2.3) run every repeat
+    of a driver's set inside one relay session, so the wizard envelope's
+    passive progress mirror (``crossover_envelope._plan_measuring_verdict``)
+    needs live "N of {target} done" — this is the write side, called by the
+    v3 orchestrator (``correction_crossover_flow.
+    build_crossover_relay_plan_run_and_consume``) at session start and after
+    every capture. Best-effort: a stale/changed owner (a concurrent Stop, or
+    the session already ended) silently drops the update rather than
+    resurrecting a slot that has moved on — the same non-blocking posture
+    ``_publish_relay_waiting`` and friends already use for this global slot.
+    """
+    global _relay_capture
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("kind") != kind_label:
+            return
+        if relay.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
+            return
+        _relay_capture = {**relay, "capture_plan": dict(plan_progress)}
+
+
 def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
     """Return relay state only to the flow that owns it.
 
@@ -5765,6 +5791,27 @@ def _handle_crossover_relay_capture(
     acknowledgement_binding = secrets.token_urlsafe(24)
     driver_label = correction_crossover_flow.relay_driver_label(raw)
 
+    # Session-spanning capture plan (protocol v3, SPEC W2.3) — driver-sweep
+    # specs ALWAYS carry one now (unconditional in code; the coordinator's
+    # deploy sequencing, not a flag here, protects it — see the PR body).
+    # capture_target/max_attempts mirror the SAME numbers the existing
+    # repeat_admission/commissioning_capture ledger already enforces
+    # (DEFAULT_REPEAT_TARGET=3 accepted repeats within MAX_ATTEMPTS=4 admitted
+    # attempts), so the plan's own bookkeeping and the durable ledger's
+    # bookkeeping can never drift out of lockstep. Summed/verification stay
+    # on the v2 per-capture path untouched.
+    capture_plan: Any = None
+    if kind_id == "driver":
+        from jasper.active_speaker.commissioning_capture import (
+            DEFAULT_REPEAT_TARGET,
+        )
+        from jasper.active_speaker.repeat_admission import MAX_ATTEMPTS
+        from jasper.capture_relay.spec import CapturePlan
+
+        capture_plan = CapturePlan(
+            capture_target=DEFAULT_REPEAT_TARGET, max_attempts=MAX_ATTEMPTS
+        )
+
     def _open(
         client: RelayClient,
         base: str,
@@ -5802,6 +5849,7 @@ def _handle_crossover_relay_capture(
                 ambient_duration_ms=int(round(ambient_duration_s * 1000)),
                 hard_timeout_ms=int(round(CROSSOVER_CAPTURE_HARD_TIMEOUT_S * 1000)),
                 max_upload_bytes=CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+                capture_plan=capture_plan,
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -5990,40 +6038,86 @@ def _handle_crossover_relay_capture(
         with stop_lock:
             stop_event.set()
 
-    base_run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
-        raw,
-        _run_async,
-        _camilla,
-        post_host_event=_post_host_event,
-        # Server-side probe, re-evaluated fresh when the phone actually arms.
-        blocking_phase=_crossover_blocking_phase,
-        validate_capture=_validate_capture,
-        prepare_play=_prepare_capture_play,
-        restore_play=_restore_capture_play,
-        driver_locked_main_volume_db=(
-            _driver_locked_main_volume_db if kind_id == "driver" else None
-        ),
-        comparison_set=comparison_set,
-        applied_profile=(
-            applied_profile if isinstance(applied_profile, dict) else None
-        ),
-        target_fingerprint=target_fingerprint,
-        validate_current_context=_validate_current_context,
-        reserve_repeat_attempt=(
-            _reserve_repeat_attempt if kind_id == "driver" else None
-        ),
-        finish_failed_repeat_attempt=(
-            _finish_failed_repeat_attempt if kind_id == "driver" else None
-        ),
-        begin_finishing=lambda: _begin_relay_finishing(
-            f"crossover_sweep:{kind_id}"
-        ),
-        begin_commit=lambda: _begin_relay_commit(
-            f"crossover_sweep:{kind_id}"
-        ),
-        stop_event=stop_event,
-        stop_lock=stop_lock,
-    )
+    if capture_plan is not None:
+        # Session-spanning capture plan (protocol v3, SPEC W2.3): one relay
+        # session drives the whole repeat SET. Same reservation seam
+        # (reserve_repeat_attempt/finish_failed_repeat_attempt) and the same
+        # per-capture analysis/record path (record_driver_capture, reached
+        # through build_crossover_relay_plan_run_and_consume's
+        # consume_capture) as the v2 branch below — see that function's
+        # docstring for the full reasoning.
+        driver_role = str(raw.get("role") or "driver")
+
+        def _publish_plan_progress(accepted_count: int) -> None:
+            assert capture_plan is not None
+            _publish_crossover_capture_plan_progress(
+                f"crossover_sweep:{kind_id}",
+                {
+                    "role": driver_role,
+                    "capture_target": capture_plan.capture_target,
+                    "accepted": accepted_count,
+                },
+            )
+
+        base_run_and_consume = (
+            correction_crossover_flow.build_crossover_relay_plan_run_and_consume(
+                raw,
+                _run_async,
+                _camilla,
+                post_host_event=_post_host_event,
+                blocking_phase=_crossover_blocking_phase,
+                validate_capture=_validate_capture,
+                prepare_play=_prepare_capture_play,
+                restore_play=_restore_capture_play,
+                driver_locked_main_volume_db=_driver_locked_main_volume_db,
+                comparison_set=comparison_set,
+                applied_profile=(
+                    applied_profile if isinstance(applied_profile, dict) else None
+                ),
+                target_fingerprint=target_fingerprint,
+                validate_current_context=_validate_current_context,
+                reserve_repeat_attempt=_reserve_repeat_attempt,
+                finish_failed_repeat_attempt=_finish_failed_repeat_attempt,
+                publish_progress=_publish_plan_progress,
+                stop_event=stop_event,
+                stop_lock=stop_lock,
+            )
+        )
+    else:
+        base_run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
+            raw,
+            _run_async,
+            _camilla,
+            post_host_event=_post_host_event,
+            # Server-side probe, re-evaluated fresh when the phone actually arms.
+            blocking_phase=_crossover_blocking_phase,
+            validate_capture=_validate_capture,
+            prepare_play=_prepare_capture_play,
+            restore_play=_restore_capture_play,
+            driver_locked_main_volume_db=(
+                _driver_locked_main_volume_db if kind_id == "driver" else None
+            ),
+            comparison_set=comparison_set,
+            applied_profile=(
+                applied_profile if isinstance(applied_profile, dict) else None
+            ),
+            target_fingerprint=target_fingerprint,
+            validate_current_context=_validate_current_context,
+            reserve_repeat_attempt=(
+                _reserve_repeat_attempt if kind_id == "driver" else None
+            ),
+            finish_failed_repeat_attempt=(
+                _finish_failed_repeat_attempt if kind_id == "driver" else None
+            ),
+            begin_finishing=lambda: _begin_relay_finishing(
+                f"crossover_sweep:{kind_id}"
+            ),
+            begin_commit=lambda: _begin_relay_commit(
+                f"crossover_sweep:{kind_id}"
+            ),
+            stop_event=stop_event,
+            stop_lock=stop_lock,
+        )
 
     kind = RelayCaptureKind(
         label=f"crossover_sweep:{kind_id}",
