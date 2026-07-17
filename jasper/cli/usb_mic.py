@@ -285,7 +285,7 @@ class AlsaGadgetSink:
     clock. Frozen room audio must therefore be replaced with silence while
     idle, before a later host capture can consume it. A resume resets the PCM
     again, primes one full start-threshold buffer, then lets fill settle to the
-    20 ms operating target. The optional export never blocks the AEC bridge.
+    30 ms operating target. The optional export never blocks the AEC bridge.
     """
 
     def __init__(
