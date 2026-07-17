@@ -394,12 +394,28 @@ capture_spec:
   default_setup:              # OPTIONAL household-mic prefill hint (Wave-2
     calibration:              # persistence, jasper/correction/household_mic.py):
       mode: "serial"          # "serial" | "upload"; the model key, a last-4
-      model: "minidsp_umik2"  # serial display form, and the resolvable
-      serial_display: "8494"  # calibration_id of the mic the household last
-      calibration_id: "..."   # used. A HINT the page may ignore (today's page
-                              # does); the one-tap confirm UI that reads it is
-                              # a follow-up page PR. Never binding — real setup
-                              # still validates through the normal flow.
+      model: "minidsp_umik2"  # serial display form, and the calibration_id
+      serial_display: "8494"  # of the mic the household last used.
+      calibration_id: "..."   # The 2026-07 Wave-2 capture page renders a
+      resolvable: true        # one-tap "Using {label} · {serial_display} —
+                              # one tap to confirm" screen (main.js's
+                              # renderCalibrationConfirm) with a "Use a
+                              # different microphone" fallback. Confirm
+                              # SUBMITS setup.calibration = {mode: "stored",
+                              # calibration_id} (+ model, display-only) for
+                              # the Pi to resolve via the household-mic
+                              # record — gated on `resolvable: true`, the
+                              # marker the Pi-side stored-mode build (in
+                              # flight: adds the mode="stored" branch to
+                              # _relay_calibration_from_setup) mints when
+                              # the ID currently resolves. Without the
+                              # marker (older Pi) the page renders the plain
+                              # full picker; a rejection of a gone-stale
+                              # stored record also falls back to the picker
+                              # with a plain sentence — never a dead end. An
+                              # older page still ignores unknown spec
+                              # fields, so this is safe in every deploy
+                              # order.
   output:
     format: "wav"             # mono 16-bit PCM WAV at sample_rate_hz
   max_upload_bytes: 33554432  # 32 MB cap; mirror the Pi backend limit
@@ -443,7 +459,7 @@ CSS-variable allowlist).
 **Why DATA and not executable HTML/CSS/JS — this is a security boundary, not a
 style choice. See §8.**
 
-### Session-spanning capture plans — protocol v3 (SPEC W2.3; dormant)
+### Session-spanning capture plans — protocol v3 (SPEC W2.3)
 
 Protocol v3 lets **one relay session carry a driver's whole repeat SET** so a
 3-repeat crossover driver needs zero wizard interactions after the initial
@@ -476,11 +492,20 @@ attempt, accepted, verdict fields}` → the phone renders "Measurement N of
 malformed begins are refused loudly; per-event replay is already blocked by the
 protocol-v2 authenticated-envelope sequence.
 
-**Dormant until the page PR:** no shipped builder emits the marker or a plan
-(pinned by `tests/test_capture_relay_spec.py`), so today's page and flow are
-byte-identical. A v3 spec against today's v2 page fails the page-identity check
-before any tone. Deploy sequencing: Pi (dormant) → Worker (indexed blobs,
-back-compat) → page → flip the marker on.
+**Page ships v3; still dormant on the Pi.** The 2026-07 Wave-2 capture page
+(`capture-page/js/main.js`'s `onPlanStart`/`runPlanCapture`) implements the
+full v3 choreography — the Pi side (`jasper/capture_relay/session.py`'s
+`run_capture_plan`) has understood it since the earlier PR in this series.
+What remains dormant is the **spec side**: no shipped builder call site
+passes `capture_plan=` yet (pinned by `tests/test_capture_relay_spec.py`),
+so `CaptureSpec.capture_protocol_version` never reaches 3 in production and
+every deployed page/Pi pair still runs the byte-identical v1/v2 flow. A v3
+spec against an OLDER (pre-Wave-2) page still fails the page-identity check
+before any tone, and the page's own `version.json` now advertises
+`supported_capture_protocol_versions: [1, 2, 3]`. Deploy sequencing: Pi
+(dormant) → Worker (indexed blobs, back-compat) → page (this PR, still
+dormant — no caller emits `capture_plan` yet) → a follow-up PR flips a
+crossover call site to pass `capture_plan=`.
 
 ---
 
@@ -498,7 +523,18 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   `level_batch` events during automatic leveling, and later posts `{armed:true}`
   so the Pi can trigger the stimulus (auth: upload_token). Capture events include
   passive `noise_floor`, phone-reported `device`, and only the frozen setup
-  binding — not raw calibration contents.
+  binding — not raw calibration contents. A `crossover_sweep` capture's `armed`
+  event ALSO carries `ambient_stats` (Wave 2, `capture-page/js/ambient-stats.js`
+  → `jasper.audio_measurement.level_solver.parse_ambient_stats_event`):
+  per-octave-band RMS dBFS over the same quiet window `noise_floor` summarizes,
+  `{schema, run_token, duration_s, clipped, bands:[{lo_hz,hi_hz,rms_dbfs}]}`
+  (≤64 bands). It rides the SAME already-awaited `armed` post rather than a
+  separate event — the relay's phone-event slot is last-write-wins, so a
+  standalone post would almost always be overwritten before the Pi's ~0.75s
+  poll ever saw it. No shipped Pi caller reads it from the event yet (the
+  solver only consumes it when a caller passes `ambient_bands=`), so it is
+  presently inert — the emission is forward-compatible plumbing, not a wired
+  feature.
 - `GET    /sessions/:id/phone-status` — phone polls `{state, host_event}` (auth:
   upload_token) so it can wait for Pi progress, especially `sweep_complete`,
   without seeing pull-only blob/integrity fields.

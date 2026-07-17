@@ -49,8 +49,9 @@ sanitizes it again before rendering a plain navigation link to the local Pi page
 | `js/constraints.js` | Realized-constraints verify/degrade per the spec's per-kind policy | `capture_constraints_test.mjs` |
 | `js/wakelock.js` | Screen Wake Lock + `visibilitychange` abort | `capture_wakelock_test.mjs` |
 | `js/level-events.js` | Batched phone-side mic-level events for the level-match ramp | `capture_level_events_test.mjs` |
+| `js/ambient-stats.js` | Per-octave-band ambient-noise stats for a driver sweep's quiet window (Wave 2) | `capture_ambient_stats_test.mjs`, `test_capture_page_ambient_stats_bridge.py` |
 | `js/config.js` | `RELAY_BASE` (one relay origin for the fleet) | — |
-| `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload | on-device |
+| `js/main.js` | Browser orchestration: one tap → record + arm → encrypt → upload; session-spanning capture plans (protocol v3) | `capture_plan_loop_test.mjs`, on-device |
 | `index.html` | Static shell + CSP + base styles | `node --check` |
 | `version.json` | Live page build + supported capture-protocol versions | `test_capture_page_js.py` |
 
@@ -117,6 +118,10 @@ node tests/js/capture_return_url_test.mjs    # sanitized local-Pi return URL
 node tests/js/capture_level_events_test.mjs  # batched phone-side level events
 node tests/js/capture_setup_store_test.mjs   # sliding + absolute setup expiry
 node tests/js/capture_protocol_test.mjs      # page/Pi release compatibility
+node tests/js/capture_ambient_stats_test.mjs # per-octave-band ambient stats (Wave 2)
+node tests/js/capture_plan_loop_test.mjs     # session-spanning capture plan loop (protocol v3)
+node tests/js/capture_calibration_confirm_test.mjs  # one-tap household-mic confirm (Wave 2)
+node tests/js/capture_defect_fixes_test.mjs  # run-19 field-telemetry defect fixes
 ```
 
 All harnesses run in CI through `tests/test_capture_page_js.py` (pytest) and

@@ -79,6 +79,7 @@ const verifyRealizedConstraints = (settings, spec, capturedChannelCount) => ({
 const constraintDecision = () => ({ action: "proceed", degraded: false, reason: "" });
 const acquireWakeLock = async () => ({ release: async () => { globalThis.__wakeReleased = true; } });
 const watchVisibilityAbort = () => () => {};
+const buildAmbientStatsEvent = () => ({ ambient_stats: { schema: 1, run_token: "", duration_s: 0, clipped: false, bands: [] } });
 `;
 globalThis.__recorder = recorder;
 globalThis.__wakeReleased = false;
@@ -135,4 +136,20 @@ assert.equal(globalThis.__wakeReleased, true, "host Stop releases the wake lock"
 assert.equal(uploads, 0, "host Stop prevents a late upload");
 assert.equal(statusEl.dataset.kind, "info", "host Stop stays expected control flow");
 
-console.log(JSON.stringify({ ok: true, passed: 8 }));
+// v2 regression pin (this spec carries no capture_protocol_version, i.e. the
+// legacy/v1-v2 shape): captureAmbientNoise()'s new `samples` field must
+// never leak onto the wire — noise_floor stays exactly {duration_ms,
+// rms_dbfs} — and the ambient_stats fields ride alongside on the SAME
+// already-awaited `armed` post for a crossover_sweep capture (no separate
+// relay round trip).
+assert.deepEqual(
+  new Set(Object.keys(posted[0].noise_floor)),
+  new Set(["duration_ms", "rms_dbfs"]),
+  "noise_floor never carries the raw Float32Array samples onto the wire",
+);
+assert.deepEqual(
+  Object.keys(posted[0].ambient_stats),
+  ["schema", "run_token", "duration_s", "clipped", "bands"],
+);
+
+console.log(JSON.stringify({ ok: true, passed: 10 }));

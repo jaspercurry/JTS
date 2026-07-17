@@ -1560,11 +1560,13 @@ def _default_setup_calibration_for_spec() -> Any | None:
     """Build the capture spec's OPTIONAL ``default_setup.calibration`` hint
     from the household's remembered mic (Wave-2 household-mic persistence).
 
-    Never binding — the current capture page ignores unknown spec fields
-    (see `DefaultSetupCalibration`'s docstring), so this is a
-    forward-compatible no-op until the phone one-tap-confirm follow-up reads
-    it. Fail-soft: any resolution miss yields no hint rather than blocking
-    the capture.
+    Never binding — the 2026-07 Wave-2 capture page reads it and renders a
+    one-tap confirm screen that submits ``{mode: "stored", calibration_id}``
+    when the hint is marked ``resolvable: true`` (marker + the stored-mode
+    resolution branch ship in the in-flight Pi stored-mode PR — see
+    `DefaultSetupCalibration`'s docstring); an older page still ignores
+    unknown spec fields, so this stays a safe no-op there. Fail-soft: any
+    resolution miss yields no hint rather than blocking the capture.
     """
     from jasper.capture_relay.spec import DefaultSetupCalibration
 

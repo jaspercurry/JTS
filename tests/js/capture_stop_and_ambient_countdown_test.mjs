@@ -155,6 +155,7 @@ const runLevelRampProtocol = async (opts) => {
   if (opts.isAborted()) return { state: "aborted", terminal: true };
   return { state: "locked", terminal: true };
 };
+const buildAmbientStatsEvent = () => ({ ambient_stats: { schema: 1, run_token: "", duration_s: 0, clipped: false, bands: [] } });
 `;
 
 function makeRecorder() {

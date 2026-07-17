@@ -81,7 +81,17 @@ export class RelayClient {
   ) {
     const controller = new AbortController();
     const timeout = Math.max(250, Number(timeoutMs) || RELAY_CONTROL_TIMEOUT_MS);
-    const timer = setTimeout(() => controller.abort(), timeout);
+    // A named reason (not a bare `.abort()`) so a timed-out control request
+    // never surfaces the browser's default "signal is aborted without
+    // reason." to the household — that raw DOMException text was leaking
+    // through captureFailureMessage() verbatim (run-19 defect). Fetch
+    // rejects with this exact reason value per the AbortController spec.
+    const timer = setTimeout(
+      () => controller.abort(
+        new Error("timed out waiting for the speaker's measurement relay"),
+      ),
+      timeout,
+    );
     try {
       const res = await this._fetch(this._url(suffix), {
         ...(init || {}),
@@ -163,9 +173,17 @@ export class RelayClient {
   }
 
   // Upload IV‖ciphertext with the plaintext integrity the Pi verifies.
-  async putBlob(blob, plaintextLen, sha256Hex) {
+  // `captureIndex` (session-spanning capture plans, protocol v3, SPEC W2.3)
+  // is the 0-based relay blob slot for one admitted attempt
+  // (`capture_index = attempt - 1`); omitted/undefined keeps today's
+  // byte-identical single-capture request (no `?index=`, aliasing the
+  // Worker's legacy un-indexed key — see relay/src/worker.js's `blobKey`).
+  async putBlob(blob, plaintextLen, sha256Hex, captureIndex) {
     const bytes = blob instanceof Uint8Array ? blob : new Uint8Array(blob);
-    const res = await this._fetch(this._url("/blob"), {
+    const path = Number.isInteger(captureIndex) && captureIndex >= 0
+      ? `/blob?index=${captureIndex}`
+      : "/blob";
+    const res = await this._fetch(this._url(path), {
       method: "PUT",
       headers: this._authHeaders({
         "Content-Type": "application/octet-stream",
