@@ -1024,6 +1024,13 @@ reference. Currently:
   simple delivery path from level matching through full crossover design.
   Includes the Wave 1 contract foundation and clearly separates those inert
   identities from current playback, `/state`, and Room-gate behavior.
+  Wave 3's execution prompts (shared charter, file allowlists, staged
+  PR plans) for the correction/crossover information-architecture
+  rework — single entry + active/passive declaration, one crossover
+  surface, stepper semantics, room-flow parity, a jargon sweep, a
+  conventions tightening, and a region-scoped-quality-gates design
+  investigation — live in
+  [`docs/correction-ux-wave3/`](docs/correction-ux-wave3/README.md).
 - [`dual-apple-dac-lab.md`](docs/dual-apple-dac-lab.md) —
   Lab-only runbook for validating two Apple USB-C to 3.5 mm adapters
   as one stereo DAC per speaker. Keeps the experiment outside the
