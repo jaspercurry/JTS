@@ -1,9 +1,9 @@
 # Wave 5 — runtime scheduler (Codex prompt)
 
-> **Revision 5 (2026-07-17) — implementation blocked.** The eventual
+> **Revision 6 (2026-07-17) — implementation blocked.** The eventual
 > R1 scheduler remains sealed-only, but no Wave 5 implementation is
 > authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` has
-> no frozen commissioning producer, and Wave 4 revision 4 remains blocked
+> no frozen commissioning producer, and Wave 4 revision 5 remains blocked
 > behind a focused measured-derivation prerequisite rather than
 > inventing one. This revision also freezes scheduler behavior around
 > Wave 3's durable natural-at-rest commit/recovery boundary. Ported/PR
@@ -46,7 +46,7 @@ structural patches for their changing filter tuples.
 1. `docs/HANDOFF-bass-extension-plan.md` §8.2–8.4 and §10 (read
    carefully — hysteresis, rate limits, micro-steps, limiter
    coupling, and the failure ladder are specified, not designable).
-2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 5,
+2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 6,
    then Wave 1's `TargetSpec` and ported/PR family sections. Read the
    fixed-graph scope and deferral contract carefully.
 3. `jasper/volume_coordinator.py` — fully: `_dispatch`, the observer
@@ -87,16 +87,21 @@ structural patches for their changing filter tuples.
 - Confirm Wave 3's one commit owner, source-explicit graph-
   classification boundary, natural predecessor normalization, and
   correction-process
-  recovery owner exist exactly as revision 5 specifies. A pending
+  recovery owner exist exactly as revision 6 specifies. A pending
   apply intent must be visible in static state and must authorize only
-  its two exact natural graph fingerprints. If recovery is implicit in
-  GET, runs in a new process/task, or may leave a deep graph, STOP.
-- Confirm a **merged, dated replacement for Wave 4 revision 4** defines a
+  its two exact natural graph/file fingerprints. Confirm the existing
+  outputd boot selector is unchanged across Wave 3 commits and that all
+  four `CamillaController` graph mutations, including `patch_config`
+  and `reload`, enter Wave 3's global mutation admission and refuse
+  ordinary work while intent is pending. If recovery is implicit in
+  GET, runs in a new process/task, may leave a deep graph, changes the
+  boot selector, or a mutation bypasses admission, STOP.
+- Confirm a **merged, dated replacement for Wave 4 revision 5** defines a
   deterministic evidence → `limiter_threshold_dbfs` derivation for
   every sealed target, its units/stage in the Camilla graph, refusal on
   missing evidence, and hardware-free tests; confirm Wave 4 implements
   it and accepted sealed profiles carry finite thresholds. No such
-  contract exists as of this revision: Wave 4 revision 4 explicitly
+  contract exists as of this revision: Wave 4 revision 5 explicitly
   found that its existing evidence is insufficient and blocks behind
   the focused measured-derivation prerequisite. This check therefore
   fails and Wave 5 must stop. Do not design the derivation in Wave 5.
@@ -134,16 +139,29 @@ Modify (small, seam-only):
   existing voice control socket with one bounded absolute
   `VOLUME_SET <0..100>` command that invokes that same coordinator and
   returns only after its existing mutation lock covers bass gate plus
-  carrier dispatch. This is an existing-process command, not a route,
-  daemon, task, or second coordinator.
+  carrier dispatch. A successful response is exactly
+  `{"result":"applied","listening_level":N}` after confirmed carrier
+  dispatch; a gate refusal is exactly
+  `{"result":"rejected","reason":...,"listening_level":PREVIOUS}`
+  after the prior canonical level is restored. This is an
+  existing-process command, not a route, daemon, task, or second
+  coordinator.
 - `jasper/control/volume_ops.py` — do **not** construct a bass runtime.
   For every web/dial set, adjust, or unmute that resolves to an
   accepted/current sealed profile **or a pending Wave 3 intent**,
   delegate the resulting absolute target to voice's `VOLUME_SET`
-  command so the whole mutation has the sole owner above. If voice is
-  unavailable, a louder request fails closed without changing
-  persistence or an actuator; same/quieter may use the existing direct
-  coordinator path because it cannot require a bass deepening.
+  command so the whole mutation has the sole owner above. A returned
+  `rejected` result is confirmed no-louder. Any connection error,
+  timeout, EOF, malformed reply, or response loss after invoking the
+  command is **`volume_change_unconfirmed`**: voice may or may not have
+  accepted and applied it. For a louder target, do not issue a direct
+  fallback or automatic retry and do not claim persistence/actuator
+  remained unchanged; surface the unconfirmed outcome and refresh
+  state. A later explicit user retry is another absolute request and
+  passes through the ordinary current-state gate. For same/quieter
+  targets (including mute), the existing direct absolute fallback is
+  allowed because either one or two applications are monotonically
+  safer and it performs no bass patch.
   Missing/bypassed/deferred profiles with no pending intent retain
   today's direct path. No other process may call `PatchConfig` for bass.
 - `jasper/voice_daemon.py` — add the runtime snapshot as the exact
@@ -313,10 +331,14 @@ add, remove, rename, or change the type of a filter.
   unregistered (existing coordinator tests must pass unchanged).
 - Ownership/delegation: voice-originated and delegated control volume
   changes enter the same long-lived coordinator lock and one runtime;
-  no control-side runtime/PatchConfig is constructed. Voice-unavailable
-  louder control requests change neither persistence nor any actuator;
-  same/quieter and ineligible/deferred cases retain their specified
-  direct behavior.
+  no control-side runtime/PatchConfig is constructed. Inject response
+  loss before acceptance, after target persistence, after retreat, and
+  after carrier dispatch. Every louder non-response reports
+  `volume_change_unconfirmed`, performs no direct fallback or automatic
+  retry, and makes no unchanged-state claim; confirmed rejection
+  restores/reports the predecessor. Same/quieter duplicate fallback is
+  allowed and pinned as monotonic. Ineligible/deferred cases retain
+  their specified direct behavior.
 - State: accepted ported/PR preserves the commissioned profile fields,
   reports `current_target=null`, `current_extension_hz=null`,
   `runtime_armed=false`, and the exact deferred reason; sealed reports
@@ -337,8 +359,9 @@ add, remove, rename, or change the type of a filter.
 
 Do NOT: create a daemon, thread, or standalone asyncio task (the
 runtime lives inside jasper-voice's existing ticks/hooks); add
-cross-process locks (one existing process and one in-process runtime
-lock own transitions); persist
+another cross-process lock (Wave 3's existing global Camilla mutation
+admission is reused; one in-process runtime lock owns transition
+ordering); persist
 scheduler state to disk (it reconstructs from level + live params);
 implement R2/faders; implement signal-aware scheduling (explicit
 non-goal — the seam is `select_target` and that's where it would go
@@ -371,6 +394,17 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 6 (2026-07-17)** — the second independent gate found that a
+  bounded UDS timeout cannot distinguish pre-accept failure from an
+  accepted mutation whose response was lost. Rationale: only an
+  explicit `applied` or `rejected` response is confirmed; every louder
+  transport/response failure is typed `volume_change_unconfirmed`,
+  never falls back or retries automatically, and never claims state was
+  unchanged. Same/quieter absolute fallback remains permitted because
+  duplicate attenuation/mute is monotonic and does not patch bass.
+  Rejected alternatives were pretending timeout means no mutation, an
+  unsafe louder direct fallback, and a new durable UDS-result journal.
 
 - **Rev 5 (2026-07-17)** — the fresh independent review proved that
   the process-local measurement flag cannot exclude a control-owned

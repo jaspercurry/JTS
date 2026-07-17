@@ -1,6 +1,6 @@
 # Wave 4 — commissioning backend (Codex prompt)
 
-> **Revision 4 (2026-07-17) — implementation blocked.** Accept hands
+> **Revision 5 (2026-07-17) — implementation blocked.** Accept hands
 > the desired profile in memory to Wave 3's sole profile+DSP commit
 > owner; every adapter uses the same predecessor-aware boundary and
 > never persists first. The existing correction process owns
@@ -222,11 +222,14 @@ passing it to Wave 3's
 one predecessor-aware commit owner. **Do not call
 `save_bass_extension_profile`, a graph
 loader, or a second transaction helper first or directly.** Wave 3
-normalizes the predecessor to its persisted natural graph, snapshots
-that predecessor, proves the desired natural graph, durably records
-both when two authorities can change, loads/readbacks DSP, durably
-publishes the desired profile, proves the persisted pair, and clears
-the intent in that order. Only after it
+normalizes the predecessor to its persisted natural graph, requires the
+live config path to match the existing outputd statefile selector,
+snapshots that predecessor, proves the desired natural graph, and
+durably records both when two authorities can change. It atomically
+replaces the already-selected graph file, guarded-reloads the unchanged
+path, durably publishes the desired profile, proves the selector +
+graph-file + active graph + profile, and clears the intent in that
+order. Wave 4 never selects a new boot path. Only after it
 returns success may the backend transition the session from `review`
 to `accepted`.
 
@@ -317,7 +320,8 @@ sneaky segments.
   Wave 3 returns a failure. Pin `measurement_window` → Wave 3 commit →
   session `accepted` ordering and shielded cancellation. Reopen with a
   pending Wave 3 intent and prove the process claim runs before ready,
-  exact recovery happens under the measurement window, GET state is
+  exact recovery happens under the measurement window without changing
+  the existing outputd boot selector, GET state is
   read-only with no actions, and every POST retries recovery before its
   own mutation. Failed recovery retains the intent and blocks forward
   work without blocking the red Stop or read-only/non-DSP correction routes;
@@ -354,6 +358,15 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 5 (2026-07-17)** — the second independent gate exposed that a
+  new authoritative graph path would also transition CamillaDSP's
+  restart selector, adding another power-loss boundary. Rationale:
+  Wave 4 still hands one in-memory profile to the Wave 3 owner, while
+  Wave 3 durably replaces and guarded-reloads the graph file already
+  named by the outputd statefile. The existing root correction process
+  can restore that file and profile using its current paths; no selector
+  write, service, permission, route, or recovery task is added.
 
 - **Rev 4 (2026-07-17)** — the fresh independent review found that a
   profile-only ported/PR accept is incoherent when replacing an

@@ -1,12 +1,12 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 5 (2026-07-17).** Static graph groundwork remains
+> **Revision 6 (2026-07-17).** Static graph groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
 > an explicit graph-classification boundary, one predecessor-aware commit
 > owner, and a durable profile+DSP recovery contract owned by the
 > existing correction process. Wave 5 is not yet authorized to arm
-> the graph; see its revision 5 safety gate. Findings and rationale
+> the graph; see its revision 6 safety gate. Findings and rationale
 > are in the changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
@@ -139,32 +139,46 @@ Modify:
   ```python
   classify_bass_extension_graph(
       topology, *,
-      evidence_source: Literal["persisted", "desired"],
-      read_graph_text: Callable[[], str] | None = None,
+      evidence_source: Literal[
+          "persisted_boot", "persisted_active", "desired"
+      ],
+      statefile_path: Path | None = None,
+      read_active_graph_text: Callable[[], str] | None = None,
       graph_text: str | None = None,
       applied_baseline_path: Path | None = None,
-      applied_baseline_state: AppliedBaselineProfileState | None = None,
+      applied_baseline_state: Mapping[str, Any] | None = None,
       profile_path: Path | None = None,
       intent_path: Path | None = None,
       desired_profile: BassExtensionProfile | None = None,
-  ) -> GraphClassification
+  ) -> GraphSafety
   ```
 
-  Exactly one source is legal. `persisted` requires the explicit
-  applied-baseline/profile/intent paths plus a caller-supplied,
-  source-named `read_graph_text` callback (active Camilla readback or
-  one exact config path). The boundary itself invokes that callback
-  inside an
-  `applied-baseline₁ → intent₁ → profile₁ → graph → profile₂ → intent₂
-  → applied-baseline₂` sandwich. Both reads of every evidence file
-  must match byte-for-byte; one bounded retry of the **whole**
-  sandwich is allowed, then instability fails closed. This makes the
-  classified graph and its authority evidence one immutable snapshot;
-  no caller may read the graph before or after resolving evidence.
-  `desired` requires in-memory `graph_text`, applied-baseline state,
-  and desired profile and performs no disk read. The boundary owns all
-  profile evaluation; callers never parse profile or intent bytes or
-  choose bass policy themselves.
+  Exactly one source is legal. Both persisted sources require explicit
+  applied-baseline/profile/intent paths and `statefile_path`; the
+  resolver itself parses that statefile's one `config_path` and reads
+  the selected graph. Callers never read or supply an arbitrary graph
+  file. `persisted_boot` forbids an active callback and classifies the
+  stable boot-selected file. `persisted_active` additionally requires
+  `read_active_graph_text`; inside the same snapshot it classifies the
+  live readback and requires its normalized fingerprint to equal the
+  stable boot-selected file. It never treats path equality alone as
+  active-graph proof.
+
+  The boundary performs
+  `applied-baseline₁ → intent₁ → profile₁ → selector₁ → selected-file₁
+  → [active graph] → selected-file₂ → selector₂ → profile₂ → intent₂
+  → applied-baseline₂`. Both reads of every authority file and selected
+  graph must match byte-for-byte; the two parsed selector targets must
+  match (unrelated Camilla statefile volume/mute changes do not change
+  graph authority). One bounded retry of the **whole** sandwich is
+  allowed, then instability fails closed. `desired` forbids all paths
+  and callbacks, requires in-memory `graph_text`, applied-baseline
+  state, and desired profile, and performs no disk read. The boundary
+  owns all profile evaluation; callers never parse profile/intent/
+  statefile bytes or choose bass policy themselves. `Mapping[str,
+  Any]` and the existing `GraphSafety` are the concrete merged types;
+  do not introduce an `AppliedBaselineProfileState`,
+  `GraphClassification`, or another wrapper type for this seam.
 
   The lower-level `classify_camilla_graph` remains a pure verifier over
   the immutable graph text and returned bass evidence. It must not
@@ -188,10 +202,12 @@ Modify:
   still rolls back to the predecessor.
 
   Audit every production `classify_camilla_graph` call with `rg`.
-  Persisted startup/fallback, doctor, correction, commissioning, and
-  multiroom paths call the canonical boundary at their host edge and
-  thread its immutable result into nested decisions. A staged
-  pre-publication graph uses only `desired`. Add the
+  The source mapping is frozen, not caller-selectable policy:
+  startup/fallback and doctor use `persisted_boot`; live correction,
+  commissioning, and multiroom decisions use `persisted_active`; only
+  a staged pre-publication transaction graph uses `desired`. Each path
+  calls the canonical boundary at its host edge and threads its
+  immutable result into nested decisions. Add the
   necessary seam-only caller edits to
   `jasper/correction/runtime_safety.py`,
   `jasper/active_speaker/commissioning_{runtime,capture_producer,apply}.py`,
@@ -208,7 +224,14 @@ Modify:
   previews, and measurement stores remain outside this path.
   `baseline_candidate_fingerprint` stays a strictly bass-independent
   Layer-A identity: do not add `profile_id`, status, or bass filters to
-  its payload. Deferred adapters leave emitted YAML unchanged.
+  its payload. The applied baseline JSON remains the immutable
+  recomposition/provenance anchor; its `config.sha256` describes the
+  compiled Layer-A candidate and is not a locator or checksum for the
+  current composite graph. The canonical resolver must use the explicit
+  outputd statefile path above, never the applied artifact's `config`
+  fields, to locate live durable graph authority. Reapplying a baseline
+  continues to rebuild its generated cache before validation. Deferred
+  adapters leave emitted YAML unchanged.
 - `jasper/sound/graph_carrier.py` — active-baseline seam only: expose
   the minimal host helper needed for bass apply/bypass to reemit with
   the currently persisted preference profile, room PEQs, and output
@@ -255,11 +278,14 @@ Modify:
   override only, same atomic-write/mode/owner handling as the profile).
   The record contains a kind/schema, operation id, exact predecessor
   and desired profile bytes (or an explicit predecessor-absent marker),
-  the natural predecessor `ExactDspStateIdentity`, and the exact
-  normalized desired-graph fingerprint. Atomically write and
+  the natural predecessor `ExactDspStateIdentity`, the predecessor
+  config path plus its exact predecessor and desired file
+  bytes/mode/fingerprints and normalized graph fingerprints, and the
+  unchanged durable boot-selector target read from the existing
+  `/var/lib/camilladsp/outputd-statefile.yml`. Atomically write and
   directory-fsync it before the first authority mutation. Do not add
-  phases or a second journal: record existence is the complete
-  rollback instruction.
+  phases or a second journal: record existence is the complete rollback
+  instruction.
   A surviving intent always means "roll back," never "finish forward":
 
   1. The sole production host (Wave 4's existing
@@ -268,32 +294,60 @@ Modify:
      writer lock, first recover any older intent. Then reload and
      freshly prove the currently persisted predecessor's canonical
      **natural-at-rest** graph. This pre-intent normalization changes no
-     profile or graph file and deliberately discards any ephemeral Wave
-     5 target; if interrupted, reload semantics already converge in the
-     safe direction. Refuse if natural state cannot be proved.
-  2. Snapshot that normalized exact predecessor graph and predecessor
-     profile bytes/absence. Build the desired profile in memory,
-     recompose from the immutable
+     profile or graph semantics and deliberately discards any ephemeral
+     Wave 5 target; if interrupted, reload semantics already converge in
+     the safe direction. Refuse if natural state cannot be proved.
+  2. Snapshot that normalized exact predecessor graph, its readable
+     config-path bytes/mode, predecessor profile bytes/absence, and the
+     existing outputd statefile's `config_path`. The live path and
+     durable selector must resolve to the same file. Refuse before
+     mutation if they differ, if the predecessor file is outside the
+     correction service's existing writable paths, or if it cannot be
+     read, fingerprinted, and durably restored; do not widen
+     permissions.
+     Before an intent can exist, atomically rewrite those **same**
+     predecessor bytes/mode with `durable=True`, fsync the parent, and
+     re-read/re-prove them. This is a durability reassertion, not a new
+     graph; interruption leaves old-or-identical safe bytes.
+     Build the desired profile in memory, recompose from the immutable
      applied baseline plus the currently persisted program-layer
      overlays, and validate/re-proof that candidate against the desired
      profile. Staged design/preview/measurement edits are never inputs.
-     Durably publish the one intent containing both sides only after
-     both natural graphs have been proved; intent-write failure refuses
-     before either authority changes.
-  3. Load and read back the candidate graph using the existing DSP
-     transaction primitives. The persisted bass profile is still the
-     predecessor at this point.
+     Ask the carrier for YAML in memory (`out_path=None`). Write an
+     operation-unique **validation scratch** under the existing Camilla
+     config directory, run the existing syntax preflight, read and
+     fingerprint the exact desired bytes, then unlink the scratch. It
+     is never loaded or written into the outputd statefile; a crash may
+     leave only an unreferenced non-authoritative orphan. Durably publish
+     the one intent containing both byte sets only after both natural
+     graphs have been proved; intent-write failure refuses before either
+     authority changes.
+  3. Atomically replace the **same already-selected config path** with
+     the desired bytes using
+     `atomic_write_text(..., durable=True, mode=<recorded mode>,
+     group_from_parent=True)`, fsync its parent, and read back the exact
+     fingerprint. Do not call `set_config_file_path` and do not edit the
+     outputd statefile: its pre-existing `config_path` remains the
+     durable restart selector throughout. Invoke the existing guarded
+     `CamillaController.reload()` and read back the active path, active
+     graph, graph-file bytes, and statefile `config_path`. All must match
+     the intent. The persisted bass profile is still the predecessor at
+     this point.
   4. Only after DSP readback succeeds, save the desired profile with
      file-content and parent-directory fsync, then perform a final
      graph+persisted-profile re-proof through the canonical sandwich.
-  5. Any failure after either authority changes restores **both** the
-     exact predecessor graph and exact predecessor profile bytes (or
-     durably removes the file if it was previously absent), fsyncs the
-     containing directory, then proves the restored pair. Apply,
+  5. Any failure after either authority changes first durably restores
+     the predecessor config-path bytes/mode and parent directory,
+     invokes guarded `reload()` on that unchanged path, proves boot
+     selector + active path + active graph + on-disk bytes, and
+     restores the exact predecessor profile bytes (or durably removes
+     the profile if it was previously absent). It then proves the whole
+     restored authority. Apply,
      deferred-adapter replacement, and bypass use the same ordering.
      Clear and directory-fsync the intent only after the desired
-     pair's final proof; if a crash leaves an intent after a successful
-     proof, recovery still conservatively restores the predecessor.
+     profile + active graph/path + durable graph-file bytes final proof;
+     if a crash leaves an intent after a successful proof, recovery
+     still conservatively restores the predecessor.
 
   Cancellation after intent publication drains a shielded exact
   rollback before propagating cancellation (mirror
@@ -302,9 +356,13 @@ Modify:
 
   `recover_pending_bass_extension_apply()` is idempotent, runs under
   the same writer lock while the host holds `measurement_window()`,
-  restores profile bytes and DSP state from the intent, freshly proves
-  the predecessor pair through the canonical resolver, and only then
-  clears the intent. It runs before every new apply/bypass. Wave 4's
+  durably restores the recorded predecessor config-path bytes/mode,
+  invokes guarded `reload()` without changing the outputd statefile,
+  restores profile bytes, freshly proves the boot selector + path +
+  active graph + graph-file bytes + profile through the
+  canonical resolver, and only then clears the intent. Applying an
+  in-memory `active_raw` without restoring and fsyncing the file is not
+  recovery. It runs before every new apply/bypass. Wave 4's
   existing socket-activated correction process is the named lifecycle
   and permission owner: on every process claim, before
   `_systemd.notify_ready()`, it synchronously attempts recovery; every
@@ -318,17 +376,39 @@ Modify:
   leaving the intent pending, but cannot start forward work or clear
   recovery evidence.
 
-  The existing `dsp_writer_lock()` is also the one global admission
-  point while an intent survives. Extend it with an explicit
-  `allow_pending_bass_extension_recovery=False` permission: after
-  acquiring the existing lock it refuses every ordinary full-graph
-  writer while the canonical intent path exists. Only this Wave 3
-  commit/recovery owner passes `True`; a source label alone cannot
-  bypass the guard. This prevents sound, baseline, startup,
-  commissioning, or another correction writer from overtaking a
-  crash-recovery record. It is not a new lock or transaction service.
-  PatchConfig is covered separately by Wave 5's pending-intent no-arm
-  rule. Read-only and non-DSP correction operations remain available.
+  The global admission must sit below **every** production Camilla graph
+  mutation, not only the public `dsp_writer_lock()` wrapper. Extend the
+  existing private `_dsp_apply_lock` path with one task-local reentrancy
+  record (held lock path + recovery permission), and expose a small
+  `camilla_graph_mutation(source=...)` async context from
+  `jasper.dsp_apply`. Freeze one production lock path,
+  `/var/lib/camilladsp/configs/.dsp_apply.lock`, derived from the
+  already-shipped Camilla config directory; per-test path injection is
+  allowed, but there is no env/config override or per-candidate
+  production lock. `apply_dsp_config`, `dsp_writer_lock`, and direct
+  controller mutations all resolve to that same path. When the current
+  task already holds the writer
+  lock, it reuses that ownership; otherwise it acquires the same
+  canonical lock. Immediately after acquisition and before mutation it
+  checks the canonical bass intent. Ordinary ownership refuses while
+  the intent exists; only the Wave 3 recovery owner may set
+  `allow_pending_bass_extension_recovery=True`. A source label is not
+  permission.
+
+  `CamillaController.set_config_file_path`,
+  `set_active_config_raw`, `patch_config`, and `reload` must each wrap their
+  complete mutation in that context. This is the actual lowest shared
+  production seam: ordinary `apply_dsp_config()` already enters the
+  private lock path and therefore carries the task-local record, while
+  direct startup, capture-entry, audition, correction, sound, and
+  multiroom calls acquire it automatically. No call-site allowlist can
+  bypass it. The race is pinned both ways: a mutation that acquired the
+  lock first finishes before intent publication; an intent published
+  under the lock causes every later ordinary file load, active-raw
+  swap, patch, and reload to refuse. This reuses one existing fcntl lock; it is
+  not a daemon, service, second lock, or generic transaction framework.
+  Read-only Camilla calls, volume/mute commands, and non-DSP correction
+  operations remain available.
 
   `jasper-correction-web` already runs as root (the unit has no
   `User=`), has `ReadWritePaths=/var/lib/jasper /var/lib/camilladsp`,
@@ -336,7 +416,7 @@ Modify:
   `_claim_crossover_state_owners`; no service or permission change is
   authorized. On power-up the intent may remain until the next socket
   activation, but the canonical startup classifier accepts only its
-  two recorded natural graphs, and Wave 5 revision 5 treats intent
+  two recorded natural graphs, and Wave 5 revision 6 treats intent
   presence as no-arm. Thus music remains available and natural while
   convergence is pending; the next correction-process claim repairs
   it before serving a mutating bass action.
@@ -345,9 +425,15 @@ Modify:
   first slice: refuse before graph or profile mutation. Current Wave 1
   adapters always generate the protection; do not add a removal state,
   identity substitute, or new refusal vocabulary here.
-- `jasper/dsp_apply.py` — seam-only pending-intent admission described
-  above; ordinary callers retain the default refusal and Wave 3 is the
-  only explicit recovery permission owner.
+- `jasper/dsp_apply.py` — put pending-intent admission on the private
+  lock path used by `apply_dsp_config`, add the task-local reentrancy
+  record, canonical production path, and `camilla_graph_mutation`
+  context described above; ordinary callers retain the default refusal
+  and Wave 3 is the only explicit recovery permission owner.
+- `jasper/camilla.py` — wrap the four graph-mutating controller
+  methods (`set_config_file_path`, `set_active_config_raw`,
+  `patch_config`, `reload`) in `camilla_graph_mutation`; do not change their wire
+  operations, best-effort policy, or volume/mute methods.
 - `jasper/bass_extension/profile.py` — use
   `atomic_write_text(..., durable=True)` for desired publication and
   exact predecessor restoration, and directory-fsync predecessor
@@ -369,8 +455,11 @@ Modify:
   `tests/test_active_speaker_runtime_contract.py`,
   `tests/test_active_speaker_graph_safety.py`,
   `tests/test_bass_extension_profile.py` (durable saver and
-  apply/bypass/deferred-replacement seams),
-  `tests/test_dsp_apply.py` (pending-intent writer admission),
+  apply/bypass/deferred-replacement and durable graph-file seams),
+  `tests/test_dsp_apply.py` (private-path admission, task-local
+  reentrancy, two-sided race ordering, and sole recovery permission),
+  `tests/test_camilla_controller.py` (all four graph mutations enter
+  the admission context),
   `tests/test_sound_graph_carrier.py` (program-overlay preservation),
   plus seam-only signature/fixture updates in
   `tests/test_active_speaker_baseline_profile.py`,
@@ -448,16 +537,25 @@ an exact two-fingerprint crash-recovery proof, not a state wildcard.
 - Durable recovery: cancel or simulate process death after intent
   publication, after graph readback, after profile publication, and
   after final proof but before intent removal; reopen state as a fresh
-  process and prove idempotent exact predecessor restoration. A failed
-  recovery retains the intent and reports
+  process and prove idempotent exact predecessor restoration. Delete,
+  truncate, and replace the selected config file at every crash point;
+  recovery must durably restore the predecessor bytes/mode/path without
+  changing the boot selector, reload it, and prove selector + active
+  graph + path + file bytes + profile before clearing the intent. After
+  a successful commit and simulated power cycle, the unchanged
+  selector, durable desired bytes, and profile must classify together.
+  A failed recovery retains the intent and reports
   `apply_recovery_required=true`; no new forward operation may start.
 - Evidence ownership: the canonical persisted boundary is exercised by
   existing startup/fallback, doctor, correction, commissioning, and
   multiroom classifier callers; its full graph/evidence sandwich
-  accepts only stable or exact pending evidence. Tests mutate graph,
-  applied-baseline, profile, and intent inputs at every sandwich seam
-  and require whole-snapshot retry/fail-closed behavior. The staged
-  desired graph can pass only `evidence_source="desired"`. The
+  accepts only stable or exact pending evidence. Tests mutate selected
+  graph bytes, selector target, applied-baseline, profile, and intent
+  inputs at every sandwich seam and require whole-snapshot
+  retry/fail-closed behavior; `persisted_active` also refuses a live
+  graph that differs from the selected file. Pin the fixed caller-source
+  mapping. The staged desired graph can pass only
+  `evidence_source="desired"`. The
   low-level classifier performs no disk I/O, and omitted evidence
   never means a missing profile.
 - Commit/recovery ordering: Wave 4 never invokes the profile saver or
@@ -466,9 +564,12 @@ an exact two-fingerprint crash-recovery proof, not a state wildcard.
   `jasper-correction-web` process claims recovery before ready; GET
   remains read-only; failed isolation/proof keeps the intent and blocks
   state-advancing bass POSTs (apart from the never-409 safety Stop).
-  With a pending intent, ordinary `dsp_writer_lock` callers are refused
-  and Wave 5 never patches/deepens. Desired publication, predecessor
-  restoration/removal, and intent clearing are power-loss durable.
+  With a pending intent, direct controller file loads, active-raw
+  swaps, patches, reloads, and ordinary `apply_dsp_config` calls are refused;
+  Wave 5 never patches/deepens. Tests race intent publication against
+  a direct controller mutation in both acquisition orders. Desired
+  graph/profile publication, predecessor graph/profile restoration or
+  removal, and intent clearing are power-loss durable.
 - Identity: save → accept/apply → reload/evaluate remains current and
   `baseline_candidate_fingerprint(applied_snapshot)` is unchanged.
 
@@ -501,11 +602,13 @@ STOP and report — do not restructure the contract to fit.
   tests/test_active_speaker_runtime_contract.py \
   tests/test_active_speaker_graph_safety.py \
   tests/test_bass_extension_profile.py \
+  tests/test_dsp_apply.py \
+  tests/test_camilla_controller.py \
   tests/test_sound_graph_carrier.py -q
 .venv/bin/pytest tests/ -q -k "emit_gate or camilla or bass_extension"
 .venv/bin/pytest tests/test_correction_runtime_safety.py \
   tests/test_active_speaker_commissioning_runtime.py \
-  tests/test_multiroom_leader_config.py \
+  tests/test_multiroom_active_leader_config.py \
   tests/test_multiroom_follower_config.py tests/test_doctor.py -q
 scripts/test-fast
 ```
@@ -516,6 +619,25 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Rev 6 (2026-07-17)** — the second independent gate found that the
+  proposed public writer-lock guard did not cover `apply_dsp_config`'s
+  private lock path or direct Camilla graph mutations, and that fsyncing
+  intent/profile state did not make the referenced DSP graph files
+  power-loss durable. Rationale: put admission on the existing private
+  lock path, carry its ownership task-locally for reentrant controller
+  calls, and make every production file load, active-raw swap, patch,
+  and reload enter that same lock/intent boundary. The transaction now
+  writes desired bytes durably into the already-selected config path,
+  records exact predecessor and desired file identities plus the
+  unchanged outputd boot selector, and durably restores and proves
+  graph-file authority before clearing intent. Concrete merged
+  classifier types and the complete guard/caller tests replace
+  speculative types and incomplete commands. Rejected alternatives
+  were caller-by-caller guard wiring, a second lock/service, a new
+  authoritative candidate path/statefile transition, live-raw-only
+  rollback, and treating an atomic-but-unfsynced graph file as durable
+  authority.
 
 - **Rev 5 (2026-07-17)** — the fresh independent review found three
   remaining authority gaps. A sealed→ported/PR replacement could leave
