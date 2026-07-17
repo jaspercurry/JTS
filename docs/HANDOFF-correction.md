@@ -610,6 +610,19 @@
   Worker → page publish → the Pi build carrying this flip deploys last. See
   [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
   capture plans" section for the wire choreography.
+  **Hardware blocker fixed (run 21, jts3):** the v3 order (reserve → phone
+  arms → guard) made `on_armed`'s envelope-derivation guard
+  (`_assert_crossover_driver_action`, built for v2's guard → reserve → capture
+  order) veto every driver capture's own `authorize_begin` admission — an
+  in-flight `repeat_admission` reservation made the guard's independent
+  envelope recompute treat the plan's own live attempt as orphaned. Fixed by
+  `_plan_admission_matches` (`jasper/web/correction_setup.py`): a matching,
+  live capture-plan reservation for the exact (speaker_group_id, role,
+  capture_geometry) IS the server-owned admission, so the redundant
+  envelope-derivation guard is skipped for that one capture; every
+  wizard-initiated v2/direct request still runs the full guard unchanged. See
+  [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
+  capture plans" section for the full mechanism.
 
   **W2.6 fix landed in the same PR:** the exhausted-budget
   `measurement_window_unreachable` refusal's `required_db`/`available_db`
@@ -2914,7 +2927,13 @@ Internal:
 
 ---
 
-Last verified: 2026-07-17 (Wave-2 household-mic Status bullet updated to the
+Last verified: 2026-07-17 (hardware run 21, jts3 @ 62af5b206: the v3
+session-spanning driver-capture guard/reservation SSOT conflict fixed —
+`_plan_admission_matches` in `jasper/web/correction_setup.py` — see the
+"Session-spanning capture protocol v3" bullet above and
+[phone-mic-relay-plan.md](phone-mic-relay-plan.md). Hardware-free tests
+only; on-device revalidation of the fix still owed.) Prior 2026-07-17
+(Wave-2 household-mic Status bullet updated to the
 completed loop: the phone one-tap confirm shipped in the capture page's
 2026-07 Wave-2 batch and the Pi's `mode="stored"` branch +
 `default_setup.calibration.resolvable` marker complete it; the stored-mode

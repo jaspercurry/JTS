@@ -1494,7 +1494,9 @@ def build_crossover_relay_plan_run_and_consume(
     comparison_set: Mapping[str, Any] | None = None,
     applied_profile: Mapping[str, Any] | None = None,
     target_fingerprint: str = "",
-    validate_current_context: Callable[[], None] | None = None,
+    validate_current_context: (
+        Callable[[Mapping[str, Any] | None], None] | None
+    ) = None,
     reserve_repeat_attempt: Callable[[], Mapping[str, Any]],
     finish_failed_repeat_attempt: Callable[[Mapping[str, Any], str], None] | None = None,
     publish_progress: Callable[[int], None] | None = None,
@@ -1750,7 +1752,13 @@ def build_crossover_relay_plan_run_and_consume(
                         "the sweep"
                     )
                 if validate_current_context is not None:
-                    validate_current_context()
+                    # repeat_reservation is populated by authorize_begin
+                    # (above) before on_armed ever fires -- that reservation
+                    # IS this capture's server-owned admission (SPEC W2.3).
+                    # See _plan_admission_matches in correction_setup.py.
+                    validate_current_context(
+                        dict(repeat_reservation) if repeat_reservation else None
+                    )
                 placement_proof.clear()
                 placement_proof.update(
                     normalized_placement_proof(

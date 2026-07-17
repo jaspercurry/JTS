@@ -658,11 +658,22 @@ def _relay_failure_reason(exc: BaseException) -> str:
 
     if isinstance(exc, LevelMatchRefused):
         return exc.code
+    if isinstance(exc, ServerOwnedNextStepMismatch):
+        return "server_owned_step_mismatch"
     return type(exc).__name__
 
 
 def _relay_failure_message(exc: BaseException) -> str:
     """The phone/operator-facing text for a relay-capture-lifecycle failure.
+
+    ``ServerOwnedNextStepMismatch`` (hardware run 21) is the
+    envelope-derivation guard's own refusal
+    (``_assert_crossover_driver_action`` /
+    ``_assert_crossover_reference_axis_level_action`` in this module) — a
+    stale wizard tab racing a fresher server-driven step. Its raw message
+    ("...is not the server-owned next step") is programmer-facing jargon;
+    map it to plain, actionable copy instead of falling through to
+    ``str(exc)`` below.
 
     ``LevelMatchRefused`` carries pre-translated homeowner copy (see
     ``jasper.correction.level_match.describe_ramp_refusal``).
@@ -705,6 +716,11 @@ def _relay_failure_message(exc: BaseException) -> str:
         return (
             "The phone page is out of date for this speaker. "
             "Close the phone tab and open a fresh link from this page."
+        )
+    if isinstance(exc, ServerOwnedNextStepMismatch):
+        return (
+            "This measurement step changed on the speaker before the phone "
+            "confirmed it. Reopen the phone link and try again."
         )
     if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
         return (
@@ -4726,6 +4742,19 @@ def _activate_crossover_comparison_authorities(
         raise
 
 
+class ServerOwnedNextStepMismatch(ValueError):
+    """A wizard-initiated capture/level-check no longer matches what the
+    server's envelope would offer next.
+
+    Distinct from a plain ``ValueError`` so ``_relay_failure_message`` maps
+    it to an actionable household sentence instead of leaking this
+    programmer-facing string to the wizard status line (hardware run 21).
+    Still a ``ValueError`` subclass — every existing ``except ValueError`` /
+    ``except (RuntimeError, OSError, ValueError)`` catch upstream keeps
+    working unchanged.
+    """
+
+
 def _assert_crossover_reference_axis_level_action(
     status: Mapping[str, Any],
     *,
@@ -4752,7 +4781,7 @@ def _assert_crossover_reference_axis_level_action(
         or str(expected_body.get("speaker_group_id") or "") != speaker_group_id
         or str(expected_body.get("role") or "").lower() != role.lower()
     ):
-        raise ValueError(
+        raise ServerOwnedNextStepMismatch(
             "the requested fixed-axis level check is not the server-owned next step"
         )
 
@@ -5368,9 +5397,69 @@ def _assert_crossover_driver_action(
         or str(expected_body.get("role") or "").lower() != role.lower()
         or expected_geometry != geometry
     ):
-        raise ValueError(
+        raise ServerOwnedNextStepMismatch(
             "the requested driver capture is not the server-owned next step"
         )
+
+
+def _plan_admission_matches(
+    plan_admission: Mapping[str, Any] | None,
+    *,
+    speaker_group_id: str,
+    role: str,
+    capture_geometry: str,
+    target_fingerprint: str,
+) -> bool:
+    """Whether ``plan_admission`` IS the live ``repeat_admission`` reservation
+    for exactly this (speaker_group_id, role, capture_geometry) capture.
+
+    A session-spanning capture plan's ``authorize_begin`` (SPEC W2.3) already
+    admitted this exact attempt through the durable ``repeat_admission``
+    ledger — budget, target identity, and ordering all enforced there. That
+    reservation IS the server-owned admission for the capture it covers.
+    Re-deriving "server-owned next step" a second time from
+    ``build_crossover_envelope`` (with the relay forced blank so the guard
+    cannot see its own session) is a second, weaker copy of the SAME fact —
+    and once the reservation itself is live, the two computations can
+    disagree: an in-flight ``repeat_admission`` entry makes the envelope's
+    own ``orphaned_inflight`` check treat the plan's own attempt as an
+    abandoned one (see ``jasper/active_speaker/crossover_envelope.py``), so
+    the envelope stops offering the very capture the plan just authorized.
+    Hardware run 21 (jts3 @ 62af5b206): every v3 driver capture failed this
+    way, deterministically, ~3s after ``authorize_begin`` admitted it.
+
+    Scoped narrowly: ``plan_admission`` must be the CURRENT, live
+    (``status == "active"`` and ``inflight`` truthy) reservation, and its
+    ``target_id``/``target_fingerprint`` must match the geometry-scoped
+    binding this exact request derives — a reservation for a different
+    role, group, or capture geometry (near_field vs. reference_axis are
+    bound to different ledger targets) never matches. A caller with no
+    admission of its own (``plan_admission=None`` — every wizard-initiated
+    v2/direct request) always falls through to the full envelope-derivation
+    guard, unchanged.
+    """
+    if not isinstance(plan_admission, Mapping):
+        return False
+    if plan_admission.get("status") != "active" or not plan_admission.get(
+        "inflight"
+    ):
+        return False
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    try:
+        expected_target_id, expected_target_fingerprint = driver_repeat_binding(
+            speaker_group_id=speaker_group_id,
+            role=role,
+            target_fingerprint=target_fingerprint,
+            capture_geometry=capture_geometry,
+        )
+    except ValueError:
+        return False
+    return (
+        str(plan_admission.get("target_id") or "") == expected_target_id
+        and str(plan_admission.get("target_fingerprint") or "")
+        == expected_target_fingerprint
+    )
 
 
 def _handle_crossover_region_geometry(
@@ -5833,8 +5922,23 @@ def _handle_crossover_relay_capture(
 
     def _assert_server_owned_driver_action(
         current_status: Mapping[str, Any],
+        *,
+        plan_admission: Mapping[str, Any] | None = None,
     ) -> None:
         if kind_id != "driver":
+            return
+        # plan_admission is only ever non-None from the armed-time call inside
+        # _validate_current_context below (SPEC W2.3) -- by then
+        # target_fingerprint (closed over from the outer scope) is already
+        # assigned. The POST-time call above always passes none, so this
+        # branch short-circuits before ever touching target_fingerprint.
+        if plan_admission is not None and _plan_admission_matches(
+            plan_admission,
+            speaker_group_id=requested_group,
+            role=requested_role,
+            capture_geometry=requested_geometry,
+            target_fingerprint=target_fingerprint,
+        ):
             return
         _assert_crossover_driver_action(
             current_status,
@@ -6017,10 +6121,14 @@ def _handle_crossover_relay_capture(
             capture_geometry=requested_geometry,
         )
 
-    def _validate_current_context() -> None:
+    def _validate_current_context(
+        plan_admission: Mapping[str, Any] | None = None,
+    ) -> None:
         current_topology = load_output_topology()
         current_status = correction_crossover_backend.status_payload()
-        _assert_server_owned_driver_action(current_status)
+        _assert_server_owned_driver_action(
+            current_status, plan_admission=plan_admission
+        )
         correction_crossover_flow.validate_current_capture_context(
             current_status,
             current_topology_id=current_topology.topology_id,

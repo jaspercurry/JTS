@@ -3928,6 +3928,116 @@ def test_driver_capture_geometry_must_match_server_owned_next_step():
         )
 
 
+def test_plan_admission_match_is_scoped_to_the_live_authorized_target():
+    """``_plan_admission_matches`` (SPEC W2.3) is the seam that lets a v3
+    capture plan's own ``repeat_admission`` reservation stand in for the
+    envelope-derivation guard (``_assert_crossover_driver_action`` /
+    ``_assert_crossover_reference_axis_level_action``) for exactly the
+    capture it authorized — see hardware run 21. Every mismatch below must
+    still fall through to the full guard: the protection did not weaken,
+    it moved to its rightful owner (the durable ledger reservation), and
+    only for the EXACT (group, role, geometry) it actually admitted."""
+
+    from jasper.web import correction_setup
+
+    live = {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "6" * 64,
+        "status": "active",
+        "inflight": "a" * 32,
+    }
+    assert correction_setup._plan_admission_matches(
+        live,
+        speaker_group_id="mono",
+        role="woofer",
+        capture_geometry="near_field",
+        target_fingerprint="6" * 64,
+    )
+
+    # No admission at all (every wizard-initiated v2/direct request) never
+    # matches -- the full guard always runs for those.
+    assert not correction_setup._plan_admission_matches(
+        None,
+        speaker_group_id="mono",
+        role="woofer",
+        capture_geometry="near_field",
+        target_fingerprint="6" * 64,
+    )
+
+    # Fixed-axis (reference_axis) variant: near_field and reference_axis
+    # captures of the SAME driver are bound to DIFFERENT repeat_admission
+    # targets (test_driver_repeat_bindings_are_geometry_scoped) precisely so
+    # they cannot complete each other's set. A near_field reservation must
+    # not exempt a reference_axis request, and vice versa.
+    assert not correction_setup._plan_admission_matches(
+        live,
+        speaker_group_id="mono",
+        role="woofer",
+        capture_geometry="reference_axis",
+        target_fingerprint="6" * 64,
+    )
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    fixed_axis_target_id, fixed_axis_fingerprint = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint="6" * 64,
+        capture_geometry="reference_axis",
+    )
+    fixed_axis_live = {
+        "target_id": fixed_axis_target_id,
+        "target_fingerprint": fixed_axis_fingerprint,
+        "status": "active",
+        "inflight": "b" * 32,
+    }
+    assert correction_setup._plan_admission_matches(
+        fixed_axis_live,
+        speaker_group_id="mono",
+        role="woofer",
+        capture_geometry="reference_axis",
+        target_fingerprint="6" * 64,
+    )
+    assert not correction_setup._plan_admission_matches(
+        fixed_axis_live,
+        speaker_group_id="mono",
+        role="woofer",
+        capture_geometry="near_field",
+        target_fingerprint="6" * 64,
+    )
+
+    # Different role/group never matches, even with an otherwise-live entry.
+    assert not correction_setup._plan_admission_matches(
+        live,
+        speaker_group_id="mono",
+        role="tweeter",
+        capture_geometry="near_field",
+        target_fingerprint="7" * 64,
+    )
+    assert not correction_setup._plan_admission_matches(
+        live,
+        speaker_group_id="stereo",
+        role="woofer",
+        capture_geometry="near_field",
+        target_fingerprint="6" * 64,
+    )
+
+    # A finished (not "active", or no longer inflight) reservation is a
+    # completed fact, not a live authorization -- a stale wizard tab must
+    # not be able to replay it to skip the guard.
+    for finished in (
+        {**live, "status": "completed", "inflight": None},
+        {**live, "status": "ready", "inflight": None},
+        {**live, "status": "active", "inflight": None},
+    ):
+        assert not correction_setup._plan_admission_matches(
+            finished,
+            speaker_group_id="mono",
+            role="woofer",
+            capture_geometry="near_field",
+            target_fingerprint="6" * 64,
+        )
+
+
 def test_driver_repeat_bindings_are_geometry_scoped():
     from jasper.active_speaker.capture_geometry import driver_repeat_binding
 
@@ -10465,6 +10575,257 @@ async def test_v3_driver_plan_stop_between_authorize_and_consume_plays_no_tone(
     assert target_state["inflight"] is None
     assert target_state["status"] == "active"  # attempt 1 failing is not terminal
     assert target_state["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_v3_driver_plan_on_armed_guard_agrees_with_its_own_authorization(
+    monkeypatch, tmp_path
+):
+    """Hardware run 21 (jts3 @ 62af5b206): every v3 driver capture
+    deterministically failed. ``authorize_begin`` (the real
+    ``repeat_admission`` ledger) admits index=1/attempt=1; ~3s later, when
+    the phone's ``armed`` event arrives, ``on_armed``'s envelope-derivation
+    guard (``_assert_crossover_driver_action`` via
+    ``correction_setup._validate_current_context``) recomputes
+    ``build_crossover_envelope`` with THIS SAME reservation now live in the
+    ledger. Pre-fix, that recompute no longer offers ``measure_driver`` as
+    ``next_action`` (the in-flight reservation, combined with the guard's
+    own ``action_status["relay"] = None``, makes ``orphaned_inflight`` true
+    in ``crossover_envelope._targets``/``orphaned_inflight`` — see
+    ``jasper/active_speaker/crossover_envelope.py`` around
+    ``orphaned_inflight``), so the guard raises "the requested driver
+    capture is not the server-owned next step": the v2-shaped guard vetoes
+    the v3 plan's own authorized capture. Two computations of "server-owned
+    next step" (the plan's reservation vs. the guard's envelope recompute)
+    disagree — an SSOT violation.
+
+    Drives the REAL production entry point
+    (``correction_setup._handle_crossover_relay_capture``) end to end: a
+    real ``repeat_admission`` ledger, a real ``CrossoverLevelLease`` (only
+    its CamillaDSP/volume-hardware methods are stubbed — orthogonal to the
+    guard), and the real, unstubbed ``_assert_crossover_driver_action`` /
+    ``build_crossover_envelope``. Only the acoustic-analysis boundary
+    (``_v3_driver_plan_fixture``'s established mocks) and playback
+    mechanics are faked, exactly as the rest of this v3 plan suite already
+    does.
+
+    Fixed, all three captures of the repeat set complete without the guard
+    ever firing. Pre-fix (confirmed by running this test against the
+    unpatched guard), the very first ``on_armed`` raised:
+
+        ValueError: the requested driver capture is not the server-owned
+        next step
+
+    — the same failure line as the run-21 journal traceback
+    (``correction_setup.py:5359``).
+    """
+    import urllib.parse
+
+    from jasper.active_speaker import repeat_admission
+    from jasper.capture_relay import session as relay_session
+    from jasper.capture_relay.client import RelayClient
+    from jasper.correction import coordinator
+    from jasper.web import correction_setup
+    import jasper.output_topology as output_topology
+    from tests.test_capture_relay_plan import FakePlanRelayBackend, PhonePlanDriver, _wav
+
+    fixture = _v3_driver_plan_fixture(monkeypatch, tmp_path)
+
+    def fake_status_payload():
+        status = _envelope_status()
+        status["targets"]["drivers"] = [
+            {
+                "speaker_group_id": "mono",
+                "role": "woofer",
+                "target_fingerprint": "c" * 64,
+            },
+        ]
+        status["setup"]["applied_crossover"] = {
+            "valid": True,
+            "owner": "manual",
+            "reason": None,
+        }
+        status["measurements"]["active_comparison_set"] = fixture.comparison_set
+        _locked_level(status)
+        # The live ledger snapshot, re-read fresh on every call (exactly as
+        # the real correction_crossover_backend.status_payload() does) —
+        # this is what makes the in-flight reservation visible to the
+        # guard's second (armed-time) envelope recompute.
+        status["level_match"]["repeats"] = {
+            "targets": {},
+            "failures": {},
+            "durable": repeat_admission.snapshot(
+                fixture.comparison_set, path=fixture.admission_path
+            ),
+        }
+        return status
+
+    monkeypatch.setattr(backend, "status_payload", fake_status_payload)
+    monkeypatch.setattr(
+        output_topology,
+        "load_output_topology",
+        lambda: SimpleNamespace(topology_id="topology-1"),
+    )
+
+    # backend.level_lease() already resolves to the fixture's fresh
+    # CrossoverLevelLease() (_v3_driver_plan_fixture patches the module
+    # global _LEVEL_LEASE) — reuse the SAME instance record_driver_capture's
+    # internals see, and stub only its hardware-facing volume methods.
+    lease = backend.level_lease()
+    monkeypatch.setattr(
+        lease, "driver_sweep_locked_main_volume_db", lambda *_a, **_k: -12.0
+    )
+
+    async def fake_acquire(*_a, **_k):
+        return True
+
+    async def fake_finish(*_a, **_k):
+        return backend.UnresolvedVolumeRecoveryResult.EXACT_RESTORED
+
+    monkeypatch.setattr(lease, "acquire_driver_sweep_volume", fake_acquire)
+    monkeypatch.setattr(lease, "finish_sweep_volume", fake_finish)
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    correction_setup._set_relay_capture(None)
+
+    async def acquire_measurement_gate():
+        return None
+
+    async def release_measurement_gate(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        coordinator, "_acquire_measurement_gate", acquire_measurement_gate
+    )
+    monkeypatch.setattr(
+        coordinator, "_release_measurement_gate", release_measurement_gate
+    )
+
+    class AlwaysActive:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def assert_active(self):
+            return None
+
+    monkeypatch.setattr(relay_session, "CaptureActivityProbe", AlwaysActive)
+
+    play_calls: list[int] = []
+
+    async def play(*_args, **_kwargs):
+        play_calls.append(len(play_calls) + 1)
+        return {
+            "status": "completed",
+            "playback": {"audio_emitted": True},
+            "sweep_meta": {"sample_rate": 48000},
+            "playback_id": f"play-{len(play_calls)}",
+            "test_level_dbfs": -72.0,
+            "excitation": {},
+        }
+
+    monkeypatch.setattr(backend, "play_driver_capture_sweep", play)
+
+    # The production `_post_host_event` closure builds its OWN RelayClient
+    # against the real (urllib) transport rather than reusing the caller's
+    # client — route it through the same in-memory backend the phone driver
+    # uses so host-event posts (capture_authorized, sweep_complete, ...)
+    # never touch the network.
+    relay_backend = FakePlanRelayBackend()
+    register_client = RelayClient("https://relay.test", transport=relay_backend)
+
+    def fake_post_host_event(_relay_base, session_id, pull_token, payload):
+        return register_client.post_host_event(session_id, pull_token, payload)
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_post_crossover_relay_host_event",
+        fake_post_host_event,
+    )
+
+    captured = {}
+
+    def fake_run_relay_capture(kind, _relay_base, *, return_url):
+        captured["kind"] = kind
+        return {"status": "awaiting_phone"}
+
+    monkeypatch.setattr(
+        correction_setup, "_run_relay_capture", fake_run_relay_capture
+    )
+
+    response = correction_setup._handle_crossover_relay_capture(
+        _json_handler(
+            {
+                "kind": "driver",
+                "speaker_group_id": "mono",
+                "role": "woofer",
+                "capture_geometry": "near_field",
+            }
+        )
+    )
+    assert response["relay"]["status"] == "awaiting_phone"
+    kind = captured["kind"]
+
+    rc = kind.open(
+        register_client,
+        "https://relay.test",
+        "capture.test",
+        "http://jts.local/correction/crossover/",
+    )
+
+    class _UploadingPhoneDriver(PhonePlanDriver):
+        """Reacts to the REAL production ``on_armed`` — which only plays the
+        sweep and posts ``sweep_complete``, never uploads — by uploading the
+        WAV itself once it sees that phase, exactly as the future capture
+        page will (mirrors ``_drive_v3_driver_plan``'s identical helper)."""
+
+        def __init__(self, backend_, session):
+            super().__init__(backend_, session)
+            self._uploaded_for: set[tuple[int, int]] = set()
+
+        def step(self):
+            if not self.finished:
+                host = (
+                    self.backend.sessions[self.session.session_id]["host_event"]
+                    or {}
+                )
+                if (
+                    host.get("phase") == "sweep_complete"
+                    and self.begun is not None
+                    and self.begun not in self._uploaded_for
+                ):
+                    _index, attempt = self.begun
+                    self.backend.phone_upload(
+                        self.session.session_id,
+                        self.session.content_key,
+                        _wav(attempt),
+                        index=attempt - 1,
+                    )
+                    self._uploaded_for.add(self.begun)
+            super().step()
+
+    phone = _UploadingPhoneDriver(relay_backend, rc.pi_session)
+
+    def transport(method, url, headers, body):
+        if method == "GET" and urllib.parse.urlsplit(url).path.endswith("/status"):
+            phone.step()
+        return relay_backend(method, url, headers, body)
+
+    run_client = RelayClient("https://relay.test", transport=transport)
+
+    await kind.run_and_consume(run_client, rc.pi_session)
+
+    assert play_calls == [1, 2, 3]
+    phases = relay_backend.phases(rc.pi_session.session_id)
+    assert phases[-1] == "capture_set_complete"
+    assert "sweep_failed" not in phases
+
+    snapshot = repeat_admission.snapshot(
+        fixture.comparison_set, path=fixture.admission_path
+    )
+    target_state = snapshot["targets"][fixture.repeat_target_id]
+    assert target_state["status"] == "completed"
+    assert target_state["attempts"] == 3
 
 
 def test_v3_capture_plan_progress_renders_in_the_wizard_envelope():
