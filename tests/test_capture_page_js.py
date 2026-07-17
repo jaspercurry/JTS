@@ -46,6 +46,10 @@ _HARNESSES = [
     "capture_transport_integrity_test.mjs",
     "capture_host_stop_lifecycle_test.mjs",
     "capture_stop_and_ambient_countdown_test.mjs",
+    "capture_ambient_stats_test.mjs",
+    "capture_plan_loop_test.mjs",
+    "capture_calibration_confirm_test.mjs",
+    "capture_defect_fixes_test.mjs",
 ]
 
 
@@ -91,17 +95,18 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
 
     assert version == {
         "schema_version": 1,
-        "capture_protocol_version": 2,
-        "supported_capture_protocol_versions": [1, 2],
-        "capture_page_build": "20260716.1",
+        "capture_protocol_version": 3,
+        "supported_capture_protocol_versions": [1, 2, 3],
+        "capture_page_build": "20260717.1",
     }
-    assert "main.js?v=20260716-1" in index_html
+    assert "main.js?v=20260717-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
     assert 'from "./constraints.js?v=20260711-4"' in main_js
-    assert 'from "./relay-client.js?v=20260715-3"' in main_js
+    assert 'from "./relay-client.js?v=20260717-1"' in main_js
     assert 'from "./level-events.js?v=20260716-1"' in main_js
+    assert 'from "./ambient-stats.js?v=20260717-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
@@ -392,13 +397,15 @@ def test_capture_page_no_return_link_falls_back_to_close_tab_copy():
     """PHONE-2: when safeReturnUrl() is empty, the terminal screens that
     otherwise render a Back-to-speaker button must not silently drop the CTA
     with no replacement copy. 3 pre-existing call sites (capture complete,
-    ramp complete, bound-setup-expired), the XOVER-6 sweep_failed screen, and
-    the phone-initiated Stop terminal screen (renderStoppedScreen) all need
-    the same fallback."""
+    ramp complete, bound-setup-expired), the XOVER-6 sweep_failed screen, the
+    phone-initiated Stop terminal screen (renderStoppedScreen), the run-19
+    dead-session terminal (renderSessionExpired), and the three new v3
+    session-plan terminals (renderPlanAllDone, renderPlanRefused,
+    renderPlanExhausted) all need the same fallback."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 5
-    assert main_js.count('text: "You can close this tab."') == 5
+    assert main_js.count('linkButton("Back to speaker", returnUrl)') == 9
+    assert main_js.count('text: "You can close this tab."') == 9
 
 
 def test_capture_page_setup_continue_and_fragment_errors_use_friendly_helper():
@@ -441,3 +448,250 @@ def test_crossover_candidate_review_collapses_provenance_hashes():
     assert "el('details', {class: 'candidate-provenance'}" in crossover_js
     assert "el('summary', {text: 'Technical details'})" in crossover_js
     assert "evidence.algorithm_id" in crossover_js
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 (SPEC W2.3 session-spanning relay + W2.1 ambient stats + W2.2
+# one-tap mic confirm — the no-ping-pong batch)
+# ---------------------------------------------------------------------------
+
+
+def test_capture_page_v3_plan_routes_begin_capture_to_the_plan_loop():
+    """A capture_protocol_version=3 spec with a capture_plan wires the
+    spec-rendered Start button to onPlanStart(); anything else (v1/v2, or a
+    v3-shaped protocol number with no plan — impossible per
+    CaptureSpec.validate() but checked defensively anyway) keeps today's
+    single-capture onStart() untouched."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert (
+        "const isPlanSpec = spec.capture_protocol_version === 3 && Boolean(spec.capture_plan);"
+        in main_js
+    )
+    assert "begin_capture: () => (isPlanSpec ? onPlanStart(ctx) : onStart(ctx))," in main_js
+    # v2 keeps its exact single-capture behavior — the "retry" action (a v2-
+    # only affordance; v3 never emits it) is untouched, still onStart.
+    assert "retry: () => onStart(ctx)," in main_js
+
+
+def test_capture_page_plan_loop_derives_named_screens_for_every_outcome():
+    """Pins the plan loop's screen vocabulary: accepted-but-not-final (Next),
+    rejected (Try again, SAME slot next attempt), refused (terminal, no
+    retry), exhausted (terminal, distinct from success), and the final
+    success terminal — matching SPEC W2.3's choreography."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert 'text: `Measurement ${index} of ${target} ✓`' in main_js
+    assert 'text: `Measurement ${index} of ${target} needs another try`' in main_js
+    assert "await runPlanCapture(ctx, { index, attempt: attempt + 1 });" in main_js
+    assert "await runPlanCapture(ctx, { index: index + 1, attempt: attempt + 1 });" in main_js
+    assert '"All measurements done — the speaker continues automatically."' in main_js
+    assert 'text: "Measurement refused"' in main_js
+    assert 'text: "Reached the attempt limit"' in main_js
+    # Refusal and exhaustion never route through the success text.
+    refused_start = main_js.index("function renderPlanRefused")
+    refused_end = main_js.index("function renderPlanExhausted", refused_start)
+    assert "All measurements done" not in main_js[refused_start:refused_end]
+
+
+def test_capture_page_plan_loop_timeouts_are_terminal_not_stale_retries():
+    """A begin-authorization or result-poll timeout in the plan loop must
+    render a terminal screen (renderSweepFailed's shape — no button), not
+    leave the previous "Next measurement"/"Try again" screen up with a
+    button closure still bound to an (index, attempt) the Pi's own state may
+    have already moved past. Retrying that stale pair risks a fatal
+    begin_replayed refusal (run_capture_plan ends the whole session on ANY
+    capture_refused)."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    start = main_js.index("async function waitForCaptureAuthorized(")
+    end = main_js.index("async function waitForCaptureResult(", start)
+    authorized_body = main_js[start:end]
+    assert "failure.sweepFailed = true;" in authorized_body
+    assert "throw failure;" in authorized_body
+
+    start = main_js.index("async function waitForCaptureResult(")
+    end = main_js.index("async function runPlanCapture(", start)
+    result_body = main_js[start:end]
+    assert "failure.sweepFailed = true;" in result_body
+    assert "throw failure;" in result_body
+    # The result wait scales with the recording window rather than reusing
+    # the tight admission-latency budget — the Pi's own consume_capture()
+    # analysis pass has no hard ceiling from run_capture_plan's poll loop.
+    assert "Math.max(30000, Number(spec.duration_ms) || 30000)" in result_body
+
+
+def test_capture_page_plan_loop_blob_upload_carries_the_capture_index():
+    """Each admitted attempt's blob rides capture_index = attempt - 1 (SPEC
+    W2.3) — a retried slot must never clobber the prior attempt's upload."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "await client.putBlob(blob, plaintextLen, sha256, attempt - 1);" in main_js
+
+
+def test_capture_page_plan_loop_acknowledgement_captured_once_not_per_round():
+    """The placement acknowledgement is derived ONCE at plan start (from the
+    spec-rendered checkbox) and threaded through every round's armed event —
+    there is no per-round checkbox on the page-owned Next/Try-again screens."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    start = main_js.index("async function onPlanStart(ctx)")
+    end = main_js.index("// The whole capture leg, behind the single Start tap.", start)
+    plan_start_body = main_js[start:end]
+    assert "acceptedAcknowledgement(ctx.spec, ctx.captureRefs)" in plan_start_body
+    assert "ctx.planAcknowledgement = acknowledgement;" in plan_start_body
+    assert "acknowledgement: ctx.planAcknowledgement," in main_js
+
+
+def test_capture_page_plan_loop_stop_stays_wired_across_rounds():
+    """activeAbort is set ONCE in onPlanStart and persists across every
+    round's async gaps (the idle time between "Next measurement" taps), only
+    clearing at a genuine terminal outcome (endPlanSession) or Stop itself —
+    never per-round, which would leave Stop dead while idling between
+    captures."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "activeAbort = controller.abort;" in main_js
+    assert "function endPlanSession(ctx) {" in main_js
+    assert "if (activeAbort === state.abort) activeAbort = null;" in main_js
+
+
+def test_capture_page_ambient_stats_rides_the_armed_event_not_a_separate_post():
+    """The relay's phone-event slot is last-write-wins: a standalone
+    ambient_stats event posted before `armed` would almost always be
+    overwritten before the Pi's ~0.75s poll ever saw it. ambientStatsFieldsFor
+    is spread directly into the SAME already-awaited armed postEvent call in
+    both onStart (v1/v2) and the plan loop (v3) — zero extra network round
+    trips, "must not delay the capture sequence" for free."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert main_js.count("...ambientStatsFieldsFor(spec, noise),") == 2
+    assert 'spec.kind !== "crossover_sweep"' in main_js
+
+
+def test_capture_page_one_tap_mic_confirm_renders_when_hint_is_valid():
+    """Wave-2 household-mic prefill hint (CaptureSpec.default_setup_calibration,
+    #1540): the calibration screen shows "Using {label}{· serial}" as the
+    primary action with a safe "Use a different microphone" fallback to
+    today's full picker. Deliberately does NOT wire Confirm to submit a
+    relay setup-validation — see the STOP-and-report finding in the PR body:
+    jasper/web/correction_setup.py's _relay_calibration_from_setup has no
+    code path that resolves a bare calibration_id (mode="serial" requires
+    the raw serial, never persisted; mode="upload" requires the full
+    calibration text, also never persisted)."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "function validDefaultSetupHint(spec) {" in main_js
+    assert "function renderCalibrationConfirm(screenEl, ctx, hint) {" in main_js
+    assert (
+        "const heading = serialDisplay ? `Using ${label} · ${serialDisplay}` : `Using ${label}`;"
+        in main_js
+    )
+    assert 'button("One tap to confirm", () => {' in main_js
+    assert 'button("Use a different microphone", () => {' in main_js
+    assert "renderCalibration(screenEl, ctx, { skipHint: true });" in main_js
+    # The gate: renderCalibration only shows the hint screen on a FRESH
+    # visit (calibration.mode still "none"), never after the household has
+    # already picked something (Back navigation from a later step).
+    assert (
+        'if (hint && String((setupState.calibration || {}).mode || "none") === "none") {'
+        in main_js
+    )
+
+
+def test_capture_page_one_tap_confirm_never_submits_to_the_speaker():
+    """The primary Confirm action only pre-fills setupState.calibration and
+    re-renders the existing full picker — it never calls
+    validateSetupBeforeContinue/bindSetupBeforeLevel or posts a relay event.
+    A submission Pi cannot resolve is either a guaranteed loud failure
+    (fetch_vendor_calibration's "serial number is required" on an empty
+    serial) or worse, a validated-but-empty calibration file
+    (parse_calibration_text's row-count check saves this specific case, but
+    shipping a submit path that depends on that is the wrong layer to rely
+    on) — see the STOP condition in the task brief."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    start = main_js.index("function renderCalibrationConfirm(screenEl, ctx, hint) {")
+    end = main_js.index("function renderCalibration(screenEl, ctx", start)
+    confirm_body = main_js[start:end]
+    assert "postEvent" not in confirm_body
+    assert "validateSetupBeforeContinue" not in confirm_body
+    assert "bindSetupBeforeLevel" not in confirm_body
+
+
+def test_capture_page_one_tap_confirm_upload_prefill_never_shows_a_misleading_note():
+    """The upload-mode picker's "Choose the file again only if you want to
+    replace the current selection" note used to check only
+    calibration.mode === "upload" — true (and misleading) the moment
+    renderCalibrationConfirm's one-tap prefill sets mode:"upload" without
+    ever having loaded file content (there is no remembered file to reuse,
+    only a calibration_id pointer). Requiring .content too keeps the note
+    accurate: it now only appears after a REAL upload landed in
+    setupState.calibration this session."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert (
+        '(setupState.calibration || {}).mode === "upload" && (setupState.calibration || {}).content'
+        in main_js
+    )
+
+
+def test_capture_page_mic_picker_never_erases_the_stored_preference():
+    """Run-19 defect (a): renderMicChoice/buildMicPicker used to call
+    rememberDeviceId("") the moment the remembered device wasn't in THIS
+    render's enumerated list (unplugged right now, or a browser-rotated
+    deviceId) — permanently erasing a good preference even though the same
+    physical mic would have matched again next session. The in-memory
+    fallback to Automatic stays (selectedDeviceId = ""); only the
+    destructive localStorage write is gone."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert main_js.count('rememberDeviceId("");') == 0
+    assert main_js.count("selectedDeviceId = \"\";") >= 2
+    assert "never erase the stored" in main_js or "do NOT erase the stored" in main_js
+
+
+def test_capture_page_dead_relay_session_never_offers_a_doomed_retry():
+    """Run-19 defect (c): every phone-facing relay endpoint 404s "not_found"
+    once a session's TTL lapses or the Pi purges it, so "Tap Start to try
+    again" against a dead session is a guaranteed second failure.
+    isDeadSessionError() is checked before the generic captureFailureMessage
+    fallback in onStart, onLevelRampStart, and the plan loop's begin/result
+    polls + top-level catch."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "function isDeadSessionError(err) {" in main_js
+    assert "function renderSessionExpired(ctx) {" in main_js
+    assert (
+        "This measurement link expired — return to the speaker page to start again."
+        in main_js
+    )
+    assert main_js.count("isDeadSessionError(err)") >= 4
+    assert main_js.count("renderSessionExpired(ctx);") >= 4
+
+
+def test_capture_page_abort_signal_never_leaks_the_raw_dom_exception():
+    """Run-19 defect (b): relay-client.js's _controlFetch now aborts with a
+    named Error so a timed-out control request never surfaces the browser's
+    default "signal is aborted without reason." text; main.js additionally
+    normalizes ANY AbortError defensively (isRelayConnectivityAbort)."""
+    relay_client_js = (_REPO / "capture-page/js/relay-client.js").read_text(encoding="utf-8")
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "controller.abort(" in relay_client_js
+    assert "new Error(" in relay_client_js
+    assert "function isRelayConnectivityAbort(err, message) {" in main_js
+    assert (
+        "Lost the connection to the speaker's measurement relay for a moment."
+        in main_js
+    )
+
+
+def test_capture_page_blob_put_supports_an_optional_capture_index():
+    """relay-client.js's putBlob() gains an optional 4th `captureIndex` arg
+    that appends `?index=N`; omitted stays byte-identical to the pre-Wave-2
+    single-capture request (no query string at all)."""
+    relay_client_js = (_REPO / "capture-page/js/relay-client.js").read_text(encoding="utf-8")
+
+    assert "async putBlob(blob, plaintextLen, sha256Hex, captureIndex) {" in relay_client_js
+    assert '`/blob?index=${captureIndex}`' in relay_client_js

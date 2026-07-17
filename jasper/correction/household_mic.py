@@ -42,11 +42,18 @@ raw serial's last 4 characters, purely for the UI. The full serial is never
 persisted here (or anywhere else in the calibration registry — see
 ``jasper/audio_measurement/calibration.py``).
 
-This PR is Pi-side only. The phone page's one-tap "Using {label} — change"
-confirm UI is a follow-up page PR; the capture spec's ``default_setup``
-field is optional and the current capture page ignores unknown spec fields
-(verified against ``capture-page/js/transport-integrity.js``), so this
-module's data is inert until that follow-up reads it.
+The phone page's one-tap "Using {label} · {serial_display} — one tap to
+confirm" screen (``capture-page/js/main.js``'s ``renderCalibrationConfirm``,
+2026-07 Wave-2 batch) reads the capture spec's ``default_setup`` field this
+module feeds (``jasper/capture_relay/spec.py``'s ``_default_setup_calibration_
+for_spec``) and renders it — the read path is live. Confirm does not yet
+SUBMIT a resolvable setup, though: ``_relay_calibration_from_setup``
+(``jasper/web/correction_setup.py``) has no code path that accepts a bare
+``calibration_id`` (it needs either the raw serial or the full calibration
+text, neither of which this module persists). An older capture page ignores
+unknown spec fields (verified against
+``capture-page/js/transport-integrity.js``), so shipping ``default_setup``
+is safe against any deployed page.
 """
 from __future__ import annotations
 

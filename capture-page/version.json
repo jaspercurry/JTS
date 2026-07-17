@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "capture_protocol_version": 2,
-  "supported_capture_protocol_versions": [1, 2],
-  "capture_page_build": "20260716.1"
+  "capture_protocol_version": 3,
+  "supported_capture_protocol_versions": [1, 2, 3],
+  "capture_page_build": "20260717.1"
 }

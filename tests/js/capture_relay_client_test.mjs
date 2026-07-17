@@ -146,6 +146,33 @@ async function testControlFetchAbortsBeforePiFeedLossWindow() {
   ok();
 }
 
+// Run-19 defect: a bare `controller.abort()` (no reason) rejects fetch with
+// the browser's default "signal is aborted without reason." DOMException,
+// which leaked to the household verbatim through captureFailureMessage().
+// _controlFetch's timeout now aborts with a named Error; a spec-accurate
+// mock (rejecting with the signal's OWN `.reason`, exactly like a real
+// browser's fetch()) proves the caller sees THAT message, not the generic
+// AbortError text.
+async function testControlFetchTimeoutAbortsWithANamedReason() {
+  const f = mockFetch((_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => {
+      reject(init.signal.reason);
+    }, { once: true });
+  }));
+  const client = makeClient(f);
+  await assert.rejects(
+    () => client.fetchPhoneStatus({ timeoutMs: 1 }),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.notEqual(error.name, "AbortError");
+      assert.doesNotMatch(error.message, /signal is aborted without reason/i);
+      assert.match(error.message, /timed out waiting for the speaker's measurement relay/);
+      return true;
+    },
+  );
+  ok();
+}
+
 async function testControlFetchAbortsAStalledResponseBody() {
   const f = mockFetch((_url, init) => ({
     ok: true,
@@ -186,6 +213,36 @@ async function testPutBlob() {
   ok();
 }
 
+// Session-spanning capture plans (protocol v3, SPEC W2.3): an admitted
+// attempt's blob rides `?index=<attempt-1>`. Index 0 is explicit too (not
+// omitted) — the Worker only records its per-index `blobs` summary entry
+// for requests that opt into `?index=`, even for index 0.
+async function testPutBlobWithCaptureIndexAppendsIndexQueryParam() {
+  const f = mockFetch(() => res(200, { ok: true, capture_index: 2 }));
+  const client = makeClient(f);
+  const blob = new Uint8Array([1, 2, 3]);
+  await client.putBlob(blob, 3, "b".repeat(64), 2);
+  const call = f.calls[0];
+  assert.equal(call.url, "https://relay.test/sessions/sess-1/blob?index=2");
+  ok();
+}
+
+async function testPutBlobIndexZeroIsExplicitNotOmitted() {
+  const f = mockFetch(() => res(200, { ok: true }));
+  const client = makeClient(f);
+  await client.putBlob(new Uint8Array([1]), 1, "c".repeat(64), 0);
+  assert.equal(f.calls[0].url, "https://relay.test/sessions/sess-1/blob?index=0");
+  ok();
+}
+
+async function testPutBlobWithoutCaptureIndexOmitsQueryParam() {
+  const f = mockFetch(() => res(200, { ok: true }));
+  const client = makeClient(f);
+  await client.putBlob(new Uint8Array([1]), 1, "d".repeat(64));
+  assert.equal(f.calls[0].url, "https://relay.test/sessions/sess-1/blob");
+  ok();
+}
+
 async function testErrorThrowsRelayError() {
   const f = mockFetch(() => res(429, { error: "rate_limited" }));
   const client = makeClient(f);
@@ -223,8 +280,12 @@ const tests = [
   testProtocolTwoPostEventUsesAuthenticatedEnvelope,
   testFetchPhoneStatus,
   testControlFetchAbortsBeforePiFeedLossWindow,
+  testControlFetchTimeoutAbortsWithANamedReason,
   testControlFetchAbortsAStalledResponseBody,
   testPutBlob,
+  testPutBlobWithCaptureIndexAppendsIndexQueryParam,
+  testPutBlobIndexZeroIsExplicitNotOmitted,
+  testPutBlobWithoutCaptureIndexOmitsQueryParam,
   testErrorThrowsRelayError,
   testConstructorValidates,
 ];
