@@ -458,6 +458,43 @@ def test_relay_failure_message_translates_timeout_never_a_bare_exception_string(
     )
 
 
+def test_relay_failure_message_translates_incompatible_page_to_an_action():
+    """A stale capture page (protocol mismatch after a Pi-side deploy) used
+    to surface ``CapturePageIncompatible``'s raw ``str(exc)`` — "capture page
+    is incompatible with this speaker (expected protocol 3, observed 2,
+    build '20260711.1')" — on the wizard's relay status line via the generic
+    fallback. That's journal copy, not household copy: the fix is simply to
+    reload the phone page, so the mapped message must say that and carry no
+    protocol jargon. The technical detail stays in the
+    ``event=capture_relay.page_incompatible`` log line."""
+
+    from jasper.capture_relay.session import (
+        CapturePageIncompatible,
+        validate_capture_page,
+    )
+
+    # The real raise site, not a hand-built exception: a v2-declaring page
+    # against a v3 spec, exactly the stale-page shape a Pi deploy produces.
+    with pytest.raises(CapturePageIncompatible) as excinfo:
+        validate_capture_page(
+            {
+                "schema_version": 1,
+                "capture_protocol_version": 2,
+                "supported_capture_protocol_versions": [1, 2],
+                "capture_page_build": "20260711.1",
+            },
+            SimpleNamespace(capture_protocol_version=3),
+        )
+
+    message = correction_setup._relay_failure_message(excinfo.value)
+    assert message == (
+        "The phone page is out of date for this speaker. "
+        "Close the phone tab and open a fresh link from this page."
+    )
+    for jargon in ("protocol", "incompatible", "build", "observed"):
+        assert jargon not in message.lower()
+
+
 def test_run_async_timeout_waits_for_coroutine_cleanup():
     started = threading.Event()
     cleanup_started = threading.Event()

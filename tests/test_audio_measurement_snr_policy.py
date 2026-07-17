@@ -567,6 +567,32 @@ def test_apply_noise_band_fallback_matches_ground_truth_hardware_captures(
         ), f"{session_id}/{band_id} regressed from its pre-fix reading"
 
 
+@pytest.mark.parametrize("session_id", sorted(_GROUND_TRUTH_SESSIONS))
+def test_apply_noise_band_fallback_all_covered_is_a_structural_no_op(session_id):
+    """With every band covered (the DEFAULT full-range sweep shape), the
+    fallback machinery is structurally inert: every band takes the
+    deconvolved path and reports exactly the pre-fix level -- the only
+    change is the additive diagnostic ``basis`` key."""
+
+    rows = _GROUND_TRUTH_SESSIONS[session_id]
+    adjusted = snr_policy.apply_noise_band_fallback(
+        [{"band_id": r[0], "band_hz": [r[1], r[2]], "level_dbfs": r[3]} for r in rows],
+        robust_bands=[
+            {"band_id": r[0], "band_hz": [r[1], r[2]], "level_dbfs": r[4]} for r in rows
+        ],
+        baseline_bands=[
+            {"band_id": r[0], "band_hz": [r[1], r[2]], "level_dbfs": r[5]} for r in rows
+        ],
+        covered={r[0]: True for r in rows},
+    )
+    assert [item["basis"] for item in adjusted] == ["deconvolved"] * len(rows)
+    pre_fix = _GROUND_TRUTH_PRE_FIX_LEVELS[session_id]
+    for item in adjusted:
+        assert item["level_dbfs"] == pytest.approx(
+            pre_fix[item["band_id"]], abs=0.01
+        )
+
+
 def test_excitation_covered_bands_flags_the_narrow_woofer_sweep_hardware_shape():
     """f1=60/f2=4000 (the real production woofer sweep) covers the four
     middle bands but not sub_bass (mostly below f1) or treble (entirely
