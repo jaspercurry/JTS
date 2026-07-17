@@ -65,10 +65,12 @@ _FALLBACK_AMBIENT_BROADBAND_DBFS = -30.0
 # A rejection (or completion) past this bound is a typed refusal
 # (level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE), never a third
 # guessed level. W2.3: the budget now survives a level re-lock for the same
-# target -- including the between-set level-check restart while it is not
-# exhausted (only a successful/sufficient finalization, a changed relay mic
-# identity, an exhausted-budget restart, or a true full reset clears it
-# early) -- see CrossoverLevelLease.invalidate_comparison_context and
+# target -- including the between-set level-check restart while it has not
+# shown a pre-flight refusal (only a successful/sufficient finalization, a
+# changed relay mic identity, a restart that WAS showing a refusal -- W2.4,
+# hardware run 20, subsumes the exhausted-budget case -- or a true full
+# reset clears it early) -- see
+# CrossoverLevelLease.invalidate_comparison_context and
 # _clear_solve_correction_state.
 _MAX_SOLVE_CORRECTION_WRITES = 2
 
@@ -104,16 +106,29 @@ class LevelSolveRefused(RuntimeError):
 
     Carries the typed :class:`~jasper.audio_measurement.level_solver.LevelSolveRefusal`
     so the caller does not re-derive it; user-facing copy is owned by
-    :mod:`jasper.active_speaker.crossover_envelope` (the single
-    code -> copy mapping, mirroring ``describe_ramp_refusal``).
+    :func:`jasper.active_speaker.crossover_envelope.describe_level_solve_refusal`
+    (the single code -> copy mapping, mirroring ``describe_ramp_refusal``).
+    ``str(exc)`` IS that mapped copy -- mirrors
+    ``jasper.correction.level_match.LevelMatchRefused`` -- so an unmigrated
+    ``str(exc)`` caller reads sensibly too. Hardware run 20 (2026-07-17,
+    jts3): before this, ``str(exc)`` was the raw
+    ``"level_solve_refused code=... band=...Hz"`` diagnostic string, and TWO
+    unmigrated callers rendered it verbatim to the household --
+    ``jasper.web.correction_crossover_flow``'s phone ``sweep_failed`` host
+    event (``error=str(exc)``) and
+    ``jasper.web.correction_setup._relay_failure_message``'s generic
+    ``str(exc)`` fallback (the wizard's ``relay.error`` line). Building the
+    mapped copy once here, at the single raise site, fixes both surfaces
+    without hunting down every catch site.
     """
 
     def __init__(self, refusal: "LevelSolveRefusal") -> None:
-        self.refusal = refusal
-        super().__init__(
-            f"level_solve_refused code={refusal.code} "
-            f"band={refusal.failing_band_hz[0]:.0f}-{refusal.failing_band_hz[1]:.0f}Hz"
+        from jasper.active_speaker.crossover_envelope import (
+            describe_level_solve_refusal,
         )
+
+        self.refusal = refusal
+        super().__init__(describe_level_solve_refusal(refusal.to_dict()))
 
 
 class UnresolvedVolumeRecoveryResult(str, Enum):
@@ -782,9 +797,12 @@ class CrossoverLevelLease:
             # persists per (target, relay mic identity) across re-locks --
             # see _reconcile_solve_correction_device -- and is cleared only
             # by a successful, sufficient finalization
-            # (clear_solve_correction), a changed mic identity, an
-            # exhausted-budget between-set restart, or a true full reset
-            # (both via invalidate_comparison_context -- see its docstring).
+            # (clear_solve_correction), a changed mic identity, a
+            # between-set restart that WAS showing a pre-flight refusal for
+            # that target (W2.4, hardware run 20 -- subsumes the old
+            # exhausted-budget-only rule; see _target_refusal_pending), or a
+            # true full reset (both via invalidate_comparison_context -- see
+            # its docstring).
             self._solve_refusal = None
             self._active_sweep_solve = None
         return outcome
@@ -794,7 +812,7 @@ class CrossoverLevelLease:
 
         Shared by the set-completion (clear_solve_correction),
         device-fingerprint-change (_reconcile_solve_correction_device),
-        exhausted-budget between-set restart, and true-full-reset (both in
+        refusal-pending between-set restart, and true-full-reset (both in
         invalidate_comparison_context) clearing points so the lifecycles can
         never drift apart. A fresh ramp re-lock for the same geometry is
         deliberately NOT one of these points as of W2.3 -- see the comment
@@ -817,6 +835,71 @@ class CrossoverLevelLease:
         """
 
         return self._solve_correction_writes.get(target_id, 0) > _MAX_SOLVE_CORRECTION_WRITES
+
+    def _target_refusal_pending(self, target_id: str) -> bool:
+        """Whether ``target_id`` is currently showing a pre-flight refusal.
+
+        W2.4 (hardware run 20, 2026-07-17, jts3): the between-set restart's
+        (``invalidate_comparison_context``'s) reader of the same TWO stored
+        facts -- ``self._solve_refusal`` and the
+        ``_correction_budget_exhausted`` write count -- that the envelope's
+        refusal rendering
+        (``jasper.active_speaker.crossover_envelope._active_level_solve_refusal``)
+        independently re-derives from ``level_match_snapshot()``'s
+        ``solve_refusal`` / ``solve_correction.exhausted`` projections of
+        those same facts. The two readers are separate code paths, so their
+        agreement is pinned by a parity regression
+        (``test_refusal_pending_predicate_parity_with_envelope_rendering``
+        in tests/test_correction_crossover_backend_level_solve.py) across
+        the representative states rather than claimed structurally. True on
+        EITHER of the two ways a refusal reaches the household:
+
+        * the bounded correction budget is exhausted
+          (``_correction_budget_exhausted``) -- the exhausted case is always
+          a refusal, since ``_solve_driver_level`` synthesizes the typed
+          ``measurement_window_unreachable`` refusal the instant the budget
+          runs out (before ever touching ``self._solve_refusal`` again if no
+          fresh solve runs -- e.g. a completion-time write that itself
+          exhausts the budget without a new sweep ever being prepared);
+        * ``self._solve_refusal`` -- the lease's own most recent PRE-FLIGHT
+          solve outcome -- names this target. This is what catches a
+          genuine ``room_too_noisy_for_safe_measurement`` refusal at a
+          budget that is NOT yet exhausted (run 20: writes=1, one write
+          below the bound) -- the gap the exhausted-only W2.3 rule missed.
+          Run 19's completed-insufficient terminal (no pre-flight solve
+          ever ran; the correction wrote from set-completion evidence, not
+          a rejected attempt) never sets ``_solve_refusal``, so that path
+          still correctly reads as "no refusal shown" and preserves.
+
+        ``self._solve_refusal`` is single-valued by design: the guided flow
+        solves one driver at a time (sequential per-driver measurement), so
+        at most one target's pre-flight refusal is live when the restart
+        runs. In a hypothetical state where a second target's refusal had
+        been shown and then overwritten, that target would preserve its
+        correction through one restart, re-refuse on its next solve, and
+        clear on the following restart -- self-healing in one extra bounded
+        round, never latching.
+
+        Run 20's defect: a refusal at writes=1 is NOT exhausted, so the old
+        rule preserved the correction across the restart the refusal
+        screen's own "Redo the quick level check" action offers. The fresh
+        solve after that restart used the SAME preserved adjustment against
+        a freshly re-measured (near-identical) room and refused again,
+        identically, in ~5 seconds with no pre-roll and no tone -- the
+        household followed the instruction and got the same dead end,
+        because nothing about the correction had changed to make the next
+        solve different. Clearing on ANY shown refusal means the next
+        attempt after a restart always plays real audio and re-measures
+        reality: the household relocking cleanly is itself new evidence the
+        solver has never seen.
+        """
+
+        if self._correction_budget_exhausted(target_id):
+            return True
+        refusal = self._solve_refusal
+        return isinstance(refusal, Mapping) and str(
+            refusal.get("target_id") or ""
+        ) == target_id
 
     def _reconcile_solve_correction_device(self, target_id: str) -> None:
         """Drop ``target_id``'s bounded-correction state on a mic swap (W2.3).
@@ -886,27 +969,49 @@ class CrossoverLevelLease:
         bounded-correction state.
 
         ``preserve_solve_corrections=True`` is the BETWEEN-SET RESTART
-        (W2.3, hardware run 19) -- the household's only mechanical path out
-        of both the completed-insufficient terminal and the placement
-        refusal is restarting the level check, and both restarts arrive
-        through the SAME endpoint/body
-        (``_handle_crossover_relay_level_match``'s non-continuing branch,
-        the single production caller passing this flag). The two are
-        distinguished by STORED STATE, never by request shape:
+        (W2.3, hardware run 19; discriminator revised W2.4, hardware run 20)
+        -- the household's only mechanical path out of both the
+        completed-insufficient terminal and the placement refusal is
+        restarting the level check, and both restarts arrive through the
+        SAME endpoint/body (``_handle_crossover_relay_level_match``'s
+        non-continuing branch, the single production caller passing this
+        flag). The two are distinguished by STORED STATE, never by request
+        shape, via ``_target_refusal_pending``, which reads the same TWO
+        stored facts (``self._solve_refusal`` and the
+        ``_correction_budget_exhausted`` write count) that the envelope's
+        refusal rendering
+        (``jasper.active_speaker.crossover_envelope._active_level_solve_refusal``)
+        independently re-derives from ``level_match_snapshot()``; the two
+        readers' agreement about "was a refusal shown" is pinned by a
+        parity regression
+        (``test_refusal_pending_predicate_parity_with_envelope_rendering``):
 
-        * a target whose correction budget is NOT exhausted keeps its
-          signed adjustment, write count, measured gain/peak, and mic
-          identity binding -- the completed-insufficient terminal just
-          promised "JTS will play the next measurement louder", and run 19
-          proved a re-lock reproduces near-identical solve inputs, so
-          wiping the correction here silently replayed the same doomed
-          level;
-        * a target whose budget IS exhausted (the placement refusal was
-          showing -- the user was told to move the phone) clears
-          completely: the restart is a fresh evaluation, so the refusal
-          cannot latch (no deadlock), and if the physics truly didn't
-          change the machinery re-converges to the refusal within the
-          bounded write budget instead of looping on one identical solve.
+        * a target with NO pre-flight refusal pending keeps its signed
+          adjustment, write count, measured gain/peak, and mic identity
+          binding -- this is the completed-insufficient path (every attempt
+          accepted, aggregate SNR still short; no pre-flight solve ever
+          refused). The terminal promised "JTS will play the next
+          measurement louder", and run 19 proved a re-lock reproduces
+          near-identical solve inputs, so wiping the correction here would
+          silently replay the same doomed level;
+        * a target with a pre-flight refusal pending -- EITHER
+          ``room_too_noisy_for_safe_measurement`` from a genuine solve
+          refusal (any write count, not only exhausted) OR the synthesized
+          ``measurement_window_unreachable`` once the budget is exhausted
+          -- clears completely: the restart is a fresh evaluation, so the
+          refusal cannot latch (no deadlock), and if the physics truly
+          didn't change the machinery re-converges to the refusal within
+          the bounded write budget instead of looping on one identical
+          solve with no audio ever played. Run 20 (hardware, jts3): a
+          ``room_too_noisy`` refusal at writes=1 (budget NOT exhausted)
+          was preserved under the old exhausted-only rule, so the restart
+          the refusal screen itself offers played the SAME preserved
+          adjustment against a freshly re-measured room and refused again
+          in ~5 seconds, no pre-roll, no tone -- a dead loop with an honest
+          instruction that lied. Clearing here instead means every restart
+          after a refusal re-measures reality (a fresh baseline solve),
+          which converges or honestly oscillates with real measurements,
+          never a canned replay.
         """
 
         self.assert_volume_safety_resolved()
@@ -916,7 +1021,7 @@ class CrossoverLevelLease:
             if self._running is not None:
                 raise RuntimeError("cannot invalidate a running crossover level match")
             preserved_targets: list[str] = []
-            cleared_exhausted_targets: list[str] = []
+            cleared_refused_targets: list[str] = []
             if preserve_solve_corrections:
                 correction_targets = (
                     set(self._solve_correction_writes)
@@ -924,9 +1029,9 @@ class CrossoverLevelLease:
                     | set(self._solve_measured_gain_db)
                 )
                 for target_id in sorted(correction_targets):
-                    if self._correction_budget_exhausted(target_id):
+                    if self._target_refusal_pending(target_id):
                         self._clear_solve_correction_state(target_id)
-                        cleared_exhausted_targets.append(target_id)
+                        cleared_refused_targets.append(target_id)
                     else:
                         preserved_targets.append(target_id)
             self._level_run_store.invalidate_succeeded_result()
@@ -957,7 +1062,7 @@ class CrossoverLevelLease:
             "correction.crossover_level_context_invalidated",
             preserve_solve_corrections=preserve_solve_corrections,
             preserved_correction_targets=",".join(preserved_targets),
-            cleared_exhausted_targets=",".join(cleared_exhausted_targets),
+            cleared_refused_targets=",".join(cleared_refused_targets),
         )
 
     def _target_id_for(self, speaker_group_id: str, role: str) -> str | None:
@@ -1378,7 +1483,7 @@ class CrossoverLevelLease:
         place, since hardware run 19 showed the physical problem that caused
         them is very likely still there on the next attempt. Mirrors the
         other clearing points -- device-fingerprint change,
-        exhausted-budget between-set restart, true full reset (see
+        refusal-pending between-set restart, true full reset (see
         _clear_solve_correction_state).
         """
 

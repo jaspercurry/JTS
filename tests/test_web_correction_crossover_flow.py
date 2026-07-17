@@ -6596,6 +6596,47 @@ def test_crossover_envelope_renders_level_solve_refusal_before_measuring():
     assert "lock" not in env["verdict_text"].lower()
 
 
+def test_crossover_envelope_refusal_screen_hides_stale_repeat_rejected_nudge():
+    """W2.4 (hardware run 20): a level-solve refusal can coexist with a
+    PRIOR rejected repeat attempt's evidence still sitting in the durable
+    repeat ledger -- that rejection is very often WHY the correction that
+    then refused was written in the first place. The generic
+    "crossover_repeat_rejected" nudge is built early, straight from that
+    ledger entry, independent of which screen ultimately renders, and its
+    copy ("nothing to fix in the room -- try again" / "JTS will try again a
+    bit quieter") flatly contradicts the refusal screen's own honest verdict
+    (quiet the room / move the mic / redo the level check) and duplicates
+    its action. It must not render alongside level_solve_refused."""
+
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["solve_refusal"] = _refusal("mono:woofer", "woofer")
+    status["level_match"]["repeats"] = {
+        "durable": {
+            "targets": {
+                "mono:woofer": {
+                    "status": "active",
+                    "results": [
+                        {
+                            "accepted": False,
+                            "reject_reason": "insufficient_snr",
+                            "snr_shortfall_db": 5.2,
+                            "worst_band_id": "80_160hz",
+                        }
+                    ],
+                }
+            }
+        }
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "level_solve_refused"
+    assert "crossover_repeat_rejected" not in {n["code"] for n in env["nudges"]}
+
+
 def test_crossover_envelope_refusal_scoped_to_the_refused_target():
     """A refusal for a DIFFERENT target than the one currently being
     measured must not hijack this driver's screen."""

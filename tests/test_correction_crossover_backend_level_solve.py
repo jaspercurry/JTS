@@ -237,6 +237,129 @@ async def test_refusal_surfaces_on_level_match_snapshot(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_level_solve_refused_str_is_the_mapped_household_copy(monkeypatch):
+    """W2.4 (hardware run 20): ``str(LevelSolveRefused(...))`` used to be the
+    raw diagnostic string ``"level_solve_refused code=... band=...Hz"`` --
+    the exact text that leaked to the household on TWO unmigrated surfaces:
+    the phone's ``sweep_failed`` host event
+    (``jasper.web.correction_crossover_flow``'s ``error=str(exc)``) and the
+    wizard's relay status line
+    (``jasper.web.correction_setup._relay_failure_message``'s generic
+    ``str(exc)`` fallback). ``str(exc)`` must instead be EXACTLY the same
+    mapped sentence the envelope renders
+    (``jasper.active_speaker.crossover_envelope.describe_level_solve_refusal``)
+    -- one code -> copy mapping, never a raw code/band string on any
+    household surface."""
+
+    from jasper.active_speaker.crossover_envelope import (
+        describe_level_solve_refusal,
+    )
+
+    topology, profile, targets = _safety_profile_and_targets()
+    _patch_solve_environment(monkeypatch, topology, profile)
+
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    lease._outcomes["near_field_driver:mono:tweeter"] = _ramp_outcome(
+        locked=-3.0, gain_map_db=-60.0, cap_db=-3.0, noise_floor_dbfs=-20.0
+    )
+    _, get_v, set_v = await _volume_ports(-27.0)
+
+    with pytest.raises(LevelSolveRefused) as excinfo:
+        await lease.acquire_driver_sweep_volume("mono", "tweeter", get_v, set_v)
+
+    message = str(excinfo.value)
+    assert "level_solve_refused" not in message
+    assert "code=" not in message
+    assert "band=" not in message
+    assert message == describe_level_solve_refusal(excinfo.value.refusal.to_dict())
+    # Sanity: this IS the household-facing "too high to measure reliably"
+    # room_too_noisy copy, not a generic/empty fallback.
+    assert "too high to measure reliably at safe levels" in message
+
+
+def test_refusal_pending_predicate_parity_with_envelope_rendering():
+    """W2.4 parity pin: the between-set restart's clear/preserve decision
+    (``CrossoverLevelLease._target_refusal_pending``, reading
+    ``_solve_refusal`` + the exhausted write count directly) and the
+    envelope's refusal rendering
+    (``crossover_envelope._active_level_solve_refusal``, re-deriving the
+    same OR from ``level_match_snapshot()``'s ``solve_refusal`` /
+    ``solve_correction.exhausted`` projections) are SEPARATE readers of the
+    same two stored facts. They are equivalent today only because both
+    sides implement the same OR -- nothing structural forces it -- so this
+    test pins ``envelope-renders-a-refusal <=> restart-clears`` across the
+    three representative states. If either side changes, this is the
+    contract to keep green: a divergence means the household could be shown
+    a refusal whose restart preserves the doomed correction (run 20's dead
+    loop) or have a correction cleared with no refusal ever rendered."""
+
+    from jasper.active_speaker.crossover_envelope import (
+        _active_level_solve_refusal,
+    )
+
+    _topology, _profile, targets = _safety_profile_and_targets()
+    target_id = "mono:woofer"
+
+    def parity(lease) -> None:
+        status = {"level_match": lease.level_match_snapshot()}
+        rendered = _active_level_solve_refusal(status, target_id) is not None
+        pending = lease._target_refusal_pending(target_id)
+        assert rendered == pending, (
+            f"envelope renders refusal={rendered} but restart "
+            f"refusal_pending={pending} -- the two readers of the same "
+            "stored facts have diverged"
+        )
+
+    # State 1 (run 20's shape): genuine pre-flight refusal at writes=1 --
+    # one write BELOW the exhausted bound. Both readers must say refusal.
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="completed_insufficient", shortfall_db=12.3
+    )
+    lease._solve_refusal = {
+        "target_id": target_id,
+        "role": "woofer",
+        "code": "room_too_noisy_for_safe_measurement",
+        "failing_band_hz": [60.0, 171.0],
+        "required_db": 20.0,
+        "available_db": 14.5,
+    }
+    assert lease._correction_budget_exhausted(target_id) is False
+    assert lease._target_refusal_pending(target_id) is True
+    parity(lease)
+
+    # State 2 (run 19's completion-time exhaustion shape): budget exhausted
+    # with NO fresh solve refusal stored -- the envelope synthesizes the
+    # measurement_window_unreachable refusal from the exhausted flag; the
+    # restart must agree via the same write count.
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    for _ in range(3):
+        lease.record_solve_correction(
+            "mono", "woofer", trigger="snr_shortfall", shortfall_db=2.0
+        )
+    assert lease._solve_refusal is None
+    assert lease._correction_budget_exhausted(target_id) is True
+    assert lease._target_refusal_pending(target_id) is True
+    parity(lease)
+
+    # State 3 (the preserve path): a correction exists but no refusal was
+    # ever shown and the budget is not exhausted. Both readers must say
+    # no-refusal -- this is what keeps the completed-insufficient
+    # "JTS will play the next measurement louder" promise intact.
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="completed_insufficient", shortfall_db=12.3
+    )
+    assert lease._solve_refusal is None
+    assert lease._target_refusal_pending(target_id) is False
+    parity(lease)
+
+
+@pytest.mark.asyncio
 async def test_solve_falls_back_to_raw_lock_when_ceilings_unresolvable(monkeypatch):
     """No driver-safety profile confirmed -- the solve cannot resolve
     ceilings, so the pre-W2.1 raw-lock reassert behavior is preserved."""
