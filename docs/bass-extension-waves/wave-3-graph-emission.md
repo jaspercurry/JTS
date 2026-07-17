@@ -1,12 +1,12 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 7 (2026-07-17).** Static graph groundwork remains
+> **Revision 8 (2026-07-17).** Static graph groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
 > an explicit graph-classification boundary, one predecessor-aware commit
 > owner, and a durable profile+DSP recovery contract owned by the
 > existing correction process. Wave 5 is not yet authorized to arm
-> the graph; see its revision 7 safety gate. Findings and rationale
+> the graph; see its revision 8 safety gate. Findings and rationale
 > are in the changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
@@ -133,75 +133,110 @@ Modify:
   evidence according to the complete state table below. The proof
   takes the evaluated bass profile as separate evidence; it does not
   infer permission from filter names or mutate Layer-A identity.
-  Freeze one canonical graph-classification boundary with an explicit
-  source:
+  Freeze one canonical graph-classification boundary with sync and
+  async entry points shaped to the existing hosts:
 
   ```python
   classify_bass_extension_graph(
       topology, *,
       evidence_source: Literal[
-          "persisted_boot", "persisted_active", "persisted_candidate",
-          "desired"
+          "persisted_boot", "persisted_candidate", "desired"
       ],
       statefile_path: Path | None = None,
+      candidate_kind: Literal[
+          "explicit", "applied_baseline", "staged_all_muted"
+      ] | None = None,
       candidate_path: Path | None = None,
-      read_active_graph_text: Callable[[], str] | None = None,
       graph_text: str | None = None,
       applied_baseline_path: Path | None = None,
       applied_baseline_state: Mapping[str, Any] | None = None,
       profile_path: Path | None = None,
       intent_path: Path | None = None,
+      staged_metadata_path: Path | None = None,
       desired_profile: BassExtensionProfile | None = None,
+  ) -> GraphSafety
+
+  async classify_active_bass_extension_graph(
+      topology, *,
+      statefile_path: Path,
+      read_active_graph_text: Callable[[], Awaitable[str | None]],
+      applied_baseline_path: Path,
+      profile_path: Path,
+      intent_path: Path,
+      staged_metadata_path: Path,
   ) -> GraphSafety
   ```
 
-  Exactly one source is legal. All three persisted sources require
-  explicit applied-baseline/profile/intent paths. `persisted_boot` and
-  `persisted_active` additionally require `statefile_path`; the resolver
-  itself parses that statefile's one `config_path` and reads the selected
-  graph. `persisted_boot` forbids an active callback and classifies the
-  stable boot-selected file. `persisted_active` additionally requires
-  `read_active_graph_text`; inside the same snapshot it classifies the
-  live readback and requires its normalized fingerprint to equal the
-  stable boot-selected file. It never treats path equality alone as
-  active-graph proof.
+  These are two transport-shaped entry points to one boundary, not two
+  policies. Both use one private, disk-I/O-free snapshot evaluator in
+  `runtime_contract.py` for staged-guard parsing, bass-profile
+  evaluation, pending-intent rules, and the final low-level verifier
+  call. Do not duplicate those decisions between the entry points or
+  introduce a snapshot/wrapper class. The synchronous entry point is
+  the only one available to boot, candidate, and desired callers. The
+  asynchronous entry point is the only live-active entry and always
+  awaits the supplied callback inside its sandwich. Callers pass
+  `lambda: camilla.get_active_config_raw(best_effort=False)`; an exception,
+  `None`, non-string, or unparseable response fails closed.
+
+  Exactly one synchronous source is legal. All persisted paths through
+  the two entry points require explicit applied-baseline/profile/intent
+  and staged-metadata paths. `persisted_boot` additionally requires
+  `statefile_path`; the
+  resolver itself parses that statefile's one `config_path` and reads
+  the selected graph. It classifies the stable boot-selected file.
+  `classify_active_bass_extension_graph` also parses the selector and,
+  inside the same snapshot, awaits live readback and requires its
+  normalized fingerprint to equal the stable boot-selected file. It
+  never treats path equality alone as active-graph proof.
 
   `persisted_candidate` exists only for the current
   `safe_graph_for_current_topology` startup/fallback decision, whose
   existing policy must compare persisted graphs that are not yet the
   statefile selection: an explicit `current_config_path` override, the
   applied-baseline candidate, the loopback/ring flat fallbacks, and the
-  staged all-muted candidate. It forbids `statefile_path` and the active
-  callback. For the applied-baseline candidate, `candidate_path` is
-  omitted and the resolver derives `config.path` from the stable
-  applied-baseline snapshot. For each other existing candidate,
-  `candidate_path` is the exact path already supplied or derived by
-  `safe_graph_for_current_topology`; the resolver, not the caller, reads
-  its bytes. `applied_baseline.config.path` is therefore a rebuildable
+  staged all-muted candidate. It forbids `statefile_path`. The fixed
+  `candidate_kind` owns path provenance: `explicit` requires the exact
+  current override or flat/ring path already supplied to
+  `safe_graph_for_current_topology`; `applied_baseline` forbids
+  `candidate_path` and derives `config.path` from the stable paired
+  applied-baseline bytes; `staged_all_muted` forbids `candidate_path`
+  and derives the locator from the stable paired staged metadata. The
+  resolver, not the caller, reads graph bytes. It passes the immutable
+  parsed staged mapping to the low-level verifier so topology identity,
+  locator, and software-guard evidence remain mandatory.
+  `applied_baseline.config.path` is therefore a rebuildable
   fallback-candidate locator only, never proof of the current or active
   graph. No other production caller or candidate class may use this
   source, and this revision does not move fallback selection policy into
   the bass resolver.
 
   The boot/active boundary performs
-  `applied-baseline₁ → intent₁ → profile₁ → selector₁ → selected-file₁
-  → [active graph] → selected-file₂ → selector₂ → profile₂ → intent₂
-  → applied-baseline₂`. Both reads of every authority file and selected
-  graph must match byte-for-byte; the two parsed selector targets must
+  `applied-baseline₁ → intent₁ → profile₁ → staged-metadata₁ → selector₁
+  → selected-file₁ → [await active graph in the async entry only]
+  → selected-file₂ → selector₂
+  → staged-metadata₂ → profile₂ → intent₂ → applied-baseline₂`. Both
+  reads of every authority file and selected graph must match byte-for-
+  byte; the two parsed selector targets must
   match (unrelated Camilla statefile volume/mute changes do not change
   graph authority). The candidate boundary performs
-  `applied-baseline₁ → intent₁ → profile₁ → candidate-file₁
-  → candidate-file₂ → profile₂ → intent₂ →
-  applied-baseline₂`; both candidate reads match byte-for-byte and an
-  applied-baseline-derived locator must also be identical in the paired
-  applied snapshots. One bounded retry of the **whole** selected or
+  `applied-baseline₁ → intent₁ → profile₁ → staged-metadata₁
+  → candidate-file₁ → candidate-file₂ → staged-metadata₂ → profile₂
+  → intent₂ → applied-baseline₂`; both candidate reads and paired staged
+  metadata match byte-for-byte. Applied-baseline- and staged-derived
+  locators must also be identical in their paired authority snapshots.
+  A paired missing staged-metadata file is stable empty evidence: it
+  cannot authorize a guarded/all-muted graph, though graph classes that
+  never depend on staged evidence retain their existing proof.
+  One bounded retry of the **whole** selected or
   candidate sandwich is allowed, then instability fails closed.
   `desired` forbids all paths
   and callbacks, requires in-memory `graph_text`, applied-baseline
   state, and desired profile, and performs no disk read. The boundary
   owns all profile evaluation; callers never parse profile/intent/
-  statefile bytes or choose bass policy themselves. `Mapping[str,
-  Any]` and the existing `GraphSafety` are the concrete merged types;
+  statefile/staged-metadata bytes or choose bass policy themselves.
+  `Mapping[str, Any]` and the existing `GraphSafety` are the concrete
+  merged types;
   do not introduce an `AppliedBaselineProfileState`,
   `GraphClassification`, or another wrapper type for this seam.
 
@@ -209,14 +244,14 @@ Modify:
   the immutable graph text and returned bass evidence. It must not
   read graph/profile/intent files, invoke the persisted boundary
   implicitly, or interpret omitted evidence as "no profile." Production
-  host boundaries call `classify_bass_extension_graph`; direct use of
+  host boundaries call the matching canonical entry point; direct use of
   the low-level verifier is limited to already-frozen in-memory test or
   composition inputs. A baseline-shaped graph whose bass evidence is
   omitted is unsafe; graph classes that cannot carry the optional
   baseline block (flat/program-pipe and guarded/all-muted commissioning
   graphs) retain their existing proof.
 
-  A valid pending intent supplies the exact predecessor and desired
+  For baseline-shaped graphs, a valid pending intent supplies the exact predecessor and desired
   normalized-graph fingerprints plus the exact predecessor and desired
   profile bytes. The persisted resolver may authorize only those two
   already-proved natural graphs while recovery is pending, selecting
@@ -224,15 +259,17 @@ Modify:
   intent, profile bytes other than the recorded predecessor/desired
   bytes, or any third graph fingerprint is unsafe. This is narrow
   restart availability, not forward completion: the transaction owner
-  still rolls back to the predecessor.
+  still rolls back to the predecessor. Non-baseline flat/program-pipe
+  and guarded/all-muted classes retain their existing independent
+  proof, but never become runtime-armed or complete the transaction.
 
   Audit every production `classify_camilla_graph` call with `rg`.
   The source mapping is frozen, not caller-selectable bass policy:
   startup/fallback uses `persisted_boot` for its statefile-selected
   graph and `persisted_candidate` for only the unselected candidates
   enumerated above; doctor uses `persisted_boot`; live correction,
-  commissioning, and multiroom decisions use `persisted_active`; only
-  a staged pre-publication transaction graph uses `desired`. Each path
+  commissioning, and multiroom decisions use the async active entry;
+  only a staged pre-publication transaction graph uses `desired`. Each path
   calls the canonical boundary at its host edge and threads its
   immutable result into nested decisions. Add the
   necessary seam-only caller edits to
@@ -241,7 +278,12 @@ Modify:
   `jasper/active_speaker/commissioning_{runtime,capture_producer,apply}.py`,
   `jasper/cli/doctor/audio.py`, and
   `jasper/multiroom/{active_leader_config,follower_config}.py`; do not
-  add caller-specific profile policy.
+  add caller-specific profile policy. Production startup/doctor hosts
+  thread CLI `--staged-metadata` or the existing
+  `staged_metadata_path()` default into the resolver; they no longer
+  call `load_staged_startup_config()` before classification. Retain
+  in-memory staged mappings only for already-frozen direct low-level
+  tests, never as persisted host authority.
 - `jasper/active_speaker/baseline_profile.py` — thread the accepted
   sealed profile into **`recompose_applied_baseline_yaml`**, the
   immutable production carrier. Default production recomposition
@@ -444,7 +486,7 @@ Modify:
   `_claim_crossover_state_owners`; no service or permission change is
   authorized. On power-up the intent may remain until the next socket
   activation, but the canonical startup classifier accepts only its
-  two recorded natural graphs, and Wave 5 revision 7 treats intent
+  two recorded natural graphs, and Wave 5 revision 8 treats intent
   presence as no-arm. Thus music remains available and natural while
   convergence is pending; the next correction-process claim repairs
   it before serving a mutating bass action.
@@ -580,16 +622,20 @@ an exact two-fingerprint crash-recovery proof, not a state wildcard.
   existing startup/fallback, doctor, correction, commissioning, and
   multiroom classifier callers; its full graph/evidence sandwich
   accepts only stable or exact pending evidence. Tests mutate selected
-  graph bytes, every startup candidate's bytes and locator, selector
-  target, applied-baseline, profile, and intent inputs at every sandwich
+  graph bytes, every startup candidate's bytes and locator, staged
+  metadata bytes/locator/guard fields, selector target, applied-baseline,
+  profile, and intent inputs at every sandwich
   seam and require whole-snapshot
-  retry/fail-closed behavior; `persisted_active` also refuses a live
-  graph that differs from the selected file. Pin the fixed caller-source
-  mapping and that `persisted_candidate` is used only inside
+  retry/fail-closed behavior; the async active entry also refuses a live
+  graph that is absent, malformed, or differs from the selected file,
+  and tests prove the await happens between the paired disk reads. Pin the fixed caller-source
+  mapping and that `persisted_candidate` plus its three
+  `candidate_kind` values are used only inside
   `safe_graph_for_current_topology` for its existing current override,
   applied baseline, flat/ring, and staged all-muted candidates. The
-  CLI no longer parses applied-baseline `config.path` before calling the
-  resolver. The staged desired graph can pass only
+  CLI no longer parses applied-baseline `config.path` or staged metadata
+  before calling the resolver; doctor and other production hosts do not
+  pre-read staged authority either. The staged desired graph can pass only
   `evidence_source="desired"`. The
   low-level classifier performs no disk I/O, and omitted evidence
   never means a missing profile.
@@ -655,6 +701,21 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Rev 8 (2026-07-17)** — the follow-up final gate found two concrete
+  implementation mismatches in revision 7. The staged all-muted graph
+  requires staged locator/topology/guard metadata that was outside the
+  candidate sandwich, and the live callback was typed synchronously
+  even though the existing Camilla read is awaited and nullable.
+  Rationale: make staged metadata a paired authority for every persisted
+  proof, derive the staged locator inside that snapshot, and give the
+  one canonical resolver boundary sync and async entry points that share
+  a single pure evaluator. The async entry awaits best-effort-false live
+  readback inside the sandwich and fails closed on no result. Rejected
+  alternatives were trusting caller-parsed staged metadata, dropping
+  the staged software guard, pre-reading live YAML into a synchronous
+  closure, synchronously driving a coroutine on an active event loop,
+  or converting all synchronous startup/doctor callers to async.
 
 - **Rev 7 (2026-07-17)** — the fresh final gate found that revision 6
   could classify only the outputd-statefile selection, while the

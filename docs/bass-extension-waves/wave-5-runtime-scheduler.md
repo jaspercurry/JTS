@@ -1,6 +1,6 @@
 # Wave 5 — runtime scheduler (Codex prompt)
 
-> **Revision 7 (2026-07-17) — implementation blocked.** The eventual
+> **Revision 8 (2026-07-17) — implementation blocked.** The eventual
 > R1 scheduler remains sealed-only, but no Wave 5 implementation is
 > authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` has
 > no frozen commissioning producer, and Wave 4 revision 5 remains blocked
@@ -53,7 +53,7 @@ structural patches for their changing filter tuples.
 1. `docs/HANDOFF-bass-extension-plan.md` §8.2–8.4 and §10 (read
    carefully — hysteresis, rate limits, micro-steps, limiter
    coupling, and the failure ladder are specified, not designable).
-2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 7,
+2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 8,
    then Wave 1's `TargetSpec` and ported/PR family sections. Read the
    fixed-graph scope and deferral contract carefully.
 3. `jasper/volume_coordinator.py` — fully: `_dispatch`, the observer
@@ -94,7 +94,7 @@ structural patches for their changing filter tuples.
 - Confirm Wave 3's one commit owner, source-explicit graph-
   classification boundary, natural predecessor normalization, and
   correction-process
-  recovery owner exist exactly as revision 7 specifies. A pending
+  recovery owner exist exactly as revision 8 specifies. A pending
   apply intent must be visible in static state and must authorize only
   its two exact natural graph/file fingerprints. Confirm the existing
   outputd boot selector is unchanged across Wave 3 commits and that all
@@ -401,6 +401,15 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 8 (2026-07-17)** — follows Wave 3 revision 8 after the final
+  gate required staged-metadata authority in persisted graph snapshots
+  and an awaitable fail-closed live readback entry. Rationale: the
+  future scheduler must consume the canonical async active proof rather
+  than pre-read live YAML or reconstruct profile/staged evidence. This
+  does not relax the mandatory stop or add implementation authority.
+  Rejected alternatives were retaining the stale Wave 3 dependency or
+  letting Wave 5 create a caller-specific live classifier.
 
 - **Rev 7 (2026-07-17)** — the final independent gate found that the
   directory prerequisite table still permits a Wave 5 lane launch after

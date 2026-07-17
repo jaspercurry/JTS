@@ -44,7 +44,10 @@
 > unconfirmed rather than unchanged. The final independent gate also
 > closed the startup/fallback evidence gap: the same canonical resolver
 > now snapshots each existing unselected fallback candidate, while the
-> existing selector remains the sole owner of fallback policy.
+> existing selector remains the sole owner of fallback policy. Its
+> final follow-up adds staged guard metadata to that snapshot and gives
+> live hosts an awaitable fail-closed entry point matching the existing
+> Camilla client.
 
 ## 0. One-paragraph summary
 
@@ -1090,30 +1093,47 @@ intent, which authorizes only its exact predecessor or desired natural
 graph fingerprint with the corresponding recorded profile evaluation;
 it is recovery-required and never runtime-armed.
 
-One canonical `classify_bass_extension_graph(topology, *,
-evidence_source, ...)` boundary produces the classification from one
-immutable graph/authority snapshot. `persisted_boot`,
-`persisted_active`, and the host-restricted `persisted_candidate`
-require explicit applied-baseline/profile/intent paths. The first two
-also require the outputd statefile; the resolver—not its callers—parses
-that statefile's `config_path` and reads the selected graph twice inside
-the authority sandwich. `persisted_active` also invokes an explicit
-live readback callback inside that snapshot and requires its normalized
-fingerprint to equal the stable selected file; `persisted_boot` forbids
-the callback. Paired authority/graph-file reads match byte-for-byte and
-the parsed selector target remains equal; unrelated volume/mute fields
-may change.
+One canonical graph-classification boundary has two transport-shaped
+entry points in `runtime_contract.py`, not two policies. The synchronous
+`classify_bass_extension_graph(topology, *, evidence_source, ...)`
+handles `persisted_boot`, host-restricted `persisted_candidate`, and
+disk-free `desired`. The async-only
+`classify_active_bass_extension_graph(...)` awaits the existing
+`CamillaController.get_active_config_raw(best_effort=False)` callback
+inside the persisted snapshot and fails closed on exception, `None`,
+non-string, or malformed readback. Both entry points construct one
+immutable graph/authority snapshot and call one private disk-I/O-free
+evaluator for staged-guard parsing, bass-profile/intent policy, and the
+final low-level verifier; they do not duplicate policy or add a wrapper
+type.
+
+All persisted paths require explicit applied-baseline/profile/intent
+and staged-metadata paths. Boot and active also require the outputd
+statefile; the resolver—not its callers—parses that statefile's
+`config_path` and reads the selected graph twice inside the authority
+sandwich. The async entry additionally requires live readback's
+normalized fingerprint to equal that stable selected file. Paired
+authority/graph-file reads match byte-for-byte and the parsed selector
+target remains equal; unrelated volume/mute fields may change.
+A paired missing staged-metadata file is empty evidence and can never
+authorize a guarded/all-muted graph; graph classes that do not depend
+on that evidence retain their current proof.
 
 `persisted_candidate` is limited to
 `safe_graph_for_current_topology` and its existing unselected candidates:
 an explicit current override, the applied-baseline candidate, loopback/
 ring flat fallbacks, and the staged all-muted fallback. It forbids the
-statefile and active callback and reads the candidate twice inside the
-applied-baseline/intent/profile sandwich. The applied-baseline candidate
-locator is derived from the paired applied snapshots inside the
-resolver; `applied_baseline.config.path` is a rebuildable fallback
-locator, not current-graph or live-graph authority. The existing safe-
-graph function continues to own selection policy.
+statefile and reads the candidate twice inside the applied-baseline/
+intent/profile/staged-metadata sandwich. Its fixed `candidate_kind`
+distinguishes the explicit current/flat/ring paths from locators derived
+inside paired applied-baseline or staged-metadata bytes. The resolver
+passes the immutable staged mapping to the low-level verifier, so the
+staged locator, topology identity, and software guard remain mandatory.
+`applied_baseline.config.path` is a rebuildable fallback locator, not
+current-graph or live-graph authority. The existing safe-graph function
+continues to own selection policy. Production startup/doctor hosts pass
+the CLI `--staged-metadata` path or existing `staged_metadata_path()`
+default into the boundary; they do not pre-parse staged authority.
 
 One bounded whole-snapshot retry covers a concurrent commit, then
 instability fails closed. `desired` forbids disk paths/callbacks,
@@ -1130,13 +1150,15 @@ boundary, or treat omission as a missing profile. The source mapping is
 fixed: startup/fallback uses `persisted_boot` for the selected graph and
 `persisted_candidate` only for the enumerated unselected candidates;
 doctor uses `persisted_boot`; live correction, commissioning, and
-multiroom use `persisted_active`; only the pre-publish transaction uses
-`desired`. Those host boundaries thread
+multiroom use the async active entry; only the pre-publish transaction
+uses `desired`. Those host boundaries thread
 the result into nested proofs. A pending intent may authorize
 only its recorded predecessor/desired natural graph fingerprints with
-their recorded profile bytes. Any third graph, bytes, or malformed
+their recorded profile bytes. Any third baseline-shaped graph, bytes, or malformed
 intent is unsafe; exact pending authorization exists only to keep
-startup available until conservative rollback.
+startup available until conservative rollback. Non-baseline flat/
+program-pipe and guarded/all-muted classes keep their independent
+proof, but are never runtime-armed and cannot complete the transaction.
 
 ### 8.6 Apply / bypass / fallback
 
@@ -1461,9 +1483,9 @@ wave keeps out of the god-files. Every implementation PR runs
 | 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | spikes 1–3 done 2026-07-16 — **R1 confirmed** ([memo](research/2026-07-16-bass-extension-spikes/README.md)); spike 4 + ears-on listen with operator |
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553; clean gate after 3 review findings fixed in-session) |
-| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | implementation parked after draft #1558 stop report; contract rev 7 authorizes sealed natural-at-rest graph groundwork plus durable predecessor-aware apply/recovery |
+| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | implementation parked after draft #1558 stop report; contract rev 8 authorizes sealed natural-at-rest graph groundwork plus durable predecessor-aware apply/recovery |
 | 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **blocked at contract rev 5** — no implementation until the focused measured limiter-derivation prerequisite is frozen and this prompt is revised |
-| 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 7** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land |
+| 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 8** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
 
@@ -1523,7 +1545,8 @@ same PR as the emitter change** — a split ships a graph the contract
 re-proof rejects), including one source-explicit persisted/desired
 graph+authority classification boundary and a disk-I/O-free low-level
 classifier, including sandwiched proof of the startup selector's
-existing unselected candidates; immutable-snapshot apply/bypass/deferred
+existing unselected candidates and staged guard metadata plus an
+awaitable live-read entry; immutable-snapshot apply/bypass/deferred
 replacement with
 one commit owner, natural predecessor normalization, and a durable
 local intent with exact profile+DSP predecessor restoration across
@@ -1570,7 +1593,7 @@ remains the only no-forward-work exception. Depends: Waves
 
 ### Wave 5 — Runtime scheduler
 
-**No implementation is authorized by revision 7.** A coordinator may
+**No implementation is authorized by revision 8.** A coordinator may
 launch this lane after Wave 3 only to execute and record its mandatory
 preflight stop while Wave 4 is blocked; that launch is not authority to
 edit implementation files. A replacement prompt depends on the Wave 4
