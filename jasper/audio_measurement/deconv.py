@@ -293,3 +293,90 @@ def magnitude_response(
     if normalize:
         magnitude_db = magnitude_db - float(np.max(magnitude_db))
     return freqs.astype(np.float64), magnitude_db.astype(np.float64)
+
+
+import math
+
+from .sweep import SweepMeta
+
+
+def harmonic_time_advance_s(meta: SweepMeta, order: int) -> float:
+    """Return how far the order-N harmonic image leads the linear IR."""
+
+    if type(order) is not int or order < 1:
+        raise ValueError("harmonic order must be a positive integer")
+    if not np.isfinite(meta.L) or meta.L <= 0.0:
+        raise ValueError("sweep L must be finite and positive")
+    return float(meta.L * np.log(order))
+
+
+def extract_harmonic_ir(
+    full_ir: np.ndarray,
+    sample_rate: int,
+    direct_peak_idx: int,
+    meta: SweepMeta,
+    order: int,
+) -> np.ndarray:
+    """Window one synchronized-sweep harmonic image with a Hann taper."""
+
+    full_ir = np.asarray(full_ir, dtype=np.float64)
+    if full_ir.ndim != 1 or full_ir.size == 0:
+        raise ValueError("full_ir must be non-empty 1-D data")
+    if sample_rate <= 0 or not 0 <= direct_peak_idx < len(full_ir):
+        raise ValueError("sample rate or direct peak is invalid")
+    advance = harmonic_time_advance_s(meta, order)
+    predicted_center = direct_peak_idx - round(advance * sample_rate)
+    search_radius = round(0.002 * sample_rate)
+    search_start = max(0, predicted_center - search_radius)
+    search_end = min(len(full_ir), predicted_center + search_radius + 1)
+    if search_start >= search_end:
+        raise ValueError("harmonic window crosses t=0 or the capture boundary")
+    center = search_start + int(np.argmax(np.abs(full_ir[search_start:search_end])))
+    neighboring_orders = (2,) if order == 1 else (order - 1, order + 1)
+    neighboring_centers = [
+        direct_peak_idx - round(
+            harmonic_time_advance_s(meta, neighbor) * sample_rate
+        )
+        for neighbor in neighboring_orders
+    ]
+    nearest_gap = min(abs(center - neighbor) for neighbor in neighboring_centers)
+    half_width = max(1, int(math.floor(0.4 * nearest_gap)))
+    start = center - half_width
+    end = center + half_width + 1
+    if start < 0 or end > len(full_ir):
+        raise ValueError("harmonic window crosses t=0 or the capture boundary")
+    for neighbor, neighbor_center in zip(neighboring_orders, neighboring_centers):
+        adjacent = (2,) if neighbor == 1 else (neighbor - 1, neighbor + 1)
+        neighbor_gap = min(abs(
+            neighbor_center
+            - (
+                direct_peak_idx
+                - round(harmonic_time_advance_s(meta, other) * sample_rate)
+            )
+        ) for other in adjacent)
+        neighbor_half_width = max(1, int(math.floor(0.4 * neighbor_gap)))
+        if start <= neighbor_center + neighbor_half_width and end > (
+            neighbor_center - neighbor_half_width
+        ):
+            raise ValueError("harmonic window overlaps a neighboring order")
+    window = np.hanning(end - start)
+    return full_ir[start:end] * window
+
+
+def harmonic_magnitude_response(
+    harmonic_ir,
+    sample_rate,
+    order,
+    n_fft=None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return harmonic magnitude on the excitation-frequency axis."""
+
+    if type(order) is not int or order < 1:
+        raise ValueError("harmonic order must be a positive integer")
+    output_freqs, magnitude_db = magnitude_response(
+        np.asarray(harmonic_ir, dtype=np.float64),
+        sample_rate,
+        n_fft=n_fft,
+        normalize=False,
+    )
+    return output_freqs / order, magnitude_db
