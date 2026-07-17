@@ -124,7 +124,7 @@ class PassiveRadiatorAdapter:
             _as_ported(plant), margin=margin, n_targets=n_targets
         )
         minimum_corner = 1.1 * plant.notch_hz
-        grid = np.geomspace(10.0, 500.0, 512)
+        grid = np.unique(np.append(np.geomspace(10.0, 500.0, 512), plant.notch_hz))
         family: list[TargetSpec] = []
         for target in base_family:
             filters = tuple(

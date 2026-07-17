@@ -302,6 +302,21 @@ def test_ported_family_is_sorted_by_headroom_then_corner():
             assert left.fp_hz <= right.fp_hz
 
 
+@pytest.mark.parametrize("margin", MARGINS.values(), ids=MARGINS)
+def test_pr_composite_constraint_includes_exact_notch(margin):
+    plant = PassiveRadiatorPlantFit(
+        45.0, 68.0, 24.0, 0.5, NATURAL_CURVE, 22.5
+    )
+    family = PASSIVE_RADIATOR_ADAPTER.generate_family(plant, margin=margin)
+    notch = np.array([plant.notch_hz])
+    natural = np.interp(
+        notch, plant.natural_curve.freqs_hz, plant.natural_curve.magnitude_db
+    )
+    for target in family:
+        delta = PASSIVE_RADIATOR_ADAPTER.predicted_response(plant, target, notch)
+        assert np.max(delta - natural) <= 0.5 + 1e-12
+
+
 def test_sealed_low_q_headroom_captures_peak_above_dc_boost():
     dc_boost = lt_boost_db(60.0, 40.0)
     margin = replace(MARGINS["normal"], boost_cap_db=dc_boost)

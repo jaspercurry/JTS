@@ -75,6 +75,8 @@ class PortedPlantFit:
             for item in items
         ) for items in (frequency_values, magnitude_values)):
             raise ValueError("ported plant fit natural curve must be numeric")
+        assert isinstance(frequency_values, (list, tuple))
+        assert isinstance(magnitude_values, (list, tuple))
         try:
             natural_curve = MagnitudeCurve(
                 tuple(float(item) for item in frequency_values),
@@ -95,7 +97,8 @@ class PortedPlantFit:
         notes = value["notes"]
         if not isinstance(notes, (list, tuple)) or not all(isinstance(note, str) for note in notes):
             raise ValueError("ported plant fit notes must be strings")
-        return cls(*numbers, natural_curve=natural_curve, notes=tuple(notes))
+        fb_hz, knee_hz, slope, fit_rms_db = numbers
+        return cls(fb_hz, knee_hz, slope, fit_rms_db, natural_curve, tuple(notes))
 
 
 def _curve_arrays(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:

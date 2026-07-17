@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Mapping, Protocol, TYPE_CHECKING
+from typing import Any, cast, Mapping, Protocol, TYPE_CHECKING
 
 import numpy as np
 
@@ -92,9 +92,9 @@ PlantFit = SealedPlantFit | PortedPlantFit | PassiveRadiatorPlantFit
 
 
 ADAPTERS: dict[str, EnclosureAdapter] = {
-    "sealed_v1": SEALED_ADAPTER,
-    "ported_v1": PORTED_ADAPTER,
-    "passive_radiator_v1": PASSIVE_RADIATOR_ADAPTER,
+    "sealed_v1": cast(EnclosureAdapter, SEALED_ADAPTER),
+    "ported_v1": cast(EnclosureAdapter, PORTED_ADAPTER),
+    "passive_radiator_v1": cast(EnclosureAdapter, PASSIVE_RADIATOR_ADAPTER),
 }
 
 

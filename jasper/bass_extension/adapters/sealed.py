@@ -76,7 +76,12 @@ class SealedPlantFit:
             isinstance(note, str) for note in notes
         ):
             raise ValueError("sealed plant fit notes must be strings")
-        return cls(*converted, notes=tuple(notes))
+        return cls(
+            f0_hz=converted[0],
+            q0=converted[1],
+            fit_rms_db=converted[2],
+            notes=tuple(notes),
+        )
 
 
 def _curve_arrays(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
@@ -252,6 +257,7 @@ class SealedAdapter:
         freqs = np.asarray(freqs_hz, dtype=np.float64)
         response = second_order_highpass_db(freqs, plant.f0_hz, plant.q0)
         if target.filters:
+            assert target.qp is not None
             response = response + lt_response_db(
                 freqs,
                 plant.f0_hz,
