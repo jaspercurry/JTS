@@ -97,9 +97,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 3,
         "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260717.2",
+        "capture_page_build": "20260717.3",
     }
-    assert "main.js?v=20260717-2" in index_html
+    assert "main.js?v=20260717-3" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -519,6 +519,42 @@ def test_capture_page_plan_loop_timeouts_are_terminal_not_stale_retries():
     # the tight admission-latency budget — the Pi's own consume_capture()
     # analysis pass has no hard ceiling from run_capture_plan's poll loop.
     assert "Math.max(30000, Number(spec.duration_ms) || 30000)" in result_body
+
+
+def test_capture_page_plan_loop_post_arm_errors_are_terminal_pre_arm_retries():
+    """S1 (adversarial review of this PR): runPlanCapture's generic catch-all
+    used to leave the previous "Next measurement"/"Try again" button live and
+    bound to the SAME (index, attempt) already posted — a re-tap after e.g. a
+    transient putBlob failure posts a begin the Pi refuses (begin_replayed /
+    out_of_order → session-ending CaptureFailed), or worse re-records a
+    sweep-less window. The catch now splits on whether `armed` was posted:
+    post-arm generic errors render the terminal failure screen (mirroring
+    the timeout paths); pre-arm errors (mic permission denied, a begin-post
+    hiccup) keep the live retry — correct there, the round never started on
+    the Pi — with Stop still wired and copy naming the ACTUAL on-screen
+    affordance (N3). Behavior exercised in capture_plan_loop_test.mjs; these
+    pins keep the wiring from silently regressing."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    start = main_js.index("async function runPlanCapture(ctx, { index, attempt }) {")
+    end = main_js.index("async function onPlanStart(ctx)", start)
+    run_body = main_js[start:end]
+    assert "let armedPosted = false;" in run_body
+    assert "armedPosted = true;" in run_body
+    # armedPosted is set BEFORE the armed post's await — a lost response may
+    # still have armed the Pi, so a failed post must classify as post-arm.
+    assert run_body.index("armedPosted = true;") < run_body.index("armed: true,")
+    assert "} else if (armedPosted) {" in run_body
+    assert "setStatus(captureFailureMessage(err, planRetryAffordance(ctx)), \"error\");" in run_body
+    # The post-arm upload-cap refusal is terminal too (sweepFailed routing),
+    # and the pre-arm clean-capture refusal keeps the session alive: exactly
+    # the sweepFailed/deadSession/armedPosted terminal branches call
+    # endPlanSession inside the catch, never the pre-arm else.
+    assert "failure.sweepFailed = true;" in run_body
+    assert "function planRetryAffordance(ctx) {" in main_js
+    # captureFailureMessage's affordance parameter defaults to the v1/v2
+    # flows' real Start button.
+    assert 'function captureFailureMessage(err, retryAction = "Start") {' in main_js
 
 
 def test_capture_page_plan_loop_blob_upload_carries_the_capture_index():

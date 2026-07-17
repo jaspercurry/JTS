@@ -167,7 +167,12 @@ function isRelayConnectivityAbort(err, message) {
   );
 }
 
-function captureFailureMessage(err) {
+// `retryAction` names the button the retry copy points at. The v1/v2 flows
+// keep the default "Start" (their spec screens all render a Start-labeled
+// begin button); the v3 plan loop passes the label of whatever begin
+// affordance is actually on screen ("Next measurement" / "Try again" / the
+// spec's own button label) — its screens have no button called Start.
+function captureFailureMessage(err, retryAction = "Start") {
   const message = err && err.message ? String(err.message) : String(err);
   if (message === "not_found") {
     return (
@@ -178,12 +183,12 @@ function captureFailureMessage(err) {
   if (isRelayConnectivityAbort(err, message)) {
     return (
       "Lost the connection to the speaker's measurement relay for a moment. " +
-      "Tap Start to try again."
+      `Tap ${retryAction} to try again.`
     );
   }
   // Trim a trailing period so wrapping a message that is already a full
   // sentence (e.g. FragmentError's own friendly text) never produces "..".
-  return `Measurement failed: ${message.replace(/\.+$/, "")}. Tap Start to try again.`;
+  return `Measurement failed: ${message.replace(/\.+$/, "")}. Tap ${retryAction} to try again.`;
 }
 
 // Whether `err` means the relay SESSION itself is gone (expired/purged) —
@@ -802,10 +807,12 @@ function renderCalibration(screenEl, ctx, { skipHint = false } = {}) {
         file,
       ]));
       // Only true when a file was ACTUALLY loaded this session (saveAndContinue
-      // keeps .content only after a real upload) — the one-tap confirm prefill
-      // (renderCalibrationConfirm) sets mode:"upload" without content (there is
-      // no remembered file to reuse, only a calibration_id pointer), and this
-      // note would otherwise wrongly imply one is already selected.
+      // keeps .content only after a real upload). The mode:"upload"-without-
+      // content state comes from boot's bound-setup restore (loadBoundSetup
+      // rehydrates only the compact {mode, model} summary — file text is
+      // deliberately never persisted); without the .content check this note
+      // would wrongly imply a file is already selected there. (The one-tap
+      // confirm is unrelated: renderCalibrationConfirm sets mode:"stored".)
       if ((setupState.calibration || {}).mode === "upload" && (setupState.calibration || {}).content) {
         details.append(el("p", {
           class: "cap-note",
@@ -1325,9 +1332,13 @@ async function waitForSweepComplete(client, spec, isAborted) {
 // SET: after each accepted capture the phone shows "Measurement N of target
 // ✓" with a single "Next measurement" tap, instead of the household
 // returning to the wizard between every repeat. v2 specs (no capture_plan)
-// are completely untouched — onStart() above is byte-identical to before
-// this PR; this is a fully separate code path. Dormant until a Pi build
-// starts emitting capture_protocol_version=3 + capture_plan (see
+// keep today's flow through onStart() above, which stays WIRE-COMPATIBLE
+// with every deployed Pi: its armed event changed inert-additively (the
+// noise_floor object is now built explicitly with the same two fields, and
+// crossover_sweep captures gained the ambient_stats key, which older Pis
+// simply ignore) — no field changed meaning or shape. The loop below is a
+// fully separate code path, dormant until a Pi build starts emitting
+// capture_protocol_version=3 + capture_plan (see
 // jasper/capture_relay/spec.py's CapturePlan docstring).
 // ============================================================================
 
@@ -1626,6 +1637,18 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
   throw failure;
 }
 
+// The label of the live begin affordance on the current plan screen —
+// "Next measurement" / "Try again" / the spec's own Start-button label —
+// so a pre-arm failure's retry copy names a button that actually exists
+// (the plan screens have no button called "Start").
+function planRetryAffordance(ctx) {
+  const begin = ((ctx.captureRefs && ctx.captureRefs.buttons) || []).find(
+    (entry) => entry && entry.action === "begin_capture",
+  );
+  const label = begin && begin.el ? String(begin.el.textContent || "").trim() : "";
+  return label || "the measurement button";
+}
+
 // One capture round: begin -> Pi admission -> quiet window + sweep + upload
 // (index-aware) -> Pi verdict -> the next screen. Invoked once from
 // onPlanStart (index 1, attempt 1) and thereafter from a "Next measurement" /
@@ -1637,6 +1660,16 @@ async function runPlanCapture(ctx, { index, attempt }) {
   let recorder = null;
   let wakeLock = null;
   let disposeWatch = () => {};
+  // Whether this round's `armed` post was ATTEMPTED (set just before the
+  // await — a lost response may still have armed the Pi). It splits the
+  // generic catch below: before arming, the round has not started on the
+  // Pi and the on-screen begin affordance is safe to re-tap; after arming,
+  // the Pi may already have played this attempt's stimulus, so a re-tap of
+  // the SAME (index, attempt) is never sound — it is either refused
+  // (begin_replayed → session-ending CaptureFailed), rejected by the
+  // Worker's one-upload-per-index guard (409), or worst, re-records a
+  // sweep-less window that uploads as a silently-wrong capture.
+  let armedPosted = false;
 
   try {
     setStatus(`Requesting measurement ${index} of ${target}…`, "info");
@@ -1669,12 +1702,15 @@ async function runPlanCapture(ctx, { index, attempt }) {
       await recorder.close();
       controller.recorder = null;
       recorder = null;
+      // Pre-arm refusal: the round never started on the Pi, so keep the
+      // on-screen begin affordance live AND Stop wired (no endPlanSession)
+      // — plugging in a USB measurement mic and re-tapping is a legitimate
+      // recovery, and Stop must keep working while the household decides.
       setStatus(
         `This phone can't run a clean measurement (${capture.decision.reason}). ` +
           "Try a different phone, or use a calibrated USB mic on the speaker.",
         "error",
       );
-      endPlanSession(ctx);
       return;
     }
 
@@ -1697,6 +1733,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
       "recording",
     );
 
+    armedPosted = true;
     await client.postEvent({
       armed: true,
       degraded: capture.decision.degraded,
@@ -1728,12 +1765,12 @@ async function runPlanCapture(ctx, { index, attempt }) {
     const key = await importContentKey(ctx.contentKeyB64);
     const { blob, plaintextLen, sha256 } = await encryptWav(key, wavBytes);
     if (!withinUploadCap(blob.length, spec)) {
-      setStatus(
-        "This recording is too large to upload. Try a shorter measurement.",
-        "error",
-      );
-      endPlanSession(ctx);
-      return;
+      // Post-arm, so terminal (S1): the sweep already played for this
+      // attempt; a re-tap of the same round can never produce a sound
+      // capture. sweepFailed routes the catch to renderSweepFailed.
+      const failure = new Error("this recording is too large to upload");
+      failure.sweepFailed = true;
+      throw failure;
     }
     // Each admitted attempt's blob rides its OWN relay key
     // (capture_index = attempt - 1) so a retried slot never clobbers the
@@ -1770,12 +1807,27 @@ async function runPlanCapture(ctx, { index, attempt }) {
     if (!controller.aborted) {
       if (err && err.sweepFailed) {
         renderSweepFailed(ctx, err);
+        endPlanSession(ctx);
       } else if (isDeadSessionError(err)) {
         renderSessionExpired(ctx);
+        endPlanSession(ctx);
+      } else if (armedPosted) {
+        // Post-arm generic failure (S1 — e.g. a transient putBlob error or
+        // a recorder.stop timeout after the sweep played): TERMINAL, mirror
+        // the timeout paths. Leaving the previous "Next measurement"/"Try
+        // again" button live would let a re-tap post a begin for the SAME
+        // already-consumed (index, attempt) — see armedPosted's comment for
+        // why that is never sound.
+        renderSweepFailed(ctx, err);
+        endPlanSession(ctx);
       } else {
-        setStatus(captureFailureMessage(err), "error");
+        // Pre-arm failure (mic permission denied, a transient begin-post
+        // or authorization hiccup): the round never started on the Pi, so
+        // the on-screen begin affordance is safe to re-tap. Keep it live,
+        // keep Stop wired (no endPlanSession), and name the ACTUAL button
+        // in the copy — these screens have no button called "Start".
+        setStatus(captureFailureMessage(err, planRetryAffordance(ctx)), "error");
       }
-      endPlanSession(ctx);
     }
   } finally {
     if (recorder) {

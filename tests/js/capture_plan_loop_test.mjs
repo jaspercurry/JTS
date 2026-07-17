@@ -163,7 +163,10 @@ const acceptedAcknowledgement = (spec, refs) => (
     ? { schema_version: 1, id: spec.acknowledgement.id, binding_id: spec.acknowledgement.binding_id, accepted: true }
     : null
 );
-const createMonoRecorder = async () => globalThis.__recorder;
+const createMonoRecorder = async () => {
+  if (globalThis.__recorderError) throw globalThis.__recorderError;
+  return globalThis.__recorder;
+};
 const delayMs = async () => {};
 const safeReturnUrl = (spec) => {
   const raw = spec && typeof spec.return_url === "string" ? spec.return_url.trim() : "";
@@ -577,6 +580,135 @@ async function testStopMidRoundAbortsWholeSession() {
   ok();
 }
 
+// ============================================================================
+// 6 (S1). A generic error AFTER `armed` was posted (a transient putBlob
+// failure here — the reviewer's reachable case) is TERMINAL: the previous
+// screen's begin button must NOT stay live bound to the already-consumed
+// (index, attempt) (a re-tap would post a begin the Pi refuses as
+// begin_replayed → session-ending CaptureFailed, or worse re-record a
+// sweep-less window). Stop state stays coherent: the session is ended, so
+// a Stop tap after the terminal is a clean no-op.
+// ============================================================================
+async function testPostArmUploadFailureIsTerminalNotStaleRetry() {
+  statusHistory.length = 0;
+  const { onPlanStart, stopCapture } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 3, maxAttempts: 4 });
+  const posted = [];
+  const client = {
+    async postEvent(event) {
+      posted.push(event);
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        client._last = { phase: "capture_authorized", index, attempt };
+      } else if (event.armed) {
+        client._last = { phase: "sweep_complete" };
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: client._last || {} };
+    },
+    async putBlob() {
+      // Transient relay hiccup — NOT a dead-session status (that path has
+      // its own terminal), and NOT sweepFailed-flagged: the generic
+      // catch-all must classify it terminal purely from armedPosted.
+      const err = new Error("relay 500");
+      err.status = 500;
+      throw err;
+    },
+  };
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(headingText(ctx.screenEl), "Measurement failed");
+  assert.ok(
+    !ctx.screenEl.children.some((c) => c.tagName === "BUTTON"),
+    "post-arm failure leaves no live begin button bound to the consumed attempt",
+  );
+  const link = backLink(ctx.screenEl);
+  assert.ok(link, "the terminal still offers Back to speaker");
+  // Stop state coherent: the session ended with the terminal, so Stop is a
+  // clean no-op (stopCapture only acts while an abort handler is live).
+  assert.equal(stopCapture(), undefined, "Stop after the terminal is a no-op");
+  assert.ok(
+    !posted.some((e) => e.aborted),
+    "the no-op Stop never posts a late aborted event",
+  );
+  // Exactly one begin was ever posted — nothing on the terminal can replay it.
+  assert.equal(posted.filter((e) => e.begin_capture && !e.armed).length, 1);
+  ok();
+}
+
+// ============================================================================
+// 7 (S1). A generic error BEFORE `armed` (mic permission denied here) keeps
+// the live retry — the round never started on the Pi, so re-tapping the
+// begin affordance is safe and correct — and Stop stays WIRED (the session
+// is still alive). The failure copy names the actual on-screen affordance,
+// never a nonexistent "Start" button (N3).
+// ============================================================================
+async function testPreArmFailureKeepsRetryLiveAndStopWired() {
+  statusHistory.length = 0;
+  const { onPlanStart, stopCapture } = await loadModule();
+  // Mic open rejection — the canonical pre-arm failure.
+  globalThis.__recorderError = new Error("Permission denied");
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 3, maxAttempts: 4 });
+  const posted = [];
+  const client = {
+    async postEvent(event) {
+      posted.push(event);
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        client._last = { phase: "capture_authorized", index, attempt };
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: client._last || {} };
+    },
+    async putBlob() {
+      throw new Error("must not upload before arming");
+    },
+  };
+  const ctx = makeCtx(spec, client);
+  // The spec screen's own begin button is still the live affordance for
+  // round 1 — give ctx.captureRefs the same shape boot's renderScreen
+  // produces so planRetryAffordance can name it.
+  const beginButton = makeNode("button");
+  beginButton.textContent = "I've positioned the mic — measure Woofer driver";
+  ctx.captureRefs = { buttons: [{ action: "begin_capture", el: beginButton }], levelMeters: [] };
+
+  await onPlanStart(ctx);
+
+  const lastStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    lastStatus.includes("Tap I've positioned the mic — measure Woofer driver to try again"),
+    `pre-arm failure copy names the actual affordance, got: ${lastStatus}`,
+  );
+  assert.ok(
+    !lastStatus.includes("Tap Start to try again"),
+    "the plan flow never points at a nonexistent Start button",
+  );
+  // Stop is still wired: the session survived the pre-arm failure.
+  const stopped = stopCapture();
+  assert.ok(stopped, "Stop stays live after a pre-arm failure");
+  await stopped;
+  assert.equal(headingText(ctx.screenEl), "Measurement stopped.");
+  assert.deepEqual(
+    posted.filter((e) => e.aborted).map((e) => e.abort_reason),
+    ["stopped"],
+  );
+  globalThis.__recorderError = null;
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -584,6 +716,8 @@ const tests = [
   testRefusedBeginRendersTerminalWithNoRetry,
   testExhaustedBudgetRendersDistinctTerminal,
   testStopMidRoundAbortsWholeSession,
+  testPostArmUploadFailureIsTerminalNotStaleRetry,
+  testPreArmFailureKeepsRetryLiveAndStopWired,
 ];
 
 let failure = null;

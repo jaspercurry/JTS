@@ -11,8 +11,10 @@
 // from the room's PER-BAND ambient noise; absent a real measurement it
 // synthesizes a conservative broadband guess. `parse_ambient_stats_event`
 // (same module) already parses this event on the Pi side — this module is
-// the matching phone-side EMITTER, so its wire shape matches that parser
-// FIELD FOR FIELD:
+// the matching phone-side EMITTER. The parser validates schema, run_token,
+// clipped, and bands field for field; `duration_s` is an emitted SUPERSET
+// field the parser currently ignores (it matches the Pi test vectors and
+// rides for observability / future ambient-drift checks, W2.4):
 //
 //   { ambient_stats: { schema, run_token, duration_s, clipped, bands } }
 //   bands: [{ lo_hz, hi_hz, rms_dbfs }, ...]   (1..AMBIENT_STATS_MAX_BANDS)
