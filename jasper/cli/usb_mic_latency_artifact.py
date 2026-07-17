@@ -445,10 +445,15 @@ def build_usb_mic_latency_artifact(
             percentile_inputs[artifact_key].append(
                 _finite_float(sample.get(relay_key), field=relay_key)
             )
+    p50_ms = nearest_rank_percentile(percentile_inputs["p50_ms"], 0.50)
+    p95_ms = nearest_rank_percentile(percentile_inputs["p95_ms"], 0.95)
+    p99_ms = nearest_rank_percentile(percentile_inputs["p99_ms"], 0.99)
+    if p50_ms is None or p95_ms is None or p99_ms is None:
+        raise ValueError("certification window has no percentile samples")
     metrics = {
-        "p50_ms": nearest_rank_percentile(percentile_inputs["p50_ms"], 0.50),
-        "p95_ms": nearest_rank_percentile(percentile_inputs["p95_ms"], 0.95),
-        "p99_ms": nearest_rank_percentile(percentile_inputs["p99_ms"], 0.99),
+        "p50_ms": p50_ms,
+        "p95_ms": p95_ms,
+        "p99_ms": p99_ms,
         "sample_ticks_total": len(samples),
         "sample_ticks_aggregated": len(metric_samples),
         "duration_seconds": round(duration_seconds, 3),
@@ -526,7 +531,7 @@ def build_usb_mic_latency_artifact(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     healthy = bool(
-        metrics["p95_ms"] <= USB_MIC_LATENCY_BUDGET_MS
+        p95_ms <= USB_MIC_LATENCY_BUDGET_MS
         and all(counter["run_delta"] == 0 for counter in counter_payload.values())
     )
     payload: dict[str, Any] = {
