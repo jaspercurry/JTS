@@ -2033,6 +2033,22 @@ def test_start_over_confirm_is_grouping_aware_and_partial_is_honest():
     assert result == {"ok": True, "passed": 9}
 
 
+def test_applied_chip_renders_server_state_and_hides_for_none():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH")
+    harness = Path("tests/js/crossover_applied_chip_test.mjs")
+    proc = subprocess.run(
+        [node, str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result == {"ok": True, "passed": 11}
+
+
 # --- passive-gating: Layer A hidden for a full-range passive speaker ----------
 
 
@@ -3063,7 +3079,7 @@ def test_crossover_envelope_passive_speaker_is_gated():
     }
     assert env["nudges"] == []
     assert "crossover" in env["verdict_text"].lower()
-    assert env["schema_version"] == 5
+    assert env["schema_version"] == 6
 
 
 def test_crossover_envelope_requires_protected_setup_first():
@@ -5088,6 +5104,212 @@ def test_crossover_envelope_manual_profile_offers_room_edit_or_automatic():
     assert env["nudges"] == []
 
 
+def test_crossover_envelope_done_manual_run_steps_stay_monotonic():
+    """Pre-fix bug (live on the deployed box, 2026-07-17): a crossover applied
+    manually with no fresh measurement run marked "apply" done while
+    microphone/drivers/alignment stayed pending -- steps rendered
+    done, pending, pending, pending, done, a non-monotonic run stepper.
+    Root cause: durable applied-state was conflated into per-run step
+    status. The fix keeps the run stepper a MONOTONIC prefix (see
+    crossover_envelope._project_run_steps) and surfaces "a crossover is
+    applied" as its own `applied` chip (crossover_envelope._applied_chip),
+    separate from the per-run steps. Mirrors the fixture in
+    test_crossover_envelope_manual_profile_offers_room_edit_or_automatic.
+    """
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["setup"]["acoustic_commissioning"] = {"allowed": True}
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "manual",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "tuning_owner": "manual",
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "done_manual"
+    statuses = {step["id"]: step["status"] for step in env["steps"]}
+    assert statuses == {
+        "speaker_setup": "done",
+        "microphone": "pending",
+        "drivers": "pending",
+        "alignment": "pending",
+        "apply": "pending",
+    }
+    assert env["applied"] == {
+        "state": "manual",
+        "label": "Manual crossover applied",
+    }
+
+
+def _assert_steps_monotonic(steps, label: str) -> None:
+    """Once a step's status is not "done", no later step may read "done"
+    either -- the run stepper must always render as a monotonic prefix of
+    completed steps, regardless of screen or durable applied-state."""
+    seen_non_done = False
+    for step in steps:
+        if seen_non_done:
+            assert step["status"] != "done", (
+                f"{label}: non-monotonic steps {steps!r}"
+            )
+        if step["status"] != "done":
+            seen_non_done = True
+
+
+def _automatic_done_status() -> dict:
+    """Mirrors the cumulative fixture in
+    test_crossover_envelope_walks_level_drivers_apply_room's final state: an
+    automatic crossover applied with no fresh measurement run, and no
+    region_commissioning ever tracked (so "alignment" is never marked done).
+    This is a SECOND, previously-unnoticed instance of the same non-monotonic
+    bug the done_manual fix above also covers -- apply done while alignment
+    stays pending -- caught by the general projection rather than a
+    screen-specific patch.
+    """
+    status = _envelope_status()
+    _locked_level(status)
+    summary = status["measurements"]["summary"]
+    summary["latest_driver_measurements"] = {
+        "mono:woofer": _driver_acoustic("woofer"),
+        "mono:tweeter": _driver_acoustic("tweeter"),
+    }
+    _completed_near_field_repeat_state(status)
+    status["level_match"]["reference_axis_driver_locks"] = {
+        "mono:woofer": -10.0,
+        "mono:tweeter": -12.0,
+    }
+    summary["latest_reference_axis_driver_measurements"] = {
+        "mono:woofer": _reference_axis_driver_acoustic("woofer"),
+        "mono:tweeter": _reference_axis_driver_acoustic("tweeter"),
+    }
+    _completed_reference_axis_repeat_state(status)
+    status["setup"]["automatic_candidate"] = {
+        "ready": True,
+        "reason": None,
+        "candidate_fingerprint": "automatic-candidate",
+    }
+    status["applied_profile"] = {
+        "status": "applied",
+        "provisional": False,
+        "level_match": {"groups_measured": 1},
+        "source": {"fingerprint": "source-1"},
+        "tuning_owner": "automatic",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "tuning_owner": "automatic",
+            "level_match": {
+                "active_comparison_set_id": _COMPARISON_SET["comparison_set_id"],
+            },
+        },
+    }
+    status["setup"]["acoustic_commissioning"] = {"allowed": True}
+    status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "automatic",
+        "reason": None,
+    }
+    return status
+
+
+def test_crossover_envelope_steps_are_always_monotonic():
+    """General invariant guard (the durable pin): for a representative matrix
+    of screens, once a run step is not "done", no later step may read "done"
+    either. Pre-fix, an applied-state screen (done_manual, choose_tuning, and
+    -- previously unnoticed -- the plain automatic "done" screen before
+    region_commissioning is ever tracked) could mark "apply" done while
+    earlier steps stayed pending -- see
+    test_crossover_envelope_done_manual_run_steps_stay_monotonic for the
+    concrete repro this generalizes.
+    """
+    from jasper.active_speaker import crossover_envelope
+
+    passive_status = {"active": False, "targets": {"drivers": [], "summed": []}}
+
+    speaker_setup_status = _envelope_status()
+    speaker_setup_status["setup"]["status"] = "blocked"
+
+    done_manual_status = _envelope_status()
+    done_manual_status["setup"]["acoustic_commissioning"] = {"allowed": True}
+    done_manual_status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    done_manual_status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "manual",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "tuning_owner": "manual",
+        },
+    }
+
+    # choose_tuning: the LEGACY re-apply trigger (applied_profile.status ==
+    # "applied" with no recomposition_snapshot) alongside a durably-applied
+    # manual crossover -- the same shape as done_manual, reached through the
+    # legacy branch instead.
+    choose_tuning_status = _envelope_status()
+    choose_tuning_status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    choose_tuning_status["setup"]["manual_preservation"] = {
+        "ready": True,
+        "reason": None,
+    }
+    choose_tuning_status["applied_profile"] = {
+        "status": "applied",
+        "tuning_owner": "manual",
+    }
+
+    alignment_status = _envelope_status()
+    _locked_level(alignment_status)
+    alignment_status["commissioning_run"] = {
+        "status": "current",
+        "isolated_evidence": {"status": "complete"},
+    }
+    alignment_status["setup"]["applied_crossover"] = {
+        "valid": True,
+        "owner": "manual",
+        "reason": None,
+    }
+    alignment_status["region_commissioning"] = {
+        "status": "needs_geometry",
+        "next_geometry": {
+            "target_fingerprint": "f" * 64,
+            "lower_role": "woofer",
+            "upper_role": "tweeter",
+            "fc_hz": 2_100.0,
+        },
+    }
+
+    cases = (
+        ("not_applicable", passive_status, "not_applicable"),
+        ("speaker_setup", speaker_setup_status, "speaker_setup"),
+        ("done_manual", done_manual_status, "done_manual"),
+        ("choose_tuning", choose_tuning_status, "choose_tuning"),
+        ("alignment_geometry", alignment_status, "alignment_geometry"),
+        ("automatic_done", _automatic_done_status(), "done"),
+    )
+
+    for label, status, expected_screen in cases:
+        env = crossover_envelope.build_crossover_envelope(status)
+        assert env["screen"] == expected_screen, (
+            f"{label}: expected screen {expected_screen!r}, got {env['screen']!r}"
+        )
+        _assert_steps_monotonic(env["steps"], label)
+
+
 def test_crossover_envelope_done_manual_surfaces_interrupted_retune_nudge():
     """A manual profile is applied, but an in-progress automatic retune's
     level context was discarded (durable repeat safety state unavailable).
@@ -6487,7 +6709,7 @@ def test_durable_level_run_keeps_waiting_without_volatile_relay_state():
 
     assert env["screen"] == "waiting"
     assert env["next_action"] is None
-    assert env["schema_version"] == 5
+    assert env["schema_version"] == 6
 
 
 def test_phone_timeout_keeps_exact_run_waiting_and_explains_correlation():
