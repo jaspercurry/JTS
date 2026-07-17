@@ -426,7 +426,7 @@ def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
         "selection": "chip_aec_210",
         "mode": "software_aec3",
         "leg": "clean",
-        "fallback_active": False,
+        "fallback_active": True,
     }
 
 
@@ -1276,6 +1276,53 @@ def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
         sequences.append(header[3])
         assert packet[USB_MIC_HEADER_BYTES:] == clean
     assert sequences == [0, 1, 2, 3]
+
+
+def test_usb_host_mic_marks_requested_chip_leg_fallback_in_software_mode(
+    monkeypatch,
+):
+    import socket as real_socket
+    from jasper.mics import xvf3800
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(real_socket, "socket", MagicMock(side_effect=sockets))
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2, 3, 4)),
+    )
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+        usb_mic_leg="chip_aec_210",
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    clean_frames = [bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    engine = MagicMock()
+    engine.process.side_effect = clean_frames
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=False,
+        chip_aec_primary_leg="chip_aec_150",
+        config=config,
+    )
+
+    stats = aec_bridge._bridge_stats.snapshot()
+    assert stats["active_capture_plan"]["usb_mic_source"] == {
+        "selection": "chip_aec_210",
+        "mode": "software_aec3",
+        "leg": "clean",
+        "fallback_active": True,
+    }
+    assert stats["counters"]["usb_mic_source_fallback_frames"] == len(
+        clean_frames
+    )
 
 
 def test_usb_host_mic_selects_plan_beam_without_changing_voice_gain(

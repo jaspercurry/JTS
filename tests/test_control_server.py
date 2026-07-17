@@ -1347,6 +1347,131 @@ def test_usb_mic_leg_same_value_is_noop(
     assert body == final_status
 
 
+def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    state = {"leg": "primary"}
+    clock = {"now": 100.0}
+    calls = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    pending_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "chip_aec_210",
+                "applied": {"value": "primary"},
+            },
+        },
+    }
+    monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
+    monkeypatch.setattr(srv_mod.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: state.__setitem__("leg", leg),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda unit, **kwargs: calls.append((unit, kwargs["verb"])) or {"ok": True},
+    )
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: pending_status)
+
+    for _request in range(2):
+        status, body = _post(
+            f"{base}/aec/usb-mic-leg",
+            {"leg": "chip_aec_210"},
+        )
+        assert status == 200
+        assert body == pending_status
+
+    assert calls == [
+        ("jasper-aec-bridge.service", "reset-failed"),
+        ("jasper-aec-bridge.service", "restart"),
+    ]
+
+    clock["now"] += srv_mod._USB_MIC_LEG_APPLY_COALESCE_SECONDS + 0.1
+    status, body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert status == 200
+    assert body == pending_status
+    assert calls == [
+        ("jasper-aec-bridge.service", verb)
+        for _attempt in range(2)
+        for verb in ("reset-failed", "restart")
+    ]
+
+
+def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    state = {"leg": "primary"}
+    calls = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    pending_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "chip_aec_210",
+                "applied": {"value": "primary"},
+            },
+        },
+    }
+    monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: state.__setitem__("leg", leg),
+    )
+
+    def manage(unit, **kwargs):
+        calls.append((unit, kwargs["verb"]))
+        return {"ok": len(calls) != 2}
+
+    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", manage)
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: pending_status)
+
+    first_status, first_body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+    second_status, second_body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert first_status == 502
+    assert first_body["code"] == "usb_mic_leg_restart_failed"
+    assert second_status == 200
+    assert second_body == pending_status
+    assert calls == [
+        ("jasper-aec-bridge.service", verb)
+        for _attempt in range(2)
+        for verb in ("reset-failed", "restart")
+    ]
+
+
 def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
     monkeypatch,
     server_with_coordinator,

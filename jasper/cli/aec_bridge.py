@@ -942,11 +942,21 @@ def _resolve_usb_mic_source(
             level=logging.WARNING,
         )
     if not production_chip_aec_enabled:
+        fallback_active = selection != USB_MIC_PRIMARY_LEG
+        if fallback_active:
+            log_event(
+                logger,
+                "usb_mic.leg_unavailable",
+                leg=selection,
+                fallback="clean",
+                mode="software_aec3",
+                level=logging.WARNING,
+            )
         return {
             "selection": selection,
             "mode": "software_aec3",
             "leg": "clean",
-            "fallback_active": False,
+            "fallback_active": fallback_active,
         }
     return {
         "selection": selection,
@@ -2313,7 +2323,7 @@ def _aec_loop(  # noqa: PLR0915
     chip_primary_missing_log = _DropLogDebouncer()
     usb_mic_leg_missing_log = _DropLogDebouncer()
     usb_mic_effective_leg = str(usb_mic_source["leg"])
-    usb_mic_fallback_active = False
+    usb_mic_fallback_active = bool(usb_mic_source["fallback_active"])
 
     # Optional debug WAV writers — see `_aec_loop` docstring.
     debug_dir = os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
@@ -2540,7 +2550,7 @@ def _aec_loop(  # noqa: PLR0915
             usb_mic_uses_clean = True
             selected_usb_leg = str(usb_mic_source["leg"])
             effective_usb_leg = selected_usb_leg
-            fallback_active = False
+            fallback_active = bool(usb_mic_source["fallback_active"])
             if (
                 production_chip_aec_enabled
                 and selected_usb_leg != chip_aec_primary_leg
@@ -2552,7 +2562,6 @@ def _aec_loop(  # noqa: PLR0915
                 else:
                     effective_usb_leg = chip_aec_primary_leg
                     fallback_active = True
-                    _bridge_stats.inc("usb_mic_source_fallback_frames")
                     if outcome := usb_mic_leg_missing_log.record(time.monotonic()):
                         drops, window_sec = outcome
                         log_event(
@@ -2564,6 +2573,8 @@ def _aec_loop(  # noqa: PLR0915
                             window_sec=f"{window_sec:.1f}",
                             level=logging.WARNING,
                         )
+            if fallback_active:
+                _bridge_stats.inc("usb_mic_source_fallback_frames")
             if (
                 effective_usb_leg != usb_mic_effective_leg
                 or fallback_active != usb_mic_fallback_active

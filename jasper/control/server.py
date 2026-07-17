@@ -126,7 +126,9 @@ _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_requested_at: dict[str, float] = {}
 _USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
 _AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
+_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
 _usb_mic_leg_apply_lock = threading.Lock()
+_usb_mic_leg_apply_pending: tuple[str, float] | None = None
 
 
 def _diagnostics_result_path() -> str:
@@ -2953,6 +2955,8 @@ def _make_handler(
         def _post_aec_usb_mic_leg(self) -> None:
             """Persist the computer-mic source, then restart its producer only."""
 
+            global _usb_mic_leg_apply_pending
+
             body = self._read_json()
             leg = body.get("leg")
             if not isinstance(leg, str) or not leg.strip():
@@ -2997,9 +3001,25 @@ def _make_handler(
                     )
                     applied = selection.get("applied") or {}
                     if applied.get("value") == leg:
+                        _usb_mic_leg_apply_pending = None
                         log_event(
                             logger,
                             "usb_mic.leg_unchanged",
+                            leg=leg,
+                            client=self.address_string(),
+                        )
+                        self._send_json(current_status)
+                        return
+                    pending = _usb_mic_leg_apply_pending
+                    if (
+                        pending is not None
+                        and pending[0] == leg
+                        and time.monotonic() - pending[1]
+                        < _USB_MIC_LEG_APPLY_COALESCE_SECONDS
+                    ):
+                        log_event(
+                            logger,
+                            "usb_mic.leg_apply_pending",
                             leg=leg,
                             client=self.address_string(),
                         )
@@ -3061,6 +3081,7 @@ def _make_handler(
                         status=502,
                     )
                     return
+                _usb_mic_leg_apply_pending = (leg, time.monotonic())
             self._send_json(_aec_full_status())
             return
 

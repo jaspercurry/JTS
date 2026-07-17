@@ -45,6 +45,7 @@ MIN_SAMPLE_TICKS = 16
 MIN_SAMPLE_INTERVAL_SECONDS = 0.55
 MAX_SAMPLE_INTERVAL_SECONDS = 1.0
 MAX_STATUS_GAP_SECONDS = 1.25
+STATUS_FENCE_POLL_SECONDS = 0.05
 ROLLING_WINDOW_WARMUP_SECONDS = 11.0
 MIN_SOURCE_AGE_SAMPLES_PER_SECOND = 40.0
 
@@ -213,6 +214,7 @@ def build_usb_mic_latency_artifact(
     bridge_stats: Mapping[str, Any],
     host_os: str,
     host_app: str,
+    observation_deadline_epoch_sec: float | None = None,
     validated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Bind an uninterrupted active-capture status window to runtime identity."""
@@ -296,7 +298,14 @@ def build_usb_mic_latency_artifact(
     ):
         raise ValueError(f"relay status gap exceeded {MAX_STATUS_GAP_SECONDS:.2f}s")
     observation_started_epoch_sec = raw_observed[0]
-    observation_ended_epoch_sec = raw_observed[-1]
+    observation_ended_epoch_sec = (
+        raw_observed[-1]
+        if observation_deadline_epoch_sec is None
+        else _finite_float(
+            observation_deadline_epoch_sec,
+            field="observation_deadline_epoch_sec",
+        )
+    )
     duration_seconds = observation_ended_epoch_sec - observation_started_epoch_sec
     if duration_seconds < MIN_DURATION_SECONDS:
         raise ValueError(
@@ -542,6 +551,31 @@ def _read_json_mapping(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _read_json_mapping_through_epoch(
+    path: Path,
+    *,
+    minimum_updated_epoch_sec: float,
+    status_name: str,
+) -> tuple[dict[str, Any], float]:
+    """Wait for one atomic status generation that covers the fixed cutoff."""
+
+    timeout = time.monotonic() + MAX_STATUS_GAP_SECONDS
+    while True:
+        payload = _read_json_mapping(path)
+        observed_epoch_sec = time.time()
+        updated_epoch_sec = _finite_float(
+            payload.get("updated_epoch_sec"),
+            field=f"{status_name}.updated_epoch_sec",
+        )
+        if updated_epoch_sec >= minimum_updated_epoch_sec:
+            return payload, observed_epoch_sec
+        if time.monotonic() >= timeout:
+            raise ValueError(
+                f"{status_name} did not publish through the observation deadline"
+            )
+        time.sleep(STATUS_FENCE_POLL_SECONDS)
+
+
 def _capture_status_window(
     *,
     status_path: Path,
@@ -605,7 +639,22 @@ def main(argv: list[str] | None = None) -> int:
             duration_seconds=args.duration_seconds,
             interval_seconds=args.sample_interval_seconds,
         )
-        bridge_after = _read_json_mapping(args.bridge_stats)
+        observation_deadline_epoch_sec = _finite_float(
+            snapshots[-1].get("sample_observed_epoch_sec"),
+            field="sample_observed_epoch_sec",
+        )
+        relay_after, relay_observed_epoch_sec = _read_json_mapping_through_epoch(
+            args.relay_status,
+            minimum_updated_epoch_sec=observation_deadline_epoch_sec,
+            status_name="relay_status",
+        )
+        relay_after["sample_observed_epoch_sec"] = relay_observed_epoch_sec
+        snapshots.append(relay_after)
+        bridge_after, _bridge_observed_epoch_sec = _read_json_mapping_through_epoch(
+            args.bridge_stats,
+            minimum_updated_epoch_sec=observation_deadline_epoch_sec,
+            status_name="aec_bridge_stats",
+        )
         build_after = args.build_manifest.read_text(encoding="utf-8")
         bcd_after = args.bcd_device.read_text(encoding="utf-8").strip()
         if bridge_before.get("pid") != bridge_after.get("pid"):
@@ -637,6 +686,7 @@ def main(argv: list[str] | None = None) -> int:
             bridge_stats=bridge_after,
             host_os=args.host_os,
             host_app=args.host_app,
+            observation_deadline_epoch_sec=observation_deadline_epoch_sec,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))

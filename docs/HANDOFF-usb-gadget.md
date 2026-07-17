@@ -261,9 +261,12 @@ that silence-only ring begins advancing, the relay resets once more and primes
 20 ms of silence followed by the freshest 20 ms source frame. The first
 pre-detection samples should therefore be silence, not minutes-old room audio;
 the host-capture acceptance gate below must certify that property. The
-writer then resumes target control; a high-fill correction drops one 10 ms
-half-period, while source underfill inserts one 10 ms silence period. Both are
-counted as `writer_splices`; xruns and resets are separate counters. The relay
+writer then resumes target control. A high-fill correction discards held stale
+periods in favor of the freshest queued frame. Source underfill may insert two
+exact 10 ms silence periods in one writer step to restore one 20 ms source-frame
+deficit. Each high-fill replacement or one/two-period underfill correction is
+counted once in `writer_splices`; `writer_silence_periods` retains the exact
+inserted-period count, while xruns and resets have separate counters. The relay
 never blocks on a full/non-draining gadget and repeated recovery failures exit
 to systemd instead of reopening forever.
 

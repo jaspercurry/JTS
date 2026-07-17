@@ -263,6 +263,35 @@ def test_artifact_warns_when_selected_source_fell_back_during_window() -> None:
     }
 
 
+def test_artifact_warns_when_requested_chip_source_resolves_to_software_clean() -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    before = _bridge_stats(production_chip_aec=False)
+    before["active_capture_plan"]["usb_mic_source"] = {
+        "selection": "chip_aec_210",
+        "mode": "software_aec3",
+        "leg": "clean",
+        "fallback_active": True,
+    }
+    after = {
+        **before,
+        "counters": {"usb_mic_source_fallback_frames": 3},
+    }
+
+    artifact = _artifact(
+        snapshots,
+        bridge_stats=after,
+        bridge_stats_before=before,
+    )
+
+    assert artifact["status"] == "warn"
+    assert artifact["identity"]["configuration"]["selected_source"] == {
+        "selection": "chip_aec_210",
+        "mode": "software_aec3",
+        "leg": "clean",
+        "fallback_active": True,
+    }
+
+
 def test_artifact_requires_source_window_turnover() -> None:
     snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
     for index, snapshot in enumerate(snapshots):
@@ -358,22 +387,39 @@ def test_cli_writes_artifact_and_require_pass_controls_warning_exit(
 
     def run(*, p95: float, require_pass: bool, output_name: str) -> int:
         before = {**_bridge_stats(), "updated_epoch_sec": 100.0}
-        after = {**_bridge_stats(), "updated_epoch_sec": 101.0}
-        bridge_reads = iter((before, after))
-        monkeypatch.setattr(
-            artifact_cli,
-            "_read_json_mapping",
-            lambda _path: next(bridge_reads),
-        )
         snapshots = [
             _snapshot(index, p50=10, p95=p95, p99=p95 + 5) for index in range(16)
         ]
+        relay_stale = dict(snapshots[-1])
+        relay_fenced = dict(relay_stale)
+        relay_fenced.update(
+            {
+                "updated_epoch_sec": 115.2,
+                "last_host_progress_epoch_sec": 115.2,
+                "source_age_samples_appended": (
+                    relay_stale["source_age_samples_appended"] + 10
+                ),
+            }
+        )
+        bridge_stale = {**_bridge_stats(), "updated_epoch_sec": 115.0}
+        bridge_fenced = {**_bridge_stats(), "updated_epoch_sec": 115.3}
+        reads = {"bridge": 0, "relay": 0}
+        bridge_reads = iter((before, bridge_stale, bridge_fenced))
+        relay_reads = iter((relay_stale, relay_fenced))
+
+        def read_status(path):
+            key = "bridge" if path == bridge_path else "relay"
+            reads[key] += 1
+            return next(bridge_reads if key == "bridge" else relay_reads)
+
+        monkeypatch.setattr(artifact_cli, "_read_json_mapping", read_status)
         monkeypatch.setattr(
             artifact_cli,
             "_capture_status_window",
             lambda **_kwargs: snapshots,
         )
-        monkeypatch.setattr(artifact_cli.time, "time", lambda: 101.1)
+        monkeypatch.setattr(artifact_cli.time, "time", lambda: 115.4)
+        monkeypatch.setattr(artifact_cli.time, "sleep", lambda _seconds: None)
         argv = [
             "--duration-seconds",
             "15",
@@ -394,7 +440,9 @@ def test_cli_writes_artifact_and_require_pass_controls_warning_exit(
         ]
         if require_pass:
             argv.append("--require-pass")
-        return artifact_cli.main(argv)
+        result = artifact_cli.main(argv)
+        assert reads == {"bridge": 3, "relay": 2}
+        return result
 
     assert run(p95=30, require_pass=False, output_name="pass.json") == 0
     assert (tmp_path / "pass.json").is_file()
