@@ -237,6 +237,48 @@ async def test_refusal_surfaces_on_level_match_snapshot(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_level_solve_refused_str_is_the_mapped_household_copy(monkeypatch):
+    """W2.4 (hardware run 20): ``str(LevelSolveRefused(...))`` used to be the
+    raw diagnostic string ``"level_solve_refused code=... band=...Hz"`` --
+    the exact text that leaked to the household on TWO unmigrated surfaces:
+    the phone's ``sweep_failed`` host event
+    (``jasper.web.correction_crossover_flow``'s ``error=str(exc)``) and the
+    wizard's relay status line
+    (``jasper.web.correction_setup._relay_failure_message``'s generic
+    ``str(exc)`` fallback). ``str(exc)`` must instead be EXACTLY the same
+    mapped sentence the envelope renders
+    (``jasper.active_speaker.crossover_envelope.describe_level_solve_refusal``)
+    -- one code -> copy mapping, never a raw code/band string on any
+    household surface."""
+
+    from jasper.active_speaker.crossover_envelope import (
+        describe_level_solve_refusal,
+    )
+
+    topology, profile, targets = _safety_profile_and_targets()
+    _patch_solve_environment(monkeypatch, topology, profile)
+
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    lease._outcomes["near_field_driver:mono:tweeter"] = _ramp_outcome(
+        locked=-3.0, gain_map_db=-60.0, cap_db=-3.0, noise_floor_dbfs=-20.0
+    )
+    _, get_v, set_v = await _volume_ports(-27.0)
+
+    with pytest.raises(LevelSolveRefused) as excinfo:
+        await lease.acquire_driver_sweep_volume("mono", "tweeter", get_v, set_v)
+
+    message = str(excinfo.value)
+    assert "level_solve_refused" not in message
+    assert "code=" not in message
+    assert "band=" not in message
+    assert message == describe_level_solve_refusal(excinfo.value.refusal.to_dict())
+    # Sanity: this IS the household-facing "too high to measure reliably"
+    # room_too_noisy copy, not a generic/empty fallback.
+    assert "too high to measure reliably at safe levels" in message
+
+
+@pytest.mark.asyncio
 async def test_solve_falls_back_to_raw_lock_when_ceilings_unresolvable(monkeypatch):
     """No driver-safety profile confirmed -- the solve cannot resolve
     ceilings, so the pre-W2.1 raw-lock reassert behavior is preserved."""

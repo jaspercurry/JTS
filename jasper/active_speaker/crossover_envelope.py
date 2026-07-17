@@ -196,7 +196,7 @@ def _completed_insufficient_verdict(
     writes = correction.get("writes") if isinstance(correction, Mapping) else None
     corrected = isinstance(writes, int) and not isinstance(writes, bool) and writes > 0
     remedy = (
-        "JTS will play the next measurement louder -- redo the quick level "
+        "JTS will play the next measurement louder — redo the quick level "
         "check, then measure again."
         if corrected
         else (
@@ -230,12 +230,17 @@ def _active_level_solve_refusal(
     placement-lever copy the household actually needs. So this also
     synthesizes the SAME typed refusal straight from
     ``level_match.solve_correction``'s ``exhausted`` flag the moment the
-    budget runs out, reusing ``_describe_level_solve_refusal``'s single
+    budget runs out, reusing ``describe_level_solve_refusal``'s single
     code -> copy mapping (its ``measurement_window_unreachable`` branch
     reads only ``code``, so the minimal synthesized mapping is sufficient).
     The offered "Redo the quick level check" action is a genuine escape
-    hatch, not a dead end: the between-set restart clears an EXHAUSTED
-    target's correction state for a fresh evaluation (see
+    hatch, not a dead end: the between-set restart clears a REFUSED
+    target's correction state for a fresh evaluation -- W2.4 (hardware run
+    20) widened this from "exhausted only" to "any pre-flight refusal
+    shown, at any write count," closing a dead loop where a
+    room_too_noisy refusal below the exhausted threshold survived the
+    restart and refused again identically with no audio played (see
+    ``CrossoverLevelLease._target_refusal_pending`` and
     ``CrossoverLevelLease.invalidate_comparison_context``'s
     ``preserve_solve_corrections`` contract), so the refusal cannot latch
     across the restart.
@@ -261,13 +266,17 @@ def _active_level_solve_refusal(
 # sentence. Values are literal strings, not imports from
 # jasper.audio_measurement.level_solver -- mirrors the existing
 # room_too_noisy duplication so this module stays free of a solver import.
+# Public (no leading underscore) since W2.4: the raise site itself
+# (jasper.web.correction_crossover_backend.LevelSolveRefused) imports this to
+# build str(exc) so an unmigrated catch site can never render the raw code --
+# see that class's docstring for the hardware-run-20 leak this closed.
 _LEVEL_SOLVE_REFUSAL_CODE_ROOM_TOO_NOISY = "room_too_noisy_for_safe_measurement"
 _LEVEL_SOLVE_REFUSAL_CODE_MEASUREMENT_WINDOW_UNREACHABLE = (
     "measurement_window_unreachable"
 )
 
 
-def _describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
+def describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
     """Homeowner copy for a level-solve refusal.
 
     Honest about what the offered action does: redoing the level check
@@ -1243,7 +1252,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # mic closer"). The copy below is honest about the redo until a
             # narrower per-driver retry lands.
             screen = "level_solve_refused"
-            verdict = _describe_level_solve_refusal(solve_refusal)
+            verdict = describe_level_solve_refusal(solve_refusal)
             action = {
                 "id": "level_match",
                 "label": "Redo the quick level check (about 2 minutes)",
@@ -1402,7 +1411,7 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # remedy redoes the level check from the start; see that
             # branch's comment).
             screen = "level_solve_refused"
-            verdict = _describe_level_solve_refusal(solve_refusal)
+            verdict = describe_level_solve_refusal(solve_refusal)
             action = {
                 "id": "level_match",
                 "label": "Redo the quick level check (about 2 minutes)",
@@ -1812,6 +1821,20 @@ def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
         }
         active_step = "microphone"
+
+    if screen == "level_solve_refused":
+        # W2.4 (hardware run 20): "crossover_repeat_rejected" (built early
+        # above, from the repeat ledger's own last-result entry, before
+        # ``screen`` is decided) reads "nothing to fix in the room -- try
+        # again" for a transport failure, or otherwise nudges a retry --
+        # copy that flatly contradicts the refusal screen's own verdict
+        # (there IS something to fix -- quiet the room / move the mic /
+        # redo the level check) and duplicates its "try again" action. A
+        # stale nudge sitting next to the honest refusal reads as JTS
+        # disagreeing with itself. Scope it out here, at the one place the
+        # final screen is known, rather than threading a "don't append"
+        # condition back through the earlier nudge-building code.
+        nudges = [n for n in nudges if n.get("code") != "crossover_repeat_rejected"]
 
     return {
         "schema_version": CROSSOVER_ENVELOPE_SCHEMA_VERSION,

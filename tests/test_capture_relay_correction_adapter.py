@@ -2011,6 +2011,68 @@ def test_level_match_restart_with_exhausted_budget_clears_for_fresh_evaluation(
     assert lease._correction_budget_exhausted("mono:woofer") is False
 
 
+def _refused_lease(*, correction_writes: int = 1):
+    """Run-20's exact starting state (hardware, jts3, 2026-07-17): a genuine
+    PRE-FLIGHT solve refusal for the woofer at a write count BELOW the
+    exhausted bound.
+
+    Builds on ``_completed_insufficient_lease`` (same fully-locked,
+    ``ready=True`` shape the restart's ``continuing`` gate needs) and
+    additionally marks the lease's own most recent solve as having refused
+    for this target -- exactly what a real ``_solve_driver_level`` call
+    leaves on ``self._solve_refusal`` right before ``LevelSolveRefused``
+    propagates (see ``test_refusal_surfaces_on_level_match_snapshot`` in
+    tests/test_correction_crossover_backend_level_solve.py). The correction
+    writes model set 1's insufficient finalization (#1555's own
+    "completed_insufficient" trigger); the refusal models set 2's solve --
+    now louder from that correction -- still coming up short against the
+    room.
+    """
+
+    lease = _completed_insufficient_lease(correction_writes=correction_writes)
+    lease._solve_refusal = {
+        "target_id": "mono:woofer",
+        "role": "woofer",
+        "code": "room_too_noisy_for_safe_measurement",
+        "failing_band_hz": [60.0, 171.0],
+        "required_db": 20.0,
+        "available_db": 14.5,
+    }
+    return lease
+
+
+def test_level_match_restart_after_refusal_at_writes_one_clears_correction(
+    monkeypatch, tmp_path
+):
+    """Run-20 endpoint repro (hardware, jts3, 2026-07-17) -- the dead-loop
+    #1555 left behind. #1555's own fix worked: set 1 (insufficient) wrote
+    +shortfall (writes=1), set 2 solved louder, and THEN genuinely refused
+    ``room_too_noisy_for_safe_measurement`` -- one write below the exhausted
+    bound, so the OLD (exhausted-only) discriminator preserved the
+    correction across the restart. The household followed the refusal
+    screen's own "Redo the quick level check" action, relocked both drivers
+    cleanly, tapped measure -- and got the IDENTICAL refusal back in ~5
+    seconds, no pre-roll, no tone: the preserved (writes=1, not exhausted)
+    adjustment fed straight back into the next solve against a freshly
+    re-measured (near-identical) room. This test drives the REAL restart
+    endpoint and pins that the correction now CLEARS, so the next solve
+    starts from a clean baseline instead of replaying the doomed level.
+
+    Confirmed FAILING pre-fix: seen adjustment == {'mono:woofer': 12.3}
+    (preserved) against the expected {} (cleared) -- see the PR description
+    for the actual pre-fix pytest output."""
+
+    lease = _refused_lease(correction_writes=1)
+    assert lease._correction_budget_exhausted("mono:woofer") is False
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(12.3)}
+
+    seen = _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease)
+
+    assert seen["adjustment_db"] == {}
+    assert seen["writes"] == {}
+    assert seen["measured_gain_db"] == {}
+
+
 def test_open_commissioning_bundle_for_level_match_forwards_calibration_id(
     monkeypatch,
 ) -> None:

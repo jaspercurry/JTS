@@ -640,6 +640,15 @@ def _relay_failure_message(exc: BaseException) -> str:
 
     ``LevelMatchRefused`` carries pre-translated homeowner copy (see
     ``jasper.correction.level_match.describe_ramp_refusal``).
+    ``jasper.web.correction_crossover_backend.LevelSolveRefused`` follows the
+    same pattern one layer differently (W2.4, hardware run 20): its
+    ``str(exc)`` -- built at the raise site from
+    ``jasper.active_speaker.crossover_envelope.describe_level_solve_refusal``
+    -- IS the mapped homeowner copy, so it needs no special-case branch here;
+    it falls straight through to the generic ``str(exc)`` return below and
+    still reads honestly. Before that fix, ``str(exc)`` was the raw
+    ``"level_solve_refused code=... band=...Hz"`` diagnostic string and DID
+    leak onto the wizard's relay status line through this exact fallback.
 
     A bare socket/HTTP read timeout (Python's ``socket.timeout`` --
     ``TimeoutError`` since 3.10 -- whose message is the literal programmer

@@ -659,25 +659,60 @@ quieter only because the fresh ambient baseline happened to read lower), so
 clearing the correction on every re-lock or restart just replayed the same
 doomed level. The two restarts are distinguished by **stored state**, never
 by request shape (both terminals POST the same level-match endpoint with
-the same body):
+the same body).
 
-- a target whose correction budget is **not exhausted** keeps its signed
+**W2.4 (hardware run 20, 2026-07-17) revised the discriminator from
+"exhausted budget" to "a pre-flight refusal was shown for this target."**
+Run 19's terminal state (completed-insufficient, no pre-flight solve ever
+refused) and W2.2's exhausted-budget refusal are not the only way a
+household reaches the between-set restart: run 20 showed set 1 finalizing
+insufficient (writing a +shortfall correction, one write — not exhausted),
+set 2 solving louder from that correction, and THEN genuinely refusing
+`room_too_noisy_for_safe_measurement` before any tone played — still one
+write below the exhausted bound. The household followed the refusal
+screen's own "Redo the quick level check" action, relocked both drivers
+cleanly, and tapped measure — and the identical refusal came back in about
+5 seconds, no pre-roll, no tone: the old "not exhausted → preserve" rule
+kept the SAME adjustment in place across the restart, so the fresh solve
+against a freshly re-measured (near-identical) room reproduced the exact
+same refusal. An honest instruction ("redo the level check to measure
+again") led to a dead loop, because nothing about the correction had
+changed to make the next solve different — the correction and the
+refusal it produced disagreed about whether the household's own new
+attempt was new evidence.
+
+The revised rule:
+
+- a target with **no pre-flight refusal pending** keeps its signed
   adjustment, write count, measured gain, and mic-identity binding across
-  the restart — this is what makes the completed-insufficient terminal's
-  "JTS will play the next measurement louder" promise come true;
-- a target whose budget **is exhausted** (the placement refusal was
-  showing — the user was told to move the phone) clears completely on the
-  restart: a fresh evaluation, so the refusal cannot latch, and if the
-  physics truly didn't change the machinery re-converges to the refusal
-  within the bounded write budget instead of looping on one identical
-  solve.
+  the restart — this is the completed-insufficient path (every individual
+  attempt accepted; the aggregate SNR verdict alone triggered the
+  correction) and is what makes that terminal's "JTS will play the next
+  measurement louder" promise come true;
+- a target with **a pre-flight refusal pending** — either a genuine
+  `room_too_noisy_for_safe_measurement` solve refusal at ANY write count,
+  or the synthesized `measurement_window_unreachable` refusal once the
+  budget is exhausted (exhausted is always a refusal; it is subsumed, not
+  a separate case) — clears completely on the restart: a fresh evaluation,
+  so the refusal cannot latch, and if the physics truly didn't change the
+  machinery re-converges to the refusal within the bounded write budget
+  instead of looping on one identical solve with no audio ever played.
+  Every restart after a refusal now plays a real baseline sweep and
+  re-measures reality — the household relocking cleanly is itself new
+  evidence the solver had never seen — which converges or honestly
+  oscillates with real measurements, never a canned replay.
 
-Beyond the exhausted-restart case, a target's correction state clears only
-on: its repeat set finalizing with a *sufficient* aggregate verdict, the
-relay microphone changing (a different mic is different physics), or a
-true full reset (`invalidate_comparison_context` without the
-between-set-restart flag — no production surface calls this today; it is
-the contract for any future whole-flow reset). It never clears on a
+The two ways a refusal reaches the household are read from ONE stored
+predicate (`CrossoverLevelLease._target_refusal_pending`) so the
+between-set restart and the envelope's own refusal rendering can never
+disagree about "was a refusal shown for this target."
+
+Beyond the refusal-pending restart case, a target's correction state
+clears only on: its repeat set finalizing with a *sufficient* aggregate
+verdict, the relay microphone changing (a different mic is different
+physics), or a true full reset (`invalidate_comparison_context` without
+the between-set-restart flag — no production surface calls this today; it
+is the contract for any future whole-flow reset). It never clears on a
 terminal refusal (insufficient accepted repeats), since that failure
 mode's physical cause is very likely still present on the next attempt.
 `measurement.level_solved` carries the signed `adjustment_db` (the
@@ -685,7 +720,24 @@ persisted running total, so it reflects every prior write across re-locks
 and restarts) and a `gain_source` of `tone_gain_map` or
 `measured_band_peak` so the journal names which evidence a solve actually
 used; `correction.crossover_level_context_invalidated` names the preserved
-and exhausted-cleared targets on every between-set restart.
+and cleared (`cleared_refused_targets`) targets on every between-set
+restart.
+
+The household-facing copy for a level-solve refusal is one code → sentence
+mapping (`describe_level_solve_refusal`, in
+`jasper.active_speaker.crossover_envelope`), and the raise site
+(`LevelSolveRefused` in `jasper.web.correction_crossover_backend`) builds
+its own `str(exc)` from that SAME mapping — mirroring
+`jasper.correction.level_match.LevelMatchRefused` — so a caller that only
+does `str(exc)` (the phone's `sweep_failed` host event, the wizard's
+generic relay-failure fallback) can never render the raw
+`"level_solve_refused code=... band=...Hz"` diagnostic string to the
+household; both surfaces showed exactly that string, in red, before this
+fix. The envelope also no longer renders the generic
+`crossover_repeat_rejected` nudge (built from the durable repeat ledger's
+last-result entry, independent of the eventual screen) alongside the
+`level_solve_refused` screen — that nudge's "nothing to fix in the room,
+try again" copy flatly contradicted the refusal's own verdict.
 
 ### Measurement validity: gating and the low-frequency floor
 
@@ -1831,7 +1883,7 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-16 (added the closed-loop level solver — Wave 2 reconstruction, measured-candidate input,
+Last verified: 2026-07-17 (added the closed-loop level solver — Wave 2 reconstruction, measured-candidate input,
 preparation-only safety, level-run correlation contracts and terminal-result
 liveness, permanent historical refusal, the reachable isolated-driver
 Shared-admission/playback adapter and bounded writer transaction,
@@ -1872,4 +1924,20 @@ changed relay microphone identity, or a true full reset, and the resulting
 reachable, non-latching placement-lever refusal — checked against the
 current implementation and pinned by regressions reproducing hardware run
 19's numbers, including an endpoint-level restart repro through the real
+level-match handler; not yet hardware-validated. Same-day-follow-up-style
+addition, landed 2026-07-17: W2.4 revised the between-set restart's
+preserve/clear discriminator from "budget exhausted" to "a pre-flight
+refusal was shown for this target" (any write count; exhausted is
+subsumed, not a separate case) — closing a dead loop where a genuine
+`room_too_noisy_for_safe_measurement` refusal below the exhausted bound
+survived the restart the refusal screen's own action offered, and the
+next solve replayed the identical preserved adjustment against a freshly
+re-measured room, refusing again in seconds with no tone played. The same
+fix made `LevelSolveRefused`'s `str(exc)` the mapped household copy
+instead of the raw `code=... band=...` diagnostic string (closing a leak
+onto both the phone's `sweep_failed` host event and the wizard's relay
+status line), and scoped the stale `crossover_repeat_rejected` nudge out
+of the `level_solve_refused` screen. Checked against the current
+implementation and pinned by regressions reproducing hardware run 20's
+numbers, including an endpoint-level restart repro through the real
 level-match handler; not yet hardware-validated.)

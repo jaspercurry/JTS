@@ -1303,7 +1303,7 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-16 (added the closed-loop level solver's isolated-driver
+Last verified: 2026-07-17 (added the closed-loop level solver's isolated-driver
 reassert override, checked hardware-free; bounded, cancellation-safe shared DSP-writer
 admission and contention observability checked hardware-free; Wave 2 neutral artifact-manifest, playback,
 admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
@@ -1354,5 +1354,14 @@ clearing otherwise only on a sufficient finalization, a changed relay
 mic, or a true full reset; full detail in
 active-crossover-information-design.md "Level control and SNR") checked
 hardware-free against hardware run 19's numbers, including an
+endpoint-level restart repro through the real level-match handler; not
+yet hardware-validated. Same-day follow-up: W2.4 revised the
+between-set restart's preserve/clear discriminator (from "budget
+exhausted" to "a pre-flight refusal was shown for this target," any
+write count, exhausted subsumed — hardware run 20 found a
+room_too_noisy refusal below the exhausted bound surviving the
+restart and re-refusing identically with no tone played; full detail
+in active-crossover-information-design.md "Level control and SNR")
+checked hardware-free against hardware run 20's numbers, including an
 endpoint-level restart repro through the real level-match handler; not
 yet hardware-validated)
