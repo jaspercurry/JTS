@@ -257,14 +257,21 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     import jasper.active_speaker.camilla_yaml as camilla_yaml
 
-    def refuse(*_args, **_kwargs):
-        raise camilla_yaml.ActiveSpeakerConfigError("forced emit re-proof failure")
+    original = camilla_yaml._driver_baseline_filter_chain
 
-    monkeypatch.setattr(camilla_yaml, "_assert_bass_extension_safe", refuse)
+    def omit_woofer_crossover(preset, role, *args, **kwargs):
+        names = original(preset, role, *args, **kwargs)
+        if role == "woofer":
+            return [name for name in names if not name.endswith("_lp")]
+        return names
+
+    monkeypatch.setattr(
+        camilla_yaml, "_driver_baseline_filter_chain", omit_woofer_crossover
+    )
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("right"), validate=_valid_config))
-    assert exc.value.reason == "driver_domain_emit_refused"
+    assert exc.value.reason == "crossover_graph_unprovable"
 
 
 def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
@@ -312,7 +319,11 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
         ok = str(config_path) == alc.CROSSOVER_CONFIG_PATH
         return SimpleNamespace(
             allowed=ok,
-            classification="driver_domain" if ok else "unsafe",
+            classification=(
+                runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                if ok
+                else "unsafe"
+            ),
             issues=[] if ok else [{"code": "forced_bake"}],
         )
 

@@ -589,17 +589,24 @@ def dsp_apply_lock_path(config_dir: str | Path) -> Path:
     return Path(config_dir) / ".dsp_apply.lock"
 
 
-def _default_apply_lock_path(candidate: Path) -> Path:
-    """Use the fixed production lock, retaining pytest temp-path injection."""
+def _production_or_pytest_lock_path(config_dir: str | Path) -> Path:
+    """Return the canonical production lock or an injected pytest-local lock."""
 
+    directory = Path(config_dir)
     if os.environ.get("PYTEST_CURRENT_TEST"):
         try:
-            candidate.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+            directory.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
         except (OSError, ValueError):
             pass
         else:
-            return dsp_apply_lock_path(candidate.parent)
+            return dsp_apply_lock_path(directory)
     return CANONICAL_DSP_WRITER_LOCK_PATH
+
+
+def _default_apply_lock_path(candidate: Path) -> Path:
+    """Use the fixed production lock, retaining pytest temp-path injection."""
+
+    return _production_or_pytest_lock_path(candidate.parent)
 
 
 @contextlib.asynccontextmanager
@@ -614,7 +621,7 @@ async def dsp_writer_lock(
     """Serialize JTS DSP writers with bounded, cancellation-safe admission."""
 
     async with _dsp_apply_lock(
-        dsp_apply_lock_path(config_dir),
+        _production_or_pytest_lock_path(config_dir),
         timeout_s=timeout_s,
         source=source,
         allow_pending_bass_extension_recovery=(

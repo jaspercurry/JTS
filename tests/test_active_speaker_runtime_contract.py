@@ -288,6 +288,16 @@ def _staged_metadata(topology: OutputTopology, path: Path) -> dict:
     }
 
 
+def _classify_staged_active(topology: OutputTopology, text: str):
+    config_path = Path("/var/lib/camilladsp/configs/test-staged-active.yml")
+    return classify_camilla_graph(
+        topology=topology,
+        text=text,
+        config_path=str(config_path),
+        staged_config=_staged_metadata(topology, config_path),
+    )
+
+
 def _persisted_boundary(
     tmp_path: Path,
     *,
@@ -367,6 +377,34 @@ def test_persisted_boot_boundary_accepts_stable_no_profile_baseline(
     assert graph.details["bass_extension_profile_summary"] == (
         NO_BASS_EXTENSION_PROFILE_SUMMARY
     )
+
+
+@pytest.mark.parametrize("audible_outputs", [set(), {0}, {1}])
+def test_persisted_boot_guarded_graph_requires_staged_authority(
+    tmp_path: Path,
+    audible_outputs: set[int],
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_yaml("mono", 2, audible_outputs),
+    )
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert graph.allowed is False
+    assert "active_staged_metadata_missing" in {
+        issue["code"] for issue in graph.issues
+    }
 
 
 def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
@@ -618,18 +656,11 @@ def test_mono_active_2way_rejects_flat_and_allows_guarded_graphs() -> None:
     topology = _active_topology("mono", "active_2_way")
 
     flat = classify_camilla_graph(topology=topology, text=_flat_yaml())
-    startup = classify_camilla_graph(
-        topology=topology,
-        text=_active_yaml("mono", 2, frozenset()),
+    startup = _classify_staged_active(
+        topology, _active_yaml("mono", 2, frozenset())
     )
-    woofer = classify_camilla_graph(
-        topology=topology,
-        text=_active_yaml("mono", 2, {0}),
-    )
-    tweeter = classify_camilla_graph(
-        topology=topology,
-        text=_active_yaml("mono", 2, {1}),
-    )
+    woofer = _classify_staged_active(topology, _active_yaml("mono", 2, {0}))
+    tweeter = _classify_staged_active(topology, _active_yaml("mono", 2, {1}))
 
     assert classify_output_contract(topology).classification == CONTRACT_ACTIVE_MONO_2WAY
     assert flat.allowed is False
@@ -757,9 +788,9 @@ def _isolated_baseline_yaml(
 def test_baseline_commissioning_allows_one_exact_adjacent_pair() -> None:
     topology = _active_topology("stereo", "active_3_way")
 
-    graph = classify_camilla_graph(
-        topology=topology,
-        text=_isolated_baseline_yaml("stereo", 3, {1, 2}),
+    graph = _classify_staged_active(
+        topology,
+        _isolated_baseline_yaml("stereo", 3, {1, 2}),
     )
 
     assert graph.allowed is True
@@ -1561,9 +1592,9 @@ def test_active_graph_rejects_unassigned_unmuted_output() -> None:
 def test_mono_active_3way_rejects_flat_and_allows_all_muted_startup() -> None:
     topology = _active_topology("mono", "active_3_way")
     flat = classify_camilla_graph(topology=topology, text=_flat_yaml())
-    startup = classify_camilla_graph(
-        topology=topology,
-        text=_active_yaml("mono", 3, frozenset()),
+    startup = _classify_staged_active(
+        topology,
+        _active_yaml("mono", 3, frozenset()),
     )
 
     assert classify_output_contract(topology).classification == CONTRACT_ACTIVE_MONO_3WAY
@@ -1575,9 +1606,9 @@ def test_mono_active_3way_rejects_flat_and_allows_all_muted_startup() -> None:
 def test_stereo_active_2way_rejects_flat_and_requires_all_tweeters_guarded() -> None:
     topology = _active_topology("stereo", "active_2_way")
     flat = classify_camilla_graph(topology=topology, text=_flat_yaml())
-    startup = classify_camilla_graph(
-        topology=topology,
-        text=_active_yaml("stereo", 2, frozenset()),
+    startup = _classify_staged_active(
+        topology,
+        _active_yaml("stereo", 2, frozenset()),
     )
 
     assert classify_output_contract(topology).classification == CONTRACT_ACTIVE_STEREO_2WAY
@@ -1589,9 +1620,9 @@ def test_stereo_active_2way_rejects_flat_and_requires_all_tweeters_guarded() -> 
 def test_stereo_active_3way_rejects_flat_and_allows_all_muted_startup() -> None:
     topology = _active_topology("stereo", "active_3_way")
     flat = classify_camilla_graph(topology=topology, text=_flat_yaml())
-    startup = classify_camilla_graph(
-        topology=topology,
-        text=_active_yaml("stereo", 3, frozenset()),
+    startup = _classify_staged_active(
+        topology,
+        _active_yaml("stereo", 3, frozenset()),
     )
 
     assert classify_output_contract(topology).classification == CONTRACT_ACTIVE_STEREO_3WAY

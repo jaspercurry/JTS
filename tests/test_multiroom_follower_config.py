@@ -232,10 +232,17 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
     import jasper.active_speaker.camilla_yaml as camilla_yaml
 
-    def refuse(*_args, **_kwargs):
-        raise camilla_yaml.ActiveSpeakerConfigError("forced emit re-proof failure")
+    original = camilla_yaml._driver_baseline_filter_chain
 
-    monkeypatch.setattr(camilla_yaml, "_assert_bass_extension_safe", refuse)
+    def omit_woofer_crossover(preset, role, *args, **kwargs):
+        names = original(preset, role, *args, **kwargs)
+        if role == "woofer":
+            return [name for name in names if not name.endswith("_lp")]
+        return names
+
+    monkeypatch.setattr(
+        camilla_yaml, "_driver_baseline_filter_chain", omit_woofer_crossover
+    )
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     with pytest.raises(fc.ActiveFollowerError) as exc:
@@ -244,7 +251,7 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
                 _cfg("right"), camilla_factory=lambda: cam, validate=_valid_config,
             )
         )
-    assert exc.value.reason == "driver_domain_emit_refused"
+    assert exc.value.reason == "graph_unprovable"
     assert cam.loaded == []
 
 
@@ -351,6 +358,41 @@ def test_restore_refuses_unprovable_candidate_never_loads_passive(
 
     assert restored is None
     assert cam.loaded == []  # NEVER loaded the unprovable config onto the active sink
+
+
+def test_restore_refuses_candidate_when_reproof_has_no_graph(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    monkeypatch.setattr(
+        output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
+    )
+    from jasper.active_speaker import baseline_profile as bp_mod
+    monkeypatch.setattr(
+        bp_mod, "baseline_config_path", lambda *a, **k: tmp_path / "no_baseline.yml"
+    )
+    monkeypatch.setattr(
+        runtime_contract_mod,
+        "safe_graph_for_current_topology",
+        lambda *_a, **_k: SimpleNamespace(
+            current_graph=None,
+            selected_config_path=None,
+            issues=({"code": "candidate_unavailable"},),
+        ),
+    )
+    candidate = tmp_path / "active_speaker_baseline.yml"
+    candidate.write_text("# candidate with unavailable proof\n", encoding="utf-8")
+    fc._write_stash(str(candidate), path=fc.FOLLOWER_PRIOR_STASH)
+
+    cam = _FakeCamilla(current=fc.FOLLOWER_CONFIG_PATH)
+    restored = asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
+
+    assert restored is None
+    assert cam.loaded == []
+    assert "classification=unavailable" in caplog.text
+    assert "candidate_unavailable" in caplog.text
 
 
 def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> None:

@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import stat
 from pathlib import Path
 
 import pytest
+
+import jasper.dsp_apply as dsp_apply_module
 
 from jasper.dsp_apply import (
     BassExtensionApplyPending,
@@ -373,6 +376,32 @@ def test_apply_lock_is_fixed_in_production_with_explicit_pytest_temp_injection(
 
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "test seam")
     assert _default_apply_lock_path(candidate) == dsp_apply_lock_path(tmp_path)
+
+
+async def test_public_writer_lock_uses_same_fixed_production_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths: list[Path] = []
+
+    @contextlib.asynccontextmanager
+    async def capture(path: Path, **_kwargs):
+        paths.append(path)
+        yield
+
+    monkeypatch.setattr(dsp_apply_module, "_dsp_apply_lock", capture)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    async with dsp_writer_lock(tmp_path, source="production-path-proof"):
+        pass
+
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "test seam")
+    async with dsp_writer_lock(tmp_path, source="pytest-path-proof"):
+        pass
+
+    assert paths == [
+        CANONICAL_DSP_WRITER_LOCK_PATH,
+        dsp_apply_lock_path(tmp_path),
+    ]
 
 
 async def test_apply_dsp_config_skips_lock_when_caller_already_owns_it(

@@ -169,6 +169,10 @@ async def precheck_active_leader(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_DRIVER_DOMAIN_BASELINE,
+        classify_camilla_graph,
+    )
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -282,8 +286,27 @@ async def precheck_active_leader(
             f"(status={candidate.get('status')}, issues={codes}); commission "
             "this speaker as an active speaker before leading a bond",
         )
-    # The driver-domain emitter's independent emit gate has re-proved the exact
-    # generated YAML, including any accepted/current sealed natural pair.
+    crossover_graph = classify_camilla_graph(
+        topology=topology,
+        text=Path(CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8"),
+        config_path=CROSSOVER_CONFIG_PATH,
+        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
+    )
+    if (
+        not crossover_graph.allowed
+        or crossover_graph.classification != GRAPH_DRIVER_DOMAIN_BASELINE
+    ):
+        codes = [
+            issue.get("code")
+            for issue in crossover_graph.issues
+            if isinstance(issue, dict)
+        ]
+        raise ActiveLeaderError(
+            "crossover_graph_unprovable",
+            "active leader camilla#2 driver-domain graph failed whole-graph "
+            f"re-proof (classification={crossover_graph.classification}, "
+            f"issues={codes}); refusing to bond (no full-range emit)",
+        )
 
     # 2. camilla#1 program bake (Layer B/C + headroom, File -> SNAPFIFO,
     #    enable_rate_adjust=False). The initial bond bake is emitted and re-proved
@@ -314,7 +337,6 @@ async def precheck_active_leader(
     # late apply still performs the canonical live authority sandwich.
     from jasper.active_speaker.runtime_contract import (
         NO_BASS_EXTENSION_PROFILE_SUMMARY,
-        classify_camilla_graph,
     )
 
     bake_graph = classify_camilla_graph(

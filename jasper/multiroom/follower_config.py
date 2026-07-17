@@ -158,6 +158,10 @@ async def precheck_active_follower(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_DRIVER_DOMAIN_BASELINE,
+        classify_camilla_graph,
+    )
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -234,9 +238,30 @@ async def precheck_active_follower(
             "this speaker as an active speaker before bonding it",
         )
 
-    # The driver-domain emitter's independent emit gate has re-proved the exact
-    # generated YAML, including the accepted/current sealed natural pair.  The
-    # late apply below performs the canonical live-active sandwich after load.
+    # Re-prove the complete emitted Layer-A graph independently. The emit gates
+    # cover tweeter HP and the bass-owner pair; this verifier also proves every
+    # driver crossover/gain/limiter chain before the candidate can be loaded.
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=Path(FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8"),
+        config_path=FOLLOWER_CONFIG_PATH,
+        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
+    )
+    if (
+        not graph.allowed
+        or graph.classification != GRAPH_DRIVER_DOMAIN_BASELINE
+    ):
+        codes = [
+            issue.get("code")
+            for issue in graph.issues
+            if isinstance(issue, dict)
+        ]
+        raise ActiveFollowerError(
+            "graph_unprovable",
+            "active follower driver-domain graph failed whole-graph re-proof "
+            f"(classification={graph.classification}, issues={codes}); refusing "
+            "to bond (no full-range emit)",
+        )
     return FOLLOWER_CONFIG_PATH
 
 
@@ -401,14 +426,27 @@ async def restore_active_camilla_solo(
         ):
             candidate, via = cand, cand_via
             break
-        codes = [i.get("code") for i in graph.issues if isinstance(i, dict)]
+        if graph is None:
+            codes = [
+                issue.get("code")
+                for issue in decision.issues
+                if isinstance(issue, dict)
+            ]
+            classification = "unavailable"
+        else:
+            codes = [
+                issue.get("code")
+                for issue in graph.issues
+                if isinstance(issue, dict)
+            ]
+            classification = graph.classification
         log_event(
             logger,
             "multiroom.camilla_apply",
             result=f"{log_kind}_restore_skip_unsafe",
             candidate=cand,
             via=cand_via,
-            classification=graph.classification,
+            classification=classification,
             issues=codes,
             level=logging.WARNING,
         )

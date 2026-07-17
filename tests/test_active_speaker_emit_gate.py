@@ -367,7 +367,10 @@ def test_natural_pair_tamper_is_unsafe_and_missing_subsonic_trips_emit_gate(
         )
 
 
-@pytest.mark.parametrize("profile_kind", ["missing", "bypassed", "ported"])
+@pytest.mark.parametrize(
+    "profile_kind",
+    ["missing", "bypassed", "ported", "passive_radiator"],
+)
 def test_deferred_or_inactive_profiles_preserve_ordinary_baseline_bytes(
     profile_kind,
 ) -> None:
@@ -378,20 +381,25 @@ def test_deferred_or_inactive_profiles_preserve_ordinary_baseline_bytes(
     profile = None
     if profile_kind == "bypassed":
         profile = _sealed_profile(status="bypassed")
-    elif profile_kind == "ported":
+    elif profile_kind in {"ported", "passive_radiator"}:
         profile = replace(
             _sealed_profile(),
             enclosure={
-                "adapter_id": "ported_v1",
+                "adapter_id": f"{profile_kind}_v1",
                 "adapter_version": 1,
                 "cabinet_fingerprint": "cabinet-a",
             },
-            natural={
-                "fb_hz": 43.1,
-                "knee_hz": 55.0,
-                "knee_slope_db_oct": 21.0,
-                "fit_rms_db": 0.4,
-                "natural_curve": {
+                natural={
+                    "fb_hz": 43.1,
+                    "knee_hz": 55.0,
+                    "knee_slope_db_oct": 21.0,
+                    "fit_rms_db": 0.4,
+                    **(
+                        {"notch_hz": 27.0}
+                        if profile_kind == "passive_radiator"
+                        else {}
+                    ),
+                    "natural_curve": {
                     "freqs_hz": np.geomspace(10.0, 500.0, 96).tolist(),
                     "magnitude_db": [0.0] * 96,
                 },

@@ -2421,29 +2421,38 @@ def _active_graph_allowed(
         if isinstance(staged_config, dict)
         else False
     )
-    if (
-        classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
-        and staged_path
-        and config_path
-        and _path_matches(config_path, staged_path)
-        and not staged_match
-    ):
+    staged_dependent = staged_config is not None and classification in {
+        GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+        GRAPH_GUARDED_COMMISSIONING,
+    }
+    if staged_dependent and (not staged_path or not config_path):
         issues.append(_issue(
             "blocker",
-            "active_staged_metadata_mismatch",
-            "all-muted active startup path no longer matches saved topology metadata",
+            "active_staged_metadata_missing",
+            "guarded active graphs require a staged locator and graph path",
         ))
     if (
         classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
         and staged_path
         and config_path
-        and _path_matches(config_path, staged_path)
-        and not staged_guard_ready
+        and not _path_matches(config_path, staged_path)
     ):
         issues.append(_issue(
             "blocker",
+            "active_staged_locator_mismatch",
+            "all-muted active startup path does not match staged metadata",
+        ))
+    if staged_dependent and staged_path and config_path and not staged_match:
+        issues.append(_issue(
+            "blocker",
+            "active_staged_metadata_mismatch",
+            "guarded active graph no longer matches saved topology metadata",
+        ))
+    if staged_dependent and staged_path and config_path and not staged_guard_ready:
+        issues.append(_issue(
+            "blocker",
             "active_staged_guard_not_ready",
-            "staged active startup metadata does not prove software guard readiness",
+            "staged active metadata does not prove software guard readiness",
         ))
 
     allowed = classification in {
@@ -2777,7 +2786,12 @@ def _classify_bass_extension_snapshot(
         if isinstance(applied_baseline_state, Mapping)
         else _json_mapping(applied_baseline_bytes)
     )
-    staged = _json_mapping(staged_metadata_bytes)
+    # Canonical persisted snapshots always carry an explicit staged-authority
+    # mapping. Missing, malformed, or non-object bytes become stable empty
+    # evidence and cannot authorize staged-dependent graphs. Direct low-level
+    # in-memory composition calls retain ``staged_config=None`` and their
+    # independent graph-only proof.
+    staged = _json_mapping(staged_metadata_bytes) or {}
     bass_summary = _snapshot_profile_summary(
         topology=topology,
         graph_text=graph_text,

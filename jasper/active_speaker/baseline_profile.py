@@ -116,6 +116,35 @@ _GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
     "sensitivity": PROVENANCE_RECOMMENDED_START,
 }
 
+
+def _bass_extension_graph_summary(
+    profile: BassExtensionProfile | None,
+) -> dict[str, Any]:
+    """Freeze authority evidence beside one just-emitted composition."""
+
+    if (
+        profile is None
+        or profile.status != "accepted"
+        or profile.enclosure["adapter_id"] != "sealed_v1"
+    ):
+        return {"authority_valid": True, "runtime_block_required": False}
+    natural = profile.targets[-1]
+    protected = all(target.subsonic is not None for target in profile.targets)
+    return {
+        "authority_valid": protected,
+        "runtime_block_required": True,
+        "bass_owner_channels": list(profile.bass_owner["channels"]),
+        "natural": {
+            "fp_hz": natural.fp_hz,
+            "qp": natural.qp,
+            "boost_headroom_db": natural.boost_headroom_db,
+            "subsonic": (
+                dict(natural.subsonic) if natural.subsonic is not None else None
+            ),
+        },
+    }
+
+
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -1788,6 +1817,13 @@ def build_baseline_profile_candidate(
             **candidate_graph_context,
         },
     }
+    if driver_domain:
+        # The bond precheck consumes this immutable sidecar in the independent
+        # whole-graph verifier. It comes from the already-evaluated profile
+        # passed to the emitter, never from filter-name inference or caller I/O.
+        payload["bass_extension_profile_summary"] = (
+            _bass_extension_graph_summary(bass_extension_profile)
+        )
     payload = finalize(payload)
     payload["candidate_fingerprint"] = baseline_candidate_fingerprint(payload)
     if write:
