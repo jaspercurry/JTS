@@ -117,6 +117,15 @@ evidence-gated experiment knob: unset preserves PortAudio's current default,
 requests an explicit buffer. Because this one capture stream also feeds
 voice/wake, do not set a production value until hardware A/B evidence shows
 lower negotiated latency with no stalls, queue drops, or wake-rate regression.
+On 2026-07-16, build `1b1b36015` negotiated 80 ms with the knob unset and
+20 ms with `low` on the same XVF3800. During real macOS CoreAudio pulls, the
+corresponding 30-second USB-microphone artifacts passed at p95 46.1 ms and
+19.3 ms respectively, with zero run-delta packet loss, streaming drops,
+writer splices, or xruns; 50/60-second host captures also reported zero
+callback errors. The artifact metric begins at bridge emit and therefore does
+not directly include the 60 ms capture-buffer reduction. Treat `low` as a
+promising opt-in experiment, not the production default, until the shared
+wake/voice soak and wake-rate parity gates pass.
 Voice/wake legs keep their established raw
 1280-sample / 80 ms packet contract with no header.
 The same negotiated capture rate, block size, and input-latency frames are
