@@ -22,6 +22,7 @@ or latency evidence."""
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -39,6 +40,10 @@ from jasper.usb_mic import (
     RELAY_STATUS_FRESH_SECONDS,
     RELAY_STATUS_PATH,
     USB_MIC_BCD_DEVICE,
+    USB_MIC_LATENCY_WARN_MS,
+    USB_MIC_RELAY_SCHEMA_VERSION,
+    USB_MIC_SOURCE_AGE_BASIS,
+    USB_MIC_SOURCE_AGE_SCOPE,
     USB_NO_MIC_BCD_DEVICE,
     USBMIC_UNIT,
     read_intent as read_usb_mic_intent,
@@ -503,12 +508,61 @@ def check_usb_mic_export() -> CheckResult:
             f"queue_drops={relay.get('periods_dropped', 0)}, "
             f"drop_rate={relay.get('drop_rate_periods_per_sec', 0)} periods/s",
         )
+    host_streaming = bool(relay.get("host_streaming"))
+    source_age_p95 = relay.get("source_age_ms_p95")
+    try:
+        source_age_p95_ms = (
+            float(source_age_p95) if source_age_p95 is not None else None
+        )
+    except (TypeError, ValueError):
+        source_age_p95_ms = None
+    if source_age_p95_ms is not None and (
+        not math.isfinite(source_age_p95_ms) or source_age_p95_ms < 0
+    ):
+        source_age_p95_ms = None
+    metric_contract_ok = bool(
+        relay.get("schema_version") == USB_MIC_RELAY_SCHEMA_VERSION
+        and relay.get("source_age_basis") == USB_MIC_SOURCE_AGE_BASIS
+        and relay.get("source_age_scope") == USB_MIC_SOURCE_AGE_SCOPE
+    )
+    if host_streaming and not metric_contract_ok:
+        return CheckResult(
+            "USB microphone export",
+            "warn",
+            "advertised and relay healthy, but active capture latency "
+            "telemetry uses an unsupported schema or measurement scope",
+        )
+    if host_streaming and source_age_p95_ms is None:
+        return CheckResult(
+            "USB microphone export",
+            "warn",
+            "advertised and relay healthy, but active capture latency "
+            "telemetry is not yet available",
+        )
+    if (
+        host_streaming
+        and source_age_p95_ms is not None
+        and source_age_p95_ms > USB_MIC_LATENCY_WARN_MS
+    ):
+        return CheckResult(
+            "USB microphone export",
+            "warn",
+            "advertised and relay healthy, but active capture latency is high: "
+            f"source_age_p95={source_age_p95_ms:.1f} ms "
+            f"(budget {USB_MIC_LATENCY_WARN_MS:.0f} ms)",
+        )
+    latency_detail = (
+        f", source_age_p95={source_age_p95_ms:.1f} ms"
+        if host_streaming and source_age_p95_ms is not None
+        else ""
+    )
     return CheckResult(
         "USB microphone export",
         "ok",
         "advertised and relay healthy; "
-        f"host_streaming={bool(relay.get('host_streaming'))}, "
-        f"queue_drops={int(relay.get('periods_dropped', 0))}",
+        f"host_streaming={host_streaming}, "
+        f"queue_drops={int(relay.get('periods_dropped', 0))}"
+        f"{latency_detail}",
     )
 
 @doctor_check(order=59.8, group="usbsink")

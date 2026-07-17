@@ -110,6 +110,8 @@ automatically (embedded in each page behind the read guard, read by
   not stop an independently enabled USB microphone export.
 - `POST /aec/usb-mic` — exposes or removes the AEC-cleaned room microphone on
   the attached USB host.
+- `POST /aec/usb-mic-leg` — chooses which live AEC-cleaned microphone stream
+  reaches the attached USB host.
 - `POST /grouping/set` — rewires multiroom output routing. This route
   **additionally** accepts a distinct **household credential**
   (`X-JTS-Household`) for the cross-device bond fan-out — a paired peer
@@ -119,10 +121,11 @@ automatically (embedded in each page behind the read guard, read by
 
 A gated request without a matching `X-JTS-Token` header gets a `403
 {"error":"control_token_required"}` (compared in constant time via
-`hmac.compare_digest`). **Volume, transport, source, and the AEC knobs stay
-ungated** — the dial's low-impact controls, which it relies on and which never
-call the gated routes. USB microphone export and the XVF3800 firmware-update
-route are the two privacy/hardware-sensitive exceptions under `/aec`.
+`hmac.compare_digest`). **Volume, transport, source, and ordinary AEC tuning
+knobs stay ungated** — the dial's low-impact controls, which it relies on and
+which never call the gated routes. USB microphone export/source selection and
+the XVF3800 firmware-update route are the privacy/hardware-sensitive exceptions
+under `/aec`.
 
 **What it does and does not protect.** Because the token is auto-delivered to
 the dashboard over the same LAN, a determined device on the LAN that fetches the

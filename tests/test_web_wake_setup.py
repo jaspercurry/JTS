@@ -125,6 +125,15 @@ def test_render_has_echo_choices_and_advanced_validation():
     assert "not approved for automatic use" in html
 
 
+def test_render_has_server_hydrated_computer_microphone_source_select():
+    html = _render()
+    assert "Computer microphone source" in html
+    assert 'id="usb-mic-leg-select"' in html
+    assert 'id="usb-mic-leg-status"' in html
+    # Choice labels arrive in /aec; the initial page owns no beam allowlist.
+    assert "Same as JTS voice" not in html
+
+
 def test_render_form_posts_to_save_with_primary_button():
     html = _render()
     assert '<form method="post" action="save"' in html
@@ -334,6 +343,48 @@ def test_post_usb_mic_proxies_boolean_to_control(tmp_path, monkeypatch):
     }
     assert cap["status"] == 200
     assert b'"enabled":true' in cap["body"]
+
+
+def test_post_usb_mic_leg_proxies_choice_and_control_token(tmp_path, monkeypatch):
+    _make_request.state_path = str(tmp_path / "wake_model.env")
+    captured = {}
+    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a: True)
+
+    def fake_proxy_post(path, *, control_base, timeout, body=b"", headers=None):
+        captured["path"] = path
+        captured["body"] = json.loads(body.decode())
+        captured["headers"] = headers
+        return 200, b'{"usb_mic":{"source_selection":{"requested":"primary"}}}'
+
+    monkeypatch.setattr(wake_setup, "proxy_post", fake_proxy_post)
+    h, cap = _make_request(
+        "POST",
+        "/usb-mic-leg",
+        body=b'{"leg":"primary"}',
+        headers={
+            "Content-Type": "application/json",
+            "X-JTS-Token": "control-token",
+        },
+    )
+    h.do_POST()
+
+    assert captured == {
+        "path": "/aec/usb-mic-leg",
+        "body": {"leg": "primary"},
+        "headers": {"X-JTS-Token": "control-token"},
+    }
+    assert cap["status"] == 200
+    assert b'"requested":"primary"' in cap["body"]
+
+
+def test_wake_module_renders_server_choices_and_runtime_effective_label():
+    module = (
+        Path(wake_setup.__file__).parents[2]
+        / "deploy/assets/wake/js/main.js"
+    ).read_text()
+    assert "source.choices" in module
+    assert 'document.createElement("option")' in module
+    assert "applied.effective_label" in module
 
 
 def test_get_unknown_path_404(tmp_path):

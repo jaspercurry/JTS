@@ -5,9 +5,12 @@
 """AEC and wake-threshold helpers behind jasper-control endpoints."""
 from __future__ import annotations
 
-import os
-import subprocess
 import json
+import math
+import os
+from pathlib import Path
+import subprocess
+import time
 from typing import Any
 
 from ..audio_profile_state import (
@@ -33,7 +36,11 @@ from ..audio_validation import (
 from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
-from ..usb_mic import build_usb_mic_status
+from ..usb_mic import (
+    build_usb_mic_status,
+    read_usb_mic_leg,
+    usb_mic_leg_choices,
+)
 from ..chip_aec_policy import (
     combine_mic_availability,
     gate_from_runtime_env,
@@ -46,6 +53,8 @@ _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
+_AEC_BRIDGE_STATS_FILE = "/run/jasper/aec_bridge_stats.json"
+_AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
 
 # Default leg policy — must match deploy/install.sh's reconcile_aec_state
 # and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on for
@@ -696,9 +705,137 @@ def _aec_full_status() -> dict:
         "validation": _audio_validation_summary(**validation_filters),
         "firmware_update": _xvf_firmware_update_status(),
     }
-    payload["usb_mic"] = build_usb_mic_status(payload)
+    usb_mic = build_usb_mic_status(payload)
+    usb_mic["source_selection"] = _usb_mic_source_selection(
+        env,
+        bridge_active=bridge_active,
+    )
+    payload["usb_mic"] = usb_mic
     payload["mic_settings"] = build_microphone_settings_view(payload)
     return payload
+
+
+def _fresh_bridge_usb_mic_source(
+    *,
+    bridge_active: bool,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Return only an authoritative, fresh bridge-applied source.
+
+    Persisted intent changes before the non-blocking bridge restart completes,
+    so status must never present the request as applied. The bridge stats file
+    is the runtime authority; missing, stale, malformed, or inactive state has
+    no applied answer.
+    """
+
+    if not bridge_active:
+        return None
+    try:
+        payload = json.loads(
+            Path(_AEC_BRIDGE_STATS_FILE).read_text(encoding="utf-8")
+        )
+        if not isinstance(payload, dict):
+            return None
+        updated = float(payload.get("updated_epoch_sec"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    age = (time.time() if now is None else now) - updated
+    if not math.isfinite(updated) or age < 0 or age > _AEC_BRIDGE_STATS_FRESH_SECONDS:
+        return None
+    active_plan = payload.get("active_capture_plan")
+    if not isinstance(active_plan, dict):
+        return None
+    source = active_plan.get("usb_mic_source")
+    if not isinstance(source, dict):
+        return None
+    mode = str(source.get("mode") or "").strip()
+    leg = str(source.get("leg") or "").strip()
+    selection = str(source.get("selection") or "").strip()
+    if not selection or not mode or not leg:
+        return None
+    return {
+        "selection": selection,
+        "mode": mode,
+        "leg": leg,
+        "fallback_active": bool(source.get("fallback_active")),
+    }
+
+
+def _usb_mic_effective_label(
+    source: dict[str, Any],
+    choices: list[dict[str, Any]],
+) -> str:
+    """Name the physical source proved by fresh bridge stats.
+
+    ``selection`` is persisted intent and can stay on a chip beam while the
+    bridge falls back to software AEC.  The applied label must therefore come
+    from runtime ``mode`` + physical ``leg``, never from selection alone.
+    """
+
+    mode = source["mode"]
+    leg = source["leg"]
+    if mode == "software_aec3" or leg == "clean":
+        return "Software-clean microphone"
+    physical_choice = next(
+        (
+            choice
+            for choice in choices
+            if isinstance(choice, dict) and choice.get("value") == leg
+        ),
+        None,
+    )
+    if physical_choice is not None:
+        return str(physical_choice.get("label") or leg)
+    return leg
+
+
+def _usb_mic_source_selection(
+    env: dict[str, str],
+    *,
+    bridge_active: bool,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Build requested/available/applied computer-mic source status."""
+
+    requested = read_usb_mic_leg()
+    choices = usb_mic_leg_choices(env)
+    applied_source = _fresh_bridge_usb_mic_source(
+        bridge_active=bridge_active,
+        now=now,
+    )
+    applied: dict[str, Any] | None = None
+    if applied_source is not None:
+        applied_value = applied_source["selection"]
+        mode = applied_source["mode"]
+        leg = applied_source["leg"]
+        choice = next(
+            (
+                candidate
+                for candidate in choices
+                if candidate.get("value") == applied_value
+            ),
+            None,
+        )
+        applied = {
+            "value": applied_value,
+            "label": (
+                str(choice.get("label") or applied_value)
+                if choice is not None
+                else applied_value
+            ),
+            "mode": mode,
+            "leg": leg,
+            "effective_label": _usb_mic_effective_label(
+                applied_source,
+                choices,
+            ),
+            "fallback_active": bool(applied_source.get("fallback_active")),
+        }
+    return {
+        "requested": requested,
+        "choices": choices,
+        "applied": applied,
+    }
 
 
 def _applied_aec_intent(

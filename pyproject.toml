@@ -82,10 +82,11 @@ full = [
     # vendor-control interface for boot-time profile writes and diagnostics.
     "pyusb>=1.2",
     "libusb_package>=1.0",
-    # ALSA-native PCM access for jasper-aec-bridge — needed because
+    # ALSA-native PCM access for jasper-aec-bridge and jasper-usbmic — needed because
     # PortAudio (sounddevice's backend) only enumerates hw: devices,
     # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
-    # we capture the AEC reference from).
+    # we capture the AEC reference from), while the USB-mic relay needs
+    # nonblocking period writes and explicit gadget-ring occupancy control.
     "pyalsaaudio>=0.11; sys_platform == 'linux'",
     # jasper-{dial,satellite}-onboard: pyserial for USB CDC discovery
     # + Improv handshake; esptool for firmware flash. Both pure-Python
@@ -178,6 +179,7 @@ jasper-audio-validate = "jasper.audio_validation:main"
 jasper-audio-hw-validate = "jasper.audio_validation:hardware_main"
 jasper-route-latency-artifact = "jasper.cli.route_latency_artifact:main"
 jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
+jasper-usb-mic-latency-artifact = "jasper.cli.usb_mic_latency_artifact:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
 jasper-usbsink-volume = "jasper.cli.usbsink_volume_main:main"
 jasper-dial-onboard = "jasper.cli.dial_onboard:main"

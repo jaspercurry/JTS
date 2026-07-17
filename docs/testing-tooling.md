@@ -36,6 +36,7 @@
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
 | Measure the live loopback-coupled receiver path from lane 7 to outputd's final electrical reference | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-receiver-timing-proof.py`](../scripts/airplay-receiver-timing-proof.py) |
 | Certify (or honestly fail) `usb_low_latency_48k`'s p95/p99 route-latency claim with real click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
+| Certify the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency artifact](#usb-microphone-export-latency-artifact) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | [`HANDOFF-identity.md`](HANDOFF-identity.md) — `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
@@ -589,6 +590,35 @@ Pure stdlib + numpy/scipy; covered by `tests/test_analyze_wake_corpus_quality.py
 
 ---
 
+## USB microphone export latency artifact
+
+`jasper-usb-mic-latency-artifact` samples the live `jasper-usbmic` status while
+a computer is actively recording from `JTS Mic`. It rejects an idle or stale
+window, then writes a schema-1 JSON record bound to the installed build,
+descriptor revision, resolved software/chip export source, negotiated
+XVF/PortAudio capture geometry,
+realized ALSA writer geometry/target, and operator-supplied host application.
+Use it for the optional Pi→computer microphone direction; it does not replace
+the host→speaker click/capture harness below.
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact \
+  --duration-seconds 30 \
+  --host-os "macOS 15" \
+  --host-app "CoreAudio / sounddevice" \
+  --output /tmp/jts-usb-mic-latency.json
+```
+
+The active-only 120 ms doctor budget and the exact artifact interpretation are
+canonical in
+[`HANDOFF-usb-gadget.md`](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
+Aggregation waits at least 11 seconds and also proves 512 exact source-age
+appends after the first post-start relay status, so delayed status reads cannot
+admit history from before the run. Use the documented 30-second command for
+review artifacts, and add `--require-pass` in automation.
+
+---
+
 ## Route-latency click/capture harness
 
 `jasper-route-latency-harness` (source: `jasper/cli/route_latency_harness.py`
@@ -942,7 +972,10 @@ Artifact contract, schema v1:
   (`ActiveState`, `SubState`, `NRestarts`, `MainPID`, tasks,
   `MemoryCurrent`, `CPUUsageNSec` delta-derived CPU%), cgroup
   `cpu.stat`, `memory.events`, PSI when available, and outputd/fanin/
-  mux/voice STATUS snapshots.
+  mux/voice STATUS snapshots. The tracked inventory includes the resident
+  USB host-microphone export path (`jasper-usbgadget`, `jasper-usbmic`, and
+  `jasper-usbnet-dhcp`); it deliberately excludes the transient
+  `jasper-usbmic-apply` oneshot.
 - `journal`: count/byte summary by unit and priority for the soak
   window. It intentionally does **not** store raw message text, which
   keeps routine resource artifacts out of the log-redaction business.

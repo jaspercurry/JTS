@@ -15,6 +15,7 @@ so a regression in parse/write logic surfaces fast.
 """
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -552,6 +553,154 @@ def test_aec_full_status_includes_legs_and_threshold(
         "dac_id": "apple_usb_c_dongle",
     }]
     assert status["wake_word"]["label"]
+    assert status["usb_mic"]["source_selection"]["requested"] == "primary"
+    assert status["usb_mic"]["source_selection"]["applied"] is None
+
+
+@pytest.mark.parametrize(
+    ("requested", "runtime_source", "expected"),
+    [
+        (
+            "chip_aec_150",
+            {
+                "selection": "chip_aec_150",
+                "mode": "software_aec3",
+                "leg": "clean",
+            },
+            {
+                "value": "chip_aec_150",
+                "label": "Front hardware beam",
+                "mode": "software_aec3",
+                "leg": "clean",
+                "effective_label": "Software-clean microphone",
+                "fallback_active": False,
+            },
+        ),
+        (
+            "primary",
+            {
+                "selection": "primary",
+                "mode": "chip_aec",
+                "leg": "chip_aec_150",
+            },
+            {
+                "value": "primary",
+                "label": "Same as JTS voice",
+                "mode": "chip_aec",
+                "leg": "chip_aec_150",
+                "effective_label": "Front hardware beam",
+                "fallback_active": False,
+            },
+        ),
+    ],
+)
+def test_usb_mic_source_selection_distinguishes_requested_from_applied_source(
+    tmp_path,
+    monkeypatch,
+    requested,
+    runtime_source,
+    expected,
+):
+    """Applied wording follows fresh physical mode/leg, not saved intent."""
+
+    stats = tmp_path / "aec_bridge_stats.json"
+    stats.write_text(json.dumps({
+        "updated_epoch_sec": 100.0,
+        "active_capture_plan": {"usb_mic_source": runtime_source},
+    }))
+    choices = [
+        {
+            "value": "primary",
+            "label": "Same as JTS voice",
+            "description": "Follows JTS voice.",
+        },
+        {
+            "value": "chip_aec_150",
+            "label": "Front hardware beam",
+            "description": "Fixed hardware beam.",
+        },
+    ]
+    monkeypatch.setattr(aec_endpoints, "_AEC_BRIDGE_STATS_FILE", str(stats))
+    monkeypatch.setattr(aec_endpoints, "read_usb_mic_leg", lambda: requested)
+    monkeypatch.setattr(
+        aec_endpoints,
+        "usb_mic_leg_choices",
+        lambda _env: choices,
+    )
+
+    status = aec_endpoints._usb_mic_source_selection(
+        {},
+        bridge_active=True,
+        now=101.0,
+    )
+
+    assert status == {
+        "requested": requested,
+        "choices": choices,
+        "applied": expected,
+    }
+
+
+@pytest.mark.parametrize(
+    ("stats_payload", "bridge_active", "now"),
+    [
+        ({"updated_epoch_sec": 100.0}, True, 101.0),
+        (
+            {
+                "updated_epoch_sec": 100.0,
+                "active_capture_plan": {
+                    "usb_mic_source": {
+                        "selection": "primary",
+                        "mode": "chip_aec",
+                        "leg": "chip_aec_150",
+                    },
+                },
+            },
+            True,
+            104.0,
+        ),
+        ([], True, 101.0),
+        (
+            {
+                "updated_epoch_sec": 100.0,
+                "active_capture_plan": {
+                    "usb_mic_source": {
+                        "selection": "primary",
+                        "mode": "chip_aec",
+                        "leg": "chip_aec_150",
+                    },
+                },
+            },
+            False,
+            101.0,
+        ),
+    ],
+)
+def test_usb_mic_source_selection_never_invents_applied_state(
+    tmp_path,
+    monkeypatch,
+    stats_payload,
+    bridge_active,
+    now,
+):
+    stats = tmp_path / "aec_bridge_stats.json"
+    stats.write_text(json.dumps(stats_payload))
+    monkeypatch.setattr(aec_endpoints, "_AEC_BRIDGE_STATS_FILE", str(stats))
+    monkeypatch.setattr(aec_endpoints, "read_usb_mic_leg", lambda: "primary")
+    monkeypatch.setattr(
+        aec_endpoints,
+        "usb_mic_leg_choices",
+        lambda _env: [{"value": "primary", "label": "Same as JTS voice"}],
+    )
+
+    status = aec_endpoints._usb_mic_source_selection(
+        {},
+        bridge_active=bridge_active,
+        now=now,
+    )
+
+    assert status["requested"] == "primary"
+    assert status["applied"] is None
 
 
 def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monkeypatch):

@@ -52,12 +52,13 @@ path. Multiple speakers keep distinct hostnames (mDNS) and distinct MACs
 6. **Port role is hardware-resolved, never selected by source intent.** Toggling
    USB Audio Input cannot switch a controller between host and peripheral.
 7. **The computer microphone is explicit, subordinate, and off by default.** Its
-   durable preference is `/var/lib/jasper/usb_mic.env`; it is eligible only
+   durable enablement and source preferences are `JASPER_USB_MIC` and
+   `JASPER_USB_MIC_LEG` in `/var/lib/jasper/usb_mic.env`; it is eligible only
    while USB Audio Input is authorized/composed and an echo-cancelled AEC bridge
    profile is active. On uses UAC2 `p_chmask=1`, 48 kHz mono S16, microphone
    terminal type, and descriptor revision `0x0210`; Off uses `p_chmask=0` and
    revision `0x0200`. The distinct revision makes macOS discard the opposite
-   cached shape.
+   cached shape. Source selection never changes either descriptor.
 
 ## USB data-role policy
 
@@ -123,21 +124,23 @@ jasper-usbmic.service               (optional Pi-to-host clean-mic relay)
   Consumes dedicated localhost UDP :9894; voice remains on :9876
 ```
 
-`jasper-usbmic` publishes `/run/jasper-usbmic/status.json` schema 3 with
-separate source-packet, sink-write, and host `hw_ptr` progress timestamps plus
-drop counts/rate. The schema also carries v2 bridge-emit age p50/p95/p99,
-bounded sequence-gap loss, and drop totals attributed to host-advancing versus
-idle **status intervals**. That split is diagnostic attribution at the 500 ms
-sampling boundary, not proof of the exact host-clock state at each individual
-drop. ALSA's gadget PCM reports `RUNNING` as soon as `aplay` opens,
-even when no host application is consuming it, so `RUNNING` is never treated as
-host use by itself. The Wake page says Streaming only after `hw_ptr` actually
-advances. A never-advanced or later-idle clock is normal Ready state; queue
-drops while that host clock is idle are expected drop-oldest behavior. Missing
-AEC packets, or sustained drops while the host clock is independently advancing,
-are degraded relay health and produce a stable `event=usb_mic.audio_health`
-transition plus a doctor warning. This distinction keeps idle hosts from raising
-false alarms while ensuring an alive-but-stuck writer cannot claim Streaming.
+`jasper-usbmic` publishes `/run/jasper-usbmic/status.json` schema 4 with
+separate source-packet, ALSA-write, and host `hw_ptr` progress timestamps plus
+drop counts/rate. The schema carries v2 bridge-emit-to-ALSA-write
+p50/p95/p99, bounded sequence-gap loss, host `appl_ptr - hw_ptr` fill,
+writer target/geometry, resets, xruns, counted drift splices, and drop totals
+attributed to host-advancing versus idle **status intervals**. That split is
+diagnostic attribution at the 500 ms sampling boundary, not proof of the exact
+host-clock state at each individual drop. ALSA's gadget PCM reports `RUNNING`
+as soon as its playback side is primed, even when no host application is
+consuming it, so `RUNNING` is never treated as host use by itself. The Wake
+page says Streaming only after `hw_ptr` actually advances; a backward pointer
+reset is explicitly not progress. A never-advanced or later-idle clock is
+normal Ready state. Missing AEC packets, sustained drops while the host clock
+is independently advancing, or writer failure are degraded relay health and
+produce stable structured events plus a doctor warning. This distinction keeps
+idle hosts from raising false alarms while ensuring an alive-but-stuck writer
+cannot claim Streaming.
 
 `jasper-usbsink-init.service` — the old audio-only gadget-owner oneshot —
 is **deleted**. `jasper-usbgadget.service` is its replacement and does more:
@@ -191,7 +194,7 @@ unrelated toggle does not re-enumerate this gadget. The complete transition and
 verification contract is canonical in
 [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
 
-### Toggling the computer microphone from `/wake/`
+### Toggling and choosing the computer microphone from `/wake/`
 
 `/wake/` writes only the independent `JASPER_USB_MIC=enabled|disabled` intent.
 The control daemon hands the change to `jasper-usbmic-apply.service`, whose
@@ -210,41 +213,160 @@ hard start limit prevents an unbounded recompose loop, and the stable
 if all attempts fail. A later explicit switch action resets that bounded retry
 budget before scheduling its new desired state.
 
-The relay's Python queue is bounded to two 20 ms periods and drops oldest audio
-if the host is not consuming. It uses ALSA's blocking 16→48 kHz conversion
-proven by the lab, with a 10 ms ALSA period that the Pi's four-period UAC2 ring
-realizes as a 40 ms hardware buffer. The dedicated `:9894` packet now carries a
-sequence and bridge-emit monotonic timestamp; status reports a bounded rolling
-p50/p95/p99 from bridge emit to relay dequeue, plus sequence gaps and status-
-interval-attributed active-host versus idle drop totals. The machine-readable
-scope is `source_age_scope=bridge_emit_to_relay_dequeue`; generation/start
-fields identify the rolling age window, which is cleared while the sampled
-host clock is idle so prior-session ages do not survive a resume.
-`event=usb_mic.pipe_configured` records the real
-pipe capacity and `event=usb_mic.pipe_baseline` records one startup occupancy
-sample while this transitional pipe still exists.
+The adjacent source selector writes `JASPER_USB_MIC_LEG`. `primary` is the
+default and follows the same production-clean stream JTS uses for voice;
+additional options are derived from the reconciler-applied `ChipBeamPlan`, not
+hard-coded into the cross-profile UI or persistence contract. The control
+endpoint fresh-reads that reconciler-owned plan (rather than trusting the
+long-lived control process environment) and rejects a choice it does not
+advertise. At the bridge's
+USB-only emit site, an explicit chip beam receives the same post-AEC gain and
+soft-limit as `primary`; if its frame is absent for an iteration (including in
+software-AEC mode), that iteration falls back to the final `clean` frame. The
+bridge publishes the effective physical leg plus
+`usb_mic_source_fallback_frames`, so UI/artifact evidence cannot label fallback
+audio as the requested beam. The normal `:9876` voice/session stream and all
+wake legs remain unchanged.
 
-Those measurements do **not** yet prove a 40–80 ms end-to-end bound because the
-dequeue timestamp is before the opaque `aplay` pipe and gadget ring. A genuine
-host recording on 2026-07-16 held about 50 ms in that pipe and a 30–40 ms gadget
-ring sawtooth. The earlier 490 ms pipe reading was a frozen idle residual, not
-steady-state latency—but frozen residuals varied with prior use and there is no
-flush when host capture begins. The real defect is therefore history-dependent
-latency and a possible stale leading burst. Replacing the pipe with an
-occupancy-targeted writer and reset-on-host-resume remains the next measured
-slice; the existing 15.02 s capture proves continuity, not latency.
+This source change has a deliberately narrower restart path than the On/Off
+toggle. `/aec/usb-mic-leg` saves the preference, then asks the restart broker to
+restart only `jasper-aec-bridge.service` with reason `usb_mic_leg`. Saving the
+already-selected value is a no-op; a changed value first clears that unit's
+systemd start counter so deliberate rapid changes cannot consume the
+`StartLimitAction=reboot` crash-recovery budget.
+`jasper-usbmic.service` follows through its existing `PartOf=` relationship.
+The path does **not** invoke `jasper-usbmic-apply.service`, restart
+`jasper-usbgadget.service`, alter `p_chmask` / `bcdDevice`, re-enumerate the USB
+device, or interrupt NCM. A broker scheduling failure returns structured HTTP
+502 while reporting that intent was saved; the UI keeps requested intent and
+fresh bridge-applied source separate while the non-blocking restart converges.
+
+The relay's source queue is bounded to two 20 ms frames and drops oldest audio
+if the host is not consuming. The in-process nonblocking `pyalsaaudio` writer
+splits each frame into two exact 10 ms writes; explicit four-period geometry
+realizes the verified 40 ms `plughw` buffer while preserving ALSA's proven
+16→48 kHz conversion. Capacity and target are distinct: a fresh PCM needs the
+full 40 ms start-threshold preload, then the writer lets occupancy settle to a
+30 ms target and uses a 20–40 ms operating band. One counted insert splice may
+write two exact 10 ms silence periods to correct one 20 ms source-frame
+deficit; `writer_silence_periods` retains the exact period count. A 20 ms target / 10–30 ms band
+was lower-latency but recorded an ordinary-load xrun after 15 minutes on real
+hardware; the extra 10 ms is the current lowest reliable posture.
+
+The writer is designed to remove host-idle history *before* resume can expose
+it. After `hw_ptr` is
+frozen for 200 ms, the relay performs one latched idle sanitization: close and
+reopen the PCM, clear queued/pending room audio, and preload only silence. When
+that silence-only ring begins advancing, the relay resets once more and primes
+20 ms of silence followed by the freshest 20 ms source frame. The first
+pre-detection samples should therefore be silence, not minutes-old room audio;
+the host-capture acceptance gate below must certify that property. The
+writer then resumes target control. A high-fill correction discards held stale
+periods in favor of the freshest queued frame. Source underfill may insert two
+exact 10 ms silence periods in one writer step to restore one 20 ms source-frame
+deficit. Each high-fill replacement or one/two-period underfill correction is
+counted once in `writer_splices`; `writer_silence_periods` retains the exact
+inserted-period count, while xruns and resets have separate counters. The relay
+never blocks on a full/non-draining gadget and repeated recovery failures exit
+to systemd instead of reopening forever.
+
+The dedicated `:9894` packet carries a sequence and bridge-emit monotonic
+timestamp. Status reports a bounded rolling p50/p95/p99 after each source
+frame's final successful ALSA period write, plus sequence gaps, ring fill, and
+active-host versus idle drop totals.
+The machine-readable scope is
+`source_age_scope=bridge_emit_to_alsa_write`; generation/start fields identify
+the rolling window, which is cleared across idle/reset transitions. This
+removes the former opaque `aplay` pipe and is intended to make Pi-side transport
+latency history-independent. The idle/resume and soak gates below remain the
+certification of that claim. This is still not physical mic→host end-to-end latency:
+XVF/PortAudio capture time, current gadget fill, USB transport, and the host
+audio stack remain separate terms and need the hardware certification run.
+
+During an active host recording, `jasper-doctor` compares the fresh p95 with
+the 120 ms acceptance budget. It deliberately does not judge a frozen idle
+ring. For a reviewable run record, keep the host capture open and run:
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact \
+  --duration-seconds 30 \
+  --host-os "macOS 15" \
+  --host-app "CoreAudio / sounddevice" \
+  --output /tmp/jts-usb-mic-latency.json
+```
+
+The schema-1 artifact rejects any tick where the host is not pulling. It binds
+the measured window to the installed build, microphone descriptor revision,
+resolved export source (software-clean carrier or chip beam), negotiated
+XVF/PortAudio capture geometry, realized
+ALSA writer geometry and target, host/app identity, and counter deltas. Its
+source identity is the effective runtime leg; any selected-beam fallback frame
+during the run increments a bound counter and makes the artifact warn.
+`configuration_sha256`, `identity_sha256`, and `content_sha256` bind stable
+configuration, run identity, and complete content respectively; none is a
+cryptographic operator signature. Certification requires at least 15 seconds
+of uninterrupted status. Percentile aggregation begins only after both an
+11-second minimum warm-up and 512 exact source-age appends following the first
+relay status written after observation began. That counter proof, rather than
+wall time alone, ensures the bounded rolling window contains only this run even
+when status reads are delayed. The reported p50/p95/p99 remain conservative
+nearest-rank aggregates of qualifying rolling-percentile ticks, not raw
+per-frame samples; the artifact names that statistic explicitly. Pass
+`--require-pass` when a warning should produce a nonzero exit status.
+
+### Return-path hardware evidence (2026-07-17)
+
+The in-process writer's audio path passed an uninterrupted Mac CoreAudio
+capture for 7,200.3 seconds: 345,595,200 host frames in 359,995 callbacks with
+zero host status errors. The relay stayed on one PID with zero service
+restarts, writer xruns, packet loss, sequence resets/reorders/discontinuities,
+or new streaming-drop deltas. Its bridge-emit→final-ALSA-write p95 normally
+remained 24–35 ms and briefly reached 52.5 ms during deliberate CPU/memory
+pressure, still below the 80 ms evidence target. The same run included 91.1
+seconds of simultaneous bidirectional UAC2 audio plus roughly 256 MiB of NCM
+traffic in each direction; neither that overlap nor the bounded pressure run
+produced an xrun or stream-integrity fault.
+
+The run also evidence-refuted the original plan's `writer_splices <= 1 per 10
+min` number without refuting the design. There were 22 bounded, insert-only 20
+ms corrections in 120 minutes (1.83 per 10 minutes); ordinary later cadence
+approached one correction per 197 seconds. That cadence is the expected result
+of the plan's own roughly 100 ppm independent-clock premise: a 20 ms excursion
+at 100 ppm is consumed in about 200 seconds, or roughly three corrections per
+10 minutes. Meeting the separate one-per-10-minute number would require
+running near an empty ring, increasing the verified 40 ms buffer and latency,
+or adding an adaptive resampler/DLL. Preserve the lowest-reliable 30 ms target,
+20–40 ms band, and 160x4 geometry unless host evidence shows harm; judge this
+controller by bounded correction duty plus zero xrun/loss/sequence failures,
+not the internally inconsistent historical number. The original execution
+plan remains byte-for-byte preserved in
+[`PLAN-usb-mic-export-latency-fix.md`](PLAN-usb-mic-export-latency-fix.md).
+
+A separate 7,200.884-second realistic Pi system soak recorded 241 samples with
+zero tracked-service restarts, memory-pressure events, OOMs, or warning-level
+journal entries. The sampler version used for that run omitted
+`jasper-usbmic.service` and `jasper-usbnet-dhcp.service`; manual service,
+cgroup, and journal evidence showed both on one PID with zero restarts,
+memory-pressure events, or failure lines throughout the window. The tracker now
+includes both resident units so future schema-1 artifacts retain their full
+PSS/CPU history. Windows 11 composite hardware and wake-rate parity for the
+optional low PortAudio capture-latency setting remain open; the latter setting
+therefore stays off by default.
 
 The relay publishes fresh status under `/run/jasper-usbmic/status.json`;
 “streaming” requires the gadget PCM hardware pointer and sink writer to advance,
-while an idle host stays “ready.” The `/wake/` switch is the sole end-user
+while an idle host stays “ready.” The `/wake/` controls are the sole end-user
 authority for this export: pausing the JTS voice assistant does not alter or
-silence an explicitly enabled computer microphone. `/wake/`, `/aec`, logs, and
-the usbsink doctor group expose desired, advertised, relay, and streaming state.
+silence an explicitly enabled computer microphone. `/wake/` and `/aec` expose
+the requested selector separately from the fresh bridge-applied mode/leg;
+those surfaces, logs, and the usbsink doctor group also expose desired,
+advertised, relay, and streaming state.
 
 From this descriptor owner's perspective, an actual transition adds or removes
 `uac2.usb0` while leaving the network function wanted. A brief host-visible
 re-enumeration ("Playback Inactive" flicker, momentary network blip) is expected
-when a recompose is necessary and remains hardware-checklist item #5.
+when a recompose is necessary and remains hardware-checklist item #5. Changing
+only `JASPER_USB_MIC_LEG` is not such a transition and must not recompose.
 
 ### Multiroom follower parking
 
@@ -668,13 +790,14 @@ Each item names the specific claim above it verifies.
     recording has advancing audio with no gaps or relay drops. Repeat with NCM
     both bound and unbound: Windows audio compatibility must not be conflated
     with the separate management-network driver caveats above.
-12. **Return-path latency decomposition.** Add same-clock taps at selected
-    chip-frame arrival, `:9894` receive, and ALSA enqueue/pointer progress; read
-    the actual UDP receive buffer, pipe capacity, queue depths, and
-    `snd_pcm_delay`. Pair that with a host capture to separate Pi-side transport
-    from host/USB latency. Do not claim the visible two-period queue plus 40 ms
-    UAC2 ring is the complete latency budget until the opaque pipe is removed or
-    measured empty under steady-state and stall/recovery tests.
+12. **Return-path latency certification.** During a real host capture, verify
+    schema-4 bridge-emit→ALSA-write percentiles, `appl_ptr - hw_ptr` fill,
+    reset/xrun/splice deltas, and the separately negotiated XVF/PortAudio
+    capture geometry. Pair the Pi metrics with a simultaneous host capture to
+    separate gadget/USB/host latency and to prove the first 250 ms after idle
+    contains silence/current input rather than pre-idle audio. The in-process
+    writer removed the opaque pipe; the two-period source queue plus current
+    ring fill still is not the complete physical mic→host budget.
 
 ## Cable caveats
 
@@ -711,22 +834,33 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-16 (the USB-microphone switch's scheduler acknowledgement
-and bounded accepted-apply retry contract were rechecked against the control
-endpoint, systemd unit, README wording, and focused tests; the Windows UAC2 support envelope was rechecked
+Last verified: 2026-07-17 (the active-plan-derived computer-microphone source
+selector, bridge-only restart-broker path, relay `PartOf=` convergence, and
+explicit no-gadget/no-descriptor/no-NCM boundary were rechecked against the
+control, bridge, systemd, and `/wake/` paths; the USB-microphone switch's
+scheduler acknowledgement and bounded accepted-apply retry contract were
+rechecked against the control endpoint, systemd unit, README wording, and
+focused tests; the schema-4
+in-process writer, exact 10 ms period split, idle sanitization, resume reset,
+occupancy target, bounded recovery, and structured telemetry were rechecked
+against the relay and focused tests, with the realized 16 kHz 160x4 plug
+geometry and underlying 48 kHz 480x4 gadget pointers verified on jts.local;
+the two-hour Mac capture, simultaneous bidirectional UAC2/NCM load, bounded
+CPU/memory pressure, and two-hour Pi resource soak were hardware-verified with
+the measured splice-rate deviation recorded above; the Windows UAC2 support envelope was rechecked
 against Microsoft's current class-driver documentation; live `jts` probes
-separated a genuine-recording ~50 ms pipe / 30–40 ms gadget-ring baseline from
-history-dependent frozen idle residuals, so the prior continuity result is no
-longer presented as a latency bound; JTS4 active-host Apple-DAC recovery and strict
+on the prior implementation separated a genuine-recording ~50 ms pipe /
+30–40 ms gadget-ring baseline from history-dependent frozen idle residuals,
+which motivated deleting that pipe; JTS4 active-host Apple-DAC recovery and strict
 deploy health verified; hardware-aware USB data-role matrix, pending-role RAM
 contract, and conditional NCM availability rechecked;
 the `/wake/` USB-microphone intent, `p_chmask`/BCD descriptor split, dedicated
 `:9894` relay, dependency lifecycle, assistant-pause independence, and
 status/doctor surfaces
 were rechecked against the implementation and focused tests;
-Pi 5 + Mac Studio composite enumeration and lab-only UAC2 return capture were
-hardware-verified, closing basic dwc2 endpoint allocation while leaving
-simultaneous bidirectional-audio/NCM stress open;
+Pi 5 + Mac Studio composite enumeration and sustained UAC2 return capture were
+hardware-verified, closing basic dwc2 endpoint allocation and the simultaneous
+bidirectional-audio/NCM stress gate;
 `jasper-usbsink.service` rechecked as the process-free readiness marker; USB
 audio composition requires canonical
 source-aware authorization, derived lifecycle readiness, and a live fan-in

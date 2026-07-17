@@ -83,6 +83,14 @@ systemctl status jasper-usbsink.service jasper-usbgadget.service jasper-fanin.se
 jasper-doctor
 ```
 
+For the optional reverse `JTS Mic` direction, the active-only 120 ms doctor
+gate and the identity-bound `jasper-usb-mic-latency-artifact` certification
+workflow are canonical in
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
+That tool measures bridge-emit→final-ALSA-write; it does not claim the
+host-to-speaker route latency measured by the click/capture harness below in
+this document's historical appendix.
+
 The readiness marker has zero resident-process RAM. USB-specific incremental
 userspace cost is the non-real-time volume observer; fan-in is already the
 shared source mixer. A sustained DIRECT-capture failure makes USB unavailable
@@ -2155,8 +2163,9 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-15 (hardware-resolved USB role and Zero/USB-DAC
+Last verified: 2026-07-16 (hardware-resolved USB role and Zero/USB-DAC
 unavailability contract rechecked against the shared output-hardware artifact;
 the optional reverse USB-mic path is explicitly separated from the one
-host-to-speaker fan-in data plane; runtime capture recovery was rechecked as
+host-to-speaker fan-in data plane and links to its certification tool; runtime
+capture recovery was rechecked as
 local fan-in self-heal plus telemetry with no health-driven composition owner.)

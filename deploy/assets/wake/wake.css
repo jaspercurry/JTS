@@ -84,6 +84,14 @@
 .usb-mic-notice {
   margin-top: 0.55rem;
 }
+.usb-mic-source {
+  margin-top: 0.8rem;
+}
+.usb-mic-source-status {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
 
 .echo-card .info-card {
   padding-bottom: 0.85rem;

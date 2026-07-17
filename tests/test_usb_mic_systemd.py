@@ -10,6 +10,7 @@ UNIT = ROOT / "deploy/systemd/jasper-usbmic.service"
 APPLY_UNIT = ROOT / "deploy/systemd/jasper-usbmic-apply.service"
 APPLY_RESULT = ROOT / "deploy/usbsink/jasper-usbmic-apply-result"
 INSTALL = ROOT / "deploy/lib/install/systemd-units.sh"
+INSTALL_SH = ROOT / "deploy/install.sh"
 SERVICE_USERS = ROOT / "deploy/lib/install/service-users.sh"
 
 
@@ -33,6 +34,12 @@ def test_installer_stages_and_enables_usb_mic_service() -> None:
     assert "deploy/systemd/jasper-usbmic-apply.service" in text
     assert "deploy/usbsink/jasper-usbmic-apply-result" in text
     assert "systemctl enable jasper-usbmic.service" in text
+
+
+def test_installer_seeds_usb_mic_enable_and_leg_preferences() -> None:
+    text = INSTALL_SH.read_text()
+    assert "JASPER_USB_MIC=disabled" in text
+    assert "JASPER_USB_MIC_LEG=primary" in text
 
 
 def test_usb_mic_apply_is_durable_delayed_and_naturally_debounced() -> None:

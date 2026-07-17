@@ -56,6 +56,8 @@ URL surface (after nginx strips the /wake/ prefix):
   POST /profile         body {profile: str} — set canonical input profile
   POST /usb-mic         body {enabled: bool} — expose/remove the cleaned mic
                         as the UAC2 host-input direction
+  POST /usb-mic-leg     body {leg: str} — choose the server-advertised source
+                        sent to the computer microphone
   POST /layer/aec       body {enabled: bool} — legacy compatibility shim
                         for the old software-AEC3 toggle; not rendered
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
@@ -380,6 +382,13 @@ def _mic_status_card_html() -> str:
       {toggle_html("usb-mic-toggle", disabled=True)}
     </div>
     <div class="usb-mic-notice" id="usb-mic-notice">—</div>
+    <div class="field usb-mic-source">
+      <label for="usb-mic-leg-select">Computer microphone source</label>
+      <select id="usb-mic-leg-select" disabled>
+        <option value="">checking…</option>
+      </select>
+      <div class="usb-mic-source-status" id="usb-mic-leg-status">checking…</div>
+    </div>
   </div>
 </section>"""
 
@@ -742,6 +751,23 @@ def _apply_usb_mic(
     )
 
 
+def _apply_usb_mic_leg(
+    leg: str,
+    *,
+    control_base: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Forward a server-provided computer-microphone source choice."""
+
+    return proxy_post(
+        "/aec/usb-mic-leg",
+        control_base=control_base,
+        timeout=5.0,
+        body=json.dumps({"leg": leg}).encode(),
+        headers=headers,
+    )
+
+
 def _start_firmware_update(
     *,
     control_base: str,
@@ -827,6 +853,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     reject_csrf(self)
                     return
                 self._handle_usb_mic()
+                return
+            if path == "/usb-mic-leg":
+                if not guard_mutating_request(self):
+                    reject_csrf(self)
+                    return
+                self._handle_usb_mic_leg()
                 return
             if path == "/sensitivity":
                 if not guard_mutating_request(self):
@@ -972,6 +1004,37 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
             status, resp = _apply_usb_mic(
                 enabled,
+                control_base=cfg["control_base"],
+                headers=forward_control_token_headers(self),
+            )
+            send_proxy_json(self, resp, status=status)
+
+        def _handle_usb_mic_leg(self) -> None:
+            body, err = _read_json_body(self)
+            if err is not None:
+                send_proxy_json(
+                    self,
+                    json.dumps({"error": err}).encode(),
+                    status=400,
+                )
+                return
+            leg = body.get("leg") if body is not None else None
+            if not isinstance(leg, str) or not leg.strip():
+                send_proxy_json(
+                    self,
+                    b'{"error":"leg must be a non-empty string"}',
+                    status=400,
+                )
+                return
+            leg = leg.strip()
+            log_event(
+                logger,
+                "wake.usb_mic_leg",
+                leg=leg,
+                client=self.address_string(),
+            )
+            status, resp = _apply_usb_mic_leg(
+                leg,
                 control_base=cfg["control_base"],
                 headers=forward_control_token_headers(self),
             )
