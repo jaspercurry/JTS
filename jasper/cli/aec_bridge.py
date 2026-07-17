@@ -276,7 +276,7 @@ USB_MIC_RATE = 0
 OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
-BRIDGE_STATS_SCHEMA_VERSION = 2
+BRIDGE_STATS_SCHEMA_VERSION = 3
 
 # Drop-frame threshold. If queues fill faster than they drain,
 # something's wrong (CPU starvation, clock drift exceeded our
@@ -523,6 +523,7 @@ class _BridgeStats:
             self._started_epoch_sec = time.time()
             self._leg_engines = {}
             self._active_capture_plan: dict[str, object] = {}
+            self._capture_stream: dict[str, object] = {}
             self._counters = {
                 "frames_processed": 0,
                 "ref_starved_frames": 0,
@@ -535,6 +536,25 @@ class _BridgeStats:
                 },
                 "udp_send_drops_by_leg": _zero_leg_counters(aec3_sweep_variants),
                 "packets_sent_by_leg": _zero_leg_counters(aec3_sweep_variants),
+            }
+
+    def set_capture_stream(
+        self,
+        *,
+        sample_rate_hz: int,
+        block_frames: int,
+        input_latency_seconds: float,
+    ) -> None:
+        """Publish the PortAudio geometry negotiated by the live XVF stream."""
+
+        with self._lock:
+            self._capture_stream = {
+                "sample_rate_hz": sample_rate_hz,
+                "block_frames": block_frames,
+                "input_latency_seconds": input_latency_seconds,
+                "input_latency_frames": round(
+                    input_latency_seconds * sample_rate_hz
+                ),
             }
 
     def set_leg_engine(
@@ -624,6 +644,7 @@ class _BridgeStats:
             counters = json.loads(json.dumps(self._counters))
             leg_engines = json.loads(json.dumps(self._leg_engines))
             active_capture_plan = json.loads(json.dumps(self._active_capture_plan))
+            capture_stream = json.loads(json.dumps(self._capture_stream))
             started = self._started_epoch_sec
         return {
             "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
@@ -635,6 +656,7 @@ class _BridgeStats:
             "out_frame_samples": OUT_FRAME_SAMPLES,
             "counters": counters,
             "leg_engines": leg_engines,
+            "capture_stream": capture_stream,
             "active_capture_plan": active_capture_plan,
             "wake_corpus_plan_id": active_capture_plan.get(
                 "wake_corpus_plan_id", "",
@@ -1531,6 +1553,11 @@ def _mic_thread(
             latency_s=stream.latency,
             samplerate=SAMPLE_RATE,
             blocksize=FRAME_SAMPLES,
+        )
+        _bridge_stats.set_capture_stream(
+            sample_rate_hz=int(stream.samplerate),
+            block_frames=int(stream.blocksize),
+            input_latency_seconds=float(stream.latency),
         )
         _shutdown.wait()
 

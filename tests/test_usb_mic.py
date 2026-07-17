@@ -136,6 +136,7 @@ def test_status_surfaces_relay_latency_and_loss_telemetry(tmp_path: Path) -> Non
             "source_age_basis": "bridge_emit_monotonic_v2",
             "source_age_scope": "bridge_emit_to_relay_dequeue",
             "source_age_sample_count": 100,
+            "source_age_samples_appended": 1234,
             "source_age_window_generation": 4,
             "source_age_window_started_epoch_sec": 95.0,
             "source_age_ms_p50": 31.2,
@@ -148,6 +149,14 @@ def test_status_surfaces_relay_latency_and_loss_telemetry(tmp_path: Path) -> Non
             "periods_dropped_streaming": 3,
             "periods_dropped_idle": 40,
             "drop_regime_basis": "status_interval_host_hw_ptr_advance",
+            "writer_fill_ms": 15.75,
+            "writer_target_ms": 20.0,
+            "writer_pcm_rate_hz": 16_000,
+            "writer_pcm_period_frames": 160,
+            "writer_pcm_buffer_frames": 640,
+            "writer_splices": 2,
+            "writer_xruns": 0,
+            "writer_resets": 1,
         },
     )
 
@@ -155,6 +164,7 @@ def test_status_surfaces_relay_latency_and_loss_telemetry(tmp_path: Path) -> Non
     assert status["source_age_basis"] == "bridge_emit_monotonic_v2"
     assert status["source_age_scope"] == "bridge_emit_to_relay_dequeue"
     assert status["source_age_sample_count"] == 100
+    assert status["source_age_samples_appended"] == 1234
     assert status["source_age_window_generation"] == 4
     assert status["source_age_window_started_epoch_sec"] == 95.0
     assert status["source_age_ms_p50"] == 31.2
@@ -167,6 +177,14 @@ def test_status_surfaces_relay_latency_and_loss_telemetry(tmp_path: Path) -> Non
     assert status["periods_dropped_streaming"] == 3
     assert status["periods_dropped_idle"] == 40
     assert status["drop_regime_basis"] == ("status_interval_host_hw_ptr_advance")
+    assert status["writer_fill_ms"] == 15.75
+    assert status["writer_target_ms"] == 20.0
+    assert status["writer_pcm_rate_hz"] == 16_000
+    assert status["writer_pcm_period_frames"] == 160
+    assert status["writer_pcm_buffer_frames"] == 640
+    assert status["writer_splices"] == 2
+    assert status["writer_xruns"] == 0
+    assert status["writer_resets"] == 1
 
 
 def test_status_does_not_conflate_assistant_pause_with_usb_export(
@@ -465,6 +483,7 @@ def test_writer_writes_each_source_frame_as_two_exact_periods(monkeypatch) -> No
         audio[ALSA_PERIOD_BYTES:],
     ]
     assert sink.source_ages_ms() == (50.0,)
+    assert sink.source_age_snapshot().samples_appended == 1
     sink.close()
 
 
@@ -1055,6 +1074,7 @@ def test_relay_reports_v2_loss_percentiles_and_drop_regimes(monkeypatch) -> None
     assert status["source_age_scope"] == "bridge_emit_to_alsa_write"
     assert status["source_age_window_generation"] == 2
     assert status["source_age_window_started_epoch_sec"] == 900.0
+    assert status["source_age_samples_appended"] == 0
     assert status["source_age_ms_p50"] == 20.0
     assert status["source_age_ms_p95"] == 30.0
     assert status["source_age_ms_p99"] == 30.0
@@ -1063,9 +1083,15 @@ def test_relay_reports_v2_loss_percentiles_and_drop_regimes(monkeypatch) -> None
     assert status["periods_dropped"] == 3
     assert status["drop_regime_basis"] == ("status_interval_host_hw_ptr_advance")
     assert status["writer_fill_ms"] == 20.0
+    assert status["writer_pcm_rate_hz"] == 16_000
+    assert status["writer_pcm_period_frames"] == 160
+    assert status["writer_pcm_buffer_frames"] == 640
+    assert status["gadget_hardware_rate_hz"] == 48_000
     assert status["writer_splices"] == 2
     assert status["writer_xruns"] == 0
     assert status["writer_resets"] == 1
+    assert status["relay_pid"] > 0
+    assert status["relay_started_epoch_sec"] > 0
     assert fake_sink.age_window_resets == 2
 
 

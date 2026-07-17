@@ -136,6 +136,22 @@ def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
     assert data["counters"]["packets_sent_by_leg"]["on"] == 1
 
 
+def test_bridge_stats_snapshot_carries_negotiated_capture_geometry() -> None:
+    stats = aec_bridge._BridgeStats()
+    stats.set_capture_stream(
+        sample_rate_hz=16_000,
+        block_frames=320,
+        input_latency_seconds=0.08,
+    )
+
+    assert stats.snapshot()["capture_stream"] == {
+        "sample_rate_hz": 16_000,
+        "block_frames": 320,
+        "input_latency_seconds": 0.08,
+        "input_latency_frames": 1280,
+    }
+
+
 def test_drop_log_debouncer_aggregates_one_second_windows():
     debouncer = aec_bridge._DropLogDebouncer()
 
@@ -1183,7 +1199,11 @@ def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
 
 
 def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
-    stream = SimpleNamespace(latency=0.025)
+    stream = SimpleNamespace(
+        latency=0.025,
+        samplerate=aec_bridge.SAMPLE_RATE,
+        blocksize=aec_bridge.FRAME_SAMPLES,
+    )
 
     class InputStream:
         def __init__(self, **kwargs):

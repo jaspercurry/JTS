@@ -247,6 +247,35 @@ certification of that claim. This is still not physical mic→host end-to-end la
 XVF/PortAudio capture time, current gadget fill, USB transport, and the host
 audio stack remain separate terms and need the hardware certification run.
 
+During an active host recording, `jasper-doctor` compares the fresh p95 with
+the 120 ms acceptance budget. It deliberately does not judge a frozen idle
+ring. For a reviewable run record, keep the host capture open and run:
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact \
+  --duration-seconds 30 \
+  --host-os "macOS 15" \
+  --host-app "CoreAudio / sounddevice" \
+  --output /tmp/jts-usb-mic-latency.json
+```
+
+The schema-1 artifact rejects any tick where the host is not pulling. It binds
+the measured window to the installed build, microphone descriptor revision,
+resolved export source (software-clean carrier or chip beam), negotiated
+XVF/PortAudio capture geometry, realized
+ALSA writer geometry and target, host/app identity, and counter deltas. Its
+`configuration_sha256`, `identity_sha256`, and `content_sha256` bind stable
+configuration, run identity, and complete content respectively; none is a
+cryptographic operator signature. Certification requires at least 15 seconds
+of uninterrupted status. Percentile aggregation begins only after both an
+11-second minimum warm-up and 512 exact source-age appends following the first
+relay status written after observation began. That counter proof, rather than
+wall time alone, ensures the bounded rolling window contains only this run even
+when status reads are delayed. The reported p50/p95/p99 remain conservative
+nearest-rank aggregates of qualifying rolling-percentile ticks, not raw
+per-frame samples; the artifact names that statistic explicitly. Pass
+`--require-pass` when a warning should produce a nonzero exit status.
+
 The relay publishes fresh status under `/run/jasper-usbmic/status.json`;
 “streaming” requires the gadget PCM hardware pointer and sink writer to advance,
 while an idle host stays “ready.” The `/wake/` switch is the sole end-user

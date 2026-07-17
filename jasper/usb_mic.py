@@ -42,6 +42,10 @@ USB_MIC_PACKET_MAGIC = b"JM"
 USB_MIC_PACKET_VERSION = 2
 USB_MIC_HEADER_STRUCT = "<2sBBIQ"
 USB_MIC_HEADER_BYTES = struct.calcsize(USB_MIC_HEADER_STRUCT)
+USB_MIC_RELAY_SCHEMA_VERSION = 4
+USB_MIC_SOURCE_AGE_BASIS = "bridge_emit_monotonic_v2"
+USB_MIC_SOURCE_AGE_SCOPE = "bridge_emit_to_alsa_write"
+USB_MIC_LATENCY_WARN_MS = 120.0
 USB_MIC_BCD_DEVICE = "0x0210"
 USB_NO_MIC_BCD_DEVICE = "0x0200"
 RELAY_STATUS_FRESH_SECONDS = 3.0
@@ -331,6 +335,11 @@ def build_usb_mic_status(
         )
         if relay_fresh
         else 0,
+        "source_age_samples_appended": _status_int(
+            relay.get("source_age_samples_appended")
+        )
+        if relay_fresh
+        else 0,
         "source_age_window_generation": _status_int(
             relay.get("source_age_window_generation")
         )
@@ -384,6 +393,34 @@ def build_usb_mic_status(
         if relay_fresh
         else "",
         "periods_dropped": _status_int(relay.get("periods_dropped"))
+        if relay_fresh
+        else 0,
+        "writer_fill_ms": _status_optional_float(relay.get("writer_fill_ms"))
+        if relay_fresh
+        else None,
+        "writer_target_ms": _status_optional_float(relay.get("writer_target_ms"))
+        if relay_fresh
+        else None,
+        "writer_pcm_rate_hz": _status_int(relay.get("writer_pcm_rate_hz"))
+        if relay_fresh
+        else 0,
+        "writer_pcm_period_frames": _status_int(
+            relay.get("writer_pcm_period_frames")
+        )
+        if relay_fresh
+        else 0,
+        "writer_pcm_buffer_frames": _status_int(
+            relay.get("writer_pcm_buffer_frames")
+        )
+        if relay_fresh
+        else 0,
+        "writer_splices": _status_int(relay.get("writer_splices"))
+        if relay_fresh
+        else 0,
+        "writer_xruns": _status_int(relay.get("writer_xruns"))
+        if relay_fresh
+        else 0,
+        "writer_resets": _status_int(relay.get("writer_resets"))
         if relay_fresh
         else 0,
         "drop_rate_periods_per_sec": float(

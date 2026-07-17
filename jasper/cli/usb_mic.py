@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import dataclass
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import signal
@@ -32,6 +33,9 @@ from jasper.usb_mic import (
     USB_HOST_MIC_UDP_PORT,
     USB_MIC_HEADER_BYTES,
     USB_MIC_HEADER_STRUCT,
+    USB_MIC_RELAY_SCHEMA_VERSION,
+    USB_MIC_SOURCE_AGE_BASIS,
+    USB_MIC_SOURCE_AGE_SCOPE,
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
     usb_mic_enabled,
@@ -54,8 +58,9 @@ V2_PACKET_BYTES = USB_MIC_HEADER_BYTES + PACKET_BYTES
 ACCEPTED_PACKET_BYTES = frozenset((PACKET_BYTES, LEGACY_PACKET_BYTES, V2_PACKET_BYTES))
 QUEUE_PERIODS = 2
 SOURCE_AGE_WINDOW_PERIODS = 512
-SOURCE_AGE_BASIS = "bridge_emit_monotonic_v2"
-SOURCE_AGE_SCOPE = "bridge_emit_to_alsa_write"
+SOURCE_AGE_BASIS = USB_MIC_SOURCE_AGE_BASIS
+SOURCE_AGE_SCOPE = USB_MIC_SOURCE_AGE_SCOPE
+RELAY_SCHEMA_VERSION = USB_MIC_RELAY_SCHEMA_VERSION
 DROP_REGIME_BASIS = "status_interval_host_hw_ptr_advance"
 # Local UDP can only queue hundreds of these 656-byte packets. Treat a jump
 # larger than this generous bound as a sender discontinuity rather than
@@ -106,6 +111,7 @@ class SourceAgeSnapshot:
     samples_ms: tuple[float, ...]
     generation: int
     started_epoch_sec: float
+    samples_appended: int = 0
 
 
 @dataclass(frozen=True)
@@ -295,6 +301,7 @@ class AlsaGadgetSink:
         self._source_ages_ms: deque[float] = deque(maxlen=SOURCE_AGE_WINDOW_PERIODS)
         self._source_age_generation = 0
         self._source_age_started_epoch_sec = time.time()
+        self._source_age_samples_appended = 0
         self._alsa = alsaaudio_module or _load_alsaaudio()
         alsa_error = getattr(self._alsa, "ALSAAudioError", None)
         self._alsa_error_types: tuple[type[BaseException], ...] = (
@@ -445,6 +452,7 @@ class AlsaGadgetSink:
                     / 1_000_000.0,
                 )
                 self._source_ages_ms.append(source_age_ms)
+                self._source_age_samples_appended += 1
             self.frames_written += written
             self.last_progress_monotonic = now_monotonic
             self.last_progress_epoch_sec = now_epoch
@@ -753,6 +761,7 @@ class AlsaGadgetSink:
                 samples_ms=tuple(self._source_ages_ms),
                 generation=self._source_age_generation,
                 started_epoch_sec=self._source_age_started_epoch_sec,
+                samples_appended=self._source_age_samples_appended,
             )
 
     def reset_source_age_window(self) -> None:
@@ -1043,7 +1052,7 @@ def _ready(
 def _write_status(path: str, payload: dict[str, Any]) -> None:
     payload = {
         **payload,
-        "schema_version": 4,
+        "schema_version": RELAY_SCHEMA_VERSION,
         "updated_epoch_sec": time.time(),
     }
     atomic_write_text(path, json.dumps(payload, sort_keys=True) + "\n", mode=0o644)
@@ -1076,6 +1085,7 @@ def run_relay(
     packets_lost = 0
     sequence = SequenceTracker()
     started_monotonic = time.monotonic()
+    relay_started_epoch_sec = time.time()
     last_packet_monotonic = 0.0
     last_packet_epoch_sec = 0.0
     last_status = 0.0
@@ -1214,6 +1224,7 @@ def run_relay(
                         "source_age_basis": SOURCE_AGE_BASIS,
                         "source_age_scope": SOURCE_AGE_SCOPE,
                         "source_age_sample_count": len(source_ages_ms),
+                        "source_age_samples_appended": source_age.samples_appended,
                         "source_age_window_generation": source_age.generation,
                         "source_age_window_started_epoch_sec": (
                             source_age.started_epoch_sec
@@ -1221,6 +1232,12 @@ def run_relay(
                         "drop_regime_basis": DROP_REGIME_BASIS,
                         "writer_fill_ms": writer.fill_ms,
                         "writer_target_ms": writer.target_ms,
+                        "writer_pcm_rate_hz": SOURCE_RATE,
+                        "writer_pcm_period_frames": ALSA_PERIOD_FRAMES,
+                        "writer_pcm_buffer_frames": round(
+                            writer.pcm_buffer_ms * SOURCE_RATE / 1000.0
+                        ),
+                        "gadget_hardware_rate_hz": GADGET_RATE,
                         "writer_pcm_period_ms": writer.pcm_period_ms,
                         "writer_pcm_buffer_ms": writer.pcm_buffer_ms,
                         "writer_splices": writer.splices,
@@ -1232,6 +1249,8 @@ def run_relay(
                         **age_percentiles,
                         **health,
                         "udp_port": udp_port,
+                        "relay_pid": os.getpid(),
+                        "relay_started_epoch_sec": relay_started_epoch_sec,
                     },
                 )
                 last_status = now
@@ -1268,6 +1287,7 @@ def run_relay(
                 "source_age_basis": SOURCE_AGE_BASIS,
                 "source_age_scope": SOURCE_AGE_SCOPE,
                 "source_age_sample_count": len(final_source_ages_ms),
+                "source_age_samples_appended": final_source_age.samples_appended,
                 "source_age_window_generation": final_source_age.generation,
                 "source_age_window_started_epoch_sec": (
                     final_source_age.started_epoch_sec
@@ -1275,6 +1295,12 @@ def run_relay(
                 "drop_regime_basis": DROP_REGIME_BASIS,
                 "writer_fill_ms": final_writer.fill_ms,
                 "writer_target_ms": final_writer.target_ms,
+                "writer_pcm_rate_hz": SOURCE_RATE,
+                "writer_pcm_period_frames": ALSA_PERIOD_FRAMES,
+                "writer_pcm_buffer_frames": round(
+                    final_writer.pcm_buffer_ms * SOURCE_RATE / 1000.0
+                ),
+                "gadget_hardware_rate_hz": GADGET_RATE,
                 "writer_pcm_period_ms": final_writer.pcm_period_ms,
                 "writer_pcm_buffer_ms": final_writer.pcm_buffer_ms,
                 "writer_splices": final_writer.splices,
@@ -1288,6 +1314,8 @@ def run_relay(
                 "audio_healthy": False,
                 "audio_stalled": False,
                 "udp_port": udp_port,
+                "relay_pid": os.getpid(),
+                "relay_started_epoch_sec": relay_started_epoch_sec,
             },
         )
     return 0

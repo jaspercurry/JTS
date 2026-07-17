@@ -10,6 +10,7 @@ and reads. Pi-side smoke testing happens via jasper-doctor itself.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1146,6 +1147,87 @@ def test_usb_mic_doctor_warns_when_live_relay_audio_is_stalled(
     assert result.status == "warn"
     assert "stopped before" in result.detail
     assert "drop_rate=8" in result.detail
+
+
+@pytest.mark.parametrize(
+    (
+        "host_streaming",
+        "p95_ms",
+        "relay_schema",
+        "metric_scope",
+        "expected_status",
+        "expected_detail",
+    ),
+    [
+        (True, 121.0, 4, "bridge_emit_to_alsa_write", "warn", "121.0 ms"),
+        (True, 119.0, 4, "bridge_emit_to_alsa_write", "ok", "119.0 ms"),
+        (True, None, 4, "bridge_emit_to_alsa_write", "warn", "not yet available"),
+        (True, "bad", 4, "bridge_emit_to_alsa_write", "warn", "not yet available"),
+        (True, -1.0, 4, "bridge_emit_to_alsa_write", "warn", "not yet available"),
+        (
+            True,
+            float("nan"),
+            4,
+            "bridge_emit_to_alsa_write",
+            "warn",
+            "not yet available",
+        ),
+        (
+            True,
+            20.0,
+            3,
+            "bridge_emit_to_relay_dequeue",
+            "warn",
+            "unsupported",
+        ),
+        (False, 500.0, 4, "bridge_emit_to_alsa_write", "ok", "host_streaming=False"),
+    ],
+)
+def test_usb_mic_doctor_checks_latency_only_during_active_capture(
+    monkeypatch,
+    tmp_path,
+    host_streaming,
+    p95_ms,
+    relay_schema,
+    metric_scope,
+    expected_status,
+    expected_detail,
+):
+    gadget = _usb_mic_gadget(tmp_path, p_chmask="1", bcd_device="0x0210")
+    relay = tmp_path / "relay.json"
+    relay.write_text(
+        json.dumps(
+            {
+                "updated_epoch_sec": 100,
+                "audio_stalled": False,
+                "host_streaming": host_streaming,
+                "source_age_ms_p95": p95_ms,
+                "schema_version": relay_schema,
+                "source_age_basis": "bridge_emit_monotonic_v2",
+                "source_age_scope": metric_scope,
+                "periods_dropped": 0,
+            }
+        )
+    )
+    monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
+    monkeypatch.setattr(doctor.usbsink, "RELAY_STATUS_PATH", str(relay))
+    monkeypatch.setattr(doctor.usbsink.time, "time", lambda: 100.5)
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "read_usb_mic_intent",
+        lambda: SimpleNamespace(valid=True, enabled=True, detail=""),
+    )
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "_audio_composition_wanted",
+        lambda: (True, "ready"),
+    )
+    monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda _unit: True)
+
+    result = doctor.usbsink.check_usb_mic_export()
+
+    assert result.status == expected_status
+    assert expected_detail in result.detail
 
 
 # ----------------------------------------------------------------------

@@ -113,6 +113,9 @@ XVF capture, PortAudio, the mic queue, AEC processing, gadget fill, USB, or the
 host audio stack. The bridge logs the separately negotiated PortAudio input
 latency as `event=aec.mic_stream_latency`. Voice/wake legs keep their established raw
 1280-sample / 80 ms packet contract with no header.
+The same negotiated capture rate, block size, and input-latency frames are
+published in `/run/jasper/aec_bridge_stats.json` under `capture_stream`, so a
+USB-microphone latency artifact can bind its evidence without journal parsing.
 
 There is **no independent computer-microphone leg picker yet**. Export mirrors
 the bridge's final cleaned stream—the same primary/session selection sent to
@@ -1244,9 +1247,10 @@ contract. `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` is enough for
 `jasper-aec-bridge` to emit the dedicated `chip_aec_150` and
 `chip_aec_210` UDP legs on `:9887/:9888`; it no longer depends on
 production per-beam wake-device vars being configured. Bridge stats
-schema v2 publishes `active_capture_plan` with the wake-corpus
+schema v3 publishes `active_capture_plan` with the wake-corpus
 `plan_id`, emitted legs, corpus flags, beam plan, ports, and mic /
-reference identity summary. The recorder uses that stats payload, not
+reference identity summary, plus the negotiated `capture_stream` geometry.
+The recorder uses that stats payload, not
 env inference alone, to block clip start when the active bridge no
 longer matches the stored session plan.
 
