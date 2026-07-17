@@ -679,6 +679,18 @@ pub struct Mixer {
     xrun_tx: Sender<XrunEvent>,
     period_frames: u32,
     tts: Option<TtsMixer>,
+    /// Smoothed program-lane duck gain (linear), persisted across periods.
+    /// 1.0 = no duck. `step()` glides this toward the per-period target
+    /// (1.0, or the configured duck level while TTS/cue/chirp audio is
+    /// queued) at `program_duck_attack_step` / `program_duck_release_step`
+    /// per frame. Before this, the ~25 dB program duck was applied as a
+    /// hard per-period step, which clicked and pumped the music around
+    /// every earcon/cue.
+    program_duck_current: f32,
+    /// Per-frame linear-gain decrement while ducking DOWN (attack).
+    program_duck_attack_step: f32,
+    /// Per-frame linear-gain increment while releasing UP toward 1.0.
+    program_duck_release_step: f32,
     /// OPTIONAL music-only (pre-TTS) side-output — the multi-room sync
     /// tap (`docs/HANDOFF-multiroom.md` §2 "inv-2 realization"). `None`
     /// on a solo speaker (zero added work). `write_music_only` keeps it a
@@ -1353,6 +1365,15 @@ impl Mixer {
             xrun_tx,
             period_frames: config.period_frames,
             tts: tts.map(TtsMixer::new),
+            program_duck_current: 1.0,
+            program_duck_attack_step: duck_step_per_frame(
+                config.tts_duck_attack_ms,
+                config.sample_rate,
+            ),
+            program_duck_release_step: duck_step_per_frame(
+                config.tts_duck_release_ms,
+                config.sample_rate,
+            ),
             music_output,
             music_only_buf: vec![0i16; period_samples],
             music_frames_written: Arc::new(AtomicU64::new(0)),
@@ -1528,10 +1549,10 @@ impl Mixer {
         // When voice ducking is routed through fan-in, attenuate only
         // renderer/program lanes. TTS is mixed after this step so it
         // remains audible and then flows through CamillaDSP crossover.
-        let mut program_gain = 1.0f32;
+        let mut program_target = 1.0f32;
         if let Some(tts) = self.tts.as_mut() {
             if tts.prepare_period() {
-                program_gain = tts.program_duck_gain();
+                program_target = tts.program_duck_gain();
             }
         }
 
@@ -1656,8 +1677,24 @@ impl Mixer {
             saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
             tts.observe_content_period(&self.content_meter_buf);
         }
-        if program_gain != 1.0 {
-            apply_gain_to_sum(&mut self.sum_buf, program_gain);
+        // Apply the program-lane duck as a per-sample ramp toward the
+        // period target, so a ~25 dB duck engages/releases smoothly rather
+        // than stepping at the period boundary (the click/pump-the-music
+        // artifact). Fast paths: skip entirely when fully un-ducked, and
+        // flat-multiply when already at a steady ducked level.
+        if program_target == 1.0 && self.program_duck_current == 1.0 {
+            // no duck — common path, nothing to do
+        } else if program_target == self.program_duck_current {
+            apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current);
+        } else {
+            self.program_duck_current = ramp_program_duck(
+                &mut self.sum_buf,
+                CHANNELS as usize,
+                self.program_duck_current,
+                program_target,
+                self.program_duck_attack_step,
+                self.program_duck_release_step,
+            );
         }
         // Music-only side-tap (multi-room sync): the program AS PLAYED
         // minus the assistant — taken POST-duck (so a synced follower
@@ -2245,6 +2282,53 @@ fn apply_gain_to_sum(sum: &mut [i32], gain: f32) {
             .round()
             .clamp(i32::MIN as f32, i32::MAX as f32) as i32;
     }
+}
+
+/// Per-frame linear-gain slew such that a full 0.0→1.0 traversal takes
+/// `ms` milliseconds at `sample_rate`. Floored so a misconfigured 0 can't
+/// divide by zero (config validation already bounds `ms >= 1`).
+fn duck_step_per_frame(ms: u32, sample_rate: u32) -> f32 {
+    let frames = (ms.max(1) as f32) * (sample_rate.max(1) as f32) / 1000.0;
+    1.0 / frames.max(1.0)
+}
+
+/// Glide `current` toward `target` and apply the gliding gain to the
+/// interleaved program sum, one linear step per frame. Ducking DOWN uses
+/// `attack_step`; releasing UP uses `release_step`. The clamp to `target`
+/// means it never overshoots and lands exactly, so callers can compare
+/// `current == target` to detect a settled duck. Returns the updated
+/// `current` for the caller to persist across periods.
+///
+/// This replaces a hard per-period gain step: a ~25 dB program duck that
+/// switched levels in one sample injected a broadband click and a "pump"
+/// into music playing under a short earcon/cue. Ramping the edges removes
+/// both.
+fn ramp_program_duck(
+    sum: &mut [i32],
+    channels: usize,
+    mut current: f32,
+    target: f32,
+    attack_step: f32,
+    release_step: f32,
+) -> f32 {
+    debug_assert!(channels >= 1);
+    let frames = sum.len() / channels;
+    for f in 0..frames {
+        if current > target {
+            current = (current - attack_step).max(target);
+        } else if current < target {
+            current = (current + release_step).min(target);
+        }
+        if current != 1.0 {
+            let base = f * channels;
+            for s in &mut sum[base..base + channels] {
+                *s = ((*s as f32) * current)
+                    .round()
+                    .clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+            }
+        }
+    }
+    current
 }
 
 /// Clamp i32 sum back to i16 for output. Pulled out for unit testability.
@@ -4615,6 +4699,77 @@ mod tests {
         let mut sum = vec![20_000i32, -20_000, 1_500, -1_500];
         apply_gain_to_sum(&mut sum, 0.1);
         assert_eq!(sum, vec![2_000, -2_000, 150, -150]);
+    }
+
+    #[test]
+    fn duck_step_per_frame_matches_requested_time() {
+        // 15 ms at 48 kHz = 720 frames for a full 0->1 traversal.
+        let step = duck_step_per_frame(15, 48_000);
+        assert!((step - 1.0 / 720.0).abs() < 1e-9);
+        // A misconfigured 0 floors to 1 ms rather than dividing by zero.
+        assert!(duck_step_per_frame(0, 48_000).is_finite());
+        assert!(duck_step_per_frame(15, 0).is_finite());
+    }
+
+    #[test]
+    fn ramp_program_duck_glides_it_does_not_step() {
+        // A constant program signal, one period long. Ducking DOWN toward
+        // 0.5 must NOT drop every frame to 0.5 at once (the old hard step);
+        // early frames stay near full level and the level descends monotonically.
+        let channels = 2usize;
+        let frames = 64usize;
+        let mut sum = vec![10_000i32; frames * channels];
+        // attack_step chosen so it takes ~the whole period to reach target.
+        let attack = (1.0 - 0.5) / (frames as f32);
+        let current = ramp_program_duck(&mut sum, channels, 1.0, 0.5, attack, 1.0);
+        // First frame is essentially un-ducked (no instantaneous 25 dB drop).
+        assert!(
+            sum[0] > 9_800,
+            "onset stepped instead of ramping: {}",
+            sum[0]
+        );
+        // Level descends monotonically frame to frame.
+        let frame_val = |f: usize| sum[f * channels];
+        for f in 1..frames {
+            assert!(
+                frame_val(f) <= frame_val(f - 1),
+                "duck ramp not monotonic at frame {f}"
+            );
+        }
+        // Landed at (or approaching) the target by the end.
+        assert!(
+            (current - 0.5).abs() < 0.02,
+            "did not reach target: {current}"
+        );
+        assert!(frame_val(frames - 1) < 6_000);
+    }
+
+    #[test]
+    fn ramp_program_duck_release_returns_to_unity_and_stops_scaling() {
+        // Releasing UP from a ducked 0.5 back to 1.0: once it lands on 1.0
+        // it must stop scaling entirely (samples pass through unchanged).
+        let channels = 2usize;
+        let frames = 8usize;
+        let mut sum = vec![10_000i32; frames * channels];
+        // release_step large enough to reach 1.0 within the first frame.
+        let current = ramp_program_duck(&mut sum, channels, 0.5, 1.0, 1.0, 1.0);
+        assert_eq!(current, 1.0);
+        // The last frame, fully released, is unscaled.
+        assert_eq!(sum[(frames - 1) * channels], 10_000);
+    }
+
+    #[test]
+    fn ramp_program_duck_steady_state_is_flat_multiply_equivalent() {
+        // When current already equals target, every frame scales by the same
+        // constant — identical to apply_gain_to_sum (the step() steady-state
+        // fast path uses apply_gain_to_sum; this guards their equivalence).
+        let channels = 2usize;
+        let mut ramped = vec![20_000i32, -20_000, 1_500, -1_500];
+        let mut flat = ramped.clone();
+        let current = ramp_program_duck(&mut ramped, channels, 0.1, 0.1, 0.01, 0.01);
+        apply_gain_to_sum(&mut flat, 0.1);
+        assert_eq!(current, 0.1);
+        assert_eq!(ramped, flat);
     }
 
     #[test]

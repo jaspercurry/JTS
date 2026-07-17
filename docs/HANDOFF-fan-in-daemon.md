@@ -538,7 +538,19 @@ socket (`GAIN`, `VOLUME_CONTEXT`, `PREPARE_ASSISTANT`, `SEGMENT_START`, `AUDIO`,
 commands at period boundaries, drops excess queued audio over the
 pending-frame budget, applies program ducking only to renderer lanes,
 then mixes TTS/cues into the summed buffer before writing toward
-CamillaDSP. `PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
+CamillaDSP. The program duck is **ramped, not stepped**: the mixer
+glides the applied renderer-lane gain toward its target
+(1.0 ↔ `JASPER_FANIN_TTS_PROGRAM_DUCK_DB`) per sample over
+`JASPER_FANIN_TTS_DUCK_ATTACK_MS` (engage, default 15) and
+`JASPER_FANIN_TTS_DUCK_RELEASE_MS` (release, default 150). A hard
+per-period step of a ~25 dB duck injected a broadband click and a "pump"
+into music playing under a short earcon/cue; the ramp removes both.
+Steady-state (fully ducked) stays a flat per-period multiply, and the
+fully-un-ducked path is skipped, so the ramp only costs work on the
+engage/release edges (`mixer::ramp_program_duck`,
+`mixer::tests::ramp_program_duck_*`).
+
+`PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
 drive fan-in's content-loudness/profile/peak-cap gain decision.
 `VOLUME_CONTEXT` is standalone FIFO state, not a PREPARE field. Voice writes it
 immediately before PREPARE on the same connection; every publisher uses one

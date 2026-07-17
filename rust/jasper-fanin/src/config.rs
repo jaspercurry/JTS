@@ -164,6 +164,15 @@ pub struct Config {
     /// unattenuated before CamillaDSP crossover/protection.
     pub tts_program_duck_db: f32,
 
+    /// How long the program-lane duck takes to engage (attack) and to
+    /// release back to full level, in milliseconds. The mixer glides the
+    /// applied duck gain over these times per sample instead of stepping
+    /// it at a period boundary, so a ~25 dB duck around a short earcon/cue
+    /// no longer clicks or pumps the music. Attack is short so speech/cues
+    /// aren't masked; release is longer so the music swells back gently.
+    pub tts_duck_attack_ms: u32,
+    pub tts_duck_release_ms: u32,
+
     /// Assistant loudness policy for the pre-DSP TTS socket.
     pub assistant_loudness: AssistantLoudnessConfig,
 
@@ -830,6 +839,21 @@ impl Config {
             );
         }
 
+        let tts_duck_attack_ms = env_u32("JASPER_FANIN_TTS_DUCK_ATTACK_MS", 15)?;
+        if !(1..=200).contains(&tts_duck_attack_ms) {
+            anyhow::bail!(
+                "JASPER_FANIN_TTS_DUCK_ATTACK_MS={} out of range 1..=200",
+                tts_duck_attack_ms
+            );
+        }
+        let tts_duck_release_ms = env_u32("JASPER_FANIN_TTS_DUCK_RELEASE_MS", 150)?;
+        if !(1..=2000).contains(&tts_duck_release_ms) {
+            anyhow::bail!(
+                "JASPER_FANIN_TTS_DUCK_RELEASE_MS={} out of range 1..=2000",
+                tts_duck_release_ms
+            );
+        }
+
         Ok(Self {
             output_pcm,
             music_output_pcm,
@@ -853,6 +877,8 @@ impl Config {
                 crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             )?,
             tts_program_duck_db,
+            tts_duck_attack_ms,
+            tts_duck_release_ms,
             assistant_loudness: AssistantLoudnessConfig {
                 assistant_offset_lu: env_f32(
                     "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
