@@ -3,13 +3,24 @@
 This directory holds one self-contained implementation prompt per
 workstream of Wave 3 of the correction/crossover finish-line campaign
 — the information-architecture rework of `/correction/`'s room and
-active-crossover flows. The architecture plan of record is
-[`campaign/VALIDATION-FIX-PLAN.md`](../../campaign/VALIDATION-FIX-PLAN.md)
-(Wave 3 section) plus the punchlist items cited below; these prompts
-are the execution contracts derived from Jasper's own resolved IA
-decisions (recorded in `campaign/OVERNIGHT-2026-07-16-NIGHT2.md`
-"SCOPE CHANGE" note — Wave 3 was deliberately deferred from the
-autonomous overnight run to be implemented later via Codex).
+active-crossover flows. The architecture plan of record is Jasper's
+own campaign planning notes (`campaign/VALIDATION-FIX-PLAN.md`, Wave 3
+section, plus `campaign/punchlist.md`'s hardware-found evidence); these
+prompts are the execution contracts derived from Jasper's own resolved
+IA decisions (recorded in the campaign notes' "SCOPE CHANGE" entry —
+Wave 3 was deliberately deferred from the autonomous overnight run to
+be implemented later via Codex).
+
+**A note on `campaign/` citations throughout this kit**: they are
+**not part of this git repository** — they live in Jasper's private
+planning workspace and will not exist in a Codex checkout. Every
+`campaign/`-cited fact that a workstream actually needs to execute has
+been independently re-verified against the current codebase and
+restated directly in that workstream's own prompt (Context, Preflight
+facts, Requirements). Treat every `campaign/` reference below and in
+each prompt file as **provenance** ("this is where the finding came
+from, for a human with access to that workspace to cross-check"), never
+as a required-reading step — do not attempt to open those paths.
 
 **Operator usage:** start a fresh Codex session per workstream and
 say "Read `docs/correction-ux-wave3/w3.N-….md` and execute it." Do
@@ -82,15 +93,17 @@ design investigation (W3.7).
 
 ## Evidence sources
 
-- [`campaign/VALIDATION-FIX-PLAN.md`](../../campaign/VALIDATION-FIX-PLAN.md)
-  — Wave 3 section, the UX acceptance rubric, and the from-scratch E2E
-  milestone (both reproduced below for convenience; this file is
-  still the source of truth for the wording).
-- `campaign/punchlist.md` items 31–52 — hardware-found evidence,
-  cited by number in each workstream prompt. Punchlist items 34–46 are
-  the direct UX-architecture source material; #51 and #1563 explain
-  why the older SNR-wall entries no longer reproduce; #52 is the
-  known-open item above.
+- `campaign/VALIDATION-FIX-PLAN.md` (not in this repository — see the
+  note above) — Wave 3 section, the UX acceptance rubric, and the
+  from-scratch E2E milestone, both reproduced in full below since this
+  kit is meant to be self-contained without access to that file.
+- `campaign/punchlist.md` (not in this repository) items 31–52 —
+  hardware-found evidence, cited by number in each workstream prompt
+  as provenance; the substance of every cited item is restated inline
+  in the relevant prompt. Punchlist items 34–46 are the direct
+  UX-architecture source material; #51 and #1563 explain why the older
+  SNR-wall entries no longer reproduce; #52 is the known-open item
+  above.
 - [`docs/active-crossover-information-design.md`](../active-crossover-information-design.md)
   — product/architecture design of record for the crossover builder,
   including the Language guide (§"Language guide") that W3.5's copy
