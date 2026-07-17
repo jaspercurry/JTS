@@ -613,7 +613,9 @@ impl TtsMixer {
             let mut completed_reference = None;
             let block_finished;
             {
-                let front = self.queue.front_mut().expect("front checked above");
+                let Some(front) = self.queue.front_mut() else {
+                    break;
+                };
                 for (channel, sample_sum) in frame_sum.iter_mut().enumerate() {
                     let sample = front.samples[front.cursor + channel];
                     *sample_sum = sample_sum.saturating_add(apply_gain_i16(sample, gain) as i32);
