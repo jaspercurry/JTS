@@ -47,7 +47,11 @@
 > existing selector remains the sole owner of fallback policy. Its
 > final follow-up adds staged guard metadata to that snapshot and gives
 > live hosts an awaitable fail-closed entry point matching the existing
-> Camilla client.
+> Camilla client. The last cross-path gate keeps the accepted sealed
+> natural pair on the existing local active-speaker driver-domain graph
+> at bond entry, while refusing profile mutation and future runtime
+> arming during a bond until multi-Camilla ownership is separately
+> proved.
 
 ## 0. One-paragraph summary
 
@@ -363,7 +367,10 @@ ladder HTTP backend, and the hardware-validation scripts.
   - No sub → the **woofer way** owns it (both sides, linked).
   - Wireless-sub bonds → **out of scope v1** (§13); the profile
     refuses to arm when the box is in a bonded topology whose bass
-    owner is remote.
+    owner is remote. An active-speaker bond with a local bass owner may
+    preserve the already-accepted natural pair on its driver-domain
+    graph, but profile mutation and runtime scheduling still refuse
+    while bonded.
 
 ---
 
@@ -455,7 +462,7 @@ Design points:
   sealed-only; accepted ported/PR profiles retain these dicts as
   commissioned evidence but are not armed. `limiter_threshold_dbfs`
   remains optional/`None` in the already-merged schema, but Wave 4
-  revision 5 is blocked and may not accept a sealed profile until a
+  revision 6 is blocked and may not accept a sealed profile until a
   focused measured-derivation prerequisite revises the contract and
   produces a finite value for every sealed target. Wave 5 cannot
   consume or fill it. Ported/PR retention does not imply a runtime
@@ -851,6 +858,14 @@ Rationale:
 - Local-sub topologies with a sealed bass owner emit the same pair on
   the sub chain instead.
 
+The same local Layer-A pair is present in both the solo baseline and
+the existing active-speaker driver-domain graph used for a bonded
+leader/follower member. A transport-role change must not drop the
+commissioned subsonic protection, and the multiroom precheck re-proves
+that driver-domain graph before bonding. This narrowly reuses the
+existing driver-domain builder/emitter seam; it does not authorize
+generic multiroom carrier, remote bass-owner, or state-writer changes.
+
 An accepted, current sealed profile's emitted **static** graph always
 carries the pair at the **natural target's parameters** (LT with
 `freq_act == freq_target`, `q_act == q_target` is an exact
@@ -881,7 +896,7 @@ micro-steps, but neither Wave 4 nor another frozen contract produces
 for one admitted sweep peak, the sustain test proves one admitted noise
 waveform, and the digital clamp proves arithmetic headroom; those facts
 do not bound arbitrary program peaks at the downstream limiter's
-detector or define its Camilla-stage dBFS reference. Wave 4 revision 5
+detector or define its Camilla-stage dBFS reference. Wave 4 revision 6
 therefore blocks before implementation. A focused measured-derivation
 result must identify the stage/units, determine whether extra evidence
 is needed, freeze a deterministic per-target producer and refusal, and
@@ -1049,7 +1064,7 @@ re-converging.
   current schema reserves `limiter_threshold_dbfs`, but **no frozen
   wave defines how ladder/sustain evidence becomes that Camilla-stage
   dBFS value**. Wave 3 therefore leaves the existing −1 dB baseline
-  limiter unchanged, Wave 4 revision 5 stops before implementation,
+  limiter unchanged, Wave 4 revision 6 stops before implementation,
   and Wave 5 is blocked. The focused prerequisite must identify the
   detector stage/units, prove whether the retained rung/sustain/digital
   evidence is sufficient (or specify the smallest added measurement),
@@ -1082,7 +1097,8 @@ not emitter trust — same philosophy, new predicate in
 `graph_safety.py`.
 
 The proof table is complete: accepted/current sealed with protection
-requires exactly the natural LT+subsonic pair; accepted/current sealed
+requires exactly the natural LT+subsonic pair in every baseline-shaped
+solo or active driver-domain graph; accepted/current sealed
 with any missing subsonic has no approved graph and cannot apply;
 accepted/current ported/PR requires no `bass_ext_*` block; and
 bypassed/stale/malformed/missing requires no block. Every other
@@ -1180,6 +1196,14 @@ validation.
 owner for profile and graph; bypass delegates to it. Wave 4 constructs
 desired state and supplies the existing `measurement_window()`, but
 never saves profile bytes or loads a bass graph itself.
+
+That owner refuses apply, replacement, and bypass before any mutation
+while a bonded program-bake or driver-domain carrier is active, leaving
+the profile and every Camilla graph byte-for-byte unchanged. Bond entry
+may compile and re-prove an already-accepted/current sealed profile's
+natural pair on the existing local driver-domain graph, but Wave 3 does
+not grow a two-Camilla transaction or overwrite that carrier with a
+solo recompose. Profile changes require leaving the bond first.
 
 Inside that audio-isolated window and the existing DSP writer lock,
 first recover any older intent. Reload and prove the currently
@@ -1392,8 +1416,11 @@ and doctor surface.
   sealed emit-gate red-team (strip subsonic HP → raises; off-family
   params → raises; non-natural at-rest params → raises; any missing
   sealed subsonic → apply refuses before mutation);
-  `classify_camilla_graph` accepts sealed extension-bearing baselines
-  and still rejects tampered ones; its source-explicit graph/
+  `classify_camilla_graph` accepts sealed extension-bearing solo and
+  active driver-domain baselines and still rejects tampered ones;
+  follower/leader prechecks pin the same pair before bonding, while
+  bonded apply/replacement/bypass refuses with both graphs and the
+  profile unchanged; its source-explicit graph/
   authority boundary is
   exercised through startup/fallback, doctor, correction,
   commissioning, and multiroom call paths, while the low-level
@@ -1483,9 +1510,9 @@ wave keeps out of the god-files. Every implementation PR runs
 | 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | spikes 1–3 done 2026-07-16 — **R1 confirmed** ([memo](research/2026-07-16-bass-extension-spikes/README.md)); spike 4 + ears-on listen with operator |
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553; clean gate after 3 review findings fixed in-session) |
-| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | implementation parked after draft #1558 stop report; contract rev 8 authorizes sealed natural-at-rest graph groundwork plus durable predecessor-aware apply/recovery |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **blocked at contract rev 5** — no implementation until the focused measured limiter-derivation prerequisite is frozen and this prompt is revised |
-| 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 8** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land |
+| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | implementation parked after draft #1558 stop report; contract rev 9 authorizes sealed natural-at-rest solo + local driver-domain graph groundwork plus durable predecessor-aware apply/recovery, with bonded profile mutation refused |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **blocked at contract rev 6** — no implementation until the focused measured limiter-derivation prerequisite is frozen and this prompt is revised |
+| 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 9** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
 
@@ -1536,8 +1563,10 @@ Depends: Wave 1 dataclasses.
 ### Wave 3 — Graph emission + apply transaction (⚠ hot-file wave; small PRs)
 
 `camilla_emit.py` LT/Butterworth-HP emitters;
-`camilla_yaml.py` sealed-only bass-extension block (natural-at-rest
-invariant); ported/PR profiles remain accepted/observable but emit the
+`camilla_yaml.py` sealed-only bass-extension block in both the solo
+baseline and existing active-speaker driver-domain pipeline
+(natural-at-rest invariant); ported/PR profiles remain
+accepted/observable but emit the
 byte-identical ordinary baseline;
 `graph_safety.py` predicate + emit gate;
 `runtime_contract.py` classification extension (**land this in the
@@ -1557,7 +1586,11 @@ existing private writer lock path and every controller graph mutation,
 including reload, share one reentrant admission and refuse ordinary
 work while that intent exists. The Layer-A candidate fingerprint
 remains bass-independent, the existing baseline limiter is unchanged,
-and profiles missing sealed subsonic protection cannot apply. These
+profiles missing sealed subsonic protection cannot apply, and
+apply/replacement/bypass refuses before mutation while a bonded
+program-bake or driver-domain carrier is active. Bond entry may only
+emit and re-prove the already-accepted profile's natural pair on the
+local driver-domain graph. These
 mutation seams have no production caller/route until revised Wave 4
 lands the correction-process host. Red-team
 contract tests.
@@ -1566,7 +1599,7 @@ touching the same files; rebase before push per AGENTS.md.
 
 ### Wave 4 — Commissioning backend
 
-**No implementation is authorized by revision 5.** First complete the
+**No implementation is authorized by revision 6.** First complete the
 focused measured limiter prerequisite in §14.8 and revise the prompt
 with the deterministic producer. The intended wave then contains
 `ladder.py` state machine (pure) + web backend module (new file, thin
@@ -1593,7 +1626,7 @@ remains the only no-forward-work exception. Depends: Waves
 
 ### Wave 5 — Runtime scheduler
 
-**No implementation is authorized by revision 8.** A coordinator may
+**No implementation is authorized by revision 9.** A coordinator may
 launch this lane after Wave 3 only to execute and record its mandatory
 preflight stop while Wave 4 is blocked; that launch is not authority to
 edit implementation files. A replacement prompt depends on the Wave 4
@@ -1608,7 +1641,10 @@ retreat to invalidate stale ticks, the 1 Hz voice-owned reconciler,
 voice `STATUS` → `/state` live telemetry, the tested ported/PR
 no-live-target/no-patch `adapter_deferred` state, and no-arm/no-patch
 while Wave 3 recovery is pending or the correction measurement gate is
-held. Louder UDS transport/response failures are observable as
+held. It must also remain no-arm/no-patch while a bonded program-bake
+or driver-domain carrier is active unless a later contract proves the
+multi-Camilla runtime owner and conservative transition ordering.
+Louder UDS transport/response failures are observable as
 unconfirmed and never trigger fallback, automatic retry, or an
 unchanged-state claim.
 Depends: Waves 2–4 and the
@@ -1713,10 +1749,14 @@ atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
 - No far-field reconstruction / splice / baffle-step claims — the
   profile's claims are fixed-position-relative by design; the splice
   lane upgrades the *display* later, not the decision.
-- No wireless-sub or bonded-pair emission (refusal
-  `BONDED_BASS_OWNER_REMOTE`); no passive full-range (non-active)
-  speakers — the math generalizes but the graph carrier work is its
-  own slice; no multi-driver/multi-port/TL/OB/horn adapters
+- No wireless-sub or remote bonded bass-owner shaping (refusal
+  `BONDED_BASS_OWNER_REMOTE`). The existing active-speaker
+  driver-domain graph may carry the same local natural-at-rest Layer-A
+  pair so bonding cannot drop commissioned subsonic protection; no
+  generic multiroom carrier, state-writer, bonded profile mutation, or
+  two-Camilla transaction is authorized. No passive full-range
+  (non-active) speakers — the math generalizes but the graph carrier
+  work is its own slice; no multi-driver/multi-port/TL/OB/horn adapters
   (`ENCLOSURE_UNSUPPORTED`, future adapters).
 - No loudness compensation (separate feature; explicitly kept
   composable and distinct).

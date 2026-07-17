@@ -1,6 +1,6 @@
 # Wave 4 — commissioning backend (Codex prompt)
 
-> **Revision 5 (2026-07-17) — implementation blocked.** Accept hands
+> **Revision 6 (2026-07-17) — implementation blocked.** Accept hands
 > the desired profile in memory to Wave 3's sole profile+DSP commit
 > owner; every adapter uses the same predecessor-aware boundary and
 > never persists first. The existing correction process owns
@@ -8,7 +8,8 @@
 > current ladder/sustain/digital evidence still cannot determine a
 > Camilla-stage limiter threshold, so a focused measured-derivation
 > prerequisite is mandatory before any Wave 4 code. Findings and
-> rationale are in the changelog.
+> rationale are in the changelog. Accept also refuses without mutation
+> while a bonded program-bake or driver-domain carrier is active.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–3 merged, AND the
@@ -233,6 +234,12 @@ order. Wave 4 never selects a new boot path. Only after it
 returns success may the backend transition the session from `review`
 to `accepted`.
 
+If a bonded program-bake or driver-domain carrier is active, Wave 3
+refuses before changing the profile or either Camilla graph. Wave 4
+surfaces that stable conflict and leaves the session in `review`; the
+operator must leave the bond before accepting, replacing, or bypassing
+a profile. Do not add a two-Camilla transaction to this wave.
+
 Cancellation of the backend task propagates only after Wave 3 drains
 its shielded rollback. For a ported/PR desired profile, that same entry
 point returns the stable runtime deferral **and** removes a predecessor
@@ -273,7 +280,9 @@ allowlist → `guard_mutating_request()` → `read_json_object`).
 - `POST /bassext/sustain/start` `{}`.
 - `POST /bassext/accept` `{}` → builds the desired profile in memory,
   invokes Wave 3's transaction, and only on its success returns the
-  committed evaluation. The handler never persists first.
+  committed evaluation. The handler never persists first; bonded
+  program-bake/driver-domain state returns the Wave 3 refusal with the
+  session and both graphs unchanged.
 - `POST /bassext/stop` `{}` → the red Stop: graceful fade-down, abort
   session, restore. Must work in every state; never 409s.
 
@@ -317,7 +326,9 @@ sneaky segments.
   the JSON keys — Wave 6 depends on them). Pin that accept passes the
   desired profile in memory, never calls
   `save_bass_extension_profile`, and does not enter `accepted` when
-  Wave 3 returns a failure. Pin `measurement_window` → Wave 3 commit →
+  Wave 3 returns a failure. Pin the bonded-role refusal leaves the
+  review session, profile, and both Camilla graphs unchanged. Pin
+  `measurement_window` → Wave 3 commit →
   session `accepted` ordering and shielded cancellation. Reopen with a
   pending Wave 3 intent and prove the process claim runs before ready,
   exact recovery happens under the measurement window without changing
@@ -358,6 +369,15 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 6 (2026-07-17)** — Wave 3's final cross-path audit found that
+  bonded active speakers use a driver-domain/program-bake graph split
+  that the one-path profile+DSP transaction does not own. Rationale:
+  surface Wave 3's pre-mutation bonded-role refusal from Accept, keep
+  the session in review, and require leaving the bond before profile
+  accept/replacement/bypass. Rejected alternatives were adding a
+  two-Camilla transaction to commissioning or persisting the profile
+  before the graph owner can commit it.
 
 - **Rev 5 (2026-07-17)** — the second independent gate exposed that a
   new authoritative graph path would also transition CamillaDSP's

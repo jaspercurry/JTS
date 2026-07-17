@@ -1,12 +1,12 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 8 (2026-07-17; final seam amendment).** Static graph groundwork remains
+> **Revision 9 (2026-07-17; final driver-domain amendment).** Static graph groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
 > an explicit graph-classification boundary, one predecessor-aware commit
 > owner, and a durable profile+DSP recovery contract owned by the
 > existing correction process. Wave 5 is not yet authorized to arm
-> the graph; see its revision 8 safety gate. Findings and rationale
+> the graph; see its revision 9 safety gate. Findings and rationale
 > are in the changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
@@ -59,8 +59,9 @@ hide that structural difference.
 3. `jasper/camilla_emit.py` — fully. Your new emitters must be
    indistinguishable in style from `emit_peaking_biquad` /
    `emit_linkwitz_riley`.
-4. `jasper/active_speaker/camilla_yaml.py` — the baseline emitter
-   path: `_emit_baseline_pipeline`, the per-role filter-chain
+4. `jasper/active_speaker/camilla_yaml.py` — the active baseline
+   emitter paths: `_emit_baseline_pipeline` and
+   `_emit_driver_domain_pipeline`, the shared per-role filter-chain
    assembly, `_assert_tweeter_outputs_protected` (your emit gate
    mirrors it), and where `BASELINE_LIMITER_CLIP_LIMIT_DB` is used.
 5. `jasper/active_speaker/graph_safety.py` — the view/predicate
@@ -90,11 +91,11 @@ hide that structural difference.
   `jasper/camilla_emit.py`.
 - `_assert_tweeter_outputs_protected` (or a successor emit gate) is
   called before every emitted active YAML is returned.
-- The baseline per-role chain today orders
+- The solo and driver-domain baseline per-role chains today order
   `[bass_management_hp?] → crossover → delay → gain → limiter`
-  (verify against the current `_emit_baseline_pipeline`; if the chain
-  shape has changed, STOP and report — your insertion point spec
-  below depends on it).
+  (verify against the current `_emit_baseline_pipeline` and
+  `_emit_driver_domain_pipeline`; if either chain shape has changed,
+  STOP and report — your insertion point spec below depends on it).
 - `classify_camilla_graph` fails closed on unknown filters in a
   baseline graph (verify by reading the evidence path; if it silently
   ignores unknown filters instead, report that too — it changes the
@@ -116,8 +117,11 @@ Modify:
   `emit_butterworth_highpass(name, freq, order)` (+ shared bounds
   constants), ~60 lines.
 - `jasper/active_speaker/camilla_yaml.py` — optional bass-extension
-  block on the bass-owner chain(s) for accepted+current **sealed_v1
-  only**; emit-gate extension call.
+  block on the bass-owner chain(s) in both the solo baseline and the
+  existing active-speaker driver-domain graph for accepted+current
+  **sealed_v1 only**; emit-gate extension call. This is the same local
+  Layer-A protection across a transport-role change, not generic
+  multiroom graph work.
   Insertion point: after the crossover biquads, before
   `driver_delay`. Filter names: `bass_ext_lt`, `bass_ext_subsonic`
   (shared definitions referenced from both stereo woofer channels, or
@@ -291,7 +295,9 @@ Modify:
   tests, never as persisted host authority.
 - `jasper/active_speaker/baseline_profile.py` — thread the accepted
   sealed profile into **`recompose_applied_baseline_yaml`**, the
-  immutable production carrier. Default production recomposition
+  immutable production carrier, and through its existing
+  `driver_domain=True` builder/emitter seam. Default production
+  recomposition
   evaluates the separately persisted bass profile against the supplied
   applied snapshot; the bass apply transaction may pass its desired
   in-memory profile explicitly so it never has to publish profile state
@@ -311,7 +317,9 @@ Modify:
   the minimal host helper needed for bass apply/bypass to reemit with
   the currently persisted preference profile, room PEQs, and output
   trim while passing the desired in-memory bass profile. Do not change
-  passive, unknown, multiroom, or flat/stereo emission. If the current
+  passive, unknown, generic multiroom carrier, or flat/stereo emission;
+  the shared active-speaker driver-domain seam above is explicitly in
+  scope. If the current
   overlays cannot be reproduced from their existing canonical inputs,
   STOP; never parse-and-splice the loaded YAML and never silently reset
   a program layer.
@@ -334,6 +342,16 @@ Modify:
   remains inside the same durable commit boundary. Commissioning
   callers hand the desired profile to this entry point and never save
   it first.
+
+  Refuse apply, replacement, and bypass **before any profile or graph
+  mutation** while the speaker is in a bonded program-bake or
+  driver-domain role. Leave the profile and every Camilla graph
+  byte-for-byte unchanged. Bond entry may compile and re-prove the
+  already-accepted/current profile's natural pair on the existing local
+  driver-domain graph, but this one-path transaction must not invent a
+  two-Camilla commit or overwrite a driver-domain carrier with a solo
+  recompose. Pin this refusal at the owner boundary and in both
+  leader/follower tests; no new persisted profile status is required.
 
   `apply_bass_extension(desired_profile)` is the **only production
   commit owner** for both authorities. Wave 4 may construct a profile
@@ -491,7 +509,7 @@ Modify:
   `_claim_crossover_state_owners`; no service or permission change is
   authorized. On power-up the intent may remain until the next socket
   activation, but the canonical startup classifier accepts only its
-  two recorded natural graphs, and Wave 5 revision 8 treats intent
+  two recorded natural graphs, and Wave 5 revision 9 treats intent
   presence as no-arm. Thus music remains available and natural while
   convergence is pending; the next correction-process claim repairs
   it before serving a mutating bass action.
@@ -553,6 +571,11 @@ Modify:
   representative commissioning/multiroom call paths, plus the explicit
   desired source before profile publish.
 
+  The multiroom tests also pin that bond entry emits and re-proves the
+  accepted/current sealed profile's natural pair on the local
+  driver-domain chain, while apply/replacement/bypass in either bonded
+  role refuses before changing the profile or either Camilla graph.
+
   Add a static ownership assertion that
   `allow_pending_bass_extension_recovery=True` appears only in the
   Wave 3 commit/recovery owner; ordinary callers may not opt out.
@@ -566,7 +589,7 @@ ONE PR. Shipping either alone produces graphs the re-proof rejects
 
 | Evaluated profile state | Only approved bass-extension filter set |
 |---|---|
-| accepted + current `sealed_v1`, every target has subsonic protection | exactly `bass_ext_lt` + `bass_ext_subsonic` on exactly the bass-owner channels; natural LT/subsonic params; existing downstream baseline limiter unchanged |
+| accepted + current `sealed_v1`, every target has subsonic protection | exactly `bass_ext_lt` + `bass_ext_subsonic` on exactly the bass-owner channels of every baseline-shaped solo or active driver-domain graph; natural LT/subsonic params; existing downstream baseline limiter unchanged |
 | accepted + current `sealed_v1`, any target has `subsonic is None` | none; apply is refused before mutation and any observed graph/profile pair is `unsafe` |
 | accepted + current ported/PR | no `bass_ext_*` definitions or references (ordinary baseline; runtime deferred) |
 | bypassed, stale, malformed, or missing profile | no `bass_ext_*` definitions or references |
@@ -581,7 +604,8 @@ an exact two-fingerprint crash-recovery proof, not a state wildcard.
 
 ## Invariants your tests must red-team
 
-- Emitted graph with an accepted sealed profile: classification is
+- Emitted solo and active driver-domain graphs with an accepted sealed
+  profile: classification is
   `approved_active_runtime`; the LT params equal the natural member;
   boost of the emitted member is 0.0; the protective subsonic remains
   active at its commissioned natural parameter; the pre-existing
@@ -672,10 +696,11 @@ change Wave 1 adapters or `TargetSpec`; add new transaction/rollback
 framework (the one immutable local intent and recovery above are required);
 call mutable-candidate `apply_baseline_profile`; introduce a
 "filter block" abstraction into `camilla_emit.py` (two plain emit
-functions, same shape as the neighbors); touch the flat/stereo
-emitter (`jasper/sound/camilla_yaml.py`), passive/unknown/multiroom
-graph carriers, multiroom emission, or the
-statefile writers; add a new doctor result (the existing classifier
+functions, same shape as the neighbors); touch the flat/stereo emitter
+(`jasper/sound/camilla_yaml.py`), passive/unknown/generic multiroom
+graph carriers, multiroom state writers, multiroom emission outside the
+existing active-speaker driver-domain seam, or the statefile writers;
+add a new doctor result (the existing classifier
 caller receives evidence; Wave 5 owns runtime checks); modify
 `reconstruction_capability.py`, `driver_safety.py`, or any
 commissioning behavior beyond the allowlisted evidence seams. If
@@ -710,6 +735,27 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Rev 9 (2026-07-17)** — the final independent cross-path audit
+  found that an accepted/current sealed profile requires the natural
+  pair in every baseline-shaped graph, while the prompt named only the
+  solo `_emit_baseline_pipeline` and broadly forbade multiroom
+  emission. Existing follower/leader bonding emits and re-proves an
+  active-speaker driver-domain Layer-A graph through
+  `_emit_driver_domain_pipeline`; omitting the pair there would either
+  drop commissioned subsonic protection during a transport-role change
+  or fail classification. Profile mutation while bonded was also
+  undefined: an active leader's local pair lives on Camilla #2 while
+  the one-path transaction targets Camilla #1, and a follower's
+  selected graph is driver-domain rather than the solo recompose
+  carrier. Rationale: emit and re-prove the same natural pair on the
+  existing local driver-domain chain at bond entry, but refuse
+  apply/replacement/bypass before mutation in either bonded role.
+  Generic multiroom carriers, remote bass-owner shaping, state writers,
+  and a two-Camilla transaction remain out of scope. Rejected
+  alternatives were a sealed no-pair classifier exemption, refusing
+  ordinary bonding, overwriting a driver-domain graph with a solo
+  carrier, or broad multiroom graph surgery.
 
 - **Final seam amendment (2026-07-17)** — the final independent caller
   audit found that `jasper/correction/runtime_safety.py` alone could not

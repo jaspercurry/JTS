@@ -12,6 +12,11 @@ merged before the next starts) except where a prompt says otherwise.
 A Wave 5 lane launched after Wave 3 is currently only a mandatory
 preflight/stop audit; it is not implementation authority while Wave 4's
 measured limiter prerequisite remains unresolved.
+Across the frozen contracts, bond entry may preserve and re-prove an
+already-accepted sealed profile's natural pair on the existing local
+active-speaker driver-domain graph, but profile mutation and Wave 5
+runtime patching remain refused while bonded until multi-Camilla
+ownership is separately proved.
 
 | Wave | Prompt file | Executor | Prereqs |
 |---|---|---|---|

@@ -1,14 +1,16 @@
 # Wave 5 — runtime scheduler (Codex prompt)
 
-> **Revision 8 (2026-07-17) — implementation blocked.** The eventual
+> **Revision 9 (2026-07-17) — implementation blocked.** The eventual
 > R1 scheduler remains sealed-only, but no Wave 5 implementation is
 > authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` has
-> no frozen commissioning producer, and Wave 4 revision 5 remains blocked
+> no frozen commissioning producer, and Wave 4 revision 6 remains blocked
 > behind a focused measured-derivation prerequisite rather than
 > inventing one. This revision also freezes scheduler behavior around
 > Wave 3's durable natural-at-rest commit/recovery boundary. Ported/PR
 > profiles remain retained and observable. Findings and rationale are
-> in the changelog.
+> in the changelog. A bonded program-bake or driver-domain role is also
+> a hard no-arm/no-patch state until a later contract proves
+> multi-Camilla runtime ownership.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 2–3 merged AND the Wave-0
@@ -53,7 +55,7 @@ structural patches for their changing filter tuples.
 1. `docs/HANDOFF-bass-extension-plan.md` §8.2–8.4 and §10 (read
    carefully — hysteresis, rate limits, micro-steps, limiter
    coupling, and the failure ladder are specified, not designable).
-2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 8,
+2. `docs/bass-extension-waves/wave-3-graph-emission.md` revision 9,
    then Wave 1's `TargetSpec` and ported/PR family sections. Read the
    fixed-graph scope and deferral contract carefully.
 3. `jasper/volume_coordinator.py` — fully: `_dispatch`, the observer
@@ -94,7 +96,7 @@ structural patches for their changing filter tuples.
 - Confirm Wave 3's one commit owner, source-explicit graph-
   classification boundary, natural predecessor normalization, and
   correction-process
-  recovery owner exist exactly as revision 8 specifies. A pending
+  recovery owner exist exactly as revision 9 specifies. A pending
   apply intent must be visible in static state and must authorize only
   its two exact natural graph/file fingerprints. Confirm the existing
   outputd boot selector is unchanged across Wave 3 commits and that all
@@ -103,12 +105,12 @@ structural patches for their changing filter tuples.
   ordinary work while intent is pending. If recovery is implicit in
   GET, runs in a new process/task, may leave a deep graph, changes the
   boot selector, or a mutation bypasses admission, STOP.
-- Confirm a **merged, dated replacement for Wave 4 revision 5** defines a
+- Confirm a **merged, dated replacement for Wave 4 revision 6** defines a
   deterministic evidence → `limiter_threshold_dbfs` derivation for
   every sealed target, its units/stage in the Camilla graph, refusal on
   missing evidence, and hardware-free tests; confirm Wave 4 implements
   it and accepted sealed profiles carry finite thresholds. No such
-  contract exists as of this revision: Wave 4 revision 5 explicitly
+  contract exists as of this revision: Wave 4 revision 6 explicitly
   found that its existing evidence is insufficient and blocks behind
   the focused measured-derivation prerequisite. This check therefore
   fails and Wave 5 must stop. Do not design the derivation in Wave 5.
@@ -186,6 +188,10 @@ Modify (small, seam-only):
   one of the intent's exact natural graphs; malformed/unproved pending
   state reports `current_target=null`. This transaction gate takes
   precedence over accepted/current profile state.
+  A bonded program-bake or driver-domain role likewise reports
+  `runtime_armed=false`; `current_target="natural"` is allowed only
+  when the canonical active proof confirms the local natural pair,
+  otherwise it is `null`. Bonded state never implies a patch owner.
   For accepted ported/PR profiles: `current_target=null`,
   `current_extension_hz=null`,
   `runtime_armed=false`, and
@@ -255,6 +261,13 @@ Constants as literals with names (`REEXTEND_HYSTERESIS_LEVELS = 4`,
   the canonical resolver proves the live graph is one of the intent's
   exact natural fingerprints; otherwise return `failed`. Recovery is
   never a Wave 5 action.
+- If a bonded program-bake or driver-domain carrier is active, do not
+  read or patch live bass params, start/deepen timers, or report the
+  runtime armed. Publish `runtime_armed=false`; a louder volume gate
+  returns `failed`, while same/quieter carrier changes may proceed
+  without a bass patch. Bond entry may already carry Wave 3's local
+  natural pair, but this scheduler has no proved owner for coordinated
+  Camilla #1/#2 transitions and must not infer one.
 - The existing `MEASURE_PAUSE` command sets jasper-voice's
   process-local correction measurement gate. Because jasper-voice is
   now the sole bass patch owner, that existing gate applies to **both**
@@ -327,7 +340,10 @@ add, remove, rename, or change the type of a filter.
   for an exactly proved natural graph, and resumes ordinary selection
   only after the intent clears. A held correction measurement gate
   suppresses both tick- and hook-driven patches and refuses louder
-  actuator dispatch.
+  actuator dispatch. A bonded program-bake or driver-domain role never
+  reads or patches bass params, never advances timers, reports not
+  armed, and refuses a louder gate; a proved local natural pair may be
+  reported as natural without claiming runtime ownership.
 - Coordinator hook: retreat-before-louder ordering (hook fires before
   the first audible-level actuator on every rising change) — test at
   the seam with a fake awaited runtime recording
@@ -380,6 +396,8 @@ PatchConfig calls "converge" independently.
 Do not add ported/PR identity filters, named shaping slots, filter
 bypasses, or structural `PatchConfig` updates; that is a separately
 budgeted graph-design/proof problem, not this wave.
+Do not add a bonded two-Camilla runtime transaction; bonded arming
+requires a separately reviewed ownership and transition contract.
 Do not read or repair Wave 3's intent, publish a profile, reload a full
 graph, or add a scheduler-specific transaction/quiesce protocol. The
 runtime only observes the canonical state/measurement gates, stays
@@ -401,6 +419,19 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 9 (2026-07-17)** — Wave 3's final cross-path audit found that
+  bond entry needs the already-accepted sealed natural pair on the
+  existing local active-speaker driver-domain graph, but profile commit
+  and live scheduling have no proved multi-Camilla owner. Rationale:
+  retain that natural protective pair during transport-role changes
+  while making any bonded program-bake or driver-domain role a hard
+  scheduler no-arm/no-patch state. A replacement prompt may relax this
+  only after it proves graph ownership and conservative transition
+  ordering across both Camilla instances. This does not relax the
+  measured-limiter mandatory stop. Rejected alternatives were patching
+  only one bonded graph, treating bond-local natural emission as
+  scheduler authority, or inventing a two-Camilla runtime transaction.
 
 - **Rev 8 (2026-07-17)** — follows Wave 3 revision 8 after the final
   gate required staged-metadata authority in persisted graph snapshots
