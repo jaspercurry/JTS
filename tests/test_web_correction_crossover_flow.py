@@ -2423,6 +2423,47 @@ def test_repeat_rejection_nudge_distinguishes_infra_from_acoustic_failure():
     )
 
 
+def test_repeat_rejection_nudge_clip_copy_is_honest_and_actionable():
+    """W2.2 (hardware run 18): "reduce the input gain" was unactionable
+    advice for a calibrated measurement mic with no gain control. The clip
+    nudge now describes the automatic de-escalation behavior instead."""
+
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    status["level_match"]["repeats"] = {
+        "targets": {},
+        "failures": {},
+        "durable": {
+            "status": "active",
+            "targets": {
+                "mono:woofer": {
+                    "target_fingerprint": "6" * 64,
+                    "status": "active",
+                    "attempts": 1,
+                    "results": [{
+                        "attempt": 1,
+                        "accepted": False,
+                        "reject_reason": "unusable_capture",
+                        "clipping": True,
+                        "estimated_snr_db": None,
+                    }],
+                },
+            },
+        },
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+    nudge = next(
+        n for n in env["nudges"] if n["code"] == "crossover_repeat_rejected"
+    )
+    assert nudge["text"] == (
+        "That sweep was too loud for the microphone at this distance. "
+        "JTS will try again a bit quieter."
+    )
+    assert "input gain" not in nudge["text"].lower()
+
+
 _COMPARISON_SET = {
     "schema_version": 2,
     "comparison_set_id": "1" * 32,
@@ -6421,6 +6462,45 @@ def test_crossover_envelope_reference_axis_level_solve_refusal():
     assert "redo the quick level check" in env["verdict_text"]
 
 
+def test_crossover_envelope_renders_measurement_window_unreachable_refusal():
+    """W2.2: a target that burned its bounded clip/SNR correction budget
+    (CrossoverLevelLease.record_solve_correction) and rejected again gets
+    the honest mic-placement copy, not the room_too_noisy copy -- and, like
+    every level-solve refusal, does not touch the level lock."""
+
+    from jasper.active_speaker import crossover_envelope
+
+    status = _envelope_status()
+    _locked_level(status)
+    status["level_match"]["solve_refusal"] = {
+        "target_id": "mono:woofer",
+        "role": "woofer",
+        "code": "measurement_window_unreachable",
+        "failing_band_hz": [40.0, 400.0],
+        "required_db": -12.0,
+        "available_db": 0.0,
+    }
+
+    env = crossover_envelope.build_crossover_envelope(status)
+
+    assert env["screen"] == "level_solve_refused"
+    assert env["next_action"]["id"] == "level_match"
+    assert env["progress"]["position"] == 2  # microphone step
+    assert env["verdict_text"] == (
+        "The microphone can't get a clean reading at this distance — "
+        "it's picking up too much on loud passages and too little on "
+        "quiet ones. Move the phone close to the driver being measured "
+        "(about 3 cm / just over an inch away), then measure again."
+    )
+    # Honest, provider/jargon-free copy: no internal band/dB numbers or
+    # "room" framing leak into this mic-placement message.
+    assert "Hz" not in env["verdict_text"]
+    assert "room" not in env["verdict_text"].lower()
+    # The lock survives -- verified via _locked_level's ramp state staying
+    # untouched (the refusal only ever READS level_match state here).
+    assert status["level_match"]["last"]["ramp"]["state"] == "locked"
+
+
 # --- phone-mic relay transport (P7) -------------------------------------------
 
 
@@ -8109,6 +8189,48 @@ async def test_required_host_event_failure_consumes_repeat_without_stray_audio(
         assert play_calls == []
     else:
         assert play_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_ambient_started_host_event_still_carries_duration_s(monkeypatch):
+    """W2.2 countdown regression check (hardware run 18 saw NO phone
+    countdown and ~4-5s more arm->tone latency than run 16's working
+    countdown). The phone-side countdown is driven entirely by this event's
+    ``duration_s`` field, so the first thing to rule out is the wire
+    contract silently dropping it after #1543's changes. It has not:
+    ``run_crossover_relay_transport`` still posts
+    ``{"phase": "ambient_started", "duration_s": ambient_duration_s}``
+    unconditionally whenever ``ambient_duration_s > 0``, and #1543 never
+    touched this function -- see the PR body for where the extra latency
+    actually comes from (prepare_play's solver work, which now runs AFTER
+    this event posts but BEFORE the real quiet-window sleep starts)."""
+
+    import asyncio
+
+    _fake_relay_transport(monkeypatch)
+    host_events: list[dict] = []
+
+    async def trivial_play_sequence(on_sweep_ready):
+        if on_sweep_ready is not None:
+            await asyncio.to_thread(on_sweep_ready)
+        return {"status": "completed"}
+
+    result, _played = await flow.run_crossover_relay_transport(
+        object(),
+        _relay_pi_session("driver"),
+        run_async=lambda coro, timeout=None: _run_coro(coro),
+        play_sequence=trivial_play_sequence,
+        validate_playback=lambda _payload: None,
+        prepare_armed=lambda _state, _ack: None,
+        post_host_event=lambda _sid, _token, payload: host_events.append(payload),
+        ambient_duration_s=2.5,
+    )
+    assert result is not None
+    phases = [event.get("phase") for event in host_events]
+    assert "ambient_started" in phases
+    assert phases.index("ambient_started") < phases.index("sweep_started")
+    ambient_event = host_events[phases.index("ambient_started")]
+    assert ambient_event == {"phase": "ambient_started", "duration_s": 2.5}
 
 
 async def _async_true():

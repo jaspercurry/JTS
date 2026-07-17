@@ -585,17 +585,60 @@ the failing band and the two levers (quiet the room, move the microphone
 closer) — the refusal itself does not invalidate the driver's level lock,
 though the remedy the UI offers today re-runs the guided level check from
 the start (ambient is currently a ramp byproduct; a retained-locks
-re-measure is the planned seam for the phone ambient-stats follow-up). If
-sweep 1's own measured SNR still misses despite the solve (the solver's
-ambient estimate was optimistic), a one-time "bounded correction" escalates
-the assumed ambient by the measured shortfall for the remaining repeats; a
-second miss becomes the typed refusal, never an open-ended retry ritual.
+re-measure is the planned seam for the phone ambient-stats follow-up).
 `commissioning_gain_db` stays governed by the same non-positive,
 `DriverSweepGeneratorPlan`-validated invariant as before — the solver
 proposes, commissioning admission still validates every ceiling exactly as
 it always has (defense in depth). The phone-side per-band `ambient_stats`
 event is a follow-up page change; until it ships, every solve takes the
 broadband-fallback path.
+
+**Bounded correction (W2.2) is ONE signed per-target adjustment, applied
+to the solver's assumed ambient, with up to two writes per target per
+comparison set.** Hardware run 18 (2026-07-16, jts3) exposed a second
+failure mode the W2.1 escalation didn't cover: a woofer sweep solved with
+`gain_map_db` from the level-match ramp's single 250 Hz lock tone,
+predicted a comfortably safe mic peak, and clipped the mic at 0 dBFS
+anyway — a single-frequency tone can underestimate a full sweep's hottest
+band by double digits of dB, and a clip rejection carries no
+`snr_shortfall_db` (the W2.1 escalation's only trigger), so the same
+doomed level replayed identically on every bounded repeat attempt. Two
+independent, complementary fixes:
+
+1. **SNR-shortfall rejections still raise the assumed ambient** (unchanged
+   sign/mechanism), and **clip rejections now lower it** — a de-escalation
+   sized from the clipped capture's OWN measured mic peak, targeting a
+   `MIC_TARGET_PEAK_DBFS` of −12 dBFS (well below the −6 dBFS hard mic-clip
+   ceiling) with a `CLIP_UNDERESTIMATE_ALLOWANCE_DB` of 3 dB folded in,
+   since a clamped/clipped mic reading understates the true acoustic peak.
+   Both triggers write into the SAME signed adjustment slot, so a
+   target's correction always reflects its most recent evidence regardless
+   of which direction it came from.
+2. **Once ANY capture — accepted or rejected — exists for a target, the
+   driver's own measured chain gain (measured mic peak minus that
+   attempt's played level) replaces the tone's `gain_map_db` for the
+   solver's mic-clip ceiling specifically** (not the SNR-target math, which
+   still reads the tone-derived `gain_map_db` unchanged) — a full-sweep
+   measurement is strictly better evidence about the driver's hottest band
+   than one lock-tone frequency. When the capture that produced the
+   reading clipped, the same `CLIP_UNDERESTIMATE_ALLOWANCE_DB` is folded
+   into the stored gain so every later use inherits the same conservatism.
+
+At most two corrections write per target per comparison set (either
+trigger, combined); a third rejection past the bound does not guess a
+third level — the next solve attempt refuses pre-flight with a typed
+`measurement_window_unreachable` result (same "fires before any tone
+plays, never invalidates the level lock" contract as
+`room_too_noisy_for_safe_measurement`), naming the physical lever: move
+the phone closer to the driver being measured, then measure again. Both
+the adjustment and the measured gain clear on the same three lifecycle
+points — a fresh ramp lock for that target's geometry, a full comparison
+invalidate, and the target's repeat set reaching a terminal state
+(finalized or terminally refused) — so a later, unrelated measurement of
+the same target never inherits stale correction state.
+`measurement.level_solved` carries the signed `adjustment_db` and a
+`gain_source` of `tone_gain_map` or `measured_band_peak` so the journal
+names which evidence a solve actually used.
 
 ### Measurement validity: gating and the low-frequency floor
 
@@ -1766,4 +1809,10 @@ grouped-active unsupported result, and strict automatic-receipt separation
 checked against the current implementation and cited measurement literature;
 the complete path was
 validated with injected runtime seams only, and no live audio/DSP/hardware
-operation was performed or hardware-validated.)
+operation was performed or hardware-validated. Same-day follow-up: the W2.2
+clip-aware correction — the unified signed adjustment slot, the driver's own
+measured chain gain replacing the tone's `gain_map_db` for the mic-clip
+ceiling, the two-write bound, and the `measurement_window_unreachable`
+refusal — checked against the current implementation and pinned by a
+regression reproducing the triggering hardware run's numbers; not yet
+hardware-validated.)

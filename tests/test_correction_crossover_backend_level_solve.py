@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Closed-loop level solver wiring into the driver-capture path (W2.1).
+"""Closed-loop level solver wiring into the driver-capture path (W2.1/W2.2).
 
 Pins: an isolated driver sweep reasserts the SOLVED level (not the raw ramp
 lock), a refusal fires before any tone plays and does NOT invalidate the
 driver's level lock, ``level_match_snapshot()`` surfaces the refusal for the
-envelope, the bounded-correction escalation fires at most once, and a solve
-that cannot resolve its ceilings falls back to the pre-W2.1 raw-lock
+envelope, the bounded correction (W2.2: ONE signed adjustment slot, up to
+``_MAX_SOLVE_CORRECTION_WRITES`` writes, clip de-escalation using the
+driver's OWN measured mic peak, and a typed refusal past the bound), and a
+solve that cannot resolve its ceilings falls back to the pre-W2.1 raw-lock
 behavior cleanly.
 """
 from __future__ import annotations
@@ -286,17 +288,179 @@ async def test_missing_gain_map_falls_back_to_raw_lock(monkeypatch):
     assert current["value"] == pytest.approx(-20.0)
 
 
-def test_solve_escalation_fires_at_most_once_and_raises_the_level(monkeypatch):
-    """B1 regression: escalating the assumed ambient (a LOUDER, less-negative
-    dBFS figure) must monotonically RAISE the solved level -- the escalation
-    exists because the first sweep's measured SNR came up short, so the
-    retry needs MORE headroom, never less. And the escalated result must
-    still pass every admission ceiling."""
+def test_solve_correction_snr_shortfall_stacks_and_bounds_at_two_writes(monkeypatch):
+    """W2.2 (generalizes B1): escalating the assumed ambient (a LOUDER,
+    less-negative dBFS figure) must monotonically RAISE the solved level --
+    each shortfall rejection needs MORE headroom, never less. Unlike the
+    pre-W2.2 "at most once" behavior, a SECOND shortfall now stacks on top
+    of the first (bounded at _MAX_SOLVE_CORRECTION_WRITES writes); a THIRD
+    rejection past the bound does not write a third correction -- the very
+    next solve refuses pre-flight instead, and that refusal must NOT
+    invalidate the driver's level lock."""
 
     from jasper.active_speaker.excitation_safety_plan import (
         DriverSweepGeneratorPlan,
     )
     from jasper.audio_measurement import level_solver
+    from jasper.web.correction_crossover_backend import _MAX_SOLVE_CORRECTION_WRITES
+
+    assert _MAX_SOLVE_CORRECTION_WRITES == 2
+
+    topology, profile, targets = _safety_profile_and_targets()
+    _patch_solve_environment(monkeypatch, topology, profile)
+
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets)
+    # A looser cap/quieter ambient than the tight regression fixture --
+    # enough headroom that two +1 dB escalations both stay within every
+    # ceiling (a tight fixture hits the PRE-EXISTING room_too_noisy refusal
+    # on the second escalation, which is a different code path than the
+    # one this test pins).
+    lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
+        locked=-20.0, gain_map_db=1.9, cap_db=-1.0, noise_floor_dbfs=-50.0
+    )
+
+    def _solve():
+        return lease._solve_driver_level(
+            "mono", "woofer", capture_geometry="near_field"
+        )
+
+    baseline = _solve()
+    assert isinstance(baseline, level_solver.SolvedLevel)
+    assert baseline.achieved_target is True
+
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    write1 = _solve()
+    assert isinstance(write1, level_solver.SolvedLevel)
+    assert write1.achieved_target is True
+    write1_total = write1.main_volume_db + write1.commissioning_gain_db
+    baseline_total = baseline.main_volume_db + baseline.commissioning_gain_db
+    assert write1_total == pytest.approx(baseline_total + 1.0)
+
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    write2 = _solve()
+    assert isinstance(write2, level_solver.SolvedLevel)
+    assert write2.achieved_target is True
+    write2_total = write2.main_volume_db + write2.commissioning_gain_db
+    # Stacks on top of write1 (not a no-op, and not re-derived from scratch).
+    assert write2_total == pytest.approx(write1_total + 1.0)
+
+    # The stacked (twice-corrected) level still passes through admission:
+    # every ceiling still binds.
+    plan = DriverSweepGeneratorPlan(
+        f1_hz=20.0,
+        f2_hz=20_000.0,
+        amplitude=10.0 ** (-12.0 / 20.0),
+        duration_s=1.0,
+        repeat_count=1,
+        commissioning_gain_db=write2.commissioning_gain_db,
+        main_volume_db=write2.main_volume_db,
+    )
+    assert plan.effective_peak_dbfs <= -8.0 + 1e-9  # driver-safety ceiling
+    predicted_mic_peak = plan.effective_peak_dbfs + 1.9 - (-12.0)
+    assert predicted_mic_peak <= level_solver.MIC_CLIP_CEILING_DBFS + 1e-9
+    assert write2.main_volume_db <= -1.0 + 1e-9  # ramp cap
+
+    # A THIRD rejection past the bound: no third correction is written; the
+    # NEXT solve attempt refuses pre-flight instead of replaying a doomed
+    # sweep a third time.
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    write3 = _solve()
+    assert isinstance(write3, level_solver.LevelSolveRefusal)
+    assert write3.code == level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE
+
+    # Refusal must NOT invalidate the driver's level lock -- same guarantee
+    # as the existing room_too_noisy refusal.
+    assert "near_field_driver:mono:woofer" in lease._outcomes
+    assert (
+        lease._outcomes["near_field_driver:mono:woofer"].ramp.locked_main_volume_db
+        == -20.0
+    )
+
+    # A fourth rejection stays refused (idempotent) -- not a crash, and
+    # still not a fourth guessed level.
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=1.0
+    )
+    write4 = _solve()
+    assert isinstance(write4, level_solver.LevelSolveRefusal)
+    assert write4.code == level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE
+
+
+def test_solve_correction_clip_trigger_deescalates_and_replaces_gain_source(
+    monkeypatch,
+):
+    """W2.2 (hardware run 18): a clip rejection writes a NEGATIVE adjustment
+    (de-escalation) sized from the clipped capture's OWN measured mic peak,
+    and record_measured_gain's stored gain (once present) replaces the
+    tone's gain_map_db for the solver's mic-clip ceiling ONLY -- both
+    verified end to end through _solve_driver_level, not just the pure
+    solve_level math (see test_audio_measurement_level_solver.py's
+    regression pinned to the same run-18 numbers)."""
+
+    from jasper.audio_measurement import level_solver
+
+    topology, profile, targets = _safety_profile_and_targets()
+    _patch_solve_environment(monkeypatch, topology, profile)
+
+    lease = CrossoverLevelLease()
+    _configure_lease(lease, targets, commissioning_gain_db=0.0)
+    lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
+        locked=-20.0, gain_map_db=-0.1, cap_db=-3.0, noise_floor_dbfs=-41.45
+    )
+
+    baseline = lease._solve_driver_level(
+        "mono", "woofer", capture_geometry="near_field"
+    )
+    assert isinstance(baseline, level_solver.SolvedLevel)
+    baseline_total = baseline.main_volume_db + baseline.commissioning_gain_db
+    assert baseline_total == pytest.approx(-7.35, abs=0.01)
+
+    # The clipped capture's own measured evidence: mic peak clamped to 0.0
+    # dBFS, played at this exact baseline sum.
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="clip", measured_mic_peak_dbfs=0.0
+    )
+    lease.record_measured_gain(
+        "mono",
+        "woofer",
+        measured_mic_peak_dbfs=0.0,
+        effective_peak_dbfs=-12.0 + baseline_total,
+        clipped=True,
+    )
+
+    corrected = lease._solve_driver_level(
+        "mono", "woofer", capture_geometry="near_field"
+    )
+    assert isinstance(corrected, level_solver.SolvedLevel)
+    corrected_total = corrected.main_volume_db + corrected.commissioning_gain_db
+    # Quieter than the clipped attempt -- the de-escalation, not louder.
+    assert corrected_total < baseline_total
+    assert corrected_total == pytest.approx(baseline_total - 15.0, abs=0.01)
+
+    # The measured gain (padded) predicts exactly MIC_TARGET_PEAK_DBFS at
+    # the corrected level -- the same identity the pure-solver regression
+    # pins.
+    measured_gain_db = lease._solve_measured_gain_db["mono:woofer"]
+    assert corrected_total + measured_gain_db == pytest.approx(
+        level_solver.MIC_TARGET_PEAK_DBFS, abs=0.05
+    )
+
+
+def test_measured_gain_cleared_by_fresh_ramp_lock_invalidate_and_set_completion(
+    monkeypatch,
+):
+    """W2.2 item 2's stored measured gain shares the adjustment slot's THREE
+    clearing points: a fresh ramp lock for the same geometry, a full
+    invalidate, and set completion (clear_solve_correction) -- so a later,
+    unrelated measurement never inherits a stale gain from an earlier
+    attempt."""
 
     topology, profile, targets = _safety_profile_and_targets()
     _patch_solve_environment(monkeypatch, topology, profile)
@@ -306,45 +470,40 @@ def test_solve_escalation_fires_at_most_once_and_raises_the_level(monkeypatch):
     lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
         locked=-20.0, gain_map_db=1.9, cap_db=-3.0, noise_floor_dbfs=-42.3
     )
+    lease.record_measured_gain(
+        "mono", "woofer", measured_mic_peak_dbfs=0.0, effective_peak_dbfs=-19.35,
+        clipped=True,
+    )
+    assert "mono:woofer" in lease._solve_measured_gain_db
+    assert "mono:woofer" in lease._solve_measured_peak_dbfs
 
-    baseline = lease._solve_driver_level(
-        "mono", "woofer", capture_geometry="near_field"
-    )
-    lease.record_solve_escalation("mono", "woofer", shortfall_db=5.0)
-    escalated = lease._solve_driver_level(
-        "mono", "woofer", capture_geometry="near_field"
-    )
-    # A second escalation attempt must not stack on top of the first.
-    lease.record_solve_escalation("mono", "woofer", shortfall_db=5.0)
-    escalated_again = lease._solve_driver_level(
-        "mono", "woofer", capture_geometry="near_field"
-    )
+    # 1. Set completion.
+    lease.clear_solve_correction("mono", "woofer")
+    assert "mono:woofer" not in lease._solve_measured_gain_db
+    assert "mono:woofer" not in lease._solve_measured_peak_dbfs
 
-    # Louder (or ceiling-clamped equal) -- per lever and in total.
-    assert escalated.main_volume_db >= baseline.main_volume_db
-    assert escalated.commissioning_gain_db >= baseline.commissioning_gain_db
-    escalated_total = escalated.main_volume_db + escalated.commissioning_gain_db
-    baseline_total = baseline.main_volume_db + baseline.commissioning_gain_db
-    assert escalated_total > baseline_total
-    assert escalated_again.main_volume_db == pytest.approx(escalated.main_volume_db)
-    assert escalated_again.commissioning_gain_db == pytest.approx(
-        escalated.commissioning_gain_db
+    # 2. Full invalidate.
+    lease.record_measured_gain(
+        "mono", "woofer", measured_mic_peak_dbfs=0.0, effective_peak_dbfs=-19.35,
+        clipped=True,
     )
+    lease.invalidate_comparison_context()
+    assert lease._solve_measured_gain_db == {}
+    assert lease._solve_measured_peak_dbfs == {}
 
-    # The escalated level still passes through admission: the ceilings bind.
-    plan = DriverSweepGeneratorPlan(
-        f1_hz=20.0,
-        f2_hz=20_000.0,
-        amplitude=10.0 ** (-12.0 / 20.0),
-        duration_s=1.0,
-        repeat_count=1,
-        commissioning_gain_db=escalated.commissioning_gain_db,
-        main_volume_db=escalated.main_volume_db,
+    # 3. Fresh ramp lock for the same geometry -- reconfigure since
+    # invalidate wiped the targets.
+    _configure_lease(lease, targets)
+    lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
+        locked=-20.0, gain_map_db=1.9, cap_db=-3.0, noise_floor_dbfs=-42.3
     )
-    assert plan.effective_peak_dbfs <= -8.0 + 1e-9  # driver-safety ceiling
-    predicted_mic_peak = plan.effective_peak_dbfs + 1.9 - (-12.0)
-    assert predicted_mic_peak <= level_solver.MIC_CLIP_CEILING_DBFS + 1e-9
-    assert escalated.main_volume_db <= -3.0 + 1e-9  # ramp cap
+    lease.record_measured_gain(
+        "mono", "woofer", measured_mic_peak_dbfs=0.0, effective_peak_dbfs=-19.35,
+        clipped=True,
+    )
+    lease._discard_solve_correction_for_geometry("near_field_driver:mono:woofer")
+    assert "mono:woofer" not in lease._solve_measured_gain_db
+    assert "mono:woofer" not in lease._solve_measured_peak_dbfs
 
 
 def test_new_level_match_run_clears_solve_state(monkeypatch):
@@ -358,12 +517,17 @@ def test_new_level_match_run_clears_solve_state(monkeypatch):
     )
     lease._solve_driver_level("mono", "tweeter", capture_geometry="near_field")
     assert lease.level_match_snapshot()["solve_refusal"] is not None
-    lease.record_solve_escalation("mono", "tweeter", shortfall_db=3.0)
+    lease.record_solve_correction(
+        "mono", "tweeter", trigger="snr_shortfall", shortfall_db=3.0
+    )
 
     lease.invalidate_comparison_context()
 
     assert lease.level_match_snapshot()["solve_refusal"] is None
-    assert lease._solve_escalation_db == {}
+    assert lease._solve_adjustment_db == {}
+    assert lease._solve_correction_writes == {}
+    assert lease._solve_measured_gain_db == {}
+    assert lease._solve_measured_peak_dbfs == {}
 
 
 @pytest.mark.asyncio
@@ -383,8 +547,10 @@ async def test_fresh_ramp_lock_clears_that_targets_escalation(monkeypatch):
     lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
         locked=-20.0, gain_map_db=1.9, cap_db=-3.0, noise_floor_dbfs=-42.3
     )
-    lease.record_solve_escalation("mono", "woofer", shortfall_db=5.0)
-    assert lease._solve_escalation_db == {"mono:woofer": pytest.approx(5.0)}
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=5.0
+    )
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(5.0)}
 
     fresh_outcome = SimpleNamespace(
         locked=True,
@@ -419,7 +585,7 @@ async def test_fresh_ramp_lock_clears_that_targets_escalation(monkeypatch):
         set_main_volume_db=set_volume,
     )
     assert outcome is fresh_outcome
-    assert lease._solve_escalation_db == {}
+    assert lease._solve_adjustment_db == {}
 
 
 @pytest.mark.asyncio
@@ -480,7 +646,10 @@ async def test_solve_runs_once_per_sweep_and_reads_consume_it(monkeypatch):
 def test_record_driver_capture_escalates_on_measured_shortfall(monkeypatch):
     """Sweep 1's OWN measured verdict misses despite the solve predicting a
     safe level -- the wrapper escalates the lease's ambient assumption by
-    exactly the measured shortfall, once."""
+    exactly the measured shortfall. Unlike the pre-W2.2 "at most once"
+    behavior, a SECOND rejection for the SAME target now stacks (bounded at
+    _MAX_SOLVE_CORRECTION_WRITES writes); a THIRD does not write a third
+    correction."""
 
     import jasper.web.correction_crossover_backend as backend_mod
 
@@ -500,6 +669,7 @@ def test_record_driver_capture_escalates_on_measured_shortfall(monkeypatch):
                 "latest_rejection": {
                     "accepted": False,
                     "reject_reason": "insufficient",
+                    "clipping": False,
                     "snr_shortfall_db": 4.7,
                 },
             },
@@ -509,14 +679,114 @@ def test_record_driver_capture_escalates_on_measured_shortfall(monkeypatch):
     backend_mod.record_driver_capture(
         {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
     )
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(4.7)}
 
-    assert lease._solve_escalation_db == {"mono:woofer": pytest.approx(4.7)}
-
-    # A second rejection for the SAME target must not stack a second bump.
+    # A second rejection for the SAME target STACKS (write 2 of 2).
     backend_mod.record_driver_capture(
         {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
     )
-    assert lease._solve_escalation_db == {"mono:woofer": pytest.approx(4.7)}
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(9.4)}
+
+    # A third rejection past the bound does not stack a third bump.
+    backend_mod.record_driver_capture(
+        {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
+    )
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(9.4)}
+    assert lease._solve_correction_writes == {"mono:woofer": 3}
+
+
+def test_record_driver_capture_clip_rejection_deescalates_and_stores_measured_gain(
+    monkeypatch,
+):
+    """W2.2 (hardware run 18): a clip rejection writes a de-escalation from
+    the rejected capture's OWN measured mic peak (peak_dbfs on the rejected
+    attempt's admission_result, propagated through
+    repeat_progress.latest_rejection) and, separately, refines the solver's
+    stored mic-clip gain from the SAME evidence."""
+
+    import jasper.web.correction_crossover_backend as backend_mod
+
+    lease = backend_mod.CrossoverLevelLease()
+    monkeypatch.setattr(backend_mod, "_LEVEL_LEASE", lease)
+    _, profile, targets = _safety_profile_and_targets()
+    _configure_lease(lease, targets, commissioning_gain_db=0.0)
+
+    monkeypatch.setattr(
+        backend_mod.web_measurement,
+        "record_driver_capture",
+        lambda *args, **kwargs: {
+            "recorded": False,
+            "repeat_progress": {
+                "attempts": 1,
+                "accepted": 0,
+                "latest_rejection": {
+                    "accepted": False,
+                    "reject_reason": "unusable_capture",
+                    "clipping": True,
+                    "snr_shortfall_db": None,
+                    "peak_dbfs": 0.0,
+                    "effective_peak_dbfs": -19.35,
+                },
+            },
+        },
+    )
+
+    backend_mod.record_driver_capture(
+        {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
+    )
+
+    # drop_db = (0.0 - (-12.0)) + 3.0 = 15.0 -- a de-escalation (negative).
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(-15.0)}
+    assert lease._solve_correction_writes == {"mono:woofer": 1}
+    # measured gain: 0.0 - (-19.35 - (-12.0)) + 3.0 (clipped allowance).
+    assert lease._solve_measured_gain_db["mono:woofer"] == pytest.approx(
+        10.35, abs=0.01
+    )
+    assert lease._solve_measured_peak_dbfs["mono:woofer"] == pytest.approx(0.0)
+
+
+def test_record_driver_capture_clip_rejection_with_no_usable_peak_uses_zero(
+    monkeypatch,
+):
+    """When the analyzer records no usable peak level for a clipped capture,
+    the wrapper falls back to the conservative 0.0 dBFS measured value
+    rather than skipping the correction."""
+
+    import jasper.web.correction_crossover_backend as backend_mod
+
+    lease = backend_mod.CrossoverLevelLease()
+    monkeypatch.setattr(backend_mod, "_LEVEL_LEASE", lease)
+    _, profile, targets = _safety_profile_and_targets()
+    _configure_lease(lease, targets)
+
+    monkeypatch.setattr(
+        backend_mod.web_measurement,
+        "record_driver_capture",
+        lambda *args, **kwargs: {
+            "recorded": False,
+            "repeat_progress": {
+                "attempts": 1,
+                "accepted": 0,
+                "latest_rejection": {
+                    "accepted": False,
+                    "reject_reason": "unusable_capture",
+                    "clipping": True,
+                    "snr_shortfall_db": None,
+                    "peak_dbfs": None,
+                    "effective_peak_dbfs": None,
+                },
+            },
+        },
+    )
+
+    backend_mod.record_driver_capture(
+        {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
+    )
+
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(-15.0)}
+    # No usable effective_peak_dbfs -- record_measured_gain has nothing to
+    # compute from, so it does not fire (no crash, no bogus gain stored).
+    assert lease._solve_measured_gain_db == {}
 
 
 def test_record_driver_capture_does_not_escalate_on_acceptance(monkeypatch):
@@ -537,4 +807,75 @@ def test_record_driver_capture_does_not_escalate_on_acceptance(monkeypatch):
         {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
     )
 
-    assert lease._solve_escalation_db == {}
+    assert lease._solve_adjustment_db == {}
+
+
+def test_record_driver_capture_set_completion_clears_correction_state(monkeypatch):
+    """W2.2: once a target's repeat set reaches a terminal state (success or
+    terminal refusal), its bounded-correction state clears -- a LATER,
+    unrelated measurement of the same target starts with a clean budget."""
+
+    import jasper.web.correction_crossover_backend as backend_mod
+
+    lease = backend_mod.CrossoverLevelLease()
+    monkeypatch.setattr(backend_mod, "_LEVEL_LEASE", lease)
+    _, profile, targets = _safety_profile_and_targets()
+    _configure_lease(lease, targets)
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=4.7
+    )
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(4.7)}
+
+    monkeypatch.setattr(
+        backend_mod.web_measurement,
+        "record_driver_capture",
+        lambda *args, **kwargs: {
+            "recorded": True,
+            "acoustic": {"peak_dbfs": -20.0, "mic_clipping": False},
+            "excitation": {"effective_peak_dbfs": -25.0},
+        },
+    )
+    backend_mod.record_driver_capture(
+        {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
+    )
+
+    assert lease._solve_adjustment_db == {}
+    assert lease._solve_correction_writes == {}
+    # The accepted capture's own peak/effective_peak_dbfs still refined the
+    # measured gain BEFORE set-completion cleared it (matches item 2's
+    # "any capture" scope) -- clearing happens last, so the end state has
+    # no stale gain.
+    assert lease._solve_measured_gain_db == {}
+
+
+def test_record_driver_capture_terminal_refusal_clears_correction_state(monkeypatch):
+    """The insufficient-accepted-repeats terminal refusal is ALSO set
+    completion -- it must clear a target's correction state, not just a
+    successful finalization."""
+
+    import jasper.web.correction_crossover_backend as backend_mod
+
+    lease = backend_mod.CrossoverLevelLease()
+    monkeypatch.setattr(backend_mod, "_LEVEL_LEASE", lease)
+    _, profile, targets = _safety_profile_and_targets()
+    _configure_lease(lease, targets)
+    lease.record_solve_correction(
+        "mono", "woofer", trigger="snr_shortfall", shortfall_db=4.7
+    )
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(4.7)}
+
+    monkeypatch.setattr(
+        backend_mod.web_measurement,
+        "record_driver_capture",
+        lambda *args, **kwargs: {
+            "recorded": False,
+            "status": "refused",
+            "verdict": "insufficient_repeats",
+        },
+    )
+    backend_mod.record_driver_capture(
+        {"speaker_group_id": "mono", "role": "woofer"}, b"wav"
+    )
+
+    assert lease._solve_adjustment_db == {}
+    assert lease._solve_correction_writes == {}

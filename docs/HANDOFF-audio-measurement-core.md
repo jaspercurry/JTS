@@ -1337,4 +1337,10 @@ Wave 1 excitation/evidence identities remain the shared substrate rather than
 feature policy. Production post-apply verification/receipt and Room authority
 are Active-owned and hardware-free verified. Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
-against correction, balance, sync, and the coordinator mutex)
+against correction, balance, sync, and the coordinator mutex. Same-day
+follow-up: the level solver's W2.2 clip-aware correction (unified signed
+adjustment slot, measured-gain mic-clip ceiling override, two-write bound,
+`measurement_window_unreachable` refusal — full detail in
+active-crossover-information-design.md "Level control and SNR") checked
+hardware-free against the triggering run-18 numbers; not yet
+hardware-validated)

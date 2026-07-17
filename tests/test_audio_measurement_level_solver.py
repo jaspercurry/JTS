@@ -235,6 +235,162 @@ def test_mic_clip_ceiling_binds():
 
 
 # ---------------------------------------------------------------------------
+# mic_clip_gain_map_db override (W2.2 clip-aware correction, hardware run 18)
+# ---------------------------------------------------------------------------
+
+
+def test_mic_clip_gain_map_db_none_matches_baseline_behavior():
+    """Omitting the override reproduces the single-gain_map_db behavior
+    exactly -- the default is a true no-op, not just "close"."""
+
+    kwargs = dict(
+        gain_map_db=20.0,
+        admitted_band_hz=(2500.0, 20000.0),
+        commissioning_gain_baseline_db=0.0,
+        main_volume_cap_db=0.0,
+        max_effective_peak_dbfs=0.0,
+        ambient_broadband_dbfs=-30.0,
+        model=DRIVER,
+    )
+    baseline = solve_level(**kwargs)
+    explicit_none = solve_level(mic_clip_gain_map_db=None, **kwargs)
+    assert isinstance(baseline, SolvedLevel) and isinstance(explicit_none, SolvedLevel)
+    assert explicit_none == baseline
+
+
+def test_mic_clip_gain_map_db_overrides_only_the_clip_ceiling():
+    """A MEASURED gain more sensitive than the tone's gain_map_db tightens
+    the mic-clip ceiling and lands a quieter chosen_sum -- but the SNR
+    target math (predicted_worst_band_snr_db) still reads the ORIGINAL
+    gain_map_db, not the override: the override is scoped to the clip
+    safety ceiling only, per solve_level's own contract."""
+
+    kwargs = dict(
+        gain_map_db=20.0,
+        admitted_band_hz=(2500.0, 20000.0),
+        commissioning_gain_baseline_db=0.0,
+        main_volume_cap_db=0.0,
+        max_effective_peak_dbfs=0.0,
+        ambient_broadband_dbfs=-30.0,
+        model=DRIVER,
+    )
+    baseline = solve_level(**kwargs)
+    overridden = solve_level(mic_clip_gain_map_db=22.0, **kwargs)
+    assert isinstance(baseline, SolvedLevel) and isinstance(overridden, SolvedLevel)
+
+    # The more-sensitive measured gain tightens the ceiling -> quieter.
+    assert overridden.main_volume_db < baseline.main_volume_db
+
+    # Reported SNR still comes from gain_map_db (20.0), not the override
+    # (22.0) -- confirms the override never leaks into the SNR-target math.
+    chosen_sum = overridden.main_volume_db + overridden.commissioning_gain_db
+    worst_band_ambient = max(b.ambient_dbfs for b in overridden.band_detail)
+    expected_snr = chosen_sum + 20.0 - worst_band_ambient
+    assert overridden.predicted_worst_band_snr_db == pytest.approx(expected_snr)
+
+    # And the mic-clip ceiling that actually bound this solve was computed
+    # from the OVERRIDE (22.0), confirmed by reconstructing the predicted
+    # peak with it landing exactly on MIC_CLIP_CEILING_DBFS.
+    predicted_peak_via_override = chosen_sum + 22.0
+    assert predicted_peak_via_override == pytest.approx(
+        level_solver.MIC_CLIP_CEILING_DBFS
+    )
+
+
+def test_regression_run18_clip_deescalation_lands_predicted_peak_at_target():
+    """W2.2 pinned regression: hardware run 18 (jts3). The woofer's 250 Hz
+    level-lock tone measured gain_map_db=-0.1, predicting a safe sweep --
+    the solve chose main_volume=-7.35/commissioning=0.0 (achieving 26 dB
+    worst-band SNR, matching the earlier same-day regression). The mic
+    ACTUALLY hit 0 dBFS (clipped) instead.
+
+    De-escalating from that measured evidence -- CrossoverLevelLease's
+    ambient-shift correction (drop_db, item 1) plus the driver's OWN
+    measured chain gain replacing the tone's gain_map_db for the mic-clip
+    ceiling (item 2, padded by CLIP_UNDERESTIMATE_ALLOWANCE_DB since a
+    clipped reading understates the true peak) -- must land the corrected
+    solve's predicted mic peak (evaluated with the driver's real, unpadded
+    measured gain) at MIC_TARGET_PEAK_DBFS minus the allowance: the
+    allowance is baked into HOW FAR to drop, not left over as slack, so the
+    solve target itself (evaluated with the PADDED gain the solver was
+    actually configured with) lands exactly on MIC_TARGET_PEAK_DBFS.
+    """
+
+    gain_map_db = -0.1
+    ambient_broadband_dbfs = -41.45
+    kwargs = dict(
+        gain_map_db=gain_map_db,
+        admitted_band_hz=(40.0, 400.0),
+        commissioning_gain_baseline_db=0.0,
+        main_volume_cap_db=-3.0,
+        max_effective_peak_dbfs=-8.0,
+        model=DRIVER,
+    )
+
+    # First (clipped) sweep -- reproduces the run-18 numbers exactly, so
+    # this fixture's ambient is grounded in the same solve the hardware ran.
+    first = solve_level(ambient_broadband_dbfs=ambient_broadband_dbfs, **kwargs)
+    assert isinstance(first, SolvedLevel)
+    old_chosen_sum = first.main_volume_db + first.commissioning_gain_db
+    assert old_chosen_sum == pytest.approx(-7.35, abs=0.01)
+    assert first.predicted_worst_band_snr_db == pytest.approx(26.0)
+
+    measured_mic_peak_dbfs = 0.0  # clipped -- clamped to the conservative value
+
+    # Item 1: the signed ambient-shift de-escalation.
+    drop_db = (
+        (measured_mic_peak_dbfs - level_solver.MIC_TARGET_PEAK_DBFS)
+        + level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB
+    )
+    assert drop_db == pytest.approx(15.0)
+
+    # Item 2: the driver's own measured chain gain (padded), replacing
+    # gain_map_db for the mic-clip ceiling. Mirrors
+    # CrossoverLevelLease.record_measured_gain's conversion from
+    # effective_peak_dbfs (the excitation ledger's field) to the
+    # chosen_sum-relative convention gain_map_db itself uses.
+    measured_gain_db = (
+        measured_mic_peak_dbfs
+        - old_chosen_sum
+        + level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB
+    )
+    assert measured_gain_db == pytest.approx(10.35, abs=0.01)
+
+    second = solve_level(
+        ambient_broadband_dbfs=ambient_broadband_dbfs - drop_db,
+        mic_clip_gain_map_db=measured_gain_db,
+        **kwargs,
+    )
+    assert isinstance(second, SolvedLevel)
+    new_chosen_sum = second.main_volume_db + second.commissioning_gain_db
+    assert new_chosen_sum == pytest.approx(old_chosen_sum - drop_db, abs=0.01)
+
+    # Evaluated with the PADDED (stored) gain the solver used, the
+    # de-escalated level's predicted mic peak lands exactly on the target.
+    predicted_padded_peak = new_chosen_sum + measured_gain_db
+    assert predicted_padded_peak == pytest.approx(
+        level_solver.MIC_TARGET_PEAK_DBFS, abs=0.05
+    )
+
+    # Evaluated with the driver's TRUE (unpadded) measured gain, the
+    # allowance shows up as extra headroom below the target -- the
+    # de-escalation errs quieter, never re-clips.
+    unpadded_gain_db = measured_gain_db - level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB
+    predicted_true_peak = new_chosen_sum + unpadded_gain_db
+    assert predicted_true_peak == pytest.approx(
+        level_solver.MIC_TARGET_PEAK_DBFS - level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB,
+        abs=0.05,
+    )
+    assert predicted_true_peak < level_solver.MIC_TARGET_PEAK_DBFS
+
+    # A second, IDENTICAL clip at this de-escalated level is not something
+    # solve_level itself can refuse (it always answers what's asked) -- the
+    # "second identical solve impossible" guarantee lives in the bounded
+    # write-count on CrossoverLevelLease.record_solve_correction (see
+    # tests/test_correction_crossover_backend_level_solve.py).
+
+
+# ---------------------------------------------------------------------------
 # Refusal
 # ---------------------------------------------------------------------------
 

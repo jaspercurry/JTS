@@ -58,6 +58,14 @@ CamillaFactory = Callable[[], Any]
 # refusal is safer than silently under-provisioning a driver's sweep level.
 _FALLBACK_AMBIENT_BROADBAND_DBFS = -30.0
 
+# Bounded correction (W2.2): at most this many signed adjustment writes
+# (clip de-escalations or SNR-shortfall escalations, combined) per target
+# per comparison set -- see CrossoverLevelLease.record_solve_correction. A
+# rejection past this bound is a typed refusal
+# (level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE), never a third
+# guessed level.
+_MAX_SOLVE_CORRECTION_WRITES = 2
+
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_level_run import (
         CrossoverLevelRunClaim,
@@ -195,12 +203,34 @@ class CrossoverLevelLease:
         self.noise_floor_db = None
         self.mic_calibration = None
         self.input_device = None
-        # Closed-loop level solver (W2.1): the most recent refusal (surfaced
-        # by the envelope until a fresh level-match clears it) and each
-        # target's one-time bounded-correction escalation. Keyed by
-        # target_id; see _solve_driver_level.
+        # Closed-loop level solver (W2.1/W2.2): the most recent refusal
+        # (surfaced by the envelope until a fresh level-match clears it) and
+        # each target's bounded-correction state. Keyed by target_id; see
+        # _solve_driver_level.
         self._solve_refusal: dict[str, Any] | None = None
-        self._solve_escalation_db: dict[str, float] = {}
+        # ONE signed adjustment per target, added to the solve's assumed
+        # ambient dBFS: an SNR-shortfall rejection writes +shortfall_db
+        # (louder assumed room -> louder solve); a CLIP rejection writes a
+        # de-escalation (quieter assumed room -> quieter solve) sized from
+        # the clipped capture's OWN measured evidence. See
+        # record_solve_correction.
+        self._solve_adjustment_db: dict[str, float] = {}
+        # How many corrections have been written for this target in the
+        # current comparison set. Bounded at _MAX_SOLVE_CORRECTION_WRITES --
+        # a further rejection after the bound is a typed refusal
+        # (measurement_window_unreachable), not a third guessed level.
+        self._solve_correction_writes: dict[str, int] = {}
+        # W2.2: the driver's OWN measured chain gain (mic peak minus that
+        # attempt's effective sweep peak), replacing the level-match tone's
+        # single-frequency gain_map_db for the solver's mic-clip ceiling --
+        # see record_measured_gain. Updated by ANY capture (accepted or
+        # rejected); padded by CLIP_UNDERESTIMATE_ALLOWANCE_DB when the
+        # capture it came from clipped.
+        self._solve_measured_gain_db: dict[str, float] = {}
+        # The measured peak dBFS backing _solve_measured_gain_db, kept only
+        # for the measurement_window_unreachable refusal's observability
+        # fields (never fed back into the gain math).
+        self._solve_measured_peak_dbfs: dict[str, float] = {}
         # One solve per sweep: _acquire_sweep_volume computes and stores the
         # SolvedLevel here (keyed by group/role/geometry so a mismatched read
         # can never consume another sweep's solve); the excitation-ledger
@@ -706,17 +736,17 @@ class CrossoverLevelLease:
                 self.context_id = context_id
             # A fresh ramp result changes the solver's inputs (gain_map_db,
             # cap_db, noise_floor_dbfs) for this geometry -- any earlier
-            # refusal, stored per-sweep solve, or bounded-correction
-            # escalation for this target is stale. The escalation in
-            # particular must not survive a re-lock: the fresh ramp
-            # re-measured the ambient it was compensating for, so keeping it
-            # would double-count the correction.
+            # refusal, stored per-sweep solve, or bounded correction for
+            # this target is stale. The correction in particular must not
+            # survive a re-lock: the fresh ramp re-measured the ambient it
+            # was compensating for, so keeping it would double-count the
+            # correction.
             self._solve_refusal = None
             self._active_sweep_solve = None
-            self._discard_solve_escalation_for_geometry(geometry)
+            self._discard_solve_correction_for_geometry(geometry)
         return outcome
 
-    def _discard_solve_escalation_for_geometry(self, geometry: str) -> None:
+    def _discard_solve_correction_for_geometry(self, geometry: str) -> None:
         from jasper.active_speaker.capture_geometry import (
             parse_driver_level_geometry,
         )
@@ -729,7 +759,19 @@ class CrossoverLevelLease:
             return
         target_id = self._target_id_for(group_id, role)
         if target_id is not None:
-            self._solve_escalation_db.pop(target_id, None)
+            self._clear_solve_correction_state(target_id)
+
+    def _clear_solve_correction_state(self, target_id: str) -> None:
+        """Drop one target's bounded-correction state (W2.2).
+
+        Shared by the fresh-ramp-lock, invalidate, and set-completion
+        clearing points so the three lifecycles can never drift apart.
+        """
+
+        self._solve_adjustment_db.pop(target_id, None)
+        self._solve_correction_writes.pop(target_id, None)
+        self._solve_measured_gain_db.pop(target_id, None)
+        self._solve_measured_peak_dbfs.pop(target_id, None)
 
     async def cancel_level_match(self) -> bool:
         """Ask the retained crossover ramp to stop through its safe restore."""
@@ -764,7 +806,10 @@ class CrossoverLevelLease:
             self._repeat_failures = {}
             self._durable_repeat_progress = {}
             self._solve_refusal = None
-            self._solve_escalation_db = {}
+            self._solve_adjustment_db = {}
+            self._solve_correction_writes = {}
+            self._solve_measured_gain_db = {}
+            self._solve_measured_peak_dbfs = {}
             self._active_sweep_solve = None
         log_event(
             logger,
@@ -851,6 +896,49 @@ class CrossoverLevelLease:
             )
         except (ExcitationSafetyPlanError, OSError, RuntimeError, TypeError, ValueError):
             return None
+        if self._solve_correction_writes.get(target_id, 0) > _MAX_SOLVE_CORRECTION_WRITES:
+            # W2.2: a rejection past the bounded correction budget (see
+            # record_solve_correction) is a typed refusal, fired here --
+            # BEFORE any tone plays -- rather than a third guessed level.
+            # The mic cannot get a clean reading at this
+            # distance/placement; that is a physical problem the solver
+            # cannot correct its way out of.
+            exhausted_refusal = level_solver.LevelSolveRefusal(
+                code=level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE,
+                failing_band_hz=(permitted_band.lower_hz, permitted_band.upper_hz),
+                required_db=level_solver.MIC_TARGET_PEAK_DBFS,
+                available_db=self._solve_measured_peak_dbfs.get(
+                    target_id, level_solver.MIC_TARGET_PEAK_DBFS
+                ),
+            )
+            log_event(
+                logger,
+                "measurement.level_solved",
+                target_id=target_id,
+                role=role,
+                capture_geometry=capture_geometry,
+                gain_map_db=f"{float(gain_map_db):.1f}",
+                outcome="refused",
+                main_volume_db="",
+                commissioning_gain_db="",
+                predicted_worst_band_snr_db="",
+                failing_band_lo_hz=f"{exhausted_refusal.failing_band_hz[0]:.1f}",
+                failing_band_hi_hz=f"{exhausted_refusal.failing_band_hz[1]:.1f}",
+                required_db=f"{exhausted_refusal.required_db:.1f}",
+                available_db=f"{exhausted_refusal.available_db:.1f}",
+                adjustment_db=f"{self._solve_adjustment_db.get(target_id, 0.0):+.1f}",
+                gain_source=(
+                    "measured_band_peak"
+                    if target_id in self._solve_measured_gain_db
+                    else "tone_gain_map"
+                ),
+            )
+            self._solve_refusal = {
+                "target_id": target_id,
+                "role": role,
+                **exhausted_refusal.to_dict(),
+            }
+            return exhausted_refusal
         main_volume_cap_db = getattr(outcome.ramp, "cap_db", None)
         if (
             main_volume_cap_db is None
@@ -863,13 +951,12 @@ class CrossoverLevelLease:
             float(ambient_broadband_dbfs)
         ):
             ambient_broadband_dbfs = _FALLBACK_AMBIENT_BROADBAND_DBFS
-        # Bounded correction (W2.1 item 4): a one-time escalation, in dB of
-        # additional required headroom, applied after sweep 1's measured
-        # worst-band SNR still missed the solver's prediction. Modeled as
-        # extra assumed ambient loudness (a LESS negative dBFS figure, which
-        # monotonically raises the solved level) so every downstream ceiling
-        # check (mic-clip, peak) still applies to the escalated target.
-        ambient_broadband_dbfs = float(ambient_broadband_dbfs) + self._solve_escalation_db.get(
+        # Bounded correction (W2.1/W2.2): the ONE signed per-target
+        # adjustment, in dB, applied to the solver's assumed ambient. An
+        # SNR-shortfall rejection raises it (louder assumed room -> louder
+        # solve); a clip rejection lowers it (quieter assumed room ->
+        # quieter solve). See record_solve_correction.
+        ambient_broadband_dbfs = float(ambient_broadband_dbfs) + self._solve_adjustment_db.get(
             target_id, 0.0
         )
         commissioning_gain_baseline_db = min(
@@ -883,6 +970,16 @@ class CrossoverLevelLease:
             ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
         )
 
+        # W2.2: once a real sweep has clipped or otherwise measured this
+        # driver's mic peak, that measured chain gain (mic peak minus the
+        # attempt's own effective sum) replaces the level-match tone's
+        # single-frequency gain_map_db for the mic-clip ceiling ONLY -- see
+        # record_measured_gain and solve_level's mic_clip_gain_map_db.
+        mic_clip_gain_map_db = self._solve_measured_gain_db.get(target_id)
+        gain_source = (
+            "measured_band_peak" if mic_clip_gain_map_db is not None else "tone_gain_map"
+        )
+
         result = level_solver.solve_level(
             gain_map_db=float(gain_map_db),
             admitted_band_hz=(permitted_band.lower_hz, permitted_band.upper_hz),
@@ -892,7 +989,9 @@ class CrossoverLevelLease:
             ambient_broadband_dbfs=ambient_broadband_dbfs,
             model=DRIVER_QUALITY_MODEL,
             sweep_amplitude_dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+            mic_clip_gain_map_db=mic_clip_gain_map_db,
         )
+        adjustment_db = self._solve_adjustment_db.get(target_id, 0.0)
         if isinstance(result, level_solver.LevelSolveRefusal):
             log_event(
                 logger,
@@ -912,6 +1011,8 @@ class CrossoverLevelLease:
                 failing_band_hi_hz=f"{result.failing_band_hz[1]:.1f}",
                 required_db=f"{result.required_db:.1f}",
                 available_db=f"{result.available_db:.1f}",
+                adjustment_db=f"{adjustment_db:+.1f}",
+                gain_source=gain_source,
             )
             self._solve_refusal = {
                 "target_id": target_id,
@@ -933,34 +1034,179 @@ class CrossoverLevelLease:
             main_volume_db=f"{result.main_volume_db:.1f}",
             commissioning_gain_db=f"{result.commissioning_gain_db:.1f}",
             predicted_worst_band_snr_db=f"{result.predicted_worst_band_snr_db:.1f}",
+            adjustment_db=f"{adjustment_db:+.1f}",
+            gain_source=gain_source,
         )
         self._solve_refusal = None
         return result
 
-    def record_solve_escalation(
-        self, speaker_group_id: str, role: str, *, shortfall_db: float
+    def record_solve_correction(
+        self,
+        speaker_group_id: str,
+        role: str,
+        *,
+        trigger: str,
+        shortfall_db: float | None = None,
+        measured_mic_peak_dbfs: float | None = None,
     ) -> None:
-        """One-time bounded-correction escalation (W2.1 item 4).
+        """ONE signed per-target correction (W2.2, generalizes W2.1 item 4).
 
-        Called after a driver capture's OWN measured worst-band SNR still
-        misses despite the solve. Fires at most once per target -- a second
-        miss is the solver's job to refuse on the NEXT attempt, not a second
-        escalation (never a user-facing retry ritual).
+        ``trigger="snr_shortfall"`` (unchanged W2.1 behavior): a driver
+        capture's OWN measured worst-band SNR still missed despite the
+        solve -- raise the solver's assumed ambient by exactly the measured
+        shortfall so the next solve asks for more headroom.
+
+        ``trigger="clip"`` (W2.2, hardware run 18): a driver capture
+        clipped the mic even though the solve predicted a safe level --
+        de-escalate the solver's assumed ambient using the clipped
+        capture's OWN measured mic peak (``measured_mic_peak_dbfs``),
+        targeting ``level_solver.MIC_TARGET_PEAK_DBFS`` with
+        ``level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB`` of slack for the
+        clipped reading's own unreliability (a clamped/clipped reading
+        understates the true acoustic peak).
+
+        Bounded at ``_MAX_SOLVE_CORRECTION_WRITES`` writes per target per
+        comparison set -- a further clip or shortfall past the bound does
+        NOT write a third guessed level; it marks the target so the NEXT
+        solve attempt (``_solve_driver_level``) refuses pre-flight with
+        ``level_solver.REFUSAL_MEASUREMENT_WINDOW_UNREACHABLE`` instead of
+        replaying a doomed sweep a third time.
         """
 
-        if not math.isfinite(shortfall_db) or shortfall_db <= 0.0:
-            return
+        from jasper.audio_measurement import level_solver
+
         target_id = self._target_id_for(speaker_group_id, role)
-        if target_id is None or target_id in self._solve_escalation_db:
+        if target_id is None:
             return
-        self._solve_escalation_db[target_id] = float(shortfall_db)
+        if trigger == "snr_shortfall":
+            if (
+                shortfall_db is None
+                or not math.isfinite(shortfall_db)
+                or shortfall_db <= 0.0
+            ):
+                return
+            delta_db = float(shortfall_db)
+        elif trigger == "clip":
+            if measured_mic_peak_dbfs is None or not math.isfinite(
+                measured_mic_peak_dbfs
+            ):
+                return
+            drop_db = (
+                (float(measured_mic_peak_dbfs) - level_solver.MIC_TARGET_PEAK_DBFS)
+                + level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB
+            )
+            if drop_db <= 0.0:
+                return
+            delta_db = -drop_db
+        else:
+            raise ValueError(f"unsupported solve-correction trigger: {trigger!r}")
+
+        writes = self._solve_correction_writes.get(target_id, 0)
+        if writes >= _MAX_SOLVE_CORRECTION_WRITES:
+            self._solve_correction_writes[target_id] = writes + 1
+            log_event(
+                logger,
+                "measurement.level_solve_correction_exhausted",
+                target_id=target_id,
+                role=role,
+                trigger=trigger,
+                writes=writes,
+            )
+            return
+        self._solve_adjustment_db[target_id] = (
+            self._solve_adjustment_db.get(target_id, 0.0) + delta_db
+        )
+        self._solve_correction_writes[target_id] = writes + 1
         log_event(
             logger,
-            "measurement.level_solve_escalated",
+            "measurement.level_solve_corrected",
             target_id=target_id,
             role=role,
-            shortfall_db=f"{float(shortfall_db):.1f}",
+            trigger=trigger,
+            adjustment_db=f"{delta_db:+.1f}",
+            total_adjustment_db=f"{self._solve_adjustment_db[target_id]:+.1f}",
+            writes=writes + 1,
         )
+
+    def record_measured_gain(
+        self,
+        speaker_group_id: str,
+        role: str,
+        *,
+        measured_mic_peak_dbfs: float,
+        effective_peak_dbfs: float,
+        clipped: bool,
+    ) -> None:
+        """Store this driver's OWN measured chain gain (W2.2 item 2).
+
+        Fires for ANY capture -- accepted or rejected -- once a real sweep
+        has played through this driver: its full-band measured behavior is
+        a better basis for the solver's mic-clip ceiling than the
+        level-match ramp's single-frequency lock tone (hardware run 18: a
+        250 Hz tone underestimated a woofer sweep's hottest band). When the
+        capture that produced this reading clipped, the reading itself
+        understates the true peak, so
+        ``level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB`` is folded into the
+        stored gain so every later use inherits the same conservatism. Not
+        bounded by the correction-write limit -- this is better
+        information, not a guessed retry -- and always overwrites with the
+        latest reading.
+
+        ``effective_peak_dbfs`` is ``DriverSweepGeneratorPlan.effective_peak_dbfs``
+        for the attempt that produced ``measured_mic_peak_dbfs`` (sweep
+        amplitude + commissioning_gain_db + main_volume_db -- the excitation
+        ledger's own field, e.g. ``raw["excitation"]["effective_peak_dbfs"]``).
+        ``gain_map_db``'s own established convention (see
+        ``predicted_mic_peak_dbfs`` in ``jasper.audio_measurement.level_solver``)
+        is measured relative to ``commissioning_gain_db + main_volume_db``
+        WITHOUT the sweep amplitude term -- the sweep/tone amplitudes cancel
+        because both are pinned at the same constant today. This method
+        converts by subtracting that constant so the stored gain plugs
+        directly into ``solve_level``'s ``mic_clip_gain_map_db`` on the same
+        footing as the tone-derived ``gain_map_db`` it replaces.
+        """
+
+        if not math.isfinite(measured_mic_peak_dbfs) or not math.isfinite(
+            effective_peak_dbfs
+        ):
+            return
+        target_id = self._target_id_for(speaker_group_id, role)
+        if target_id is None:
+            return
+        from jasper.active_speaker.commissioning_admission import (
+            ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+        )
+        from jasper.audio_measurement import level_solver
+
+        chosen_sum = float(effective_peak_dbfs) - ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS
+        allowance = level_solver.CLIP_UNDERESTIMATE_ALLOWANCE_DB if clipped else 0.0
+        gain_db = float(measured_mic_peak_dbfs) - chosen_sum + allowance
+        self._solve_measured_gain_db[target_id] = gain_db
+        self._solve_measured_peak_dbfs[target_id] = float(measured_mic_peak_dbfs)
+        log_event(
+            logger,
+            "measurement.level_solve_measured_gain",
+            target_id=target_id,
+            role=role,
+            measured_gain_db=f"{gain_db:.1f}",
+            measured_mic_peak_dbfs=f"{float(measured_mic_peak_dbfs):.1f}",
+            effective_peak_dbfs=f"{float(effective_peak_dbfs):.1f}",
+            clipped=clipped,
+        )
+
+    def clear_solve_correction(self, speaker_group_id: str, role: str) -> None:
+        """Drop one target's bounded-correction state (W2.2 set completion).
+
+        Called once a driver's repeat set reaches a terminal state --
+        successfully finalized, or terminally refused -- so a LATER,
+        unrelated measurement of the SAME target in this comparison set
+        starts with a clean correction budget. Mirrors the fresh-ramp-lock
+        and invalidate clearing points (see _clear_solve_correction_state).
+        """
+
+        target_id = self._target_id_for(speaker_group_id, role)
+        if target_id is not None:
+            self._clear_solve_correction_state(target_id)
 
     async def acquire_driver_sweep_volume(
         self,
@@ -2595,15 +2841,18 @@ def record_driver_capture(
             "status"
         ),
     )
-    # Bounded correction (W2.1 item 4): the solve predicted a safe level
-    # would clear the SNR requirement, but this attempt's OWN measured
-    # verdict still rejected it (a model-error case -- the fallback ambient
-    # guess, or a per-band evidence event, undershot the real room). Escalate
-    # the solver's assumed ambient by exactly the measured shortfall so the
-    # NEXT repeat attempt asks for more headroom; record_solve_escalation
-    # itself enforces "at most once" -- repeats 2-3 inherit the same bump,
-    # and a second miss becomes the solver's typed refusal on its own next
-    # solve, not a second escalation.
+    # Bounded correction (W2.1/W2.2): the solve predicted a safe level would
+    # clear the SNR requirement, but this attempt's OWN measured verdict
+    # still rejected it -- either a clip (the tone-derived gain_map
+    # underestimated the driver's hottest band -- hardware run 18, see
+    # docs/HANDOFF-audio-measurement-core.md) or a measured SNR shortfall
+    # (the fallback ambient guess, or a per-band evidence event, undershot
+    # the real room). record_solve_correction writes ONE signed adjustment
+    # per rejection, bounded at _MAX_SOLVE_CORRECTION_WRITES; a rejection
+    # past the bound becomes the solver's typed refusal on its own next
+    # solve attempt, not a third guessed level.
+    group_id = str(raw.get("speaker_group_id") or "")
+    role = str(raw.get("role") or "").lower()
     repeat_progress = payload.get("repeat_progress")
     latest_rejection = (
         repeat_progress.get("latest_rejection")
@@ -2611,14 +2860,102 @@ def record_driver_capture(
         else None
     )
     if isinstance(latest_rejection, Mapping):
-        shortfall = latest_rejection.get("snr_shortfall_db")
-        if isinstance(shortfall, (int, float)) and not isinstance(shortfall, bool):
-            _LEVEL_LEASE.record_solve_escalation(
-                str(raw.get("speaker_group_id") or ""),
-                str(raw.get("role") or "").lower(),
-                shortfall_db=float(shortfall),
+        if bool(latest_rejection.get("clipping")):
+            peak = latest_rejection.get("peak_dbfs")
+            if (
+                not isinstance(peak, (int, float))
+                or isinstance(peak, bool)
+                or not math.isfinite(peak)
+            ):
+                # A clipped capture with no usable peak level -- conservative
+                # measured value per the module docstring's clip contract.
+                peak = 0.0
+            _LEVEL_LEASE.record_solve_correction(
+                group_id,
+                role,
+                trigger="clip",
+                measured_mic_peak_dbfs=float(peak),
             )
+        else:
+            shortfall = latest_rejection.get("snr_shortfall_db")
+            if isinstance(shortfall, (int, float)) and not isinstance(shortfall, bool):
+                _LEVEL_LEASE.record_solve_correction(
+                    group_id,
+                    role,
+                    trigger="snr_shortfall",
+                    shortfall_db=float(shortfall),
+                )
+
+    # W2.2 item 2: any capture (accepted or rejected) that carries a
+    # measured mic peak and the attempt's own played effective sum refines
+    # the solver's mic-clip ceiling for this target going forward.
+    evidence = _extract_level_evidence(payload)
+    if evidence is not None:
+        measured_peak_dbfs, effective_peak_dbfs, clipping = evidence
+        _LEVEL_LEASE.record_measured_gain(
+            group_id,
+            role,
+            measured_mic_peak_dbfs=measured_peak_dbfs,
+            effective_peak_dbfs=effective_peak_dbfs,
+            clipped=clipping,
+        )
+
+    # Set completion (W2.2): once the repeat set reaches a terminal state
+    # for this target -- successfully finalized, or terminally refused
+    # (insufficient accepted repeats after the attempt budget) -- clear its
+    # bounded-correction state.
+    if payload.get("recorded") is True or payload.get("status") == "refused":
+        _LEVEL_LEASE.clear_solve_correction(group_id, role)
     return payload
+
+
+def _extract_level_evidence(
+    payload: Mapping[str, Any],
+) -> tuple[float, float, bool] | None:
+    """(measured_mic_peak_dbfs, effective_peak_dbfs, clipping) for whichever
+    capture ``record_driver_capture`` just recorded -- the just-rejected
+    attempt (``repeat_progress.latest_rejection``) or the finalized accepted
+    repeat (top-level ``acoustic``/``excitation``) -- or ``None`` when
+    either figure is unavailable.
+    """
+
+    repeat_progress = payload.get("repeat_progress")
+    latest_rejection = (
+        repeat_progress.get("latest_rejection")
+        if isinstance(repeat_progress, Mapping)
+        else None
+    )
+    clipping = False
+    if isinstance(latest_rejection, Mapping):
+        peak = latest_rejection.get("peak_dbfs")
+        effective = latest_rejection.get("effective_peak_dbfs")
+        clipping = bool(latest_rejection.get("clipping"))
+    elif payload.get("recorded") is True:
+        acoustic = payload.get("acoustic")
+        excitation = payload.get("excitation")
+        acoustic = acoustic if isinstance(acoustic, Mapping) else {}
+        excitation = excitation if isinstance(excitation, Mapping) else {}
+        peak = acoustic.get("peak_dbfs")
+        effective = excitation.get("effective_peak_dbfs")
+        clipping = bool(acoustic.get("mic_clipping"))
+    else:
+        return None
+    if clipping and (
+        not isinstance(peak, (int, float))
+        or isinstance(peak, bool)
+        or not math.isfinite(peak)
+    ):
+        peak = 0.0
+    if (
+        not isinstance(peak, (int, float))
+        or isinstance(peak, bool)
+        or not math.isfinite(peak)
+        or not isinstance(effective, (int, float))
+        or isinstance(effective, bool)
+        or not math.isfinite(effective)
+    ):
+        return None
+    return float(peak), float(effective), clipping
 
 
 def record_summed_capture(
