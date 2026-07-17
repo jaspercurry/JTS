@@ -90,6 +90,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass, field
 import logging
+import math
 import os
 import socket
 import signal
@@ -289,6 +290,7 @@ _shutdown = threading.Event()
 @dataclass(frozen=True)
 class BridgeConfig:
     mic_device: str
+    capture_latency: str
     out_host: str
     out_port: int
     out_port_raw: int
@@ -360,12 +362,31 @@ class BridgeConfig:
         corpus_chip_aec_enabled = _env_bool(
             "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
         )
+        capture_latency = os.environ.get("JASPER_AEC_CAPTURE_LATENCY", "").strip()
+        if capture_latency and capture_latency.lower() != "low":
+            try:
+                capture_latency_seconds = float(capture_latency)
+            except ValueError:
+                capture_latency_seconds = 0.0
+            if (
+                not math.isfinite(capture_latency_seconds)
+                or capture_latency_seconds <= 0
+            ):
+                log_event(
+                    log,
+                    "aec.capture_latency_invalid",
+                    value=capture_latency,
+                    fallback="default",
+                    level=logging.WARNING,
+                )
+                capture_latency = ""
 
         return cls(
             mic_device=os.environ.get(
                 "JASPER_AEC_MIC_DEVICE",
                 _mic_profile.alsa_card_name(),
             ),
+            capture_latency=capture_latency.lower(),
             out_host=os.environ.get("JASPER_AEC_UDP_HOST", OUT_HOST),
             out_port=_env_leg_port("JASPER_AEC_UDP_PORT", "on"),
             out_port_raw=_env_leg_port("JASPER_AEC_UDP_PORT_RAW", "off"),
@@ -1543,16 +1564,24 @@ def _mic_thread(
                     _bridge_stats.inc_nested("queue_drops", "chip")
                     pass
 
-    with sd.InputStream(
+    input_stream_kwargs = dict(
         device=config.mic_device, samplerate=SAMPLE_RATE, channels=MIC_CHANNELS,
         dtype="int16", blocksize=FRAME_SAMPLES, callback=cb,
-    ) as stream:
+    )
+    if config.capture_latency:
+        input_stream_kwargs["latency"] = (
+            "low"
+            if config.capture_latency == "low"
+            else float(config.capture_latency)
+        )
+    with sd.InputStream(**input_stream_kwargs) as stream:
         log_event(
             logger,
             "aec.mic_stream_latency",
             latency_s=stream.latency,
-            samplerate=SAMPLE_RATE,
-            blocksize=FRAME_SAMPLES,
+            requested_latency=config.capture_latency or "default",
+            samplerate=int(stream.samplerate),
+            blocksize=int(stream.blocksize),
         )
         _bridge_stats.set_capture_stream(
             sample_rate_hz=int(stream.samplerate),

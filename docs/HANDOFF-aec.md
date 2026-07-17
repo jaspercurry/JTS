@@ -111,7 +111,13 @@ uses it to measure bridge emit through the frame's final successful ALSA period
 write; it does not include
 XVF capture, PortAudio, the mic queue, AEC processing, gadget fill, USB, or the
 host audio stack. The bridge logs the separately negotiated PortAudio input
-latency as `event=aec.mic_stream_latency`. Voice/wake legs keep their established raw
+latency as `event=aec.mic_stream_latency`. `JASPER_AEC_CAPTURE_LATENCY` is an
+evidence-gated experiment knob: unset preserves PortAudio's current default,
+`low` requests the device's low-latency default, and a positive seconds value
+requests an explicit buffer. Because this one capture stream also feeds
+voice/wake, do not set a production value until hardware A/B evidence shows
+lower negotiated latency with no stalls, queue drops, or wake-rate regression.
+Voice/wake legs keep their established raw
 1280-sample / 80 ms packet contract with no header.
 The same negotiated capture rate, block size, and input-latency frames are
 published in `/run/jasper/aec_bridge_stats.json` under `capture_stream`, so a

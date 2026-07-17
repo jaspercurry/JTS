@@ -383,6 +383,37 @@ def test_raw_port_overridable_via_env(monkeypatch):
     assert aec_bridge.OUT_PORT_RAW == 9877
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("low", "low"), ("0.04", "0.04"), ("", "")],
+)
+def test_capture_latency_parses_from_env(monkeypatch, configured, expected):
+    monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
+
+    config = aec_bridge.BridgeConfig.from_env()
+
+    assert config.capture_latency == expected
+
+
+@pytest.mark.parametrize("configured", ["fast", "0", "-0.1", "nan", "inf"])
+def test_capture_latency_invalid_values_fall_back_to_default(monkeypatch, configured):
+    monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
+    event = MagicMock()
+    monkeypatch.setattr(aec_bridge, "log_event", event)
+    test_logger = MagicMock()
+
+    config = aec_bridge.BridgeConfig.from_env(logger_=test_logger)
+
+    assert config.capture_latency == ""
+    event.assert_called_once_with(
+        test_logger,
+        "aec.capture_latency_invalid",
+        value=configured,
+        fallback="default",
+        level=aec_bridge.logging.WARNING,
+    )
+
+
 def test_raw0_port_default_9879():
     """Default raw mic 0 UDP port is the canonical 9879. wake-corpus
     recorder + wake_enroll CLI both subscribe to this port; if it
@@ -1201,8 +1232,8 @@ def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
 def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
     stream = SimpleNamespace(
         latency=0.025,
-        samplerate=aec_bridge.SAMPLE_RATE,
-        blocksize=aec_bridge.FRAME_SAMPLES,
+        samplerate=15_990,
+        blocksize=319,
     )
 
     class InputStream:
@@ -1237,9 +1268,55 @@ def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
         aec_bridge.logger,
         "aec.mic_stream_latency",
         latency_s=0.025,
+        requested_latency="default",
+        samplerate=15_990,
+        blocksize=319,
+    )
+    assert aec_bridge._bridge_stats.snapshot()["capture_stream"] == {
+        "sample_rate_hz": 15_990,
+        "block_frames": 319,
+        "input_latency_seconds": 0.025,
+        "input_latency_frames": 400,
+    }
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("low", "low"), ("0.04", 0.04)],
+)
+def test_mic_thread_passes_configured_capture_latency(
+    monkeypatch,
+    configured,
+    expected,
+):
+    stream = SimpleNamespace(
+        latency=0.02,
         samplerate=aec_bridge.SAMPLE_RATE,
         blocksize=aec_bridge.FRAME_SAMPLES,
     )
+
+    class InputStream:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return stream
+
+        def __exit__(self, *_args):
+            return False
+
+    input_stream = MagicMock(side_effect=InputStream)
+    monkeypatch.setattr(aec_bridge, "sd", SimpleNamespace(InputStream=input_stream))
+    aec_bridge._shutdown.set()
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        mic_device="test-mic",
+        capture_latency=configured,
+    )
+
+    aec_bridge._mic_thread(MagicMock(), config=config)
+
+    assert input_stream.call_args.kwargs["latency"] == expected
 
 
 def test_dtln_runtime_failure_degrades_once_and_primary_aec_continues(
