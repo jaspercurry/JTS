@@ -501,5 +501,8 @@ def build_usb_mic_status(
         "bcd_device": bcd_device,
         "descriptor_revision_ok": descriptor_revision_ok,
         "label": microphone_name,
-        "notice": "Changing this reconnects USB audio and the USB management link for a few seconds.",
+        "notice": (
+            "Changing the computer microphone on or off reconnects USB audio "
+            "and the USB management link for a few seconds."
+        ),
     }

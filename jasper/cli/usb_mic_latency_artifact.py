@@ -464,7 +464,11 @@ def build_usb_mic_latency_artifact(
     for key in (
         "writer_splices",
         "writer_xruns",
+        "writer_resets",
         "packets_lost",
+        "sequence_resets",
+        "sequence_reorders",
+        "sequence_discontinuities",
         "periods_dropped_streaming",
     ):
         delta, total = _counter_delta(samples, key)

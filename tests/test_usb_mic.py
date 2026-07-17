@@ -172,6 +172,10 @@ def test_status_reports_streaming_only_when_descriptor_and_relay_are_live(
     assert status["descriptor_revision_ok"] is True
     assert "computer" in status["detail"].lower()
     assert "Mac" not in status["detail"]
+    assert status["notice"] == (
+        "Changing the computer microphone on or off reconnects USB audio and "
+        "the USB management link for a few seconds."
+    )
 
 
 def test_status_surfaces_relay_latency_and_loss_telemetry(tmp_path: Path) -> None:

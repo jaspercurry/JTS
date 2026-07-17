@@ -44,7 +44,11 @@ def _snapshot(
         "gadget_hardware_rate_hz": 48_000,
         "writer_splices": 2,
         "writer_xruns": 0,
+        "writer_resets": 0,
         "packets_lost": 0,
+        "sequence_resets": 0,
+        "sequence_reorders": 0,
+        "sequence_discontinuities": 0,
         "periods_dropped_streaming": 7,
         "relay_pid": 456,
         "relay_started_epoch_sec": 90.0,
@@ -236,12 +240,64 @@ def test_artifact_rejects_status_epoch_regression() -> None:
         _artifact(snapshots)
 
 
-def test_artifact_requires_schema_and_counters() -> None:
+@pytest.mark.parametrize(
+    "counter",
+    (
+        "writer_xruns",
+        "writer_resets",
+        "sequence_resets",
+        "sequence_reorders",
+        "sequence_discontinuities",
+    ),
+)
+def test_artifact_requires_schema_and_counters(counter: str) -> None:
     snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
-    snapshots[2].pop("writer_xruns")
+    snapshots[2].pop(counter)
 
-    with pytest.raises(ValueError, match="writer_xruns is required"):
+    with pytest.raises(ValueError, match=rf"{counter} is required"):
         _artifact(snapshots)
+
+
+@pytest.mark.parametrize(
+    "counter",
+    (
+        "writer_resets",
+        "sequence_resets",
+        "sequence_reorders",
+        "sequence_discontinuities",
+    ),
+)
+def test_artifact_warns_on_in_window_reliability_counter(counter: str) -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    for snapshot in snapshots:
+        snapshot[counter] = 7
+    for snapshot in snapshots[8:]:
+        snapshot[counter] = 8
+
+    artifact = _artifact(snapshots)
+
+    assert artifact["status"] == "warn"
+    assert artifact["counters"][counter] == {"run_delta": 1, "end_total": 8}
+
+
+@pytest.mark.parametrize(
+    "counter",
+    (
+        "writer_resets",
+        "sequence_resets",
+        "sequence_reorders",
+        "sequence_discontinuities",
+    ),
+)
+def test_artifact_allows_historical_reliability_counter(counter: str) -> None:
+    snapshots = [_snapshot(index, p50=10, p95=20, p99=30) for index in range(16)]
+    for snapshot in snapshots:
+        snapshot[counter] = 7
+
+    artifact = _artifact(snapshots)
+
+    assert artifact["status"] == "pass"
+    assert artifact["counters"][counter] == {"run_delta": 0, "end_total": 7}
 
 
 def test_artifact_warns_when_selected_source_fell_back_during_window() -> None:
