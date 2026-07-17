@@ -3122,6 +3122,21 @@ it's a branch going **stale** under you. These habits keep velocity high
 without merging breakage. They were distilled from a real incident where a
 branch sat while `main` advanced 23 commits and silently went un-mergeable.
 
+0. **Start from current `main` — sync BEFORE your first edit, not just before
+   you push.** A worktree or branch can be *cut from* a base that is already far
+   behind: a 2026-07-17 session found its branch **157 commits** behind
+   `origin/main` (diverged 4 days earlier), and a blind `gh pr merge` would have
+   reverted that much of `main` — every file the stale base "changed back."
+   Staleness is not only a pre-push concern; a branch that *begins* behind is the
+   same hazard, just discovered later and more expensively. So the FIRST thing
+   you do on any task: `git fetch origin`, then confirm your HEAD contains current
+   `main` with `git merge-base --is-ancestor origin/main HEAD` (exit 0 = caught
+   up). If it isn't, `git rebase origin/main` (or `git rebase --onto origin/main
+   <stale-base>` to drop unrelated commits the worktree carried) before you build
+   on top of it. `git log --oneline origin/main..HEAD` shows exactly what you'd
+   carry into a PR — if it lists commits you didn't write, stop and reconcile.
+   This is cheap at the start and expensive at the end.
+
 1. **Local preflight before every push.** Run `scripts/test-fast`. It
    catches undefined names / dead imports / obvious targeted breaks in
    seconds instead of a CI round-trip; `pre-commit run --all-files` covers
