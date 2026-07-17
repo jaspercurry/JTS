@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,10 +16,38 @@ import pytest
 import yaml
 
 from jasper.active_speaker import commissioning_runtime as runtime
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GraphSafety,
+)
+
+
+@pytest.fixture(autouse=True)
+def _stable_no_bass_graph_authority(monkeypatch):
+    """Legacy in-memory ports inherit one explicit canonical host decision."""
+
+    async def classify(*_args, **_kwargs):
+        return GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": {
+                    "authority_valid": True,
+                    "runtime_block_required": False,
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        runtime,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
 from jasper.active_speaker.runtime_contract import (
     GRAPH_GUARDED_COMMISSIONING,
-    classify_camilla_graph,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_camilla_graph as _classify_camilla_graph,
 )
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
@@ -47,6 +77,13 @@ from tests.test_active_speaker_runtime_contract import (
     _active_baseline_yaml,
     _active_topology,
 )
+
+
+def classify_camilla_graph(*args, **kwargs):
+    kwargs.setdefault(
+        "bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY
+    )
+    return _classify_camilla_graph(*args, **kwargs)
 
 _HASH_A = "a" * 64
 _HASH_B = "b" * 64
@@ -96,10 +133,70 @@ def _raw(graph: dict) -> str:
     return yaml.safe_dump(graph, sort_keys=False)
 
 
+def _fake_predecessor_raw() -> str:
+    text = _active_baseline_yaml("mono", 2)
+    return (
+        text.replace(
+            "  as_woofer_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.0000\n",
+            "  as_woofer_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.7000\n",
+            1,
+        )
+        .replace(
+            "  as_woofer_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: 0.0000, inverted: false, mute: false }\n",
+            "  as_woofer_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: -1.0000, inverted: false, mute: false }\n",
+            1,
+        )
+        .replace(
+            "  as_tweeter_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.0000\n",
+            "  as_tweeter_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.1000\n",
+            1,
+        )
+        .replace(
+            "  as_tweeter_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: 0.0000, inverted: false, mute: false }\n",
+            "  as_tweeter_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: -2.0000, inverted: false, mute: false }\n",
+            1,
+        )
+    )
+
+
 class FakePort:
     def __init__(self) -> None:
-        self.raw = _raw(_graph(woofer_delay=0.7, tweeter_delay=0.1))
+        self.raw = _fake_predecessor_raw()
+        self._authority_tmp = tempfile.TemporaryDirectory(
+            prefix="jts-bass-authority-"
+        )
+        self._authority_dir = Path(self._authority_tmp.name)
         self.path = "/etc/camilladsp/applied.yml"
+        self._authority_config_path = self._authority_dir / "applied.yml"
+        self._authority_config_path.write_text(self.raw, encoding="utf-8")
+        self._statefile_path = self._authority_dir / "statefile.yml"
+        self._statefile_path.write_text(
+            f"config_path: {self._authority_config_path}\n"
+            "volume: -28.0\nmute: false\n",
+            encoding="utf-8",
+        )
+        self._applied_baseline_path = self._authority_dir / "applied.json"
+        self._applied_baseline_path.write_text(json.dumps({}), encoding="utf-8")
         self.volume = -28.0
         self.apply_calls: list[str] = []
         self.volume_calls: list[float] = []
@@ -149,6 +246,13 @@ class FakePort:
             read_config_path=self.read_config_path,
             read_listening_volume_db=self.read_volume,
             set_listening_volume_db=self.set_volume,
+            _bass_extension_authority_paths={
+                "statefile_path": self._statefile_path,
+                "applied_baseline_path": self._applied_baseline_path,
+                "profile_path": self._authority_dir / "bass-profile.json",
+                "intent_path": self._authority_dir / "bass-intent.json",
+                "staged_metadata_path": self._authority_dir / "staged.json",
+            },
         )
 
 
@@ -1814,8 +1918,8 @@ async def test_shared_lock_default_and_explicit_bound_refuse_before_mutation(
         return _admitted()
 
     async with dsp_writer_lock(tmp_path, source="test_holder"):
-        with pytest.raises(DspWriterLockTimeout) as raised:
-            await runtime.run_summed_capture(
+        contender = asyncio.create_task(
+            runtime.run_summed_capture(
                 fake.port(),
                 _request(),
                 capture,
@@ -1824,6 +1928,9 @@ async def test_shared_lock_default_and_explicit_bound_refuse_before_mutation(
                 config_dir=tmp_path,
                 lock_timeout_s=0.001,
             )
+        )
+        with pytest.raises(DspWriterLockTimeout) as raised:
+            await contender
 
     assert (
         runtime.DEFAULT_SUMMED_RUNTIME_LOCK_TIMEOUT_S

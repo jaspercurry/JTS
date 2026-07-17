@@ -94,7 +94,10 @@ from .driver_acoustics import (
 from .driver_safety import evaluate_driver_safety_profile
 from .graph_evidence import driver_baseline_gain_name
 from .measurement import active_driver_targets
-from .runtime_contract import classify_camilla_graph
+from .runtime_contract import (
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_camilla_graph,
+)
 from .runtime_contract import GRAPH_GUARDED_COMMISSIONING
 from .test_signal_plan import (
     CROSSOVER_AMBIENT_DURATION_S,
@@ -718,7 +721,13 @@ class SummedCaptureProducer:
                 }
             )
         graph_safety = classify_camilla_graph(
-            topology=self.topology, text=readback.active_raw
+            topology=self.topology,
+            text=readback.active_raw,
+            bass_profile_summary=(
+                readback.bass_profile_summary
+                if isinstance(readback.bass_profile_summary, Mapping)
+                else NO_BASS_EXTENSION_PROFILE_SUMMARY
+            ),
         )
         devices = readback.graph.normalized_active_raw.get("devices")
         volume_limit = (

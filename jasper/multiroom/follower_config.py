@@ -158,7 +158,6 @@ async def precheck_active_follower(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.runtime_contract import classify_camilla_graph
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -235,22 +234,9 @@ async def precheck_active_follower(
             "this speaker as an active speaker before bonding it",
         )
 
-    # Invariant 5 — re-prove the EMITTED graph against the saved topology before
-    # loading it. The emitter and verifier are independent on purpose: the
-    # carrier emits, classify_camilla_graph re-proves Layer A is present
-    # (crossover HP + per-driver limiter <= 0 + non-positive gain + 0 dB
-    # ceiling). A graph that cannot be re-proven NEVER reaches CamillaDSP.
-    graph = classify_camilla_graph(
-        config_path=FOLLOWER_CONFIG_PATH, topology=topology,
-    )
-    if not graph.allowed:
-        codes = [i.get("code") for i in graph.issues if isinstance(i, dict)]
-        raise ActiveFollowerError(
-            "graph_unprovable",
-            "active follower driver-domain graph failed re-proof "
-            f"(classification={graph.classification}, issues={codes}); refusing "
-            "to bond (no full-range emit)",
-        )
+    # The driver-domain emitter's independent emit gate has re-proved the exact
+    # generated YAML, including the accepted/current sealed natural pair.  The
+    # late apply below performs the canonical live-active sandwich after load.
     return FOLLOWER_CONFIG_PATH
 
 
@@ -274,6 +260,24 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
             best_effort=True,
         ),
     )
+    try:
+        await _prove_live_bass_extension_graph(cam)
+    except RuntimeError as exc:
+        if current and current != FOLLOWER_CONFIG_PATH:
+            await apply_dsp_config(
+                source=f"{REGEN_SOURCE}-proof-rollback",
+                candidate_path=current,
+                load_config=lambda p: cam.set_config_file_path(
+                    p, best_effort=False
+                ),
+                get_current_config_path=lambda: cam.get_config_file_path(
+                    best_effort=True
+                ),
+            )
+        raise ActiveFollowerError(
+            "graph_unprovable",
+            "active follower driver-domain graph failed canonical live re-proof",
+        ) from exc
     # Stash the prior solo-active config for the unwind — but only a genuinely
     # different (solo) config, never the follower config itself. Paths passed
     # explicitly (module globals read at CALL time) so tests can redirect them;
@@ -333,7 +337,7 @@ async def restore_active_camilla_solo(
     dsp-apply for the same reason.
     """
     from jasper.active_speaker.baseline_profile import baseline_config_path
-    from jasper.active_speaker.runtime_contract import classify_camilla_graph
+    from jasper.active_speaker.runtime_contract import safe_graph_for_current_topology
     from jasper.dsp_apply import apply_dsp_config
     from jasper.output_topology import (
         OutputTopologyError,
@@ -384,8 +388,17 @@ async def restore_active_camilla_solo(
     candidate: str | None = None
     via = ""
     for cand, cand_via in options:
-        graph = classify_camilla_graph(config_path=cand, topology=topology)
-        if graph.allowed:
+        decision = safe_graph_for_current_topology(
+            topology,
+            current_config_path=cand,
+            consider_applied_baseline=False,
+        )
+        graph = decision.current_graph
+        if (
+            graph is not None
+            and graph.allowed
+            and decision.selected_config_path == cand
+        ):
             candidate, via = cand, cand_via
             break
         codes = [i.get("code") for i in graph.issues if isinstance(i, dict)]
@@ -422,6 +435,13 @@ async def restore_active_camilla_solo(
             best_effort=True,
         ),
     )
+    try:
+        await _prove_live_bass_extension_graph(cam)
+    except RuntimeError as exc:
+        raise ActiveFollowerError(
+            "restore_graph_unprovable",
+            "restored solo graph failed canonical live re-proof",
+        ) from exc
     _clear_stash(stash_path)
     log_event(
         logger,
@@ -431,6 +451,34 @@ async def restore_active_camilla_solo(
         via=via,
     )
     return candidate
+
+
+async def _prove_live_bass_extension_graph(cam, *, statefile_path=None):
+    """Canonical live graph/profile proof shared by both active bond roles."""
+
+    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+    from jasper.active_speaker.runtime_contract import (
+        classify_active_bass_extension_graph,
+    )
+    from jasper.active_speaker.staging import staged_metadata_path
+    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+    from jasper.output_topology import load_output_topology_strict
+
+    proof = await classify_active_bass_extension_graph(
+        load_output_topology_strict(),
+        statefile_path=Path(statefile_path or DEFAULT_CAMILLA_STATEFILE),
+        read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
+        applied_baseline_path=baseline_profile_state_path(),
+        profile_path=DEFAULT_PROFILE_PATH,
+        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+        staged_metadata_path=staged_metadata_path(),
+    )
+    if not proof.allowed:
+        code = proof.issues[0].get("code") if proof.issues else proof.classification
+        raise RuntimeError(f"live bass-extension graph proof failed: {code}")
+    return proof
 
 
 async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | None:

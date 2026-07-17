@@ -27,7 +27,8 @@ import pytest
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_FLAT_FULL_RANGE,
-    classify_camilla_graph,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_camilla_graph as _classify_camilla_graph,
 )
 from jasper.fanin_coupling import (
     RING_CAPTURE_DEVICE,
@@ -49,6 +50,11 @@ from tests.test_active_speaker_runtime_contract import (
 )
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
+
+
+def classify_camilla_graph(*args, **kwargs):
+    kwargs.setdefault("bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY)
+    return _classify_camilla_graph(*args, **kwargs)
 
 
 def _program_bake_yaml() -> str:

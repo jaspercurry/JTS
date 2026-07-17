@@ -39,6 +39,7 @@ from jasper.output_topology import OutputTopology
 from .baseline_profile import (
     baseline_candidate_fingerprint,
     baseline_config_path,
+    baseline_profile_state_path,
     build_baseline_profile_candidate,
     persist_applied_baseline_profile,
 )
@@ -61,7 +62,7 @@ from .commissioning_runtime import (
     snapshot_exact_dsp_state,
 )
 from .measured_candidate import MeasuredElectricalCandidate
-from .runtime_contract import classify_camilla_graph
+from .runtime_contract import classify_active_bass_extension_graph
 
 APPLY_PURPOSE = "measured_candidate_apply"
 APPLY_SOURCE = "active_speaker_measured_candidate_apply"
@@ -1224,9 +1225,23 @@ async def apply_measured_candidate(
                             failure_code,
                             "fresh graph, path, or listening-volume readback mismatched",
                         )
-                    graph_safety = classify_camilla_graph(
-                        topology=topology,
-                        text=str(observed.state["active_raw"]),
+                    from jasper.active_speaker.environment import (
+                        DEFAULT_CAMILLA_STATEFILE,
+                    )
+                    from jasper.active_speaker.staging import staged_metadata_path
+                    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+                    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+
+                    graph_safety = await classify_active_bass_extension_graph(
+                        topology,
+                        statefile_path=Path(DEFAULT_CAMILLA_STATEFILE),
+                        read_active_graph_text=runtime_port.read_active_raw,
+                        applied_baseline_path=baseline_profile_state_path(
+                            state_path
+                        ),
+                        profile_path=DEFAULT_PROFILE_PATH,
+                        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+                        staged_metadata_path=staged_metadata_path(),
                     )
                     if not graph_safety.allowed:
                         failure_code = "protection_proof_failed"

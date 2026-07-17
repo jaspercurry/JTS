@@ -447,6 +447,7 @@ def save_bass_extension_profile(
         json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n",
         mode=0o640,
         group_from_parent=True,
+        durable=True,
     )
 
 
@@ -466,13 +467,27 @@ def evaluate_bass_extension_profile(
     if parsed.profile is None:
         return parsed
 
+    return evaluate_loaded_bass_extension_profile(
+        parsed.profile,
+        topology=topology,
+        applied_baseline_state=applied_baseline_state,
+    )
+
+
+def evaluate_loaded_bass_extension_profile(
+    profile: BassExtensionProfile,
+    *,
+    topology: Any,
+    applied_baseline_state: Mapping[str, Any] | None,
+) -> BassExtensionEvaluation:
+    """Evaluate one already-parsed immutable profile without disk I/O."""
+
     from jasper.active_speaker.baseline_profile import (
         baseline_candidate_fingerprint,
         topology_config_fingerprint,
     )
     from jasper.bass_extension.adapters.base import ADAPTERS
 
-    profile = parsed.profile
     refusals: list[BassExtensionRefusal] = []
     mismatches: list[str] = []
 
@@ -508,15 +523,43 @@ def evaluate_bass_extension_profile(
 
 def bass_extension_state_summary(
     path: str | Path | None = None,
+    *,
+    intent_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
+    from jasper.bass_extension import (
+        BASS_EXTENSION_APPLY_INTENT_PATH,
+        BASS_EXTENSION_RUNTIME_ADAPTER_IDS,
+    )
+
+    recovery_required = Path(
+        intent_path or BASS_EXTENSION_APPLY_INTENT_PATH
+    ).exists()
     with suppress(Exception):
         profile = load_bass_extension_profile(path)
         if profile is None:
-            return None
+            if not recovery_required:
+                return None
+            return {
+                "commissioned": False,
+                "status": None,
+                "profile_id": None,
+                "adapter_id": None,
+                "runtime_eligible": False,
+                "runtime_deferred_reason": None,
+                "apply_recovery_required": True,
+            }
+        adapter_id = str(profile.enclosure["adapter_id"])
+        runtime_eligible = adapter_id in BASS_EXTENSION_RUNTIME_ADAPTER_IDS
         return {
             "commissioned": True,
             "status": profile.status,
             "profile_id": profile.profile_id,
+            "adapter_id": adapter_id,
+            "runtime_eligible": runtime_eligible,
+            "runtime_deferred_reason": (
+                None if runtime_eligible else "fixed_graph_not_defined"
+            ),
+            "apply_recovery_required": recovery_required,
             "deepest_hz": profile.targets[0].fp_hz,
             "natural_hz": profile.targets[-1].fp_hz,
             "margin": profile.margin,

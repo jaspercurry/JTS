@@ -11,6 +11,7 @@ the unbond restore (which must always restore an ACTIVE graph, never passive).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ import pytest
 import yaml
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
+import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
@@ -50,6 +52,18 @@ from jasper.multiroom.reconcile import (
     GROUPING_LOOPBACK_CAPTURE_FORMAT,
 )
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_bass_extension_profile import _profile
+
+
+@pytest.fixture(autouse=True)
+def _stable_live_graph_authority(monkeypatch):
+    async def prove(*_args, **_kwargs):
+        return runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE,
+            allowed=True,
+        )
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
 
 
 def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
@@ -121,6 +135,15 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    sealed = replace(
+        _profile(topology=topology),
+        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
+    )
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "evaluate_bass_extension_profile",
+        lambda **_kwargs: SimpleNamespace(status="accepted", profile=sealed),
+    )
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
@@ -133,11 +156,20 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     # The driver-domain config was emitted, re-proven, and loaded into CamillaDSP.
     assert applied == fc.FOLLOWER_CONFIG_PATH
     assert cam.loaded == [fc.FOLLOWER_CONFIG_PATH]
-    yaml = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
-    assert "emit_active_speaker_driver_domain_config" in yaml
-    assert "# program_channel=left" in yaml
-    assert 'device: "hw:Loopback,1,6"' in yaml  # the round-trip loopback capture (shared pair 6)
-    assert "active_baseline_headroom" not in yaml  # no leader-baked program domain
+    yaml_text = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
+    assert "emit_active_speaker_driver_domain_config" in yaml_text
+    assert "# program_channel=left" in yaml_text
+    assert 'device: "hw:Loopback,1,6"' in yaml_text  # the round-trip loopback capture (shared pair 6)
+    assert "active_baseline_headroom" not in yaml_text  # no leader-baked program domain
+    document = yaml.safe_load(yaml_text)
+    woofer_chain = next(
+        step["names"]
+        for step in document["pipeline"]
+        if step.get("type") == "Filter" and step.get("channels") == [0]
+    )
+    assert woofer_chain.index("bass_ext_lt") < woofer_chain.index(
+        "bass_ext_subsonic"
+    ) < woofer_chain.index("as_woofer_delay")
     # The prior solo-active config was stashed for the unbond restore.
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == (
         "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
@@ -198,14 +230,12 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-    # Force the re-proof to reject (e.g. a hypothetical emitter regression).
-    monkeypatch.setattr(
-        runtime_contract_mod,
-        "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=False, classification="unsafe", issues=[{"code": "forced"}],
-        ),
-    )
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    def refuse(*_args, **_kwargs):
+        raise camilla_yaml.ActiveSpeakerConfigError("forced emit re-proof failure")
+
+    monkeypatch.setattr(camilla_yaml, "_assert_bass_extension_safe", refuse)
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     with pytest.raises(fc.ActiveFollowerError) as exc:
@@ -214,7 +244,7 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
                 _cfg("right"), camilla_factory=lambda: cam, validate=_valid_config,
             )
         )
-    assert exc.value.reason == "graph_unprovable"
+    assert exc.value.reason == "driver_domain_emit_refused"
     assert cam.loaded == []
 
 
@@ -262,11 +292,19 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
     )
+    def decide(_topology, *, current_config_path=None, **_kwargs):
+        graph = SimpleNamespace(
+            allowed=allowed,
+            classification="x" if allowed else "unsafe",
+            issues=[],
+        )
+        return SimpleNamespace(
+            current_graph=graph,
+            selected_config_path=(str(current_config_path) if allowed else None),
+        )
+
     monkeypatch.setattr(
-        runtime_contract_mod, "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=allowed, classification="x" if allowed else "unsafe", issues=[],
-        ),
+        runtime_contract_mod, "safe_graph_for_current_topology", decide
     )
 
 

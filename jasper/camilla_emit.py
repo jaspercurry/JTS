@@ -147,6 +147,54 @@ BASS_MANAGEMENT_CORNER_HZ_LO = 40.0
 BASS_MANAGEMENT_CORNER_HZ_HI = 200.0
 BASS_MANAGEMENT_CROSSOVER_ORDER = 4
 
+# Bass-extension's sealed-box Linkwitz Transform and its protective subsonic
+# high-pass are deliberately bounded by the same measured plant domain Wave 1
+# accepts.  Keep these in the format leaf so the emitter and independent graph
+# verifier cannot drift onto different numeric domains.
+BASS_EXTENSION_FREQ_HZ_LO = 15.0
+BASS_EXTENSION_FREQ_HZ_HI = 200.0
+BASS_EXTENSION_Q_LO = 0.3
+BASS_EXTENSION_Q_HI = 1.2
+BASS_EXTENSION_SUBSONIC_ORDERS = frozenset({2, 4})
+
+
+def emit_linkwitz_transform_biquad(
+    name: str,
+    freq_act: float,
+    q_act: float,
+    freq_target: float,
+    q_target: float,
+) -> list[str]:
+    """A CamillaDSP native ``LinkwitzTransform`` biquad."""
+
+    return [
+        f"  {name}:",
+        "    type: Biquad",
+        "    parameters:",
+        "      type: LinkwitzTransform",
+        f"      freq_act: {fmt(freq_act)}",
+        f"      q_act: {fmt(q_act)}",
+        f"      freq_target: {fmt(freq_target)}",
+        f"      q_target: {fmt(q_target)}",
+    ]
+
+
+def emit_butterworth_highpass(
+    name: str,
+    freq: float,
+    order: int,
+) -> list[str]:
+    """A CamillaDSP native ``ButterworthHighpass`` combo."""
+
+    return [
+        f"  {name}:",
+        "    type: BiquadCombo",
+        "    parameters:",
+        "      type: ButterworthHighpass",
+        f"      freq: {fmt(freq)}",
+        f"      order: {order}",
+    ]
+
 
 def emit_linkwitz_riley(
     name: str,

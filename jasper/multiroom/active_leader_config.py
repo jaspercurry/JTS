@@ -67,6 +67,7 @@ import asyncio
 import logging
 import os
 import shutil
+from pathlib import Path
 
 from .. import atomic_io
 from ..audio_runtime_plan import coupling_supported_for_route
@@ -168,7 +169,6 @@ async def precheck_active_leader(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.runtime_contract import classify_camilla_graph
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -282,17 +282,8 @@ async def precheck_active_leader(
             f"(status={candidate.get('status')}, issues={codes}); commission "
             "this speaker as an active speaker before leading a bond",
         )
-    crossover_graph = classify_camilla_graph(
-        config_path=CROSSOVER_CONFIG_PATH, topology=topology,
-    )
-    if not crossover_graph.allowed:
-        codes = [i.get("code") for i in crossover_graph.issues if isinstance(i, dict)]
-        raise ActiveLeaderError(
-            "crossover_graph_unprovable",
-            "active leader camilla#2 driver-domain graph failed re-proof "
-            f"(classification={crossover_graph.classification}, issues={codes}); "
-            "refusing to bond (no full-range emit)",
-        )
+    # The driver-domain emitter's independent emit gate has re-proved the exact
+    # generated YAML, including any accepted/current sealed natural pair.
 
     # 2. camilla#1 program bake (Layer B/C + headroom, File -> SNAPFIFO,
     #    enable_rate_adjust=False). The initial bond bake is emitted and re-proved
@@ -318,16 +309,24 @@ async def precheck_active_leader(
         out_path=LEADER_BAKE_CONFIG_PATH,
         profile_id=f"grouping-{cfg.bond_id or 'bond'}",
     )
+    # Program-bake graphs cannot carry the optional baseline bass block, so
+    # their pre-publication proof is a frozen in-memory composition check.  The
+    # late apply still performs the canonical live authority sandwich.
+    from jasper.active_speaker.runtime_contract import (
+        NO_BASS_EXTENSION_PROFILE_SUMMARY,
+        classify_camilla_graph,
+    )
+
     bake_graph = classify_camilla_graph(
-        config_path=LEADER_BAKE_CONFIG_PATH, topology=topology,
+        config_path=LEADER_BAKE_CONFIG_PATH,
+        topology=topology,
+        text=Path(LEADER_BAKE_CONFIG_PATH).read_text(encoding="utf-8"),
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
     )
     if not bake_graph.allowed:
-        codes = [i.get("code") for i in bake_graph.issues if isinstance(i, dict)]
         raise ActiveLeaderError(
             "bake_graph_unprovable",
-            "active leader camilla#1 program-bake graph failed re-proof "
-            f"(classification={bake_graph.classification}, issues={codes}); "
-            "refusing to bond",
+            "active leader program-bake graph failed pre-publication re-proof",
         )
     return LEADER_BAKE_CONFIG_PATH, CROSSOVER_CONFIG_PATH
 
@@ -353,6 +352,24 @@ async def apply_active_leader_bake(*, camilla_factory=_camilla) -> str:
             best_effort=True,
         ),
     )
+    try:
+        await follower_config._prove_live_bass_extension_graph(cam)
+    except RuntimeError as exc:
+        if current and current != LEADER_BAKE_CONFIG_PATH:
+            await apply_dsp_config(
+                source=f"{REGEN_SOURCE}-proof-rollback",
+                candidate_path=current,
+                load_config=lambda p: cam.set_config_file_path(
+                    p, best_effort=False
+                ),
+                get_current_config_path=lambda: cam.get_config_file_path(
+                    best_effort=True
+                ),
+            )
+        raise ActiveLeaderError(
+            "bake_graph_unprovable",
+            "active leader program-bake graph failed canonical live re-proof",
+        ) from exc
     # Stash the prior solo-active config for the unwind — but only a genuinely
     # different (solo) config, never the bake itself. (The shared restore ladder
     # re-proves every candidate, so even a stale/odd stash can never load a

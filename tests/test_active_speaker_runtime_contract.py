@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import json
+
 import pytest
 import yaml
 
@@ -33,12 +36,18 @@ from jasper.active_speaker.runtime_contract import (
     CONTRACT_NORMAL_MONO_FULL_RANGE,
     CONTRACT_NORMAL_STEREO_FULL_RANGE,
     CONTRACT_SUBWOOFER_PRESENT,
-    classify_camilla_graph,
+    classify_camilla_graph as _classify_camilla_graph,
     classify_output_contract,
     apply_safe_graph_decision_to_statefile,
     flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_active_bass_extension_graph,
+    classify_bass_extension_graph,
 )
+from jasper.audio_measurement.evidence_identity import ExactDspStateIdentity
+from jasper.bass_extension import _intent_payload
+from jasper.bass_extension.profile import save_bass_extension_profile
 from jasper.camilla_config_contract import (
     FilterSpec,
     PeqFilter,
@@ -47,8 +56,40 @@ from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.profile import SimpleEq, SoundProfile
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+from tests.test_bass_extension_profile import _applied_baseline, _profile
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+
+def classify_camilla_graph(*args, **kwargs):
+    """Frozen in-memory verifier input with explicit no-profile evidence."""
+
+    kwargs.setdefault(
+        "bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY
+    )
+    return _classify_camilla_graph(*args, **kwargs)
+
+
+def _write_authority(
+    tmp_path: Path,
+    *,
+    staged: dict | None = None,
+    applied_config: Path | None = None,
+) -> dict[str, Path]:
+    applied = tmp_path / "applied-baseline.json"
+    if applied_config is not None:
+        applied.write_text(
+            json.dumps({"config": {"path": str(applied_config)}}),
+            encoding="utf-8",
+        )
+    staged_path = tmp_path / "staged-metadata.json"
+    staged_path.write_text(json.dumps(staged or {}), encoding="utf-8")
+    return {
+        "applied_baseline_path": applied,
+        "profile_path": tmp_path / "bass-profile.json",
+        "intent_path": tmp_path / "bass-intent.json",
+        "staged_metadata_path": staged_path,
+    }
 
 
 def _flat_yaml() -> str:
@@ -192,6 +233,7 @@ def _active_baseline_yaml(
     room_peqs: tuple[PeqFilter, ...] = (),
     preference_filters: tuple[FilterSpec, ...] = (),
     output_trim_db: float = 0.0,
+    bass_extension_profile=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_baseline_config(
@@ -201,6 +243,7 @@ def _active_baseline_yaml(
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
         baseline_id=f"baseline-{layout}-{way}way",
+        bass_extension_profile=bass_extension_profile,
     )
 
 
@@ -245,6 +288,297 @@ def _staged_metadata(topology: OutputTopology, path: Path) -> dict:
     }
 
 
+def _persisted_boundary(
+    tmp_path: Path,
+    *,
+    topology: OutputTopology,
+    graph_text: str,
+    profile=None,
+) -> dict[str, object]:
+    config = tmp_path / "active-speaker-baseline.yml"
+    config.write_text(graph_text, encoding="utf-8")
+    applied = _applied_baseline()
+    applied["status"] = "applied"
+    applied["config"] = {"path": str(config)}
+    applied_path = tmp_path / "applied-baseline.json"
+    applied_path.write_text(json.dumps(applied), encoding="utf-8")
+    profile_path = tmp_path / "bass-profile.json"
+    if profile is not None:
+        save_bass_extension_profile(profile, profile_path)
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(
+        f"config_path: {config}\nvolume: -18.0\nmute: false\n",
+        encoding="utf-8",
+    )
+    staged_path = tmp_path / "staged-metadata.json"
+    staged_path.write_text("{}\n", encoding="utf-8")
+    return {
+        "topology": topology,
+        "config": config,
+        "applied": applied,
+        "applied_baseline_path": applied_path,
+        "profile_path": profile_path,
+        "intent_path": tmp_path / "bass-intent.json",
+        "staged_metadata_path": staged_path,
+        "statefile_path": statefile,
+    }
+
+
+def _sealed_profile(topology: OutputTopology, applied: dict):
+    return replace(
+        _profile(topology=topology, applied_baseline=applied),
+        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
+    )
+
+
+def test_low_level_baseline_without_bass_authority_fails_closed() -> None:
+    graph = _classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"),
+        text=_active_baseline_yaml("mono", 2),
+    )
+
+    assert graph.allowed is False
+    assert "bass_extension_evidence_missing" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_persisted_boot_boundary_accepts_stable_no_profile_baseline(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert graph.allowed is True
+    assert graph.details["bass_extension_profile_summary"] == (
+        NO_BASS_EXTENSION_PROFILE_SUMMARY
+    )
+
+
+def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    profile = _sealed_profile(topology, applied)
+    text = _active_baseline_yaml(
+        "mono", 2, bass_extension_profile=profile
+    )
+
+    accepted = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+        desired_profile=profile,
+    )
+    refused = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+        desired_profile=profile,
+        profile_path=tmp_path / "must-not-be-read.json",
+    )
+
+    assert accepted.allowed is True
+    assert refused.allowed is False
+    assert refused.issues[0]["code"] == "bass_extension_source_invalid"
+
+
+@pytest.mark.parametrize("candidate_kind", ["explicit", "applied_baseline"])
+def test_persisted_candidate_boundary_derives_only_declared_provenance(
+    tmp_path: Path,
+    candidate_kind: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+    candidate_path = (
+        authority["config"] if candidate_kind == "explicit" else None
+    )
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_candidate",
+        candidate_kind=candidate_kind,
+        candidate_path=candidate_path,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+    invalid = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_candidate",
+        candidate_kind="applied_baseline",
+        candidate_path=authority["config"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert graph.allowed is True
+    assert invalid.allowed is False
+    assert invalid.issues[0]["code"] == "bass_extension_candidate_invalid"
+
+
+def test_persisted_boundary_retries_once_then_refuses_unstable_authority(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+    profile_path = authority["profile_path"]
+    calls = 0
+
+    from jasper.active_speaker import runtime_contract as contract_module
+
+    real_read = contract_module._read_optional_bytes
+
+    def alternating_read(path: Path):
+        nonlocal calls
+        if path == profile_path:
+            calls += 1
+            return b"first" if calls % 2 else b"second"
+        return real_read(path)
+
+    monkeypatch.setattr(contract_module, "_read_optional_bytes", alternating_read)
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=profile_path,
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert calls == 4
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_snapshot_unstable"
+
+
+async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        authority["statefile_path"].write_text(
+            f"config_path: {authority['config']}\nvolume: -21.0\nmute: false\n",
+            encoding="utf-8",
+        )
+        return "# live normalized copy\n" + text
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 1
+    assert graph.allowed is True
+
+
+def test_pending_intent_authorizes_only_recorded_graph_profile_pair(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    profile = _sealed_profile(topology, applied)
+    predecessor = _active_baseline_yaml("mono", 2).encode()
+    desired = _active_baseline_yaml(
+        "mono", 2, bass_extension_profile=profile
+    ).encode()
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=desired.decode(),
+        profile=profile,
+    )
+    authority["applied_baseline_path"].write_text(
+        json.dumps({**applied, "status": "applied", "config": {"path": str(authority["config"])}}),
+        encoding="utf-8",
+    )
+    profile_bytes = authority["profile_path"].read_bytes()
+    intent = _intent_payload(
+        predecessor_identity=ExactDspStateIdentity(
+            {"config_path": str(authority["config"]), "graph": "predecessor"}
+        ),
+        predecessor_profile_bytes=None,
+        desired_profile_bytes=profile_bytes,
+        selected_path=authority["config"],
+        selected_mode=0o640,
+        predecessor_graph_bytes=predecessor,
+        desired_graph_bytes=desired,
+        selector_target=authority["config"],
+    )
+    authority["intent_path"].write_text(json.dumps(intent), encoding="utf-8")
+
+    accepted = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+    intent["graphs"]["desired"] = "0" * 64
+    authority["intent_path"].write_text(json.dumps(intent), encoding="utf-8")
+    refused = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert accepted.allowed is True
+    assert refused.allowed is False
+    assert "bass_extension_authority_invalid" in {
+        issue["code"] for issue in refused.issues
+    }
+
+
 def test_no_topology_allows_flat_outputd_cutover() -> None:
     topology = _topology([])
     graph = classify_camilla_graph(topology=topology, text=_flat_yaml())
@@ -270,7 +604,7 @@ def test_full_range_mono_rejects_wider_flat_outputd_cutover(tmp_path: Path) -> N
     decision = safe_graph_for_current_topology(
         topology,
         flat_config_path=flat,
-        staged_config={},
+        **_write_authority(tmp_path),
     )
 
     assert classify_output_contract(topology).classification == CONTRACT_NORMAL_MONO_FULL_RANGE
@@ -1286,7 +1620,9 @@ def test_safe_graph_decision_selects_staged_active_startup(tmp_path: Path) -> No
         topology,
         current_config_path=flat_path,
         flat_config_path=flat_path,
-        staged_config=_staged_metadata(topology, staged_path),
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
     )
 
     assert decision.status == "select_active_startup"
@@ -1307,7 +1643,7 @@ def test_safe_graph_preserves_staged_startup_after_identity_confirmation(
     decision = safe_graph_for_current_topology(
         topology,
         current_config_path=staged_path,
-        staged_config=staged,
+        **_write_authority(tmp_path, staged=staged),
     )
 
     assert decision.status == "preserve_current"
@@ -1331,7 +1667,9 @@ def test_safe_graph_decision_does_not_persist_guarded_commissioning(
     decision = safe_graph_for_current_topology(
         topology,
         current_config_path=current_path,
-        staged_config=_staged_metadata(topology, staged_path),
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
     )
 
     assert decision.status == "select_active_startup"
@@ -1352,7 +1690,9 @@ def test_safe_graph_decision_preserves_approved_active_baseline(
     decision = safe_graph_for_current_topology(
         topology,
         current_config_path=current_path,
-        staged_config=_staged_metadata(topology, staged_path),
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
     )
 
     assert decision.status == "preserve_current"
@@ -1374,7 +1714,11 @@ def test_safe_graph_decision_prefers_applied_baseline_over_staged_current(
         topology,
         current_config_path=current_path,
         preferred_config_path=baseline_path,
-        staged_config=_staged_metadata(topology, current_path),
+        **_write_authority(
+            tmp_path,
+            staged=_staged_metadata(topology, current_path),
+            applied_config=baseline_path,
+        ),
     )
 
     assert decision.status == "select_active_baseline"
@@ -1396,7 +1740,7 @@ def test_safe_graph_decision_blocks_active_topology_without_staged_graph(
         topology,
         current_config_path=flat_path,
         flat_config_path=flat_path,
-        staged_config={},
+        **_write_authority(tmp_path),
     )
 
     assert decision.status == "blocked"
@@ -1424,7 +1768,7 @@ def test_statefile_repair_preserves_existing_volume_and_mute(tmp_path: Path) -> 
         topology,
         statefile_path=statefile,
         flat_config_path=flat,
-        staged_config={},
+        **_write_authority(tmp_path),
     )
 
     assert apply_safe_graph_decision_to_statefile(
@@ -1698,7 +2042,7 @@ def test_driver_domain_not_persistable_as_solo_fallback(tmp_path: Path) -> None:
         _active_topology("mono", "active_2_way"),
         current_config_path=str(config),
         preferred_config_path=str(config),
-        staged_config={},
+        **_write_authority(tmp_path, applied_config=config),
     )
     assert decision.status == "blocked"
     assert decision.selected_config_path is None
@@ -1846,7 +2190,7 @@ def test_program_bake_not_selectable_as_solo_graph(tmp_path: Path) -> None:
         current_config_path=str(config),
         preferred_config_path=str(config),
         flat_config_path=str(tmp_path / "no-such-outputd.yml"),
-        staged_config={},
+        **_write_authority(tmp_path, applied_config=config),
     )
     assert decision.selected_config_path != str(config)
     assert decision.status != "preserve_current"

@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -37,9 +39,12 @@ class _FakeClient:
     def __init__(self, active_raw_value: str | None = None) -> None:
         self.volume = _FakeVolume()
         self.config = self
+        self.general = self
         self.active_raw_values: list[str] = []
         self.active_raw_value = active_raw_value
         self.queries: list[tuple[str, object]] = []
+        self.file_paths: list[str] = []
+        self.reload_count = 0
 
     def set_active_raw(self, value: str) -> None:
         self.active_raw_values.append(value)
@@ -47,13 +52,21 @@ class _FakeClient:
     def active_raw(self):
         return self.active_raw_value
 
+    def set_file_path(self, path: str) -> None:
+        self.file_paths.append(path)
+
+    def reload(self) -> None:
+        self.reload_count += 1
+
     def query(self, command: str, *, arg=None):
         self.queries.append((command, arg))
         return None
 
 
-def _controller(fake: _FakeClient) -> CamillaController:
+def _controller(fake: _FakeClient, tmp_path: Path | None = None) -> CamillaController:
     cam = CamillaController("127.0.0.1", 1234)
+    if tmp_path is not None:
+        cam._graph_mutation_lock_path = tmp_path / ".dsp_apply.lock"
 
     async def call(fn):
         return fn(fake)
@@ -124,9 +137,9 @@ async def test_set_main_mute_forwards_boolean_to_camilla():
 
 
 @pytest.mark.asyncio
-async def test_set_active_config_raw_uploads_without_file_path_reload():
+async def test_set_active_config_raw_uploads_without_file_path_reload(tmp_path):
     fake = _FakeClient()
-    cam = _controller(fake)
+    cam = _controller(fake, tmp_path)
 
     assert await cam.set_active_config_raw("---\nfilters: {}\n")
 
@@ -163,15 +176,46 @@ async def test_get_active_config_raw_none_when_no_active_config():
 
 
 @pytest.mark.asyncio
-async def test_patch_config_uses_camilla_query_escape_hatch():
+async def test_patch_config_uses_camilla_query_escape_hatch(tmp_path):
     fake = _FakeClient()
-    cam = _controller(fake)
+    cam = _controller(fake, tmp_path)
 
     patch = {"filters": {"sound_simple_bass": {"parameters": {"gain": 1.5}}}}
 
     assert await cam.patch_config(patch)
 
     assert fake.queries == [("PatchConfig", patch)]
+
+
+@pytest.mark.asyncio
+async def test_all_graph_mutations_enter_the_lowest_admission_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    sources: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def admit(*, source: str, **_kwargs):
+        sources.append(source)
+        yield
+
+    monkeypatch.setattr("jasper.dsp_apply.camilla_graph_mutation", admit)
+
+    assert await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
+    assert await cam.set_active_config_raw("---\nfilters: {}\n")
+    assert await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
+    assert await cam.reload()
+
+    assert sources == [
+        "camilla.set_config_file_path",
+        "camilla.set_active_config_raw",
+        "camilla.patch_config",
+        "camilla.reload",
+    ]
+    assert fake.file_paths == [str(tmp_path / "candidate.yml")]
+    assert fake.reload_count == 2
 
 
 class _FakeWebSocket:

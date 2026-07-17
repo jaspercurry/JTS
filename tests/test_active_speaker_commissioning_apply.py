@@ -166,13 +166,16 @@ def _install_compiler(
         return payload
 
     monkeypatch.setattr(apply_module, "build_baseline_profile_candidate", build)
-    monkeypatch.setattr(
-        apply_module,
-        "classify_camilla_graph",
-        lambda **_kwargs: GraphSafety(
+    async def classify(*_args, **_kwargs):
+        return GraphSafety(
             classification="approved_active_runtime",
             allowed=True,
-        ),
+        )
+
+    monkeypatch.setattr(
+        apply_module,
+        "classify_active_bass_extension_graph",
+        classify,
     )
 
 
@@ -805,6 +808,7 @@ async def test_writer_lock_timeout_leaves_candidate_ready_and_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
+    real_writer_lock = apply_module.dsp_writer_lock
 
     @asynccontextmanager
     async def collide_once(*_args, **_kwargs):
@@ -817,7 +821,8 @@ async def test_writer_lock_timeout_leaves_candidate_ready_and_retryable(
                 waited_s=10.0,
                 source=apply_module.APPLY_SOURCE,
             )
-        yield
+        async with real_writer_lock(*_args, **_kwargs):
+            yield
 
     monkeypatch.setattr(apply_module, "dsp_writer_lock", collide_once)
     harness, candidate, deferred, state, _previous, port, load = await _apply(

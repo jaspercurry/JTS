@@ -43,6 +43,7 @@ from jasper.active_speaker.measurement import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import PeqFilter
+from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUMMARY
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
@@ -484,7 +485,11 @@ def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:
     assert "volume_limit: 0.0" in yaml
 
     # Keystone: the emitted sub-bearing graph re-proves as approved.
-    graph = classify_camilla_graph(topology=topology, text=yaml)
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
     assert graph.allowed is True, [i["code"] for i in graph.issues]
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.details["subwoofer_present"] is True
@@ -2048,7 +2053,11 @@ def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
     assert pref_idx < mixer_idx
 
     # invariant 2 (keystone): the protection contract still holds.
-    graph = classify_camilla_graph(topology=topology, text=eq_yaml)
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=eq_yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True
 
@@ -2068,7 +2077,11 @@ def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
         trimmed_yaml,
     )
     assert trim_match is not None and float(trim_match.group(1)) == -4.0
-    assert classify_camilla_graph(topology=topology, text=trimmed_yaml).allowed is True
+    assert classify_camilla_graph(
+        topology=topology,
+        text=trimmed_yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    ).allowed is True
 
 
 def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
@@ -2120,7 +2133,11 @@ def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
         < pipeline.index("type: Mixer")
     )
 
-    graph = classify_camilla_graph(topology=topology, text=room_yaml)
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=room_yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True, graph.issues
 

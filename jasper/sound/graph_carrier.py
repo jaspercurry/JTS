@@ -443,10 +443,6 @@ def _recompose_active_baseline_with_eq(
         load_applied_baseline_profile_state,
         recompose_applied_baseline_yaml,
     )
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
-        classify_camilla_graph,
-    )
     from jasper.output_topology import load_output_topology
     from jasper.sound.profile import build_sound_filters
 
@@ -470,18 +466,52 @@ def _recompose_active_baseline_with_eq(
             "JTS couldn't rebuild this speaker's active baseline to add sound EQ: "
             f"{detail}. Your crossover and driver protection are unchanged.",
         )
-    graph = classify_camilla_graph(topology=topology, text=yaml)
-    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
-        detail = (
-            graph.issues[0].get("message") if graph.issues else None
-        ) or "the recomposed active baseline did not pass the runtime contract"
-        raise CarrierCannotHostEq(
-            "active_baseline_recompose_unsafe",
-            "JTS rebuilt this speaker's active baseline, but the safety "
-            f"contract rejected it: {detail}. Your crossover and driver "
-            "protection are unchanged.",
-        )
     return yaml
+
+
+def recompose_active_baseline_for_bass_extension(
+    topology,
+    *,
+    applied_profile,
+    desired_profile,
+    current_config_path: str | Path,
+    preference_profile_path: str | Path | None = None,
+    sound_settings_path: str | Path | None = None,
+) -> str:
+    """Rebuild the selected solo baseline with every persisted program overlay.
+
+    This is the narrow Wave-3 carrier seam. Room PEQs are extracted through the
+    existing canonical reader; preference EQ and output trim are rebuilt from
+    their own persisted models. The loaded YAML is never spliced.
+    """
+
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.sound.profile import build_sound_filters, load_profile
+    from jasper.sound.settings import load_sound_settings, output_trim_db
+
+    preference = load_profile(preference_profile_path)
+    settings = load_sound_settings(sound_settings_path)
+    room_peqs = extract_room_peqs_from_config(current_config_path)
+    yaml, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied_profile,
+        room_peqs=room_peqs,
+        preference_filters=build_sound_filters(preference),
+        output_trim_db=output_trim_db(preference, settings),
+        out_path=None,
+        bass_extension_profile=desired_profile,
+    )
+    if yaml is not None:
+        return yaml
+    detail = (issues[0].get("message") if issues else None) or (
+        "the immutable applied baseline cannot be recomposed"
+    )
+    raise CarrierCannotHostEq(
+        "bass_extension_recompose_unavailable",
+        f"JTS could not rebuild the active baseline: {detail}",
+    )
 
 
 def _classify_loaded_config(current_path: str | Path) -> dict | None:

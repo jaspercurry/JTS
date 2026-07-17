@@ -64,8 +64,9 @@ modules are independent.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
@@ -187,6 +188,17 @@ class GraphView:
     parsed_ok: bool
     filters: dict[str, GraphFilter] = field(default_factory=dict)
     pipeline_steps: tuple[GraphPipelineStep, ...] = ()
+
+
+@dataclass(frozen=True)
+class BassExtensionBlockEvidence:
+    """Independent proof of the optional natural-at-rest bass filter block."""
+
+    valid: bool
+    expected: bool
+    definitions_present: tuple[str, ...]
+    reference_channels: tuple[int, ...]
+    reason: str | None = None
 
 
 def _filters_from_dict(payload: dict[str, Any]) -> dict[str, GraphFilter]:
@@ -875,3 +887,155 @@ def bass_management_corner_matched(
     if lp_freq is None or hp_freq is None or lp_freq <= 0.0 or hp_freq <= 0.0:
         return False
     return float_matches(lp_freq, hp_freq)
+
+
+def bass_extension_block_valid(
+    view: GraphView,
+    profile_summary: Mapping[str, Any],
+) -> BassExtensionBlockEvidence:
+    """Prove the complete optional sealed natural-at-rest filter pair.
+
+    Permission comes only from separately evaluated profile evidence. A missing,
+    deferred, bypassed, or stale profile requires the complete absence of both
+    definitions and references. An eligible sealed profile requires the exact
+    named pair, exact natural parameters, and one reference on exactly the
+    recorded bass-owner channels.
+    """
+
+    from jasper.camilla_emit import (
+        BASS_EXTENSION_FREQ_HZ_HI,
+        BASS_EXTENSION_FREQ_HZ_LO,
+        BASS_EXTENSION_Q_HI,
+        BASS_EXTENSION_Q_LO,
+        BASS_EXTENSION_SUBSONIC_ORDERS,
+    )
+
+    names = ("bass_ext_lt", "bass_ext_subsonic")
+    definitions = tuple(sorted(name for name in view.filters if name.startswith("bass_ext")))
+    references = tuple(
+        step
+        for step in view.pipeline_steps
+        if any(name.startswith("bass_ext") for name in step.names)
+    )
+    if profile_summary.get("authority_valid") is False:
+        return BassExtensionBlockEvidence(
+            False,
+            bool(profile_summary.get("runtime_block_required")),
+            definitions,
+            tuple(sorted({c for step in references for c in step.channels})),
+            "bass_extension_authority_invalid",
+        )
+    expected = bool(profile_summary.get("runtime_block_required"))
+    if not expected:
+        valid = not definitions and not references
+        return BassExtensionBlockEvidence(
+            valid,
+            False,
+            definitions,
+            tuple(sorted({c for step in references for c in step.channels})),
+            None if valid else "bass_extension_block_forbidden",
+        )
+
+    if not view.parsed_ok or definitions != names:
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_definitions_invalid"
+        )
+    natural = profile_summary.get("natural")
+    owner_channels = profile_summary.get("bass_owner_channels")
+    if not isinstance(natural, Mapping) or not isinstance(owner_channels, (list, tuple)):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_profile_evidence_invalid"
+        )
+    if (
+        not owner_channels
+        or any(type(channel) is not int or channel < 0 for channel in owner_channels)
+        or len(set(owner_channels)) != len(owner_channels)
+        or any(
+            isinstance(natural.get(key), bool)
+            or not isinstance(natural.get(key), (int, float))
+            for key in ("fp_hz", "qp", "boost_headroom_db")
+        )
+    ):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_profile_evidence_invalid"
+        )
+    try:
+        fp_hz = float(natural["fp_hz"])
+        qp = float(natural["qp"])
+        boost = float(natural["boost_headroom_db"])
+        subsonic = natural["subsonic"]
+        channels = frozenset(owner_channels)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_profile_evidence_invalid"
+        )
+    if (
+        not math.isfinite(fp_hz)
+        or not BASS_EXTENSION_FREQ_HZ_LO <= fp_hz <= BASS_EXTENSION_FREQ_HZ_HI
+        or not math.isfinite(qp)
+        or not BASS_EXTENSION_Q_LO <= qp <= BASS_EXTENSION_Q_HI
+        or boost != 0.0
+        or not isinstance(subsonic, Mapping)
+    ):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, tuple(sorted(channels)),
+            "bass_extension_natural_target_invalid",
+        )
+    if (
+        type(subsonic.get("order")) is not int
+        or isinstance(subsonic.get("freq"), bool)
+        or not isinstance(subsonic.get("freq"), (int, float))
+    ):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, tuple(sorted(channels)),
+            "bass_extension_subsonic_invalid",
+        )
+    try:
+        sub_freq = float(subsonic["freq"])
+        sub_order = subsonic["order"]
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, tuple(sorted(channels)),
+            "bass_extension_subsonic_invalid",
+        )
+    lt = view.filters.get(names[0])
+    hp = view.filters.get(names[1])
+    params = lt.params if lt else {}
+    hp_params = hp.params if hp else {}
+    definitions_ok = (
+        lt is not None
+        and lt.type == "Biquad"
+        and params.get("type") == "LinkwitzTransform"
+        and all(
+            float_matches(params.get(key), expected_value)
+            for key, expected_value in (
+                ("freq_act", fp_hz),
+                ("q_act", qp),
+                ("freq_target", fp_hz),
+                ("q_target", qp),
+            )
+        )
+        and hp is not None
+        and hp.type == "BiquadCombo"
+        and subsonic.get("type") == "ButterworthHighpass"
+        and hp_params.get("type") == "ButterworthHighpass"
+        and math.isfinite(sub_freq)
+        and BASS_EXTENSION_FREQ_HZ_LO <= sub_freq <= BASS_EXTENSION_FREQ_HZ_HI
+        and sub_order in BASS_EXTENSION_SUBSONIC_ORDERS
+        and float_matches(hp_params.get("freq"), sub_freq)
+        and hp_params.get("order") == sub_order
+    )
+    reference_ok = (
+        len(references) == 1
+        and references[0].channels == channels
+        and tuple(name for name in references[0].names if name.startswith("bass_ext"))
+        == names
+    )
+    valid = definitions_ok and reference_ok
+    return BassExtensionBlockEvidence(
+        valid,
+        True,
+        definitions,
+        tuple(sorted(references[0].channels)) if len(references) == 1 else (),
+        None if valid else "bass_extension_block_invalid",
+    )

@@ -39,8 +39,33 @@ import pytest
 from pathlib import Path
 
 from jasper.web import correction_setup, correction_tuning
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GraphSafety,
+)
 
 from ._web_test_helpers import request_with_csrf
+
+
+@pytest.fixture(autouse=True)
+def _stable_no_bass_graph_authority(monkeypatch):
+    async def classify(_cam):
+        return GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": {
+                    "authority_valid": True,
+                    "runtime_block_required": False,
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_classify_live_bass_extension_graph",
+        classify,
+    )
 
 # The page's behaviour was relocated VERBATIM into a static ES module when
 # /correction/ migrated to the canonical design system (chrome-only restyle).
@@ -4335,7 +4360,7 @@ async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
     )
     safety_calls = []
 
-    def fail_candidate_after_snapshot(text):
+    def fail_candidate_after_snapshot(text, **_kwargs):
         safety_calls.append(text)
         if len(safety_calls) == 2:
             raise RuntimeError("post-write safety refusal")
@@ -4418,7 +4443,10 @@ async def test_room_reversal_rejects_unverified_no_room_fallback(
         reemit_fails,
     )
     async def snapshot_current(_sess, _cam):
-        return fallback, fallback
+        return fallback, fallback, {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
 
     monkeypatch.setattr(
         correction_setup,
@@ -4478,7 +4506,10 @@ async def test_reset_accepts_verified_no_room_active_fallback(
         reemit_fails,
     )
     async def snapshot_current(_sess, _cam):
-        return no_room, no_room
+        return no_room, no_room, {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
 
     monkeypatch.setattr(
         correction_setup,
@@ -4539,15 +4570,20 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
         reemitted_from.append(
             await current_cam.get_config_file_path(best_effort=False)
         )
-        return new_active, old_active_snapshot
+        return new_active, old_active_snapshot, {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
 
     async def reemit_current(
         _sess,
         _current_cam,
         *,
         current_snapshot_path=None,
+        bass_profile_summary=None,
     ):
         assert current_snapshot_path == old_active_snapshot
+        assert bass_profile_summary is not None
         return no_room_new_active
 
     monkeypatch.setattr(

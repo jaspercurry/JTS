@@ -70,7 +70,10 @@ from .graph_evidence import (
 )
 from .measurement import active_driver_targets
 from .profile import ADJACENT_PAIRS_BY_WAY
-from .runtime_contract import classify_camilla_graph
+from .runtime_contract import (
+    classify_active_bass_extension_graph,
+    classify_camilla_graph,
+)
 from .test_signal_plan import (
     MAX_DRIVER_TEST_FREQUENCY_HZ,
     MIN_DRIVER_TEST_FREQUENCY_HZ,
@@ -104,6 +107,7 @@ class CommissioningRuntimePort:
     read_config_path: ReadConfigPath
     read_listening_volume_db: ReadListeningVolume
     set_listening_volume_db: SetListeningVolume
+    _bass_extension_authority_paths: Mapping[str, Path] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -115,6 +119,17 @@ class CommissioningRuntimePort:
         ):
             if not callable(getattr(self, name)):
                 raise CommissioningRuntimeError(f"{name} must be callable")
+        paths = self._bass_extension_authority_paths
+        if paths is not None and set(paths) != {
+            "statefile_path",
+            "applied_baseline_path",
+            "profile_path",
+            "intent_path",
+            "staged_metadata_path",
+        }:
+            raise CommissioningRuntimeError(
+                "test bass-extension authority paths are incomplete"
+            )
 
 
 def _role(value: Any, *, field: str) -> str:
@@ -266,6 +281,7 @@ class CommissioningFreshReadback:
     config_path: str
     listening_volume_db: float
     delay_confirmation: DelayCandidateConfirmation | None
+    bass_profile_summary: Mapping[str, Any] | None = None
 
 
 FreshCommissioningReadback: TypeAlias = Callable[
@@ -283,6 +299,7 @@ class CommissioningLiveContext:
     listening_volume_db: float
     delay_confirmation: DelayCandidateConfirmation | None
     fresh_readback: FreshCommissioningReadback
+    bass_profile_summary: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.fresh_readback):
@@ -924,6 +941,7 @@ async def _apply_graph(
     expected_path: str,
     expected_volume_db: float,
     set_volume: bool,
+    bass_profile_summary: Mapping[str, Any],
 ) -> tuple[str, NormalizedActiveRawIdentity, float]:
     if set_volume and not await port.set_listening_volume_db(expected_volume_db):
         raise _OperationFailure(
@@ -957,7 +975,11 @@ async def _apply_graph(
         raise _OperationFailure(
             "graph_readback_mismatch", "fresh active_raw did not equal the candidate"
         )
-    safety = classify_camilla_graph(topology=topology, text=raw)
+    safety = classify_camilla_graph(
+        topology=topology,
+        text=raw,
+        bass_profile_summary=bass_profile_summary,
+    )
     if not safety.allowed:
         issue_codes = ",".join(
             str(issue.get("code") or "unknown") for issue in safety.issues
@@ -990,6 +1012,7 @@ async def _confirm_candidate_still_live(
     expected_path: str,
     expected_volume_db: float,
     delay_confirmation: DelayCandidateConfirmation | None,
+    bass_profile_summary: Mapping[str, Any],
 ) -> CommissioningFreshReadback:
     raw = await port.read_active_raw()
     observed = _active_identity(
@@ -1024,6 +1047,7 @@ async def _confirm_candidate_still_live(
         config_path=path,
         listening_volume_db=volume,
         delay_confirmation=delay_confirmation,
+        bass_profile_summary=bass_profile_summary,
     )
 
 
@@ -1326,6 +1350,33 @@ async def _run_locked(
         nonlocal mutation_attempted
         nonlocal predecessor
 
+        from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+        from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+        from jasper.active_speaker.staging import staged_metadata_path
+        from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+        from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+
+        authority_paths = port._bass_extension_authority_paths or {
+            "statefile_path": Path(DEFAULT_CAMILLA_STATEFILE),
+            "applied_baseline_path": baseline_profile_state_path(),
+            "profile_path": DEFAULT_PROFILE_PATH,
+            "intent_path": BASS_EXTENSION_APPLY_INTENT_PATH,
+            "staged_metadata_path": staged_metadata_path(),
+        }
+        authority = await classify_active_bass_extension_graph(
+            topology,
+            read_active_graph_text=port.read_active_raw,
+            **authority_paths,
+        )
+        bass_profile_summary = authority.details.get(
+            "bass_extension_profile_summary"
+        )
+        if not authority.allowed or not isinstance(bass_profile_summary, Mapping):
+            raise _OperationFailure(
+                "graph_authority_unproven",
+                "live CamillaDSP graph and bass-extension authority could not be proved",
+            )
+
         predecessor = await _snapshot(port)
         try:
             normal = _normal_graph(request, binding)
@@ -1334,6 +1385,7 @@ async def _run_locked(
         safety = classify_camilla_graph(
             topology=topology,
             text=request.normal_active_raw,
+            bass_profile_summary=bass_profile_summary,
         )
         if not safety.allowed:
             issue_codes = ",".join(
@@ -1373,6 +1425,7 @@ async def _run_locked(
                 expected_path=predecessor.path,
                 expected_volume_db=request.listening_volume_db,
                 set_volume=True,
+                bass_profile_summary=bass_profile_summary,
             )
             snapshot = _delay_snapshot(
                 request,
@@ -1398,6 +1451,7 @@ async def _run_locked(
                     expected_path=predecessor.path,
                     expected_volume_db=request.listening_volume_db,
                     set_volume=False,
+                    bass_profile_summary=bass_profile_summary,
                 )
             delay_confirmation = confirm_delay_candidate(
                 snapshot,
@@ -1419,6 +1473,7 @@ async def _run_locked(
                 expected_path=predecessor.path,
                 expected_volume_db=request.listening_volume_db,
                 set_volume=True,
+                bass_profile_summary=bass_profile_summary,
             )
         readback_open = True
 
@@ -1434,6 +1489,7 @@ async def _run_locked(
                 expected_path=predecessor.path,
                 expected_volume_db=request.listening_volume_db,
                 delay_confirmation=delay_confirmation,
+                bass_profile_summary=bass_profile_summary,
             )
             if not readback_open:
                 raise CommissioningRuntimeError(
@@ -1451,6 +1507,7 @@ async def _run_locked(
                     listening_volume_db=candidate_volume,
                     delay_confirmation=delay_confirmation,
                     fresh_readback=fresh_readback,
+                    bass_profile_summary=bass_profile_summary,
                 )
             )
         finally:
@@ -1467,6 +1524,7 @@ async def _run_locked(
             expected_path=predecessor.path,
             expected_volume_db=request.listening_volume_db,
             delay_confirmation=delay_confirmation,
+            bass_profile_summary=bass_profile_summary,
         )
 
     transaction = await _capture_awaitable(_execute_live_transaction())

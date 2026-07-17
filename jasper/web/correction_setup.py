@@ -2133,12 +2133,44 @@ async def _read_room_correction_readiness(cam: Any) -> dict[str, Any]:
     from jasper.camilla import CamillaUnavailable
 
     try:
+        await _classify_live_bass_extension_graph(cam)
         running_raw = await cam.get_active_config_raw(best_effort=False)
     except CamillaUnavailable as exc:
         raise RuntimeError("the running CamillaDSP graph is unavailable") from exc
     if not isinstance(running_raw, str) or not running_raw.strip():
         raise RuntimeError("the running CamillaDSP graph is unavailable")
     return read_active_speaker_setup_status(active_config_text=running_raw)
+
+
+async def _classify_live_bass_extension_graph(cam: Any):
+    """Prove the live graph and every bass authority in one canonical read."""
+
+    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+    from jasper.active_speaker.runtime_contract import (
+        classify_active_bass_extension_graph,
+    )
+    from jasper.active_speaker.staging import staged_metadata_path
+    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+    from jasper.output_topology import load_output_topology_strict
+
+    graph = await classify_active_bass_extension_graph(
+        load_output_topology_strict(),
+        statefile_path=Path(DEFAULT_CAMILLA_STATEFILE),
+        read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
+        applied_baseline_path=baseline_profile_state_path(),
+        profile_path=DEFAULT_PROFILE_PATH,
+        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+        staged_metadata_path=staged_metadata_path(),
+    )
+    summary = graph.details.get("bass_extension_profile_summary")
+    if not graph.allowed or not isinstance(summary, Mapping):
+        code = graph.issues[0].get("code") if graph.issues else graph.classification
+        raise RuntimeError(
+            f"the running CamillaDSP graph authority is unavailable ({code})"
+        )
+    return graph
 
 
 def _room_correction_readiness() -> dict[str, Any]:
@@ -2719,7 +2751,7 @@ async def _snapshot_running_room_graph(
     cam: Any,
     *,
     current_path: str | Path | None = None,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Mapping[str, Any]]:
     """Persist one validated, content-stable copy of Camilla's running graph."""
 
     from jasper.atomic_io import atomic_write_text
@@ -2743,11 +2775,18 @@ async def _snapshot_running_room_graph(
             "CamillaDSP is running a configuration JTS didn't generate, so "
             "Room cannot preserve it for exact restoration.",
         )
+    live_authority = await _classify_live_bass_extension_graph(cam)
+    bass_profile_summary = live_authority.details[
+        "bass_extension_profile_summary"
+    ]
     raw = await cam.get_active_config_raw(best_effort=False)
     if not isinstance(raw, str) or not raw.strip():
         raise RuntimeError("CamillaDSP did not report a running graph")
     text = _running_graph_snapshot_text(raw, current, carrier=carrier)
-    assert_correction_graph_safe(text)
+    assert_correction_graph_safe(
+        text,
+        bass_profile_summary=bass_profile_summary,
+    )
     snapshot = _room_graph_artifact_path(sess, "snapshot")
     snapshot.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(
@@ -2763,7 +2802,7 @@ async def _snapshot_running_room_graph(
             "CamillaDSP's running graph could not be validated for exact "
             f"restoration: {validation.error or validation.status.value}"
         )
-    return Path(current), snapshot
+    return Path(current), snapshot, bass_profile_summary
 
 
 async def _load_measurement_baseline(
@@ -2809,7 +2848,7 @@ async def _load_measurement_baseline(
         anchor = await cam.get_config_file_path(best_effort=False)
         if not anchor:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
-        _, restore_path = await _snapshot_running_room_graph(
+        _, restore_path, bass_profile_summary = await _snapshot_running_room_graph(
             sess,
             cam,
             current_path=anchor,
@@ -2825,7 +2864,10 @@ async def _load_measurement_baseline(
             profile_id=f"measurement-{sess.session_id}",
             fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
-        assert_correction_graph_safe(result.yaml)
+        assert_correction_graph_safe(
+            result.yaml,
+            bass_profile_summary=bass_profile_summary,
+        )
         sess.pre_measurement_config_path = Path(anchor)
         sess.pre_measurement_restore_path = restore_path
         return {
@@ -6885,12 +6927,17 @@ async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     )
     target = await _pre_measurement_restore_target(sess, cam)
     if target is None:
-        _current, current_snapshot = await _snapshot_running_room_graph(sess, cam)
+        (
+            _current,
+            current_snapshot,
+            bass_profile_summary,
+        ) = await _snapshot_running_room_graph(sess, cam)
         try:
             target = await _write_no_room_correction_config(
                 sess,
                 cam,
                 current_snapshot_path=current_snapshot,
+                bass_profile_summary=bass_profile_summary,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
@@ -7026,6 +7073,7 @@ async def _write_no_room_correction_config(
     cam: Any,
     *,
     current_snapshot_path: str | Path | None = None,
+    bass_profile_summary: Mapping[str, Any] | None = None,
 ) -> Path:
     """Emit the current graph with room correction cleared.
 
@@ -7046,7 +7094,11 @@ async def _write_no_room_correction_config(
     )
     config_dir.mkdir(parents=True, exist_ok=True)
     if current_snapshot_path is None:
-        _current, snapshot_path = await _snapshot_running_room_graph(sess, cam)
+        (
+            _current,
+            snapshot_path,
+            bass_profile_summary,
+        ) = await _snapshot_running_room_graph(sess, cam)
     else:
         snapshot_path = Path(current_snapshot_path)
     # Never emit over Camilla's reported current filename. Some JTS writers use
@@ -7062,7 +7114,10 @@ async def _write_no_room_correction_config(
         profile_id=f"correction-reset-{time.time_ns()}",
         fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
     )
-    assert_correction_graph_safe(result.yaml)
+    assert_correction_graph_safe(
+        result.yaml,
+        bass_profile_summary=bass_profile_summary,
+    )
     validation = validate_camilla_config(out_path)
     if not validation.ok_to_apply:
         raise RuntimeError(

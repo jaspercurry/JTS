@@ -111,10 +111,15 @@ class CamillaController:
     """
 
     def __init__(self, host: str, port: int) -> None:
+        from jasper.dsp_apply import CANONICAL_DSP_WRITER_LOCK_PATH
+
         self._host = host
         self._port = port
         self._client: CamillaClient | None = None
         self._lock = asyncio.Lock()
+        # One fixed production lock; tests may replace this instance attribute
+        # with a temporary path (there is intentionally no env/config override).
+        self._graph_mutation_lock_path = CANONICAL_DSP_WRITER_LOCK_PATH
 
     def _ensure(
         self,
@@ -558,8 +563,14 @@ class CamillaController:
             c.config.set_file_path(path)
             c.general.reload()
             return True
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            return bool(await self._call(write_and_reload))
+            async with camilla_graph_mutation(
+                source="camilla.set_config_file_path",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                return bool(await self._call(write_and_reload))
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning(
@@ -587,9 +598,15 @@ class CamillaController:
                 logger.warning("camilla active config rejected: empty config")
                 return False
             raise ValueError("config must be a non-empty YAML string")
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            await self._call(lambda c: c.config.set_active_raw(config))
-            return True
+            async with camilla_graph_mutation(
+                source="camilla.set_active_config_raw",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                await self._call(lambda c: c.config.set_active_raw(config))
+                return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning(
@@ -640,9 +657,15 @@ class CamillaController:
                 logger.warning("camilla config patch rejected: empty patch")
                 return False
             raise ValueError("patch must be a non-empty mapping")
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            await self._call(lambda c: c.query("PatchConfig", arg=patch))
-            return True
+            async with camilla_graph_mutation(
+                source="camilla.patch_config",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                await self._call(lambda c: c.query("PatchConfig", arg=patch))
+                return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning("camilla unavailable; patch_config skipped: %s", e)
@@ -654,9 +677,15 @@ class CamillaController:
         room-correction wizard's 'Reset to flat' action when the path
         is already pointed at the branch's flat base config — saves a
         redundant set_file_path call."""
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            await self._call(lambda c: c.general.reload())
-            return True
+            async with camilla_graph_mutation(
+                source="camilla.reload",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                await self._call(lambda c: c.general.reload())
+                return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning("camilla unavailable; reload skipped: %s", e)

@@ -12,10 +12,11 @@ topology before CamillaDSP is allowed to load it.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.active_speaker.runtime_contract import (
     CONTRACT_NORMAL_MONO_FULL_RANGE,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph,
     classify_output_contract,
     flat_program_graph_blocked_reason,
@@ -82,7 +83,12 @@ def reset_config_path(
     base = Path(base_config_path)
     if not contract.requires_roleful_graph:
         if contract.classification == CONTRACT_NORMAL_MONO_FULL_RANGE or contract.issues:
-            graph = classify_camilla_graph(base, topology)
+            graph = classify_camilla_graph(
+                base,
+                topology,
+                text=base.read_text(encoding="utf-8"),
+                bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+            )
             if not graph.allowed:
                 raise CorrectionRuntimeSafetyError(
                     "room-correction reset target is unsafe for the saved "
@@ -107,11 +113,20 @@ def assert_correction_graph_safe(
     text: str,
     *,
     topology: OutputTopology | None = None,
+    bass_profile_summary: Mapping[str, Any] | None = None,
 ) -> None:
-    """Refuse a generated correction graph that violates the saved topology."""
+    """Refuse a generated graph using host-proved immutable bass evidence."""
 
     topology = topology or _load_topology_for_correction()
-    graph = classify_camilla_graph(topology=topology, text=text)
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=text,
+        bass_profile_summary=(
+            bass_profile_summary
+            if isinstance(bass_profile_summary, Mapping)
+            else NO_BASS_EXTENSION_PROFILE_SUMMARY
+        ),
+    )
     if graph.allowed:
         return
     raise CorrectionRuntimeSafetyError(

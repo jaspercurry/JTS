@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ import pytest
 import yaml
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
+import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
@@ -30,6 +32,7 @@ from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
 from jasper.sound.profile import SoundProfile
+from tests.test_bass_extension_profile import _profile
 
 # Reuse the commissioning-evidence fixtures from the baseline-profile tests so
 # the leader's camilla#2 arm is exercised against the SAME evidence shape the
@@ -42,6 +45,17 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+
+@pytest.fixture(autouse=True)
+def _stable_live_graph_authority(monkeypatch):
+    async def prove(*_args, **_kwargs):
+        return runtime_contract_mod.GraphSafety(
+            classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+            allowed=True,
+        )
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
 
 
 def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
@@ -135,6 +149,15 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    sealed = replace(
+        _profile(topology=topology),
+        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
+    )
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "evaluate_bass_extension_profile",
+        lambda **_kwargs: SimpleNamespace(status="accepted", profile=sealed),
+    )
 
     bake_path, crossover_path = asyncio.run(
         alc.precheck_active_leader(_cfg("left"), validate=_valid_config)
@@ -149,6 +172,15 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     assert "# program_channel=left" in crossover_yaml
     assert f'device: "{GROUPING_LOOPBACK_CAPTURE}"' in crossover_yaml
     assert "active_baseline_headroom" not in crossover_yaml  # leader bakes B/C
+    crossover_doc = yaml.safe_load(crossover_yaml)
+    woofer_chain = next(
+        step["names"]
+        for step in crossover_doc["pipeline"]
+        if step.get("type") == "Filter" and step.get("channels") == [0]
+    )
+    assert woofer_chain.index("bass_ext_lt") < woofer_chain.index(
+        "bass_ext_subsonic"
+    ) < woofer_chain.index("as_woofer_delay")
 
     # camilla#1 program bake: File sink writing the snapfifo, NO Layer A.
     bake_doc = yaml.safe_load(Path(bake_path).read_text(encoding="utf-8"))
@@ -223,16 +255,16 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    monkeypatch.setattr(
-        runtime_contract_mod, "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=False, classification="unsafe", issues=[{"code": "forced"}],
-        ),
-    )
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    def refuse(*_args, **_kwargs):
+        raise camilla_yaml.ActiveSpeakerConfigError("forced emit re-proof failure")
+
+    monkeypatch.setattr(camilla_yaml, "_assert_bass_extension_safe", refuse)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("right"), validate=_valid_config))
-    assert exc.value.reason == "crossover_graph_unprovable"
+    assert exc.value.reason == "driver_domain_emit_refused"
 
 
 def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
@@ -411,11 +443,19 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
     )
+    def decide(_topology, *, current_config_path=None, **_kwargs):
+        graph = SimpleNamespace(
+            allowed=allowed,
+            classification="x" if allowed else "unsafe",
+            issues=[],
+        )
+        return SimpleNamespace(
+            current_graph=graph,
+            selected_config_path=(str(current_config_path) if allowed else None),
+        )
+
     monkeypatch.setattr(
-        runtime_contract_mod, "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=allowed, classification="x" if allowed else "unsafe", issues=[],
-        ),
+        runtime_contract_mod, "safe_graph_for_current_topology", decide
     )
 
 

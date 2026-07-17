@@ -42,13 +42,39 @@ from jasper.correction.session import (
     parse_current_correction,
 )
 from jasper.camilla_config_contract import PeqFilter
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GraphSafety,
+)
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
+from jasper.web import correction_setup
 from ._web_test_helpers import json_post_with_csrf
 from .correction_bundle_fixtures import write_golden_correction_bundle
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stable_no_bass_graph_authority(monkeypatch):
+    async def classify(_cam):
+        return GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": {
+                    "authority_valid": True,
+                    "runtime_block_required": False,
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_classify_live_bass_extension_graph",
+        classify,
+    )
 
 
 # ---------- parse_current_correction ---------------------------------------
@@ -731,7 +757,7 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     safety_checks: list[str] = []
     monkeypatch.setattr(
         "jasper.correction.runtime_safety.assert_correction_graph_safe",
-        lambda text: safety_checks.append(text),
+        lambda text, **_kwargs: safety_checks.append(text),
     )
     fake_cam = _FakeCamilla(current_path=str(current))
 
@@ -1440,7 +1466,7 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     )
     monkeypatch.setattr(
         "jasper.correction.runtime_safety.assert_correction_graph_safe",
-        lambda text: None,
+        lambda text, **_kwargs: None,
     )
     async def authority_current(_cam, _expected):
         return None
