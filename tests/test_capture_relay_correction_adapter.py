@@ -1793,6 +1793,224 @@ def test_crossover_level_start_refuses_other_blocked_setups(
         correction_setup._handle_crossover_relay_level_match(handler)
 
 
+def _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease):
+    """Drive the REAL ``_handle_crossover_relay_level_match`` restart.
+
+    Reproduces the run-19 household path: the completed-insufficient (or
+    refusal) terminal offers exactly one action — POST /crossover/level-match
+    with an empty body — while the lease is fully locked (``ready=True``), so
+    the endpoint's ``continuing`` gate is False and its ``_run`` closure hits
+    the invalidate seam BEFORE the ramp runs. The ramp itself is stubbed to a
+    no-op that snapshots the lease's solve-correction state at ramp time —
+    i.e. exactly what the NEXT solve would see — and the relay runner executes
+    the real ``run_and_consume`` closure synchronously (production spawns it
+    on the background loop; the seam under test is identical).
+    """
+    import asyncio
+
+    from jasper.active_speaker import web_commissioning
+    from jasper.active_speaker.measurement import active_driver_targets
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+        str(tmp_path / "measurements.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE",
+        str(tmp_path / "repeat-admission.json"),
+    )
+    topology = _topology()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    legacy = _legacy_crossover_level_status(preservation_ready=True)
+    status = {
+        **legacy,
+        "setup": {
+            **legacy["setup"],
+            "protected_profile": {
+                "source_fingerprint": "c" * 64,
+                "candidate_fingerprint": "c" * 64,
+            },
+            "applied_crossover": {"valid": True, "owner": "manual", "reason": None},
+        },
+        "applied_profile": {
+            "recomposition_snapshot": {"preset": _two_way_preset("mono")},
+        },
+        "targets": {"drivers": active_driver_targets(topology)},
+    }
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(backend, "level_lease", lambda: lease)
+    monkeypatch.setattr(
+        web_commissioning,
+        "automatic_driver_excitation",
+        lambda _topology, role, **_kwargs: {
+            "status": "ready",
+            "commissioning_gain_db": -3.0 if role == "woofer" else -18.0,
+        },
+    )
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda coro, *, timeout: asyncio.run(coro),
+    )
+    monkeypatch.setattr(adapter, "open_capture", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_request_local_return_url",
+        lambda *_args: "https://jts.local/correction/crossover/",
+    )
+
+    seen: dict = {}
+
+    async def fake_run_relay_level_match(lease_arg, *_args, **_kwargs):
+        # What the next solve for this target would observe.
+        seen["adjustment_db"] = dict(lease_arg._solve_adjustment_db)
+        seen["writes"] = dict(lease_arg._solve_correction_writes)
+        seen["measured_gain_db"] = dict(lease_arg._solve_measured_gain_db)
+
+    monkeypatch.setattr(
+        correction_setup, "_run_relay_level_match", fake_run_relay_level_match
+    )
+
+    def run_relay(kind, relay_base, *, return_url):
+        kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
+
+        async def _drive():
+            try:
+                await kind.run_and_consume(object(), object())
+            except ValueError:
+                # The stubbed ramp produces no mic binding, so _run raises
+                # after the invalidate seam under test has executed --
+                # production's _run_relay_capture wrapper catches exactly
+                # this (flips /status.relay to failed) without propagating.
+                pass
+
+        asyncio.run(_drive())
+        return {"url": "https://capture.jasper.tech/session"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+
+    body = json.dumps({"capture_geometry": "near_field"}).encode()
+    handler = SimpleNamespace(
+        headers={"Content-Length": str(len(body))},
+        rfile=io.BytesIO(body),
+    )
+    payload = correction_setup._handle_crossover_relay_level_match(handler)
+    assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
+    assert seen, "the stubbed ramp never ran -- the restart did not reach _run"
+    return seen
+
+
+def _completed_insufficient_lease(*, correction_writes: int):
+    """A real CrossoverLevelLease in run 19's terminal state.
+
+    Every target locked (``ready=True`` -- the completed-insufficient and
+    refusal terminals both sit on a fully-locked lease, which is exactly why
+    the endpoint's ``continuing`` gate reads False on restart), with
+    ``correction_writes`` solve corrections recorded for the woofer.
+    """
+    from types import SimpleNamespace as NS
+
+    from jasper.audio_measurement.ramp import RampLockKind, RampState
+    from jasper.web import correction_crossover_backend as backend
+
+    lease = backend.CrossoverLevelLease()
+    lease.context_id = "c" * 64
+    lease.configure_targets(
+        [
+            {
+                "target_id": f"mono:{role}",
+                "speaker_group_id": "mono",
+                "role": role,
+                "geometry": f"near_field_driver:mono:{role}",
+                "tone_frequency_hz": 250.0 if role == "woofer" else 6250.0,
+                "commissioning_gain_db": -3.0 if role == "woofer" else -18.0,
+                "target_fingerprint": ("6" if role == "woofer" else "7") * 64,
+            }
+            for role in ("woofer", "tweeter")
+        ]
+    )
+    for role, locked in (("woofer", -14.2), ("tweeter", -4.0)):
+        lease._outcomes[f"near_field_driver:mono:{role}"] = NS(
+            ramp=NS(
+                state=RampState.LOCKED,
+                locked_main_volume_db=locked,
+                gain_map_db=1.9,
+                cap_db=-3.0,
+                noise_floor_dbfs=-42.3,
+                lock_kind=RampLockKind.IN_WINDOW,
+            ),
+        )
+    for _ in range(correction_writes):
+        lease.record_solve_correction(
+            "mono", "woofer", trigger="completed_insufficient", shortfall_db=12.3
+        )
+    snapshot = lease.level_match_snapshot(current_context_id="c" * 64)
+    assert snapshot["ready"] is True  # the terminal state's defining property
+    return lease
+
+
+def test_level_match_restart_from_completed_insufficient_preserves_correction(
+    monkeypatch, tmp_path
+):
+    """Run-19 endpoint repro (adversarial-review BLOCKER on PR #1555): the
+    completed-insufficient terminal's only action is restarting the level
+    check, and that restart goes through the REAL
+    ``_handle_crossover_relay_level_match`` -- whose ``continuing`` gate is
+    False on a fully-locked lease, so its ``_run`` closure invalidates the
+    comparison context BEFORE the next solve ever reads the just-written
+    completion-time correction. Pre-fix (lease-level persistence only), the
+    endpoint's plain ``invalidate_comparison_context()`` wiped the
+    correction here and run 19's identical-solve loop persisted; the
+    between-set restart must preserve a NON-exhausted target's correction
+    so "JTS will play the next measurement louder" comes true.
+
+    Confirmed FAILING pre-fix: seen adjustment == {} (correction cleared by
+    the endpoint restart) against the expected {'mono:woofer': 12.3}."""
+
+    lease = _completed_insufficient_lease(correction_writes=1)
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(12.3)}
+
+    seen = _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease)
+
+    assert seen["adjustment_db"] == {"mono:woofer": pytest.approx(12.3)}
+    assert seen["writes"] == {"mono:woofer": 1}
+
+
+def test_level_match_restart_with_exhausted_budget_clears_for_fresh_evaluation(
+    monkeypatch, tmp_path
+):
+    """The other half of the between-set-restart semantics: once a target's
+    bounded correction budget is exhausted (the refusal terminal was showing
+    -- the user was told to move the phone), restarting the level check is a
+    FRESH EVALUATION: that target's correction state clears at the endpoint.
+    This also pins the no-deadlock property -- the synthesized
+    ``measurement_window_unreachable`` refusal (which keys off the same
+    exhausted flag) cannot latch across the restart, so the offered "Redo
+    the quick level check" action is a genuine escape hatch; if the physics
+    truly didn't change, the machinery re-converges to the refusal within
+    the bounded write budget instead of looping on one identical solve."""
+
+    # Three writes: two applied + one exhausted bump -- the state in which
+    # the pre-flight solve refuses and the envelope synthesizes the
+    # placement-lever refusal.
+    lease = _completed_insufficient_lease(correction_writes=3)
+    assert lease._correction_budget_exhausted("mono:woofer") is True
+
+    seen = _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease)
+
+    assert seen["adjustment_db"] == {}
+    assert seen["writes"] == {}
+    assert seen["measured_gain_db"] == {}
+    assert lease._correction_budget_exhausted("mono:woofer") is False
+
+
 def test_open_commissioning_bundle_for_level_match_forwards_calibration_id(
     monkeypatch,
 ) -> None:

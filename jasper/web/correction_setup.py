@@ -639,13 +639,30 @@ def _relay_failure_message(exc: BaseException) -> str:
     """The phone/operator-facing text for a relay-capture-lifecycle failure.
 
     ``LevelMatchRefused`` carries pre-translated homeowner copy (see
-    ``jasper.correction.level_match.describe_ramp_refusal``); every other
-    exception falls back to ``str(exc)`` unchanged (prior behavior).
+    ``jasper.correction.level_match.describe_ramp_refusal``).
+
+    A bare socket/HTTP read timeout (Python's ``socket.timeout`` --
+    ``TimeoutError`` since 3.10 -- whose message is the literal programmer
+    string "The read operation timed out") means the phone relay connection
+    died mid-measurement; hardware run 19 surfaced that exact string
+    unchanged on the wizard's status line
+    (``deploy/assets/correction/js/crossover/main.js``'s ``renderRelay``
+    just echoes ``relay.error``). Route it through the same kind of honest,
+    actionable copy every other refusal gets instead.
+
+    Every other exception falls back to ``str(exc)`` unchanged (prior
+    behavior) -- not evidenced as a wizard-facing problem, so left alone
+    per "scope fixes to the observed-broken path."
     """
     from jasper.correction.level_match import LevelMatchRefused
 
     if isinstance(exc, LevelMatchRefused):
         return exc.user_message
+    if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
+        return (
+            "The connection to the phone timed out mid-measurement. "
+            "Reopen the phone link and try this step again."
+        )
     return str(exc)
 
 
@@ -4952,7 +4969,18 @@ def _handle_crossover_relay_level_match(
             from jasper.active_speaker import repeat_admission
 
             repeat_admission.invalidate()
-            lease.invalidate_comparison_context()
+            # BETWEEN-SET RESTART (W2.3, hardware run 19): this branch is
+            # the household's only mechanical path out of both the
+            # completed-insufficient terminal and the placement refusal
+            # (the fully-locked lease reads ready=True there, so
+            # `continuing` is False for exactly the restarts that carry a
+            # freshly-written solve correction). A plain invalidate here
+            # wiped that correction before the next solve ever read it --
+            # run 19's identical-solve loop. preserve_solve_corrections
+            # keeps non-exhausted per-target correction state and clears
+            # exhausted targets for a fresh evaluation; see
+            # CrossoverLevelLease.invalidate_comparison_context.
+            lease.invalidate_comparison_context(preserve_solve_corrections=True)
             clear_active_comparison_set(topology)
             log_event(
                 logger,

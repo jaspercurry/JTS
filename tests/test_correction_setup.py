@@ -410,6 +410,54 @@ def test_relay_capture_failure_names_the_ramp_reason_not_the_exception_class(cap
     assert "reason=LevelMatchRefused" not in caplog.text
 
 
+def test_relay_failure_message_translates_timeout_never_a_bare_exception_string():
+    """Hardware run 19: a phone-relay connection death during a driver
+    sweep surfaced the literal programmer string "The read operation timed
+    out" (Python's ``socket.timeout``/``TimeoutError`` message) unchanged on
+    the wizard's status line -- ``renderRelay`` in
+    ``deploy/assets/correction/js/crossover/main.js`` just echoes
+    ``relay.error``. A timeout-family exception must translate to a human
+    sentence naming the phone connection and the retry path; every other
+    exception (not evidenced as a wizard-facing problem) is unaffected."""
+
+    timeout_exc = TimeoutError("The read operation timed out")
+    message = correction_setup._relay_failure_message(timeout_exc)
+    assert message != "The read operation timed out"
+    assert "phone" in message.lower()
+    assert "timed out" in message.lower()
+    assert "try this step again" in message.lower() or "again" in message.lower()
+
+    # socket.timeout is TimeoutError (aliased since Python 3.10) and
+    # asyncio.TimeoutError is the same builtin since Python 3.11 (this
+    # project's floor) -- both must translate identically.
+    import asyncio
+    import socket
+
+    assert correction_setup._relay_failure_message(
+        socket.timeout("The read operation timed out")
+    ) == message
+    assert correction_setup._relay_failure_message(
+        asyncio.TimeoutError("The read operation timed out")
+    ) == message
+    assert correction_setup._relay_failure_message(
+        concurrent.futures.TimeoutError()
+    ) == message
+
+    # Untouched: a non-timeout exception still falls back to str(exc), and
+    # LevelMatchRefused still carries its own pre-translated homeowner copy.
+    assert correction_setup._relay_failure_message(
+        ValueError("device mismatch")
+    ) == "device mismatch"
+
+    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
+
+    refusal = describe_ramp_refusal("agc_suspected")
+    assert (
+        correction_setup._relay_failure_message(LevelMatchRefused(refusal))
+        == refusal.user_message
+    )
+
+
 def test_run_async_timeout_waits_for_coroutine_cleanup():
     started = threading.Event()
     cleanup_started = threading.Event()

@@ -624,21 +624,68 @@ independent, complementary fixes:
    reading clipped, the same `CLIP_UNDERESTIMATE_ALLOWANCE_DB` is folded
    into the stored gain so every later use inherits the same conservatism.
 
-At most two corrections write per target per comparison set (either
-trigger, combined); a third rejection past the bound does not guess a
-third level — the next solve attempt refuses pre-flight with a typed
-`measurement_window_unreachable` result (same "fires before any tone
+**Completion-time correction (W2.3, hardware run 19) covers a third failure
+mode neither W2.1 nor W2.2 saw: a repeat set can finalize with every
+individual attempt accepted — each attempt's topology-overlap region was
+clean, so the per-attempt rejection path above never fires — yet the
+finalized winner capture's own aggregate worst-band SNR still reads
+"insufficient".** Two full woofer repeat sets at the tester's stationary
+desk placement measured exactly this: all 3 attempts `accepted=true` each
+time, per-attempt `snr_verdict=insufficient` (13.7/14.2/13.2 dB, then
+16.3/13.4/7.8 dB after the household restarted the level check) — zero
+`level_solve_corrected` events, because the correction only ever wired from
+a rejection. The completion path now extracts the finalized winner's own
+measured worst-band SNR and, when the aggregate verdict is insufficient,
+writes a correction sized from the solver's own required threshold (the 20
+dB floor plus the 6 dB solver margin, i.e. the same 26 dB the solve itself
+gates on) minus what was actually measured — not the bare per-band
+acceptance floor those individual bands were gated against.
+
+At most two corrections write per target (any trigger, combined); a third
+rejection or completed-insufficient finalization past the bound does not
+guess a third level — the next solve attempt refuses pre-flight with a
+typed `measurement_window_unreachable` result (same "fires before any tone
 plays, never invalidates the level lock" contract as
 `room_too_noisy_for_safe_measurement`), naming the physical lever: move
-the phone closer to the driver being measured, then measure again. Both
-the adjustment and the measured gain clear on the same three lifecycle
-points — a fresh ramp lock for that target's geometry, a full comparison
-invalidate, and the target's repeat set reaching a terminal state
-(finalized or terminally refused) — so a later, unrelated measurement of
-the same target never inherits stale correction state.
-`measurement.level_solved` carries the signed `adjustment_db` and a
-`gain_source` of `tone_gain_map` or `measured_band_peak` so the journal
-names which evidence a solve actually used.
+the phone closer to the driver being measured, then measure again.
+
+**As of W2.3, the adjustment and the measured gain persist per (target,
+relay microphone identity) across a fresh ramp lock — including the
+between-set level-check restart, the household's only mechanical path out
+of both terminals** — hardware run 19's two repeat sets measured
+near-identical solve inputs before and after the household restarted the
+level check (set 1 solved −26.25 dB effective, set 2 solved −27.9 dB,
+quieter only because the fresh ambient baseline happened to read lower), so
+clearing the correction on every re-lock or restart just replayed the same
+doomed level. The two restarts are distinguished by **stored state**, never
+by request shape (both terminals POST the same level-match endpoint with
+the same body):
+
+- a target whose correction budget is **not exhausted** keeps its signed
+  adjustment, write count, measured gain, and mic-identity binding across
+  the restart — this is what makes the completed-insufficient terminal's
+  "JTS will play the next measurement louder" promise come true;
+- a target whose budget **is exhausted** (the placement refusal was
+  showing — the user was told to move the phone) clears completely on the
+  restart: a fresh evaluation, so the refusal cannot latch, and if the
+  physics truly didn't change the machinery re-converges to the refusal
+  within the bounded write budget instead of looping on one identical
+  solve.
+
+Beyond the exhausted-restart case, a target's correction state clears only
+on: its repeat set finalizing with a *sufficient* aggregate verdict, the
+relay microphone changing (a different mic is different physics), or a
+true full reset (`invalidate_comparison_context` without the
+between-set-restart flag — no production surface calls this today; it is
+the contract for any future whole-flow reset). It never clears on a
+terminal refusal (insufficient accepted repeats), since that failure
+mode's physical cause is very likely still present on the next attempt.
+`measurement.level_solved` carries the signed `adjustment_db` (the
+persisted running total, so it reflects every prior write across re-locks
+and restarts) and a `gain_source` of `tone_gain_map` or
+`measured_band_peak` so the journal names which evidence a solve actually
+used; `correction.crossover_level_context_invalidated` names the preserved
+and exhausted-cleared targets on every between-set restart.
 
 ### Measurement validity: gating and the low-frequency floor
 
@@ -1815,4 +1862,14 @@ measured chain gain replacing the tone's `gain_map_db` for the mic-clip
 ceiling, the two-write bound, and the `measurement_window_unreachable`
 refusal — checked against the current implementation and pinned by a
 regression reproducing the triggering hardware run's numbers; not yet
-hardware-validated.)
+hardware-validated. Same-day follow-up: W2.3 completion-time correction and
+the persistence lifecycle change — the completed-but-insufficient
+finalization trigger, corrections now surviving a level re-lock AND the
+between-set level-check restart (non-exhausted targets preserved through
+the endpoint's invalidate; exhausted targets cleared there for a fresh
+evaluation), clearing otherwise only on a sufficient finalization, a
+changed relay microphone identity, or a true full reset, and the resulting
+reachable, non-latching placement-lever refusal — checked against the
+current implementation and pinned by regressions reproducing hardware run
+19's numbers, including an endpoint-level restart repro through the real
+level-match handler; not yet hardware-validated.)
