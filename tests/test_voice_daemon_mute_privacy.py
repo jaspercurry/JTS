@@ -119,7 +119,7 @@ async def test_public_play_cue_reports_busy_when_output_active() -> None:
 
 
 async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None:
-    from jasper.assistant_loudness import silence_target_lufs_for_level
+    from jasper.assistant_loudness import tts_envelope_lufs_for_level
     from jasper.voice_daemon import WakeLoop
 
     events: list[tuple[str, object]] = []
@@ -160,13 +160,13 @@ async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None
     assert prepare["provider"] == "grok"
     assert prepare["model"] == "grok-voice-think-fast-1.0"
     assert prepare["voice"] == "eve"
-    assert prepare["silence_target_lufs"] == pytest.approx(
-        silence_target_lufs_for_level(92)
+    assert prepare["tts_envelope_lufs"] == pytest.approx(
+        tts_envelope_lufs_for_level(92)
     )
 
 
 async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() -> None:
-    from jasper.assistant_loudness import silence_target_lufs_for_level
+    from jasper.assistant_loudness import tts_envelope_lufs_for_level
     from jasper.voice_daemon import FanInDucker, WakeLoop
 
     events: list[tuple[str, object]] = []
@@ -212,8 +212,8 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
     assert prepare["provider"] == "gemini"
     assert prepare["model"] == "gemini-3.1-flash-live-preview"
     assert prepare["voice"] == "Aoede"
-    assert prepare["silence_target_lufs"] == pytest.approx(
-        silence_target_lufs_for_level(64)
+    assert prepare["tts_envelope_lufs"] == pytest.approx(
+        tts_envelope_lufs_for_level(64)
     )
 
 
@@ -248,7 +248,7 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
 
 
 async def test_mute_click_prepares_loudness_context_before_write() -> None:
-    from jasper.assistant_loudness import silence_target_lufs_for_level
+    from jasper.assistant_loudness import tts_envelope_lufs_for_level
     from jasper.voice_daemon import WakeLoop
 
     events: list[tuple[str, object]] = []
@@ -278,12 +278,101 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
     assert prepare["provider"] == "openai"
     assert prepare["model"] == "gpt-realtime-2"
     assert prepare["voice"] == "marin"
-    assert prepare["silence_target_lufs"] == pytest.approx(
-        silence_target_lufs_for_level(77)
+    assert prepare["tts_envelope_lufs"] == pytest.approx(
+        tts_envelope_lufs_for_level(77)
     )
     segment = events[1][1]
     assert segment["segment_kind"] == "cue"
     assert segment["source_profile"].provider == "jts"
+
+
+async def test_fanin_prepare_carries_absolute_volume_context() -> None:
+    from jasper.assistant_volume import EffectiveVolumeContext
+    from jasper.voice_daemon import WakeLoop
+
+    prepares = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            prepares.append(kwargs)
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 50
+
+        async def effective_volume_context(self):
+            return EffectiveVolumeContext(-25.0, -25.0, -41.0, False, 123)
+
+    wl = WakeLoop.for_tests()
+    wl._cfg.duck_transport = "fanin"
+    wl._tts = _Tts()
+    wl._volume_coordinator = _Volume()
+
+    await wl._prepare_assistant_loudness_context()
+
+    assert prepares[0]["canonical_volume_db"] == -25.0
+    assert prepares[0]["downstream_volume_db"] == -25.0
+    assert prepares[0]["context_tts_envelope_lufs"] == -41.0
+    assert prepares[0]["muted"] is False
+    assert prepares[0]["context_stamp_boot_ns"] == 123
+
+
+async def test_post_dsp_prepare_omits_volume_context(monkeypatch) -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    prepares = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            prepares.append(kwargs)
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 50
+
+        async def effective_volume_context(self):
+            raise AssertionError("post-DSP voice must not read pre-DSP context")
+
+    monkeypatch.setenv("JASPER_TTS_MIX_STAGE", "post_dsp")
+    wl = WakeLoop.for_tests()
+    wl._cfg.duck_transport = "fanin"
+    wl._tts = _Tts()
+    wl._volume_coordinator = _Volume()
+
+    await wl._prepare_assistant_loudness_context()
+
+    assert "canonical_volume_db" not in prepares[0]
+
+
+async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    prepares = []
+
+    class _Tts:
+        async def prepare_assistant_context(self, **kwargs) -> None:
+            prepares.append(kwargs)
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 50
+
+        async def effective_volume_context(self):
+            raise AssertionError("ambiguous legacy route must fail closed")
+
+    monkeypatch.delenv("JASPER_TTS_MIX_STAGE", raising=False)
+    monkeypatch.setenv(
+        "JASPER_TTS_OUTPUTD_SOCKET",
+        "/run/jasper-outputd/tts.sock",
+    )
+    wl = WakeLoop.for_tests()
+    wl._cfg.duck_transport = "fanin"
+    wl._tts = _Tts()
+    wl._volume_coordinator = _Volume()
+
+    await wl._prepare_assistant_loudness_context()
+
+    assert "canonical_volume_db" not in prepares[0]
 
 
 async def test_mute_click_skips_when_output_active() -> None:

@@ -772,8 +772,13 @@ class Ducker:
         canonical listening_level target by this Ducker. Read by
         WakeLoop.session_status() so jasper-control can authoritatively
         gate its own camilla writes during a voice session — see
-        docs/HANDOFF-volume.md "Cross-daemon defer signal"."""
+        docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal"."""
         return self._ducked
+
+    @property
+    def locks_camilla_volume(self) -> bool:
+        """This transport temporarily owns Camilla's main volume."""
+        return True
 
     async def duck(self) -> None:
         if self._ducked:

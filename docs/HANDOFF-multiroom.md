@@ -88,7 +88,11 @@ member-local (inv-3) instead of riding the sync buffer to every speaker;
 member only, and the barge-in `FLUSH_SYNC` ack carries DAC-true
 `audio_played_ms` from the playout ledger. Active endpoints stay on fan-in
 upstream of the active graph; wireless sub followers park voice and keep
-outputd TTS unarmed. The reconciler derives that route matrix for both
+outputd TTS unarmed. Alongside the socket route, the reconciler writes the
+load-bearing `JASPER_TTS_MIX_STAGE=post_dsp` fact for a passive bonded member;
+voice uses it to withhold pre-DSP volume compensation from outputd, and an
+older socket-only grouping file fails closed during rolling upgrade. The
+reconciler derives that route matrix for both
 ends (grouping-outputd.env + grouping-voice.env; drift check:
 `grouping: TTS lane`, which replaced the PR-1 standing `TTS interim`
 warn). Runtime liveness is owned by
@@ -929,7 +933,7 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   protection described above.
   **PR-2 (built 2026-06-11):** outputd grew a TTS server
   (`rust/jasper-outputd/src/tts.rs`) speaking fanin's exact newline-framed
-  wire protocol (GAIN / PREPARE_ASSISTANT / SEGMENT_* / AUDIO /
+  wire protocol (GAIN / VOLUME_CONTEXT / PREPARE_ASSISTANT / SEGMENT_* / AUDIO /
   PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC / CLOSE — the twin
   is deliberate: Python keeps ONE playout implementation), feeding the
   surviving `OutputCore` engine (assistant segments, loudness profiles,
@@ -943,13 +947,17 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   enters the shared stream — each speaker's OWN replies mix locally,
   post-round-trip, pre-reference, which is exactly inv-A's tap requirement;
   `PROGRAM_DUCK` rides the same socket, so ducking is member-local too).
+  Because that lane is already post-DSP, outputd parses but deliberately
+  ignores `VOLUME_CONTEXT`; applying fanin's downstream-Camilla compensation
+  there would double-compensate assistant loudness.
   Active endpoints deliberately do not arm that socket; they keep TTS on
   fan-in upstream of CamillaDSP, where it is split/protected by the active
   graph. Wireless sub followers are parked and keep outputd TTS unarmed so
   full-range speech never reaches the sub. The reconciler derives the route
   matrix in `jasper.multiroom.tts_route.expected_grouping_tts_route`, then
   writes `JASPER_OUTPUTD_TTS_SOCKET` in grouping-outputd.env and
-  `JASPER_TTS_OUTPUTD_SOCKET` / `JASPER_GROUPING_VOICE_PARK` in
+  `JASPER_TTS_OUTPUTD_SOCKET` / `JASPER_TTS_MIX_STAGE=post_dsp` /
+  `JASPER_GROUPING_VOICE_PARK` in
   grouping-voice.env as that matrix requires (solo/active endpoint OMITS the
   socket key — present-but-empty would break voice's fanin default; a fresh
   solo reconcile skips creating the empty file so first boot doesn't restart
@@ -2820,7 +2828,10 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-07-14 (active/dumb follower transition deny and local-source role ownership rechecked against
+Last verified: 2026-07-16 (`JASPER_TTS_MIX_STAGE=post_dsp` ownership and the
+socket-only rolling-upgrade fail-closed rule rechecked against
+`jasper.multiroom.reconcile` and `jasper.tts_routing`; prior 2026-07-14
+active/dumb follower transition deny and local-source role ownership rechecked against
 `jasper.multiroom.reconcile`, `jasper.local_sources`, and
 `jasper.source_intent`; lifecycle detail linked to
 HANDOFF-source-lifecycle.md. Prior 2026-07-12 `/sync/apply` bounded session ownership, rooms

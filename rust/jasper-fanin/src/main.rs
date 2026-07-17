@@ -25,6 +25,7 @@
 //! in steady state. If future measurement shows audible source-handover
 //! clicks, add ramping in the mixer with tests and doctor visibility.
 
+mod assistant_reference;
 mod config;
 mod host_clock;
 mod host_compliance;
@@ -133,31 +134,52 @@ fn main() -> Result<()> {
         })
         .context("spawning xrun-log writer thread")?;
 
-    let (tts_input, tts_metrics) = if let Some(socket_path) = &config.tts_socket_path {
-        let (tts_tx, tts_rx, tts_flush_tx, tts_flush_rx, metrics, epoch) =
-            tts_channels(config.tts_max_pending_frames);
-        spawn_tts_server(
-            PathBuf::from(socket_path),
-            tts_tx,
-            tts_flush_tx,
-            epoch,
-            metrics.clone(),
-        )?;
-        (
-            Some(TtsInput {
-                rx: tts_rx,
-                flush_rx: tts_flush_rx,
-                metrics: metrics.clone(),
-                max_pending_frames: config.tts_max_pending_frames,
-                program_duck_db: config.tts_program_duck_db,
-                assistant_loudness: config.assistant_loudness,
-            }),
-            Some(metrics),
-        )
-    } else {
-        info!("event=fanin.tts_socket.disabled");
-        (None, None)
-    };
+    let (tts_input, tts_metrics, assistant_reference_writer) =
+        if let Some(socket_path) = &config.tts_socket_path {
+            let assistant_reference = crate::assistant_reference::load(std::path::Path::new(
+                &config.assistant_reference_path,
+            ));
+            let (assistant_reference_tx, assistant_reference_writer) =
+                match crate::assistant_reference::spawn_writer(
+                    PathBuf::from(&config.assistant_reference_path),
+                    assistant_reference,
+                ) {
+                    Ok((tx, handle)) => (Some(tx), Some(handle)),
+                    Err(error) => {
+                        warn!(
+                            "event=fanin.assistant_reference.writer_unavailable path={} detail={}",
+                            config.assistant_reference_path, error
+                        );
+                        (None, None)
+                    }
+                };
+            let (tts_tx, tts_rx, tts_flush_tx, tts_flush_rx, metrics, epoch) =
+                tts_channels(config.tts_max_pending_frames);
+            spawn_tts_server(
+                PathBuf::from(socket_path),
+                tts_tx,
+                tts_flush_tx,
+                epoch,
+                metrics.clone(),
+            )?;
+            (
+                Some(TtsInput {
+                    rx: tts_rx,
+                    flush_rx: tts_flush_rx,
+                    metrics: metrics.clone(),
+                    max_pending_frames: config.tts_max_pending_frames,
+                    program_duck_db: config.tts_program_duck_db,
+                    assistant_loudness: config.assistant_loudness,
+                    assistant_reference,
+                    assistant_reference_tx,
+                }),
+                Some(metrics),
+                assistant_reference_writer,
+            )
+        } else {
+            info!("event=fanin.tts_socket.disabled");
+            (None, None, None)
+        };
 
     // Open ALSA: N input PCMs + 1 output PCM. Every configured input is
     // required in the production fan-in topology; a missing lane means
@@ -350,6 +372,9 @@ fn main() -> Result<()> {
     // best-effort timeout — if either hangs, systemd's
     // TimeoutStopSec=5s will SIGKILL us anyway.
     drop(mixer);
+    if let Some(handle) = assistant_reference_writer {
+        let _ = handle.join();
+    }
     let _ = state_thread.join();
     let _ = xrun_writer.join();
     let _ = tap_writer.join();

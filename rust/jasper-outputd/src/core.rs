@@ -263,10 +263,10 @@ impl OutputCore {
         provider: String,
         model: String,
         voice: String,
-        silence_target_lufs: f32,
+        tts_envelope_lufs: f32,
     ) {
         self.loudness
-            .prepare_context(provider, model, voice, silence_target_lufs);
+            .prepare_context(provider, model, voice, tts_envelope_lufs);
     }
 
     pub fn pause_content_meter(&mut self) {
@@ -338,7 +338,7 @@ mod tests {
 
         assert_eq!(report.reference_sequence, 0);
         assert_eq!(report.clipped_samples, 0);
-        assert_eq!(core.dac().periods[0], stereo(10_839, 4));
+        assert_eq!(core.dac().periods[0], stereo(10_706, 4));
     }
 
     #[test]
@@ -368,12 +368,13 @@ mod tests {
         core.step();
 
         // With no observed content and no profile, the decision falls back
-        // to the silence target: baseline_lufs=-41.0, target_lufs=-39.5,
-        // fallback source_lufs=-24.0, so requested_gain=-15.5. The fixed
+        // to the quiet-room envelope: baseline_lufs=target_lufs=-41.0,
+        // fallback source_lufs=-24.0, so requested_gain=-17.0. The ordinary
+        // music-relative +1.5 LU offset does not apply without music. The fixed
         // max-gain ceiling is gone; this helper now scales with the same
         // decided segment gain that the runtime TTS bridge uses.
-        assert_eq!(core.ledger().segment(segment).gain, -15.5);
-        assert_eq!(core.dac().periods[0], stereo(1679, 2));
+        assert_eq!(core.ledger().segment(segment).gain, -17.0);
+        assert_eq!(core.dac().periods[0], stereo(1413, 2));
     }
 
     #[test]
@@ -412,7 +413,7 @@ mod tests {
         let clipped = core.prepare_period_with_content(&stereo(100, 2));
 
         assert_eq!(clipped, 0);
-        assert_eq!(core.output_period(), stereo(939, 2).as_slice());
+        assert_eq!(core.output_period(), stereo(806, 2).as_slice());
         assert_eq!(core.frames_written(), 0);
         assert!(core.dac().periods.is_empty());
         assert_eq!(core.ledger().segment(segment).written_frames, 0);
@@ -425,7 +426,7 @@ mod tests {
 
         assert_eq!(report.frames_written, 2);
         assert_eq!(report.reference_sequence, 0);
-        assert_eq!(core.dac().periods[0], stereo(939, 2));
+        assert_eq!(core.dac().periods[0], stereo(806, 2));
         assert_eq!(core.ledger().segment(segment).written_frames, 2);
         assert_eq!(
             core.ledger().segment(segment).status,
@@ -509,15 +510,15 @@ mod tests {
 
         // `resume_content_meter()` cleared the prepared context, so the prepared
         // silence target (-20.0) is discarded and the decision falls back to the
-        // default silence target. With no observed content: baseline_lufs=-41.0,
-        // target_lufs=-41.0+1.5=-39.5; the profile supplies source_lufs=-30.0, so
-        // requested_gain=-39.5-(-30.0)=-9.5; the peak cap (-3.0-(-18.0)=+15.0)
-        // leaves -9.5 unchanged. The -12.0 fallback gain is
+        // default envelope. With no observed content:
+        // baseline_lufs=target_lufs=-41.0; the profile supplies
+        // source_lufs=-30.0, so requested_gain=-41.0-(-30.0)=-11.0; the peak
+        // cap (-3.0-(-18.0)=+15.0) leaves -11.0 unchanged. The -12.0 fallback gain is
         // ignored once a profile yields a calibrated target (see the passing
         // `calibrated_profile_targets_baseline_plus_offset`). Had the context not
         // been cleared, baseline=-20.0 would drive the gain to the dynamic
         // peak cap instead of the quiet-room target.
-        assert_eq!(core.ledger().segment(segment).gain, -9.5);
+        assert_eq!(core.ledger().segment(segment).gain, -11.0);
     }
 
     #[test]

@@ -190,9 +190,9 @@ observed input, but not the final speaker-volume carrier. When USB is
 active, a host-side observation updates `listening_level` and then
 converges Camilla (`main_volume` plus the 0% `main_mute` flag) to match.
 That is the Wispr Flow/macOS mute-unmute path: host "0%" asserts content
-mute; host unmute restores Camilla to the observed level unless the
-voice-session duck gate is active, in which case the dB write is
-deferred but the mute flag still reflects the user's current intent.
+mute; host unmute restores Camilla to the observed level immediately during a
+normal fan-in voice session. Only the legacy Camilla-ducker lock defers the dB
+write; the mute flag always reflects the user's current intent.
 
 **Exception: AirPlay observations are unconditionally skipped.** The
 sender's slider sits *upstream* of camilla in the audio chain —
@@ -269,39 +269,68 @@ Both daemons converge through the persistence file. voice_daemon's
 coordinator runs the inbound observers; control_daemon's
 coordinator does not (it doesn't need them — it's a write surface).
 
-### Cross-daemon defer signal
+### Cross-daemon Camilla ownership signal
 
-The coordinator writes camilla via `_set_camilla(level)` on the
-camilla-master paths (AirPlay + idle + USBSINK). A camilla write
-mid-voice-session would clobber the Ducker's setting and make music
-audibly louder mid-TTS, so two complementary gates short-circuit
-the write:
+Voice-session state and Camilla ownership are separate facts. The current
+production `FanInDucker` attenuates only renderer/program audio in fan-in;
+Camilla remains the final master for music + TTS, so a dial/web/voice volume
+change must still write Camilla during speech. The legacy Camilla `Ducker`
+temporarily owns `main_volume`, so only that transport defers Camilla writes.
 
-1. **`_voice_session_active` flag** — set by `note_voice_session(True/
-   False)` from jasper-voice's `WakeLoop`. Catches the voice-tool-
-   driven path (LLM calls `set_volume` mid-session). Only meaningful
-   on the long-lived coordinator owned by jasper-voice; per-request
-   coordinators in jasper-control always read it as `False`.
-2. **`_duck_active_probe` callback** — the authoritative cross-daemon
-   signal. jasper-control's per-request coordinators are constructed
-   with a probe that asks jasper-voice over UDS (`STATUS` →
-   `duck_active`) whether the `Ducker` is currently engaged. Probe-
-   true defers (same effect as the flag); probe-false writes camilla;
-   probe-`None` (UDS unreachable, voice wedged, malformed) **fails
-   open** — the coordinator writes camilla anyway. The dial must
-   never silently stop working because of an inter-daemon problem;
-   better to occasionally un-duck music for a moment than to leave
-   the user with a dead knob. Built by `_make_duck_active_probe` in
-   `jasper/control/server.py`.
+`WakeLoop` tells its long-lived coordinator both facts through
+`note_voice_session(active, camilla_volume_locked=...)`:
 
-Both gates persist `listening_level` (user intent recorded); only
-the camilla write is skipped. When `Ducker.restore()` runs at
-session end it reads disk → `get_camilla_target_db()` → camilla
-lands at the user's intended level. The defer log lines distinguish
-the two paths: `event=volume.deferred reason=voice_session_active`
-(flag path) vs `event=volume.deferred reason=session_signaled`
-(probe path). Both `jasper-control` and `jasper-mux` build this probe
-when they construct per-request/per-handoff coordinators.
+- `_voice_session_active` still suppresses source handoffs and the 1 Hz
+  reconciler. Those operations can race session topology even when fan-in owns
+  the duck.
+- `_camilla_volume_locked` gates `_set_camilla`; it is false for fan-in and
+  true for the legacy Camilla ducker.
+
+Per-request coordinators in jasper-control cannot read the process-local lock,
+so `_duck_active_probe` asks jasper-voice `STATUS` for the explicit
+`camilla_volume_locked` boolean. During rolling upgrades it falls back to the
+older `duck_active` field. Probe `None` (voice unreachable, wedged, or malformed)
+fails open so the physical dial never becomes inert. Both fields are visible in
+`/state.voice`; `duck_active=true, camilla_volume_locked=false` is the normal
+fan-in speech state.
+
+When the legacy lock is true, `listening_level` still persists and
+`Ducker.restore()` converges Camilla to `get_camilla_target_db()` at session
+end. In the normal pre-DSP fan-in path, the write lands immediately and the
+coordinator also publishes one absolute `VOLUME_CONTEXT` message: canonical
+user dB, actual downstream Camilla dB, the quiet-room TTS envelope target,
+mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured at snapshot acquisition
+and carried immutably through publication. An older snapshot therefore stays
+older even if its socket write is delayed until after a newer update.
+The mute bit is fail-safe: persisted pre-mute intent, canonical 0%, or observed
+Camilla mute can raise it; a stale/unreadable observation can never lower user
+intent.
+Fan-in rejects a context older than the last accepted stamp. Voice sends the
+same standalone message immediately before `PREPARE_ASSISTANT` on one ordered
+connection, which gives a restarted fan-in a current snapshot without letting
+PREPARE overwrite a newer dial update.
+
+Slow push-mode actuators are ordered differently from local Camilla writes.
+For Spotify/Bluetooth, the coordinator publishes the already-known user intent
+before awaiting the source round trip, then publishes a fresh converged
+snapshot after dispatch. Mute publishes `muted=true` to fan-in before even the
+best-effort Camilla final-output backstop, so neither cloud latency nor a wedged
+Camilla connection can delay the immediate TTS stop. Non-muted Camilla-master
+edits keep the single post-write publication; a provisional context there would
+briefly compensate against stale downstream gain and create a needless second
+ramp.
+
+The grouping reconciler is the single writer of `JASPER_TTS_MIX_STAGE`. A
+passive bonded member sets `post_dsp`, so voice and the coordinator publish no
+pre-DSP compensation to outputd's post-Camilla TTS socket. Absent means the
+normal `pre_dsp` fan-in path only when there is no grouping-owned socket
+override. A legacy socket-only grouping file is ambiguous during a rolling
+upgrade and fails closed (no pre-DSP compensation). Callers use
+`tts_socket_feeds_pre_dsp_fanin()` rather than inferring stage from a socket
+pathname or duck transport. The message contains no source name or gain policy:
+source dispatch stays in `VolumeCoordinator`, while fan-in owns
+measurement/reference policy. The complete loudness contract lives in
+[audio-paths.md](audio-paths.md#assistant-loudness-matching).
 
 #### Why the probe replaced the prior dB-comparison heuristic
 
@@ -325,7 +354,7 @@ and web slider both reading 100% while the speaker stayed quiet.
 
 The probe replaces a structurally ambiguous signal with an
 authoritative one: jasper-voice is the source of truth about whether
-its own Ducker is engaged, so we ask it. The fail-open behavior
+its own Ducker owns Camilla, so we ask it. The fail-open behavior
 preserves the AGENTS.md "production speaker — must be resilient and
 plug-and-play" contract: if jasper-voice is down or wedged, the dial
 keeps working at the cost of *possibly* un-ducking music for a
@@ -335,13 +364,14 @@ defer" rationale was correct in spirit but the wrong target — what
 mattered was "is a duck *actually* active," not "would this write
 *look like* it's fighting a duck."
 
-What we **don't** do: TTS gain does NOT respond to dial / web-
-slider input during TTS playback. The tracker stays paused. The
-user can adjust between turns; mid-TTS the audible feedback is that
-music doesn't get loud (good), and TTS itself plays at the gain set
-at turn-start (no change). Building real-time TTS responsiveness to
-user input requires a delta-based tracker refactor; not justified
-for the use frequency observed in production.
+TTS responds during playback. For music-anchored speech, fan-in applies the
+residual `canonical dB delta - downstream dB delta` to queued raw speech. For
+no-music speech it instead follows the deliberately gentler TTS-envelope delta,
+minus the downstream delta, so turning the knob cannot switch to Camilla's
+steeper music curve. Both paths use a 100 ms ramp and the segment's existing
+peak cap; mute is immediate. Equal-level source observations that repair or
+clear the downstream Camilla carrier republish the context too, so an in-flight
+reply sees the real mutation even when `listening_level` did not change.
 
 ### Source handoff guard
 
@@ -396,7 +426,7 @@ jasper-voice. It's a no-op when state is healthy; when
 to converge.
 
 The reconciler is **not** the primary defense against the desync
-class of bugs — the cross-daemon defer signal (above) is. The
+class of bugs — the cross-daemon Camilla ownership signal (above) is. The
 reconciler protects against drift from other writers (room
 correction, a future code path that bypasses the coordinator, a
 camilla restart blip that swallows a write) and gives the system a
@@ -404,8 +434,10 @@ self-healing property no matter how the drift was introduced.
 
 **Gates** (all must pass for a write to land):
 
-1. No voice session or correction measurement is active. The Ducker owns
-   Camilla during a voice session (`_voice_session_active`). During
+1. No voice session or correction measurement is active. Voice sessions pause
+   this background repair (`_voice_session_active`) so it cannot race session
+   topology; foreground user volume writes remain live unless the separate
+   `_camilla_volume_locked` fact is true. During
    `MEASURE_PAUSE`, `_measurement_active` narrowly disables this voice-process
    reconciler so it cannot replace a measurement ramp's requested volume with
    persisted `listening_level` while the ramp state machine still believes its
@@ -456,11 +488,15 @@ Multiple guardrails sit on top:
 
 - `regress_listening_level_if_stale` clamps stale + extreme values
   into `[20%, 70%]` by default.
-- Assistant/TTS loudness has no fixed source-gain ceiling. Fan-in and
-  outputd match assistant loudness to measured content and cap the
-  result with the dynamic peak-aware limit (`max_peak_dbfs -
+- Pre-DSP fan-in assistant/TTS loudness has no fixed source-gain ceiling. It
+  matches assistant loudness to measured content or the quiet-room envelope
+  and caps the result with the dynamic peak-aware limit (`max_peak_dbfs -
   source_peak_dbfs`) so quiet voices are not pinned below music by a
-  stale global clamp.
+  stale global clamp. Passive bonded outputd TTS deliberately does not claim
+  volume-context parity yet; see
+  [Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
+  and the scope in
+  [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, sound-preference, and active-speaker baseline configs
   all cap the main fader at full scale.
@@ -643,4 +679,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-12 (bounded CamillaDSP socket/worker cancellation and retry contract checked against the pinned pycamilladsp/websocket-client implementation and controller tests; prior 2026-07-11 pass covered the measurement-scoped voice-reconciler guard against a synchronized JTS3 UMIK/Camilla run, renewable `MEASURE_PAUSE`, in-flight race coverage, STATUS observability, and focused coordinator/voice tests; prior 2026-07-01 pass covered TTS loudness safety; prior 2026-06-30 pass covered duck-deferred push-guard recovery; prior 2026-06-26 pass covered reconciler mute intent; prior 2026-06-22 pass covered volume-floor calibration; prior 2026-06-17 pass covered librespot state; prior 2026-06-14 pass covered active-speaker `volume_limit`; prior 2026-06-08 pass covered mute, source sync, push guards, mux, and fan-in TTS ceiling)
+Last verified: 2026-07-16 (pre-DSP mix-stage ownership, stamped standalone volume context, quiet-room envelope tracking, and equal-level downstream republish checked against the PR #1542 implementation; prior pass covered fan-in/Camilla lock separation and mid-TTS adjustment; prior 2026-07-12 pass covered bounded CamillaDSP cancellation/retry; prior 2026-07-11 pass covered measurement-scoped reconciliation and STATUS observability)

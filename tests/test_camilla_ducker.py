@@ -148,6 +148,11 @@ async def test_is_ducked_property_tracks_duck_state():
     assert d.is_ducked is False
 
 
+def test_camilla_ducker_declares_exclusive_volume_ownership():
+    cam = _FakeCamilla(db=-15.0)
+    assert _ducker(cam, duck_db=-25.0, target=-15.0).locks_camilla_volume is True
+
+
 @pytest.mark.asyncio
 async def test_is_ducked_stays_false_when_duck_skipped_camilla_down():
     """Camilla restart blip during the duck attempt — the write

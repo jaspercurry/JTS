@@ -67,6 +67,7 @@ class _CaptureOutputdStream:
         self.segments_ended = 0
         self.flush_acks: list[dict] = []
         self.prepares: list[tuple[str, str, str, float]] = []
+        self.volume_contexts: list[object | None] = []
         self.meter_pauses = 0
         self.meter_resumes = 0
 
@@ -79,9 +80,11 @@ class _CaptureOutputdStream:
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
+        tts_envelope_lufs: float,
+        volume_context=None,
     ) -> None:
-        self.prepares.append((provider, model, voice, silence_target_lufs))
+        self.prepares.append((provider, model, voice, tts_envelope_lufs))
+        self.volume_contexts.append(volume_context)
 
     def pause_content_meter(self) -> None:
         self.meter_pauses += 1
@@ -728,11 +731,28 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
             provider="openai",
             model="gpt-realtime-2",
             voice="verse",
-            silence_target_lufs=-42.34,
+            tts_envelope_lufs=-42.34,
         )
         assert (
             child.recv(128)
             == b"PREPARE_ASSISTANT openai gpt-realtime-2 verse -42.34\n"
+        )
+        adapter.prepare_assistant(
+            provider="openai",
+            model="gpt-realtime-2",
+            voice="verse",
+            tts_envelope_lufs=-42.34,
+            volume_context=audio_io_mod.EffectiveVolumeContext(
+                canonical_db=-30.0,
+                downstream_db=0.0,
+                tts_envelope_lufs=-42.34,
+                muted=False,
+                stamp_boot_ns=123456,
+            ),
+        )
+        assert child.recv(160) == (
+            b"VOLUME_CONTEXT -30.000 0.000 -42.340 0 123456\n"
+            b"PREPARE_ASSISTANT openai gpt-realtime-2 verse -42.34\n"
         )
         adapter.pause_content_meter()
         assert child.recv(128) == b"CONTENT_METER_PAUSE\n"
@@ -859,13 +879,46 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
         provider="openai",
         model="gpt-realtime-2",
         voice="marin",
-        silence_target_lufs=-41.0,
+        tts_envelope_lufs=-41.0,
     )
 
     assert broken_stream.closed
     assert p._stream is replacement
     assert replacement.prepares == [
         ("openai", "gpt-realtime-2", "marin", -41.0)
+    ]
+
+
+async def test_outputd_prepare_preserves_snapshot_stamp() -> None:
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    await p.prepare_assistant_context(
+        provider="openai",
+        model="gpt-realtime-2",
+        voice="marin",
+        tts_envelope_lufs=-41.0,
+        canonical_volume_db=-30.0,
+        downstream_volume_db=0.0,
+        context_tts_envelope_lufs=-41.0,
+        muted=False,
+        context_stamp_boot_ns=123456,
+    )
+
+    assert stream.volume_contexts == [
+        audio_io_mod.EffectiveVolumeContext(
+            canonical_db=-30.0,
+            downstream_db=0.0,
+            tts_envelope_lufs=-41.0,
+            muted=False,
+            stamp_boot_ns=123456,
+        )
     ]
 
 
@@ -892,7 +945,7 @@ async def test_outputd_prepare_reconnect_failure_is_best_effort(
         provider="openai",
         model="gpt-realtime-2",
         voice="marin",
-        silence_target_lufs=-41.0,
+        tts_envelope_lufs=-41.0,
     )
 
     assert broken_stream.closed

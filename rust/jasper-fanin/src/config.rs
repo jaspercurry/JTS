@@ -167,6 +167,10 @@ pub struct Config {
     /// Assistant loudness policy for the pre-DSP TTS socket.
     pub assistant_loudness: AssistantLoudnessConfig,
 
+    /// Versioned last-achieved assistant loudness. Separate from the
+    /// canonical speaker-volume record because fan-in is the sole writer.
+    pub assistant_reference_path: String,
+
     /// fan-in → CamillaDSP coupling transport. `Loopback` (the default) writes
     /// the ALSA snd-aloop substream `output_pcm` exactly as today; CamillaDSP
     /// dsnoop-captures it — byte-identical to the pre-coupling daemon. `ShmRing`
@@ -805,6 +809,26 @@ impl Config {
                 tts_program_duck_db
             );
         }
+        let held_content_ttl_sec = env_f32(
+            "JASPER_FANIN_HELD_CONTENT_TTL_SEC",
+            AssistantLoudnessConfig::default().held_content_ttl_sec,
+        )?;
+        if !(1.0..=86_400.0).contains(&held_content_ttl_sec) {
+            anyhow::bail!(
+                "JASPER_FANIN_HELD_CONTENT_TTL_SEC={} out of range 1..=86400",
+                held_content_ttl_sec
+            );
+        }
+        let assistant_envelope_offset_limit_lu = env_f32(
+            "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU",
+            AssistantLoudnessConfig::default().assistant_envelope_offset_limit_lu,
+        )?;
+        if !(0.0..=24.0).contains(&assistant_envelope_offset_limit_lu) {
+            anyhow::bail!(
+                "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU={} out of range 0..=24",
+                assistant_envelope_offset_limit_lu
+            );
+        }
 
         Ok(Self {
             output_pcm,
@@ -846,15 +870,22 @@ impl Config {
                     "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
                     loudness_defaults.fallback_source_peak_dbfs,
                 )?,
-                default_silence_target_lufs: env_f32(
+                default_tts_envelope_lufs: env_f32_fallback(
+                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
                     "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    loudness_defaults.default_silence_target_lufs,
+                    loudness_defaults.default_tts_envelope_lufs,
                 )?,
                 content_silence_lufs: env_f32(
                     "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
                     loudness_defaults.content_silence_lufs,
                 )?,
+                held_content_ttl_sec,
+                assistant_envelope_offset_limit_lu,
             },
+            assistant_reference_path: env_str(
+                "JASPER_FANIN_ASSISTANT_REFERENCE_PATH",
+                "/var/lib/jasper/assistant_volume_reference.json",
+            ),
             camilla_coupling,
             ring_path,
             ring_slots,
@@ -1078,8 +1109,10 @@ mod tests {
                 ("JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
+                ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS", None),
                 ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
+                ("JASPER_FANIN_ASSISTANT_REFERENCE_PATH", None),
                 ("JASPER_DUCK_DB", None),
             ],
             || {
@@ -1103,7 +1136,16 @@ mod tests {
                 assert_eq!(cfg.tts_program_duck_db, -25.0);
                 assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
                 assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
-                assert_eq!(cfg.assistant_loudness.default_silence_target_lufs, -41.0);
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -41.0);
+                assert_eq!(cfg.assistant_loudness.held_content_ttl_sec, 600.0);
+                assert_eq!(
+                    cfg.assistant_loudness.assistant_envelope_offset_limit_lu,
+                    8.0
+                );
+                assert_eq!(
+                    cfg.assistant_reference_path,
+                    "/var/lib/jasper/assistant_volume_reference.json"
+                );
                 // Per-input adaptive resampler is DEFAULT-OFF — the whole point
                 // of the feature flag (HIGH-RISK real-time path).
                 assert!(
@@ -1605,6 +1647,43 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("duck fallback must parse");
                 assert_eq!(cfg.tts_program_duck_db, -18.5);
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_silence_target_migrates_to_default_tts_envelope() {
+        with_env(
+            &[
+                ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
+                (
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    Some("-37.5"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("legacy envelope must parse");
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -37.5);
+            },
+        );
+    }
+
+    #[test]
+    fn new_default_tts_envelope_wins_over_legacy_silence_target() {
+        with_env(
+            &[
+                (
+                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
+                    Some("-39.0"),
+                ),
+                (
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    Some("-37.5"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("new envelope must parse");
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -39.0);
             },
         );
     }

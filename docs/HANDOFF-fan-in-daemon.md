@@ -514,6 +514,9 @@ JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024                           # ~21 ms output
 JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
 JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
+JASPER_FANIN_ASSISTANT_REFERENCE_PATH=/var/lib/jasper/assistant_volume_reference.json # last achieved assistant speaker loudness; fan-in is sole writer
+JASPER_FANIN_HELD_CONTENT_TTL_SEC=600                             # sustained silence before the most recent music reference expires
+JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU=8                 # symmetric limit on learned quiet-room envelope calibration
 JASPER_FANIN_INPUT_RESAMPLER=                                     # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane; only "enabled" arms it. See "Per-input resampler" below.
 JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink                         # which lane label the resampler arms on when enabled
 JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # base ring-fill target for the armed lane (~10.7 ms at 48 k)
@@ -530,15 +533,28 @@ entries. Discovered via the chunk 2 smoke test; regression-tested
 in `config::tests::pipe_delimiter_preserves_commas_inside_hw_pcm_names`.
 
 The TTS socket speaks the same line protocol as outputd's TTS
-socket (`GAIN`, `PREPARE_ASSISTANT`, `SEGMENT_START`, `AUDIO`,
-`FLUSH_SYNC`, `CLOSE`) plus `PROGRAM_DUCK_ON/OFF`. Fan-in drains those
+socket (`GAIN`, `VOLUME_CONTEXT`, `PREPARE_ASSISTANT`, `SEGMENT_START`, `AUDIO`,
+`SEGMENT_END`, `FLUSH_SYNC`, `CLOSE`) plus `PROGRAM_DUCK_ON/OFF`. Fan-in drains those
 commands at period boundaries, drops excess queued audio over the
 pending-frame budget, applies program ducking only to renderer lanes,
 then mixes TTS/cues into the summed buffer before writing toward
 CamillaDSP. `PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
-drive the same content-loudness/profile/peak-cap gain decision used by
-outputd; the latest values are exposed under `tts.assistant_loudness` in
-the STATUS response alongside `tts.program_duck_active`. Voice's current
+drive fan-in's content-loudness/profile/peak-cap gain decision.
+`VOLUME_CONTEXT` is standalone FIFO state, not a PREPARE field. Voice writes it
+immediately before PREPARE on the same connection; every publisher uses one
+serializer. It supplies absolute canonical-user dB, downstream-Camilla dB,
+final quiet-room TTS-envelope LUFS, mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured
+after the snapshot. Fan-in accepts equal/newer stamps, rejects older state, and
+logs `event=fanin.volume_context_rejected`. For music references it applies the
+residual canonical-minus-downstream delta to already-queued raw assistant
+blocks; for quiet-room references it applies the envelope-minus-downstream
+delta. Both use a 100 ms ramp and the existing per-segment peak cap.
+
+The latest decision is exposed under `tts.assistant_loudness` in STATUS with
+`reference_kind`, `target_speaker_lufs`, the accepted context and stamp, held
+content/assistant records, and `volume_context_rejected`. The same object is
+available verbatim through `/state.fanin`; `tts.program_duck_active` remains a
+sibling field. Voice's current
 fanin ducker is intentionally one-shot — it sends `PROGRAM_DUCK_ON` and
 closes, then sends `PROGRAM_DUCK_OFF` from a later connection — so fan-in
 does **not** treat TTS socket EOF as duck ownership release. A stuck
@@ -549,11 +565,37 @@ duck. `PROGRAM_DUCK_OFF` is still allowed to release a duck even after an
 audio flush advances the TTS epoch; stale `PROGRAM_DUCK_ON` is not
 allowed to relatch after a flush.
 
-On an active multiroom bond member, voice bypasses this socket
+The no-music assistant reference is a separate versioned record at
+`JASPER_FANIN_ASSISTANT_REFERENCE_PATH`. First use is exactly the final gentle
+quiet-room envelope derived from `listening_level`; the ordinary assistant
+offset applies only to music-relative references. A completed assistant segment
+learns only its achieved offset from that envelope, clamps it symmetrically to
+`JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU` (default ±8 LU), and replays
+it as `envelope(current level) + offset`. Knob tracking therefore follows the
+same gentle envelope slope instead of Camilla's steeper music-volume curve.
+Fan-in loads this record fail-soft at boot and persists it atomically from a
+non-audio writer thread. A normal `SEGMENT_END` commits even if the audio queue
+drained just before the command arrived; cues, chirps, muted speech, and flushed
+or unheard tails never overwrite it.
+
+Qualified music remains the higher-priority reference, but it is not immortal.
+Fan-in retains the most recent ≥3 s music window only until
+`JASPER_FANIN_HELD_CONTENT_TTL_SEC` (default 600 s) of sustained content
+silence. After expiry, no-music speech returns to the held assistant envelope
+offset, or offset zero on first use.
+
+On a passive multiroom bond member, voice bypasses this socket
 entirely: the grouping reconciler points it at outputd's TTS server
 (`rust/jasper-outputd/src/tts.rs`; the wire vocabulary + parser are the
 shared `rust/jasper-tts-protocol` crate both daemons import) so assistant
-audio mixes post-round-trip instead of riding the synced stream. One
+audio mixes post-round-trip instead of riding the synced stream. The reconciler
+also writes `JASPER_TTS_MIX_STAGE=post_dsp`; that explicit fact disables every
+voice/coordinator volume-context publisher for this route. Outputd therefore
+keeps the pre-volume-context behavior and does not claim fan-in parity for
+mute, downstream compensation, or live knob re-gain. The follow-up
+[Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
+must make mix stage an explicit gain-policy input, add post-DSP mute semantics,
+and re-gain queued speech in outputd's mix loop before parity can be claimed. One
 contract delta to know when comparing acks: both daemons now return a
 per-segment playout ledger in the `FLUSH_SYNC` ack (provider item id,
 flushed frames, `max_audio_played_ms`, `events[]`) — the ack KEY shape is a
@@ -1182,7 +1224,7 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-07-14 (automatic coupling profile gate rechecked: streambox
+Last verified: 2026-07-16 (stamped standalone volume context, gentle-envelope calibration offset, held-content expiry, drained-before-end reference commit, and expanded STATUS observability checked against PR #1542; prior pass covered bounded raw-block queue and live gain ramp; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
 stays loopback while the independent USB DIRECT decision still runs;
 librespot Tier-2 recovery final mutation rechecked
 as active-only `try-restart`, including concurrent Off/role parking;

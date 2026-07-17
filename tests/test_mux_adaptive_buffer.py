@@ -51,6 +51,9 @@ class _FakeVolumeCoordinator:
     async def finalize_source_handoff(self, handoff):
         return True
 
+    async def publish_volume_context(self):
+        pass
+
     async def aclose(self):
         pass
 

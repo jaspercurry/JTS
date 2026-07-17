@@ -1141,6 +1141,10 @@ async def _get_state(
             "connection_paused": (voice_st or {}).get("connection_paused"),
             "mic_muted": (voice_st or {}).get("mic_muted"),
             "measurement_active": (voice_st or {}).get("measurement_active"),
+            "duck_active": (voice_st or {}).get("duck_active"),
+            "camilla_volume_locked": (voice_st or {}).get(
+                "camilla_volume_locked"
+            ),
             "music_dbfs": (voice_st or {}).get("music_dbfs"),
             # Runtime-armed wake-leg tokens from jasper-voice's
             # session_status. jasper-doctor's check_wake_legs cross-checks

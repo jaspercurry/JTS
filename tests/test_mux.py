@@ -51,7 +51,9 @@ class _FakeVolumeCoordinator:
         self.prepared: list[tuple[Source, Source, str]] = []
         self.finalized: list[_FakeHandoff] = []
         self.events: list[str] = []
+        self.volume_context_publishes = 0
         self.next_result = "ok"
+        self.finalize_result = True
 
     async def prepare_source_handoff(self, prev, current, *, reason):
         self.prepared.append((prev, current, reason))
@@ -61,7 +63,15 @@ class _FakeVolumeCoordinator:
     async def finalize_source_handoff(self, handoff):
         self.finalized.append(handoff)
         self.events.append(f"finalize:{handoff.current_source.value}")
+        return self.finalize_result
+
+    async def abort_source_handoff(self, handoff):
+        self.events.append(f"abort:{handoff.current_source.value}")
         return True
+
+    async def publish_volume_context(self):
+        self.volume_context_publishes += 1
+        self.events.append("publish_volume_context")
 
     async def aclose(self):
         pass
@@ -1105,6 +1115,7 @@ async def test_select_source_prepares_volume_before_fanin_gate(
         "prepare:airplay",
         "select:airplay",
         "finalize:airplay",
+        "publish_volume_context",
     ]
 
 
@@ -1120,9 +1131,45 @@ async def test_select_source_does_not_open_fanin_when_handoff_fails(
 
     mux._fanin_select.assert_not_awaited()
     assert coord.finalized == []
+    assert coord.volume_context_publishes == 1
     assert mux._manual_source is None
     assert mux._winner is None
     assert status["mode"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_fanin_select_abort_republishes_final_volume_context(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+    coord = mux._volume_coordinator
+    mux._fanin_select = AsyncMock(side_effect=RuntimeError("fanin down"))
+
+    await mux.select_source(Source.AIRPLAY)
+
+    assert coord.events == [
+        "prepare:airplay",
+        "abort:airplay",
+        "publish_volume_context",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_finalize_failure_republishes_final_volume_context(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+    coord = mux._volume_coordinator
+    coord.finalize_result = False
+
+    await mux.select_source(Source.AIRPLAY)
+
+    assert coord.events == [
+        "prepare:airplay",
+        "finalize:airplay",
+        "publish_volume_context",
+    ]
+    assert mux._last_handoff["result"] == "finalize_failed"
 
 
 @pytest.mark.asyncio
@@ -1140,6 +1187,7 @@ async def test_startup_handoff_failure_uses_fanin_none(
     mux._fanin_none.assert_awaited_once()
     mux._pause.assert_not_awaited()
     assert mux._winner is None
+    assert coord.volume_context_publishes == 1
 
 
 @pytest.mark.asyncio
@@ -1198,6 +1246,7 @@ async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
         "prepare:airplay",
         "select:airplay",
         "finalize:airplay",
+        "publish_volume_context",
     ]
     mux._pause.assert_awaited_with(Source.SPOTIFY)
     assert mux._winner is Source.AIRPLAY

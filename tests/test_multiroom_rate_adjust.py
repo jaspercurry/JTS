@@ -20,6 +20,8 @@ from jasper.tts_routing import (
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET_ENV,
+    TTS_MIX_STAGE_ENV,
+    TTS_MIX_STAGE_POST_DSP,
     VOICE_TTS_SOCKET_ENV,
 )
 
@@ -845,7 +847,10 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     from jasper.multiroom.reconcile import voice_grouping_env
     leader = voice_grouping_env(
         _cfg(enabled=True, role="leader", channel="left", bond_id="b"))
-    assert leader == {VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET}
+    assert leader == {
+        VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+        TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
+    }
     # A non-sub FOLLOWER additionally carries the dumb-follower park flag (the
     # validated signal jasper-aec-reconcile gates voice/AEC parking on) and the
     # outputd socket route. Sub followers are parked too, but outputd TTS stays
@@ -855,6 +860,7 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
              bond_id="b", leader_addr="jts.local"))
     assert follower == {
         VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+        TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
         VOICE_PARK_ENV: "1",
     }
     active_leader = voice_grouping_env(
@@ -874,6 +880,7 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     )
     assert sub_follower == {
         VOICE_TTS_SOCKET_ENV: OUTPUTD_TTS_SOCKET,
+        TTS_MIX_STAGE_ENV: TTS_MIX_STAGE_POST_DSP,
         VOICE_PARK_ENV: "1",
     }
     sub_leader = voice_grouping_env(
