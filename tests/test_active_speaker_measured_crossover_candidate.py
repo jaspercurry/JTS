@@ -473,6 +473,39 @@ def test_prove_candidate_config_rejects_tampered_delay_value():
     assert excinfo.value.code == "delay_graph_proof_failed"
 
 
+def test_high_precision_delay_round_trips_the_proof():
+    # Regression (adversarial gate S1): the candidate fold used
+    # round(µs/1000, 6) before the emitter's 4-decimal fmt while the proof
+    # used a single fmt over the raw µs — two quantizers that disagree on
+    # ~0.4% of the valid range. This exact value reproduced the spurious
+    # fail-closed refusal; quantized_delay_ms is now the one shared owner.
+    candidate = _candidate(
+        alignment=MeasuredCrossoverAlignment(
+            delay_us=11382.15006948647, delay_role="tweeter", polarity="keep"
+        )
+    )
+    yaml_text = build_and_prove_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    assert "as_tweeter_delay" in yaml_text
+
+
+def test_randomized_delay_sweep_never_trips_the_proof():
+    # Deterministic-seed sweep over the full 0–20 ms DSP range: every
+    # candidate built through the production compile path must prove clean —
+    # zero quantization mismatches between fold and proof.
+    import random
+
+    rng = random.Random(20260718)
+    for _ in range(200):
+        candidate = _candidate(
+            alignment=MeasuredCrossoverAlignment(
+                delay_us=rng.uniform(0.0, MAX_DSP_DELAY_US),
+                delay_role="tweeter",
+                polarity="keep",
+            )
+        )
+        build_and_prove_candidate_config(candidate, playback_device="hw:ActiveDAC")
+
+
 def test_prove_candidate_config_rejects_unprotected_tweeter():
     candidate = _candidate()
     yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")

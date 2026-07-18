@@ -19,6 +19,7 @@ from jasper.audio_measurement.delay_graph import (
     DelayLaneBinding,
     confirm_delay_candidate,
     prove_static_delay_binding,
+    quantized_delay_ms,
 )
 from jasper.audio_measurement.null_walk import (
     MAX_DSP_DELAY_US,
@@ -890,3 +891,18 @@ def test_prove_static_delay_binding_rejects_positive_volume_limit():
             delay_us=0.0,
         )
     assert caught.value.code == "volume_limit_invalid"
+
+
+def test_quantized_delay_ms_is_the_single_fmt_quantizer():
+    # One fmt pass over the raw µs value — no intermediate rounding. The
+    # regression value is the S1 case where round(µs/1000, 6)-then-fmt
+    # disagreed with a single fmt.
+    from jasper.camilla_emit import fmt
+
+    delay_us = 11382.15006948647
+    quantized = quantized_delay_ms(delay_us)
+    assert quantized == float(fmt(delay_us / 1000.0))
+    assert quantized != float(fmt(round(delay_us / 1000.0, 6)))
+    # Idempotent: re-quantizing an already-quantized value is a no-op, so the
+    # emitter's own fmt pass over the folded value cannot shift it again.
+    assert quantized_delay_ms(quantized * 1000.0) == quantized

@@ -1647,6 +1647,14 @@ def build_baseline_profile_candidate(
     if write:
         config_target.parent.mkdir(parents=True, exist_ok=True)
         if driver_domain:
+            # v2 measured candidates (measured_crossover_candidate) are not
+            # routed through the driver_domain (wireless-follower) emit today
+            # — only the multiroom reconciler passes driver_domain=True, and
+            # it never supplies a measured_candidate. If W5+ ever applies a
+            # measured delay/polarity candidate to a follower, the alignment
+            # proof below (the else-branch prove_candidate_config call) must
+            # be added to this branch too, against the follower's channel
+            # map.
             assert program_channel is not None  # validated above
             yaml = emit_active_speaker_driver_domain_config(
                 preset,
@@ -1691,6 +1699,15 @@ def build_baseline_profile_candidate(
                 try:
                     prove_candidate_config(measured_candidate, yaml)
                 except MeasuredCrossoverCandidateError as exc:
+                    log_event(
+                        logger,
+                        "correction.crossover_alignment_proof_blocked",
+                        level=logging.ERROR,
+                        code=exc.code,
+                        detail=exc.detail,
+                        candidate_fingerprint=measured_candidate.fingerprint,
+                        delay_role=measured_candidate.alignment.delay_role,
+                    )
                     issues.append(_issue(
                         "blocker",
                         "measured_candidate_alignment_proof_failed",

@@ -3905,11 +3905,12 @@ def test_v2_candidate_trims_only_matches_legacy_trims_only_shape(
 
 
 def test_build_baseline_profile_candidate_blocks_on_failed_alignment_proof(
-    monkeypatch, tmp_path: Path,
+    monkeypatch, tmp_path: Path, caplog,
 ) -> None:
     """A failed delay_graph/graph_safety proof is a blocker issue, exactly like
     a failed CamillaDSP validation — fail closed, no partial write reaches
-    "ready_to_apply"."""
+    "ready_to_apply" — and the refusal leaves a stable journal event for
+    triage."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
@@ -3927,23 +3928,28 @@ def test_build_baseline_profile_candidate_blocks_on_failed_alignment_proof(
         _boom,
     )
 
-    payload = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements={},
-        write=True,
-        state_path=tmp_path / "baseline_profile.json",
-        config_path=tmp_path / "active_speaker_baseline.yml",
-        validate=_valid_config,
-        tuning_owner="automatic",
-        measured_candidate=candidate,
-    )
+    with caplog.at_level(logging.ERROR, logger=_BASELINE_LOGGER):
+        payload = build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=True,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+        )
 
     assert payload["status"] == "blocked"
     assert payload["permissions"]["may_apply"] is False
     issue_codes = {issue["code"] for issue in payload["issues"]}
     assert "measured_candidate_alignment_proof_failed" in issue_codes
+    blocked_events = _events(caplog, "correction.crossover_alignment_proof_blocked")
+    assert len(blocked_events) == 1
+    assert "code=delay_graph_proof_failed" in blocked_events[0]
+    assert f"candidate_fingerprint={candidate.fingerprint}" in blocked_events[0]
 
 
 async def test_apply_baseline_profile_applies_v2_measured_candidate(

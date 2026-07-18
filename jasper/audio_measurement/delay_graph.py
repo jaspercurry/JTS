@@ -120,6 +120,23 @@ def _require_volume_limit(
         _refuse(code, "devices.volume_limit must not exceed the 0 dB JTS ceiling")
 
 
+def quantized_delay_ms(delay_us: float) -> float:
+    """The single µs→ms quantizer for a Camilla ``Delay`` filter value.
+
+    CamillaDSP YAML carries delays through ``jasper.camilla_emit.fmt`` (4
+    decimal places of ms), so that formatter is the SOLE quantizer: one
+    ``fmt`` pass over the raw microsecond value, no intermediate rounding.
+    Every producer that folds a requested ``delay_us`` into a graph value
+    (the measured-crossover candidate's preset fold / corrections) and every
+    proof that recomputes the expected value from the same ``delay_us`` MUST
+    share this helper — two recipes quantize differently on ~0.4% of the
+    range (e.g. ``round(µs/1000, 6)`` then ``fmt`` vs a single ``fmt``
+    disagree at delay_us=11382.15006948647), which turns into a spurious
+    fail-closed proof refusal.
+    """
+    return float(fmt(delay_us / 1000.0))
+
+
 def _delay_filter_value(
     graph: Mapping[str, Any],
     filter_name: str,
@@ -581,7 +598,7 @@ def confirm_delay_candidate(
         code="delay_filter_invalid",
     )
 
-    effective_delay_ms = float(fmt(candidate.delay_us / 1000.0))
+    effective_delay_ms = quantized_delay_ms(candidate.delay_us)
     requested_relative_us = (
         math.copysign(
             effective_delay_ms * 1000.0,
@@ -698,7 +715,7 @@ def prove_static_delay_binding(
     delay_ms = _delay_filter_value(
         frozen_graph, delay_filter_name, code="delay_filter_invalid"
     )
-    expected_ms = float(fmt(delay_us / 1000.0))
+    expected_ms = quantized_delay_ms(delay_us)
     if not math.isclose(delay_ms, expected_ms, rel_tol=0.0, abs_tol=1e-9):
         _refuse(
             "delay_mismatch",

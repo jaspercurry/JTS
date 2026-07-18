@@ -25,9 +25,10 @@ single-capture analysis exists.
 - :func:`driver_corrections` derives the compiler-ready
   ``{role: {gain_db, delay_ms, inverted}}`` mapping from that preset via
   ``camilla_yaml._role_polarity`` — the exact shared reduction
-  ``jasper.active_speaker.baseline_profile._derive_corrections`` and the
-  legacy ``MeasuredElectricalCandidate.driver_corrections`` both already use,
-  so there is no second polarity-to-inversion translation to drift.
+  ``jasper.active_speaker.baseline_profile._derive_corrections`` already
+  uses (the legacy ``MeasuredElectricalCandidate.driver_corrections``
+  inlines its own equivalent region walk), so this module adds no new
+  polarity-to-inversion translation.
 - :func:`compile_candidate_config` calls
   ``emit_active_speaker_baseline_config`` directly — the one Layer-A emitter,
   unchanged. Polarity rides the per-driver Gain filter (``inverted=...``), not
@@ -61,6 +62,7 @@ from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
 )
+from jasper.audio_measurement.delay_graph import quantized_delay_ms
 from jasper.audio_measurement.null_walk import (
     MAX_DSP_DELAY_US,
     DspPredecessor,
@@ -391,7 +393,11 @@ def effective_preset(candidate: MeasuredCrossoverCandidate) -> ActiveSpeakerPres
     updated_region = dataclasses.replace(
         region,
         delay_target_driver=alignment.delay_role,
-        delay_ms=round(alignment.delay_us / 1000.0, 6),
+        # quantized_delay_ms is the ONE µs→ms quantizer, shared with
+        # prove_static_delay_binding's expected value — a second recipe here
+        # (e.g. round(µs/1000, 6)) disagrees with the proof on ~0.4% of the
+        # valid range and turns into a spurious fail-closed apply refusal.
+        delay_ms=quantized_delay_ms(alignment.delay_us),
         upper_polarity=upper_polarity,
     )
     updated_regions = tuple(
@@ -413,9 +419,11 @@ def driver_corrections(
 ) -> dict[str, dict[str, float | bool]]:
     """The exact compiler-ready refinement this candidate proposes.
 
-    Reuses ``camilla_yaml._role_polarity`` — the single shared region-polarity
-    reduction ``_derive_corrections`` and ``MeasuredElectricalCandidate`` both
-    already use — so polarity-to-inversion translation has one owner.
+    Reuses ``camilla_yaml._role_polarity`` — the same region-polarity
+    reduction ``baseline_profile._derive_corrections`` uses (the legacy
+    ``MeasuredElectricalCandidate.driver_corrections`` inlines its own
+    equivalent region walk) — so this module adds no new
+    polarity-to-inversion translation.
     """
 
     preset = effective_preset(candidate)
@@ -425,7 +433,8 @@ def driver_corrections(
     delay_ms = 0.0
     if delay_role is not None:
         assert candidate.alignment.delay_us is not None  # all-or-nothing invariant
-        delay_ms = round(candidate.alignment.delay_us / 1000.0, 6)
+        # Same single quantizer as effective_preset and the delay_graph proof.
+        delay_ms = quantized_delay_ms(candidate.alignment.delay_us)
     return {
         role: {
             "gain_db": candidate.role_attenuations_db[role],
@@ -448,6 +457,17 @@ def compile_candidate_config(
     function only supplies the preset (with alignment folded in) and the
     derived ``corrections`` mapping. ``emit_kwargs`` forwards any other
     emitter keyword (``capture_device``, ``out_path``, ...) unchanged.
+
+    CONVENTION (shared with ``baseline_profile.build_baseline_profile_candidate``,
+    the production emit site): the emitter derives delay and inversion from
+    ``corrections`` ONLY — it does not read a region's ``delay_ms`` /
+    ``delay_target_driver`` / polarity fields today (the baseline mixer is
+    emitted with ``apply_region_polarity=False``; the per-driver Gain is the
+    sole inverter). That is why the production path can hand the emitter the
+    preview-compiled *source* preset while this helper hands it
+    ``effective_preset`` — same corrections, byte-identical graph. If a
+    future emitter change starts reading region delay/polarity fields
+    directly, both call sites must be revisited together or they diverge.
     """
 
     preset = effective_preset(candidate)
