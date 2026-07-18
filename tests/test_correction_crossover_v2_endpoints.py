@@ -73,9 +73,39 @@ _BINDING = "placement_abcdefghijklmnopqrstuv"
 def _isolated_state(tmp_path, monkeypatch):
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
     monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    v2host.reset_session_measurement_pause_for_tests()
     yield
     v2host.set_state_path_for_tests(None)
     v2host.set_volume_plan_for_tests(None)
+    v2host.reset_session_measurement_pause_for_tests()
+
+
+def _bg_run_async(coro, *, timeout=None):
+    """Mimic correction_setup._run_async for the host recovery helpers: run the
+    coroutine to completion and return its result (each on a fresh loop — the
+    session-volume drains are self-contained, no cross-loop context manager)."""
+    return asyncio.run(coro)
+
+
+class _FakeVolCam:
+    """A CamillaController stand-in for the session-volume drains."""
+
+    def __init__(self, vol: float) -> None:
+        self.vol = vol
+
+    async def set(self, db: float) -> bool:
+        self.vol = float(db)
+        return True
+
+    async def get(self) -> float:
+        return self.vol
+
+    async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
+        self.vol = float(db)
+        return True
+
+    async def get_volume_db(self, best_effort: bool = False) -> float:
+        return self.vol
 
 
 class VolumeRecorder:
@@ -606,3 +636,302 @@ def test_status_block_reports_needs_recovery_and_phase():
         "applied": False,
     })
     assert v2host.crossover_v2_status_block()["phase"] == "review_apply"
+
+
+# --- W6.1 Finding B: no silent playback failures --------------------------------
+
+
+def _refusing_seams(base_conductor):
+    """Replace a conductor's play seam with one that refuses admission at play
+    time (the JTS3 over-cap ProgramPlaybackRefused), keeping the other seams."""
+    from jasper.active_speaker.program_admission import (
+        ProgramAdmission,
+        ProgramAdmissionRefusal,
+    )
+    from jasper.active_speaker.program_playback import ProgramPlaybackRefused
+
+    def refusing_play(phase: str, program: Any) -> None:
+        adm = ProgramAdmission(
+            program_id=program.program_id,
+            phase=phase,
+            session_volume_db=SESSION_VOLUME_DB,
+            segments=(),
+            channels=(),
+            refusals=(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP,),
+        )
+        raise ProgramPlaybackRefused(adm)
+
+    return V2FlowSeams(
+        play=refusing_play,
+        analyze=base_conductor._seams.analyze,
+        publish_check=base_conductor._seams.publish_check,
+        publish_candidate=base_conductor._seams.publish_candidate,
+        apply_complete=base_conductor._seams.apply_complete,
+    )
+
+
+def test_playback_refusal_persists_failure_abandons_volume_and_tells_phone():
+    """A play-seam refusal (ProgramPlaybackRefused) must NOT escape silently:
+    persist a distinct program_unplayable failure, abandon the volume, purge the
+    relay session, AND post a terminal capture_result so the phone stops waiting
+    (hardware run 2 froze at capture_authorized forever)."""
+    from jasper.active_speaker.program_playback import ProgramPlaybackError
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    conductor._seams = _refusing_seams(conductor)
+    volume = VolumeRecorder()
+    with pytest.raises(ProgramPlaybackError):
+        _run(_build_runner(conductor, volume), client, session)
+
+    # Volume was drained (the §5.5 walked-away guarantee), not left active.
+    assert volume.events == ["open", "abandon"]
+    # A DISTINCT failure persisted — not relay_timeout.
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": "program_unplayable"}
+    # The relay session was purged (no leak to worker TTL).
+    assert session.session_id not in backend.sessions
+    # The phone got a terminal capture_result carrying the §5.10 hard-stop so it
+    # renders the failure instead of recording into silence forever.
+    events = backend.host_events[session.session_id]
+    assert events[-1]["phase"] == "capture_result"
+    assert events[-1]["accepted"] is False
+    assert events[-1]["code"] == "program_unplayable"
+    assert events[-1]["template"] == "hard_stop"
+    assert events[-1]["index"] == 1 and events[-1]["attempt"] == 1
+
+
+def test_volume_open_raise_purges_the_fresh_relay_session():
+    """A SessionVolumePlanError from volume.open() (run 2's retry hit this when a
+    prior session left the volume open) must purge the freshly-minted relay
+    session before surfacing — no leak to worker TTL."""
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
+    from jasper.capture_relay.session import CaptureFailed
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
+
+    class _RaisingVolume:
+        def hooks(self):
+            async def _open():
+                raise SessionVolumePlanError("a prior session volume is unresolved")
+
+            async def _noop():
+                pass
+
+            return v2host.V2VolumeHooks(open=_open, close=_noop, abandon=_noop)
+
+    class _NoPhone:
+        begun = (1, 1)
+
+    conductor = _conductor(backend, session, _NoPhone(), published=[])
+    with pytest.raises(CaptureFailed):
+        _run(_build_runner(conductor, _RaisingVolume()), client, session)
+    assert session.session_id not in backend.sessions
+
+
+# --- W6.1 Finding C: session-scoped measurement pause ---------------------------
+
+
+class _FakeWindow:
+    """A recording stand-in for coordinator.measurement_window()."""
+
+    def __init__(self, log: list) -> None:
+        self.log = log
+
+    async def __aenter__(self):
+        self.log.append("enter")
+        return None
+
+    async def __aexit__(self, *exc):
+        self.log.append("exit")
+        return False
+
+
+def _patch_measurement_window(monkeypatch, log: list) -> None:
+    from jasper.correction import coordinator
+
+    monkeypatch.setattr(
+        coordinator, "measurement_window", lambda **kw: _FakeWindow(log)
+    )
+
+
+def test_session_measurement_pause_is_idempotent(monkeypatch):
+    """Acquire enters the window exactly once (a second acquire is a no-op, so a
+    per-play cannot open a second exclusive window); release exits exactly once
+    and a double-release is safe (no double-exit)."""
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+
+    async def scenario():
+        assert not v2host.session_measurement_pause_held()
+        await v2host.acquire_session_measurement_pause()
+        assert v2host.session_measurement_pause_held()
+        await v2host.acquire_session_measurement_pause()  # idempotent
+        assert v2host.session_measurement_pause_held()
+        await v2host.release_session_measurement_pause()
+        assert not v2host.session_measurement_pause_held()
+        await v2host.release_session_measurement_pause()  # idempotent
+
+    asyncio.run(scenario())
+    assert log == ["enter", "exit"]  # exactly one enter, one exit
+
+
+def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
+    """The pause is held from volume open through the drain, for BOTH the close
+    and abandon paths; a per-play in between (which nest-SKIPS while held) does
+    not release it. The failed-open path releases it so voice never strands."""
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+    )
+
+    class _Ctx:
+        session_volume_db = -20.0
+
+    for drain in ("close", "abandon"):
+        log: list = []
+        _patch_measurement_window(monkeypatch, log)
+        v2host.reset_session_measurement_pause_for_tests()
+        v2host.set_volume_plan_for_tests(SessionVolumePlan())
+        cam = _FakeVolCam(-15.0)
+
+        async def scenario():
+            hooks = v2host._volume_hooks(lambda: cam, _Ctx())
+            opened = await hooks.open()
+            assert opened is SessionVolumeOpenResult.OPENED
+            assert cam.vol == -20.0
+            # Held for the whole session; a per-play sees this and skips.
+            assert v2host.session_measurement_pause_held()
+            await getattr(hooks, drain)()
+            assert not v2host.session_measurement_pause_held()
+            assert cam.vol == -15.0  # restored
+
+        asyncio.run(scenario())
+        assert log == ["enter", "exit"], drain
+        v2host.set_volume_plan_for_tests(None)
+
+
+def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
+    """If plan.open() drains itself (does not return OPENED), the pause is
+    released — a failed open must never leave voice paused with no session."""
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+    v2host.reset_session_measurement_pause_for_tests()
+
+    class _DrainedPlan:
+        async def open(self, vol, set_v, get_v):
+            return "failed"
+
+    v2host.set_volume_plan_for_tests(_DrainedPlan())
+
+    class _Ctx:
+        session_volume_db = -20.0
+
+    async def scenario():
+        hooks = v2host._volume_hooks(lambda: _FakeVolCam(-15.0), _Ctx())
+        result = await hooks.open()
+        assert result == "failed"
+        assert not v2host.session_measurement_pause_held()
+
+    asyncio.run(scenario())
+    assert log == ["enter", "exit"]
+
+
+# --- W6.1 Finding E: recovery paths actually recover -----------------------------
+
+
+def test_reconcile_drains_residual_owned_active_before_new_session():
+    """E1: a residual owned-active plan (a prior failed session's leftover) is
+    drained before a fresh session, so plan.open() starts clean instead of
+    raising SessionVolumePlanError into the silent 200→adapter_failed loop."""
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+
+    plan = SessionVolumePlan()
+    cam = _FakeVolCam(-15.0)
+    asyncio.run(plan.open(-20.0, cam.set, cam.get))
+    assert plan.measurement_volume_db == -20.0
+    assert not plan.needs_recovery  # owned-active this process, within ceiling
+    v2host.set_volume_plan_for_tests(plan)
+
+    v2host.reconcile_session_volume_for_new_session(_bg_run_async, lambda: cam)
+
+    assert plan.measurement_volume_db is None  # residual drained
+    assert not plan.needs_recovery
+    assert cam.vol == -15.0  # restored to household
+
+
+def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise():
+    """E3: enforce_ceiling (previously zero callers) force-drains a session that
+    outlived the wall-clock ceiling, and is a no-op on a healthy session."""
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+
+    clock = [1000.0]
+    plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
+    cam = _FakeVolCam(-15.0)
+    asyncio.run(plan.open(-20.0, cam.set, cam.get))
+    assert cam.vol == -20.0
+    v2host.set_volume_plan_for_tests(plan)
+
+    # Within the ceiling: cheap no-op, nothing drained.
+    assert v2host.enforce_session_volume_ceiling_if_stale(
+        _bg_run_async, lambda: cam
+    ) is False
+    assert plan.measurement_volume_db == -20.0
+
+    # Past the ceiling: force-drained back to the household volume.
+    clock[0] = 2000.0
+    assert v2host.enforce_session_volume_ceiling_if_stale(
+        _bg_run_async, lambda: cam
+    ) is True
+    assert plan.measurement_volume_db is None
+    assert cam.vol == -15.0
+
+
+def test_v2_volume_recovery_active_tracks_needs_recovery(monkeypatch):
+    class _NeedsRecovery:
+        needs_recovery = True
+
+    v2host.set_volume_plan_for_tests(_NeedsRecovery())
+    assert v2host.v2_volume_recovery_active() is True
+
+    class _Clean:
+        needs_recovery = False
+
+    v2host.set_volume_plan_for_tests(_Clean())
+    assert v2host.v2_volume_recovery_active() is False
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
+    v2host.set_volume_plan_for_tests(_NeedsRecovery())
+    assert v2host.v2_volume_recovery_active() is False  # legacy flow: never v2
+
+
+def test_recover_session_volume_routes_to_the_plan():
+    """E2 host seam: recover_session_volume drains via the v2 plan's
+    recover_unresolved (not the legacy lease) and reports the outcome."""
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeRestoreResult,
+    )
+
+    drained: list = []
+
+    class _Plan:
+        needs_recovery = True
+
+        async def recover_unresolved(self, set_v, get_v):
+            await set_v(-15.0)
+            await get_v()
+            drained.append(True)
+            return SessionVolumeRestoreResult.EXACT_RESTORED
+
+    v2host.set_volume_plan_for_tests(_Plan())
+    cam = _FakeVolCam(-20.0)
+    succeeded, recovery = v2host.recover_session_volume(_bg_run_async, lambda: cam)
+    assert succeeded is True
+    assert recovery == "exact_restored"
+    assert drained == [True]
+    assert cam.vol == -15.0

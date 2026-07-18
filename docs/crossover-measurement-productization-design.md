@@ -560,6 +560,16 @@ robust to population variance either way — every MEASURE capture carries its
 own drift/glitch verdict, so a bad clock degrades to a per-session retry, not
 a silent wrong alignment.
 
+**W6 first-contact findings (2026-07-18).** The first JTS3 runs
+(protected-tweeter reference, caps woofer −8 / B&C DE250 tweeter −65
+dBFS-effective) surfaced five defects, all fixed and pinned hardware-free
+before the acceptance run (W6.1): (A) CHECK/VERIFY programs weren't cap-clamped;
+(B) a play-seam refusal escaped the runner silently (volume left active, relay
+leaked, phone frozen); (C) the session volume was protected only per-play, so
+the idle reconciler reverted it; (D) `/crossover/status`+`/envelope` never
+matched the `crossover_v2:*` relay slot; (E) the stale-active reset,
+recover-volume routing, and 1800 s ceiling didn't actually recover.
+
 ## 8. Primary sources
 
 - **Appendix A** — v1 deep-research report (verbatim), including the citation

@@ -109,6 +109,12 @@ REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
 REASON_RELAY_TIMEOUT = "relay_timeout"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
+# The play seam refused/failed the program (safety re-admission over-cap, a
+# graph-restore failure, or a conductor program error) — distinct from a relay
+# transport death (``relay_timeout``). After the W6.1 cap-aware composition a
+# play-time refusal is unexpected (a bug, a tampered readback, or a genuinely
+# infeasible profile), so it is terminal: hard-stop, budget 0.
+REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
 REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
 # Internal-only addition BEYOND the §5.10 table: §5.2's "inconclusive —
 # re-verify" verdict (VERIFY's own detected first reflection forced a shorter
@@ -178,6 +184,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
         "JTS could not confirm the listening volume was restored. Recover the "
         "safe volume before continuing.",
+    ),
+    REASON_PROGRAM_UNPLAYABLE: ReasonSpec(
+        REASON_PROGRAM_UNPLAYABLE, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not play the measurement signal within the speaker's safe "
+        "limits. Re-check the driver details in speaker setup, then measure "
+        "again.",
     ),
     REASON_VERIFY_OUT_OF_TOLERANCE: ReasonSpec(
         REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2, "",
@@ -487,6 +499,11 @@ class CrossoverV2Conductor:
         self._phase_attempts: dict[str, int] = {}
         self._last_reason: dict[str, str] = {}
         self._armed_index: int | None = None
+        # The most recent authorized (index, attempt) — the host reads it to
+        # address the terminal ``capture_result`` host event at a play-seam
+        # failure (§5.10 / W6.1), so the phone stops waiting instead of
+        # recording into silence forever.
+        self._armed_capture: tuple[int, int] | None = None
         # MEASURE→VERIFY handoff evidence. A verify-only re-arm session
         # rehydrates both from the persisted state (§5.2 re-verify).
         self._measure_predicted_sum: Any = measure_predicted_sum
@@ -498,8 +515,28 @@ class CrossoverV2Conductor:
     # --- program composition -------------------------------------------------
 
     def _compose_check_program(self) -> ExcitationProgram:
+        # Cap-aware (W6.1): each driver's pilot base is clamped so the loudest
+        # (hi) pilot's effective peak stays under that driver's cap folded
+        # through the session volume — the same ``back_off_gain`` margin the
+        # MEASURE composer uses. The tweeter (compression driver, deep cap)
+        # rides a base ~40 dB below the woofer's; both pilots keep their fixed
+        # ``DEFAULT_PILOT_LEVELS_DB`` offsets against that per-role base, so the
+        # 10 dB behavioral-linearity delta is preserved while the absolute
+        # level degrades honestly (recorded in the segment gains). Before this
+        # the CHECK program used the shared reference base and admission
+        # refused it on the JTS3 tweeter (program_channel_peak_over_cap).
+        role_base = {
+            rb.role: back_off_gain(
+                BASE_STIMULUS_PEAK_DBFS,
+                self._session_volume_db,
+                self._caps.get(rb.role, 0.0),
+            )
+            for rb in self._roles
+        }
         return build_check_program(
-            self._roles, downstream_gain_db=self._session_volume_db,
+            self._roles,
+            downstream_gain_db=self._session_volume_db,
+            role_base_peak_dbfs=role_base,
         )
 
     def _pilot_gains(self, hi_gain_db: float) -> tuple[float, float]:
@@ -524,7 +561,24 @@ class CrossoverV2Conductor:
         )
 
     def _compose_verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        gain = BASE_STIMULUS_PEAK_DBFS - extra_backoff_db
+        # Cap-aware (W6.1): VERIFY plays a MONO summed sweep through the APPLIED
+        # production graph with NO play-time admission gate (it does not ride
+        # ``play_program``/``readmit`` — see ``bind_production_play``), so the
+        # compose-time clamp is the ONLY level guard. A summed signal reaches
+        # every driver, so it is clamped to the MOST RESTRICTIVE (min) cap: at
+        # the worst case (no crossover attenuation) no driver is driven past its
+        # own limit. Without this the summed sweep played at the shared
+        # reference base (effective ~-32 dBFS) would over-drive a deep-cap
+        # tweeter (e.g. the JTS3 B&C DE250 at -65 dBFS effective). The
+        # ``_pilot_gains`` pair rides the same clamped level, so its 10 dB delta
+        # is preserved. A genuinely-too-quiet clamp surfaces as the existing
+        # snr_floor / agc_behavioral_fail verdicts, not a precheck (§5.10).
+        binding_cap = min(self._caps.values()) if self._caps else 0.0
+        gain = back_off_gain(
+            BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
+            self._session_volume_db,
+            binding_cap,
+        )
         return build_verify_program(
             self._fc_hz,
             gain_db=gain,
@@ -590,6 +644,12 @@ class CrossoverV2Conductor:
     def last_failure_code(self) -> str | None:
         """The most recent rejection's reason code (host persistence reads it)."""
         return self._last_failure_code
+
+    @property
+    def armed_capture(self) -> tuple[int, int] | None:
+        """The last authorized ``(index, attempt)`` — the host addresses the
+        terminal ``capture_result`` host event at a play-seam failure to it."""
+        return self._armed_capture
 
     def _phase_of_index(self, index: int) -> str:
         phase = self._index_phase_map.get(index)
@@ -693,6 +753,7 @@ class CrossoverV2Conductor:
             raise CaptureBeginRefused(spec.code, spec.message or spec.banner)
         self._phase_attempts[phase] = count
         self._armed_index = index
+        self._armed_capture = (index, attempt)
         log_event(
             logger, "correction.crossover_v2_authorized",
             session_id=self.session_id, phase=phase, index=index, attempt=attempt,
@@ -1267,6 +1328,7 @@ __all__ = [
     "REASON_LOCATE_FAILED",
     "REASON_RELAY_TIMEOUT",
     "REASON_VOLUME_UNRESOLVED",
+    "REASON_PROGRAM_UNPLAYABLE",
     "REASON_VERIFY_OUT_OF_TOLERANCE",
     "REASON_VERIFY_INCONCLUSIVE",
 ]

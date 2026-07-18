@@ -531,6 +531,7 @@ def build_check_program(
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
     base_peak_dbfs: float = BASE_STIMULUS_PEAK_DBFS,
     downstream_gain_db: float = 0.0,
+    role_base_peak_dbfs: Mapping[str, float] | None = None,
 ) -> ExcitationProgram:
     """Compose the CHECK program (design §5.2): ambient silence + per-driver pilots.
 
@@ -540,6 +541,15 @@ def build_check_program(
     — their captured level ratio drives the behavioral AGC/linearity verdict,
     and their band-concentrated energy drives channel-map sanity. ``pilot_levels_db``
     are RELATIVE offsets: pilot digital gain = ``base_peak_dbfs + level``.
+
+    ``role_base_peak_dbfs`` (v2 conductor, Wave 6.1 — cap-aware composition)
+    OPT-IN overrides ``base_peak_dbfs`` PER ROLE so a driver whose safety cap
+    binds below the shared reference (e.g. a compression tweeter) rides a lower
+    per-driver base. Because both pilots keep the same ``pilot_levels_db``
+    offsets against the SAME per-role base, the pair's 10 dB relative delta is
+    preserved regardless of how far the base is clamped; only the absolute
+    level degrades, honestly recorded in the segments' gains. ``None`` (the
+    default) is byte-identical to the pre-v2 composer.
     """
     roles = _validate_roles(roles_bands)
     if len(pilot_levels_db) != 2:
@@ -557,8 +567,13 @@ def build_check_program(
         f1_hz, f2_hz = _intersect_band(
             rb.band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ
         )
+        role_base = (
+            role_base_peak_dbfs.get(rb.role, base_peak_dbfs)
+            if role_base_peak_dbfs is not None
+            else base_peak_dbfs
+        )
         for suffix, level in (("lo", pilot_levels_db[0]), ("hi", pilot_levels_db[1])):
-            gain_db = base_peak_dbfs + level
+            gain_db = role_base + level
             seg = _stimulus(
                 segment_id=f"pilot_{rb.role}_{suffix}",
                 kind=KIND_PILOT,

@@ -31,6 +31,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     PHASE_REVIEW_APPLY,
     PHASE_VERIFY,
+    PILOT_LEVEL_DELTA_DB,
     REASON_REGISTRY,
     CrossoverV2Conductor,
     CrossoverV2FlowError,
@@ -682,3 +683,160 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
 
     reparsed = CaptureSpec.from_dict(spec.to_dict())
     assert reparsed.capture_plan.entries == spec.capture_plan.entries
+
+
+# --- W6.1 Finding A: cap-aware CHECK / MEASURE / VERIFY composition -------------
+#
+# The conductor fixture (CAPS) knew the caps, but the fake play seam never ran
+# admission, so a CHECK/VERIFY program that ignored the caps slipped through the
+# hardware-free suite and only surfaced on JTS3 (program_channel_peak_over_cap
+# refused the CHECK program). These pins compose the real programs and run them
+# through the ACTUAL admission the play seam uses.
+
+from jasper.audio_measurement.program import (  # noqa: E402
+    BASE_STIMULUS_PEAK_DBFS,
+)
+
+
+def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
+    """A conductor whose caps come from a REAL confirmed safety profile, plus the
+    (topology, profile, targets, session_volume) that admission needs."""
+    from jasper.active_speaker.session_volume_plan import (
+        session_measurement_volume_db,
+    )
+
+    from tests.test_active_speaker_program_admission import _profile_and_targets
+
+    topology, profile, targets = _profile_and_targets(
+        woofer_peak=woofer_peak, tweeter_peak=tweeter_peak
+    )
+    sv = session_measurement_volume_db(profile, targets.values())
+    caps = {"woofer": float(woofer_peak), "tweeter": float(tweeter_peak)}
+    # Bands within the profile's permitted [500, 20000] excitation band.
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
+        RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
+    ]
+    c = CrossoverV2Conductor(
+        session_id=SESSION,
+        source_preset=_preset(),
+        roles_bands=roles,
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=caps,
+        session_volume_db=sv,
+        seams=FakeSeams().seams(),
+        driver_spacing_m=0.15,
+    )
+    return c, topology, profile, targets, sv
+
+
+@pytest.mark.parametrize(
+    "woofer_peak,tweeter_peak",
+    # The JTS3-shaped 0/-8/-65 cap numbers across the two profile-valid combos
+    # (a tweeter capped above code policy, e.g. -8, cannot be confirmed).
+    [(0.0, -65.0), (-8.0, -65.0)],
+)
+def test_composed_programs_admit_at_shaped_caps(woofer_peak, tweeter_peak):
+    """CHECK and MEASURE admit at the JTS3-shaped caps; VERIFY (no admission
+    path — it rides the applied graph) is clamped to the most restrictive cap.
+
+    This is the pin that was missing (the conductor knew the caps but the fake
+    play seam never admitted). ``admit_excitation_program`` REFUSES VERIFY by
+    design (test_active_speaker_program_admission.test_verify_program_not_admitted_here
+    pins that — VERIFY is mono/summed with no per-driver target), so VERIFY's
+    equivalent safety proof is its compose-time clamp: no segment can exceed the
+    binding cap that its summed signal reaches every driver at.
+    """
+    from jasper.active_speaker.program_admission import (
+        ProgramAdmissionError,
+        admit_excitation_program,
+    )
+
+    c, topology, profile, targets, sv = _profiled_conductor(
+        woofer_peak=woofer_peak, tweeter_peak=tweeter_peak
+    )
+
+    def _admit(program):
+        return admit_excitation_program(
+            program, topology=topology, safety_profile=profile,
+            role_targets=targets, session_volume_db=sv,
+        )
+
+    adm_check = _admit(c._check_program)
+    assert adm_check.allowed, adm_check.refusals
+
+    _run_phase(c, 1, 1)  # CHECK solve → MEASURE composed
+    adm_measure = _admit(c._program_for_phase(PHASE_MEASURE))
+    assert adm_measure.allowed, adm_measure.refusals
+
+    # VERIFY has no admission path by design; its clamp is the only guard.
+    with pytest.raises(ProgramAdmissionError):
+        _admit(c._verify_program)
+    binding_cap = min(woofer_peak, tweeter_peak)
+    for seg in c._verify_program.stimulus_segments():
+        assert seg.effective_peak_dbfs <= binding_cap + 1e-9
+
+
+def test_check_pilot_pairs_preserve_delta_and_degrade_honestly():
+    """CHECK pilots keep the 10 dB behavioral delta where headroom allows, and
+    degrade honestly (recorded in the program) where a driver cap compresses the
+    level — the JTS3 tweeter drops ~33 dB but its pair stays 10 dB apart."""
+    c, _topology, _profile, _targets, sv = _profiled_conductor(
+        woofer_peak=-8.0, tweeter_peak=-65.0
+    )
+    check = c._check_program
+
+    # Woofer: cap (-8) leaves headroom, so the pair rides the reference base and
+    # keeps the full 10 dB delta.
+    w_hi = check.segment("pilot_woofer_hi")
+    w_lo = check.segment("pilot_woofer_lo")
+    assert w_hi.gain_db == pytest.approx(BASE_STIMULUS_PEAK_DBFS)
+    assert w_hi.gain_db - w_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
+
+    # Tweeter: cap (-65) compresses the base ~33 dB down, honestly recorded in
+    # the segment gains + effective peak — but the 10 dB delta is preserved so
+    # the behavioral-linearity check still has its two known levels.
+    t_hi = check.segment("pilot_tweeter_hi")
+    t_lo = check.segment("pilot_tweeter_lo")
+    assert t_hi.gain_db < BASE_STIMULUS_PEAK_DBFS
+    assert t_hi.gain_db - t_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
+    assert t_hi.effective_peak_dbfs <= -65.0 + 1e-9
+    assert t_hi.effective_peak_dbfs >= -65.0 - PILOT_LEVEL_DELTA_DB
+
+
+def test_verify_pilot_pair_preserves_delta_after_clamp():
+    """VERIFY's summed pilot pair rides the min-cap-clamped level but keeps its
+    10 dB delta (no admission gate protects VERIFY, so the clamp must not
+    silently collapse the pair to one level)."""
+    c, _topology, _profile, _targets, sv = _profiled_conductor(
+        woofer_peak=-8.0, tweeter_peak=-65.0
+    )
+    verify = c._verify_program
+    v_hi = verify.segment("pilot_summed_hi")
+    v_lo = verify.segment("pilot_summed_lo")
+    assert v_hi.gain_db - v_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
+    assert v_hi.effective_peak_dbfs <= -65.0 + 1e-9
+    # And the summed sweep itself is clamped to the same binding cap.
+    assert verify.segment("sweep_verify").effective_peak_dbfs <= -65.0 + 1e-9
+
+
+def test_uncapped_check_program_would_be_refused_regression():
+    """The pre-W6.1 shape: a CHECK program composed at the shared reference base
+    (ignoring caps) is refused by admission on the JTS3 tweeter — the exact
+    program_channel_peak_over_cap refusal hardware run 2 hit."""
+    from jasper.active_speaker.program_admission import (
+        ProgramAdmissionRefusal,
+        admit_excitation_program,
+    )
+    from jasper.audio_measurement.program import build_check_program
+
+    c, topology, profile, targets, sv = _profiled_conductor(
+        woofer_peak=-8.0, tweeter_peak=-65.0
+    )
+    uncapped = build_check_program(c._roles, downstream_gain_db=sv)  # no role bases
+    adm = admit_excitation_program(
+        uncapped, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert not adm.allowed
+    assert ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP in adm.refusals
