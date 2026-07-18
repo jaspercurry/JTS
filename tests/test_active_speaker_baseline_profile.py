@@ -4286,6 +4286,151 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
 
 
+async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from jasper.active_speaker.measured_crossover_candidate import (
+        prove_candidate_config,
+    )
+    from jasper.active_speaker.runtime_contract import (
+        classify_bass_extension_graph,
+    )
+    from jasper.bass_extension.profile import (
+        evaluate_bass_extension_profile,
+        save_bass_extension_profile,
+    )
+    from tests.test_active_speaker_runtime_contract import _sealed_profile
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    measured = _v2_candidate(preset)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    bass_path = tmp_path / "bass_extension_profile.json"
+    monkeypatch.setenv("JASPER_BASS_EXTENSION_PROFILE_STATE", str(bass_path))
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    loaded_graphs: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        loaded_graphs.append(Path(path).read_text(encoding="utf-8"))
+        return True
+
+    first = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=measured,
+    )
+    assert first["status"] == "applied"
+    profile = _sealed_profile(topology, first["profile"])
+    save_bass_extension_profile(profile, bass_path)
+
+    with (
+        mock.patch(
+            "jasper.active_speaker.measured_crossover_candidate."
+            "prove_candidate_config",
+            wraps=prove_candidate_config,
+        ) as prove_measured,
+        mock.patch(
+            "jasper.active_speaker.runtime_contract."
+            "classify_bass_extension_graph",
+            wraps=classify_bass_extension_graph,
+        ) as prove_graph,
+    ):
+        repeated = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=load_config,
+            state_path=state_path,
+            config_path=config_path,
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=measured,
+        )
+
+    assert repeated["status"] == "applied"
+    assert prove_measured.call_count == 1
+    assert prove_graph.call_count == 1
+    repeated_text = loaded_graphs[-1]
+    repeated_yaml = yaml_lib.safe_load(repeated_text)
+    assert prove_measured.call_args.args == (measured, repeated_text)
+    assert prove_graph.call_args.kwargs["graph_text"] == repeated_text
+    assert prove_graph.call_args.kwargs["desired_profile"] == profile
+    assert "bass_ext_lt" in repeated_yaml["filters"]
+    assert "bass_ext_subsonic" in repeated_yaml["filters"]
+    assert "delay: 0.2500" in repeated_text
+    assert repeated_yaml["filters"]["as_tweeter_baseline_gain"]["parameters"][
+        "inverted"
+    ] is True
+    assert repeated["profile"]["corrections"]["tweeter"] == {
+        "gain_db": -2.0,
+        "delay_ms": 0.25,
+        "inverted": True,
+    }
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=repeated["profile"],
+    ).status == "accepted"
+
+    changed_measured = MeasuredCrossoverCandidate(
+        program_id="prog-v2-2",
+        analysis={"drift_ppm": 4.0, "sweeps": ["w", "t", "w", "t"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
+        alignment=MeasuredCrossoverAlignment(
+            delay_us=375.0,
+            delay_role="tweeter",
+            polarity="keep",
+        ),
+    )
+    changed = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=changed_measured,
+    )
+
+    assert changed["status"] == "applied"
+    changed_text = loaded_graphs[-1]
+    changed_yaml = yaml_lib.safe_load(changed_text)
+    assert "bass_ext_lt" not in changed_text
+    assert "bass_ext_subsonic" not in changed_text
+    assert "delay: 0.3750" in changed_text
+    assert changed_yaml["filters"]["as_tweeter_baseline_gain"]["parameters"][
+        "inverted"
+    ] is False
+    assert changed["profile"]["corrections"]["tweeter"] == {
+        "gain_db": -3.0,
+        "delay_ms": 0.375,
+        "inverted": False,
+    }
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=changed["profile"],
+    ).status == "stale"
+
+
 async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
     monkeypatch, tmp_path: Path,
 ) -> None:
