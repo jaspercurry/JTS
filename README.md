@@ -942,6 +942,16 @@ reference. Currently:
   deliberately leaving existing bundles, playback, persistence, and Room
   gates unchanged. The
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
+- [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
+  — **Design proposal / decision record (pre-implementation)** for making the
+  `/correction/crossover/` measurement + tuning flow flexible for non-expert
+  phone-mic users: the first-principles framework, the resolved level/distance/
+  phase-delay tradeoffs, the staged adaptation plan (Stage 1 leveling & cadence,
+  Stage 2 single-capture-both-drivers aligner, Stage 3 drift correction), and the
+  empirical gaps to close on our own hardware before building the aligner.
+  Motivated by the e2e validation log; the verbatim deep-research report behind it
+  is the linked primary source
+  [`crossover-measurement-deep-research-2026-07-18.md`](docs/crossover-measurement-deep-research-2026-07-18.md).
 - [`room-correction-information-design.md`](docs/room-correction-information-design.md)
   — **Product and architecture design of record** for the Room tab:
   server-owned screen visibility and readiness, disclosed six-position/flat
