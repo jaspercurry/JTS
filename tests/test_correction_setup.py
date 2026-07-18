@@ -495,6 +495,35 @@ def test_relay_failure_message_translates_incompatible_page_to_an_action():
         assert jargon not in message.lower()
 
 
+def test_relay_failure_message_sanitizes_local_seam_oserror_to_internal_error_copy():
+    """W6 hardware run 3 finding G: a bare OSError from the v2 crossover's
+    LOCAL play/DSP seam (the DSP writer lock's os.open hitting a read-only
+    config_dir, finding F) used to leak the raw errno string —
+    "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'" —
+    onto the wizard's relay status line via the generic str(exc) fallback.
+    build_v2_run_and_consume wraps it as CrossoverV2LocalSeamError before it
+    escapes the seam (see
+    tests/test_correction_crossover_v2_endpoints.py::
+    test_local_seam_oserror_from_play_maps_to_internal_error); this pins the
+    household-facing translation, pulled from the SAME REASON_REGISTRY copy
+    the v2 envelope itself renders for internal_error — never the raw
+    exception. The raw string still reaches the journal unchanged; only the
+    household-facing surface is sanitized here."""
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_INTERNAL_ERROR,
+        REASON_REGISTRY,
+    )
+    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError
+
+    exc = CrossoverV2LocalSeamError(
+        "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"
+    )
+    message = correction_setup._relay_failure_message(exc)
+    assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
+    assert "Errno" not in message
+    assert "/etc/camilladsp" not in message
+
+
 def test_server_owned_step_mismatch_message_is_plain_not_the_raw_guard_string():
     """Hardware run 21: the envelope-derivation guard's own raw ValueError
     ("...is not the server-owned next step") reached the wizard status line
