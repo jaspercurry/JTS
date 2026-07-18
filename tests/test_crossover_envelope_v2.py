@@ -214,3 +214,26 @@ def test_every_registry_code_renders_without_error(code, template):
     assert env["schema_version"] == 7
     assert env["screen"]
     assert env["verdict_text"]
+
+
+# --- W6.1 Finding D: the v2 relay slot is visible in the envelope ----------------
+
+
+def test_envelope_carries_relay_block_awaiting_and_after_failure():
+    """The v2 envelope threads status['relay'] into BOTH the awaiting-phone
+    screen and the failure screen, so a page reload keeps the tap link and the
+    failure copy reaches the household (Finding D — the slot was invisible)."""
+    from jasper.active_speaker.crossover_v2_flow import REASON_PROGRAM_UNPLAYABLE
+
+    relay = {"tap_link": "https://capture.test/#s=cap_x", "status": "awaiting_phone"}
+
+    awaiting = build_crossover_envelope_v2({**_status(phase="check"), "relay": relay})
+    assert awaiting["relay"] == relay
+
+    failed = build_crossover_envelope_v2({
+        **_status(phase="check", failure={"code": REASON_PROGRAM_UNPLAYABLE}),
+        "relay": relay,
+    })
+    assert failed["screen"] == "hard_stop"
+    assert failed["relay"] == relay
+    assert "safe limits" in failed["verdict_text"]

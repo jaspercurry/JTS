@@ -560,6 +560,22 @@ robust to population variance either way — every MEASURE capture carries its
 own drift/glitch verdict, so a bad clock degrades to a per-session retry, not
 a silent wrong alignment.
 
+**W6 first-contact findings (2026-07-18).** The first JTS3 runs
+(protected-tweeter reference, caps woofer −8 / B&C DE250 tweeter −65
+dBFS-effective) surfaced five defects, all fixed and pinned hardware-free
+before the acceptance run (W6.1): (A) CHECK/VERIFY programs weren't cap-clamped;
+(B) seam exceptions escaped the runner silently — the seams raise open-endedly
+(`CamillaUnavailable` is a bare `Exception`), leaving the volume active, the
+relay leaked, and the phone frozen — closed with a catch-all cleanup arm
+(terminal host event + persisted `program_unplayable`/`internal_error` + volume
+drain + purge + re-raise), not an enumerated exception list; (C) the session
+volume was protected only per-play, so the idle reconciler reverted it — the
+session now holds one measurement window whose abort target the per-play path
+registers, keeping the mux gate-lease abort able to stop an in-flight sweep;
+(D) `/crossover/status`+`/envelope` never matched the `crossover_v2:*` relay
+slot; (E) the stale-active reset, recover-volume routing, and 1800 s ceiling
+didn't actually recover.
+
 ## 8. Primary sources
 
 - **Appendix A** — v1 deep-research report (verbatim), including the citation
