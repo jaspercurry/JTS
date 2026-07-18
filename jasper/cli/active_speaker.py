@@ -309,7 +309,7 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
         applied_baseline_path=baseline_profile_state_path(
             args.applied_baseline_state
         ),
-        staged_metadata_path=Path(args.staged_metadata),
+        staged_metadata_path=args.staged_metadata,
         consider_applied_baseline=not args.no_applied_baseline,
     )
     wrote = False

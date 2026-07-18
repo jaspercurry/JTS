@@ -644,9 +644,16 @@ def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
     assert payload["camilla_config"]["classification"] == "jts_outputd_stereo"
 
 
+@pytest.mark.parametrize(
+    "explicit_staged_metadata",
+    [True, False],
+    ids=["explicit", "default"],
+)
 def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     tmp_path: Path,
     capsys,
+    monkeypatch,
+    explicit_staged_metadata: bool,
 ):
     from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import (
@@ -671,7 +678,7 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {flat}\n", encoding="utf-8")
 
-    code = main([
+    argv = [
         "runtime-safe-graph",
         "--topology",
         str(topology_path),
@@ -679,11 +686,17 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
         str(statefile),
         "--flat-config",
         str(flat),
-        "--staged-metadata",
-        str(metadata),
-        "--write-statefile",
-        "--json",
-    ])
+    ]
+    if explicit_staged_metadata:
+        argv.extend(["--staged-metadata", str(metadata)])
+    else:
+        monkeypatch.setenv(
+            "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+            str(metadata),
+        )
+    argv.extend(["--write-statefile", "--json"])
+
+    code = main(argv)
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
