@@ -41,6 +41,11 @@ from jasper.active_speaker.measurement import (
     record_summed_test_artifact,
     record_summed_validation,
 )
+from jasper.active_speaker.measured_crossover_candidate import (
+    MeasuredCrossoverAlignment,
+    MeasuredCrossoverCandidate,
+    MeasuredCrossoverCandidateError,
+)
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
@@ -3771,3 +3776,286 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
         r.getMessage().startswith("event=correction.crossover_apply_")
         for r in caplog.records
     )
+
+
+# --- Wave 4 (crossover measurement v2 §5.8): MeasuredCrossoverCandidate -----
+#
+# The new v2 measured-crossover candidate (trims + optional delay/polarity,
+# jasper.active_speaker.measured_crossover_candidate) is a drop-in peer of
+# the legacy MeasuredElectricalCandidate for build_baseline_profile_candidate
+# / apply_baseline_profile's existing measured_candidate seam — same
+# apply-with-rollback transaction, same freshness gate, no new apply path.
+
+
+def _v2_candidate(
+    preset: ActiveSpeakerPreset,
+    *,
+    delay_us: float = 250.0,
+    delay_role: str = "tweeter",
+    polarity: str = "invert",
+    tweeter_gain_db: float = -2.0,
+) -> MeasuredCrossoverCandidate:
+    return MeasuredCrossoverCandidate(
+        program_id="prog-v2-1",
+        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": tweeter_gain_db},
+        alignment=MeasuredCrossoverAlignment(
+            delay_us=delay_us, delay_role=delay_role, polarity=polarity
+        ),
+    )
+
+
+def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+        created_at="2026-07-18T12:20:00Z",
+    )
+
+    assert payload["status"] == "ready_to_apply", payload.get("issues")
+    assert payload["corrections"] == {
+        "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+        "tweeter": {"gain_db": -2.0, "delay_ms": 0.25, "inverted": True},
+    }
+    config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
+    assert "delay: 0.2500" in config_text
+    assert payload["candidate_fingerprint"] is not None
+
+
+def test_build_baseline_profile_candidate_v2_candidate_requires_automatic(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    with pytest.raises(ValueError, match="automatic tuning ownership"):
+        build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=False,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="manual",
+            measured_candidate=candidate,
+        )
+
+
+def test_v2_candidate_trims_only_matches_legacy_trims_only_shape(
+    tmp_path: Path,
+) -> None:
+    """Absent alignment is exactly today's trims-only apply behavior: the
+    compiled corrections carry zero delay and the preset's own (unchanged)
+    polarity, identical in shape to a plain gain-only candidate."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    trims_only = MeasuredCrossoverCandidate(
+        program_id="prog-v2-2",
+        analysis={"drift_ppm": 1.0},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=trims_only,
+        created_at="2026-07-18T12:20:00Z",
+    )
+
+    assert payload["status"] == "ready_to_apply", payload.get("issues")
+    assert payload["corrections"] == {
+        "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+        "tweeter": {"gain_db": -2.0, "delay_ms": 0.0, "inverted": False},
+    }
+
+
+def test_build_baseline_profile_candidate_blocks_on_failed_alignment_proof(
+    monkeypatch, tmp_path: Path, caplog,
+) -> None:
+    """A failed delay_graph/graph_safety proof is a blocker issue, exactly like
+    a failed CamillaDSP validation — fail closed, no partial write reaches
+    "ready_to_apply" — and the refusal leaves a stable journal event for
+    triage."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    def _boom(*_args, **_kwargs):
+        raise MeasuredCrossoverCandidateError(
+            "delay_graph_proof_failed", "simulated proof failure"
+        )
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.measured_crossover_candidate.prove_candidate_config",
+        _boom,
+    )
+
+    with caplog.at_level(logging.ERROR, logger=_BASELINE_LOGGER):
+        payload = build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=True,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+        )
+
+    assert payload["status"] == "blocked"
+    assert payload["permissions"]["may_apply"] is False
+    issue_codes = {issue["code"] for issue in payload["issues"]}
+    assert "measured_candidate_alignment_proof_failed" in issue_codes
+    blocked_events = _events(caplog, "correction.crossover_alignment_proof_blocked")
+    assert len(blocked_events) == 1
+    assert "code=delay_graph_proof_failed" in blocked_events[0]
+    assert f"candidate_fingerprint={candidate.fingerprint}" in blocked_events[0]
+
+
+async def test_apply_baseline_profile_applies_v2_measured_candidate(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """End-to-end: publish a v2 candidate with delay+polarity, apply it through
+    the existing atomic DSP transaction, and confirm the emitted config
+    carries both — through the SAME rollback-capable apply_baseline_profile
+    used for every other candidate shape."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    current_path = str(prior)
+    calls: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        calls.append(path)
+        current_path = path
+        return True
+
+    async def current_config_path() -> str:
+        return current_path
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+
+    assert payload["status"] == "applied"
+    assert payload["profile"]["corrections"]["tweeter"] == {
+        "gain_db": -2.0,
+        "delay_ms": 0.25,
+        "inverted": True,
+    }
+    config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
+    assert "as_tweeter_delay" in config_text
+    assert "delay: 0.2500" in config_text
+    assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
+
+
+async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The candidate fingerprint covers the new alignment fields: reviewing
+    one delay_us and applying a candidate with a DIFFERENT delay_us is caught
+    by the existing expected_candidate_fingerprint staleness gate (#1423/#1441
+    apply-freshness hardening), unchanged."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    reviewed = _v2_candidate(preset, delay_us=250.0)
+    reviewed_fingerprint = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        tuning_owner="automatic",
+        measured_candidate=reviewed,
+    )["candidate_fingerprint"]
+
+    changed = _v2_candidate(preset, delay_us=999.0)
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+
+    async def load_config(_path: str) -> bool:
+        pytest.fail("load_config must not run against a stale reviewed candidate")
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=changed,
+        expected_candidate_fingerprint=reviewed_fingerprint,
+    )
+
+    assert payload["status"] == "blocked"
+    issue_codes = {issue["code"] for issue in payload["issues"]}
+    assert "baseline_candidate_fingerprint_mismatch" in issue_codes
