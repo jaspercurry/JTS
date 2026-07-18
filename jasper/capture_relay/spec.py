@@ -388,10 +388,12 @@ class CapturePlanEntry:
     - ``kind_label`` — a short slug naming what this capture measures (e.g.
       ``"check"`` / ``"measure"`` / ``"verify"``). Display/telemetry only,
       like ``CaptureStimulus.label`` — never trusted for logic.
-    - ``duration_ms`` — THIS capture's own recording deadline, overriding the
-      spec-level ``duration_ms`` for this index only. A heterogeneous plan's
-      captures can be very different lengths (the design doc's CHECK ~25s,
-      MEASURE ~20s, VERIFY ~15s).
+    - ``duration_ms`` — THIS capture's DECLARED acoustic length (the design
+      doc's CHECK ~25s / MEASURE ~20s / VERIFY ~15s can differ per index).
+      Presentation + analysis data — phone-side progress/countdown copy and
+      the analysis side's per-entry locator windows (design §5.7) — NEVER a
+      hard deadline: the session runner's recording+upload backstop stays
+      its own session-level ``timeout_s`` for every plan, entries or not.
     - ``screen`` — optional phone-side prompt copy for this capture (a
       string-to-string mapping such as ``{"title": ..., "body": ...}``).
       Opaque like ``presentation_variant``: the schema bounds size and value

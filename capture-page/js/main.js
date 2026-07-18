@@ -1249,17 +1249,8 @@ async function onLevelRampStart(ctx) {
   }
 }
 
-// `durationMsOverride` (optional, plan-loop only — §5.7) lets a session-
-// spanning plan's ACTIVE ENTRY size this capture's own recording deadline
-// (e.g. CHECK ~25s vs VERIFY ~15s in one session) instead of the spec-level
-// `duration_ms`, which stays the shared v1/v2 fallback. `onStart` (v2, no
-// entries) never passes it, so its byte-identical `spec.duration_ms` path is
-// untouched.
-async function waitForSweepComplete(client, spec, isAborted, durationMsOverride) {
-  const timeoutMs = Math.max(
-    5000,
-    Number(durationMsOverride) || Number(spec.duration_ms) || 20000,
-  );
+async function waitForSweepComplete(client, spec, isAborted) {
+  const timeoutMs = Math.max(5000, Number(spec.duration_ms) || 20000);
   const pollMs = Math.max(100, Math.min(1000, Number(spec.progress_poll_ms) || 250));
   const deadline = Date.now() + timeoutMs;
   let lastPhase = "";
@@ -1363,7 +1354,11 @@ function planTargetAndAttempts(spec) {
 // (index 0..capture_target-1); the wire protocol's `begin_capture.index` is
 // 1-based (SPEC W2.3) — mirrors jasper/capture_relay/spec.py's
 // `CapturePlan.entry_for_index`. Returns `null` for a v1/v2 spec (no
-// entries) or an index with no matching entry.
+// entries) or an index with no matching entry. An entry's `duration_ms` is
+// the capture's DECLARED acoustic length — presentation data (progress/
+// countdown copy, wired in the crossover-v2 flow), never the recording
+// deadline: waitForSweepComplete's timeout stays the spec-level
+// `duration_ms` backstop for every plan.
 function entryForIndex(spec, index) {
   const entries = spec && spec.capture_plan && spec.capture_plan.entries;
   if (!Array.isArray(entries)) return null;
@@ -1839,14 +1834,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
       ...ambientStatsFieldsFor(spec, noise),
     });
 
-    // The active entry's own duration_ms (§5.7), when this plan carries one,
-    // sizes THIS capture's recording deadline instead of the shared
-    // spec-level duration_ms — mirrors jasper.capture_relay.session's
-    // per-entry recording deadline on the Pi side.
-    const activeEntry = entryForIndex(spec, index);
-    const sweepCompleted = await waitForSweepComplete(
-      client, spec, () => controller.aborted, activeEntry && activeEntry.duration_ms,
-    );
+    const sweepCompleted = await waitForSweepComplete(client, spec, () => controller.aborted);
     if (sweepCompleted === false) {
       endPlanSession(ctx);
       return;

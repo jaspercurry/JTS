@@ -123,7 +123,10 @@ class CaptureBeginDeferred(RuntimeError):
     ``begin_capture {index, attempt}`` — the attempt budget is not spent and
     the session does not end. ``code`` is the stable machine reason;
     ``user_message`` is the phone-facing copy (mirrors
-    ``CaptureBeginRefused``)."""
+    ``CaptureBeginRefused``). Because the phone retries throughout a hold,
+    the runner dedupes on the (index, code) transition: one INFO log + one
+    ``capture_deferred`` host event per state change, DEBUG for identical
+    repeats."""
 
     def __init__(self, code: str, user_message: str = "") -> None:
         super().__init__(user_message or code)
@@ -522,23 +525,6 @@ def _call_with_optional_entry(
         len(positional) > len(args)
     )
     return callback(*args, entry) if accepts_entry else callback(*args)
-
-
-def _plan_recording_timeout_s(
-    entry: CapturePlanEntry | None,
-    spec_duration_ms: int,
-    default_timeout_s: float,
-) -> float:
-    """The per-capture recording deadline (§5.7): the ENTRY's own
-    ``duration_ms`` when this index has one, else the spec-level
-    ``duration_ms``. Callers only reach this when the plan carries an entry
-    table at all (``plan.entries is not None``) — a plan with NO entry table
-    never calls this, so its deadline math is untouched by this function's
-    existence."""
-    window_ms = entry.duration_ms if entry is not None else spec_duration_ms
-    if window_ms <= 0:
-        return default_timeout_s
-    return window_ms / 1000.0
 
 
 def run_capture(
@@ -1046,11 +1032,11 @@ def run_capture_plan(
     on a plan with no entry table) to ``authorize_begin`` and
     ``consume_capture`` — declare one extra positional parameter to receive
     it (existing 2-/3-arg callables are unaffected; see
-    ``_call_with_optional_entry``). An entry's own ``duration_ms`` also
-    overrides the per-capture RECORDING deadline (the ``awaiting_upload``
-    phase) once armed, falling back to ``session.spec.duration_ms`` — a plan
-    with no entry table takes the exact prior ``timeout_s``-only deadline
-    path, byte-identical.
+    ``_call_with_optional_entry``). An entry's ``duration_ms`` is the
+    capture's DECLARED acoustic length — phone-side presentation and
+    analysis-side locator-window data, never a deadline: the
+    recording+upload backstop stays this function's ``timeout_s`` for every
+    plan, entries or not.
 
     **Deferred admission.** ``authorize_begin`` may raise
     :class:`CaptureBeginDeferred` instead of :class:`CaptureBeginRefused` for
@@ -1059,7 +1045,9 @@ def run_capture_plan(
     ``capture_deferred`` host event and stays in ``awaiting_begin`` with the
     attempt budget untouched, so the phone may retry the IDENTICAL
     ``begin_capture {index, attempt}``; unlike a refusal this never ends the
-    session.
+    session. Repeated identical deferrals during one hold are deduped on the
+    (index, code) transition — one INFO ``capture_relay.plan_deferred`` +
+    one ``capture_deferred`` host event per state change, DEBUG otherwise.
     """
     plan = session.spec.capture_plan
     if plan is None or session.spec.capture_protocol_version < 3:
@@ -1154,6 +1142,11 @@ def _poll_capture_plan(
     attempts_used = 0
     current: tuple[int, int] | None = None
     processed: set[tuple[int, int]] = set()
+    # S2 dedupe: the last (index, code) deferral already logged + posted to
+    # the phone. The phone re-posts the same begin every ~1.5s during a hold,
+    # so without this a long "waiting for apply" hold would spam one INFO
+    # log line + one host-event POST per retry for zero new information.
+    last_deferral: tuple[int, str] | None = None
     phase = "awaiting_begin"
     armed_fired = False
     page_compatible = False
@@ -1266,30 +1259,51 @@ def _poll_capture_plan(
                             authorize_begin, index, attempt, entry=entry
                         )
                     except CaptureBeginDeferred as deferral:
-                        log_event(
-                            logger,
-                            "capture_relay.plan_deferred",
-                            session_id=session.session_id,
-                            index=index,
-                            attempt=attempt,
-                            code=deferral.code,
-                        )
-                        try:
-                            client.post_host_event(
-                                session.session_id,
-                                session.pull_token,
-                                {
-                                    "phase": HOST_PHASE_CAPTURE_DEFERRED,
-                                    "index": index,
-                                    "attempt": attempt,
-                                    "code": deferral.code,
-                                    "error": deferral.user_message,
-                                },
+                        # Dedupe on the (index, code) transition: the phone
+                        # re-posts the same begin throughout a hold, so only
+                        # the FIRST deferral of a hold (or a changed code /
+                        # index) is INFO-logged and posted to the phone;
+                        # identical repeats stay at DEBUG with no host POST
+                        # (the relay's host_event slot still holds the first
+                        # one, so the phone keeps rendering the wait screen).
+                        deferral_key = (index, deferral.code)
+                        if deferral_key != last_deferral:
+                            last_deferral = deferral_key
+                            log_event(
+                                logger,
+                                "capture_relay.plan_deferred",
+                                session_id=session.session_id,
+                                index=index,
+                                attempt=attempt,
+                                code=deferral.code,
                             )
-                        except (OSError, RelayError):
-                            logger.warning(
-                                "could not publish capture-begin deferral",
-                                exc_info=True,
+                            try:
+                                client.post_host_event(
+                                    session.session_id,
+                                    session.pull_token,
+                                    {
+                                        "phase": HOST_PHASE_CAPTURE_DEFERRED,
+                                        "index": index,
+                                        "attempt": attempt,
+                                        "code": deferral.code,
+                                        "error": deferral.user_message,
+                                    },
+                                )
+                            except (OSError, RelayError):
+                                logger.warning(
+                                    "could not publish capture-begin deferral",
+                                    exc_info=True,
+                                )
+                        else:
+                            log_event(
+                                logger,
+                                "capture_relay.plan_deferred",
+                                level=logging.DEBUG,
+                                session_id=session.session_id,
+                                index=index,
+                                attempt=attempt,
+                                code=deferral.code,
+                                repeated=True,
                             )
                         # NON-terminal soft-hold: `pair` is deliberately NOT
                         # marked processed and `phase` stays "awaiting_begin",
@@ -1324,6 +1338,10 @@ def _poll_capture_plan(
                         )
                         raise
                     else:
+                        # The hold (if any) ended — the next deferral, even
+                        # for the same (index, code), is a NEW hold and gets
+                        # its own INFO log + host event.
+                        last_deferral = None
                         processed.add(pair)
                         current = pair
                         attempts_used = attempt
@@ -1368,18 +1386,7 @@ def _poll_capture_plan(
                 )
             _verify_acknowledgement_or_refuse(client, session, state)
             armed_fired = True
-            # The per-capture RECORDING deadline (§5.7): a heterogeneous
-            # plan's entry table can size this window per capture (e.g.
-            # CHECK ~25s vs VERIFY ~15s). A plan with NO entry table takes
-            # this exact same `deadline = monotonic() + timeout_s` line as
-            # before per-capture entries existed — byte-identical.
-            if plan.entries is not None:
-                active_entry = plan.entry_for_index(current[0]) if current else None
-                deadline = monotonic() + _plan_recording_timeout_s(
-                    active_entry, session.spec.duration_ms, timeout_s
-                )
-            else:
-                deadline = monotonic() + timeout_s
+            deadline = monotonic() + timeout_s
             if session.spec.acknowledgement is not None:
                 log_event(
                     logger,

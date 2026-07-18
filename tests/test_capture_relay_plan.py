@@ -600,12 +600,15 @@ def test_plan_callbacks_with_old_arity_are_unaffected_by_entries():
     assert authorized == [(1, 1), (2, 2)]
 
 
-def test_entry_duration_overrides_the_awaiting_upload_deadline():
-    # The entry's OWN duration_ms (3s) must govern the recording deadline —
-    # NOT the caller's much larger flat timeout_s (500s). Proven by parking
-    # the phone in "armed, never uploads" and counting status polls: with the
-    # override working, the timeout fires after only a handful of polls; a
-    # regression would spin for ~500 fake ticks before timing out.
+def test_entries_plan_recording_deadline_stays_the_global_backstop():
+    # S1 (design §5.7): entry.duration_ms is the capture's DECLARED acoustic
+    # length — presentation/locator data — NEVER the hard deadline. The
+    # awaiting_upload recording+upload backstop is the runner's own timeout_s
+    # for every plan, entries or not. Proven by parking the phone in "armed,
+    # never uploads" with a tiny 3s entry: the timeout must fire on the 20s
+    # timeout_s budget (many fake-tick polls), not the entry's 3s (a
+    # handful), and the error message must name the deadline actually in
+    # force.
     backend = FakePlanRelayBackend()
     entries = (CapturePlanEntry(index=0, kind_label="check", duration_ms=3000),)
     plan = CapturePlan(
@@ -659,20 +662,24 @@ def test_entry_duration_overrides_the_awaiting_upload_deadline():
             authorize_begin=lambda _i, _a: None,
             on_armed=lambda _state: None,
             consume_capture=lambda _i, _a, _r: {"accepted": True},
-            **_run_kwargs(timeout_s=500.0),
+            **_run_kwargs(timeout_s=20.0),
         )
     assert ei.value.phase == "awaiting_upload"
-    assert poll_count["n"] < 30, (
-        "the awaiting_upload deadline should derive from the entry's own "
-        "duration_ms (3s), not the caller's 500s timeout_s budget"
+    # The message reports the deadline that was actually in force — the
+    # global timeout_s backstop, never the entry's 3s declared length.
+    assert "within 20s" in str(ei.value)
+    assert poll_count["n"] > 10, (
+        "the awaiting_upload deadline must stay the global timeout_s "
+        "backstop (20s of fake ticks); an entry-duration override would "
+        "have fired after only a handful of polls"
     )
 
 
 def test_v1_plan_without_entries_is_byte_identical_no_deadline_change():
     # Same "arm but never upload" shape as above, but on a v1 plan (no
-    # entries) — the deadline must stay governed by the flat timeout_s, so a
-    # SHORT timeout_s times out fast and a LONG one does not (within a
-    # bounded number of polls), exactly as before per-capture entries existed.
+    # entries) — the same flat timeout_s backstop governs (a SHORT timeout_s
+    # times out within a bounded number of polls), exactly as before
+    # per-capture entries existed.
     backend = FakePlanRelayBackend()
     client, session, _phone = _mint_plan_session(
         backend, capture_target=1, max_attempts=1, driver=False
@@ -785,6 +792,70 @@ def test_deferred_begin_is_non_terminal_and_a_retry_succeeds():
             "error": "Waiting for the previous step to finish.",
         }
     ]
+
+
+def test_repeated_identical_deferrals_post_and_log_once_per_hold(caplog):
+    # S2 dedupe: the phone re-posts the same begin throughout a hold, so N
+    # consecutive deferrals for the same (index, code) must produce exactly
+    # ONE INFO log_event and ONE capture_deferred host event; a changed code
+    # is a new state and gets a second of each. Identical repeats stay at
+    # DEBUG with no host POST.
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1
+    )
+    codes = iter(["not_ready", "not_ready", "not_ready", "waiting_apply"])
+
+    def authorize(_index, _attempt):
+        code = next(codes, None)
+        if code is not None:
+            raise CaptureBeginDeferred(code, f"hold ({code})")
+        # fifth call: admits normally.
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        backend.phone_upload(
+            session.session_id, session.content_key, _wav(attempt), index=attempt - 1
+        )
+
+    real_step = phone.step
+
+    def step_retries_on_deferred():
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        if host.get("phase") == "capture_deferred" and phone.begun == (1, 1):
+            phone.begun = None  # re-post the SAME (index, attempt)
+        real_step()
+
+    phone.step = step_retries_on_deferred
+
+    with caplog.at_level(logging.DEBUG, logger="jasper.capture_relay.session"):
+        outcomes = run_capture_plan(
+            client,
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=lambda _i, _a, _r: {"accepted": True},
+            **_run_kwargs(),
+        )
+
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [(1, 1, True)]
+    # Host events: one per (index, code) state change — never one per retry.
+    deferred_events = [
+        e
+        for e in backend.host_events[session.session_id]
+        if e.get("phase") == "capture_deferred"
+    ]
+    assert [e["code"] for e in deferred_events] == ["not_ready", "waiting_apply"]
+    plan_deferred_records = [
+        r
+        for r in caplog.records
+        if "event=capture_relay.plan_deferred" in r.getMessage()
+    ]
+    assert [
+        r.levelno for r in plan_deferred_records
+    ] == [logging.INFO, logging.DEBUG, logging.DEBUG, logging.INFO], (
+        "first deferral INFO, two identical repeats DEBUG, code change INFO"
+    )
 
 
 def test_deferred_begin_does_not_end_the_session_on_stop():
