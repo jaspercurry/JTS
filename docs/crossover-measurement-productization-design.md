@@ -204,6 +204,22 @@ the timing baselines).
   overlay; pairs with the existing A/B affordances as the user's proof.
 
 User cost: place the mic once, ~3 phone taps + review/apply, **~2–3 minutes**.
+**Only the first capture of a session requires a tap:** an accepted CHECK
+auto-advances into MEASURE behind a visible, cancelable countdown, and the
+apply-complete host event auto-arms VERIFY the same way — "one tap per
+phase" is the upper bound, not the design. Auto-advance also protects
+validity: a user returning to the phone cold is the likeliest
+mic-displacement event between MEASURE and VERIFY. (The shipped
+`CapturePlanEntry.screen` field already carries per-entry presentation;
+this is a page policy, not a protocol change.)
+
+The VERIFY fail screen leads with one default — "Try again" (internally:
+re-verify once, then re-measure) — plus "Undo (restore previous sound)";
+the explicit Re-verify / Re-measure / Restore trio lives behind the expert
+disclosure. The ±0.3 dB repeat-agreement and drift-agreement thresholds are
+provisional constants to be re-derived from W6 bench distributions; a
+repeat-level failure reuses the `drift_baselines_disagree` reason code —
+never a new user-facing code.
 
 ### 5.3 Excitation program (new module, `jasper/audio_measurement/program.py`)
 
@@ -425,7 +441,15 @@ screen's state machinery goes with it.
 
 ### 5.10 Failure taxonomy (the W5 screen contract)
 
-Every terminal verdict has one owning phase, one retry budget, and
+**These are internal reason codes, not screens.** W5 ships at most four
+screen templates, each parameterized by reason copy — (1) silent auto-retry
+banner (`clipped`, `drift_baselines_disagree` — per §4's own prior-art
+conclusion, the first retry of a transient code is automatic, no decision
+screen), (2) fix-and-retry prompt (`snr_floor`, `delay_exceeds_search_window`,
+`locate_failed`, `agc_behavioral_fail`), (3) hard stop
+(`channel_map_mismatch`), (4) session restart (`relay_timeout`).
+`volume_unresolved` and the VERIFY-fail screen already exist or are defined
+in §5.2. Every terminal verdict has one owning phase, one retry budget, and
 one-reason/one-action copy:
 
 | Code | Phase | Retry budget | Action copy shape |
@@ -477,19 +501,26 @@ parallel.
 - **W4 — apply extension.** Measured polarity/delay through preset →
   `camilla_yaml` → `delay_graph`/`graph_safety` proofs; candidate fingerprint
   over the new evidence.
-- **W5 — flow + envelope collapse.** Phase orchestration in
-  `correction_crossover_flow`/`backend` (check → gain solve → measure →
-  review/apply → verify), envelope schema 7, screen JS, deletions (§5.9),
-  the failure-taxonomy screens (§5.10), phase persistence + session binding
-  (§5.6), the MEASURE/VERIFY leading pilot pair + repeat level-agreement
-  acceptance (extends W1's composers per §5.2), and the test-suite rewrite
-  for the collapsed states.
-- **W6 — hardware validation.** Full run on JTS3 through real Chrome + relay
+- **W5a — the v2 happy path (unblocks W6).** Phase orchestration as a NEW
+  path in `correction_crossover_flow`/`backend` (check → gain solve →
+  measure → review/apply → verify), envelope schema 7, the auto-advance tap
+  policy, the four failure-screen templates (§5.10), phase persistence +
+  session binding (§5.6), and the MEASURE/VERIFY leading pilot pair +
+  repeat level-agreement acceptance (extends W1's composers per §5.2).
+  **The legacy flow stays intact and reachable as the fallback.**
+- **W5b — deletions + polish (gated on W6's first green hardware run).**
+  The §5.9 deletions and legacy test retirement (the big rewrite), failure
+  copy polished from W6's *observed* failures, the VERIFY-fail expert
+  disclosure, A/B polish. Hardware truth arrives before the 5.5k-line
+  deletion — deleting the only working flow before the replacement has
+  touched hardware is the one sequencing risk this plan refuses.
+- **W6 — hardware validation (after W5a).** Full run on JTS3 through real Chrome + relay
   + UMIK-2; before/after captured; design-doc benchmarks measured; docs
   verified-stamped.
 
-W1/W3/W4 have no inter-dependencies; W2 consumes W1's manifest dataclass; W5
-integrates all; W6 gates "done."
+W1/W3/W4 have no inter-dependencies; W2 consumes W1's manifest dataclass;
+W5a integrates W1–W4 (legacy kept as fallback); W6 runs on W5a; W5b — the
+§5.9 deletions — is gated on W6's first green run and closes "done."
 
 ## 7. Acceptance benchmarks & empirical gates
 
