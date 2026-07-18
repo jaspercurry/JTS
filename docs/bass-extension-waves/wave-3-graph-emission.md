@@ -1,6 +1,6 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 10 (2026-07-17; exact-head contract repair).** Static graph
+> **Revision 11 (2026-07-18; one-fixture allowlist repair).** Static graph
 > groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
@@ -9,8 +9,11 @@
 > existing correction process. Wave 5 is not yet authorized to arm
 > the graph; see its revision 9 safety gate. Revision 10 pins live
 > selected-file provenance, one correction evidence handoff, whole-graph
-> carrier re-proof, and repeated-cancellation rollback drain. Findings
-> and rationale are in the changelog.
+> carrier re-proof, and repeated-cancellation rollback drain. Those
+> requirements remain unchanged. Revision 11 authorizes only the seam
+> fixture and acceptance coverage named below for
+> `tests/test_web_correction_tuning.py`. Findings and rationale are in the
+> changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–2 merged AND the Wave-0
@@ -666,6 +669,8 @@ Modify:
   writer-lock evidence handoff),
   `tests/test_correction_setup.py`,
   `tests/test_correction_status_and_bundles.py`,
+  `tests/test_web_correction_tuning.py` (the one seam-only fixture
+  amendment pinned below),
   `tests/test_multiroom_active_leader_config.py`, and
   `tests/test_multiroom_follower_config.py`; extend only. The
   runtime-contract tests must exercise the canonical
@@ -697,6 +702,15 @@ Modify:
   session forwards that same object to `assert_correction_graph_safe`,
   and missing/non-mapping evidence prevents load. Do not make
   `MeasurementSession` read bass authority itself.
+
+  In `tests/test_web_correction_tuning.py`, change only
+  `test_propose_apply_reports_honest_failure_when_reload_rejected`: its
+  monkeypatched `_assert_room_authority_current` must return the existing
+  explicit canonical no-profile `Mapping` instead of `None`, so the test
+  reaches its intended Camilla reload-rejection path. Preserve every
+  existing honest-failure assertion. This authorizes no production
+  fallback, substitution, or reconstruction for missing/non-`Mapping`
+  evidence; such evidence must still refuse before load.
 
   `tests/test_sound_graph_carrier.py` must include the missing-woofer-
   low-pass fault injection described above and assert the stable
@@ -871,6 +885,7 @@ STOP and report — do not restructure the contract to fit.
   tests/test_correction_session.py \
   tests/test_correction_setup.py \
   tests/test_correction_status_and_bundles.py \
+  tests/test_web_correction_tuning.py \
   tests/test_active_speaker_cli.py \
   tests/test_active_speaker_commissioning_runtime.py \
   tests/test_multiroom_active_leader_config.py \
@@ -884,6 +899,25 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Rev 11 (2026-07-18)** — `scripts/test-fast` reached **6,093 passed,
+  2 skipped** on the revision-10 implementation repair and then exposed
+  one stale seam fixture:
+  `tests/test_web_correction_tuning.py::test_propose_apply_reports_honest_failure_when_reload_rejected`
+  monkeypatched `_assert_room_authority_current` to return `None`.
+  Revision 10 correctly requires topology-aware Room apply to reject
+  missing/non-`Mapping` bass-authority evidence before DSP load; treating
+  `None` as no profile would weaken fail-closed production behavior.
+  Rationale: add only that test file to the absolute implementation
+  allowlist, make only that fixture return the explicit host-proved
+  no-profile `Mapping`, and include it in the correction integration
+  acceptance command. Evidence: the
+  [PR #1574 blocker](https://github.com/jaspercurry/JTS/pull/1574#issuecomment-5010794545)
+  and
+  [issue #1557 blocker](https://github.com/jaspercurry/JTS/issues/1557#issuecomment-5010795669).
+  No production fallback or substitution, other file, runtime behavior,
+  threshold, Q, limiter derivation, architecture, later-wave, hardware,
+  playback, or deploy work is authorized.
 
 - **Rev 10 (2026-07-17)** — exact-head review of draft PR #1574 at
   `70eaa558329200c5cb6892b183a843ca526c3b46` (comment posted
