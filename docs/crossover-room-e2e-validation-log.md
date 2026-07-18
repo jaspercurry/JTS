@@ -160,6 +160,17 @@ accept. Ingests the UMIK-2 calibration by serial (`/correction/calibration/fetch
    link. Worth considering a longer/refreshable link TTL, or a clearer
    "expired — one tap to refresh" affordance, for slower operators.
 
+## Design follow-up
+
+The level-management ("too loud") and phase/delay-alignment friction surfaced
+above (findings 2 and the sweep-mechanic note) were taken into a first-principles
+deep-research pass and synthesized into a committed design proposal:
+[`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md)
+(framework, resolved tradeoffs, staged adaptation plan, and the empirical gaps to
+close on our own hardware before building the single-capture aligner). That doc is
+where this log's UX findings turn into a plan; this log stays the record of *what
+was exercised on hardware*.
+
 ## Method / gate
 
 Fable-led orchestration: diagnose → tight closed spec → Sonnet implements in an
