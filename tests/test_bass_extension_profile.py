@@ -631,6 +631,56 @@ async def test_apply_failure_restores_exact_graph_and_profile(
 
 
 @pytest.mark.asyncio
+async def test_final_durable_unlink_failure_restores_then_repropagates_base_exception(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class FinalUnlinkAbort(BaseException):
+        pass
+
+    applied = {**_applied_baseline(), "status": "applied"}
+    predecessor = _profile(applied_baseline=applied)
+    desired = replace(predecessor, status="bypassed")
+    (
+        _applied,
+        selected,
+        profile_path,
+        intent_path,
+        _statefile,
+        _cam,
+        paths,
+    ) = _transaction_harness(monkeypatch, tmp_path, predecessor=predecessor)
+    predecessor_graph = selected.read_bytes()
+    predecessor_profile = profile_path.read_bytes()
+    real_durable_unlink = bass_extension_module._durable_unlink
+    failure = FinalUnlinkAbort("final durable unlink failed")
+    failed_once = False
+
+    def fail_final_intent_unlink_once(path):
+        nonlocal failed_once
+        if path == intent_path and not failed_once:
+            failed_once = True
+            raise failure
+        real_durable_unlink(path)
+
+    monkeypatch.setattr(
+        bass_extension_module,
+        "_durable_unlink",
+        fail_final_intent_unlink_once,
+    )
+
+    with pytest.raises(FinalUnlinkAbort) as caught:
+        await apply_bass_extension(desired, **paths)
+
+    assert caught.value is failure
+    assert failed_once is True
+    assert selected.read_bytes() == predecessor_graph
+    assert stat.S_IMODE(selected.stat().st_mode) == 0o664
+    assert profile_path.read_bytes() == predecessor_profile
+    assert not intent_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_post_intent_rollback_reacquires_writer_lock_before_real_reload(
     monkeypatch,
     tmp_path,

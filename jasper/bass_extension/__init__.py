@@ -7,9 +7,9 @@ import hashlib
 import json
 import os
 import stat
+import sys
 import tempfile
 import uuid
-from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -434,210 +434,37 @@ async def apply_bass_extension(
     staged_path = Path(staged_metadata_path)
     configs = Path(config_dir)
     rollback_after_lock = None
-    forward_failure: BaseException | None = None
+    completed = False
 
-    async with dsp_writer_lock(
-        configs,
-        source="bass_extension.apply",
-        allow_pending_bass_extension_recovery=True,
-        bass_extension_intent_path=intent_target,
-    ):
-        # Bonded program-bake/driver-domain roles are a hard owner-boundary
-        # refusal.  Check them before even an older rollback can mutate either
-        # authority; the correction host will retry recovery once the local
-        # speaker is solo again.
-        selected_before_recovery = _selected_path(statefile)
-        try:
-            selected_before_recovery_text = selected_before_recovery.read_text(
-                encoding="utf-8"
-            )
-        except (OSError, UnicodeError) as exc:
-            raise BassExtensionApplyError(
-                "selected CamillaDSP config is not readable"
-            ) from exc
-        if _bonded_or_driver_carrier(selected_before_recovery_text):
-            raise BassExtensionApplyError(
-                "bass-extension apply is unavailable while an active speaker is bonded"
-            )
-
-        older = _read_intent(intent_target)
-        if older is not None:
-            await _restore_locked(
-                older,
-                topology=topology,
-                controller=controller,
-                statefile_path=statefile,
-                applied_baseline_path=applied_path,
-                profile_path=profile_target,
-                intent_path=intent_target,
-                staged_metadata_path=staged_path,
-                config_dir=configs,
-            )
-        selected = _selected_path(statefile)
-        try:
-            if selected.resolve().parent != configs.resolve():
-                raise BassExtensionApplyError(
-                    "selected CamillaDSP config is outside the writable config directory"
-                )
-            predecessor_graph_bytes = selected.read_bytes()
-            selected_mode = stat.S_IMODE(selected.stat().st_mode)
-            predecessor_text = predecessor_graph_bytes.decode("utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise BassExtensionApplyError("selected CamillaDSP config is not restorable") from exc
-        live_path = await controller.get_config_file_path(best_effort=False)
-        if live_path is None or Path(live_path) != selected:
-            raise BassExtensionApplyError("live graph path differs from the boot selector")
-        if _bonded_or_driver_carrier(predecessor_text):
-            raise BassExtensionApplyError(
-                "bass-extension apply is unavailable while an active speaker is bonded"
-            )
-
-        applied = _load_applied(applied_path)
-        predecessor_profile_bytes = (
-            profile_target.read_bytes() if profile_target.exists() else None
-        )
-        predecessor_profile = load_bass_extension_profile(profile_target)
-        current_runtime_profile = None
-        if predecessor_profile is not None:
-            current_eval = evaluate_loaded_bass_extension_profile(
-                predecessor_profile,
-                topology=topology,
-                applied_baseline_state=applied,
-            )
-            if current_eval.status == "accepted":
-                current_runtime_profile = predecessor_profile
-        desired_eval = evaluate_loaded_bass_extension_profile(
-            desired_profile,
-            topology=topology,
-            applied_baseline_state=applied,
-        )
-        if desired_profile.status == "accepted" and desired_eval.status != "accepted":
-            raise BassExtensionApplyError("desired bass-extension profile is not current")
-
-        natural_text = recompose_active_baseline_for_bass_extension(
-            topology,
-            applied_profile=applied,
-            desired_profile=current_runtime_profile,
-            current_config_path=selected,
-            preference_profile_path=preference_profile_path,
-            sound_settings_path=sound_settings_path,
-        )
-        natural_bytes = natural_text.encode("utf-8")
-        atomic_write_text(
-            selected,
-            natural_text,
-            mode=selected_mode,
-            group_from_parent=True,
-            durable=True,
-        )
-        await _reload_and_match(
-            controller,
-            selected_path=selected,
-            expected_bytes=natural_bytes,
-            expected_graph_fingerprint=_normal_fingerprint(natural_text),
-            statefile_path=statefile,
-        )
-        await _active_proof(
-            topology=topology,
-            controller=controller,
-            statefile_path=statefile,
-            applied_baseline_path=applied_path,
-            profile_path=profile_target,
-            intent_path=intent_target,
-            staged_metadata_path=staged_path,
-        )
-        predecessor_graph_bytes = selected.read_bytes()
-        predecessor_text = predecessor_graph_bytes.decode("utf-8")
-        active_raw = await controller.get_active_config_raw(best_effort=False)
-        if not isinstance(active_raw, str):
-            raise BassExtensionApplyError("natural predecessor active graph is unavailable")
-        predecessor_identity = ExactDspStateIdentity({
-            "active_raw": active_raw,
-            "normalized_active_raw_fingerprint": _normal_fingerprint(active_raw),
-            "config_path": str(selected),
-        })
-
-        desired_text = recompose_active_baseline_for_bass_extension(
-            topology,
-            applied_profile=applied,
-            desired_profile=desired_profile,
-            current_config_path=selected,
-            preference_profile_path=preference_profile_path,
-            sound_settings_path=sound_settings_path,
-        )
-        desired_proof = classify_bass_extension_graph(
-            topology,
-            evidence_source="desired",
-            graph_text=desired_text,
-            applied_baseline_state=applied,
-            desired_profile=desired_profile,
-        )
-        if (
-            not desired_proof.allowed
-            or desired_proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME
+    try:
+        async with dsp_writer_lock(
+            configs,
+            source="bass_extension.apply",
+            allow_pending_bass_extension_recovery=True,
+            bass_extension_intent_path=intent_target,
         ):
-            raise BassExtensionApplyError("desired natural graph failed pre-publication proof")
-        fd, scratch_name = tempfile.mkstemp(
-            prefix=".bass-extension-validate-", suffix=".yml", dir=configs
-        )
-        os.close(fd)
-        scratch = Path(scratch_name)
-        try:
-            atomic_write_text(scratch, desired_text, mode=selected_mode)
-            validation = validator(scratch)
-            if not validation.ok_to_apply:
-                raise BassExtensionApplyError("desired natural graph failed CamillaDSP validation")
-            desired_graph_bytes = scratch.read_bytes()
-        finally:
+            # Bonded program-bake/driver-domain roles are a hard owner-boundary
+            # refusal.  Check them before even an older rollback can mutate either
+            # authority; the correction host will retry recovery once the local
+            # speaker is solo again.
+            selected_before_recovery = _selected_path(statefile)
             try:
-                scratch.unlink()
-            except FileNotFoundError:
-                pass
-        desired_profile_bytes = _profile_bytes(desired_profile)
-        intent = _intent_payload(
-            predecessor_identity=predecessor_identity,
-            predecessor_profile_bytes=predecessor_profile_bytes,
-            desired_profile_bytes=desired_profile_bytes,
-            selected_path=selected,
-            selected_mode=selected_mode,
-            predecessor_graph_bytes=predecessor_graph_bytes,
-            desired_graph_bytes=desired_graph_bytes,
-            selector_target=_selected_path(statefile),
-        )
-        # Reassert predecessor durability before publishing the rollback record.
-        atomic_write_text(
-            selected,
-            predecessor_text,
-            mode=selected_mode,
-            group_from_parent=True,
-            durable=True,
-        )
-        if selected.read_bytes() != predecessor_graph_bytes:
-            raise BassExtensionApplyError("predecessor durability reassertion failed")
-        atomic_write_text(
-            intent_target,
-            json.dumps(intent, indent=2, sort_keys=True) + "\n",
-            mode=0o640,
-            group_from_parent=True,
-            durable=True,
-        )
+                selected_before_recovery_text = selected_before_recovery.read_text(
+                    encoding="utf-8"
+                )
+            except (OSError, UnicodeError) as exc:
+                raise BassExtensionApplyError(
+                    "selected CamillaDSP config is not readable"
+                ) from exc
+            if _bonded_or_driver_carrier(selected_before_recovery_text):
+                raise BassExtensionApplyError(
+                    "bass-extension apply is unavailable while an active speaker is bonded"
+                )
 
-        async def rollback() -> None:
-            async with dsp_writer_lock(
-                configs,
-                source="bass_extension.apply_rollback",
-                allow_pending_bass_extension_recovery=True,
-                bass_extension_intent_path=intent_target,
-            ):
-                current_intent = _read_intent(intent_target)
-                if current_intent is None:
-                    return
-                if current_intent != intent:
-                    raise BassExtensionApplyError(
-                        "bass-extension rollback intent ownership changed"
-                    )
+            older = _read_intent(intent_target)
+            if older is not None:
                 await _restore_locked(
-                    current_intent,
+                    older,
                     topology=topology,
                     controller=controller,
                     statefile_path=statefile,
@@ -647,18 +474,182 @@ async def apply_bass_extension(
                     staged_metadata_path=staged_path,
                     config_dir=configs,
                 )
+            selected = _selected_path(statefile)
+            try:
+                if selected.resolve().parent != configs.resolve():
+                    raise BassExtensionApplyError(
+                        "selected CamillaDSP config is outside the writable config directory"
+                    )
+                predecessor_graph_bytes = selected.read_bytes()
+                selected_mode = stat.S_IMODE(selected.stat().st_mode)
+                predecessor_text = predecessor_graph_bytes.decode("utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise BassExtensionApplyError("selected CamillaDSP config is not restorable") from exc
+            live_path = await controller.get_config_file_path(best_effort=False)
+            if live_path is None or Path(live_path) != selected:
+                raise BassExtensionApplyError("live graph path differs from the boot selector")
+            if _bonded_or_driver_carrier(predecessor_text):
+                raise BassExtensionApplyError(
+                    "bass-extension apply is unavailable while an active speaker is bonded"
+                )
 
-        def capture_forward_failure(_exc_type, exc, _traceback) -> bool:
-            nonlocal forward_failure
-            forward_failure = exc
-            return exc is not None
+            applied = _load_applied(applied_path)
+            predecessor_profile_bytes = (
+                profile_target.read_bytes() if profile_target.exists() else None
+            )
+            predecessor_profile = load_bass_extension_profile(profile_target)
+            current_runtime_profile = None
+            if predecessor_profile is not None:
+                current_eval = evaluate_loaded_bass_extension_profile(
+                    predecessor_profile,
+                    topology=topology,
+                    applied_baseline_state=applied,
+                )
+                if current_eval.status == "accepted":
+                    current_runtime_profile = predecessor_profile
+            desired_eval = evaluate_loaded_bass_extension_profile(
+                desired_profile,
+                topology=topology,
+                applied_baseline_state=applied,
+            )
+            if desired_profile.status == "accepted" and desired_eval.status != "accepted":
+                raise BassExtensionApplyError("desired bass-extension profile is not current")
 
-        rollback_after_lock = rollback
-        with ExitStack() as forward_attempt:
-            # The exit callback receives cancellation and every other
-            # post-intent failure, then defers propagation until the writer
-            # lock is released and the exact rollback task is drained.
-            forward_attempt.push(capture_forward_failure)
+            natural_text = recompose_active_baseline_for_bass_extension(
+                topology,
+                applied_profile=applied,
+                desired_profile=current_runtime_profile,
+                current_config_path=selected,
+                preference_profile_path=preference_profile_path,
+                sound_settings_path=sound_settings_path,
+            )
+            natural_bytes = natural_text.encode("utf-8")
+            atomic_write_text(
+                selected,
+                natural_text,
+                mode=selected_mode,
+                group_from_parent=True,
+                durable=True,
+            )
+            await _reload_and_match(
+                controller,
+                selected_path=selected,
+                expected_bytes=natural_bytes,
+                expected_graph_fingerprint=_normal_fingerprint(natural_text),
+                statefile_path=statefile,
+            )
+            await _active_proof(
+                topology=topology,
+                controller=controller,
+                statefile_path=statefile,
+                applied_baseline_path=applied_path,
+                profile_path=profile_target,
+                intent_path=intent_target,
+                staged_metadata_path=staged_path,
+            )
+            predecessor_graph_bytes = selected.read_bytes()
+            predecessor_text = predecessor_graph_bytes.decode("utf-8")
+            active_raw = await controller.get_active_config_raw(best_effort=False)
+            if not isinstance(active_raw, str):
+                raise BassExtensionApplyError("natural predecessor active graph is unavailable")
+            predecessor_identity = ExactDspStateIdentity({
+                "active_raw": active_raw,
+                "normalized_active_raw_fingerprint": _normal_fingerprint(active_raw),
+                "config_path": str(selected),
+            })
+
+            desired_text = recompose_active_baseline_for_bass_extension(
+                topology,
+                applied_profile=applied,
+                desired_profile=desired_profile,
+                current_config_path=selected,
+                preference_profile_path=preference_profile_path,
+                sound_settings_path=sound_settings_path,
+            )
+            desired_proof = classify_bass_extension_graph(
+                topology,
+                evidence_source="desired",
+                graph_text=desired_text,
+                applied_baseline_state=applied,
+                desired_profile=desired_profile,
+            )
+            if (
+                not desired_proof.allowed
+                or desired_proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME
+            ):
+                raise BassExtensionApplyError("desired natural graph failed pre-publication proof")
+            fd, scratch_name = tempfile.mkstemp(
+                prefix=".bass-extension-validate-", suffix=".yml", dir=configs
+            )
+            os.close(fd)
+            scratch = Path(scratch_name)
+            try:
+                atomic_write_text(scratch, desired_text, mode=selected_mode)
+                validation = validator(scratch)
+                if not validation.ok_to_apply:
+                    raise BassExtensionApplyError("desired natural graph failed CamillaDSP validation")
+                desired_graph_bytes = scratch.read_bytes()
+            finally:
+                try:
+                    scratch.unlink()
+                except FileNotFoundError:
+                    pass
+            desired_profile_bytes = _profile_bytes(desired_profile)
+            intent = _intent_payload(
+                predecessor_identity=predecessor_identity,
+                predecessor_profile_bytes=predecessor_profile_bytes,
+                desired_profile_bytes=desired_profile_bytes,
+                selected_path=selected,
+                selected_mode=selected_mode,
+                predecessor_graph_bytes=predecessor_graph_bytes,
+                desired_graph_bytes=desired_graph_bytes,
+                selector_target=_selected_path(statefile),
+            )
+            # Reassert predecessor durability before publishing the rollback record.
+            atomic_write_text(
+                selected,
+                predecessor_text,
+                mode=selected_mode,
+                group_from_parent=True,
+                durable=True,
+            )
+            if selected.read_bytes() != predecessor_graph_bytes:
+                raise BassExtensionApplyError("predecessor durability reassertion failed")
+            atomic_write_text(
+                intent_target,
+                json.dumps(intent, indent=2, sort_keys=True) + "\n",
+                mode=0o640,
+                group_from_parent=True,
+                durable=True,
+            )
+
+            async def rollback() -> None:
+                async with dsp_writer_lock(
+                    configs,
+                    source="bass_extension.apply_rollback",
+                    allow_pending_bass_extension_recovery=True,
+                    bass_extension_intent_path=intent_target,
+                ):
+                    current_intent = _read_intent(intent_target)
+                    if current_intent is None:
+                        return
+                    if current_intent != intent:
+                        raise BassExtensionApplyError(
+                            "bass-extension rollback intent ownership changed"
+                        )
+                    await _restore_locked(
+                        current_intent,
+                        topology=topology,
+                        controller=controller,
+                        statefile_path=statefile,
+                        applied_baseline_path=applied_path,
+                        profile_path=profile_target,
+                        intent_path=intent_target,
+                        staged_metadata_path=staged_path,
+                        config_dir=configs,
+                    )
+
+            rollback_after_lock = rollback
             graph_changed = desired_graph_bytes != predecessor_graph_bytes
             if graph_changed:
                 atomic_write_text(
@@ -686,22 +677,26 @@ async def apply_bass_extension(
                 staged_metadata_path=staged_path,
             )
             _durable_unlink(intent_target)
-
-    if forward_failure is None:
-        return
-    if rollback_after_lock is None:  # pragma: no cover - intent pins this closure
-        raise forward_failure
-    restore = asyncio.create_task(rollback_after_lock())
-    cancelled_during_restore = isinstance(forward_failure, asyncio.CancelledError)
-    while not restore.done():
-        try:
-            await asyncio.shield(restore)
-        except asyncio.CancelledError:
-            cancelled_during_restore = True
-    restore.result()
-    if cancelled_during_restore:
-        raise asyncio.CancelledError()
-    raise forward_failure
+            completed = True
+    finally:
+        forward_failure = sys.exception()
+        if (
+            forward_failure is not None
+            and not completed
+            and rollback_after_lock is not None
+        ):
+            restore = asyncio.create_task(rollback_after_lock())
+            cancelled_during_restore = isinstance(
+                forward_failure, asyncio.CancelledError
+            )
+            while not restore.done():
+                try:
+                    await asyncio.shield(restore)
+                except asyncio.CancelledError:
+                    cancelled_during_restore = True
+            restore.result()
+            if cancelled_during_restore:
+                raise asyncio.CancelledError()
 
 
 async def bypass_bass_extension(*, profile_path: str | Path = "/var/lib/jasper/bass_extension_profile.json", **kwargs) -> None:
