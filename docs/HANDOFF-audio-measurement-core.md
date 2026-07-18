@@ -421,7 +421,11 @@ create a second retention system.
   verbatim from `correction/session.py._band_levels_dbfs`, which now
   delegates to it; `band_snr_verdicts` / `cap_null_depth_db` are new,
   consumed by `active_speaker/driver_acoustics.py` and
-  `crossover_alignment.py`) — all under `jasper/audio_measurement/`; plus,
+  `crossover_alignment.py`), `program.py` + `program_analysis.py` (crossover
+  conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/
+  VERIFY composers, and the pure `(program, capture) → ProgramAnalysis`
+  locator / clock-drift ε / GCC-PHAT aligner / candidate pipeline) — all
+  under `jasper/audio_measurement/`; plus,
   staying in `jasper/correction/`: `confidence.py`, `coordinator.py`
   (`measurement_window`: pauses renderers + voice, serializes), `session.py`
   (`MeasurementSession` state machine), `bundles.py` (schema-versioned

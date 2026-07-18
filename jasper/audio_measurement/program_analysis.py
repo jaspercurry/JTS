@@ -63,6 +63,7 @@ from jasper.audio_measurement.program import (
     ProgramSegment,
     segment_stimulus,
 )
+from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.capture_relay.alignment import cross_correlation_alignment
 from jasper.log_event import log_event
@@ -77,9 +78,23 @@ logger = logging.getLogger(__name__)
 # enough for a few-hundred-ppm drift over a ~25 s program (≈6 ms) plus acoustic
 # delay, far tighter than the global first-stimulus search.
 SEGMENT_SEARCH_S = 0.030
+# Capture bound (kernel contract: defense at the FFT, 1 GB Pi — mirrors
+# deconv.cap_capture_length's rationale). A legitimate conductor capture is the
+# program plus a small phone-start lead; this margin bounds the global offset
+# the locator can see. A stuck recording is truncated to
+# program duration + this margin before any full-rate FFT runs.
+CAPTURE_BOUND_MARGIN_S = 10.0
+# Global-offset locate runs at this downsampled rate (mirrors
+# driver_acoustics._capture_to_magnitude's 16 kHz locate) so the whole-capture
+# correlation never allocates hundreds of MB; the arrival is then refined at
+# the full rate inside a tiny window.
+LOCATOR_RATE_HZ = 16_000
 # Clip run: a run of at least this many consecutive samples at/above full scale.
+# The at-full-scale threshold is the shared digital-full-scale fact owned by
+# quality_model (same value every capture-quality layer reads), not a re-declared
+# literal.
 CLIP_RUN_SAMPLES = 3
-CLIP_ABS_THRESHOLD = 0.999
+CLIP_ABS_THRESHOLD = DRIVER.clip_abs_threshold
 DBFS_FLOOR = -120.0
 
 # A capture is rejected when the drift baselines disagree by more than this many
@@ -90,7 +105,10 @@ MAX_DRIFT_PPM = 500.0
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
 DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
-SPEED_OF_SOUND_M_S = 343.0
+
+# Alignment estimator status vocabulary.
+ALIGNMENT_OK = "ok"
+ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 
 # Overlap band for trims / alignment / ripple: Fc ± 1 octave.
 OVERLAP_OCTAVE_RATIO = 2.0
@@ -133,9 +151,21 @@ class MeasurementGeometry:
 
     driver_spacing_m: float = 0.0
     mic_distance_m: float = 1.0
-    speed_of_sound_m_s: float = SPEED_OF_SOUND_M_S
+    speed_of_sound_m_s: float = DEFAULT_SOUND_SPEED_M_S
 
     def parallax_us(self) -> float:
+        """The deterministic mic-parallax term, in µs.
+
+        Aim assumption (design §5.2's placement prompt): the mic sits ON the
+        reference axis — the tweeter's axis at tweeter height — at distance
+        ``r = mic_distance_m``, so the tweeter path is exactly ``r`` and the
+        OTHER driver (the woofer, ``d = driver_spacing_m`` off-axis) carries
+        the full geometric excess ``√(r²+d²) − r``. That excess inflates the
+        measured woofer-minus-tweeter arrival difference; subtracting it
+        leaves the electrical branch delay. A mic placed off the tweeter axis
+        splits the excess between the drivers and this correction over-counts
+        — the placement screen owns keeping that assumption true.
+        """
         r = float(self.mic_distance_m)
         d = float(self.driver_spacing_m)
         c = float(self.speed_of_sound_m_s)
@@ -209,6 +239,13 @@ class AlignmentEstimate:
     ``(D_woofer − D_tweeter)`` after parallax removal, so **positive delay_us ⇒
     the tweeter's acoustic arrival is EARLIER and the tweeter branch must be
     delayed by that amount** to time-align the crossover.
+
+    ``status`` is :data:`ALIGNMENT_OK` for a trustworthy estimate. When the
+    correlation peak lands at (or within one sample of) the ±search-window
+    edge, the true delay likely exceeds the geometry prior and the windowed
+    peak is a clamped artifact — ``status`` is
+    :data:`ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW` and ``confidence`` is forced
+    to 0.0; callers must not apply ``delay_us`` from such a result.
     """
 
     delay_us: float
@@ -218,6 +255,7 @@ class AlignmentEstimate:
     polarity_sign: int  # +1 | -1
     polarity_agrees_with_sum: bool
     confidence: float
+    status: str = ALIGNMENT_OK
 
 
 @dataclass(frozen=True)
@@ -333,14 +371,24 @@ def _analytic_envelope(x: np.ndarray) -> np.ndarray:
 
 
 def _parabolic_peak(values: np.ndarray, idx: int) -> float:
-    """Sub-sample offset of a peak at integer ``idx`` via 3-point parabola."""
+    """Sub-sample offset of a peak at integer ``idx`` via 3-point parabola.
+
+    The refinement is clamped to ±1 bin: a true local maximum refines within
+    ±0.5 bin, so a larger offset means the three points are near-degenerate
+    (tiny ``denom``) and the parabola vertex is an extrapolation artifact —
+    unclamped, a flat-topped correlation once "refined" a 96-bounded peak out
+    to 128 samples. In that case the integer peak is the honest answer.
+    """
     if idx <= 0 or idx >= values.size - 1:
         return float(idx)
     y0, y1, y2 = float(values[idx - 1]), float(values[idx]), float(values[idx + 1])
     denom = y0 - 2.0 * y1 + y2
     if denom == 0.0:
         return float(idx)
-    return idx + 0.5 * (y0 - y2) / denom
+    offset = 0.5 * (y0 - y2) / denom
+    if not -1.0 <= offset <= 1.0:
+        return float(idx)
+    return idx + offset
 
 
 def _subsample_separation(
@@ -392,13 +440,17 @@ def _gcc_phat(
 ):
     """Band-limited GCC-PHAT of ``a`` vs ``b``; ``a ≈ b`` shifted right by the lag.
 
-    Returns ``(lag_samples, polarity_sign, confidence)``. The cross-power is
-    phase-transform weighted **only inside ``band_hz``** (whitening the near-zero
-    out-of-band bins otherwise piles a spurious peak near zero lag); the
-    correlation is ×``upsample`` FFT-interpolated and parabolically refined.
-    ``polarity_sign`` is the sign of the (signed) correlation at the peak, and
-    ``confidence`` mirrors ``cross_correlation_alignment``'s primary-over-secondary
-    margin.
+    Returns ``(lag_samples, polarity_sign, confidence, at_edge)``. The
+    cross-power is phase-transform weighted **only inside ``band_hz``**
+    (whitening the near-zero out-of-band bins otherwise piles a spurious peak
+    near zero lag); the correlation is ×``upsample`` FFT-interpolated and
+    parabolically refined. ``polarity_sign`` is the sign of the (signed)
+    correlation at the peak, and ``confidence`` mirrors
+    ``cross_correlation_alignment``'s primary-over-secondary margin.
+
+    ``at_edge`` is True when the peak lands within one native sample of the
+    ±``max_lag_samples`` search bound — the true peak is likely OUTSIDE the
+    window and the returned lag is a clamped artifact the caller must refuse.
     """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -445,7 +497,9 @@ def _gcc_phat(
             masked[j] = 0.0
     secondary = float(masked.max()) if masked.size else 0.0
     confidence = max(0.0, (primary - secondary) / primary) if primary > 0 else 0.0
-    return lag_samples, polarity_sign, confidence
+    max_lag_native = max_lag_up / upsample
+    at_edge = abs(lag_samples) >= max_lag_native - 1.0
+    return lag_samples, polarity_sign, confidence, at_edge
 
 
 def _complex_tf(
@@ -521,7 +575,16 @@ def _earliest_strong_peak(
 def _global_offset(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int
 ) -> tuple[int, ProgramSegment, dict[str, np.ndarray]]:
-    """Locate the first stimulus → integer global offset G. Caches stimuli."""
+    """Locate the first stimulus → integer global offset G. Caches stimuli.
+
+    The whole-capture matched filter runs at :data:`LOCATOR_RATE_HZ` (mirrors
+    ``driver_acoustics._capture_to_magnitude``'s 16 kHz downsampled locate) so
+    the largest correlation is over a 3× smaller array; the coarse arrival is
+    then refined at the full rate inside a tiny window around it, so the
+    returned offset is still full-rate-exact.
+    """
+    from scipy.signal import resample_poly
+
     stimuli: dict[str, np.ndarray] = {}
     first = None
     for seg in program.segments:
@@ -532,7 +595,26 @@ def _global_offset(
         raise ValueError("program has no stimulus segment to locate against")
     stim = segment_stimulus(first)
     stimuli[first.segment_id] = stim
-    arrival = _earliest_strong_peak(capture, stim)
+
+    down = max(1, int(round(sample_rate / LOCATOR_RATE_HZ)))
+    if down > 1:
+        capture_lo = resample_poly(capture, 1, down)
+        stim_lo = resample_poly(np.asarray(stim, dtype=np.float64), 1, down)
+    else:
+        capture_lo = capture
+        stim_lo = np.asarray(stim, dtype=np.float64)
+    coarse = _earliest_strong_peak(capture_lo, stim_lo) * down
+
+    # Full-rate refinement in a ±4·down window around the coarse arrival —
+    # bounded cost (one small correlate), full-rate precision.
+    margin = 4 * down
+    lo = max(0, coarse - margin)
+    hi = min(capture.size, coarse + stim.size + margin)
+    window = capture[lo:hi]
+    if window.size >= stim.size:
+        arrival = lo + _earliest_strong_peak(window, stim)
+    else:
+        arrival = coarse
     global_offset = arrival - first.start_sample
     return global_offset, first, stimuli
 
@@ -635,6 +717,12 @@ def _estimate_drift(
     # desync (a dropped buffer between a driver's own repeated sweeps). A
     # mid-program dropped buffer between the two woofer sweeps instead surfaces
     # as an out-of-band ε (the ppm bound below), because the repeat spans it.
+    # NOTE: with one located sweep per role the demeaned residual is
+    # identically zero, so this guard only ACTIVATES for a role with ≥2
+    # located sweeps — in the 2-way 3-sweep MEASURE program that is the woofer
+    # pair only; the single-sweep tweeter is covered by the ε ppm bound alone.
+    # A future program shape with per-role repeats gets the residual guard on
+    # every role for free.
     groups: dict[Any, list[float]] = {}
     for loc in stimulus_locs:
         start = program.segment(loc.segment_id).start_sample
@@ -829,7 +917,7 @@ def _estimate_alignment(
     length = min(ir_w.size, ir_t.size)
     ir_w, ir_t = ir_w[:length], ir_t[:length]
 
-    lag_samples, polarity_sign, confidence = _gcc_phat(
+    lag_samples, polarity_sign, confidence, at_edge = _gcc_phat(
         ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
         upsample=GCC_UPSAMPLE, max_lag_samples=max_lag,
     )
@@ -842,6 +930,23 @@ def _estimate_alignment(
     delay_us = raw_delay_us - parallax_us
 
     polarity = "normal" if polarity_sign >= 0 else "inverted"
+
+    status = ALIGNMENT_OK
+    if at_edge:
+        # A peak clamped at the search bound is not a measurement of the delay —
+        # the true delay likely exceeds the geometry prior. Fail explicitly at
+        # confidence 0 rather than returning a moderate-confidence wrong value.
+        status = ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW
+        confidence = 0.0
+        log_event(
+            logger,
+            "program_analysis.alignment_edge",
+            level=logging.WARNING,
+            phase=program.phase,
+            program_id=program.program_id,
+            lag_samples=round(lag_samples, 3),
+            search_window_ms=priors.align_search_ms,
+        )
 
     # Cross-check polarity against the flatter predicted sum.
     agrees = _flatter_sum_polarity(
@@ -857,6 +962,7 @@ def _estimate_alignment(
         polarity_sign=polarity_sign,
         polarity_agrees_with_sum=polarity_agrees,
         confidence=confidence,
+        status=status,
     )
 
 
@@ -1036,6 +1142,20 @@ def analyze_program_capture(
             f"capture rate {sample_rate} != program rate {program.sample_rate_hz}"
         )
     capture = np.asarray(samples, dtype=np.float64).ravel()
+    # Bound the capture BEFORE any full-rate FFT (kernel contract: defense at
+    # the FFT, 1 GB Pi). A legitimate conductor capture is the program plus a
+    # small phone-start lead; a stuck recording is truncated to the program
+    # duration plus CAPTURE_BOUND_MARGIN_S. A program that genuinely starts
+    # beyond the margin fails downstream location checks loudly instead of
+    # allocating hundreds of MB here.
+    capture = deconv.cap_capture_length(
+        capture,
+        sweep_len=program.total_samples,
+        sample_rate=sample_rate,
+        max_capture_seconds=(
+            program.total_samples / sample_rate + CAPTURE_BOUND_MARGIN_S
+        ),
+    )
     geometry = geometry or MeasurementGeometry()
     priors = priors or MeasurementPriors()
 

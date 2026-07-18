@@ -40,6 +40,9 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
+    ALIGNMENT_OK,
+    CAPTURE_BOUND_MARGIN_S,
     MeasurementGeometry,
     MeasurementPriors,
     _gcc_phat,
@@ -137,6 +140,137 @@ def test_measure_round_trip_recovers_drift_delay_polarity_trims(polarity_amp, ex
     trims = res.candidate.trim_db
     assert trims["woofer"] == pytest.approx(20.0 * np.log10(0.7), abs=0.3)
     assert trims["tweeter"] == pytest.approx(0.0, abs=0.3)
+
+
+def test_measure_negative_drift_round_trip():
+    """A slow capture clock (ε < 0) round-trips the same way a fast one does."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    tau_true = 25
+    eps = -80e-6
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
+        epsilon=eps,
+    )
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert res.drift.epsilon_ppm == pytest.approx(eps * 1e6, abs=2.0)
+    assert not res.glitch_detected
+    assert res.alignment.delay_us == pytest.approx(-tau_true / SR * 1e6, abs=5.0)
+    assert res.alignment.status == ALIGNMENT_OK
+
+
+def test_delay_beyond_search_window_is_refused():
+    """A true delay outside ±search_window must fail loud, not return a
+    moderate-confidence clamped value (gate finding S2a: tau=110 samples vs a
+    96-sample window once returned −2673 µs at confidence 0.575)."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    tau_true = 110  # beyond the default 2 ms ⇒ 96-sample window
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert res.alignment.status == ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW
+    assert res.alignment.confidence == 0.0
+    assert res.candidate.confidence == 0.0
+
+
+def test_delay_near_search_window_edge_is_accurate():
+    """A true delay just INSIDE the window is measured, not refused."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    tau_true = 90  # inside the 96-sample window, 6 samples from the edge
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert res.alignment.status == ALIGNMENT_OK
+    assert res.alignment.confidence > 0.0
+    assert res.alignment.delay_us == pytest.approx(-tau_true / SR * 1e6, abs=5.0)
+
+
+def test_oversized_capture_is_bounded_and_still_analyzes():
+    """A stuck long recording is truncated to program + margin before any
+    full-rate FFT (defense at the FFT, 1 GB Pi); the program at the head of
+    the capped window still analyzes correctly."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    tau_true = 30
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.8),
+        epsilon=0.0,
+    )
+    bound_samples = prog.total_samples + int(CAPTURE_BOUND_MARGIN_S * SR)
+    # A "stuck" tail far beyond the bound.
+    stuck = np.concatenate([
+        cap, np.random.default_rng(9).normal(0.0, 1e-4, 30 * SR)
+    ])
+    assert stuck.size > bound_samples
+    res = analyze_program_capture(prog, stuck, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert not res.glitch_detected
+    assert res.alignment.delay_us == pytest.approx(-tau_true / SR * 1e6, abs=5.0)
+
+
+def test_channel_map_fails_on_swapped_channels():
+    """Swapped driver wiring ⇒ each pilot window is noise-dominated (a driver
+    fed fully out-of-band content produces essentially no linear output), so
+    the pilot's energy is NOT concentrated in its declared band and channel-map
+    sanity fails.
+
+    The plants are double-convolved band-passes (~−88 dB stopband): a
+    single 4096-tap brick-wall mask leaks at ~−44 dB, which would leave a
+    coherent in-band ghost of the pilot ABOVE the noise floor — an artifact of
+    the fixture, not of a physical driver, which rolls off far deeper when fed
+    a fully disjoint band."""
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 1200.0)),
+        RoleBand("tweeter", 1, FrequencyBand(2500.0, 20000.0)),
+    ]
+    chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
+    pcm = render_program_pcm(chk)
+
+    def _deep_plant(delay, f_lo, f_hi, amp):
+        single = _band_impulse(delay, f_lo, f_hi, 1.0)
+        return amp * fftconvolve(single, single)  # stopband dB doubles
+
+    woofer_plant = _deep_plant(200, 150.0, 1200.0, 1.0)
+    tweeter_plant = _deep_plant(225, 2500.0, 20000.0, 0.8)
+
+    def _capture(ch0_plant, ch1_plant, seed):
+        mono = (
+            fftconvolve(pcm[:, 0], ch0_plant)[: pcm.shape[0]]
+            + fftconvolve(pcm[:, 1], ch1_plant)[: pcm.shape[0]]
+        )
+        cap = np.concatenate([np.zeros(500), mono, np.zeros(5000)])
+        return cap + np.random.default_rng(seed).normal(0.0, 3e-5, cap.size)
+
+    correct = analyze_program_capture(
+        chk, _capture(woofer_plant, tweeter_plant, 11), SR, priors=MeasurementPriors(),
+    )
+    assert correct.channel_map_ok is True
+
+    swapped = analyze_program_capture(
+        chk, _capture(tweeter_plant, woofer_plant, 12), SR, priors=MeasurementPriors(),
+    )
+    assert swapped.channel_map_ok is False
 
 
 def test_measure_uses_check_ambient_for_snr_verdicts():
@@ -282,14 +416,15 @@ def test_gcc_phat_sign_convention():
     base = _band_impulse(400, 800.0, 3200.0, 1.0, n=2048)
     sw = base
     st = np.roll(base, 30)  # tweeter LATER by 30 samples
-    lag, sign, conf = _gcc_phat(
+    lag, sign, conf, at_edge = _gcc_phat(
         st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
     assert lag == pytest.approx(30.0, abs=0.5)  # positive ⇒ st (tweeter) later
     assert sign == 1
+    assert not at_edge
     # Inverting the tweeter flips the correlation sign.
-    lag2, sign2, _ = _gcc_phat(
+    lag2, sign2, _conf2, _edge2 = _gcc_phat(
         -st, sw, sample_rate=SR, band_hz=(800.0, 3200.0),
         upsample=16, max_lag_samples=200,
     )
