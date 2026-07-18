@@ -71,6 +71,7 @@ from .staging import (
 
 if TYPE_CHECKING:
     from .measured_candidate import MeasuredElectricalCandidate
+    from .measured_crossover_candidate import MeasuredCrossoverCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -1148,7 +1149,9 @@ def build_baseline_profile_candidate(
     driver_domain_pair_trim_db: float = 0.0,
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
-    measured_candidate: MeasuredElectricalCandidate | None = None,
+    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
+        None
+    ),
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1182,9 +1185,15 @@ def build_baseline_profile_candidate(
         raise ValueError(f"unsupported crossover tuning owner: {tuning_owner!r}")
     if measured_candidate is not None:
         from .measured_candidate import MeasuredElectricalCandidate
+        from .measured_crossover_candidate import MeasuredCrossoverCandidate
 
-        if not isinstance(measured_candidate, MeasuredElectricalCandidate):
-            raise TypeError("measured_candidate must be MeasuredElectricalCandidate")
+        if not isinstance(
+            measured_candidate, (MeasuredElectricalCandidate, MeasuredCrossoverCandidate)
+        ):
+            raise TypeError(
+                "measured_candidate must be MeasuredElectricalCandidate or "
+                "MeasuredCrossoverCandidate"
+            )
         if tuning_owner != "automatic":
             raise ValueError("measured_candidate requires automatic tuning ownership")
     if driver_domain and program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
@@ -1660,6 +1669,33 @@ def build_baseline_profile_candidate(
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
             )
+            # A v2 measured candidate carrying delay/polarity re-proves its
+            # exact requested delay binding against the freshly compiled text
+            # before this candidate can ever reach "ready_to_apply" — the
+            # delay_graph + graph_safety proofs named in the crossover
+            # measurement v2 design (§5.8). A failed proof is a blocker issue,
+            # exactly like a failed CamillaDSP validation below: fail closed,
+            # no partial write reaches "ready". Scoped to the new candidate
+            # type only (isinstance), so a legacy MeasuredElectricalCandidate
+            # or a plain trims candidate is completely unaffected.
+            from .measured_crossover_candidate import (
+                MeasuredCrossoverCandidate,
+                MeasuredCrossoverCandidateError,
+                prove_candidate_config,
+            )
+
+            if (
+                isinstance(measured_candidate, MeasuredCrossoverCandidate)
+                and measured_candidate.alignment.delay_role is not None
+            ):
+                try:
+                    prove_candidate_config(measured_candidate, yaml)
+                except MeasuredCrossoverCandidateError as exc:
+                    issues.append(_issue(
+                        "blocker",
+                        "measured_candidate_alignment_proof_failed",
+                        str(exc),
+                    ))
         validation = validate(config_target).to_dict()
         if not validation.get("ok_to_apply") and validation.get("status") not in {
             "valid",
@@ -2116,6 +2152,9 @@ async def apply_baseline_profile(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
+        None
+    ),
     refresh_inputs: Callable[
         [],
         tuple[
@@ -2129,7 +2168,15 @@ async def apply_baseline_profile(
         validate_camilla_config
     ),
 ) -> dict[str, Any]:
-    """Serialize candidate proof, compile, load, confirmation, and rollback."""
+    """Serialize candidate proof, compile, load, confirmation, and rollback.
+
+    ``measured_candidate`` is optional and defaults to ``None`` so every
+    existing caller is byte-identical; passing one threads
+    :func:`build_baseline_profile_candidate`'s ``measured_candidate`` seam
+    through this same atomic apply-with-rollback transaction (see
+    ``jasper.active_speaker.measured_crossover_candidate`` for the v2 measured
+    candidate that carries optional delay/polarity).
+    """
 
     async with dsp_writer_lock(
         baseline_config_path(config_path).parent,
@@ -2155,6 +2202,7 @@ async def apply_baseline_profile(
             preserved_applied_profile=preserved_applied_profile,
             expected_candidate_fingerprint=expected_candidate_fingerprint,
             on_candidate_verified=on_candidate_verified,
+            measured_candidate=measured_candidate,
             validate=validate,
         )
 
@@ -2178,6 +2226,9 @@ async def _apply_baseline_profile_locked(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
+        None
+    ),
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -2195,6 +2246,10 @@ async def _apply_baseline_profile_locked(
     from the candidate builder. The follower branch of the multiroom reconciler
     passes follower-specific ``state_path`` / ``config_path`` alongside these so
     the solo baseline state is not overwritten.
+
+    ``measured_candidate`` forwards unchanged to
+    :func:`build_baseline_profile_candidate`; ``None`` (the default) keeps
+    every existing caller byte-identical.
     """
 
     state_target = baseline_profile_state_path(state_path)
@@ -2215,6 +2270,7 @@ async def _apply_baseline_profile_locked(
             driver_domain_pair_trim_db=driver_domain_pair_trim_db,
             tuning_owner=tuning_owner,
             preserved_applied_profile=preserved_applied_profile,
+            measured_candidate=measured_candidate,
             validate=validate,
         )
 
