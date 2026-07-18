@@ -7383,6 +7383,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         )
                     )
                 except ValueError as e:
+                    # W6 finding: a refused session start was previously
+                    # invisible in journalctl — the 400 reached the browser
+                    # but nothing landed in the journal to debug it from.
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_refused",
+                        level=logging.WARNING,
+                        route=path,
+                        reason=str(e),
+                    )
                     self._send_json(
                         {"ok": False, "error": str(e)},
                         status=HTTPStatus.BAD_REQUEST,

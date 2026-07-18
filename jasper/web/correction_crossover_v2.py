@@ -859,6 +859,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         ExcitationSafetyPlanError,
         resolve_driver_excitation_ceilings,
     )
+    from jasper.active_speaker.playback_route import resolve_active_playback_device
     from jasper.audio_measurement.program import RoleBand
     from jasper.output_topology import load_output_topology
 
@@ -915,7 +916,10 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     session_volume_db = derive_session_volume_db(
         safety_profile, [role_targets["woofer"], role_targets["tweeter"]]
     )
-    playback_device = str(getattr(topology, "playback_device", None) or "")
+    playback_device, _playback_device_source = resolve_active_playback_device(
+        topology
+    )
+    playback_device = str(playback_device or "")
     if not playback_device:
         raise CrossoverV2Refused(
             "the active output device is not declared; finish speaker setup"

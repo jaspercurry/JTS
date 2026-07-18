@@ -15,6 +15,7 @@ so a static render needs no hardware.
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -507,6 +508,30 @@ def test_known_post_routes_reach_csrf_guard():
     # and is deliberately absent rather than implicitly accepting null SNR.
     response = _drive("/crossover/driver-capture", method="POST", body=b"wav")
     assert b"404" in response.split(b"\r\n", 1)[0]
+
+
+def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
+    """W6 finding: a refused v2 session/verify start (CrossoverV2Refused or any
+    other precondition ValueError) mapped straight to a 400 with NO journal
+    signal — the failed session-start was invisible in journalctl. The 400
+    response is correct for the browser; the gap was purely observability."""
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    caplog.set_level(logging.WARNING, logger=correction_setup.logger.name)
+
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    records = [
+        r for r in caplog.records
+        if r.getMessage().startswith("event=correction.crossover_v2_refused")
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "route=/crossover/v2/session" in message
+    assert "phone-mic relay capture is not configured" in message
 
 
 # ---------------------------------------------------------------------------
