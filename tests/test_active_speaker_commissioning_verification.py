@@ -7,12 +7,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker import commissioning_capture_producer as capture_module
+from jasper.active_speaker import commissioning_verification as verification_module
 from jasper.active_speaker.commissioning_capture_producer import (
     SummedCaptureProducer,
 )
@@ -26,8 +28,13 @@ from jasper.active_speaker.commissioning_run import (
     CommissioningRunStore,
 )
 from jasper.active_speaker.commissioning_verification import (
+    CommissioningVerificationError,
     CommissioningVerificationService,
     read_commissioning_room_authority,
+)
+from jasper.active_speaker.runtime_contract import (
+    GraphSafety,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
 )
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
@@ -36,6 +43,26 @@ from jasper.audio_measurement.evidence_identity import (
 from jasper.audio_measurement.excitation_artifacts import canonical_admission_bytes
 from tests.test_active_speaker_commissioning_apply import _apply
 from tests.test_active_speaker_commissioning_receipt import _admission
+
+
+@pytest.fixture(autouse=True)
+def _host_proved_bass_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def classify(*args, **kwargs):
+        return GraphSafety(
+            classification="approved_active_runtime",
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": (
+                    NO_BASS_EXTENSION_PROFILE_SUMMARY
+                )
+            },
+        )
+
+    monkeypatch.setattr(
+        verification_module,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
 
 
 def _direct_artifact(
@@ -123,6 +150,208 @@ def _post_apply_proof(store, harness, operation, counter, *, verdict="blend_ok")
         admission=admission,
         generation_artifact=generation,
     )
+
+
+@pytest.mark.asyncio
+async def test_one_live_authority_proof_threads_exact_summary_under_writer_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness, _candidate, _apply_result, _state, _previous, port, _load = (
+        await _apply(tmp_path, monkeypatch)
+    )
+    store = harness.evidence_store
+    summary = {
+        "authority_valid": True,
+        "runtime_block_required": False,
+    }
+    authority_paths = {
+        "statefile_path": tmp_path / "statefile.yml",
+        "applied_baseline_path": tmp_path / "applied-baseline.json",
+        "profile_path": tmp_path / "bass-profile.json",
+        "intent_path": tmp_path / "bass-intent.json",
+        "staged_metadata_path": tmp_path / "staged-metadata.json",
+    }
+    port = replace(port, _bass_extension_authority_paths=authority_paths)
+    lock_held = False
+    proof_calls = 0
+    classified_topology = None
+
+    @asynccontextmanager
+    async def writer_lock(config_dir, *, source):
+        nonlocal lock_held
+        assert config_dir == str(tmp_path)
+        assert source == verification_module.POST_APPLY_CAPTURE_SOURCE
+        assert lock_held is False
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    async def classify(
+        topology,
+        *,
+        read_active_graph_text,
+        **kwargs,
+    ):
+        nonlocal classified_topology
+        nonlocal proof_calls
+        proof_calls += 1
+        classified_topology = topology
+        assert lock_held is True
+        assert read_active_graph_text is port.read_active_raw
+        assert kwargs == authority_paths
+        return GraphSafety(
+            classification="approved_active_runtime",
+            allowed=True,
+            details={"bass_extension_profile_summary": summary},
+        )
+
+    fresh_summaries: list[object] = []
+    original_fresh_readback = verification_module._fresh_readback
+
+    def fresh_readback(exact, *, bass_profile_summary):
+        fresh_summaries.append(bass_profile_summary)
+        return original_fresh_readback(
+            exact,
+            bass_profile_summary=bass_profile_summary,
+        )
+
+    monkeypatch.setattr(verification_module, "dsp_writer_lock", writer_lock)
+    monkeypatch.setattr(
+        verification_module,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
+    monkeypatch.setattr(verification_module, "_fresh_readback", fresh_readback)
+    monkeypatch.setattr(
+        capture_module,
+        "active_region_threshold_profile_fingerprint",
+        lambda: harness.plan.authority.threshold_profile_fingerprint,
+    )
+
+    async def capture_post_apply(self, operation, context):
+        assert lock_held is True
+        assert classified_topology is self.topology
+        assert context.bass_profile_summary is summary
+        assert (await context.fresh_readback()).bass_profile_summary is summary
+        assert (await context.fresh_readback()).bass_profile_summary is summary
+        proof = _post_apply_proof(store, harness, operation, 1)
+        return type("CaptureResult", (), {"payload": proof})()
+
+    monkeypatch.setattr(
+        SummedCaptureProducer,
+        "capture_post_apply",
+        capture_post_apply,
+    )
+
+    result = await harness.service.capture_post_apply(
+        port,
+        raw_capture_transport=lambda _play: None,
+        config_dir=str(tmp_path),
+    )
+
+    assert result["capture_ordinal"] == 1
+    assert proof_calls == 1
+    assert len(fresh_summaries) == 4
+    assert all(item is summary for item in fresh_summaries)
+    assert lock_held is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authority_kind", ["unsafe", "missing", "malformed"])
+async def test_unproved_live_authority_refuses_before_capture_or_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authority_kind: str,
+) -> None:
+    harness, _candidate, _apply_result, _state, _previous, port, _load = (
+        await _apply(tmp_path, monkeypatch)
+    )
+    monkeypatch.setattr(
+        capture_module,
+        "active_region_threshold_profile_fingerprint",
+        lambda: harness.plan.authority.threshold_profile_fingerprint,
+    )
+    summary = NO_BASS_EXTENSION_PROFILE_SUMMARY
+    if authority_kind == "unsafe":
+        authority = GraphSafety(
+            classification="unsafe",
+            allowed=False,
+            issues=(
+                {
+                    "severity": "blocker",
+                    "code": "test_authority_unsafe",
+                    "message": "test authority is unsafe",
+                },
+            ),
+            details={"bass_extension_profile_summary": summary},
+        )
+    elif authority_kind == "missing":
+        authority = GraphSafety(
+            classification="approved_active_runtime",
+            allowed=True,
+        )
+    else:
+        authority = GraphSafety(
+            classification="approved_active_runtime",
+            allowed=True,
+            details={"bass_extension_profile_summary": "invalid"},
+        )
+    proof_calls = 0
+
+    async def classify(*args, **kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        return authority
+
+    producer_called = False
+    transport_called = False
+
+    async def capture_post_apply(self, operation, context):
+        nonlocal producer_called
+        producer_called = True
+        raise AssertionError("unproved authority must refuse before producer use")
+
+    async def transport(play):
+        nonlocal transport_called
+        transport_called = True
+        raise AssertionError("unproved authority must refuse before audio transport")
+
+    monkeypatch.setattr(
+        verification_module,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
+    monkeypatch.setattr(
+        SummedCaptureProducer,
+        "capture_post_apply",
+        capture_post_apply,
+    )
+    before = {
+        path.relative_to(harness.evidence_store.bundle_dir)
+        for path in harness.evidence_store.bundle_dir.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(CommissioningVerificationError) as raised:
+        await harness.service.capture_post_apply(
+            port,
+            raw_capture_transport=transport,
+            config_dir=str(tmp_path),
+        )
+
+    after = {
+        path.relative_to(harness.evidence_store.bundle_dir)
+        for path in harness.evidence_store.bundle_dir.rglob("*")
+        if path.is_file()
+    }
+    assert raised.value.code == "graph_authority_unproven"
+    assert proof_calls == 1
+    assert producer_called is False
+    assert transport_called is False
+    assert after == before
 
 
 @pytest.mark.asyncio

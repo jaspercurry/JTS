@@ -118,14 +118,16 @@ def assert_correction_graph_safe(
     """Refuse a generated graph using host-proved immutable bass evidence."""
 
     topology = topology or _load_topology_for_correction()
+    if bass_profile_summary is not None and not isinstance(
+        bass_profile_summary, Mapping
+    ):
+        raise CorrectionRuntimeSafetyError(
+            "room-correction bass authority evidence is invalid"
+        )
     graph = classify_camilla_graph(
         topology=topology,
         text=text,
-        bass_profile_summary=(
-            bass_profile_summary
-            if isinstance(bass_profile_summary, Mapping)
-            else NO_BASS_EXTENSION_PROFILE_SUMMARY
-        ),
+        bass_profile_summary=bass_profile_summary,
     )
     if graph.allowed:
         return

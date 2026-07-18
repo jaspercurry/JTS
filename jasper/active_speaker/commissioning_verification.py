@@ -62,6 +62,7 @@ from .commissioning_runtime import (
     CommissioningRuntimePort,
     snapshot_exact_dsp_state,
 )
+from .runtime_contract import classify_active_bass_extension_graph
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.null_walk import NullWalkSpec
@@ -191,7 +192,11 @@ class PostApplyCaptureOperation:
         return self.required_target.target_fingerprint
 
 
-def _fresh_readback(exact: Any) -> CommissioningFreshReadback:
+def _fresh_readback(
+    exact: Any,
+    *,
+    bass_profile_summary: Mapping[str, Any],
+) -> CommissioningFreshReadback:
     state = exact.state
     graph = NormalizedActiveRawIdentity(state["normalized_active_raw"])
     volume = state["listening_volume_db"]
@@ -210,6 +215,7 @@ def _fresh_readback(exact: Any) -> CommissioningFreshReadback:
         config_path=str(state["config_path"]),
         listening_volume_db=value,
         delay_confirmation=None,
+        bass_profile_summary=bass_profile_summary,
     )
 
 
@@ -224,13 +230,45 @@ async def _capture_current_graph(
     """Hold the writer lock and prove the applied graph before both admissions."""
 
     async with dsp_writer_lock(config_dir, source=POST_APPLY_CAPTURE_SOURCE):
+        from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+        from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+        from jasper.active_speaker.staging import staged_metadata_path
+        from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+        from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+
+        authority_paths = port._bass_extension_authority_paths or {
+            "statefile_path": Path(DEFAULT_CAMILLA_STATEFILE),
+            "applied_baseline_path": baseline_profile_state_path(),
+            "profile_path": DEFAULT_PROFILE_PATH,
+            "intent_path": BASS_EXTENSION_APPLY_INTENT_PATH,
+            "staged_metadata_path": staged_metadata_path(),
+        }
+        authority = await classify_active_bass_extension_graph(
+            producer.topology,
+            read_active_graph_text=port.read_active_raw,
+            **authority_paths,
+        )
+        bass_profile_summary = authority.details.get(
+            "bass_extension_profile_summary"
+        )
+        if authority.allowed is not True or not isinstance(
+            bass_profile_summary, Mapping
+        ):
+            raise CommissioningVerificationError(
+                "graph_authority_unproven",
+                "live CamillaDSP graph and bass-extension authority could not be proved",
+            )
+
         initial_exact = await snapshot_exact_dsp_state(port)
         if initial_exact.fingerprint != applied.fresh_readback_fingerprint:
             raise CommissioningVerificationError(
                 "applied_readback_stale",
                 "the live graph, config path, or listening volume changed after apply",
             )
-        initial = _fresh_readback(initial_exact)
+        initial = _fresh_readback(
+            initial_exact,
+            bass_profile_summary=bass_profile_summary,
+        )
 
         async def fresh() -> CommissioningFreshReadback:
             exact = await snapshot_exact_dsp_state(port)
@@ -239,7 +277,10 @@ async def _capture_current_graph(
                     "applied_readback_stale",
                     "the applied graph changed before admitted playback",
                 )
-            return _fresh_readback(exact)
+            return _fresh_readback(
+                exact,
+                bass_profile_summary=bass_profile_summary,
+            )
 
         result: AdmittedCaptureCallbackResult[
             AdmittedCaptureProof
@@ -252,6 +293,7 @@ async def _capture_current_graph(
                 listening_volume_db=initial.listening_volume_db,
                 delay_confirmation=None,
                 fresh_readback=fresh,
+                bass_profile_summary=bass_profile_summary,
             ),
         )
         await fresh()
