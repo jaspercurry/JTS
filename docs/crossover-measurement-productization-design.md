@@ -261,10 +261,12 @@ ProgramAnalysis`:
    `_capture_to_magnitude` locator).
 2. **Segment integrity:** per-segment peak/clip runs; schedule residuals.
 3. **Drift (MEASURE):** ε = measured separation of the two woofer IRs /
-   scheduled − 1. The baselines available (sweep-to-repeat, plus schedule
-   residuals across all located segments) must agree within threshold —
-   disagreement ⇒ glitch ⇒ reject capture (one retry). ε is stored with the
-   evidence.
+   scheduled − 1, derived from the **longest available baseline** (the
+   repeat pair spans the whole program by construction; the 2026-07-18 bench
+   probe showed the short-baseline estimate is ~10× noisier). The baselines
+   available (sweep-to-repeat, plus schedule residuals across all located
+   segments) must agree within threshold — disagreement ⇒ glitch ⇒ reject
+   capture (one retry). ε is stored with the evidence.
 4. **Per-driver response:** deconvolve → `direct_arrival_window` + first-
    reflection gate → complex TF, mic cal applied; band SNR verdicts via the
    existing split policy; validity floor from the gate width.
@@ -374,13 +376,20 @@ integrates all; W6 gates "done."
 - VERIFY summed ripple ≤ ±1.5 dB through Fc on the reference hardware.
 - Wall-clock: mic placement → verified apply ≤ 5 min for a 2-way.
 
-Empirical gates running alongside (not blocking W1–W4): the JTS3 + UMIK-2
-drift probe (measured ε magnitude/stability between the DAC8x clock and a
-desktop-USB capture chain) sizes the drift-correction thresholds; W6 measures
-the same quantities through the real phone path. The design is robust to the
-answer either way — every MEASURE capture carries its own drift/glitch
-verdict, so population variance degrades to per-session retries, not silent
-wrong alignments.
+Empirical gates: the JTS3 + UMIK-2 bench probe ran 2026-07-18 (five trials,
+three scheduled sweeps per capture at 0/3/10 s through the mux test-gate →
+`correction` lane → production chain; IR peak-to-noise 42–44 dB): **measured
+ε ≈ 29.3–30.0 ppm, constant within each capture (0.1–2.2 ppm intra-trial
+spread) and stable across trials (σ ≤ 0.4 ppm on the mid/long baselines)**.
+Residual relative-delay error after a repeated-sweep correction projects to
+~0.6–4.1 µs (1σ) for a ~10 s program — comfortably inside the ±20.8 µs
+budget — while the short 3 s baseline alone is ~10× noisier, hence the
+longest-baseline rule in §5.6.3. Uncorrected, the same rig would accumulate
+~200–300 µs across a program — confirming §3.1's "the repeat is mandatory."
+W6 re-measures these quantities through the real phone path. The design is
+robust to population variance either way — every MEASURE capture carries its
+own drift/glitch verdict, so a bad clock degrades to a per-session retry, not
+a silent wrong alignment.
 
 ## 8. Primary sources
 
