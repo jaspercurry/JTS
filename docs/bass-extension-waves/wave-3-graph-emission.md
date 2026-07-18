@@ -1,13 +1,16 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 9 (2026-07-17; final driver-domain amendment).** Static graph groundwork remains
+> **Revision 10 (2026-07-17; exact-head contract repair).** Static graph
+> groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
 > an explicit graph-classification boundary, one predecessor-aware commit
 > owner, and a durable profile+DSP recovery contract owned by the
 > existing correction process. Wave 5 is not yet authorized to arm
-> the graph; see its revision 9 safety gate. Findings and rationale
-> are in the changelog.
+> the graph; see its revision 9 safety gate. Revision 10 pins live
+> selected-file provenance, one correction evidence handoff, whole-graph
+> carrier re-proof, and repeated-cancellation rollback drain. Findings
+> and rationale are in the changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–2 merged AND the Wave-0
@@ -76,7 +79,14 @@ hide that structural difference.
    immutable carrier; the latter is **not** your apply entry point.
 8. `jasper/sound/graph_carrier.py` — the active-baseline recompose
    path and how current preference/room/trim overlays are preserved.
-9. `tests/test_active_speaker_runtime_contract.py` — the red-team
+9. `jasper/correction/session.py` `MeasurementSession.apply`, then
+   `jasper/correction/runtime_safety.py` and the owning apply seam in
+   `jasper/web/correction_setup.py` — follow the existing writer-lock
+   guard and graph-evidence flow end to end.
+10. `jasper/active_speaker/commissioning_apply.py`
+   `_shielded_restore_locked` — the established repeated-cancellation
+   drain pattern; copy its semantics, not a new rollback abstraction.
+11. `tests/test_active_speaker_runtime_contract.py` — the red-team
    test style you must extend.
 
 ## Preflight facts
@@ -157,7 +167,8 @@ Modify:
       profile_path: Path | None = None,
       intent_path: Path | None = None,
       staged_metadata_path: Path | None = None,
-      desired_profile: BassExtensionProfile | None = None,
+      desired_profile: BassExtensionProfile | None | object =
+          _BASS_PROFILE_EVIDENCE_OMITTED,
   ) -> GraphSafety
 
   async classify_active_bass_extension_graph(
@@ -192,7 +203,28 @@ Modify:
   `classify_active_bass_extension_graph` also parses the selector and,
   inside the same snapshot, awaits live readback and requires its
   normalized fingerprint to equal the stable boot-selected file. It
-  never treats path equality alone as active-graph proof.
+  never treats path equality alone as active-graph proof. CamillaDSP's
+  `active_raw` is the executable semantic/readback witness only: compare
+  its normalized parsed-YAML fingerprint with the stable selected-file
+  bytes, but do **not** send `active_raw` to the canonical classifier.
+  CamillaDSP strips comments, including the bounded `# Source:`
+  provenance used to distinguish a legal saved baseline. After the
+  complete paired snapshot and semantic equality succeed, classify the
+  stable selected-file text so its original provenance remains available
+  to the existing structural classifier. This does not trust a stale
+  file: both selector targets, both selected-file reads, every paired
+  evidence file, and live semantic equality must all agree inside the
+  same bounded sandwich. Never synthesize provenance from a path or
+  filename, copy a selected-file comment into mismatched live text, or
+  accept a selected file whose bounded provenance/structure fails the
+  existing classifier. A read/decode/parse failure, non-string live
+  response, normalized live/selected mismatch, selector/file change, or
+  other sandwich instability exhausts the one whole-sandwich retry and
+  returns the existing fail-closed
+  `bass_extension_active_snapshot_unstable` result. Stable selected text
+  whose provenance or structure is invalid reaches the canonical
+  classifier and preserves that classifier's specific unsafe issue code;
+  it is not relabeled as snapshot instability.
 
   `persisted_candidate` exists only for the current
   `safe_graph_for_current_topology` startup/fallback decision, whose
@@ -236,8 +268,23 @@ Modify:
   candidate sandwich is allowed, then instability fails closed.
   `desired` forbids all paths
   and callbacks, requires in-memory `graph_text`, applied-baseline
-  state, and desired profile, and performs no disk read. The boundary
-  owns all profile evaluation; callers never parse profile/intent/
+  state, and **explicit** profile evidence, and performs no disk read.
+  Define one private module sentinel
+  `_BASS_PROFILE_EVIDENCE_OMITTED = object()` solely to distinguish an
+  omitted keyword from explicit `desired_profile=None`; this is not a
+  snapshot/wrapper type. For `desired`, accept only a
+  `BassExtensionProfile` or explicit `None`: a profile serializes to the
+  existing evaluated snapshot input, while explicit `None` supplies the
+  existing no-runtime-profile summary and proves the ordinary no-block
+  graph. Omission and every other object are
+  `bass_extension_source_invalid`. Every persisted source requires the
+  sentinel default and rejects even explicit `None`, because persisted
+  absence must come from the paired profile-path read. This preserves
+  the rule that omitted low-level bass evidence is never interpreted as
+  no profile while allowing the transaction to prove a missing,
+  bypassed, stale, or otherwise non-accepted natural predecessor without
+  inventing profile bytes. The boundary owns all profile evaluation;
+  callers never parse profile/intent/
   statefile/staged-metadata bytes or choose bass policy themselves.
   `Mapping[str, Any]` and the existing `GraphSafety` are the concrete
   merged types;
@@ -322,7 +369,51 @@ Modify:
   scope. If the current
   overlays cannot be reproduced from their existing canonical inputs,
   STOP; never parse-and-splice the loaded YAML and never silently reset
-  a program layer.
+  a program layer. `recompose_active_baseline_for_bass_extension()` must
+  independently re-prove the **whole** returned YAML before returning it:
+  call the canonical synchronous boundary with
+  `evidence_source="desired"`, the supplied topology, immutable applied
+  baseline mapping, explicit in-memory profile evidence (including
+  `None` for a proved no-runtime-profile predecessor), and recomposed
+  graph text.
+  This is the existing full runtime contract, not a direct call to only
+  `bass_extension_block_valid`. If the proof is not allowed, return no
+  YAML and raise `CarrierCannotHostEq` with the stable reason code
+  `bass_extension_recompose_unavailable`, preserving the helper's
+  existing refusal vocabulary; the caller must not validate, write,
+  load, or publish the refused candidate. Pin the independent boundary
+  with fault injection that makes the lower recomposer return a
+  syntactically valid active graph missing a required woofer low-pass:
+  the carrier helper itself must refuse it even when its bass pair is
+  otherwise valid. Also pin successful whole-graph proof for explicit
+  `None` (missing-profile predecessor) and for at least one bypassed or
+  stale no-block predecessor; neither may bypass this carrier proof.
+- `jasper/correction/session.py` — seam-only signature change in
+  `MeasurementSession.apply`: the existing keyword-only guard becomes
+  `prepare_guard: Callable[[], Awaitable[Mapping[str, Any]]] | None =
+  None`.
+  On the topology-aware `camilla_get_config` path, invoke it under the
+  existing DSP-writer lock, require the returned value to be a
+  `Mapping`, retain it as `bass_profile_summary`, and pass that exact
+  immutable mapping to
+  `assert_correction_graph_safe(result.yaml,
+  bass_profile_summary=bass_profile_summary)`. Missing/non-mapping
+  evidence refuses before the candidate can be loaded. Preserve the
+  setter-only flat compatibility path, which continues to use
+  `assert_flat_apply_safe` and needs no bass evidence.
+
+  `jasper/web/correction_setup.py` remains the policy host.
+  `_assert_room_authority_current(...) -> Mapping[str, Any]` must return
+  the `bass_extension_profile_summary` from the canonical
+  `classify_active_bass_extension_graph` result already obtained during
+  that same writer-lock guard invocation, after the existing Room
+  authority binding succeeds. It may thread that `GraphSafety` through
+  its private readiness helpers, but must not parse profile/intent files,
+  reconstruct bass policy, substitute the no-profile summary, or perform
+  a second canonical live proof merely to obtain the mapping. The
+  session consumes evidence; it does not own bass policy. Existing
+  passive/no-profile graphs still arrive as an explicit host-proved
+  summary, not as omitted evidence.
 - `jasper/bass_extension/__init__.py` — `apply_bass_extension()` /
   `bypass_bass_extension()` seams that recompose from the immutable
   applied baseline snapshot and reuse the existing DSP writer lock,
@@ -442,10 +533,19 @@ Modify:
      if a crash leaves an intent after a successful proof, recovery
      still conservatively restores the predecessor.
 
-  Cancellation after intent publication drains a shielded exact
-  rollback before propagating cancellation (mirror
-  `commissioning_apply._shielded_restore_locked`). A process kill or
-  power loss is handled from the durable record.
+  Cancellation after intent publication drains one shielded exact
+  rollback task before propagating cancellation, with the established
+  `commissioning_apply._shielded_restore_locked` semantics: create the
+  rollback task once; while it is not done, repeatedly await
+  `asyncio.shield(task)` and remember every caught `CancelledError`;
+  then call `task.result()` only after completion. Never await the still-
+  pending rollback task unshielded after the first cancellation, because
+  a second cancellation could cancel exact restoration. If restoration
+  succeeds, re-propagate cancellation only after graph, profile, and
+  intent state are exact and durable. If restoration fails, retain the
+  intent and surface the existing recovery-required failure; cancellation
+  must not hide a rollback failure. A process kill or power loss is
+  handled from the durable record.
 
   `recover_pending_bass_extension_apply()` is idempotent, runs under
   the same writer lock while the host holds `measurement_window()`,
@@ -562,6 +662,8 @@ Modify:
   `tests/test_active_speaker_commissioning_runtime.py`,
   `tests/test_active_speaker_graph_evidence.py`,
   `tests/test_active_speaker_local_subwoofer.py`,
+  `tests/test_correction_session.py` (seam-only pins for the explicit
+  writer-lock evidence handoff),
   `tests/test_correction_setup.py`,
   `tests/test_correction_status_and_bundles.py`,
   `tests/test_multiroom_active_leader_config.py`, and
@@ -575,6 +677,37 @@ Modify:
   accepted/current sealed profile's natural pair on the local
   driver-domain chain, while apply/replacement/bypass in either bonded
   role refuses before changing the profile or either Camilla graph.
+
+  `tests/test_active_speaker_runtime_contract.py` must additionally pin
+  that comment-free but semantically equal `active_raw` proves the stable
+  selected file while canonical classification still sees its bounded
+  `# Source:` provenance. A mismatched live graph, changed selector, or
+  changed/unparseable selected file exhausts the retry and pins
+  `bass_extension_active_snapshot_unstable`. For structurally parseable,
+  semantically equal selected text with missing/malformed provenance,
+  pin that the async result preserves the same specific issue code as
+  the synchronous persisted classifier for that stable snapshot and is
+  not relabeled as snapshot instability. The same module pins the
+  sentinel boundary: explicit `None` is legal only for a no-block
+  `desired` graph; omitted desired evidence, any other object, and
+  explicit `None` on either persisted source are
+  `bass_extension_source_invalid`. `tests/test_correction_setup.py` and
+  `tests/test_correction_session.py` must jointly prove that the web host
+  returns the exact canonical summary through `prepare_guard`, the
+  session forwards that same object to `assert_correction_graph_safe`,
+  and missing/non-mapping evidence prevents load. Do not make
+  `MeasurementSession` read bass authority itself.
+
+  `tests/test_sound_graph_carrier.py` must include the missing-woofer-
+  low-pass fault injection described above and assert the stable
+  `bass_extension_recompose_unavailable` refusal before the candidate
+  escapes. It must also prove the same whole-graph boundary accepts
+  explicit-`None` missing-profile and bypassed/stale no-block
+  predecessors; omission remains `bass_extension_source_invalid`.
+  `tests/test_bass_extension_profile.py` must cancel an in-progress
+  rollback at least twice, prove the single restore task is never
+  cancelled, and observe outer `CancelledError` only after exact graph
+  bytes/mode, profile bytes/absence, and intent removal are durable.
 
   Add a static ownership assertion that
   `allow_pending_bass_extension_recovery=True` appears only in the
@@ -670,6 +803,17 @@ an exact two-fingerprint crash-recovery proof, not a state wildcard.
   `evidence_source="desired"`. The
   low-level classifier performs no disk I/O, and omitted evidence
   never means a missing profile.
+- Live provenance and correction handoff: a legal selected solo
+  baseline with bounded `# Source:` provenance and comment-free,
+  semantically equal Camilla `active_raw` is approved; classification
+  consumes the selected text only after the full live-equality sandwich.
+  Every mismatch remains unsafe. Room apply receives the exact summary
+  from that host proof through its writer-lock guard and refuses omitted,
+  stale, reconstructed, or non-mapping evidence before load.
+- Carrier independence: fault-inject a recomposed graph that retains a
+  valid sealed bass pair but loses another required Layer-A protection;
+  `recompose_active_baseline_for_bass_extension` independently invokes
+  the whole-graph desired boundary and refuses before returning YAML.
 - Commit/recovery ordering: Wave 4 never invokes the profile saver or
   graph loader directly; it enters `measurement_window()` and calls
   the one Wave 3 owner. Cancellation is shielded. A fresh
@@ -682,6 +826,10 @@ an exact two-fingerprint crash-recovery proof, not a state wildcard.
   a direct controller mutation in both acquisition orders. Desired
   graph/profile publication, predecessor graph/profile restoration or
   removal, and intent clearing are power-loss durable.
+  Repeated cancellation during rollback cannot cancel its one restore
+  task: shield/drain continues through every cancellation and propagates
+  cancellation only after exact durable restoration; rollback failure
+  instead retains the intent and remains the surfaced failure.
 - Identity: save → accept/apply → reload/evaluate remains current and
   `baseline_candidate_fingerprint(applied_snapshot)` is unchanged.
 
@@ -720,6 +868,7 @@ STOP and report — do not restructure the contract to fit.
   tests/test_sound_graph_carrier.py -q
 .venv/bin/pytest tests/ -q -k "emit_gate or camilla or bass_extension"
 .venv/bin/pytest tests/test_correction_runtime_safety.py \
+  tests/test_correction_session.py \
   tests/test_correction_setup.py \
   tests/test_correction_status_and_bundles.py \
   tests/test_active_speaker_cli.py \
@@ -735,6 +884,42 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Rev 10 (2026-07-17)** — exact-head review of draft PR #1574 at
+  `70eaa558329200c5cb6892b183a843ca526c3b46` (comment posted
+  2026-07-17T23:10:37Z) found two blockers and two should-fix gaps in
+  revision 9. First, the live boundary proved comment-free Camilla
+  `active_raw` equal to the selected file and then classified the
+  comment-free payload, losing the bounded baseline provenance required
+  by Room, commissioning, multiroom, apply, and recovery consumers.
+  Second, `MeasurementSession.apply` re-proved recomposed correction
+  YAML without the host's sealed-profile summary, and no clean fix fit
+  the revision-9 absolute allowlist. The remaining gaps were a Wave 3
+  carrier helper that trusted the lower recomposer without independently
+  running the whole-graph contract, and a rollback that awaited its task
+  unshielded after the first cancellation. Rationale: use `active_raw`
+  only for semantic/readback equality and classify the stable selected
+  bytes whose paired snapshot retains provenance; let the existing
+  writer-lock guard return the canonical summary to a seam-only
+  `MeasurementSession.apply` signature; require the carrier to invoke
+  the existing synchronous `desired` boundary; and copy the established
+  repeated-shield drain loop. The absolute allowlist grows only by
+  `jasper/correction/session.py` and
+  `tests/test_correction_session.py`; all other owning files and tests
+  were already listed. The first fresh full-document review of revision
+  10 then found that the frozen `desired_profile=None` default could not
+  distinguish omitted evidence from a legitimate missing/bypassed/stale
+  no-block predecessor, and that the live clause conflated sandwich
+  instability with stable structural-provenance refusal. The minimal
+  follow-up uses one private omission sentinel, requires explicit `None`
+  only for desired no-profile proof, and preserves the stable selected
+  classifier's own issue while reserving
+  `bass_extension_active_snapshot_unstable` for failed snapshots.
+  Rejected alternatives were synthesizing source
+  provenance, trusting an unmatched/stale selected file, parsing bass
+  authority inside the session, treating omitted evidence as no profile,
+  duplicating only the bass predicate in the carrier, or adding a new
+  transaction/cancellation abstraction.
 
 - **Rev 9 (2026-07-17)** — the final independent cross-path audit
   found that an accepted/current sealed profile requires the natural

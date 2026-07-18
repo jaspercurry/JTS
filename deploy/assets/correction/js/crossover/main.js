@@ -8,6 +8,7 @@ import { jtsConfirm } from '/assets/shared/js/dialog.js';
 
 const els = {
   verdict: document.getElementById('crossover-verdict'),
+  applied: document.getElementById('crossover-applied'),
   startOver: document.getElementById('crossover-start-over'),
   steps: document.getElementById('crossover-steps'),
   nudges: document.getElementById('crossover-nudges'),
@@ -73,6 +74,19 @@ function renderSteps(steps) {
     return item;
   });
   els.steps.replaceChildren(...rows);
+}
+
+// Durable "a crossover is applied" signal, separate from the per-run step
+// stepper above (crossover_envelope.py's `_applied_chip` / `applied` field):
+// a manual/automatic crossover can be applied while the CURRENT measurement
+// run is still mid-way, or hasn't started at all. `state === "none"` keeps
+// the chip hidden via the native `hidden` attribute (app.css's
+// `[hidden] { display: none !important; }`).
+function renderApplied(applied) {
+  const state = applied && applied.state ? String(applied.state) : 'none';
+  els.applied.hidden = state === 'none';
+  els.applied.textContent = state === 'none' ? '' : (applied.label || '');
+  els.applied.dataset.state = state;
 }
 
 function renderNudges(nudges) {
@@ -279,6 +293,7 @@ function renderActionRow(env) {
 function render(env) {
   envelope = env;
   els.verdict.textContent = env.verdict_text || '';
+  renderApplied(env.applied);
   renderSteps(env.steps);
   renderNudges(env.nudges);
   renderCandidateReview(env.candidate_review);
