@@ -504,10 +504,26 @@ def recompose_active_baseline_for_bass_extension(
         bass_extension_profile=desired_profile,
     )
     if yaml is not None:
-        return yaml
-    detail = (issues[0].get("message") if issues else None) or (
-        "the immutable applied baseline cannot be recomposed"
-    )
+        from jasper.active_speaker.runtime_contract import (
+            classify_bass_extension_graph,
+        )
+
+        proof = classify_bass_extension_graph(
+            topology,
+            evidence_source="desired",
+            graph_text=yaml,
+            applied_baseline_state=applied_profile,
+            desired_profile=desired_profile,
+        )
+        if proof.allowed:
+            return yaml
+        detail = (proof.issues[0].get("message") if proof.issues else None) or (
+            "the recomposed active baseline failed whole-graph proof"
+        )
+    else:
+        detail = (issues[0].get("message") if issues else None) or (
+            "the immutable applied baseline cannot be recomposed"
+        )
     raise CarrierCannotHostEq(
         "bass_extension_recompose_unavailable",
         f"JTS could not rebuild the active baseline: {detail}",

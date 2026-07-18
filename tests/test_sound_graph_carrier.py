@@ -20,6 +20,7 @@ protection:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from unittest import mock
 
 import pytest
@@ -43,10 +44,12 @@ from jasper.sound.graph_carrier import (
 )
 from jasper.sound.profile import SoundProfile
 from tests.test_active_speaker_runtime_contract import (
+    _applied_baseline,
     _active_baseline_yaml,
     _active_topology,
     _flat_yaml,
     _full_range_stereo,
+    _sealed_profile,
 )
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
@@ -685,6 +688,107 @@ def test_recompose_wrapper_refuses_when_evidence_unavailable(tmp_path):
             _recompose_active_baseline_with_eq(mock.sentinel.profile, out_path=None)
     assert err.value.reason_code == "active_baseline_recompose_unavailable"
     assert "save a fresh crossover preview" in err.value.message
+
+
+def test_bass_extension_recompose_reproves_missing_woofer_lowpass(
+    tmp_path,
+) -> None:
+    from jasper.sound.graph_carrier import (
+        recompose_active_baseline_for_bass_extension,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    profile = _sealed_profile(topology, applied)
+    emitted = _active_baseline_yaml(
+        "mono",
+        2,
+        bass_extension_profile=profile,
+    )
+    tampered = emitted.replace(
+        "names: [as_woofer_woofer_tweeter_lp, bass_ext_lt",
+        "names: [bass_ext_lt",
+    )
+    assert tampered != emitted
+    assert "bass_ext_lt" in tampered
+    assert "bass_ext_subsonic" in tampered
+
+    with mock.patch(
+        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
+        return_value=(tampered, []),
+    ), mock.patch(
+        "jasper.sound.graph_carrier.extract_room_peqs_from_config",
+        return_value=[],
+    ), mock.patch(
+        "jasper.sound.profile.load_profile",
+        return_value=SoundProfile(enabled=False),
+    ), mock.patch(
+        "jasper.sound.profile.build_sound_filters",
+        return_value=(),
+    ), mock.patch(
+        "jasper.sound.settings.load_sound_settings",
+        return_value=mock.sentinel.settings,
+    ), mock.patch(
+        "jasper.sound.settings.output_trim_db",
+        return_value=0.0,
+    ):
+        with pytest.raises(CarrierCannotHostEq) as exc:
+            recompose_active_baseline_for_bass_extension(
+                topology,
+                applied_profile=applied,
+                desired_profile=profile,
+                current_config_path=tmp_path / "selected.yml",
+            )
+
+    assert exc.value.reason_code == "bass_extension_recompose_unavailable"
+
+
+@pytest.mark.parametrize("profile_kind", ["missing", "bypassed"])
+def test_bass_extension_recompose_proves_no_block_predecessors(
+    tmp_path,
+    profile_kind,
+) -> None:
+    from jasper.sound.graph_carrier import (
+        recompose_active_baseline_for_bass_extension,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    desired_profile = None
+    if profile_kind == "bypassed":
+        desired_profile = replace(
+            _sealed_profile(topology, applied),
+            status="bypassed",
+        )
+    emitted = _active_baseline_yaml("mono", 2)
+
+    with mock.patch(
+        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
+        return_value=(emitted, []),
+    ), mock.patch(
+        "jasper.sound.graph_carrier.extract_room_peqs_from_config",
+        return_value=[],
+    ), mock.patch(
+        "jasper.sound.profile.load_profile",
+        return_value=SoundProfile(enabled=False),
+    ), mock.patch(
+        "jasper.sound.profile.build_sound_filters",
+        return_value=(),
+    ), mock.patch(
+        "jasper.sound.settings.load_sound_settings",
+        return_value=mock.sentinel.settings,
+    ), mock.patch(
+        "jasper.sound.settings.output_trim_db",
+        return_value=0.0,
+    ):
+        result = recompose_active_baseline_for_bass_extension(
+            topology,
+            applied_profile=applied,
+            desired_profile=desired_profile,
+            current_config_path=tmp_path / "selected.yml",
+        )
+
+    assert result == emitted
 
 
 # --- inv 6: refusals are typed with a stable reason_code ----------------

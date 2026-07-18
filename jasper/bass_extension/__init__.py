@@ -665,10 +665,15 @@ async def apply_bass_extension(
         finally:
             if not committed:
                 restore = asyncio.create_task(rollback())
-                try:
-                    await asyncio.shield(restore)
-                except asyncio.CancelledError:
-                    await restore
+                cancelled_during_restore = False
+                while not restore.done():
+                    try:
+                        await asyncio.shield(restore)
+                    except asyncio.CancelledError:
+                        cancelled_during_restore = True
+                restore.result()
+                if cancelled_during_restore:
+                    raise asyncio.CancelledError()
 
 
 async def bypass_bass_extension(*, profile_path: str | Path = "/var/lib/jasper/bass_extension_profile.json", **kwargs) -> None:

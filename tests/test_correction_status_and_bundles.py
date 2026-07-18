@@ -663,7 +663,17 @@ async def test_correction_apply_replaces_existing_room_peqs(
     async def fake_get_config() -> str:
         return loaded["path"]
 
-    await sess.apply(fake_set_config, camilla_get_config=fake_get_config)
+    async def prepare_guard():
+        return {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
+
+    await sess.apply(
+        fake_set_config,
+        camilla_get_config=fake_get_config,
+        prepare_guard=prepare_guard,
+    )
 
     assert sess.config_path is not None
     yaml = sess.config_path.read_text(encoding="utf-8")
@@ -709,6 +719,10 @@ async def test_correction_apply_runs_authority_guard_inside_dsp_lock(
 
     async def prepare_guard():
         guard_observations.append(lock_held)
+        return {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
 
     loaded = {"path": str(current)}
 

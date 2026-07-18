@@ -615,6 +615,139 @@ async def test_apply_failure_restores_exact_graph_and_profile(
 
 
 @pytest.mark.asyncio
+async def test_repeated_cancellation_during_rollback_drains_one_restore_task(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    applied = {**_applied_baseline(), "status": "applied"}
+    predecessor = _profile(applied_baseline=applied)
+    desired = replace(predecessor, status="bypassed")
+    (
+        _applied,
+        selected,
+        profile_path,
+        intent_path,
+        _statefile,
+        _cam,
+        paths,
+    ) = _transaction_harness(monkeypatch, tmp_path, predecessor=predecessor)
+    predecessor_graph = selected.read_bytes()
+    predecessor_profile = profile_path.read_bytes()
+    proof_started = asyncio.Event()
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+    proof_calls = 0
+    restore_tasks: list[asyncio.Task] = []
+    real_restore = bass_extension_module._restore_locked
+
+    async def active_proof(**_kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        if proof_calls == 2:
+            proof_started.set()
+            await asyncio.Event().wait()
+
+    async def controlled_restore(*args, **kwargs):
+        restore_task = asyncio.current_task()
+        assert restore_task is not None
+        restore_tasks.append(restore_task)
+        restore_started.set()
+        await release_restore.wait()
+        return await real_restore(*args, **kwargs)
+
+    monkeypatch.setattr(bass_extension_module, "_active_proof", active_proof)
+    monkeypatch.setattr(
+        bass_extension_module,
+        "_restore_locked",
+        controlled_restore,
+    )
+
+    apply_task = asyncio.create_task(apply_bass_extension(desired, **paths))
+    await proof_started.wait()
+    apply_task.cancel()
+    await restore_started.wait()
+    for _ in range(2):
+        apply_task.cancel()
+        await asyncio.sleep(0)
+        assert len(restore_tasks) == 1
+        assert restore_tasks[0].cancelled() is False
+    release_restore.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await apply_task
+
+    assert len(restore_tasks) == 1
+    assert restore_tasks[0].cancelled() is False
+    assert selected.read_bytes() == predecessor_graph
+    assert stat.S_IMODE(selected.stat().st_mode) == 0o664
+    assert profile_path.read_bytes() == predecessor_profile
+    assert not intent_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_rollback_failure_wins_over_repeated_cancellation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    applied = {**_applied_baseline(), "status": "applied"}
+    predecessor = _profile(applied_baseline=applied)
+    desired = replace(predecessor, status="bypassed")
+    *_, intent_path, _statefile, _cam, paths = _transaction_harness(
+        monkeypatch,
+        tmp_path,
+        predecessor=predecessor,
+    )
+    proof_started = asyncio.Event()
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+    proof_calls = 0
+    restore_tasks: list[asyncio.Task] = []
+
+    async def active_proof(**_kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        if proof_calls == 2:
+            proof_started.set()
+            await asyncio.Event().wait()
+
+    async def failing_restore(*_args, **_kwargs):
+        restore_task = asyncio.current_task()
+        assert restore_task is not None
+        restore_tasks.append(restore_task)
+        restore_started.set()
+        await release_restore.wait()
+        raise BassExtensionApplyError("rollback proof failed")
+
+    monkeypatch.setattr(bass_extension_module, "_active_proof", active_proof)
+    monkeypatch.setattr(
+        bass_extension_module,
+        "_restore_locked",
+        failing_restore,
+    )
+
+    apply_task = asyncio.create_task(apply_bass_extension(desired, **paths))
+    await proof_started.wait()
+    apply_task.cancel()
+    await restore_started.wait()
+    for _ in range(2):
+        apply_task.cancel()
+        await asyncio.sleep(0)
+        assert len(restore_tasks) == 1
+        assert restore_tasks[0].cancelled() is False
+    release_restore.set()
+
+    with pytest.raises(BassExtensionApplyError, match="rollback proof failed"):
+        await apply_task
+
+    assert restore_tasks[0].cancelled() is False
+    assert intent_path.exists()
+    assert bass_extension_state_summary(
+        paths["profile_path"],
+        intent_path=intent_path,
+    )["apply_recovery_required"] is True
+
+
+@pytest.mark.asyncio
 async def test_dsp_readback_failure_restores_both_authorities(monkeypatch, tmp_path):
     applied = {**_applied_baseline(), "status": "applied"}
     predecessor = _profile(applied_baseline=applied)

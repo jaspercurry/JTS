@@ -118,6 +118,7 @@ GRAPH_FLAT_FULL_RANGE = "flat_full_range"
 GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
 GRAPH_GUARDED_COMMISSIONING = "guarded_commissioning"
 GRAPH_APPROVED_ACTIVE_RUNTIME = "approved_active_runtime"
+_BASS_PROFILE_EVIDENCE_OMITTED = object()
 GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
 # The active-leader's camilla#1 program bake: a flat (no-Layer-A) program graph
 # whose playback is a File/pipe sink, not a DAC. Allowed regardless of topology
@@ -2850,11 +2851,15 @@ def classify_bass_extension_graph(
     profile_path: Path | None = None,
     intent_path: Path | None = None,
     staged_metadata_path: Path | None = None,
-    desired_profile: "BassExtensionProfile | None" = None,
+    desired_profile: "BassExtensionProfile | None | object" = (
+        _BASS_PROFILE_EVIDENCE_OMITTED
+    ),
 ) -> GraphSafety:
     """Canonical synchronous graph/evidence boundary."""
 
     if evidence_source == "desired":
+        from jasper.bass_extension.profile import BassExtensionProfile
+
         if (
             any(path is not None for path in (
                 statefile_path, candidate_path, applied_baseline_path,
@@ -2863,12 +2868,17 @@ def classify_bass_extension_graph(
             or candidate_kind is not None
             or not isinstance(graph_text, str)
             or not isinstance(applied_baseline_state, Mapping)
-            or desired_profile is None
+            or not (
+                desired_profile is None
+                or isinstance(desired_profile, BassExtensionProfile)
+            )
         ):
             return _unsafe_boundary("bass_extension_source_invalid", "desired evidence is incomplete")
-        desired_bytes = (
-            json.dumps(desired_profile.to_dict(), indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
+        desired_bytes = None
+        if desired_profile is not None:
+            desired_bytes = (
+                json.dumps(desired_profile.to_dict(), indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
         return _classify_bass_extension_snapshot(
             topology,
             graph_text=graph_text,
@@ -2883,7 +2893,7 @@ def classify_bass_extension_graph(
     if (
         graph_text is not None
         or applied_baseline_state is not None
-        or desired_profile is not None
+        or desired_profile is not _BASS_PROFILE_EVIDENCE_OMITTED
         or applied_baseline_path is None
         or profile_path is None
         or intent_path is None
@@ -3053,7 +3063,7 @@ async def classify_active_bass_extension_graph(
             continue
         return _classify_bass_extension_snapshot(
             topology,
-            graph_text=active_text,
+            graph_text=selected_text,
             config_path=str(selected_path),
             applied_baseline_bytes=applied1,
             applied_baseline_state=None,

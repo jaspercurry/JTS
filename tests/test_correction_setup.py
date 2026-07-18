@@ -26,7 +26,7 @@ import io
 import inspect
 import json
 import logging
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 import threading
 import time
 import urllib.error
@@ -4647,6 +4647,62 @@ def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     assert restored == [-20.0]
 
 
+def test_room_authority_guard_returns_exact_canonical_bass_summary(
+    monkeypatch,
+) -> None:
+    from jasper.active_speaker import setup_status
+
+    expected = (True, "manual_applied_profile", "layer-a-current")
+    summary = MappingProxyType({
+        "authority_valid": True,
+        "runtime_block_required": False,
+    })
+    graph = GraphSafety(
+        classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+        allowed=True,
+        details={"bass_extension_profile_summary": summary},
+    )
+    classifications = 0
+
+    async def classify(_cam):
+        nonlocal classifications
+        classifications += 1
+        return graph
+
+    class Cam:
+        async def get_active_config_raw(self, *, best_effort=False):
+            return "running graph"
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_classify_live_bass_extension_graph",
+        classify,
+    )
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-current",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+
+    returned = asyncio.run(
+        correction_setup._assert_room_authority_current(Cam(), expected)
+    )
+
+    assert returned is summary
+    assert classifications == 1
+
+
 def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
     from jasper.correction.session import SessionState
 
@@ -4683,10 +4739,22 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
 
     monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    async def changed_authority_with_graph(cam):
+        return await changed_authority(cam), GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": {
+                    "authority_valid": True,
+                    "runtime_block_required": False,
+                }
+            },
+        )
+
     monkeypatch.setattr(
         correction_setup,
-        "_read_room_correction_readiness",
-        changed_authority,
+        "_read_room_correction_readiness_with_graph",
+        changed_authority_with_graph,
     )
     monkeypatch.setattr(
         correction_setup,

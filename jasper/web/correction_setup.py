@@ -2127,19 +2127,28 @@ def _assert_relay_level_identity(
         )
 
 
-async def _read_room_correction_readiness(cam: Any) -> dict[str, Any]:
-    """Read Active's decision against CamillaDSP's fresh running graph."""
+async def _read_room_correction_readiness_with_graph(
+    cam: Any,
+) -> tuple[dict[str, Any], Any]:
+    """Read Active's decision and retain its canonical live graph proof."""
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
     from jasper.camilla import CamillaUnavailable
 
     try:
-        await _classify_live_bass_extension_graph(cam)
+        graph = await _classify_live_bass_extension_graph(cam)
         running_raw = await cam.get_active_config_raw(best_effort=False)
     except CamillaUnavailable as exc:
         raise RuntimeError("the running CamillaDSP graph is unavailable") from exc
     if not isinstance(running_raw, str) or not running_raw.strip():
         raise RuntimeError("the running CamillaDSP graph is unavailable")
-    return read_active_speaker_setup_status(active_config_text=running_raw)
+    return read_active_speaker_setup_status(active_config_text=running_raw), graph
+
+
+async def _read_room_correction_readiness(cam: Any) -> dict[str, Any]:
+    """Read Active's decision against CamillaDSP's fresh running graph."""
+
+    readiness, _graph = await _read_room_correction_readiness_with_graph(cam)
+    return readiness
 
 
 async def _classify_live_bass_extension_graph(cam: Any):
@@ -2357,16 +2366,20 @@ def _room_readiness() -> _RoomReadiness:
 async def _assert_room_authority_current(
     cam: Any,
     expected: tuple[bool, str, str | None] | None,
-) -> None:
+) -> Mapping[str, Any]:
     """Revalidate the accepted Active identity at a DSP-writer boundary."""
 
     if expected is None:
         raise RuntimeError("room correction authority binding is missing")
+    raw_readiness, graph = await _read_room_correction_readiness_with_graph(cam)
     current = _normalize_room_readiness(
-        await _read_room_correction_readiness(cam),
+        raw_readiness,
     )
     if current.authority_binding == expected:
-        return
+        summary = graph.details.get("bass_extension_profile_summary")
+        if isinstance(summary, Mapping):
+            return summary
+        raise RuntimeError("room correction bass authority evidence is invalid")
     log_event(
         logger,
         "correction.layer_a_authority_changed",

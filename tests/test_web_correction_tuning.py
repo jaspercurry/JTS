@@ -501,12 +501,17 @@ def test_propose_apply_reports_honest_failure_when_reload_rejected(
     swallows the rejected-reload DspApplyError (state FAILED, returns
     normally) — the response must say applied:false, never a dishonest
     applied:true with state:"failed"."""
+    from jasper.active_speaker.runtime_contract import (
+        NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
+
     sess = _real_ready_session(tmp_path)
     cam = _RejectingCam()
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+
     async def admitted_authority(_cam, _expected):
-        return None
+        return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
         correction_setup,

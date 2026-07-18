@@ -468,6 +468,77 @@ def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
     assert refused.issues[0]["code"] == "bass_extension_source_invalid"
 
 
+def test_desired_boundary_distinguishes_explicit_no_profile_from_omission() -> None:
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    text = _active_baseline_yaml("mono", 2)
+
+    explicit_none = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+        desired_profile=None,
+    )
+    omitted = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+    )
+    invalid = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+        desired_profile=object(),
+    )
+
+    assert explicit_none.allowed is True
+    assert omitted.allowed is False
+    assert omitted.issues[0]["code"] == "bass_extension_source_invalid"
+    assert invalid.allowed is False
+    assert invalid.issues[0]["code"] == "bass_extension_source_invalid"
+
+
+def test_persisted_boundaries_reject_explicit_desired_profile_evidence(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+
+    boot = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+        desired_profile=None,
+    )
+    candidate = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_candidate",
+        candidate_kind="explicit",
+        candidate_path=authority["config"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+        desired_profile=None,
+    )
+
+    assert boot.allowed is False
+    assert boot.issues[0]["code"] == "bass_extension_source_invalid"
+    assert candidate.allowed is False
+    assert candidate.issues[0]["code"] == "bass_extension_source_invalid"
+
+
 @pytest.mark.parametrize("candidate_kind", ["explicit", "applied_baseline"])
 def test_persisted_candidate_boundary_derives_only_declared_provenance(
     tmp_path: Path,
@@ -568,7 +639,9 @@ async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
             f"config_path: {authority['config']}\nvolume: -21.0\nmute: false\n",
             encoding="utf-8",
         )
-        return "# live normalized copy\n" + text
+        return "\n".join(
+            line for line in text.splitlines() if not line.startswith("#")
+        ) + "\n"
 
     graph = await classify_active_bass_extension_graph(
         topology,
@@ -582,6 +655,46 @@ async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
 
     assert callback_count == 1
     assert graph.allowed is True
+
+
+async def test_live_boundary_preserves_stable_selected_classifier_issue(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    selected_text = "\n".join(
+        line
+        for line in _active_baseline_yaml("mono", 2).splitlines()
+        if not line.startswith("# Source:")
+    ) + "\n"
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=selected_text,
+    )
+
+    synchronous = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+    active = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=lambda: asyncio.sleep(0, result=selected_text),
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert synchronous.allowed is False
+    assert active.allowed is False
+    assert active.issues[0]["code"] == synchronous.issues[0]["code"]
+    assert active.issues[0]["code"] != "bass_extension_active_snapshot_unstable"
 
 
 async def test_live_boundary_fails_closed_on_arbitrary_reader_error(

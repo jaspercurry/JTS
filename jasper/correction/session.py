@@ -43,7 +43,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 import numpy as np
 
@@ -1909,7 +1909,7 @@ class MeasurementSession:
         camilla_set_config: Callable[[str], Awaitable[bool]],
         camilla_get_config: Callable[[], Awaitable[str | None]] | None = None,
         *,
-        prepare_guard: Callable[[], Awaitable[None]] | None = None,
+        prepare_guard: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
     ) -> None:
         async with self._lock:
             if self.state != SessionState.READY:
@@ -1939,8 +1939,18 @@ class MeasurementSession:
             # DSP-writer lock. The web owner injects its Active-owned authority
             # check here so no legal writer can change Layer A between the
             # decision and carrier re-emission.
-            if prepare_guard is not None:
-                await prepare_guard()
+            bass_profile_summary: Mapping[str, Any] | None = None
+            if camilla_get_config is not None:
+                if prepare_guard is None:
+                    raise RuntimeError(
+                        "room-correction bass authority evidence is missing"
+                    )
+                guarded_summary = await prepare_guard()
+                if not isinstance(guarded_summary, Mapping):
+                    raise RuntimeError(
+                        "room-correction bass authority evidence is invalid"
+                    )
+                bass_profile_summary = guarded_summary
             profile = load_profile()
             prior_config_path: str | None = None
             if camilla_get_config is not None:
@@ -1970,7 +1980,14 @@ class MeasurementSession:
                     assert_correction_graph_safe,
                 )
 
-                assert_correction_graph_safe(result.yaml)
+                if bass_profile_summary is None:
+                    raise RuntimeError(
+                        "room-correction bass authority evidence is missing"
+                    )
+                assert_correction_graph_safe(
+                    result.yaml,
+                    bass_profile_summary=bass_profile_summary,
+                )
             else:
                 # Compatibility for tests and older direct callers that provide
                 # only a setter. The web surface always passes camilla_get_config
