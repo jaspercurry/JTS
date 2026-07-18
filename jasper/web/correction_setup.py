@@ -401,6 +401,14 @@ _POST_ROUTES = frozenset({
     "/crossover/apply",
     "/crossover/restore",
     "/crossover/recover-volume",
+    # v2 conductor flow (Wave 5a, JASPER_CROSSOVER_FLOW=v2). Registered in the
+    # allowlist unconditionally — like every route, unknown-path 404s happen
+    # BEFORE guard_mutating_request — but each handler refuses fail-closed
+    # when the legacy flow is active, so a legacy install's surface behavior
+    # is a named 400, never a live v2 session.
+    "/crossover/v2/session",
+    "/crossover/v2/verify",
+    "/crossover/v2/apply",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -6417,12 +6425,68 @@ def _handle_crossover_relay_cancel() -> dict[str, Any]:
     """
 
     try:
-        relay = _request_relay_stop("crossover_sweep:", "level_ramp:crossover")
+        relay = _request_relay_stop(
+            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
+        )
     except ValueError:
         raise ValueError(
             "This measurement already stopped — nothing more to do here."
         ) from None
     return {"relay": relay}
+
+
+def _handle_crossover_v2_relay(
+    handler: BaseHTTPRequestHandler, *, verify_only: bool
+) -> dict[str, Any]:
+    """POST /crossover/v2/session | /crossover/v2/verify (Wave 5a).
+
+    Thin dispatch over :mod:`jasper.web.correction_crossover_v2` — the v2 host
+    module owns gating, conductor construction, seam bindings, and the plan
+    runner; this bridges it into the shared relay slot/lifecycle machinery
+    (``_run_relay_capture``) exactly as the legacy crossover kinds do. The
+    host refuses fail-closed when ``JASPER_CROSSOVER_FLOW`` is not ``v2``.
+    """
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_backend, correction_crossover_v2 as v2host
+
+    relay_base = _require_relay_base()
+    blocking = _crossover_blocking_phase()
+    if blocking is not None:
+        raise ValueError(
+            f"another measurement is in progress ({blocking}) — finish it "
+            "before starting a crossover measurement session"
+        )
+    status = correction_crossover_backend.status_payload()
+    prepare = v2host.prepare_v2_verify if verify_only else v2host.prepare_v2_session
+    prepared = prepare(
+        raw,
+        status=status,
+        run_async=_run_async,
+        camilla_factory=_camilla,
+    )
+    kind = RelayCaptureKind(
+        label=prepared.label,
+        open=prepared.open,
+        run_and_consume=prepared.run_and_consume,
+        request_stop=prepared.request_stop,
+    )
+    return {
+        "relay": _run_relay_capture(
+            kind,
+            relay_base,
+            return_url=_request_local_return_url(handler, "/correction/crossover/"),
+        )
+    }
+
+
+def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /crossover/v2/apply: apply the reviewed v2 measured candidate."""
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_v2 as v2host
+
+    return v2host.handle_v2_apply(raw, _run_async, _camilla)
 
 
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
@@ -6438,7 +6502,9 @@ def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """
 
     try:
-        _request_relay_stop("crossover_sweep:", "level_ramp:crossover")
+        _request_relay_stop(
+            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
+        )
     except ValueError:
         pass
 
@@ -7363,6 +7429,40 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         {"ok": False, "error": _relay_failure_message(e)},
                         status=HTTPStatus.BAD_REQUEST,
                     )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
+                # v2 conductor sessions (Wave 5a). ValueError covers both the
+                # host's typed CrossoverV2Refused (a subclass) and shared
+                # precondition refusals — same contract as relay-capture.
+                try:
+                    self._send_json(
+                        _handle_crossover_v2_relay(
+                            self,
+                            verify_only=(path == "/crossover/v2/verify"),
+                        )
+                    )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/apply":
+                try:
+                    self._send_json(_handle_crossover_v2_apply(self))
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},

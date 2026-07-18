@@ -2809,6 +2809,19 @@ def status_payload() -> dict[str, Any]:
         current_context_id=current_context_id
     )
     payload["applied_profile"] = load_applied_baseline_profile_state()
+    # v2 conductor state (Wave 5a): present ONLY when JASPER_CROSSOVER_FLOW=v2
+    # (crossover_v2_status_block returns None under legacy), so the legacy
+    # status payload stays byte-identical. Fail-soft: an unreadable v2 state
+    # must never take down the whole status surface.
+    try:
+        from .correction_crossover_v2 import crossover_v2_status_block
+
+        v2_block = crossover_v2_status_block()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        logger.warning("crossover v2 status block unavailable", exc_info=True)
+        v2_block = None
+    if v2_block is not None:
+        payload["crossover_v2"] = v2_block
     logger.debug(
         "crossover status active=%s drivers=%d summed=%d",
         payload["active"],

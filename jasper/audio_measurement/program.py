@@ -435,6 +435,53 @@ def _stimulus(
     )
 
 
+def _append_leading_pilot_pair(
+    segments: list[ProgramSegment],
+    cursor: int,
+    *,
+    role: str,
+    channel: int,
+    f1_hz: float,
+    f2_hz: float,
+    gains_db: tuple[float, float],
+    pilot_duration_s: float,
+    pilot_gap_s: float,
+    downstream_gain_db: float,
+) -> int:
+    """Append a two-level pilot pair (lo then hi) + trailing gaps; return cursor.
+
+    The v2 MEASURE/VERIFY programs open with this pair (design §5.2) so each
+    capture carries its OWN behavioral-linearity evidence — CHECK-only
+    verification cannot protect the later captures (browser AGC can silently
+    return with a re-acquired stream). Same segment-id shape as CHECK's pilots
+    (``pilot_{role}_lo`` / ``pilot_{role}_hi``) so
+    :func:`jasper.audio_measurement.program_analysis` reuses one pilot reader
+    across all three phases. ``gains_db`` is ``(lo, hi)`` ABSOLUTE digital
+    gains (dBFS, non-positive); the caller supplies them (for MEASURE the CHECK
+    gain solve's woofer gain and −10 dB below it) so the pilot rides the same
+    admissible level as the measurement sweeps.
+    """
+    gap_n = _seconds_to_samples(pilot_gap_s, PROGRAM_SAMPLE_RATE_HZ)
+    for suffix, gain_db in (("lo", gains_db[0]), ("hi", gains_db[1])):
+        seg = _stimulus(
+            segment_id=f"pilot_{role}_{suffix}",
+            kind=KIND_PILOT,
+            role=role,
+            channel=channel,
+            start=cursor,
+            f1_hz=f1_hz,
+            f2_hz=f2_hz,
+            duration_s=pilot_duration_s,
+            gain_db=gain_db,
+            downstream_gain_db=downstream_gain_db,
+        )
+        segments.append(seg)
+        cursor += seg.n_samples
+        segments.append(_silence(f"pilot_gap_{role}_{suffix}", cursor, gap_n))
+        cursor += gap_n
+    return cursor
+
+
 def _validate_roles(roles_bands: Sequence[RoleBand]) -> tuple[RoleBand, ...]:
     roles = tuple(roles_bands)
     if not roles:
@@ -541,12 +588,17 @@ def build_measure_program(
     tail_s: float = DEFAULT_MEASURE_TAIL_S,
     ir_tail_s: float = DEFAULT_IR_TAIL_S,
     downstream_gain_db: float = 0.0,
+    leading_pilot_gains_db: tuple[float, float] | None = None,
+    leading_pilot_role: str | None = None,
+    pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
+    pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
 ) -> ExcitationProgram:
     """Compose the MEASURE program (design §5.2/§5.4): woofer, tweeter, woofer-repeat.
 
     Exactly two drivers (2-way): ``roles_bands[0]`` is the lower driver (woofer,
     ch0), ``roles_bands[1]`` is the upper (tweeter, ch1). Layout::
 
+        [pilot lo → gap → pilot hi → gap →]  (v2, when leading pilots requested)
         guard silence → woofer sweep → MESM gap → tweeter sweep
                       → MESM gap → woofer sweep REPEAT → tail silence
 
@@ -556,6 +608,13 @@ def build_measure_program(
     digital gain (dBFS, non-positive); ``sweep_durations`` maps role → sweep
     duration (defaults: ~4 s woofer / ~3 s tweeter). Gaps come from
     :func:`mesm_gap_samples` sized to the PRECEDING sweep.
+
+    ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
+    prepends a two-level ``(lo, hi)`` pilot pair on ``leading_pilot_role``'s
+    channel (default the lower/woofer driver) so this capture carries its own
+    behavioral-linearity evidence. ``None`` (the default) is byte-identical to
+    the pre-v2 composer — the legacy analysis fixtures and any caller that does
+    not opt in see the exact original segment layout.
     """
     roles = _validate_roles(roles_bands)
     if len(roles) != 2:
@@ -582,6 +641,29 @@ def build_measure_program(
 
     segments: list[ProgramSegment] = []
     cursor = 0
+    if leading_pilot_gains_db is not None:
+        if len(leading_pilot_gains_db) != 2:
+            raise ValueError("leading_pilot_gains_db must be exactly two levels")
+        pilot_rb = woofer
+        if leading_pilot_role is not None:
+            matches = [rb for rb in roles if rb.role == leading_pilot_role]
+            if not matches:
+                raise ValueError(
+                    f"leading_pilot_role {leading_pilot_role!r} is not a declared role"
+                )
+            pilot_rb = matches[0]
+        p_f1, p_f2 = _band(pilot_rb)
+        cursor = _append_leading_pilot_pair(
+            segments, cursor,
+            role=pilot_rb.role,
+            channel=pilot_rb.channel,
+            f1_hz=p_f1,
+            f2_hz=p_f2,
+            gains_db=leading_pilot_gains_db,
+            pilot_duration_s=pilot_duration_s,
+            pilot_gap_s=pilot_gap_s,
+            downstream_gain_db=downstream_gain_db,
+        )
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("guard", cursor, guard_n))
     cursor += guard_n
@@ -627,6 +709,9 @@ def build_measure_program(
     return _finalize(PHASE_MEASURE, channels, segments, cursor)
 
 
+VERIFY_PILOT_ROLE = "summed"
+
+
 def build_verify_program(
     fc_hz: float,
     *,
@@ -635,13 +720,24 @@ def build_verify_program(
     sweep_s: float = DEFAULT_VERIFY_SWEEP_S,
     tail_s: float = DEFAULT_VERIFY_TAIL_S,
     downstream_gain_db: float = 0.0,
+    leading_pilot_gains_db: tuple[float, float] | None = None,
+    pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
+    pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
 ) -> ExcitationProgram:
     """Compose the VERIFY program (design §5.2): a mono full-band summed sweep.
 
-    One channel: guard silence + one full-band summed ESS (~6 s) + tail, played
-    through the APPLIED production graph (the real system, not a commissioning
-    construct). ``fc_hz`` widens the low bound when the crossover is low so the
-    lower shoulder ``fc/2`` is always excited: ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
+    One channel: ``[pilot lo → gap → pilot hi → gap →]`` (v2, when leading
+    pilots requested) guard silence + one full-band summed ESS (~6 s) + tail,
+    played through the APPLIED production graph (the real system, not a
+    commissioning construct). ``fc_hz`` widens the low bound when the crossover
+    is low so the lower shoulder ``fc/2`` is always excited:
+    ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
+
+    ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
+    prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``, same
+    full-band as the summed sweep) so VERIFY also carries its own
+    behavioral-linearity evidence. ``None`` is byte-identical to the pre-v2
+    composer.
     """
     if not (fc_hz > 0) or not math.isfinite(fc_hz):
         raise ValueError("fc_hz must be finite and positive")
@@ -652,6 +748,20 @@ def build_verify_program(
 
     segments: list[ProgramSegment] = []
     cursor = 0
+    if leading_pilot_gains_db is not None:
+        if len(leading_pilot_gains_db) != 2:
+            raise ValueError("leading_pilot_gains_db must be exactly two levels")
+        cursor = _append_leading_pilot_pair(
+            segments, cursor,
+            role=VERIFY_PILOT_ROLE,
+            channel=0,
+            f1_hz=f1_hz,
+            f2_hz=f2_hz,
+            gains_db=leading_pilot_gains_db,
+            pilot_duration_s=pilot_duration_s,
+            pilot_gap_s=pilot_gap_s,
+            downstream_gain_db=downstream_gain_db,
+        )
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("guard", cursor, guard_n))
     cursor += guard_n

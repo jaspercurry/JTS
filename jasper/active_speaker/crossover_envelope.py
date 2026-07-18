@@ -581,6 +581,17 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
 
 
 def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
+    # Flow selector (design §6 W5a): JASPER_CROSSOVER_FLOW=v2 activates the
+    # conductor flow; anything else (the default) runs the legacy flow below,
+    # byte-identically to today. The v2 branch is a single early return, so the
+    # legacy path is untouched — pinned by the selector byte-identity test.
+    from .crossover_flow import CROSSOVER_FLOW_V2, resolve_crossover_flow
+
+    if resolve_crossover_flow(status) == CROSSOVER_FLOW_V2:
+        from .crossover_envelope_v2 import build_crossover_envelope_v2
+
+        return build_crossover_envelope_v2(status)
+
     active = bool(status.get("active"))
     if not active:
         return {
