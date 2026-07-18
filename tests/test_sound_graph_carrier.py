@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.runtime_contract import (
@@ -688,6 +690,152 @@ def test_recompose_wrapper_refuses_when_evidence_unavailable(tmp_path):
             _recompose_active_baseline_with_eq(mock.sentinel.profile, out_path=None)
     assert err.value.reason_code == "active_baseline_recompose_unavailable"
     assert "save a fresh crossover preview" in err.value.message
+
+
+@pytest.mark.parametrize(
+    "profile_kind",
+    ["accepted", "accepted_deferred", "missing", "bypassed", "stale"],
+)
+def test_active_recompose_threads_exact_desired_bass_evidence_and_publishes(
+    tmp_path,
+    profile_kind,
+) -> None:
+    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
+
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    accepted = _sealed_profile(topology, applied)
+    evaluated_profile = accepted
+    evaluation_status = "accepted"
+    emission_profile = accepted
+    proof_profile = accepted
+    if profile_kind == "accepted_deferred":
+        evaluated_profile = replace(
+            accepted,
+            enclosure={
+                "adapter_id": "ported_v1",
+                "adapter_version": 1,
+                "cabinet_fingerprint": "ported-cabinet",
+            },
+            natural={
+                "fb_hz": 43.1,
+                "knee_hz": 55.0,
+                "knee_slope_db_oct": 21.0,
+                "fit_rms_db": 0.4,
+                "natural_curve": {
+                    "freqs_hz": np.geomspace(10.0, 500.0, 96).tolist(),
+                    "magnitude_db": [0.0] * 96,
+                },
+                "notes": [],
+            },
+        )
+        emission_profile = evaluated_profile
+        proof_profile = evaluated_profile
+    if profile_kind == "missing":
+        evaluated_profile = None
+        evaluation_status = "missing"
+        emission_profile = None
+        proof_profile = None
+    elif profile_kind == "bypassed":
+        evaluated_profile = replace(accepted, status="bypassed")
+        evaluation_status = "bypassed"
+        emission_profile = None
+        proof_profile = evaluated_profile
+    elif profile_kind == "stale":
+        evaluated_profile = replace(accepted, baseline_fingerprint="0" * 64)
+        evaluation_status = "stale"
+        emission_profile = None
+        proof_profile = evaluated_profile
+    emitted = _active_baseline_yaml(
+        "mono",
+        2,
+        bass_extension_profile=emission_profile,
+    )
+    target = tmp_path / "sound_current.yml"
+    from jasper.active_speaker.runtime_contract import (
+        classify_bass_extension_graph as desired_classifier,
+    )
+
+    with mock.patch(
+        "jasper.output_topology.load_output_topology",
+        return_value=topology,
+    ), mock.patch(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        return_value=applied,
+    ), mock.patch(
+        "jasper.bass_extension.profile.evaluate_bass_extension_profile",
+        return_value=SimpleNamespace(
+            status=evaluation_status,
+            profile=evaluated_profile,
+        ),
+    ), mock.patch(
+        "jasper.sound.profile.build_sound_filters",
+        return_value=(),
+    ), mock.patch(
+        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
+        return_value=(emitted, []),
+    ) as recompose, mock.patch(
+        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        wraps=desired_classifier,
+    ) as prove:
+        result = _recompose_active_baseline_with_eq(
+            mock.sentinel.profile,
+            out_path=target,
+        )
+
+    assert result == emitted
+    assert target.read_text(encoding="utf-8") == emitted
+    assert recompose.call_args.kwargs["bass_extension_profile"] is emission_profile
+    assert recompose.call_args.kwargs["out_path"] is None
+    assert prove.call_args.kwargs["desired_profile"] is proof_profile
+
+
+def test_active_recompose_refuses_unsafe_graph_before_publishing(tmp_path) -> None:
+    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
+
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    profile = _sealed_profile(topology, applied)
+    emitted = _active_baseline_yaml(
+        "mono",
+        2,
+        bass_extension_profile=profile,
+    )
+    tampered = emitted.replace(
+        "names: [as_woofer_woofer_tweeter_lp, bass_ext_lt",
+        "names: [bass_ext_lt",
+    )
+    assert tampered != emitted
+    target = tmp_path / "sound_current.yml"
+    predecessor = b"predecessor graph\n"
+    target.write_bytes(predecessor)
+
+    with mock.patch(
+        "jasper.output_topology.load_output_topology",
+        return_value=topology,
+    ), mock.patch(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        return_value=applied,
+    ), mock.patch(
+        "jasper.bass_extension.profile.evaluate_bass_extension_profile",
+        return_value=SimpleNamespace(status="accepted", profile=profile),
+    ), mock.patch(
+        "jasper.sound.profile.build_sound_filters",
+        return_value=(),
+    ), mock.patch(
+        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
+        return_value=(tampered, []),
+    ) as recompose:
+        with pytest.raises(CarrierCannotHostEq) as exc:
+            _recompose_active_baseline_with_eq(
+                mock.sentinel.profile,
+                out_path=target,
+            )
+
+    assert exc.value.reason_code == "active_baseline_recompose_unavailable"
+    assert target.read_bytes() == predecessor
+    assert recompose.call_args.kwargs["out_path"] is None
+    assert recompose.call_args.kwargs["bass_extension_profile"] is profile
 
 
 def test_bass_extension_recompose_reproves_missing_woofer_lowpass(

@@ -1703,6 +1703,7 @@ def build_baseline_profile_candidate(
                 capture_format=capture_format,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+                bass_extension_profile=bass_extension_profile,
             )
         validation = validate(config_target).to_dict()
         if not validation.get("ok_to_apply") and validation.get("status") not in {
@@ -2266,7 +2267,11 @@ async def _apply_baseline_profile_locked(
 
     state_target = baseline_profile_state_path(state_path)
 
-    def build_candidate(*, write: bool) -> dict[str, Any]:
+    def build_candidate(
+        *,
+        write: bool,
+        bass_extension_profile: BassExtensionProfile | None = None,
+    ) -> dict[str, Any]:
         return build_baseline_profile_candidate(
             topology,
             design_draft=design_draft,
@@ -2283,6 +2288,7 @@ async def _apply_baseline_profile_locked(
             tuning_owner=tuning_owner,
             preserved_applied_profile=preserved_applied_profile,
             validate=validate,
+            bass_extension_profile=bass_extension_profile,
         )
 
     def matches_expected(candidate: Mapping[str, Any]) -> bool:
@@ -2315,12 +2321,26 @@ async def _apply_baseline_profile_locked(
             "issues": refused["issues"],
         }
 
+    reviewed_candidate = build_candidate(write=False)
+    candidate_bass_emission_profile = None
+    candidate_bass_proof_profile = None
+    if not driver_domain:
+        bass_evaluation = evaluate_bass_extension_profile(
+            topology=topology,
+            applied_baseline_state=reviewed_candidate,
+        )
+        candidate_bass_proof_profile = bass_evaluation.profile
+        if bass_evaluation.status == "accepted":
+            candidate_bass_emission_profile = bass_evaluation.profile
+
     if expected_candidate_fingerprint is not None:
-        reviewed_candidate = build_candidate(write=False)
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
 
-    candidate = build_candidate(write=True)
+    candidate = build_candidate(
+        write=True,
+        bass_extension_profile=candidate_bass_emission_profile,
+    )
     if expected_candidate_fingerprint is not None and not matches_expected(candidate):
         return await refuse_stale(candidate)
     snapshot_state = crossover_snapshot_state(
@@ -2349,6 +2369,53 @@ async def _apply_baseline_profile_locked(
             mode=0o640,
             group_from_parent=True,
         )
+    if not driver_domain and candidate.get("permissions", {}).get("may_apply"):
+        from jasper.active_speaker.runtime_contract import (
+            GRAPH_APPROVED_ACTIVE_RUNTIME,
+            classify_bass_extension_graph,
+        )
+
+        try:
+            candidate_graph_text = Path(
+                str((candidate.get("config") or {}).get("path") or "")
+            ).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            graph_proof = None
+            proof_detail = f"the emitted active graph is unreadable: {type(exc).__name__}"
+        else:
+            graph_proof = classify_bass_extension_graph(
+                topology,
+                evidence_source="desired",
+                graph_text=candidate_graph_text,
+                applied_baseline_state=candidate,
+                desired_profile=candidate_bass_proof_profile,
+            )
+            proof_detail = (
+                graph_proof.issues[0].get("message")
+                if graph_proof.issues
+                else "the emitted active graph failed whole-graph proof"
+            )
+        if (
+            graph_proof is None
+            or not graph_proof.allowed
+            or graph_proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME
+        ):
+            candidate["status"] = "compiled_apply_blocked"
+            candidate["permissions"]["may_apply"] = False
+            candidate["issues"] = [
+                *candidate.get("issues", []),
+                _issue(
+                    "blocker",
+                    "baseline_graph_safety_proof_failed",
+                    proof_detail,
+                ),
+            ]
+            atomic_write_text(
+                state_target,
+                json.dumps(candidate, indent=2, sort_keys=True) + "\n",
+                mode=0o640,
+                group_from_parent=True,
+            )
     if not candidate.get("permissions", {}).get("may_apply"):
         await _record_apply_outcome_into_bundle(
             measurements,

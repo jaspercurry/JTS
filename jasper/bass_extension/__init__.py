@@ -432,6 +432,8 @@ async def apply_bass_extension(
     intent_target = Path(intent_path)
     staged_path = Path(staged_metadata_path)
     configs = Path(config_dir)
+    rollback_after_lock = None
+    forward_failure: BaseException | None = None
 
     async with dsp_writer_lock(
         configs,
@@ -620,19 +622,32 @@ async def apply_bass_extension(
         )
 
         async def rollback() -> None:
-            await _restore_locked(
-                intent,
-                topology=topology,
-                controller=controller,
-                statefile_path=statefile,
-                applied_baseline_path=applied_path,
-                profile_path=profile_target,
-                intent_path=intent_target,
-                staged_metadata_path=staged_path,
-                config_dir=configs,
-            )
+            async with dsp_writer_lock(
+                configs,
+                source="bass_extension.apply_rollback",
+                allow_pending_bass_extension_recovery=True,
+                bass_extension_intent_path=intent_target,
+            ):
+                current_intent = _read_intent(intent_target)
+                if current_intent is None:
+                    return
+                if current_intent != intent:
+                    raise BassExtensionApplyError(
+                        "bass-extension rollback intent ownership changed"
+                    )
+                await _restore_locked(
+                    current_intent,
+                    topology=topology,
+                    controller=controller,
+                    statefile_path=statefile,
+                    applied_baseline_path=applied_path,
+                    profile_path=profile_target,
+                    intent_path=intent_target,
+                    staged_metadata_path=staged_path,
+                    config_dir=configs,
+                )
 
-        committed = False
+        rollback_after_lock = rollback
         try:
             graph_changed = desired_graph_bytes != predecessor_graph_bytes
             if graph_changed:
@@ -661,19 +676,24 @@ async def apply_bass_extension(
                 staged_metadata_path=staged_path,
             )
             _durable_unlink(intent_target)
-            committed = True
-        finally:
-            if not committed:
-                restore = asyncio.create_task(rollback())
-                cancelled_during_restore = False
-                while not restore.done():
-                    try:
-                        await asyncio.shield(restore)
-                    except asyncio.CancelledError:
-                        cancelled_during_restore = True
-                restore.result()
-                if cancelled_during_restore:
-                    raise asyncio.CancelledError()
+        except BaseException as exc:  # noqa: BLE001 - preserve cancellation/failure
+            forward_failure = exc
+
+    if forward_failure is None:
+        return
+    if rollback_after_lock is None:  # pragma: no cover - intent pins this closure
+        raise forward_failure
+    restore = asyncio.create_task(rollback_after_lock())
+    cancelled_during_restore = isinstance(forward_failure, asyncio.CancelledError)
+    while not restore.done():
+        try:
+            await asyncio.shield(restore)
+        except asyncio.CancelledError:
+            cancelled_during_restore = True
+    restore.result()
+    if cancelled_during_restore:
+        raise asyncio.CancelledError()
+    raise forward_failure
 
 
 async def bypass_bass_extension(*, profile_path: str | Path = "/var/lib/jasper/bass_extension_profile.json", **kwargs) -> None:

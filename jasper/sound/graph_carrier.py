@@ -443,19 +443,35 @@ def _recompose_active_baseline_with_eq(
         load_applied_baseline_profile_state,
         recompose_applied_baseline_yaml,
     )
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        classify_bass_extension_graph,
+    )
+    from jasper.bass_extension.profile import evaluate_bass_extension_profile
     from jasper.output_topology import load_output_topology
     from jasper.sound.profile import build_sound_filters
 
     topology = load_output_topology()
-    applied_profile = load_applied_baseline_profile_state()
+    applied_profile = load_applied_baseline_profile_state() or {}
+    bass_evaluation = evaluate_bass_extension_profile(
+        topology=topology,
+        applied_baseline_state=applied_profile,
+    )
+    bass_emission_profile = (
+        bass_evaluation.profile
+        if bass_evaluation.status == "accepted"
+        else None
+    )
+    bass_proof_profile = bass_evaluation.profile
     preference_filters = build_sound_filters(profile)
     yaml, issues = recompose_applied_baseline_yaml(
         topology,
-        applied_profile=applied_profile or {},
+        applied_profile=applied_profile,
         room_peqs=room_peqs or [],
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
-        out_path=out_path,
+        out_path=None,
+        bass_extension_profile=bass_emission_profile,
     )
     if yaml is None:
         detail = (issues[0].get("message") if issues else None) or (
@@ -466,6 +482,30 @@ def _recompose_active_baseline_with_eq(
             "JTS couldn't rebuild this speaker's active baseline to add sound EQ: "
             f"{detail}. Your crossover and driver protection are unchanged.",
         )
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=yaml,
+        applied_baseline_state=applied_profile,
+        desired_profile=bass_proof_profile,
+    )
+    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+        detail = (
+            graph.issues[0].get("message") if graph.issues else None
+        ) or "the recomposed active baseline did not pass the runtime contract"
+        raise CarrierCannotHostEq(
+            "active_baseline_recompose_unavailable",
+            "JTS rebuilt this speaker's active baseline, but the safety "
+            f"contract rejected it: {detail}. Your crossover and driver "
+            "protection are unchanged.",
+        )
+    if out_path is not None:
+        target = Path(out_path)
+        if not target.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {target.parent}"
+            )
+        atomic_write_text(target, yaml, mode=0o640)
     return yaml
 
 

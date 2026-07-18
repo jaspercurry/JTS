@@ -436,6 +436,22 @@ class _TransactionCamilla:
         return self.active
 
 
+class _AdmissionAwareTransactionCamilla(_TransactionCamilla):
+    def __init__(self, selected: Path, intent_path: Path) -> None:
+        super().__init__(selected)
+        self.intent_path = intent_path
+
+    async def reload(self, *, best_effort=False):
+        from jasper.dsp_apply import camilla_graph_mutation
+
+        async with camilla_graph_mutation(
+            source="test.transaction_camilla.reload",
+            lock_path=self.selected.parent / ".dsp_apply.lock",
+            bass_extension_intent_path=self.intent_path,
+        ):
+            return await super().reload(best_effort=best_effort)
+
+
 def _transaction_harness(monkeypatch, tmp_path, *, predecessor=None):
     topology = _topology()
     applied = {**_applied_baseline(), "status": "applied"}
@@ -615,6 +631,184 @@ async def test_apply_failure_restores_exact_graph_and_profile(
 
 
 @pytest.mark.asyncio
+async def test_post_intent_rollback_reacquires_writer_lock_before_real_reload(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    applied = {**_applied_baseline(), "status": "applied"}
+    predecessor = _profile(applied_baseline=applied)
+    desired = replace(predecessor, status="bypassed")
+    (
+        _applied,
+        selected,
+        profile_path,
+        intent_path,
+        _statefile,
+        _cam,
+        paths,
+    ) = _transaction_harness(monkeypatch, tmp_path, predecessor=predecessor)
+    controller = _AdmissionAwareTransactionCamilla(selected, intent_path)
+    paths["controller"] = controller
+    predecessor_graph = selected.read_bytes()
+    predecessor_profile = profile_path.read_bytes()
+    proof_calls = 0
+
+    async def fail_final(**_kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        if proof_calls == 2:
+            raise BassExtensionApplyError("final proof failed")
+
+    monkeypatch.setattr(bass_extension_module, "_active_proof", fail_final)
+
+    with pytest.raises(BassExtensionApplyError, match="final proof failed"):
+        await apply_bass_extension(desired, **paths)
+
+    assert controller.reload_count == 3
+    assert selected.read_bytes() == predecessor_graph
+    assert stat.S_IMODE(selected.stat().st_mode) == 0o664
+    assert profile_path.read_bytes() == predecessor_profile
+    assert not intent_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_delayed_rollback_cannot_replay_consumed_intent_over_new_commit(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from contextlib import asynccontextmanager
+
+    import jasper.dsp_apply as dsp_apply_module
+
+    applied = {**_applied_baseline(), "status": "applied"}
+    predecessor = _profile(applied_baseline=applied)
+    desired = replace(predecessor, status="bypassed")
+    (
+        _applied,
+        selected,
+        profile_path,
+        intent_path,
+        _statefile,
+        _cam,
+        paths,
+    ) = _transaction_harness(monkeypatch, tmp_path, predecessor=predecessor)
+    real_lock = dsp_apply_module.dsp_writer_lock
+    rollback_waiting = asyncio.Event()
+    release_rollback = asyncio.Event()
+    delayed = False
+
+    @asynccontextmanager
+    async def delayed_lock(config_dir, *, source, **kwargs):
+        nonlocal delayed
+        if source == "bass_extension.apply_rollback" and not delayed:
+            delayed = True
+            rollback_waiting.set()
+            await release_rollback.wait()
+        async with real_lock(config_dir, source=source, **kwargs):
+            yield
+
+    proof_calls = 0
+
+    async def fail_first_final(**_kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        if proof_calls == 2:
+            raise BassExtensionApplyError("first final proof failed")
+
+    monkeypatch.setattr(dsp_apply_module, "dsp_writer_lock", delayed_lock)
+    monkeypatch.setattr(bass_extension_module, "_active_proof", fail_first_final)
+
+    first = asyncio.create_task(apply_bass_extension(desired, **paths))
+    await rollback_waiting.wait()
+    await apply_bass_extension(desired, **paths)
+    assert selected.read_text(encoding="utf-8") == "---\ngraph: plain\n"
+    assert load_bass_extension_profile(profile_path) == desired
+
+    release_rollback.set()
+    with pytest.raises(BassExtensionApplyError, match="first final proof failed"):
+        await first
+
+    assert selected.read_text(encoding="utf-8") == "---\ngraph: plain\n"
+    assert load_bass_extension_profile(profile_path) == desired
+    assert not intent_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_delayed_rollback_refuses_different_newer_pending_intent(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from contextlib import asynccontextmanager
+
+    import jasper.dsp_apply as dsp_apply_module
+
+    applied = {**_applied_baseline(), "status": "applied"}
+    predecessor = _profile(applied_baseline=applied)
+    desired = replace(predecessor, status="bypassed")
+    (
+        _applied,
+        _selected,
+        _profile_path,
+        intent_path,
+        _statefile,
+        _cam,
+        paths,
+    ) = _transaction_harness(monkeypatch, tmp_path, predecessor=predecessor)
+    real_lock = dsp_apply_module.dsp_writer_lock
+    first_rollback_waiting = asyncio.Event()
+    second_rollback_waiting = asyncio.Event()
+    release_first = asyncio.Event()
+    release_second = asyncio.Event()
+    rollback_count = 0
+
+    @asynccontextmanager
+    async def delayed_lock(config_dir, *, source, **kwargs):
+        nonlocal rollback_count
+        if source == "bass_extension.apply_rollback":
+            rollback_count += 1
+            if rollback_count == 1:
+                first_rollback_waiting.set()
+                await release_first.wait()
+            elif rollback_count == 2:
+                second_rollback_waiting.set()
+                await release_second.wait()
+        async with real_lock(config_dir, source=source, **kwargs):
+            yield
+
+    proof_calls = 0
+
+    async def fail_each_final(**_kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        if proof_calls == 2:
+            raise BassExtensionApplyError("first final proof failed")
+        if proof_calls == 5:
+            raise BassExtensionApplyError("second final proof failed")
+
+    monkeypatch.setattr(dsp_apply_module, "dsp_writer_lock", delayed_lock)
+    monkeypatch.setattr(bass_extension_module, "_active_proof", fail_each_final)
+
+    first = asyncio.create_task(apply_bass_extension(desired, **paths))
+    await first_rollback_waiting.wait()
+    second = asyncio.create_task(apply_bass_extension(desired, **paths))
+    await second_rollback_waiting.wait()
+    newer_intent = intent_path.read_bytes()
+
+    release_first.set()
+    with pytest.raises(
+        BassExtensionApplyError,
+        match="rollback intent ownership changed",
+    ):
+        await first
+    assert intent_path.read_bytes() == newer_intent
+
+    release_second.set()
+    with pytest.raises(BassExtensionApplyError, match="second final proof failed"):
+        await second
+    assert not intent_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_repeated_cancellation_during_rollback_drains_one_restore_task(
     monkeypatch,
     tmp_path,
@@ -740,6 +934,43 @@ async def test_rollback_failure_wins_over_repeated_cancellation(
         await apply_task
 
     assert restore_tasks[0].cancelled() is False
+    assert intent_path.exists()
+    assert bass_extension_state_summary(
+        paths["profile_path"],
+        intent_path=intent_path,
+    )["apply_recovery_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_rollback_failure_wins_over_forward_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    applied = {**_applied_baseline(), "status": "applied"}
+    predecessor = _profile(applied_baseline=applied)
+    desired = replace(predecessor, status="bypassed")
+    *_, intent_path, _statefile, _cam, paths = _transaction_harness(
+        monkeypatch,
+        tmp_path,
+        predecessor=predecessor,
+    )
+    proof_calls = 0
+
+    async def fail_final(**_kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        if proof_calls == 2:
+            raise BassExtensionApplyError("forward proof failed")
+
+    async def fail_restore(*_args, **_kwargs):
+        raise BassExtensionApplyError("rollback proof failed")
+
+    monkeypatch.setattr(bass_extension_module, "_active_proof", fail_final)
+    monkeypatch.setattr(bass_extension_module, "_restore_locked", fail_restore)
+
+    with pytest.raises(BassExtensionApplyError, match="rollback proof failed"):
+        await apply_bass_extension(desired, **paths)
+
     assert intent_path.exists()
     assert bass_extension_state_summary(
         paths["profile_path"],
