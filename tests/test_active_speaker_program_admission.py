@@ -35,23 +35,30 @@ from jasper.audio_measurement.program import (
 from tests.active_speaker_fixtures import mono_output_topology
 
 
-def _profile_and_targets():
+def _profile_and_targets(*, woofer_peak: float = 0.0, tweeter_peak: float = -65.0):
+    """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
+    2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
+    derivation must handle — symmetric fixtures masked the min/max inversion."""
     topology = mono_output_topology()
+
+    def _limits(peak):
+        return {
+            "max_effective_peak_dbfs": peak,
+            "max_sweep_duration_s": 6,
+            "max_repeat_count": 3,
+            "minimum_cooldown_s": 0,
+        }
+
     common = {
         "hard_excitation_band_hz": [500, 20_000],
         "measurement_band_hz": [500, 10_000],
         "crossover_search_band_hz": [1500, 2500],
-        "level_duration_limits": {
-            "max_effective_peak_dbfs": -65,
-            "max_sweep_duration_s": 6,
-            "max_repeat_count": 3,
-            "minimum_cooldown_s": 0,
-        },
     }
     settings = {
         "drivers": [
             {
                 **common,
+                "level_duration_limits": _limits(woofer_peak),
                 "target_id": "mono:woofer",
                 "role": "woofer",
                 "model": "W",
@@ -67,6 +74,7 @@ def _profile_and_targets():
             },
             {
                 **common,
+                "level_duration_limits": _limits(tweeter_peak),
                 "target_id": "mono:tweeter",
                 "role": "tweeter",
                 "model": "T",
@@ -82,7 +90,6 @@ def _profile_and_targets():
         ],
         "crossover_candidates": [],
     }
-    topology = mono_output_topology()
     profile = build_driver_safety_profile(
         topology,
         manual_settings=settings,
@@ -103,7 +110,10 @@ def _roles(woofer_band=(500.0, 1600.0), tweeter_band=(1600.0, 10_000.0)):
 
 def _measure_program(session_volume_db, roles=None, gains=None):
     roles = roles or _roles()
-    gains = gains or {"woofer": -6.0, "tweeter": -6.0}
+    # The default gain plan mirrors the corrected session-volume rule: the
+    # woofer (highest cap) runs at the -6 dB digital guard; the tweeter
+    # attenuates DOWN so gain + session_volume clears its -65 dB cap.
+    gains = gains or {"woofer": -6.0, "tweeter": -46.0}
     return build_measure_program(gains, roles, downstream_gain_db=session_volume_db)
 
 
@@ -139,15 +149,49 @@ def test_band_escape_refuses_segment():
 
 def test_peak_over_ceiling_refuses():
     topology, profile, targets = _profile_and_targets()
-    # A too-loud session volume pushes every effective peak above the -65 cap.
-    prog = _measure_program(-65.0)
+    # A too-loud session volume pushes the tweeter's effective peak above its
+    # -65 cap (gain -46 + volume -10 = -56 dBFS effective > -65).
+    prog = _measure_program(-20.0)
     adm = admit_excitation_program(
         prog, topology=topology, safety_profile=profile,
-        role_targets=targets, session_volume_db=-40.0,
+        role_targets=targets, session_volume_db=-10.0,
     )
     assert not adm.allowed
     assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in adm.refusals
     assert ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP in adm.refusals
+
+
+def test_asymmetric_caps_woofer_reaches_reference_while_tweeter_lands_at_cap():
+    """The 2026-07-18 gate's asymmetric-cap admission proof (B1).
+
+    Caps (woofer 0.0, tweeter -65): V = min(-20, max(caps)) = -20. The woofer's
+    admitted effective peak reaches ≈ V - 6 (the digital guard) — NOT ~40 dB
+    under its ceiling as the inverted min(caps) rule produced — while the
+    tweeter attenuates down (-45 dB digital) and lands exactly at its own cap.
+    Symmetric -65/-65 fixtures could never distinguish the two rules.
+    """
+    topology, profile, targets = _profile_and_targets(
+        woofer_peak=0.0, tweeter_peak=-65.0
+    )
+    sv = session_measurement_volume_db(profile, targets.values())
+    assert sv == -20.0
+    prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -45.0})
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert adm.allowed
+    by_id = {s.segment_id: s for s in adm.segments}
+    # Woofer: effective ≈ V - guard = -26 dBFS, far above the old -70.
+    assert by_id["sweep_w"].effective_peak_dbfs == pytest.approx(sv - 6.0)
+    assert by_id["sweep_w"].execution_allowed
+    # Tweeter: digitally attenuated to land exactly at its own -65 cap.
+    assert by_id["sweep_t"].effective_peak_dbfs == pytest.approx(-65.0)
+    assert by_id["sweep_t"].execution_allowed
+    facts = {c.role: c for c in adm.channels}
+    assert facts["woofer"].effective_true_peak_dbfs == pytest.approx(sv - 6.0, abs=0.1)
+    assert facts["tweeter"].effective_true_peak_dbfs == pytest.approx(-65.0, abs=0.1)
+    assert facts["woofer"].peak_within_cap and facts["tweeter"].peak_within_cap
 
 
 def test_channel_manifest_peak_mismatch_refuses():

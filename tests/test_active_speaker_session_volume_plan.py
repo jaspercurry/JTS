@@ -112,11 +112,29 @@ class FakeVolume:
 # --- SSOT derivation ---------------------------------------------------------
 
 
-def test_session_measurement_volume_is_the_minimum_cap():
-    profile, targets = _profile_and_targets(woofer_peak=-30.0, tweeter_peak=-70.0)
-    vol = session_measurement_volume_db(profile, targets.values())
-    # woofer cap = min(-30, 0) = -30; tweeter cap = min(-70, -65) = -70; min = -70.
-    assert vol == -70.0
+def test_session_measurement_volume_targets_the_least_sensitive_driver():
+    # The B1 rule: V = min(reference -20, max(caps)). The HIGHEST cap (the
+    # least-sensitive driver) governs; more-sensitive drivers attenuate DOWN
+    # digitally (always satisfiable), never the other way around.
+    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
+    # caps: woofer min(0, 0) = 0; tweeter min(-65, -65) = -65; max = 0 -> V = -20.
+    assert session_measurement_volume_db(profile, targets.values()) == -20.0
+
+    # When the highest cap binds BELOW the reference, it wins.
+    profile2, targets2 = _profile_and_targets(woofer_peak=-30.0, tweeter_peak=-70.0)
+    # caps: woofer -30, tweeter -70; max = -30 -> V = min(-20, -30) = -30.
+    assert session_measurement_volume_db(profile2, targets2.values()) == -30.0
+
+
+def test_session_measurement_volume_refuses_unmeasurable_profile():
+    # Every cap at or below the -60 dB emergency floor: no driver can be
+    # measured at a safe volume -> typed refusal, never a zero-SNR session.
+    # (This invariant would have caught the inverted min(caps) derivation.)
+    profile, targets = _profile_and_targets(woofer_peak=-65.0, tweeter_peak=-70.0)
+    with pytest.raises(
+        SessionVolumePlanError, match="profile_unmeasurable_at_safe_volume"
+    ):
+        session_measurement_volume_db(profile, targets.values())
 
 
 def test_session_measurement_volume_requires_targets():
@@ -248,6 +266,38 @@ def test_crash_hydrated_active_is_not_ready_until_recovered(tmp_path):
     recovered = asyncio.run(reborn.recover_unresolved(vol.set, vol.get))
     assert recovered is SessionVolumeRestoreResult.EXACT_RESTORED
     assert vol.value == -6.0
+
+
+def test_needs_recovery_true_for_unresolved_and_foreign_active(tmp_path):
+    # Branch 1: latched unresolved -> needs_recovery (and surfaced payload).
+    p1 = tmp_path / "sv1.json"
+    vol = FakeVolume(initial=-6.0, confirm_targets=set())
+    plan1 = SessionVolumePlan(state_path=p1)
+    asyncio.run(plan1.open(-12.0, vol.set, vol.get))  # nothing confirms
+    assert plan1.unresolved_volume_safety is not None
+    assert plan1.needs_recovery is True
+
+    # Branch 2: crash-hydrated active within the ceiling -> needs_recovery is
+    # the ONLY surfaced signal (unresolved_volume_safety stays None).
+    p2 = tmp_path / "sv2.json"
+    vol2 = FakeVolume(initial=-6.0)
+    opener = SessionVolumePlan(
+        state_path=p2, wall_clock_ceiling_s=1800.0, clock=lambda: 1000.0
+    )
+    asyncio.run(opener.open(-12.0, vol2.set, vol2.get))
+    assert opener.needs_recovery is False  # owned by this process
+    reborn = SessionVolumePlan(
+        state_path=p2, wall_clock_ceiling_s=1800.0, clock=lambda: 1005.0
+    )
+    assert reborn.unresolved_volume_safety is None
+    assert reborn.needs_recovery is True
+
+    # Draining resolves both signals.
+    asyncio.run(reborn.recover_unresolved(vol2.set, vol2.get))
+    assert reborn.needs_recovery is False
+
+    # No state at all -> nothing to recover.
+    assert SessionVolumePlan().needs_recovery is False
 
 
 def test_hydrated_malformed_state_is_unresolved(tmp_path):

@@ -72,6 +72,14 @@ STATE_KIND = "jts_crossover_session_volume"
 # volume within a bounded window even if no close/session-death event fires.
 DEFAULT_WALL_CLOCK_CEILING_S = 1800.0
 
+# The codified measurement reference level: the fixed session volume when no
+# driver cap binds below it. -20 dB gives the least-sensitive driver a usable
+# acoustic measurement level while leaving 20 dB of digital+DSP margin under the
+# 0 dB ceiling. PROVISIONAL pending W6 bench validation — the value is a design
+# input (2026-07-18 W2 gate ruling), not yet a hardware-measured one; W6 may
+# retune it against measured SNR at ~1 m.
+MEASUREMENT_REFERENCE_VOLUME_DB = -20.0
+
 _DEFAULT_STATE_PATH = Path(
     "/var/lib/jasper/active_speaker_crossover_session_volume.json"
 )
@@ -107,28 +115,36 @@ def session_measurement_volume_db(
 ) -> float:
     """The fixed session measurement volume DERIVED from the profile's ceilings.
 
-    Chosen so a 0 dBFS program peak on the *hotter* driver's channel lands
-    exactly at that driver's admitted effective-peak cap. The hotter driver is
-    the more sensitive one — the compression driver / tweeter — whose admitted
-    cap is the LOWEST (see ``driver_protection.driver_protection_profile``: a
-    compression driver caps at ~-65 dBFS). Because the program's per-segment
-    effective peak is ``segment_peak_dbfs + session_volume`` (the program graph
-    adds no headroom beyond the main volume — see
-    ``emit_active_speaker_program_config``), setting
+    The session volume's job is to let the LEAST-sensitive (highest-cap) driver
+    reach a usable measurement level with digital headroom, while more-sensitive
+    drivers attenuate DOWN to their own caps via per-segment digital gains —
+    attenuating downward is always satisfiable, so every driver's cap is
+    enforceable at this volume (2026-07-18 W2 gate ruling)::
 
-        session_volume = min over drivers of resolve_driver_excitation_ceilings()[1]
+        session_volume = min(MEASUREMENT_REFERENCE_VOLUME_DB, max over drivers
+                             of resolve_driver_excitation_ceilings()[1])
 
-    makes a 0 dBFS peak on the hotter (min-cap) driver reach exactly its cap, and
-    leaves every other driver automatic headroom (its cap is higher). Every
-    admissible program peak is <= 0 dBFS, so NO driver can exceed its cap for any
-    program at this volume — that is the safety property, and it holds regardless
-    of the derived value because admission enforces the per-segment cap directly
-    (this value is only an INPUT to that admission, the single definition path).
+    Worked example — woofer cap 0.0 dBFS, tweeter (compression driver) cap
+    -65 dBFS: V = min(-20, max(0, -65)) = **-20 dB**. The tweeter's program
+    channel attenuates to -45 dB digital (effective -45 + -20 = -65 = its cap);
+    the woofer can reach up to -26 dBFS effective at the -6 dB digital guard —
+    versus -70 dBFS under a (wrong) ``min(caps)`` rule, which would pin the
+    least-sensitive driver ~40 dB under its ceiling and collapse its measurement
+    SNR. Because the program's per-segment effective peak is ``segment_peak_dbfs
+    + session_volume`` (the program graph adds no headroom beyond the main
+    volume — see ``emit_active_speaker_program_config``), admission enforces
+    every driver's cap directly against this value: it is only an INPUT to that
+    admission, the single definition path (SSOT), so the caps hold regardless of
+    the derived number.
 
-    Per-driver loudness differences (the ~25 dB sensitivity spread) are handled
-    by the per-segment digital gains, not by re-leveling — a quieter driver is
-    accepted-and-normalized in analysis (design §5.5). W6 validates the resulting
-    SNR on hardware.
+    Fail-closed floor: the derived volume must sit ABOVE the emergency
+    attenuation floor (:data:`EMERGENCY_MEASUREMENT_VOLUME_DB`, -60 dB). A
+    profile whose highest cap is at or below the floor cannot be measured at a
+    safe volume at all — every driver would need its stimulus pushed into the
+    emergency-quiet regime — so the session refuses to open with the typed
+    ``profile_unmeasurable_at_safe_volume`` error rather than opening a
+    zero-SNR session. (This invariant would also have caught the inverted
+    ``min(caps)`` derivation at runtime.)
 
     Raises if no targets are given or a ceiling cannot be resolved (fail-closed:
     an underivable session volume is a refusal, never a guessed default).
@@ -143,10 +159,16 @@ def session_measurement_volume_db(
         raise SessionVolumePlanError(
             "cannot derive a session measurement volume with no driver targets"
         )
-    volume = min(caps)
+    volume = min(MEASUREMENT_REFERENCE_VOLUME_DB, max(caps))
     if not math.isfinite(volume) or volume > 0.0:
         raise SessionVolumePlanError(
             "derived session measurement volume must be finite and non-positive"
+        )
+    if not volume > EMERGENCY_MEASUREMENT_VOLUME_DB:
+        raise SessionVolumePlanError(
+            "profile_unmeasurable_at_safe_volume: every driver cap sits at or "
+            f"below the {EMERGENCY_MEASUREMENT_VOLUME_DB:g} dB emergency floor; "
+            "the profile cannot be measured at a safe session volume"
         )
     return volume
 
@@ -275,6 +297,27 @@ class SessionVolumePlan:
             "original_main_volume_db": state.original_main_volume_db,
             "emergency_volume_db": self._emergency_volume_db,
         }
+
+    @property
+    def needs_recovery(self) -> bool:
+        """True when the durable state must be drained before a new session.
+
+        Two branches: a latched ``unresolved`` state, OR a durably ``active``
+        state this process did not open (crash/restart hydration). **W5's
+        recovery screen must key on THIS property, not
+        ``unresolved_volume_safety`` alone** — the crash-hydrated-active state
+        within the wall-clock ceiling surfaces NO unresolved payload (its
+        durable status is deliberately not flipped on restart; the ceiling
+        governs staleness), so a screen keyed only on ``unresolved`` would show
+        nothing while the speaker sits at measurement volume with no owner.
+        Drain via :meth:`recover_unresolved`.
+        """
+        state = self._state
+        if state is None:
+            return False
+        if state.status == "unresolved":
+            return True
+        return not self._opened_this_process
 
     def stale_active(self, now: float | None = None) -> bool:
         """True iff an ``active`` session has outlived the wall-clock ceiling."""

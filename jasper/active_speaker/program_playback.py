@@ -208,12 +208,15 @@ async def play_program(
             restored, _restore_error = await _safe_restore(
                 restore_graph, entry_config_path, program_id=program.program_id
             )
-        # Reached only when load + play did not raise.
+        # Reached only when load + play did not raise. A played program whose
+        # prior graph did NOT come back is not "completed" — the speaker is in
+        # the wrong graph, and the end marker must say so.
         log_event(
             logger,
             "active_speaker.program_playback",
             action="end",
-            result="completed",
+            result="completed" if restored else "restore_failed",
+            level=logging.INFO if restored else logging.CRITICAL,
             program_id=program.program_id,
             phase=program.phase,
             restored=restored,

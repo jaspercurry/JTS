@@ -1745,6 +1745,16 @@ def emit_active_speaker_program_config(
     """
 
     preset.validate()
+    # W2 scope gate: the conductor's program topology (2 program channels,
+    # woofer/tweeter role routing, the repeat-pair drift estimator) is designed
+    # for a 2-way crossover. A 3-way needs a designed reshape (program channel
+    # count, mid-band MESM schedule, per-region alignment), not a silent
+    # generalization of this emitter.
+    if preset.way_count != 2:
+        raise ActiveSpeakerConfigError(
+            "the crossover-measurement program graph is scoped to 2-way presets; "
+            f"way_count={preset.way_count} requires a designed program reshape"
+        )
     role_channels = _validate_program_role_channels(preset, role_channels)
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)

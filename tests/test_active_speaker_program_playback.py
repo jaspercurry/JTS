@@ -185,11 +185,21 @@ def test_missing_entry_config_refuses_before_loading():
     assert "load" not in [e[0] if isinstance(e, tuple) else e for e in boundary.order]
 
 
-def test_restore_failure_after_play_raises():
+def test_restore_failure_after_play_raises(caplog):
     program = _program()
     boundary = Boundary(restore_ok=False)
-    with pytest.raises(ProgramGraphRestoreError):
-        _run(program, boundary, FakePlan())
+    with caplog.at_level("INFO"):
+        with pytest.raises(ProgramGraphRestoreError):
+            _run(program, boundary, FakePlan())
     # Play still happened and restore was attempted.
     assert "play" in boundary.order
     assert ("restore", ENTRY_PATH) in boundary.order
+    # N3: the end marker must say restore_failed, never a false "completed".
+    end_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "active_speaker.program_playback" in r.getMessage()
+        and "action=end" in r.getMessage()
+    ]
+    assert end_lines and all("result=restore_failed" in line for line in end_lines)
+    assert not any("result=completed" in line for line in end_lines)

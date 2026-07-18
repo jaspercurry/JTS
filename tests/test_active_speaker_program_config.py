@@ -35,7 +35,7 @@ from jasper.active_speaker.graph_safety import (
 
 # Reuse the canonical preset fixtures (mono 2-way == JTS3 single cabinet:
 # output 0 = woofer, output 1 = tweeter).
-from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 ROLE_CHANNELS = {"woofer": 0, "tweeter": 1}
@@ -173,6 +173,18 @@ def test_program_config_refuses_outputd_playback_lane():
     with pytest.raises(ActiveSpeakerConfigError):
         emit_active_speaker_program_config(
             _preset("mono"), role_channels=ROLE_CHANNELS, playback_device="jasper_out"
+        )
+
+
+def test_program_config_refuses_non_two_way_preset():
+    # W2 scope: the conductor's program topology is designed for a 2-way; a
+    # 3-way needs a designed reshape, not a silent generalization.
+    preset = ActiveSpeakerPreset.from_mapping(_three_way_preset("stereo"))
+    with pytest.raises(ActiveSpeakerConfigError, match="scoped to 2-way"):
+        emit_active_speaker_program_config(
+            preset,
+            role_channels={"woofer": 0, "mid": 1, "tweeter": 2},
+            playback_device=ACTIVE_PCM,
         )
 
 

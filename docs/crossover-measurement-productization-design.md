@@ -303,15 +303,20 @@ level differences are digital, in the program; the 25 dB sensitivity spread is
 handled by segment gains, not by re-leveling the speaker); restore exactly
 once on session close/abandon.
 
-**The session volume's source:** a codified per-profile value derived from
-the active profile's excitation ceilings — chosen so a 0 dBFS program peak on
-the hotter driver's channel lands at that driver's admitted cap (via
-`resolve_driver_excitation_ceilings`), with the derivation documented at the
-definition. It is an input to program admission (one definition path), and it
-is **never adjusted after CHECK**: the gain solve operates strictly within
-[SNR floor, 0 dBFS − 6 dB guard]; if infeasible at max gain, the session
-fails with a named reason ("move the phone closer" / "the room is too loud
-right now").
+**The session volume's source:** derived so the **least-sensitive
+(highest-cap) driver** reaches the measurement reference level with digital
+headroom — `min(MEASUREMENT_REFERENCE_VOLUME_DB = −20 dB, max(caps))`,
+refused with a typed error when the result is at or below the −60 dB
+emergency floor; more-sensitive drivers are digitally **attenuated down** to
+their own caps (always satisfiable downward). The 2026-07-18 W2 adversarial
+gate caught the min-cap misreading of this section's earlier text: a
+min-cap-derived volume pins the least-sensitive driver ~40 dB under its own
+ceiling and collapses its SNR below the trim floor. The reference constant
+is provisional pending W6 bench validation. It is an input to program
+admission (one definition path), and it is **never adjusted after CHECK**:
+the gain solve operates strictly within [SNR floor, 0 dBFS − 6 dB guard]; if
+infeasible at max gain, the session fails with a named reason ("move the
+phone closer" / "the room is too loud right now").
 
 **Abandon is a defined event set** (the latch trio is reused for its crash
 semantics, not its lifecycle — today's lease is per-step with no TTL, and its

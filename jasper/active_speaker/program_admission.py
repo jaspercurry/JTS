@@ -352,13 +352,23 @@ def _evaluate_program(
             except ExcitationSafetyPlanError as exc:
                 refusals.append(_map_safety_plan_error(exc))
                 continue
-            column = np.asarray(pcm[:, channel], dtype=np.float64)
+            # float32 throughout: the whole-file materialization is the memory
+            # hot spot on the 1 GB Pi (float64 doubled a ~20 s 2-ch program to
+            # ~19 MB transient). Peak/RMS at float32 precision is ~1e-6 dB —
+            # far inside the 0.5 dB manifest tolerance. The RMS accumulator
+            # stays float64 (dtype=) so a long quiet residual cannot lose
+            # low-level energy to float32 summation.
+            column = np.asarray(pcm[:, channel], dtype=np.float32)
             true_peak = float(np.max(np.abs(column))) if column.size else 0.0
             true_peak_dbfs = _dbfs(true_peak)
             effective_true_peak_dbfs = true_peak_dbfs + float(session_volume_db)
             mask = _out_of_segment_mask(program, channel, column.size)
             residual = column[mask]
-            rms = float(np.sqrt(np.mean(residual**2))) if residual.size else 0.0
+            rms = (
+                float(np.sqrt(np.mean(np.square(residual), dtype=np.float64)))
+                if residual.size
+                else 0.0
+            )
             out_of_segment_rms_dbfs = _dbfs(rms)
             declared_peak_dbfs = _channel_declared_peak_dbfs(program, channel)
 
@@ -532,11 +542,12 @@ def readmit_program_from_wav(
             channels=(),
             refusals=(ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH,),
         )
-    # Invert write_program_wav's S16_LE scaling (peak 1.0 -> 32767).
+    # Invert write_program_wav's S16_LE scaling (peak 1.0 -> 32767). float32:
+    # halves the whole-file transient on the 1 GB Pi (see _evaluate_program).
     if np.issubdtype(data.dtype, np.integer):
-        pcm = data.astype(np.float64) / 32767.0
+        pcm = data.astype(np.float32) / np.float32(32767.0)
     else:
-        pcm = data.astype(np.float64)
+        pcm = data.astype(np.float32)
     return _evaluate_program(
         program,
         pcm,
