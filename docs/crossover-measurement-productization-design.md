@@ -1,12 +1,17 @@
 # Crossover measurement & tuning — productization design
 
-> **Status: v2 design / decision record (2026-07-18). Committed plan, not yet
-> implemented.** v1 (earlier the same day) synthesized the first-principles
-> deep-research pass (Appendix A) into a staged adaptation plan. v2 — same day,
-> after an adversarial validation pass against the primary sources, a
-> prior-art UX study, and a full code-contract mapping — **corrects four v1
-> claims (§3) and replaces the staged adaptation with the conductor
-> architecture (§5)**. Motivated by the end-to-end hardware-validation run
+> **Status: v2.1 design / decision record (2026-07-18, in implementation).**
+> v1 (earlier the same day) synthesized the first-principles deep-research
+> pass (Appendix A) into a staged adaptation plan. v2 — same day, after an
+> adversarial validation pass against the primary sources, a prior-art UX
+> study, and a full code-contract mapping — **corrects four v1 claims (§3)
+> and replaces the staged adaptation with the conductor architecture (§5)**.
+> v2.1 folds in an independent adversarial *design* review (3 blockers /
+> 8 should-fixes, all accepted — §5.4 placement contract, §5.5 lifecycle,
+> per-capture gain integrity, phase persistence, VERIFY semantics, failure
+> taxonomy, scope boundaries). Wave status: W1 (measurement core) and W3
+> (relay entries) merged; W4 (apply extension) gated + in PR; W2/W5/W6
+> pending. Motivated by the end-to-end hardware-validation run
 > ([crossover-room-e2e-validation-log.md](crossover-room-e2e-validation-log.md)).
 > This doc does **not** restate the canonical measurement/correction references
 > ([docs/HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md),
@@ -144,8 +149,21 @@ adds phase — the high-credibility view for a crossover product).
 ### 5.2 The three phases
 
 One mic position for the whole session: **~1 m on the listening axis**
-(tweeter height, facing the speaker; picture on the placement screen). One
-relay session spans all phases (§5.7).
+(tweeter height, facing the speaker; picture on the placement screen). The
+parallax budget in §3.2 assumes this placement within a tolerance window of
+roughly ±0.3 m distance and ±10 cm height — comfortably inside the ~16°
+residual by the same formula — and the placement screen's copy/picture
+encodes that window, so a "roughly right" placement is genuinely fine. One
+relay session spans all phases (§5.7), and the capture page holds **one
+MediaStream for the entire session**: any track end/mute/re-acquisition is
+reported to the Pi and requires the behavioral gain check to re-pass before
+the next capture is admitted (browser AGC can silently return with a
+re-acquired stream). Because CHECK-only verification cannot protect the
+later captures, **every MEASURE and VERIFY program also opens with a short
+two-level pilot pair (~2 s)** so each capture carries its own linearity
+evidence, and MEASURE acceptance additionally requires the woofer repeat
+pair to agree in level within ±0.3 dB (a gain-riding detector complementing
+the timing baselines).
 
 - **CHECK (~25 s capture, one phone tap).** Program: leading silence (the
   session's ambient measurement, reusing the framed-ambient policy) + per
@@ -171,11 +189,19 @@ relay session spans all phases (§5.7).
   trims, polarity, delay, predicted summed response vs target — with one
   Apply action (existing fingerprint pattern). Crossover Fc/slope stay
   preset-owned, now with measured trims/delay/polarity.
-- **VERIFY (~15 s capture, one phone tap, after apply).** One summed sweep
-  through the applied production graph. Analysis: measured summed response
-  vs the MEASURE-predicted sum and the target — ripple through Fc within
-  tolerance = pass. Rendered as the before/after overlay; pairs with the
-  existing A/B affordances as the user's proof.
+- **VERIFY (~15 s capture, one phone tap, after apply).** Two-level pilot
+  pair + one summed sweep through the applied production graph. **Pass =
+  |measured sum − predicted sum| ≤ ±1.5 dB over [Fc/2, 2·Fc] at 1/6-octave
+  smoothing, with VERIFY analysis windowed to MEASURE's accepted gate
+  parameters**; if VERIFY's own detected first reflection forces a shorter
+  gate than MEASURE's, the verdict is "inconclusive — re-verify," not fail
+  (a different gate manufactures overlay differences that aren't driver
+  alignment). Target-tracking is displayed but does not gate. **On fail: the
+  applied graph stays in force** (it is proof-checked safe regardless); the
+  user is offered Re-verify (capture again), Re-measure (back to MEASURE,
+  evidence replaced), or Restore previous (the existing apply-rollback
+  path), with one specific reason shown. Rendered as the before/after
+  overlay; pairs with the existing A/B affordances as the user's proof.
 
 User cost: place the mic once, ~3 phone taps + review/apply, **~2–3 minutes**.
 
@@ -211,11 +237,16 @@ Composers: `build_check_program(...)`, `build_measure_program(gain_plan, ...)`,
 `build_verify_program(...)`. Every segment passes
 `prepare_driver_excitation_plan` (band ⊆ permitted band, effective peak ≤
 `min(profile cap, protection cap)` — the DE250 −65 dBFS HF cap lives there
-already); the compiled program carries the per-segment attestations, and
-playback re-admits from a fresh readback exactly as today
-(`admitted_playback`). Sweep legs reuse `sweep.synchronized_swept_sine`;
-inter-sweep gaps come from the MESM rule (gap ≥ expected IR length + harmonic
-pre-ring for the preceding sweep's band).
+already). **Program admission attests N per-segment plans plus two
+per-channel whole-file facts recomputed from the rendered WAV bytes: each
+channel's true peak ≤ its driver's admitted cap, and out-of-segment channel
+energy below a floor** — that is what makes the attestation about the
+artifact rather than about intentions; the static graph's target filter +
+caps remain the structural backstop. Playback re-admits both facts from a
+fresh readback exactly as today (`admitted_playback`). Sweep legs reuse
+`sweep.synchronized_swept_sine`; inter-sweep gaps come from the MESM rule
+(gap ≥ expected IR length + harmonic pre-ring for the preceding sweep's
+band).
 
 ### 5.4 Channel-routed program graph (static safety)
 
@@ -230,12 +261,20 @@ the two responses directly summable (`P = W_xo + s·T_xo·e^{−jωτ}`), remove
 any protective-filter double-counting from the prediction, and keeps the
 tweeter behind its final ≥24 dB/oct high-pass during every excitation. The
 schedule lives in the WAV channels, so per-driver sequencing is
-sample-accurate while the CamillaDSP graph stays **static and provable** —
-`graph_safety`'s `tweeter_guard_present` / `output_highpass_protected` proofs
-apply unchanged, and no graph reload happens mid-program (v1 loaded a fresh
-isolated graph per sweep). VERIFY plays a mono sweep through the **applied
-production graph** — measuring the real system, not a commissioning
-construct.
+sample-accurate while the CamillaDSP graph stays **static and provable**, and
+no graph reload happens mid-program (v1 loaded a fresh isolated graph per
+sweep). **Placement contract (load-bearing):** the routing is a **new mixer
+mode** (program ch0 → woofer path, ch1 → tweeter path); the target LP/HP,
+protective HP, limiter, and level caps remain **on the physical output
+channels** — the positions `output_highpass_protected` and
+`tweeter_guard_present` actually inspect. Filters must NOT be emitted
+per-program-channel pre-mixer: on the 2-way preset, program ch1 numerically
+coincides with tweeter output 1, and the subset-of-role guard cannot
+distinguish a pre-split ch-1 HP from the post-split tweeter HP (a false-PASS
+shape). W2 ships a contract test proving the routed variant passes both
+proofs and that a pre-split per-channel-HP variant is rejected. VERIFY plays
+a mono sweep through the **applied production graph** — measuring the real
+system, not a commissioning construct.
 
 ### 5.5 Session volume plan (SSOT)
 
@@ -246,9 +285,31 @@ proven fail-closed latch trio from `CrossoverLevelLease`
 set the fixed measurement volume (constant across all phases — per-driver
 level differences are digital, in the program; the 25 dB sensitivity spread is
 handled by segment gains, not by re-leveling the speaker); restore exactly
-once on session close/abandon. Deleted: `LevelMatchSession` use in the
-crossover flow, `CrossoverLevelRunStore`, level locks, per-sweep
-solve-corrections.
+once on session close/abandon.
+
+**The session volume's source:** a codified per-profile value derived from
+the active profile's excitation ceilings — chosen so a 0 dBFS program peak on
+the hotter driver's channel lands at that driver's admitted cap (via
+`resolve_driver_excitation_ceilings`), with the derivation documented at the
+definition. It is an input to program admission (one definition path), and it
+is **never adjusted after CHECK**: the gain solve operates strictly within
+[SNR floor, 0 dBFS − 6 dB guard]; if infeasible at max gain, the session
+fails with a named reason ("move the phone closer" / "the room is too loud
+right now").
+
+**Abandon is a defined event set** (the latch trio is reused for its crash
+semantics, not its lifecycle — today's lease is per-step with no TTL, and its
+recovery route refuses `active` states): the plan's durable state carries an
+`opened_at` timestamp, and each of (a) explicit stop from either surface,
+(b) relay-session end/TTL expiry (the Pi owns the session and observes its
+death), and (c) a hard wall-clock ceiling on the held plan (~1800 s ≈ 2× the
+relay TTL, enforced live and on hydration) drains the restore-once path; if
+restore cannot confirm by readback, the state latches unresolved →
+`volume_recovery`. A user who walks away can never leave the speaker pinned
+at measurement volume.
+
+Deleted: `LevelMatchSession` use in the crossover flow,
+`CrossoverLevelRunStore`, level locks, per-sweep solve-corrections.
 
 ### 5.6 Analysis pipeline (pure, per phase)
 
@@ -289,6 +350,20 @@ New estimator code (ε, GCC-PHAT sub-sample) is net-new and lands with
 synthetic-fixture tests: composed captures with injected known ε, delay,
 polarity, noise, and dropped-buffer faults must round-trip within tolerance.
 
+**Phase persistence & session binding (the W5 contract):** each phase
+publishes its evidence and derived plan — CHECK: ambient report + behavioral
+verdict + `GainPlan`; MEASURE: `ProgramAnalysis` + candidate — as
+evidence-store artifacts under the session's commissioning run; the v2
+measured candidate rides the existing publish → tamper-checked reopen →
+apply → crash-restore chain (`commissioning_service.publish_candidate` and
+kin), re-keyed to `(program_id, analysis, proposal)`. MEASURE's SNR verdicts
+consume CHECK's framed ambient; MEASURE's own guard silence is a cross-check
+only. **Phase evidence is bound to the relay session**: a new session
+invalidates CHECK and MEASURE evidence (mic position is unverifiable across
+sessions) — resume within one session skips accepted phases; resume after
+session death restarts at CHECK, which is 25 s by design precisely so this
+is cheap.
+
 ### 5.7 Relay/capture protocol: heterogeneous capture plans
 
 Protocol v3 today runs "N repeats of ONE spec." v2 extends `CapturePlan`
@@ -317,25 +392,71 @@ the global constant.
 
 ### 5.8 Apply: trims + polarity + delay
 
-Apply extends from trims-only to the full measured candidate: polarity flows
-into the preset region fields (`lower_polarity`/`upper_polarity`) and delay
-into the per-driver `Delay` filter (`ms`, ≤ the existing 20 ms DSP ceiling)
-that `camilla_yaml` already knows how to emit — then `delay_graph` +
-`graph_safety` re-prove the emitted graph as today. The candidate is
-fingerprinted over `(program_id, analysis, proposal)` so apply freshness works
-unchanged.
+Apply carries the full measured candidate. (Precisely: the apply
+*transaction* already moved per-role `{gain_db, delay_ms, inverted}`
+corrections end-to-end — what is new is a **measured** candidate writing
+polarity into the preset region fields and a measured delay value, plus the
+v2 evidence core.) Shipped as `MeasuredCrossoverCandidate` (W4, merged):
+delay/polarity fold through `corrections` into the single emitter
+(`emit_active_speaker_baseline_config` — Delay filter in ms via the
+single-owner `quantized_delay_ms`, ≤ the 20 ms DSP ceiling; inversion via the
+per-driver Gain, no double-inversion), proven pre-apply by
+`prove_static_delay_binding` + the `graph_safety` protection proofs — a
+failed proof blocks with `correction.crossover_alignment_proof_blocked` and
+no partial write. The candidate is fingerprinted over `(program_id,
+analysis, preset, trims, alignment)` via the existing `json_fingerprint`
+recipe so apply freshness works unchanged.
 
 ### 5.9 Deleted with this design (crossover flow scope)
 
 The near-field geometry pass and the near-field/reference-axis handoff; both
 per-driver ramp level-matches and `MeasurementRamp` use in this flow; per-
-repeat tap admission and the 120 s windows; `CrossoverLevelRunStore` and level
-locks; per-sweep solve corrections; the null-walk as the flow's delay source
-(superseded by the single-capture estimator + VERIFY; the physical walk
-remains available as an expert diagnostic until proven redundant on hardware).
-Envelope steps collapse to
+repeat tap admission and the per-capture operator windows (the relay
+session's `DEFAULT_TIMEOUT_S = 120 s` budget stays as the transport backstop;
+what dies is the tap-per-repeat cadence gated on it); `CrossoverLevelRunStore`
+and level locks; per-sweep solve corrections; the null-walk as the flow's
+delay source (superseded by the single-capture estimator + VERIFY; the
+physical walk remains available as an expert diagnostic until proven
+redundant on hardware). The envelope's step *tuple* stays five entries —
 `("speaker_setup", "microphone_check", "measure", "review_apply", "verify")`
-(schema 6 → 7); each retired screen's state machinery goes with it.
+(schema 6 → 7) — the real deletion is the sub-state machinery inside the
+steps (ramp/level-lock/near-field/comparison-set logic); each retired
+screen's state machinery goes with it.
+
+### 5.10 Failure taxonomy (the W5 screen contract)
+
+Every terminal verdict has one owning phase, one retry budget, and
+one-reason/one-action copy:
+
+| Code | Phase | Retry budget | Action copy shape |
+|---|---|---|---|
+| `agc_behavioral_fail` | CHECK (re-armed on stream change) | 1 | name the browser/AGC cause; retry after re-permission |
+| `snr_floor` | CHECK / MEASURE | 1 | "room is too loud right now" / "move the phone closer" |
+| `channel_map_mismatch` | CHECK | 0 (hard stop) | "check speaker wiring" — never auto-swap |
+| `clipped` | MEASURE / VERIFY | 1 (gain-adjusted) | automatic quieter retry, say so |
+| `drift_baselines_disagree` (glitch) | MEASURE | 1 | "capture glitched — retrying" |
+| `delay_exceeds_search_window` | MEASURE | 1 | re-check mic placement vs the picture |
+| `locate_failed` | any capture | 1 | "couldn't hear the speaker — check volume/mic" |
+| `relay_timeout` / session death | any | new session | re-open link; CHECK restarts (evidence invalidated) |
+| `volume_unresolved` | session | — | existing `volume_recovery` screen |
+| `verify_out_of_tolerance` | VERIFY | 2 (re-verify) | offer Re-verify / Re-measure / Restore previous |
+
+### 5.11 Scope boundaries (non-goals & doors)
+
+- **3-way is a named non-goal for v2.** The program/WAV layer generalizes
+  (N channels, per-segment roles), but the candidate must reshape from one
+  alignment triple to per-boundary `(trim, s, τ)` entries and the prediction
+  becomes an N-branch sum — a schema change, not an additive wave. The `mid`
+  `delay_role` is refused as ambiguous today (W4) on purpose.
+- **Subwoofer/main alignment is owned by the bass-extension program.** This
+  flow measures nothing below its gated validity floor and hands off nothing
+  else.
+- **Fc/slope re-derivation and driver EQ beyond trims are a v3 door, not a
+  permanent closure.** v2 deliberately measures as-crossed and cannot recover
+  them (dividing out the target filter explodes stopband noise). The door
+  opens with one additive program variant capturing raw branches behind the
+  protective-only HP — a second graph variant + segments, no change to the
+  conductor architecture.
 
 ## 6. Wave plan
 
@@ -359,7 +480,10 @@ parallel.
 - **W5 — flow + envelope collapse.** Phase orchestration in
   `correction_crossover_flow`/`backend` (check → gain solve → measure →
   review/apply → verify), envelope schema 7, screen JS, deletions (§5.9),
-  test-suite rewrite for the collapsed states.
+  the failure-taxonomy screens (§5.10), phase persistence + session binding
+  (§5.6), the MEASURE/VERIFY leading pilot pair + repeat level-agreement
+  acceptance (extends W1's composers per §5.2), and the test-suite rewrite
+  for the collapsed states.
 - **W6 — hardware validation.** Full run on JTS3 through real Chrome + relay
   + UMIK-2; before/after captured; design-doc benchmarks measured; docs
   verified-stamped.
@@ -373,8 +497,17 @@ integrates all; W6 gates "done."
   corruption (behavioral check catches or session fails loudly).
 - Relative-delay repeatability within ±1 sample @ 48 kHz (±20.8 µs) across 10
   sessions; ε baselines agree within threshold in every accepted capture.
-- VERIFY summed ripple ≤ ±1.5 dB through Fc on the reference hardware.
+- VERIFY summed ripple ≤ ±1.5 dB over [Fc/2, 2·Fc] @ 1/6-octave (per §5.2's
+  VERIFY definition) on the reference hardware.
 - Wall-clock: mic placement → verified apply ≤ 5 min for a 2-way.
+
+**W6 operationalization** (a single bench campaign can't measure fleet
+medians, and "zero silent corruption" is unfalsifiable without a negative):
+≥ 9 of 10 scripted bench sessions accept the first capture of every phase;
+one deliberate negative trial per device class (constraints omitted / AGC
+forced on) MUST be rejected by the behavioral check — a negative trial that
+passes silently fails the wave; delay repeatability and VERIFY ripple as
+stated.
 
 Empirical gates: the JTS3 + UMIK-2 bench probe ran 2026-07-18 (five trials,
 three scheduled sweeps per capture at 0/3/10 s through the mux test-gate →
@@ -425,4 +558,5 @@ the ask) is archived at `deep-research-crossover-measurement-prompt.md`
 
 ---
 
-_Last updated: 2026-07-18 (v2 conductor design; pre-implementation)._
+_Last updated: 2026-07-18 (v2.1 — design-review amendments folded; W1/W3/W4
+merged, W2 in flight)._
