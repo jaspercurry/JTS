@@ -712,12 +712,31 @@ def _relay_failure_message(exc: BaseException) -> str:
     fields), wrong for the household surface. Map it to the one action that
     fixes it: reload the phone page so it serves the current build.
 
+    ``CrossoverV2LocalSeamError`` (W6 hardware run 3 finding G) wraps a bare
+    ``OSError`` raised by the v2 crossover's LOCAL play/DSP seam -- e.g. the
+    DSP writer lock's ``os.open`` hitting a read-only ``config_dir``
+    (finding F), which surfaced the raw
+    ``"[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"``
+    string on the wizard's relay status line via the generic ``str(exc)``
+    fallback below. Its household copy comes from the SAME
+    ``REASON_REGISTRY[REASON_INTERNAL_ERROR]`` text the v2 envelope itself
+    renders for an internal error, so the two surfaces never say different
+    things about the same failure. The raw exception string still reaches
+    the journal unchanged -- this function only shapes what the household
+    sees; ``event=capture_relay.adapter_failed`` above logs with
+    ``exc_info=True`` regardless of the mapped message.
+
     Every other exception falls back to ``str(exc)`` unchanged (prior
     behavior) -- not evidenced as a wizard-facing problem, so left alone
     per "scope fixes to the observed-broken path."
     """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_INTERNAL_ERROR,
+        REASON_REGISTRY,
+    )
     from jasper.capture_relay.session import CapturePageIncompatible
     from jasper.correction.level_match import LevelMatchRefused
+    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError
 
     if isinstance(exc, LevelMatchRefused):
         return exc.user_message
@@ -733,6 +752,8 @@ def _relay_failure_message(exc: BaseException) -> str:
             "The connection to the phone timed out mid-measurement. "
             "Reopen the phone link and try this step again."
         )
+    if isinstance(exc, CrossoverV2LocalSeamError):
+        return REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     return str(exc)
 
 
