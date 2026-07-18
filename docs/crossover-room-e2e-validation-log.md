@@ -64,12 +64,28 @@ End state: a working active crossover applied from scratch; `done_manual` with
 the honest monotonic stepper + "Manual crossover applied" chip; tweeter now
 protected by the *applied* crossover highpass (passive-window exposure over).
 
-## Journey — mic / crossover-config flow (UMIK-2) ⏳ in progress
+## Journey — mic / crossover-config flow (UMIK-2, relay) ⏳ in progress
 
-The automated mic flow (`/correction/crossover/`, browser getUserMedia) refines
-the provisional sensitivity-derived levels into measured ones: mic + level →
-measure each driver → align → apply the *measured* crossover. Driven from a
-headed browser on the operator's Mac Studio with the UMIK-2. **Next.**
+The automated mic flow refines the provisional sensitivity-derived levels into
+measured ones. It is **relay-based**: the control page (`/correction/crossover/`)
+opens a relay session whose `tap_link` (a `capture.jasper.tech` page holding the
+mic + E2E key) the capture device joins; the Pi plays a protected sweep, the
+capture device records via the mic + uploads through the relay, the Pi pulls +
+commits. Since the UMIK-2 is on the operator's Mac Studio, the *same machine*
+runs both the control page and the capture page (I drive both via a persistent
+headed-Chrome harness; the UMIK-2 is the selected capture device).
+
+Flow-validation run: **fixed mic position** (front of speaker), per operator
+direction — validating that the flow works end to end, not chasing optimal
+per-driver near-field placement.
+
+| step | result |
+|---|---|
+| Woofer level match | ✅ relay `complete`; JTS ramped 250 Hz from quiet, UMIK-2 locked the level |
+| Tweeter level match | ✅ relay `complete`; 6250 Hz protected passband, locked |
+| Measure each driver (3 stationary repeats/driver) | ⏳ woofer sweep in progress |
+| Align the crossover | ⏳ pending |
+| Apply measured crossover | ⏳ pending |
 
 ## Room correction (UMIK-2) ⏳ pending
 
@@ -110,6 +126,21 @@ accept. Ingests the UMIK-2 calibration by serial (`/correction/calibration/fetch
 5. **UMIK-2 browser capture works** for the local-device measurement path
    (headed Chrome, HTTPS `/correction/`, deviceId-selected UMIK-2, clean
    settings) — enables driving the mic flow autonomously.
+6. **Relay mic flow works end to end** — both drivers level-matched via the
+   relay + UMIK-2 (relay `complete`, protected passband tones, level locked).
+   The capture page recognizes and remembers the mic calibration by serial
+   ("miniDSP UMIK-2 · 8494").
+7. **Relay session TTL + hash-routed capture SPA — automation-driving finding.**
+   The `capture.jasper.tech` page is a hash-routed SPA (`#s=<session>…`) and the
+   relay session has a short TTL. Two practical consequences for a *scripted*
+   driver (a human tapping through on a phone wouldn't hit these): (a)
+   re-navigating an already-open capture tab to a *new* session's hash does not
+   reload the app — it keeps the stale session and shows "Link expired"; the
+   capture tab must be **closed and reopened** per session. (b) The wizard
+   (allow → choose mic → confirm cal → start) must be driven quickly, and any
+   human pause at the placement step easily exceeds the TTL and expires the
+   link. Worth considering a longer/refreshable link TTL, or a clearer
+   "expired — one tap to refresh" affordance, for slower operators.
 
 ## Method / gate
 
