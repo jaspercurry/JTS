@@ -55,6 +55,7 @@ from jasper.audio_measurement import calibration as calibration_mod
 from jasper.audio_measurement import deconv, gating, snr_policy
 from jasper.audio_measurement.program import (
     KIND_PILOT,
+    KIND_SWEEP,
     PHASE_CHECK,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -101,6 +102,14 @@ DBFS_FLOOR = -120.0
 # samples-equivalent, or the primary drift exceeds the ppm bound (design §5.6.3).
 GLITCH_RESIDUAL_SAMPLES = 1.5
 MAX_DRIFT_PPM = 500.0
+
+# The two woofer sweeps of a MEASURE program are bit-identical stimuli, so a
+# clean capture reproduces the same captured level for both. A larger gap is a
+# gain-rider (browser AGC nudging the level between the two sweeps) — a
+# complement to the timing baselines (design §5.2). PROVISIONAL pending W6 bench
+# distributions. A failure REUSES the ``drift_baselines_disagree`` glitch
+# verdict — never a new user-facing reason code (design §5.2).
+REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
@@ -310,6 +319,12 @@ class ProgramAnalysis:
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
     verify_tracking: dict[str, Any] | None = None
+    # MEASURE-predicted applied summed magnitude ``(freqs_hz, magnitude_db)`` —
+    # the flattest-achievable aligned sum for the candidate (design §5.6.6). The
+    # v2 conductor hands this to the VERIFY analysis as
+    # ``MeasurementPriors.predicted_sum`` so VERIFY's PASS is |measured −
+    # predicted| ≤ ±1.5 dB (design §5.2), not merely the summed ripple.
+    predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     glitch_detected: bool = False
 
 
@@ -691,7 +706,12 @@ def _estimate_drift(
     by_id = {loc.segment_id: loc for loc in locations}
     w1 = by_id.get("sweep_w")
     w2 = by_id.get("sweep_w_rep")
-    stimulus_locs = [loc for loc in locations if loc.kind in STIMULUS_KINDS]
+    # Only the SWEEP-kind stimuli anchor the drift baselines / residual guard.
+    # A v2 MEASURE program may open with a leading pilot pair (linearity probe,
+    # design §5.2) whose short/quiet windows are located more coarsely; folding
+    # them into the residual guard would manufacture spurious desync. Pilots are
+    # judged separately (their own linearity verdict), never as a drift baseline.
+    stimulus_locs = [loc for loc in locations if loc.kind == KIND_SWEEP]
 
     baselines: dict[str, float] = {}
     epsilon = 0.0
@@ -734,9 +754,21 @@ def _estimate_drift(
         for r in resids:
             max_residual = max(max_residual, abs(r - mean))
 
+    # Woofer-repeat LEVEL agreement (design §5.2): the two woofer sweeps are
+    # bit-identical stimuli, so a clean capture reproduces the same captured
+    # peak. A larger delta is a gain-rider (AGC nudging the level mid-program)
+    # and REUSES the drift-baselines-disagree glitch verdict — never a new
+    # user-facing code.
+    repeat_level_delta_db = 0.0
+    repeat_level_disagrees = False
+    if w1 is not None and w2 is not None:
+        repeat_level_delta_db = abs(w1.peak_dbfs - w2.peak_dbfs)
+        repeat_level_disagrees = repeat_level_delta_db > REPEAT_LEVEL_TOLERANCE_DB
+
     glitch = (
         abs(epsilon) * 1e6 > MAX_DRIFT_PPM
         or max_residual > GLITCH_RESIDUAL_SAMPLES
+        or repeat_level_disagrees
     )
     if glitch:
         log_event(
@@ -747,6 +779,7 @@ def _estimate_drift(
             program_id=program.program_id,
             epsilon_ppm=round(epsilon * 1e6, 2),
             max_residual_samples=round(max_residual, 2),
+            repeat_level_delta_db=round(repeat_level_delta_db, 3),
         )
     return DriftEstimate(
         epsilon_ppm=epsilon * 1e6,
@@ -1069,6 +1102,26 @@ def _pilot_observations(
     return out
 
 
+def _pilot_verdicts(
+    program: ExcitationProgram,
+    capture: np.ndarray,
+    sample_rate: int,
+    locations: Sequence[SegmentLocation],
+) -> tuple[tuple[PilotObservation, ...], bool | None, bool | None]:
+    """Pilot observations + the aggregate linearity / channel-map verdicts.
+
+    ``None`` verdicts when the program carries no pilots (a legacy MEASURE /
+    VERIFY program), so a caller can distinguish "no pilot evidence" from
+    "pilot evidence, all clean". Shared by CHECK, and by v2 MEASURE / VERIFY
+    whose leading pilot pair (design §5.2) carries per-capture linearity
+    evidence CHECK-only verification cannot.
+    """
+    pilots = _pilot_observations(program, capture, sample_rate, locations)
+    linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
+    channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
+    return tuple(pilots), linearity_ok, channel_map_ok
+
+
 def _channel_map_ok(samples: np.ndarray, sample_rate: int, seg: ProgramSegment) -> bool:
     """True when the pilot's energy lands mostly inside its declared band."""
     x = np.asarray(samples, dtype=np.float64)
@@ -1244,9 +1297,15 @@ def _analyze_measure(
         pre_samples=pre_samples,
     )
 
-    candidate = _build_candidate(
+    candidate, predicted_sum = _build_candidate(
         woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
         seg_w.role, seg_t.role, alignment, calibration,
+    )
+    # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
+    # program opens with a leading pilot pair; legacy programs carry none, so
+    # the verdicts stay ``None`` (byte-identical to the pre-v2 analysis).
+    pilots, linearity_ok, channel_map_ok = _pilot_verdicts(
+        program, capture, sample_rate, locations
     )
     return ProgramAnalysis(
         phase=program.phase,
@@ -1256,6 +1315,10 @@ def _analyze_measure(
         driver_responses=responses,
         alignment=alignment,
         candidate=candidate,
+        pilots=pilots,
+        linearity_ok=linearity_ok,
+        channel_map_ok=channel_map_ok,
+        predicted_sum=predicted_sum,
         glitch_detected=drift.glitch_detected,
     )
 
@@ -1263,7 +1326,7 @@ def _analyze_measure(
 def _build_candidate(
     woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
     woofer_role, tweeter_role, alignment, calibration,
-) -> CrossoverCandidate:
+) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
     trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
@@ -1275,13 +1338,15 @@ def _build_candidate(
     # this is the flattest-achievable aligned sum for the candidate.
     predicted = _predicted_sum(W, T, trim_w, trim_t, alignment.polarity_sign)
     ripple = _ripple_db(freqs, predicted, lo, hi)
-    return CrossoverCandidate(
+    predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12))
+    candidate = CrossoverCandidate(
         trim_db={woofer_role: trim_w, tweeter_role: trim_t},
         polarity=alignment.polarity,
         delay_us=alignment.delay_us,
         predicted_ripple_db=ripple,
         confidence=alignment.confidence,
     )
+    return candidate, (freqs, predicted_db)
 
 
 def _analyze_verify(
@@ -1316,6 +1381,12 @@ def _analyze_verify(
                 (lo, hi),
             )
             tracking = {"rms_db": rms, "max_db": max_abs}
+    # A v2 VERIFY program opens with a leading pilot pair (design §5.2) so the
+    # post-apply capture carries its own behavioral-linearity evidence too;
+    # legacy VERIFY programs carry none and the verdicts stay ``None``.
+    pilots, linearity_ok, channel_map_ok = _pilot_verdicts(
+        program, capture, sample_rate, locations
+    )
     return ProgramAnalysis(
         phase=program.phase,
         program_id=program.program_id,
@@ -1323,4 +1394,7 @@ def _analyze_verify(
         summed_response=summed,
         summed_ripple_db=ripple,
         verify_tracking=tracking,
+        pilots=pilots,
+        linearity_ok=linearity_ok,
+        channel_map_ok=channel_map_ok,
     )

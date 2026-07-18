@@ -1,0 +1,1159 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""The v2 crossover conductor — phase orchestration (Wave 5a).
+
+``docs/crossover-measurement-productization-design.md`` §5 replaces the legacy
+per-driver distributed transaction with a **conductor**: the Pi compiles one
+excitation program per phase, plays it as one continuous stream, and analyzes
+``(program, capture) → analysis`` as a pure function. This module owns the
+phase state machine that drives the three-capture relay session:
+
+    CHECK  → gain solve  → MEASURE → candidate → REVIEW/APPLY → VERIFY → done
+
+It is deliberately I/O-free: every side effect (playback, analysis, evidence
+publish, apply-gate observation) crosses an INJECTED seam
+(:class:`V2FlowSeams`), exactly as :func:`jasper.active_speaker.program_playback.play_program`
+and :class:`jasper.active_speaker.session_volume_plan.SessionVolumePlan` inject
+their DSP / volume seams. That keeps the whole state walk fixture-testable with
+fake seams, and lets Wave 6 bind the real CamillaController-backed playback, the
+``analyze_program_capture`` call, the verified-WAV source, and the
+``commissioning_service`` publish/apply chain without touching this logic.
+
+The conductor exposes the three ``run_capture_plan`` callbacks
+(:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
+lifecycle hooks the flow needs (:meth:`note_apply_complete`,
+:meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
+relay session (a 3-entry heterogeneous ``CapturePlan`` — check/measure/verify)
+spans all phases; VERIFY is soft-held behind :class:`CaptureBeginDeferred` until
+the household applies (§5.2's one-tap-per-phase auto-arm).
+
+**Failure taxonomy (§5.10).** Terminal verdicts are internal reason codes, not
+screens: :data:`REASON_REGISTRY` maps each code to one of the four screen
+templates, its owning phase, and its retry budget. The conductor decides the
+code + accepted verdict; the envelope (:mod:`jasper.active_speaker.crossover_envelope_v2`)
+renders the template. A woofer-repeat level disagreement REUSES
+``drift_baselines_disagree`` — never a new user-facing code (§5.2).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Sequence
+
+from jasper.audio_measurement.program import (
+    BASE_STIMULUS_PEAK_DBFS,
+    DEFAULT_PILOT_LEVELS_DB,
+    STIMULUS_KINDS,
+    ExcitationProgram,
+    RoleBand,
+    build_check_program,
+    build_measure_program,
+    build_verify_program,
+)
+from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_OK,
+    GainPlan,
+    MeasurementGeometry,
+    MeasurementPriors,
+    ProgramAnalysis,
+)
+from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
+from jasper.log_event import log_event
+
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# phase vocabulary
+# --------------------------------------------------------------------------- #
+
+PHASE_CHECK = "check"
+PHASE_MEASURE = "measure"
+PHASE_REVIEW_APPLY = "review_apply"
+PHASE_VERIFY = "verify"
+PHASE_DONE = "done"
+
+# Capture-plan index → phase. REVIEW/APPLY is a control-page phase (no capture)
+# that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
+_INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
+_PHASE_INDEX = {phase: index for index, phase in _INDEX_PHASE.items()}
+CAPTURE_PLAN_TARGET = 3
+
+# The capturing phases in order — the ones bound to the relay session's
+# evidence and invalidated on a new session (§5.6).
+CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
+
+# --------------------------------------------------------------------------- #
+# failure taxonomy (§5.10)
+# --------------------------------------------------------------------------- #
+
+# The four screen templates W5 ships, each parameterized by reason copy.
+TEMPLATE_SILENT_AUTO_RETRY = "silent_auto_retry"
+TEMPLATE_FIX_AND_RETRY = "fix_and_retry"
+TEMPLATE_HARD_STOP = "hard_stop"
+TEMPLATE_SESSION_RESTART = "session_restart"
+# Two special screens defined in §5.2 (not among the four generic templates).
+TEMPLATE_VERIFY_FAIL = "verify_fail"
+TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
+
+# Reason codes (internal — never a bare code reaches the household; the envelope
+# renders each through its template copy).
+REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
+REASON_SNR_FLOOR = "snr_floor"
+REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
+REASON_CLIPPED = "clipped"
+REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
+REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
+REASON_LOCATE_FAILED = "locate_failed"
+REASON_RELAY_TIMEOUT = "relay_timeout"
+REASON_VOLUME_UNRESOLVED = "volume_unresolved"
+REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
+REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
+
+
+@dataclass(frozen=True)
+class ReasonSpec:
+    """One terminal verdict's template + budget + copy (§5.10)."""
+
+    code: str
+    template: str
+    retry_budget: int
+    # Short banner shown while a transient code auto-retries (template 1). Empty
+    # for codes whose template is a decision screen.
+    banner: str
+    # The fix/action copy the decision-screen template renders. One reason, one
+    # action (the Language guide).
+    message: str
+
+
+# The §5.10 table, as data. The envelope and the conductor both read it, so copy
+# and budget never drift between the verdict and its screen.
+REASON_REGISTRY: dict[str, ReasonSpec] = {
+    REASON_AGC_BEHAVIORAL_FAIL: ReasonSpec(
+        REASON_AGC_BEHAVIORAL_FAIL, TEMPLATE_FIX_AND_RETRY, 1, "",
+        "Your phone's microphone changed its own levels mid-measurement. "
+        "Re-allow the microphone, then try again.",
+    ),
+    REASON_SNR_FLOOR: ReasonSpec(
+        REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1, "",
+        "The room is too loud right now, or the phone is too far away. Quiet "
+        "the room or move the phone closer, then try again.",
+    ),
+    REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
+        REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        "The drivers didn't play in the expected order — check the speaker "
+        "wiring before measuring again.",
+    ),
+    REASON_CLIPPED: ReasonSpec(
+        REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        "That was a touch loud — measuring again a bit quieter.", "",
+    ),
+    REASON_DRIFT_BASELINES_DISAGREE: ReasonSpec(
+        REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        "The capture glitched — measuring again.", "",
+    ),
+    REASON_DELAY_EXCEEDS_SEARCH_WINDOW: ReasonSpec(
+        REASON_DELAY_EXCEEDS_SEARCH_WINDOW, TEMPLATE_FIX_AND_RETRY, 1, "",
+        "The microphone may be off the spot in the picture. Re-check its "
+        "placement, then try again.",
+    ),
+    REASON_LOCATE_FAILED: ReasonSpec(
+        REASON_LOCATE_FAILED, TEMPLATE_FIX_AND_RETRY, 1, "",
+        "Couldn't hear the speaker clearly. Check the volume and the "
+        "microphone, then try again.",
+    ),
+    REASON_RELAY_TIMEOUT: ReasonSpec(
+        REASON_RELAY_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
+        "The measurement link timed out. Open the link again to start over — "
+        "the quick microphone check runs first.",
+    ),
+    REASON_VOLUME_UNRESOLVED: ReasonSpec(
+        REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
+        "JTS could not confirm the listening volume was restored. Recover the "
+        "safe volume before continuing.",
+    ),
+    REASON_VERIFY_OUT_OF_TOLERANCE: ReasonSpec(
+        REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2, "",
+        "The result didn't quite match the prediction. Try again, or undo to "
+        "restore the previous sound.",
+    ),
+    REASON_VERIFY_INCONCLUSIVE: ReasonSpec(
+        REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2, "",
+        "The check was inconclusive — the room reflection cut the window "
+        "short. Re-verify to try again.",
+    ),
+}
+
+# The transient codes whose first retry is automatic (a banner, no decision
+# screen) per §5.10 template 1.
+TRANSIENT_AUTO_RETRY_CODES = frozenset(
+    code for code, spec in REASON_REGISTRY.items()
+    if spec.template == TEMPLATE_SILENT_AUTO_RETRY
+)
+
+# --------------------------------------------------------------------------- #
+# tuning constants (PROVISIONAL pending W6 bench validation)
+# --------------------------------------------------------------------------- #
+
+# The gain solver backs off this far below each driver's exact cap. The W2 gate
+# found ``prepare_driver_excitation_plan``'s strict ``>`` can refuse an
+# exactly-at-cap plan by one ulp, so a hair of headroom keeps an at-cap solve
+# admissible.
+GAIN_CAP_BACKOFF_DB = 0.01
+# Per gain-adjusted clip retry, drop the offending program's level by this much.
+CLIP_RETRY_BACKOFF_DB = 3.0
+# The two pilot levels are this far apart (matches the CHECK behavioral check).
+PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
+# A located stimulus below this correlation confidence reads as "couldn't hear
+# the speaker" (locate_failed).
+LOCATE_MIN_CONFIDENCE = 0.1
+# VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2).
+VERIFY_TOLERANCE_DB = 1.5
+# The prescribed on-axis mic distance the parallax correction assumes (§5.2).
+MEASUREMENT_DISTANCE_M = 1.0
+
+
+class CrossoverV2FlowError(RuntimeError):
+    """The v2 conductor could not form a safe phase transition."""
+
+
+# --------------------------------------------------------------------------- #
+# pure helpers (fixture-testable in isolation)
+# --------------------------------------------------------------------------- #
+
+
+def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
+                  *, margin_db: float = GAIN_CAP_BACKOFF_DB) -> float:
+    """Clamp a per-driver digital gain so its effective peak stays under the cap.
+
+    The effective peak folded through the session volume is
+    ``gain_db + session_volume_db``; admission caps it at the driver's
+    ``cap_dbfs``. The W2 gate found the admission's strict ``>`` can refuse an
+    exactly-at-cap plan by one ulp, so this backs off ``margin_db`` (≥0.01 dB)
+    below the cap — an at-cap solve stays admissible.
+    """
+    ceiling = cap_dbfs - session_volume_db - margin_db
+    return min(float(gain_db), ceiling)
+
+
+def alignment_to_candidate_fields(
+    analysis: ProgramAnalysis, *, woofer_role: str, tweeter_role: str,
+) -> tuple[float | None, str | None, str | None]:
+    """Map a MEASURE ``AlignmentEstimate`` to ``(delay_us, delay_role, polarity)``.
+
+    Honours the analysis sign contract (design §5.6.5): its ``delay_us`` is
+    ``(D_woofer − D_tweeter)``, so **positive ⇒ the tweeter arrived earlier and
+    the tweeter branch is delayed**; negative ⇒ the woofer is delayed. The W4
+    :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverAlignment`
+    wants a non-negative magnitude + the delayed role, so the sign is folded into
+    the role choice. Returns ``(None, None, None)`` when there is no trustworthy
+    alignment (missing, or the estimator clamped at the search-window edge), so
+    the candidate falls back to a trims-only apply.
+    """
+    from jasper.active_speaker.crossover_alignment import (
+        POLARITY_INVERT,
+        POLARITY_KEEP,
+    )
+
+    est = analysis.alignment
+    if est is None or est.status != ALIGNMENT_OK:
+        return None, None, None
+    delay_us = float(est.delay_us)
+    if delay_us >= 0.0:
+        role, magnitude = tweeter_role, delay_us
+    else:
+        role, magnitude = woofer_role, -delay_us
+    polarity = POLARITY_INVERT if est.polarity == "inverted" else POLARITY_KEEP
+    return magnitude, role, polarity
+
+
+def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
+    """Compact JSON-safe evidence core for the measured candidate fingerprint.
+
+    The W4 candidate freezes ``analysis`` as exact JSON data, so only the
+    scalar verdicts travel — never the numpy response arrays. Enough to identify
+    the exact measurement that authorized the candidate (§5.6/§5.8).
+    """
+    drift = analysis.drift
+    align = analysis.alignment
+    cand = analysis.candidate
+    return {
+        "schema_version": 1,
+        "kind": "jts_program_analysis_evidence",
+        "program_id": analysis.program_id,
+        "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
+        "glitch_detected": bool(analysis.glitch_detected),
+        "delay_us": round(float(align.delay_us), 3) if align else None,
+        "polarity": align.polarity if align else None,
+        "alignment_confidence": round(float(align.confidence), 4) if align else None,
+        "trim_db": (
+            {k: round(float(v), 4) for k, v in cand.trim_db.items()} if cand else None
+        ),
+        "predicted_ripple_db": (
+            round(float(cand.predicted_ripple_db), 4) if cand else None
+        ),
+    }
+
+
+def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
+    """False when no located stimulus cleared the locate-confidence floor."""
+    confidences = [
+        loc.confidence for loc in analysis.locations if loc.kind in STIMULUS_KINDS
+    ]
+    if not confidences:
+        return False
+    return max(confidences) >= LOCATE_MIN_CONFIDENCE
+
+
+def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
+    return any(
+        loc.clipped for loc in analysis.locations if loc.kind in STIMULUS_KINDS
+    )
+
+
+def _gate_window_ms(response: Any) -> float | None:
+    if response is None:
+        return None
+    window = response.gating.get("window_ms") if response.gating else None
+    return float(window) if isinstance(window, (int, float)) else None
+
+
+# --------------------------------------------------------------------------- #
+# seams + snapshot
+# --------------------------------------------------------------------------- #
+
+# Injected seams. Wave 6 binds the real CamillaController-backed playback,
+# analyze_program_capture, verified-WAV source, and commissioning_service chain.
+PlayProgram = Callable[[str, ExcitationProgram], None]
+AnalyzeCapture = Callable[[ExcitationProgram, bytes, MeasurementPriors], ProgramAnalysis]
+PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
+PublishCandidate = Callable[[Any], None]
+ApplyGate = Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class V2FlowSeams:
+    """The conductor's injected I/O boundary (all side effects)."""
+
+    play: PlayProgram
+    analyze: AnalyzeCapture
+    publish_check: PublishCheck
+    publish_candidate: PublishCandidate
+    apply_complete: ApplyGate
+
+
+@dataclass(frozen=True)
+class V2ConductorSnapshot:
+    """Durable phase state, bound to the relay session (§5.6).
+
+    Persisted under the session's commissioning run; :meth:`CrossoverV2Conductor.hydrate`
+    keeps the accepted phases only when the current session matches — a new
+    session invalidates CHECK/MEASURE evidence (mic position is unverifiable
+    across sessions).
+    """
+
+    session_id: str
+    accepted_phases: tuple[str, ...] = ()
+    applied: bool = False
+    gain_plan_db: Mapping[str, float] | None = None
+    candidate_fingerprint: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "accepted_phases": list(self.accepted_phases),
+            "applied": self.applied,
+            "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
+            "candidate_fingerprint": self.candidate_fingerprint,
+        }
+
+
+@dataclass(frozen=True)
+class PhaseVerdict:
+    """A consume verdict: the relay dict + the internal reason (if any)."""
+
+    accepted: bool
+    code: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def to_relay_dict(self) -> dict[str, Any]:
+        """The mapping ``consume_capture`` returns to ``run_capture_plan``.
+
+        Always carries ``accepted``; a rejection adds the reason code + template
+        + copy so the phone renders the right §5.10 screen. Every non-``accepted``
+        field is relayed verbatim in the ``capture_result`` host event.
+        """
+        out: dict[str, Any] = {"accepted": self.accepted}
+        if self.code is not None:
+            spec = REASON_REGISTRY[self.code]
+            out.update(
+                code=self.code,
+                template=spec.template,
+                reason=spec.message or spec.banner,
+                banner=spec.banner,
+                auto_retry=self.code in TRANSIENT_AUTO_RETRY_CODES,
+            )
+        out.update(self.payload)
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# the conductor
+# --------------------------------------------------------------------------- #
+
+
+class CrossoverV2Conductor:
+    """The v2 phase state machine driving one relay capture session.
+
+    Construct with the session identity, the declared drivers, the crossover Fc,
+    the safety caps + session volume, and the injected :class:`V2FlowSeams`.
+    Hand :meth:`authorize_begin`, :meth:`on_armed`, and :meth:`consume_capture`
+    to :func:`jasper.capture_relay.session.run_capture_plan`; call
+    :meth:`note_apply_complete` when the household applies (the deferred VERIFY
+    then arms). :meth:`snapshot` / :meth:`hydrate` carry phase persistence.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        source_preset: Any,
+        roles_bands: Sequence[RoleBand],
+        fc_hz: float,
+        driver_caps_dbfs: Mapping[str, float],
+        session_volume_db: float,
+        seams: V2FlowSeams,
+        driver_spacing_m: float = 0.0,
+        accepted_phases: Sequence[str] = (),
+        applied: bool = False,
+        gain_plan_db: Mapping[str, float] | None = None,
+    ) -> None:
+        roles = tuple(roles_bands)
+        if len(roles) != 2:
+            raise CrossoverV2FlowError("the v2 conductor is a 2-way flow")
+        self.session_id = str(session_id)
+        self._preset = source_preset
+        self._roles = roles
+        self._woofer, self._tweeter = roles[0], roles[1]
+        self._fc_hz = float(fc_hz)
+        self._caps = dict(driver_caps_dbfs)
+        self._session_volume_db = float(session_volume_db)
+        self._seams = seams
+        self._geometry = MeasurementGeometry(
+            driver_spacing_m=float(driver_spacing_m),
+            mic_distance_m=MEASUREMENT_DISTANCE_M,
+        )
+        self._accepted = set(accepted_phases)
+        self._applied = bool(applied)
+        self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
+
+        # Programs — CHECK is composable now; MEASURE waits on the gain solve,
+        # VERIFY on Fc (composable now, played only after apply).
+        self._check_program = self._compose_check_program()
+        self._measure_program: ExcitationProgram | None = (
+            self._compose_measure_program(self._gain_plan_db)
+            if self._gain_plan_db is not None
+            else None
+        )
+        self._verify_program = self._compose_verify_program()
+
+        # Per-phase attempt bookkeeping + the last failure reason.
+        self._phase_attempts: dict[str, int] = {}
+        self._last_reason: dict[str, str] = {}
+        self._armed_index: int | None = None
+        # MEASURE→VERIFY handoff evidence.
+        self._measure_predicted_sum: Any = None
+        self._measure_gate_window_ms: float | None = None
+        self._candidate: Any = None
+        self._verify_outcome: str | None = None  # pass | fail | inconclusive
+
+    # --- program composition -------------------------------------------------
+
+    def _compose_check_program(self) -> ExcitationProgram:
+        return build_check_program(
+            self._roles, downstream_gain_db=self._session_volume_db,
+        )
+
+    def _pilot_gains(self, hi_gain_db: float) -> tuple[float, float]:
+        return (hi_gain_db - PILOT_LEVEL_DELTA_DB, hi_gain_db)
+
+    def _compose_measure_program(
+        self, gain_plan_db: Mapping[str, float], *, extra_backoff_db: float = 0.0,
+    ) -> ExcitationProgram:
+        gains = {}
+        for rb in self._roles:
+            cap = self._caps.get(rb.role, 0.0)
+            gains[rb.role] = back_off_gain(
+                float(gain_plan_db[rb.role]) - extra_backoff_db,
+                self._session_volume_db,
+                cap,
+            )
+        return build_measure_program(
+            gains, self._roles,
+            downstream_gain_db=self._session_volume_db,
+            leading_pilot_gains_db=self._pilot_gains(gains[self._woofer.role]),
+            leading_pilot_role=self._woofer.role,
+        )
+
+    def _compose_verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
+        gain = BASE_STIMULUS_PEAK_DBFS - extra_backoff_db
+        return build_verify_program(
+            self._fc_hz,
+            gain_db=gain,
+            downstream_gain_db=self._session_volume_db,
+            leading_pilot_gains_db=self._pilot_gains(gain),
+        )
+
+    # --- priors per phase ----------------------------------------------------
+
+    def _measure_priors(self) -> MeasurementPriors:
+        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+
+    def _verify_priors(self) -> MeasurementPriors:
+        return MeasurementPriors(
+            crossover_fc_hz=self._fc_hz,
+            predicted_sum=self._measure_predicted_sum,
+        )
+
+    # --- read surfaces -------------------------------------------------------
+
+    @property
+    def accepted_phases(self) -> frozenset[str]:
+        return frozenset(self._accepted)
+
+    def phase_status(self, phase: str) -> str:
+        return "accepted" if phase in self._accepted else "pending"
+
+    def pending_phases(self) -> tuple[str, ...]:
+        return tuple(p for p in CAPTURE_PHASES if p not in self._accepted)
+
+    @property
+    def current_phase(self) -> str:
+        for phase in CAPTURE_PHASES:
+            if phase not in self._accepted:
+                # MEASURE accepted but not yet applied ⇒ the household is on the
+                # REVIEW/APPLY control page before VERIFY arms.
+                if phase == PHASE_VERIFY and PHASE_MEASURE in self._accepted and not self._applied:
+                    return PHASE_REVIEW_APPLY
+                return phase
+        return PHASE_DONE
+
+    @property
+    def candidate(self) -> Any:
+        return self._candidate
+
+    @property
+    def verify_outcome(self) -> str | None:
+        return self._verify_outcome
+
+    @property
+    def applied(self) -> bool:
+        return self._applied
+
+    def _phase_of_index(self, index: int) -> str:
+        phase = _INDEX_PHASE.get(index)
+        if phase is None:
+            raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
+        return phase
+
+    # --- lifecycle -----------------------------------------------------------
+
+    def note_apply_complete(self) -> None:
+        """The apply-complete host event — arms the soft-held VERIFY (§5.2)."""
+        self._applied = True
+        log_event(
+            logger, "correction.crossover_v2_apply_complete",
+            session_id=self.session_id,
+        )
+
+    def _apply_observed(self) -> bool:
+        if self._applied:
+            return True
+        try:
+            observed = bool(self._seams.apply_complete())
+        except (OSError, RuntimeError, ValueError):
+            observed = False
+        if observed:
+            self._applied = True
+        return observed
+
+    def snapshot(self) -> V2ConductorSnapshot:
+        return V2ConductorSnapshot(
+            session_id=self.session_id,
+            accepted_phases=tuple(p for p in CAPTURE_PHASES if p in self._accepted),
+            applied=self._applied,
+            gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
+            candidate_fingerprint=(
+                getattr(self._candidate, "fingerprint", None)
+                if self._candidate is not None else None
+            ),
+        )
+
+    @classmethod
+    def hydrate(
+        cls,
+        snapshot: V2ConductorSnapshot | None,
+        *,
+        session_id: str,
+        **kwargs: Any,
+    ) -> "CrossoverV2Conductor":
+        """Rebuild a conductor, applying the §5.6 session-binding rule.
+
+        Same session ⇒ resume, keeping the accepted phases + gain plan (skips
+        accepted phases). A different or absent session ⇒ fresh start at CHECK
+        (CHECK/MEASURE evidence invalidated — mic position is unverifiable
+        across sessions).
+        """
+        if snapshot is not None and snapshot.session_id == session_id:
+            return cls(
+                session_id=session_id,
+                accepted_phases=snapshot.accepted_phases,
+                applied=snapshot.applied,
+                gain_plan_db=snapshot.gain_plan_db,
+                **kwargs,
+            )
+        if snapshot is not None:
+            log_event(
+                logger, "correction.crossover_v2_session_rebound",
+                level=logging.INFO,
+                prior_session=snapshot.session_id,
+                session_id=session_id,
+            )
+        return cls(session_id=session_id, **kwargs)
+
+    # --- relay callbacks -----------------------------------------------------
+
+    def authorize_begin(self, index: int, attempt: int, entry: Any = None) -> None:
+        """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
+
+        VERIFY is soft-held (:class:`CaptureBeginDeferred`) until apply is
+        observed; a phase whose retry budget is spent is refused
+        (:class:`CaptureBeginRefused`, which ends the session so the envelope's
+        terminal screen shows). Every other begin is admitted.
+        """
+        phase = self._phase_of_index(index)
+        if phase == PHASE_VERIFY and not self._apply_observed():
+            raise CaptureBeginDeferred(
+                "awaiting_apply",
+                "waiting for the household to apply the measured crossover",
+            )
+        # Budget: the phase's attempt count after this begin vs the last
+        # failure's retry budget. First attempt of any phase is always admitted.
+        count = self._phase_attempts.get(phase, 0) + 1
+        last = self._last_reason.get(phase)
+        if last is not None and count > REASON_REGISTRY[last].retry_budget + 1:
+            spec = REASON_REGISTRY[last]
+            raise CaptureBeginRefused(spec.code, spec.message or spec.banner)
+        self._phase_attempts[phase] = count
+        self._armed_index = index
+        log_event(
+            logger, "correction.crossover_v2_authorized",
+            session_id=self.session_id, phase=phase, index=index, attempt=attempt,
+        )
+
+    def on_armed(self, state: Any = None) -> None:
+        """Play the armed phase's excitation program (the host stimulus)."""
+        index = self._armed_index
+        if index is None:
+            raise CrossoverV2FlowError("on_armed with no authorized capture")
+        phase = self._phase_of_index(index)
+        program = self._program_for_phase(phase)
+        log_event(
+            logger, "correction.crossover_v2_play",
+            session_id=self.session_id, phase=phase, program_id=program.program_id,
+        )
+        self._seams.play(phase, program)
+
+    def _program_for_phase(self, phase: str) -> ExcitationProgram:
+        if phase == PHASE_CHECK:
+            return self._check_program
+        if phase == PHASE_MEASURE:
+            if self._measure_program is None:
+                raise CrossoverV2FlowError(
+                    "MEASURE armed before the CHECK gain solve produced a program"
+                )
+            return self._measure_program
+        if phase == PHASE_VERIFY:
+            return self._verify_program
+        raise CrossoverV2FlowError(f"no program for phase {phase!r}")
+
+    def consume_capture(
+        self, index: int, attempt: int, result: Any, entry: Any = None,
+    ) -> dict[str, Any]:
+        """Analyze one uploaded capture and advance (or reject) the phase."""
+        phase = self._phase_of_index(index)
+        program = self._program_for_phase(phase)
+        priors = (
+            self._measure_priors() if phase == PHASE_MEASURE
+            else self._verify_priors() if phase == PHASE_VERIFY
+            else MeasurementPriors()
+        )
+        wav = getattr(result, "wav", result)
+        analysis = self._seams.analyze(program, wav, priors)
+        if phase == PHASE_CHECK:
+            verdict = self._consume_check(analysis)
+        elif phase == PHASE_MEASURE:
+            verdict = self._consume_measure(analysis)
+        else:
+            verdict = self._consume_verify(analysis)
+        if verdict.accepted:
+            self._accepted.add(phase)
+            self._last_reason.pop(phase, None)
+        elif verdict.code is not None:
+            self._last_reason[phase] = verdict.code
+        log_event(
+            logger, "correction.crossover_v2_result",
+            session_id=self.session_id, phase=phase,
+            accepted=verdict.accepted, code=verdict.code or "",
+        )
+        return verdict.to_relay_dict()
+
+    # --- per-phase verdicts --------------------------------------------------
+
+    def _consume_check(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        if not _stimulus_locate_ok(analysis):
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.channel_map_ok is False:
+            return PhaseVerdict(False, REASON_CHANNEL_MAP_MISMATCH)
+        if analysis.linearity_ok is False:
+            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+        gain_plan = analysis.gain_plan
+        if gain_plan is None or not gain_plan.snr_floor_ok:
+            return PhaseVerdict(False, REASON_SNR_FLOOR)
+        # Accept: keep the solved gains + ambient, compose the MEASURE program,
+        # publish CHECK evidence.
+        self._gain_plan_db = dict(gain_plan.gain_db)
+        self._measure_program = self._compose_measure_program(self._gain_plan_db)
+        self._seams.publish_check(gain_plan, analysis.ambient_report or {})
+        return PhaseVerdict(True, payload={"phase": PHASE_CHECK})
+
+    def _consume_measure(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        if not _stimulus_locate_ok(analysis):
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.glitch_detected:
+            # Repeat-level disagreement reuses this same code (§5.2) — the
+            # analysis already folded it into glitch_detected.
+            self._rearm_measure_after_transient()
+            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
+        if _any_sweep_clipped(analysis):
+            self._rearm_measure_after_transient(extra_backoff_db=CLIP_RETRY_BACKOFF_DB)
+            return PhaseVerdict(False, REASON_CLIPPED)
+        if analysis.linearity_ok is False:
+            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+        if analysis.alignment is not None and analysis.alignment.status != ALIGNMENT_OK:
+            return PhaseVerdict(False, REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
+        candidate = self._build_candidate(analysis)
+        self._candidate = candidate
+        self._measure_predicted_sum = analysis.predicted_sum
+        self._measure_gate_window_ms = self._measure_gate(analysis)
+        self._seams.publish_candidate(candidate)
+        return PhaseVerdict(
+            True,
+            payload={
+                "phase": PHASE_MEASURE,
+                "candidate_fingerprint": candidate.fingerprint,
+            },
+        )
+
+    def _consume_verify(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        if not _stimulus_locate_ok(analysis):
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.linearity_ok is False:
+            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+        # Gate-comparability rule (§5.2): a shorter VERIFY gate manufactures
+        # overlay differences that aren't driver alignment ⇒ inconclusive.
+        verify_gate = _gate_window_ms(analysis.summed_response)
+        if (
+            self._measure_gate_window_ms is not None
+            and verify_gate is not None
+            and verify_gate + 1e-6 < self._measure_gate_window_ms
+        ):
+            self._verify_outcome = "inconclusive"
+            return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
+        tracking = analysis.verify_tracking or {}
+        max_db = tracking.get("max_db")
+        if not isinstance(max_db, (int, float)) or max_db > VERIFY_TOLERANCE_DB:
+            self._verify_outcome = "fail"
+            return PhaseVerdict(
+                False, REASON_VERIFY_OUT_OF_TOLERANCE,
+                payload={"tracking": dict(tracking)},
+            )
+        self._verify_outcome = "pass"
+        return PhaseVerdict(
+            True, payload={"phase": PHASE_VERIFY, "tracking": dict(tracking)}
+        )
+
+    # --- helpers -------------------------------------------------------------
+
+    def _rearm_measure_after_transient(self, *, extra_backoff_db: float = 0.0) -> None:
+        """Recompose the MEASURE program for the automatic retry (§5.10 t1)."""
+        if self._gain_plan_db is not None:
+            self._measure_program = self._compose_measure_program(
+                self._gain_plan_db, extra_backoff_db=extra_backoff_db
+            )
+
+    def _measure_gate(self, analysis: ProgramAnalysis) -> float | None:
+        windows = [
+            _gate_window_ms(resp) for resp in analysis.driver_responses
+        ]
+        finite = [w for w in windows if w is not None]
+        return min(finite) if finite else None
+
+    def _build_candidate(self, analysis: ProgramAnalysis) -> Any:
+        from jasper.active_speaker.measured_crossover_candidate import (
+            MeasuredCrossoverAlignment,
+            MeasuredCrossoverCandidate,
+        )
+
+        cand = analysis.candidate
+        if cand is None:
+            raise CrossoverV2FlowError("MEASURE analysis produced no candidate")
+        delay_us, delay_role, polarity = alignment_to_candidate_fields(
+            analysis, woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
+        )
+        alignment = (
+            MeasuredCrossoverAlignment(
+                delay_us=delay_us, delay_role=delay_role, polarity=polarity,
+            )
+            if delay_role is not None
+            else MeasuredCrossoverAlignment()
+        )
+        return MeasuredCrossoverCandidate(
+            program_id=analysis.program_id,
+            analysis=_analysis_json(analysis),
+            source_preset=self._preset,
+            role_attenuations_db=dict(cand.trim_db),
+            alignment=alignment,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# capture plan + session spec (§5.7, auto-advance policy §5.2)
+# --------------------------------------------------------------------------- #
+
+# Phone-side recording margin around each program (lead + tail), presentation /
+# locator-window data — never a hard deadline (the session runner's timeout_s
+# stays the backstop).
+CAPTURE_ENTRY_MARGIN_MS = 2000
+# The cancelable auto-advance countdown between an accepted CHECK and MEASURE
+# (§5.2 — one tap per session is the design; the countdown protects validity
+# because a user returning to the phone cold is the likeliest mic-displacement
+# event). PROVISIONAL pending W6.
+AUTO_ADVANCE_COUNTDOWN_S = 5
+
+# Auto-advance policy vocabulary carried in the per-entry ``screen`` field
+# (page policy, not a protocol change — the field is opaque to the schema).
+AUTO_ADVANCE_TAP = "tap"            # requires the user's tap (first capture)
+AUTO_ADVANCE_COUNTDOWN = "countdown"  # auto-begins behind a cancelable countdown
+AUTO_ADVANCE_ON_APPLY = "on_apply"  # armed by the apply-complete host event
+
+
+def _program_duration_ms(program: ExcitationProgram) -> int:
+    return int(round(program.total_samples / program.sample_rate_hz * 1000))
+
+
+def build_v2_capture_plan(
+    roles_bands: Sequence[RoleBand],
+    fc_hz: float,
+) -> Any:
+    """The 3-entry heterogeneous CapturePlan (check / measure / verify, §5.7).
+
+    Entry durations derive from the composed programs (MEASURE sized from a
+    nominal gain plan — sweep/gap lengths are gain-independent, so the duration
+    is exact even before CHECK's solve) plus a lead/tail margin; each entry's
+    ``screen`` carries the phase prompt AND the §5.2 auto-advance policy:
+    CHECK is the session's one required tap, MEASURE auto-advances behind a
+    visible cancelable countdown, VERIFY arms on the apply-complete host event.
+    """
+    from jasper.capture_relay.spec import (
+        MAX_CAPTURE_PLAN_ATTEMPTS,
+        CapturePlan,
+        CapturePlanEntry,
+    )
+
+    roles = tuple(roles_bands)
+    check = build_check_program(roles)
+    nominal_gains = {rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}
+    measure = build_measure_program(
+        nominal_gains, roles,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+    )
+    verify = build_verify_program(
+        fc_hz,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+    )
+    entries = (
+        CapturePlanEntry(
+            index=0,
+            kind_label="check",
+            duration_ms=_program_duration_ms(check) + CAPTURE_ENTRY_MARGIN_MS,
+            screen={
+                "title": "Microphone check",
+                "body": (
+                    "Place the phone about 1 m in front of the speaker at "
+                    "tweeter height, then tap Start. Stay quiet — JTS listens "
+                    "to the room first."
+                ),
+                "auto_advance": AUTO_ADVANCE_TAP,
+            },
+        ),
+        CapturePlanEntry(
+            index=1,
+            kind_label="measure",
+            duration_ms=_program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS,
+            screen={
+                "title": "Measuring",
+                "body": "Keep the phone still — measuring both drivers.",
+                "auto_advance": AUTO_ADVANCE_COUNTDOWN,
+                "countdown_s": str(AUTO_ADVANCE_COUNTDOWN_S),
+                "cancelable": "1",
+            },
+        ),
+        CapturePlanEntry(
+            index=2,
+            kind_label="verify",
+            duration_ms=_program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS,
+            screen={
+                "title": "Waiting for apply",
+                "body": (
+                    "Review and apply the measured crossover on the speaker "
+                    "page — verification starts automatically after apply."
+                ),
+                "auto_advance": AUTO_ADVANCE_ON_APPLY,
+            },
+        ),
+    )
+    return CapturePlan(
+        capture_target=CAPTURE_PLAN_TARGET,
+        max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS,
+        schema_version=2,
+        entries=entries,
+    )
+
+
+def build_v2_session_spec(
+    roles_bands: Sequence[RoleBand],
+    fc_hz: float,
+    *,
+    acknowledgement_binding: str,
+    **spec_kwargs: Any,
+) -> Any:
+    """One relay v3 session spec spanning all three v2 phases (§5.7).
+
+    Rides the existing ``build_crossover_sweep_spec`` (same kind, transport,
+    and placement-acknowledgement machinery) with the 3-entry plan attached;
+    the summed fixed-on-axis placement copy is the closest shipped match to the
+    v2 single mic position (the per-entry screens carry the v2 prompts). The
+    spec-level stimulus duration is the longest entry so the per-capture
+    deadline covers every phase.
+    """
+    from jasper.capture_relay.spec import build_crossover_sweep_spec
+
+    plan = build_v2_capture_plan(roles_bands, fc_hz)
+    longest_ms = max(entry.duration_ms for entry in plan.entries)
+    return build_crossover_sweep_spec(
+        driver_label="crossover",
+        driver_role="summed",
+        acknowledgement_binding=acknowledgement_binding,
+        stimulus_duration_ms=longest_ms,
+        capture_plan=plan,
+        **spec_kwargs,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# production playback seams (binds W2's play_program to the real DSP boundary)
+# --------------------------------------------------------------------------- #
+
+
+def bind_program_playback_seams(
+    cam: Any,
+    *,
+    bundle_dir: str,
+    artifact: Any,
+    config_dir: str,
+    program: ExcitationProgram,
+    wav_path: str,
+    topology: Any,
+    safety_profile: Mapping[str, Any],
+    role_targets: Mapping[str, str],
+    session_volume_db: float,
+    timeout_s: float = 60.0,
+) -> dict[str, Any]:
+    """The real CamillaController-backed seams for :func:`play_program` (W2's
+    open wiring question, answered here).
+
+    Returns the keyword mapping ``play_program(program, program_graph_yaml=...,
+    session_volume_plan=..., **bind_program_playback_seams(...))`` consumes:
+
+    * ``read_current_config_path`` — ``cam.get_config_file_path`` (the persisted
+      statefile boot anchor, the restore target).
+    * ``load_program_graph`` — INLINE ``cam.set_active_config_raw`` (CamillaDSP
+      ``SetConfig``): applies the program graph WITHOUT repointing the persisted
+      statefile, preserving the crash-recovery-MUTED structural invariant
+      exactly as :func:`jasper.active_speaker.commission_wiring.commission_load_config`
+      documents. A crash mid-program reboots onto the staged anchor, never the
+      program graph.
+    * ``restore_graph`` — reads the entry config path's bytes and re-applies
+      them inline (same SetConfig transport; the statefile stays untouched).
+    * ``play_wav`` — the verified-WAV source
+      (:func:`jasper.active_speaker.program_playback.verified_program_aplay`):
+      sha256-bound bytes through the stable-fd aplay path to
+      ``correction_substream``.
+    * ``readmit`` — :func:`jasper.active_speaker.program_admission.readmit_program_from_wav`
+      from a FRESH byte readback (the play-time gate).
+    * ``writer_lock`` — :func:`jasper.dsp_apply.dsp_writer_lock` on the shared
+      generated-config dir, so the program load/restore serializes with every
+      other DSP writer.
+
+    NOT hardware-validated yet — W6 exercises this binding end-to-end on JTS3;
+    until then it is the single place the real transport is named, and every
+    orchestration test injects fakes instead.
+    """
+    from pathlib import Path
+
+    from jasper.dsp_apply import dsp_writer_lock
+
+    from .program_admission import readmit_program_from_wav
+    from .program_playback import verified_program_aplay
+
+    async def _read_current_config_path() -> str | None:
+        return await cam.get_config_file_path(best_effort=False)
+
+    async def _load_program_graph(program_graph_yaml: str) -> bool:
+        return await cam.set_active_config_raw(program_graph_yaml, best_effort=False)
+
+    async def _restore_graph(entry_config_path: str) -> bool:
+        text = Path(entry_config_path).read_text(encoding="utf-8")
+        return await cam.set_active_config_raw(text, best_effort=False)
+
+    async def _play_wav() -> Any:
+        return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)
+
+    async def _readmit() -> Any:
+        return readmit_program_from_wav(
+            program,
+            wav_path,
+            topology=topology,
+            safety_profile=safety_profile,
+            role_targets=role_targets,
+            session_volume_db=session_volume_db,
+        )
+
+    return {
+        "read_current_config_path": _read_current_config_path,
+        "load_program_graph": _load_program_graph,
+        "restore_graph": _restore_graph,
+        "play_wav": _play_wav,
+        "readmit": _readmit,
+        "writer_lock": lambda: dsp_writer_lock(
+            config_dir, source="crossover_v2_program"
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# session-volume lifecycle (one SessionVolumePlan per session, §5.5)
+# --------------------------------------------------------------------------- #
+
+
+def derive_session_volume_db(
+    safety_profile: Mapping[str, Any], target_fingerprints: Sequence[str],
+) -> float:
+    """The fixed session measurement volume — the SSOT derivation (§5.5).
+
+    Thin pass-through to
+    :func:`jasper.active_speaker.session_volume_plan.session_measurement_volume_db`
+    so the conductor and its callers reach the one derivation path (least-
+    sensitive driver reaches the reference level; more-sensitive drivers
+    attenuate down digitally). Kept here so the flow imports one module.
+    """
+    from .session_volume_plan import session_measurement_volume_db
+
+    return session_measurement_volume_db(safety_profile, target_fingerprints)
+
+
+async def open_measurement_volume(
+    plan: Any,
+    *,
+    safety_profile: Mapping[str, Any],
+    target_fingerprints: Sequence[str],
+    set_main_volume_db: Any,
+    get_main_volume_db: Any,
+) -> Any:
+    """Open the one session volume for a fresh v2 session (§5.5).
+
+    Gates on ``plan.needs_recovery`` FIRST (not ``unresolved_volume_safety``
+    alone — the W2 gate ruling: a crash-hydrated active plan needs draining but
+    surfaces no unresolved payload), then derives the fixed volume via the SSOT
+    and opens the plan. Refuses to open over a plan that needs recovery.
+    """
+    if plan.needs_recovery:
+        raise CrossoverV2FlowError(
+            "the session volume needs recovery; drain it before opening a session"
+        )
+    volume_db = derive_session_volume_db(safety_profile, target_fingerprints)
+    return await plan.open(volume_db, set_main_volume_db, get_main_volume_db)
+
+
+async def abandon_measurement_volume(
+    plan: Any, *, set_main_volume_db: Any, get_main_volume_db: Any,
+) -> Any:
+    """Session-death observation hook — drain the restore-once path (§5.5).
+
+    The flow wires the relay session's death (TTL expiry / failure / explicit
+    stop) to this so a walked-away user can never leave the speaker pinned at
+    measurement volume. Delegates to the plan's ``abandon`` (the same
+    fail-closed latch trio ``close`` uses).
+    """
+    return await plan.abandon(set_main_volume_db, get_main_volume_db)
+
+
+__all__ = [
+    "CrossoverV2Conductor",
+    "CrossoverV2FlowError",
+    "bind_program_playback_seams",
+    "build_v2_capture_plan",
+    "build_v2_session_spec",
+    "derive_session_volume_db",
+    "open_measurement_volume",
+    "abandon_measurement_volume",
+    "V2ConductorSnapshot",
+    "V2FlowSeams",
+    "PhaseVerdict",
+    "ReasonSpec",
+    "REASON_REGISTRY",
+    "TRANSIENT_AUTO_RETRY_CODES",
+    "PHASE_CHECK",
+    "PHASE_MEASURE",
+    "PHASE_REVIEW_APPLY",
+    "PHASE_VERIFY",
+    "PHASE_DONE",
+    "CAPTURE_PHASES",
+    "CAPTURE_PLAN_TARGET",
+    "alignment_to_candidate_fields",
+    "back_off_gain",
+    "TEMPLATE_SILENT_AUTO_RETRY",
+    "TEMPLATE_FIX_AND_RETRY",
+    "TEMPLATE_HARD_STOP",
+    "TEMPLATE_SESSION_RESTART",
+    "TEMPLATE_VERIFY_FAIL",
+    "TEMPLATE_VOLUME_RECOVERY",
+    "REASON_AGC_BEHAVIORAL_FAIL",
+    "REASON_SNR_FLOOR",
+    "REASON_CHANNEL_MAP_MISMATCH",
+    "REASON_CLIPPED",
+    "REASON_DRIFT_BASELINES_DISAGREE",
+    "REASON_DELAY_EXCEEDS_SEARCH_WINDOW",
+    "REASON_LOCATE_FAILED",
+    "REASON_RELAY_TIMEOUT",
+    "REASON_VOLUME_UNRESOLVED",
+    "REASON_VERIFY_OUT_OF_TOLERANCE",
+    "REASON_VERIFY_INCONCLUSIVE",
+]
