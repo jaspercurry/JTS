@@ -120,6 +120,23 @@ def _require_volume_limit(
         _refuse(code, "devices.volume_limit must not exceed the 0 dB JTS ceiling")
 
 
+def quantized_delay_ms(delay_us: float) -> float:
+    """The single µs→ms quantizer for a Camilla ``Delay`` filter value.
+
+    CamillaDSP YAML carries delays through ``jasper.camilla_emit.fmt`` (4
+    decimal places of ms), so that formatter is the SOLE quantizer: one
+    ``fmt`` pass over the raw microsecond value, no intermediate rounding.
+    Every producer that folds a requested ``delay_us`` into a graph value
+    (the measured-crossover candidate's preset fold / corrections) and every
+    proof that recomputes the expected value from the same ``delay_us`` MUST
+    share this helper — two recipes quantize differently on ~0.4% of the
+    range (e.g. ``round(µs/1000, 6)`` then ``fmt`` vs a single ``fmt``
+    disagree at delay_us=11382.15006948647), which turns into a spurious
+    fail-closed proof refusal.
+    """
+    return float(fmt(delay_us / 1000.0))
+
+
 def _delay_filter_value(
     graph: Mapping[str, Any],
     filter_name: str,
@@ -581,7 +598,7 @@ def confirm_delay_candidate(
         code="delay_filter_invalid",
     )
 
-    effective_delay_ms = float(fmt(candidate.delay_us / 1000.0))
+    effective_delay_ms = quantized_delay_ms(candidate.delay_us)
     requested_relative_us = (
         math.copysign(
             effective_delay_ms * 1000.0,
@@ -646,3 +663,70 @@ def confirm_delay_candidate(
         delay_us=candidate.delay_us,
         effective_delay_us=effective_delay_ms * 1000.0,
     )
+
+
+def prove_static_delay_binding(
+    graph: Mapping[str, Any],
+    *,
+    delay_filter_name: str,
+    channels: tuple[int, ...],
+    delay_us: float,
+) -> float:
+    """Prove a static (non-walk) graph binds exactly one requested Delay filter.
+
+    Unlike :class:`DelayGraphSnapshot` / :func:`confirm_delay_candidate` (the
+    null-walk audition proof pair, which binds TWO lanes against a live
+    zero-relative predecessor), this is the one-shot proof a final compiled
+    graph needs — e.g. an active-speaker baseline candidate carrying one
+    measured per-driver delay (see
+    ``jasper.active_speaker.measured_crossover_candidate``). It proves:
+
+    1. ``delay_filter_name`` is a ``Delay`` filter in milliseconds whose value
+       matches ``delay_us`` (converted to ms via the same rounding the emitter
+       uses) within the JTS DSP delay bound.
+    2. That filter occurs in **exactly one** pipeline ``Filter`` step (reusing
+       :func:`_pipeline_filter_placement`'s "occurs exactly once" proof), wired
+       to exactly ``channels``.
+
+    Performs no I/O — the caller owns compiling/reading the graph text. Raises
+    :class:`DelayGraphProofError` (one of :data:`DelayGraphFailureCode`) on any
+    mismatch; never silently accepts a graph it could not prove.
+    """
+    if type(delay_us) not in {int, float} or not math.isfinite(float(delay_us)):
+        _refuse("candidate_invalid", "delay_us must be a finite number")
+    delay_us = float(delay_us)
+    if delay_us < 0.0 or delay_us > MAX_DSP_DELAY_US:
+        _refuse("candidate_invalid", "delay_us is outside the DSP delay bound")
+    if not isinstance(delay_filter_name, str) or not delay_filter_name.strip():
+        _refuse("candidate_invalid", "delay_filter_name must be a non-empty string")
+    if (
+        type(channels) is not tuple
+        or not channels
+        or any(type(channel) is not int or channel < 0 for channel in channels)
+        or len(set(channels)) != len(channels)
+    ):
+        _refuse(
+            "candidate_invalid",
+            "channels must be a non-empty tuple of unique non-negative integers",
+        )
+
+    frozen_graph = _frozen_json_mapping(graph, code="snapshot_invalid", field_name="graph")
+    _require_volume_limit(frozen_graph, code="volume_limit_invalid")
+    delay_ms = _delay_filter_value(
+        frozen_graph, delay_filter_name, code="delay_filter_invalid"
+    )
+    expected_ms = quantized_delay_ms(delay_us)
+    if not math.isclose(delay_ms, expected_ms, rel_tol=0.0, abs_tol=1e-9):
+        _refuse(
+            "delay_mismatch",
+            f"{delay_filter_name!r} does not match the requested delay_us",
+        )
+    _, bound_channels = _pipeline_filter_placement(
+        frozen_graph, delay_filter_name, code="delay_filter_invalid"
+    )
+    if bound_channels != tuple(sorted(channels)):
+        _refuse(
+            "lane_binding_invalid",
+            f"{delay_filter_name!r} is wired to the wrong channels",
+        )
+    return delay_ms
