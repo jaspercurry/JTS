@@ -129,8 +129,17 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # capture helper. The ratchet now counts suppression comment tokens instead of
 # unrelated prose/string mentions of the rule name, so its value is the
 # auditable live marker count after that consolidation (627 -> 620).
-MAX_NOQA_MARKERS = 813
-MAX_BLE001_MARKERS = 620
+# 2026-07-18 (+1 suppression marker): the v2 crossover session runner's
+# catch-all cleanup arm (correction_crossover_v2.build_v2_run_and_consume) —
+# the W6.1 gate ruling. The play/analyze seams raise open-endedly
+# (CamillaUnavailable is a bare Exception; the reviewer proved by probe it
+# escaped the enumerated arms, leaving the measurement volume active, the
+# relay session leaked, and the phone frozen). The arm is cleanup-and-reraise
+# only: terminal host event + persisted failure + volume drain + purge, then
+# the original exception propagates to the outer relay net unchanged. Never a
+# silent path. Ceilings 620 -> 621 / 813 -> 814.
+MAX_NOQA_MARKERS = 814
+MAX_BLE001_MARKERS = 621
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

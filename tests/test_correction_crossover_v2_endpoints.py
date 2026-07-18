@@ -935,3 +935,187 @@ def test_recover_session_volume_routes_to_the_plan():
     assert recovery == "exact_restored"
     assert drained == [True]
     assert cam.vol == -15.0
+
+
+# --- W6.1 gate: catch-all cleanup arm (B blocker rework) -------------------------
+#
+# The seams raise open-endedly — the reviewer PROVED by probe that
+# CamillaUnavailable (a bare Exception, from a DSP wedge in the graph seams)
+# escaped the previously-enumerated arms: volume left active, session leaked,
+# phone frozen at capture_authorized, and (post-Finding C) the measurement
+# pause leaked too. These drive the reviewer's exact probe + an analyze-seam
+# raise through the REAL plan runner with REAL volume hooks, asserting the
+# full cleanup contract: abandon ran, pause released, session purged, terminal
+# host event landed, exception re-raised.
+
+
+def _real_hooks_scaffold(monkeypatch):
+    """Real _volume_hooks over a real SessionVolumePlan + fake DSP + fake
+    measurement window; returns (hooks, plan, cam, window_log)."""
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+    plan = SessionVolumePlan()
+    v2host.set_volume_plan_for_tests(plan)
+    cam = _FakeVolCam(-15.0)
+
+    class _Ctx:
+        session_volume_db = -20.0
+
+    hooks = v2host._volume_hooks(lambda: cam, _Ctx())
+    return hooks, plan, cam, log
+
+
+def _assert_full_cleanup(plan, cam, log, backend, session, *, code):
+    # abandon ran: measurement volume drained, household volume restored.
+    assert plan.measurement_volume_db is None
+    assert cam.vol == -15.0
+    # the session measurement pause was released (exactly one enter/exit).
+    assert not v2host.session_measurement_pause_held()
+    assert log == ["enter", "exit"]
+    # the relay session was purged (no leak to worker TTL).
+    assert session.session_id not in backend.sessions
+    # the phone got a terminal capture_result naming the failure.
+    events = backend.host_events[session.session_id]
+    assert events[-1]["phase"] == "capture_result"
+    assert events[-1]["accepted"] is False
+    assert events[-1]["code"] == code
+    assert events[-1]["index"] == 1 and events[-1]["attempt"] == 1
+    # and the same failure persisted for the wizard envelope.
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": code}
+
+
+def test_camilla_unavailable_from_play_seam_full_cleanup(monkeypatch):
+    """The reviewer's exact probe: CamillaUnavailable (bare Exception) from the
+    play seam — must hit the catch-all: internal_error + full cleanup + re-raise."""
+    from jasper.camilla import CamillaUnavailable
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+
+    def wedged_play(phase: str, program: Any) -> None:
+        raise CamillaUnavailable("websocket to CamillaDSP is down")
+
+    conductor._seams = V2FlowSeams(
+        play=wedged_play,
+        analyze=conductor._seams.analyze,
+        publish_check=conductor._seams.publish_check,
+        publish_candidate=conductor._seams.publish_candidate,
+        apply_complete=conductor._seams.apply_complete,
+    )
+    hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
+    runner = v2host.build_v2_run_and_consume(
+        conductor, volume=hooks, stop_event=threading.Event(),
+        stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
+    )
+    with pytest.raises(CamillaUnavailable):  # re-raised, not swallowed
+        _run(runner, client, session)
+    _assert_full_cleanup(plan, cam, log, backend, session, code="internal_error")
+
+
+def test_analyze_seam_raise_full_cleanup(monkeypatch):
+    """A ValueError from the analyze seam (consume path) — same catch-all
+    contract: internal_error + full cleanup + re-raise."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+
+    def broken_analyze(program: Any) -> Any:
+        raise ValueError("analysis kernel fault")
+
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        analyses={"check": broken_analyze},
+    )
+    hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
+    runner = v2host.build_v2_run_and_consume(
+        conductor, volume=hooks, stop_event=threading.Event(),
+        stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
+    )
+    with pytest.raises(ValueError):  # re-raised, not swallowed
+        _run(runner, client, session)
+    _assert_full_cleanup(plan, cam, log, backend, session, code="internal_error")
+
+
+def test_playback_refusal_keeps_its_distinct_code_through_the_catch_all(monkeypatch):
+    """The program-side classes keep program_unplayable through the catch-all's
+    dispatch — the distinct code is not collapsed into internal_error."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+    conductor._seams = _refusing_seams(conductor)
+    hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
+    from jasper.active_speaker.program_playback import ProgramPlaybackError
+
+    runner = v2host.build_v2_run_and_consume(
+        conductor, volume=hooks, stop_event=threading.Event(),
+        stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
+    )
+    with pytest.raises(ProgramPlaybackError):
+        _run(runner, client, session)
+    _assert_full_cleanup(plan, cam, log, backend, session, code="program_unplayable")
+
+
+# --- W6.1 gate should-fix: gate-lease abort under the held window ----------------
+
+
+def test_gate_abort_mid_play_cancels_the_play_and_names_the_error(monkeypatch):
+    """Renew failure mid-play: the coordinator's abort cancels the REGISTERED
+    play task (not the session task) and the cancellation surfaces as a named
+    MeasurementWindowError so the cleanup arm persists it honestly."""
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+
+    async def scenario():
+        await v2host.acquire_session_measurement_pause()
+        target = v2host._session_abort_target
+        assert target is not None
+        started = asyncio.Event()
+
+        async def play_body():
+            started.set()
+            await asyncio.sleep(30)
+
+        play = asyncio.create_task(v2host._play_under_session_pause(play_body))
+        await started.wait()
+        # What the coordinator's refresh task does on a 40 s renew failure.
+        target.abort(None)
+        with pytest.raises(MeasurementWindowError) as excinfo:
+            await play
+        assert "isolation was lost" in str(excinfo.value)
+        assert target.failed is True
+
+    asyncio.run(scenario())
+
+
+def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
+    """Renew failure between plays: the latched failed flag refuses the NEXT
+    play with a named error before any audio — never a silent nest-skip into an
+    unconfirmed music-isolation gate."""
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+    body_ran: list = []
+
+    async def scenario():
+        await v2host.acquire_session_measurement_pause()
+        target = v2host._session_abort_target
+        target.abort(None)  # no play registered: latch only, no crash
+
+        async def play_body():
+            body_ran.append(True)
+
+        with pytest.raises(MeasurementWindowError) as excinfo:
+            await v2host._play_under_session_pause(play_body)
+        assert "isolation was lost" in str(excinfo.value)
+
+    asyncio.run(scenario())
+    assert body_ran == []  # refused before any audio

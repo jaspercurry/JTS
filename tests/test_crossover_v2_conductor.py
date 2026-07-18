@@ -840,3 +840,31 @@ def test_uncapped_check_program_would_be_refused_regression():
     )
     assert not adm.allowed
     assert ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP in adm.refusals
+
+
+def test_verify_wav_rendered_sample_peak_respects_min_cap(tmp_path):
+    """Byte-level pin for the VERIFY clamp (W6.1 gate nit): VERIFY has NO
+    play-time readmit — the rendered WAV's actual sample peak is what the
+    speaker emits — so assert the WAV bytes themselves, not just the schedule:
+    sample peak + session volume ≤ min cap (+0.1 dB int16 quantization slack)."""
+    import math as _math
+
+    from scipy.io import wavfile
+
+    from jasper.audio_measurement.program import write_program_wav
+
+    c, _topology, _profile, _targets, sv = _profiled_conductor(
+        woofer_peak=-8.0, tweeter_peak=-65.0
+    )
+    wav = tmp_path / "verify_program.wav"
+    write_program_wav(wav, c._verify_program)
+    rate, data = wavfile.read(str(wav))
+    assert rate == c._verify_program.sample_rate_hz
+    peak = float(np.max(np.abs(data.astype(np.float64) / 32767.0)))
+    assert peak > 0.0  # the clamped program still carries signal
+    peak_dbfs = 20.0 * _math.log10(peak)
+    binding_cap = -65.0
+    assert peak_dbfs + sv <= binding_cap + 0.1
+    # And it is not clamped into oblivion: the sweep sits within a few dB of
+    # the cap-backoff level (the clamp targets the cap, not silence).
+    assert peak_dbfs + sv >= binding_cap - 1.0

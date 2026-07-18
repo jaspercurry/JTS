@@ -242,8 +242,13 @@ def set_volume_plan_for_tests(plan: Any) -> None:
 # held context manager lives here as a process-global entered on jasper-web's
 # single background loop; acquire/release are idempotent so a drain that runs
 # after the session already released (recover / ceiling / a crash-fresh process)
-# is a safe no-op.
+# is a safe no-op. The paired ``MeasurementAbortTarget`` keeps the coordinator's
+# isolation-loss abort effective under a held window: the per-play path
+# registers the actual play task, so a mux gate-lease renew failure cancels the
+# in-flight sweep (not the long-lived session task) and latches ``failed`` so
+# the next play refuses honestly.
 _session_pause_cm: Any = None
+_session_abort_target: Any = None
 
 
 async def acquire_session_measurement_pause() -> None:
@@ -254,14 +259,16 @@ async def acquire_session_measurement_pause() -> None:
     ``MeasurementWindowError`` if the window cannot be opened (e.g. a live voice
     session) — the caller surfaces that as a session-open failure.
     """
-    global _session_pause_cm
+    global _session_pause_cm, _session_abort_target
     if _session_pause_cm is not None:
         return
     from jasper.correction import coordinator
 
-    cm = coordinator.measurement_window()
+    target = coordinator.MeasurementAbortTarget()
+    cm = coordinator.measurement_window(abort_target=target)
     await cm.__aenter__()
     _session_pause_cm = cm
+    _session_abort_target = target
     log_event(logger, "correction.crossover_v2_measurement_pause", action="acquire")
 
 
@@ -273,11 +280,12 @@ async def release_session_measurement_pause() -> None:
     crash-fresh process that never entered it) is a safe no-op — never a
     double-release.
     """
-    global _session_pause_cm
+    global _session_pause_cm, _session_abort_target
     cm = _session_pause_cm
     if cm is None:
         return
     _session_pause_cm = None
+    _session_abort_target = None
     await cm.__aexit__(None, None, None)
     log_event(logger, "correction.crossover_v2_measurement_pause", action="release")
 
@@ -289,8 +297,49 @@ def session_measurement_pause_held() -> bool:
 
 def reset_session_measurement_pause_for_tests() -> None:
     """Test seam: drop the held-window reference without an ``__aexit__``."""
-    global _session_pause_cm
+    global _session_pause_cm, _session_abort_target
     _session_pause_cm = None
+    _session_abort_target = None
+
+
+async def _play_under_session_pause(play_body: Callable[[], Any]) -> None:
+    """Run one play under the session-held window, abort-target registered.
+
+    Before Finding C the per-play window's ENTERING task was the play task, so
+    the coordinator's isolation-loss abort (cancel the entering task) stopped
+    the sweep. The held window's entering task is the session runner, whose
+    cancel would not stop an in-flight play — so the play task registers
+    itself as the abort target while playing. A latched abort (gate-lease
+    renew failure between plays) refuses the next play with a NAMED error, and
+    a cancel that lands mid-play surfaces as the same named error, so the
+    runner's cleanup arm persists an honest failure either way.
+    """
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    target = _session_abort_target
+    if target is not None and target.failed:
+        raise MeasurementWindowError(
+            "measurement isolation was lost (the music-isolation gate lease "
+            "could not be renewed); restart the measurement session"
+        )
+    task = asyncio.current_task()
+    if target is not None and task is not None:
+        target.register(task)
+    try:
+        await play_body()
+    except asyncio.CancelledError:
+        if target is not None and target.failed:
+            # The coordinator aborted THIS play on isolation loss — surface a
+            # named terminal error (not a bare cancellation) so the session
+            # runner's cleanup arm persists it and tells the phone.
+            raise MeasurementWindowError(
+                "measurement isolation was lost mid-play; playback was "
+                "stopped before household music could re-enter the mix"
+            ) from None
+        raise
+    finally:
+        if target is not None:
+            target.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -872,10 +921,12 @@ def bind_production_play(
             # The session holds ONE measurement window for its whole life (W6.1
             # — see acquire_session_measurement_pause). ``measurement_window``
             # is exclusive/non-nestable, so nest-SKIP it here when the session
-            # already holds it; only fall back to a per-play window if the
-            # session pause is somehow not held.
+            # already holds it — registering this play task as the window's
+            # abort target so an isolation-loss abort still stops the sweep.
+            # Only fall back to a per-play window if the session pause is
+            # somehow not held.
             if session_measurement_pause_held():
-                await _play_body()
+                await _play_under_session_pause(_play_body)
                 return
             from jasper.correction import coordinator
 
@@ -928,6 +979,12 @@ def build_v2_run_and_consume(
       failure code; persist it + abandon.
     * ``CaptureStopped`` / cancellation — expected control flow: abandon the
       volume, no failure code.
+    * ANY other ``Exception`` — the W6.1 catch-all cleanup arm: the seams
+      raise open-endedly (``CamillaUnavailable`` is a bare Exception), so
+      every non-relay failure posts a terminal host event, persists
+      ``program_unplayable`` (program/admission/flow classes) or
+      ``internal_error`` (everything else), abandons the volume (releasing
+      the session measurement pause), purges, and re-raises.
     * Plan complete with VERIFY accepted ⇒ CLOSE (exact restore); a completed
       plan that did not reach done (attempt budget exhausted) abandons.
     """
@@ -947,6 +1004,7 @@ def build_v2_run_and_consume(
         )
         from jasper.active_speaker.crossover_v2_flow import (
             PHASE_DONE,
+            REASON_INTERNAL_ERROR,
             REASON_PROGRAM_UNPLAYABLE,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
@@ -1111,26 +1169,41 @@ def build_v2_run_and_consume(
             await _abandon_best_effort()
             await _purge_best_effort()
             raise
-        except (
-            ProgramPlaybackError, ProgramAdmissionError, CrossoverV2FlowError
-        ):
-            # The play seam refused / failed the program (safety re-admission
-            # over-cap, a graph-restore failure, or a conductor program error).
-            # Before W6.1 this escaped every arm: the volume stayed active, the
-            # relay session leaked, no failure persisted, and the phone froze at
-            # capture_authorized forever (hardware run 2). This is a program-side
-            # terminal fault (NOT a relay timeout): tell the phone (still waiting
-            # on capture_result), persist the distinct failure, then drain volume
-            # + purge.
-            await _post_terminal_failure_host_event(REASON_PROGRAM_UNPLAYABLE)
-            _persist_terminal_failure(conductor, REASON_PROGRAM_UNPLAYABLE)
-            await _abandon_best_effort()
-            await _purge_best_effort()
-            raise
         except (CaptureTimeout, CaptureAborted, CaptureFailed, RelayError, OSError):
             # Relay-session death (§5.10): relay_timeout ⇒ session restart; the
             # walked-away user's volume is always drained.
             _persist_terminal_failure(conductor, REASON_RELAY_TIMEOUT)
+            await _abandon_best_effort()
+            await _purge_best_effort()
+            raise
+        except Exception as exc:  # noqa: BLE001 — cleanup-and-reraise, see below
+            # CATCH-ALL cleanup arm (W6.1 gate ruling). The seams raise
+            # open-endedly — CamillaUnavailable is a bare Exception (a DSP
+            # wedge in load/restore escaped the previously-enumerated arms:
+            # volume left active, relay session leaked, phone frozen at
+            # capture_authorized), analyze/emit raise ValueError/RuntimeError,
+            # the held measurement window raises MeasurementWindowError — so
+            # ANY non-relay failure gets the same honest cleanup: tell the
+            # phone (still polling capture_result), persist a terminal
+            # failure, drain the volume (whose hook also releases the session
+            # measurement pause), purge the relay session, then RE-RAISE so
+            # the outer relay net still logs and flips /status.relay to
+            # failed. Program-side classes keep their distinct
+            # program_unplayable code; everything else is internal_error.
+            code = (
+                REASON_PROGRAM_UNPLAYABLE
+                if isinstance(
+                    exc,
+                    (
+                        ProgramPlaybackError,
+                        ProgramAdmissionError,
+                        CrossoverV2FlowError,
+                    ),
+                )
+                else REASON_INTERNAL_ERROR
+            )
+            await _post_terminal_failure_host_event(code)
+            _persist_terminal_failure(conductor, code)
             await _abandon_best_effort()
             await _purge_best_effort()
             raise
@@ -1275,6 +1348,11 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         # (~23° at 2 kHz for 15 cm spacing measured at 1 m). W5b/W6 also own
         # the Undo/restore stale-applied-state cleanup noted in
         # crossover_envelope_v2's verify-fail action.
+        # W6 CHECKLIST ITEM (pre-existing): a deliberate household volume
+        # action mid-session (dial / voice "louder" / :8780 HTTP) still moves
+        # the CamillaDSP main volume — the session measurement pause holds off
+        # the idle reconciler, not VolumeCoordinator writes. W6 validation
+        # runs hands-off; a session-long volume guard is a follow-up.
         driver_spacing_m=0.0,
         topology=topology,
         playback_device=playback_device,
@@ -1299,26 +1377,26 @@ class V2PreparedSession:
 
 def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
     plan = session_volume_plan()
-
-    async def _get() -> Any:
-        return await camilla_factory().get_volume_db(best_effort=False)
-
-    async def _set(db: float) -> Any:
-        return await camilla_factory().set_volume_db(db, best_effort=False)
+    # The shared IO pair converts CamillaUnavailable (a bare Exception) into
+    # RuntimeError, which plan.open's internal catches and set_and_confirm's
+    # fail-closed contract actually cover — a DSP wedge during open then drains
+    # to a non-OPENED result instead of raising an unhandled exception past the
+    # runner (the W6.1 gate's escape class).
+    _set, _get = _session_volume_io(camilla_factory)
 
     async def _open() -> Any:
         # Hold voice paused for the WHOLE session BEFORE setting the volume, so
         # the idle reconciler cannot revert the measurement volume in the gap
-        # before the first play (W6.1). If the volume does not actually open,
-        # release the pause so a failed open never strands voice paused.
+        # before the first play (W6.1). If the volume does not actually open —
+        # a non-OPENED result OR any raise — release the pause in the finally
+        # so a failed open never strands voice paused.
         await acquire_session_measurement_pause()
+        opened: Any = None
         try:
             opened = await plan.open(context.session_volume_db, _set, _get)
-        except BaseException:
-            await release_session_measurement_pause()
-            raise
-        if str(getattr(opened, "value", opened)) != "opened":
-            await release_session_measurement_pause()
+        finally:
+            if str(getattr(opened, "value", opened)) != "opened":
+                await release_session_measurement_pause()
         return opened
 
     async def _close() -> Any:

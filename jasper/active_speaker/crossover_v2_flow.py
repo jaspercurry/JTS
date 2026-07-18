@@ -115,6 +115,13 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # play-time refusal is unexpected (a bug, a tampered readback, or a genuinely
 # infeasible profile), so it is terminal: hard-stop, budget 0.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
+# Any OTHER host-side fault the session runner's catch-all cleanup arm caught
+# (W6.1 gate: the seams raise open-endedly — CamillaUnavailable is a bare
+# Exception, analyze/emit raise ValueError/RuntimeError, the held measurement
+# window raises MeasurementWindowError — so an enumerated except list is how
+# failures escape with the volume active and the phone frozen). Terminal for
+# the session; the household's one action is to try again.
+REASON_INTERNAL_ERROR = "internal_error"
 REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
 # Internal-only addition BEYOND the §5.10 table: §5.2's "inconclusive —
 # re-verify" verdict (VERIFY's own detected first reflection forced a shorter
@@ -190,6 +197,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not play the measurement signal within the speaker's safe "
         "limits. Re-check the driver details in speaker setup, then measure "
         "again.",
+    ),
+    REASON_INTERNAL_ERROR: ReasonSpec(
+        REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",
+        "Something went wrong on the speaker during that measurement. "
+        "Try again.",
     ),
     REASON_VERIFY_OUT_OF_TOLERANCE: ReasonSpec(
         REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2, "",
@@ -1329,6 +1341,7 @@ __all__ = [
     "REASON_RELAY_TIMEOUT",
     "REASON_VOLUME_UNRESOLVED",
     "REASON_PROGRAM_UNPLAYABLE",
+    "REASON_INTERNAL_ERROR",
     "REASON_VERIFY_OUT_OF_TOLERANCE",
     "REASON_VERIFY_INCONCLUSIVE",
 ]
