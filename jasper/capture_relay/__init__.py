@@ -45,6 +45,7 @@ from jasper.capture_relay.crypto import (
 )
 from jasper.capture_relay.session import (
     CaptureAborted,
+    CaptureBeginDeferred,
     CaptureBeginRefused,
     CaptureFailed,
     CaptureTimeout,
@@ -60,6 +61,7 @@ from jasper.capture_relay.spec import (
     SHIPPED_KINDS,
     CaptureConstraints,
     CapturePlan,
+    CapturePlanEntry,
     CaptureSpec,
     CaptureSpecError,
     CaptureStimulus,
@@ -75,10 +77,12 @@ __all__ = [
     "SHIPPED_KINDS",
     "AlignmentError",
     "CaptureAborted",
+    "CaptureBeginDeferred",
     "CaptureBeginRefused",
     "CaptureConstraints",
     "CaptureFailed",
     "CapturePlan",
+    "CapturePlanEntry",
     "MEASUREMENT_FAILED_CUE_SLUG",
     "RELAY_UNREACHABLE_CUE_SLUG",
     "classify_failure_cue",
