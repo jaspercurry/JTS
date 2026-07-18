@@ -1291,37 +1291,49 @@ async def recover_summed_predecessor(
     ):
         raise CommissioningRuntimeError("lock_timeout_s must be finite and positive")
     exact = _predecessor_from_identity(predecessor)
-    entered = False
-    try:
+    entered = asyncio.Event()
+
+    async def restore() -> _RestoreResult:
         async with dsp_writer_lock(
             config_dir,
             source="active_speaker_summed_recovery",
             timeout_s=float(lock_timeout_s),
         ):
-            entered = True
-            task = asyncio.create_task(_restore(port, exact))
-            cancelled = False
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    cancelled = True
-            result = task.result()
-            side_effects = RuntimeSideEffectState(True, False, True, result.error is None)
-            if result.error is not None or result.observation is None:
-                raise CommissioningRuntimeFailure(
-                    "restore_failed",
-                    result.error or "exact recovery readback failed",
-                    side_effects=side_effects,
-                    cancelled=cancelled,
-                )
-            return SummedRecoveryResult(result.observation, cancelled)
+            entered.set()
+            return await _restore(port, exact)
+
+    task = asyncio.create_task(restore())
+    cancelled = False
+    cancellation_forwarded = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+            if (
+                not entered.is_set()
+                and not cancellation_forwarded
+                and not task.done()
+            ):
+                task.cancel()
+                cancellation_forwarded = True
+    try:
+        result = task.result()
     except asyncio.CancelledError as exc:
-        if entered or isinstance(exc, CommissioningRuntimeCancelled):
+        if entered.is_set():
             raise
         raise CommissioningRuntimeCancelled(
             side_effects=RuntimeSideEffectState(False, False, False, None)
         ) from exc
+    side_effects = RuntimeSideEffectState(True, False, True, result.error is None)
+    if result.error is not None or result.observation is None:
+        raise CommissioningRuntimeFailure(
+            "restore_failed",
+            result.error or "exact recovery readback failed",
+            side_effects=side_effects,
+            cancelled=cancelled,
+        )
+    return SummedRecoveryResult(result.observation, cancelled)
 
 
 async def _run_locked(
@@ -1628,6 +1640,34 @@ async def _await_cancellation_resilient(
     return result
 
 
+async def _run_summed_capture_under_writer_lock(
+    port: CommissioningRuntimePort,
+    request: SummedGraphRequest,
+    topology: OutputTopology,
+    binding: _SummedTopologyBinding,
+    mutation_journal: CommissioningMutationJournal,
+    capture_callback: CaptureCallback[T],
+    *,
+    config_dir: str | Path,
+    lock_timeout_s: float,
+) -> SummedCaptureRuntimeResult[T]:
+    """Own the writer lock in the task that performs every graph mutation."""
+
+    async with dsp_writer_lock(
+        config_dir,
+        source="active_speaker_summed_commissioning",
+        timeout_s=lock_timeout_s,
+    ):
+        return await _run_locked(
+            port,
+            request,
+            topology,
+            binding,
+            mutation_journal,
+            capture_callback,
+        )
+
+
 async def run_summed_capture(
     port: CommissioningRuntimePort,
     request: SummedGraphRequest,
@@ -1673,32 +1713,20 @@ async def run_summed_capture(
         or float(lock_timeout_s) <= 0.0
     ):
         raise CommissioningRuntimeError("lock_timeout_s must be finite and positive")
-    entered = False
-    try:
-        async with dsp_writer_lock(
-            config_dir,
-            source="active_speaker_summed_commissioning",
-            timeout_s=float(lock_timeout_s),
-        ):
-            entered = True
-            return await _await_cancellation_resilient(
-                asyncio.create_task(
-                    _run_locked(
-                        port,
-                        request,
-                        topology,
-                        binding,
-                        mutation_journal,
-                        capture_callback,
-                    )
-                )
+    return await _await_cancellation_resilient(
+        asyncio.create_task(
+            _run_summed_capture_under_writer_lock(
+                port,
+                request,
+                topology,
+                binding,
+                mutation_journal,
+                capture_callback,
+                config_dir=config_dir,
+                lock_timeout_s=float(lock_timeout_s),
             )
-    except asyncio.CancelledError as exc:
-        if entered or isinstance(exc, CommissioningRuntimeCancelled):
-            raise
-        raise CommissioningRuntimeCancelled(
-            side_effects=RuntimeSideEffectState(False, False, False, None)
-        ) from exc
+        )
+    )
 
 
 @dataclass(frozen=True)
