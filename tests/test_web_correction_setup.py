@@ -474,6 +474,9 @@ def test_known_post_routes_reach_csrf_guard():
         "/crossover/apply", "/crossover/restore",
         "/crossover/relay-capture", "/crossover/relay-cancel",
         "/crossover/reset",
+        # v2 conductor flow (Wave 5a) — registered unconditionally; each
+        # handler refuses fail-closed unless JASPER_CROSSOVER_FLOW=v2.
+        "/crossover/v2/session", "/crossover/v2/verify", "/crossover/v2/apply",
         "/crossover/driver-test",
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",

@@ -1754,6 +1754,14 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
                              envelope. Keeps driver research and the SOLO applied
                              crossover; a bonded speaker fails safe to solo on its
                              next re-prove — see "Scoped crossover reset" below
+POST /crossover/v2/session   v2 conductor flow (JASPER_CROSSOVER_FLOW=v2, W5a):
+                             open ONE relay session spanning CHECK→MEASURE→VERIFY
+                             (3-entry capture plan); refuses under the legacy flow
+POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session after
+                             apply (§5.2 re-verify); refuses under the legacy flow
+POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
+                             through the existing atomic apply transaction (W4
+                             measured_candidate seam); arms the deferred VERIFY
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 
