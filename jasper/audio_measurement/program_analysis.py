@@ -1,0 +1,1206 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Pure analysis of a crossover excitation-program capture.
+
+``analyze_program_capture(program, samples, sample_rate) → ProgramAnalysis`` is
+the single, deterministic, fixture-testable half of the conductor model (design
+§5.6): every quantity — segment locations, per-segment integrity, in-capture
+clock drift, per-driver gated responses, tweeter-vs-woofer alignment, and the
+crossover candidate + predicted sum — derives from the ``(program, capture)``
+pair with no side-channel state.
+
+Pipeline (per phase):
+
+1. **Locate** — matched-filter the first stimulus (one global offset), then each
+   later segment at its scheduled offset ± a small window; record schedule
+   residuals. Generalizes ``driver_acoustics._capture_to_magnitude``'s locator.
+2. **Integrity** — per-segment peak dBFS + clipped-run detection (a run of ≥3
+   consecutive samples at ≥0.999 full scale is a clip).
+3. **Drift (MEASURE)** — ε from the woofer→woofer-repeat separation, cross-checked
+   against the schedule-residual slope of all located segments; disagreement or
+   |ε|>500 ppm ⇒ ``glitch_detected`` (callers must reject the capture).
+4. **Per-driver response** — deconvolve → direct-arrival window + first-reflection
+   gate → complex TF + magnitude (mic cal applied if given); band-SNR verdicts.
+5. **Alignment (MEASURE)** — tweeter-vs-woofer relative delay: band-limited
+   (≈Fc/2…2·Fc) GCC-PHAT, ×16-upsampled peak with parabolic sub-sample
+   refinement, ε-corrected, geometry-bounded, parallax-subtracted; polarity from
+   the correlation sign cross-checked against the flatter predicted sum.
+6. **Candidate + prediction** — as-crossed branches (design §5.4) ⇒ trims level-
+   match the branches through the crossover, then the predicted applied sum is
+   ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` and its Fc±1-octave ripple is reported.
+
+CHECK additionally returns the ambient band floor, per-pilot captured levels +
+the behavioral linearity verdict (§3.4), channel-map sanity, and the solved
+``GainPlan`` for MEASURE. VERIFY returns the gated summed response + ripple vs a
+supplied predicted sum.
+
+Reuses the measurement kernel (:mod:`~jasper.audio_measurement.sweep` /
+``deconv`` / ``gating`` / ``snr_policy`` / ``analysis``) and mirrors
+``jasper.capture_relay.alignment``'s confidence vocabulary. No I/O, no product
+policy, no ``jasper.active_speaker`` import.
+"""
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+import numpy as np
+
+from jasper.audio_measurement import analysis as analysis_mod
+from jasper.audio_measurement import calibration as calibration_mod
+from jasper.audio_measurement import deconv, gating, snr_policy
+from jasper.audio_measurement.program import (
+    KIND_PILOT,
+    PHASE_CHECK,
+    PHASE_MEASURE,
+    PHASE_VERIFY,
+    STIMULUS_KINDS,
+    ExcitationProgram,
+    ProgramSegment,
+    segment_stimulus,
+)
+from jasper.audio_measurement.quality_model import DRIVER
+from jasper.capture_relay.alignment import cross_correlation_alignment
+from jasper.log_event import log_event
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.calibration import CalibrationCurve
+
+logger = logging.getLogger(__name__)
+
+# --- locator / drift / alignment tuning ---
+# Per-segment search half-window around the drift-free scheduled offset. Wide
+# enough for a few-hundred-ppm drift over a ~25 s program (≈6 ms) plus acoustic
+# delay, far tighter than the global first-stimulus search.
+SEGMENT_SEARCH_S = 0.030
+# Clip run: a run of at least this many consecutive samples at/above full scale.
+CLIP_RUN_SAMPLES = 3
+CLIP_ABS_THRESHOLD = 0.999
+DBFS_FLOOR = -120.0
+
+# A capture is rejected when the drift baselines disagree by more than this many
+# samples-equivalent, or the primary drift exceeds the ppm bound (design §5.6.3).
+GLITCH_RESIDUAL_SAMPLES = 1.5
+MAX_DRIFT_PPM = 500.0
+
+# GCC-PHAT sub-sample refinement (design §5.6.5).
+GCC_UPSAMPLE = 16
+DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
+SPEED_OF_SOUND_M_S = 343.0
+
+# Overlap band for trims / alignment / ripple: Fc ± 1 octave.
+OVERLAP_OCTAVE_RATIO = 2.0
+
+# Direct-arrival window used to isolate each driver's IR before deconvolution
+# magnitude / alignment (mirrors deconv defaults; the pre guard catches the
+# non-causal deconvolution shoulder).
+IR_PRE_MS = 5.0
+IR_POST_MS = 60.0
+
+# Deconvolution window pre-guard: how far BEFORE the scheduled sweep position the
+# window starts, so the window fully contains the sweep even though the global
+# offset folds in the first driver's (small) acoustic delay. Both drivers use
+# the SAME pre-guard and global-offset anchor, so their deconvolved IR direct
+# peaks land at the pre-guard sample ± the relative delay — the aligner relies
+# on that shared time base.
+DECONV_PRE_GUARD_S = 0.25
+
+# Gain solve: land the MEASURE capture peak in [-12, -9] dBFS with ≥6 dB guard.
+DEFAULT_TARGET_CAPTURE_DBFS = -10.5
+GAIN_GUARD_DB = 6.0
+GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
+
+# Behavioral linearity tolerance (design §3.4): captured delta within this of
+# the programmed delta.
+LINEARITY_TOLERANCE_DB = 0.5
+
+ANALYSIS_KIND = "jts_program_analysis"
+
+
+@dataclass(frozen=True)
+class MeasurementGeometry:
+    """Declared physical geometry the analysis corrects for.
+
+    ``mic_distance_m`` is the prescribed on-axis mic distance (~1 m, design
+    §5.2); ``driver_spacing_m`` is the declared woofer↔tweeter spacing. Their
+    deterministic parallax ``(√(r²+d²)−r)/c`` is subtracted from the measured
+    delay so what remains is the electrical branch delay to apply.
+    """
+
+    driver_spacing_m: float = 0.0
+    mic_distance_m: float = 1.0
+    speed_of_sound_m_s: float = SPEED_OF_SOUND_M_S
+
+    def parallax_us(self) -> float:
+        r = float(self.mic_distance_m)
+        d = float(self.driver_spacing_m)
+        c = float(self.speed_of_sound_m_s)
+        if r <= 0 or c <= 0 or d <= 0:
+            return 0.0
+        extra_m = math.sqrt(r * r + d * d) - r
+        return extra_m / c * 1e6
+
+
+@dataclass(frozen=True)
+class MeasurementPriors:
+    """Per-analysis priors the program itself does not carry.
+
+    ``crossover_fc_hz`` scopes the overlap band (trims / alignment / ripple) and
+    the VERIFY window; ``align_search_ms`` bounds the delay search;
+    ``target_capture_dbfs`` is the MEASURE capture-peak target the CHECK gain
+    solve aims for. ``predicted_sum`` is the MEASURE-predicted summed magnitude
+    ``(freqs_hz, magnitude_db)`` VERIFY compares against.
+    """
+
+    crossover_fc_hz: float | None = None
+    align_search_ms: float = DEFAULT_ALIGN_SEARCH_MS
+    target_capture_dbfs: float = DEFAULT_TARGET_CAPTURE_DBFS
+    predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
+    ambient_report: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class SegmentLocation:
+    """Where one program segment landed in the capture, and its integrity."""
+
+    segment_id: str
+    kind: str
+    role: str | None
+    scheduled_start: int
+    located_start: int
+    residual_samples: float
+    confidence: float
+    peak_dbfs: float
+    clipped: bool
+
+
+@dataclass(frozen=True)
+class DriftEstimate:
+    """In-capture clock-drift estimate + the glitch verdict (design §5.6.3)."""
+
+    epsilon_ppm: float
+    baselines_ppm: Mapping[str, float]
+    max_residual_samples: float
+    glitch_detected: bool
+
+
+@dataclass(frozen=True)
+class DriverResponse:
+    """One driver's gated complex response, calibrated if a cal was supplied."""
+
+    role: str
+    freqs_hz: np.ndarray
+    magnitude_db: np.ndarray
+    complex_tf: np.ndarray
+    gating: dict[str, Any]
+    snr: dict[str, Any] | None
+    validity_floor_hz: float | None
+
+
+@dataclass(frozen=True)
+class AlignmentEstimate:
+    """Tweeter-vs-woofer relative delay + polarity (design §5.6.5).
+
+    Sign convention (pinned by test): ``delay_us`` is
+    ``(D_woofer − D_tweeter)`` after parallax removal, so **positive delay_us ⇒
+    the tweeter's acoustic arrival is EARLIER and the tweeter branch must be
+    delayed by that amount** to time-align the crossover.
+    """
+
+    delay_us: float
+    raw_delay_us: float
+    parallax_us: float
+    polarity: str  # "normal" | "inverted"
+    polarity_sign: int  # +1 | -1
+    polarity_agrees_with_sum: bool
+    confidence: float
+
+
+@dataclass(frozen=True)
+class CrossoverCandidate:
+    """The proposed measured candidate (design §5.6.6)."""
+
+    trim_db: Mapping[str, float]
+    polarity: str
+    delay_us: float
+    predicted_ripple_db: float
+    confidence: float
+
+
+@dataclass(frozen=True)
+class PilotObservation:
+    """One driver's CHECK pilot pair — level, linearity, channel-map sanity."""
+
+    role: str
+    level_lo_dbfs: float
+    level_hi_dbfs: float
+    programmed_delta_db: float
+    captured_delta_db: float
+    linearity_ok: bool
+    channel_map_ok: bool
+
+
+@dataclass(frozen=True)
+class GainPlan:
+    """Solved MEASURE digital gains (design §5.2)."""
+
+    gain_db: Mapping[str, float]
+    predicted_peak_dbfs: float
+    snr_floor_ok: bool
+
+
+@dataclass(frozen=True)
+class ProgramAnalysis:
+    """The deterministic result of one ``(program, capture)`` pair."""
+
+    phase: str
+    program_id: str
+    locations: tuple[SegmentLocation, ...]
+    drift: DriftEstimate | None = None
+    driver_responses: tuple[DriverResponse, ...] = ()
+    alignment: AlignmentEstimate | None = None
+    candidate: CrossoverCandidate | None = None
+    ambient_report: dict[str, Any] | None = None
+    pilots: tuple[PilotObservation, ...] = ()
+    linearity_ok: bool | None = None
+    channel_map_ok: bool | None = None
+    gain_plan: GainPlan | None = None
+    summed_response: DriverResponse | None = None
+    summed_ripple_db: float | None = None
+    verify_tracking: dict[str, Any] | None = None
+    glitch_detected: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# low-level signal helpers
+# --------------------------------------------------------------------------- #
+
+
+def _peak_dbfs(x: np.ndarray) -> float:
+    if x.size == 0:
+        return DBFS_FLOOR
+    peak = float(np.max(np.abs(x)))
+    if peak <= 0 or not math.isfinite(peak):
+        return DBFS_FLOOR
+    return max(DBFS_FLOOR, 20.0 * math.log10(peak))
+
+
+def _has_clipped_run(
+    x: np.ndarray, *, threshold: float = CLIP_ABS_THRESHOLD, run: int = CLIP_RUN_SAMPLES
+) -> bool:
+    """True if ``x`` has a run of ``run`` consecutive samples at ≥ full scale."""
+    if x.size < run:
+        return False
+    at_fs = np.abs(x) >= threshold
+    if not bool(np.any(at_fs)):
+        return False
+    # Longest run of True via reset-on-False cumulative counting.
+    count = 0
+    for flag in at_fs:
+        if flag:
+            count += 1
+            if count >= run:
+                return True
+        else:
+            count = 0
+    return False
+
+
+def _locate(
+    capture: np.ndarray,
+    stimulus: np.ndarray,
+    *,
+    sample_rate: int,
+    max_capture_s: float,
+):
+    """Matched-filter ``stimulus`` in ``capture``; return the alignment result."""
+    return cross_correlation_alignment(
+        capture,
+        stimulus,
+        sample_rate=sample_rate,
+        max_capture_s=max_capture_s,
+    )
+
+
+def _analytic_envelope(x: np.ndarray) -> np.ndarray:
+    from scipy.signal import hilbert
+
+    return np.abs(hilbert(np.asarray(x, dtype=np.float64)))
+
+
+def _parabolic_peak(values: np.ndarray, idx: int) -> float:
+    """Sub-sample offset of a peak at integer ``idx`` via 3-point parabola."""
+    if idx <= 0 or idx >= values.size - 1:
+        return float(idx)
+    y0, y1, y2 = float(values[idx - 1]), float(values[idx]), float(values[idx + 1])
+    denom = y0 - 2.0 * y1 + y2
+    if denom == 0.0:
+        return float(idx)
+    return idx + 0.5 * (y0 - y2) / denom
+
+
+def _subsample_separation(
+    capture: np.ndarray,
+    arrival_a: int,
+    arrival_b: int,
+    length: int,
+) -> float:
+    """Sub-sample separation ``arrival_b − arrival_a`` of two identical stimuli.
+
+    Cross-correlates the two captured windows (same stimulus + same room IR, so
+    the peak is sharp) and refines it on the upsampled analytic envelope —
+    Gamper's repeat-ratio idea. Returns the refined ``(arrival_b − arrival_a)``.
+    """
+    from scipy.signal import correlate
+
+    a = np.asarray(capture[arrival_a:arrival_a + length], dtype=np.float64)
+    b = np.asarray(capture[arrival_b:arrival_b + length], dtype=np.float64)
+    n = min(a.size, b.size)
+    if n < 8:
+        return float(arrival_b - arrival_a)
+    a, b = a[:n] - a[:n].mean(), b[:n] - b[:n].mean()
+    corr = correlate(b, a, mode="full", method="fft")
+    env = _analytic_envelope(corr)
+    peak = int(np.argmax(env))
+    refined = _parabolic_peak(env, peak)
+    lag = refined - (n - 1)  # b ≈ a shifted right by lag
+    return float((arrival_b - arrival_a) + lag)
+
+
+def _bandlimit(ir: np.ndarray, sample_rate: int, lo_hz: float, hi_hz: float) -> np.ndarray:
+    """Zero-phase band-pass an IR by masking its spectrum to ``[lo, hi]``."""
+    n = ir.size
+    spectrum = np.fft.rfft(ir)
+    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
+    mask = (freqs >= lo_hz) & (freqs <= hi_hz)
+    spectrum = spectrum * mask
+    return np.fft.irfft(spectrum, n=n)
+
+
+def _gcc_phat(
+    a: np.ndarray,
+    b: np.ndarray,
+    *,
+    sample_rate: int,
+    band_hz: tuple[float, float],
+    upsample: int,
+    max_lag_samples: float,
+):
+    """Band-limited GCC-PHAT of ``a`` vs ``b``; ``a ≈ b`` shifted right by the lag.
+
+    Returns ``(lag_samples, polarity_sign, confidence)``. The cross-power is
+    phase-transform weighted **only inside ``band_hz``** (whitening the near-zero
+    out-of-band bins otherwise piles a spurious peak near zero lag); the
+    correlation is ×``upsample`` FFT-interpolated and parabolically refined.
+    ``polarity_sign`` is the sign of the (signed) correlation at the peak, and
+    ``confidence`` mirrors ``cross_correlation_alignment``'s primary-over-secondary
+    margin.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    L = max(a.size, b.size)
+    n = 1
+    while n < 2 * L:
+        n *= 2
+    A = np.fft.rfft(a, n=n)
+    B = np.fft.rfft(b, n=n)
+    R = A * np.conj(B)
+    mag = np.abs(R)
+    mag[mag < 1e-12] = 1e-12
+    R_phat = R / mag
+    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
+    in_band = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    R_phat = R_phat * in_band
+    m = n * upsample
+    cc = np.fft.irfft(R_phat, n=m) * upsample
+    # Circular-lag axis: index i → lag i for i<=m/2 else i-m; native = /upsample.
+    max_lag_up = int(round(max_lag_samples * upsample))
+    max_lag_up = max(1, min(max_lag_up, m // 2 - 1))
+    idxs = np.concatenate(
+        [np.arange(0, max_lag_up + 1), np.arange(m - max_lag_up, m)]
+    )
+    window = cc[idxs]
+    peak_local = int(np.argmax(np.abs(window)))
+    peak_idx = int(idxs[peak_local])
+    # Parabolic refine on |cc| around the (unwrapped) peak.
+    abs_cc = np.abs(cc)
+    refined = _parabolic_peak(abs_cc, peak_idx)
+    circ = refined if refined <= m / 2 else refined - m
+    lag_samples = circ / upsample
+    polarity_sign = 1 if cc[peak_idx] >= 0 else -1
+    primary = float(abs_cc[peak_idx])
+    # Secondary: strongest competitor outside the correlation main lobe. A
+    # band-limited correlation's main lobe is ~1/bandwidth wide, so a fixed
+    # 1-sample exclusion would sit on the main lobe and read a near-primary
+    # "secondary" (spuriously low confidence). Exclude one main-lobe half-width.
+    bandwidth = max(1.0, band_hz[1] - band_hz[0])
+    exclude = max(upsample, int(round(sample_rate / bandwidth * upsample)))
+    masked = abs_cc[idxs].copy()
+    for j, gi in enumerate(idxs):
+        if abs(gi - peak_idx) <= exclude or abs(gi - peak_idx) >= m - exclude:
+            masked[j] = 0.0
+    secondary = float(masked.max()) if masked.size else 0.0
+    confidence = max(0.0, (primary - secondary) / primary) if primary > 0 else 0.0
+    return lag_samples, polarity_sign, confidence
+
+
+def _complex_tf(
+    ir: np.ndarray,
+    sample_rate: int,
+    *,
+    n_fft: int,
+    calibration: "CalibrationCurve | None",
+):
+    """Complex TF of an IR on a fixed grid, with the mic cal folded in (real)."""
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate)
+    H = np.fft.rfft(ir, n=n_fft)
+    if calibration is not None:
+        correction_db = calibration_mod.apply_calibration_curve(
+            freqs, np.zeros_like(freqs), calibration
+        )
+        H = H * np.power(10.0, correction_db / 20.0)
+    return freqs.astype(np.float64), H
+
+
+def _band_average_db(freqs: np.ndarray, magnitude_db: np.ndarray, lo: float, hi: float) -> float:
+    mask = (freqs >= lo) & (freqs <= hi)
+    if not np.any(mask):
+        raise ValueError("overlap band has no frequency bins")
+    power = np.power(10.0, magnitude_db[mask] / 10.0)
+    return 10.0 * math.log10(max(float(np.mean(power)), 1e-12))
+
+
+# --------------------------------------------------------------------------- #
+# locate + integrity (all phases)
+# --------------------------------------------------------------------------- #
+
+
+def _earliest_strong_peak(
+    capture: np.ndarray, stimulus: np.ndarray, *, frac: float = 0.6
+) -> int:
+    """Index of the EARLIEST normalized-correlation peak within ``frac`` of max.
+
+    The first stimulus can be bit-identical to a later repeat (MEASURE's woofer
+    pair) or share its SHAPE at a different level (CHECK's lo/hi pilot pair), so
+    a plain global argmax — or a raw-amplitude threshold — can lock onto the
+    wrong occurrence. This uses a locally energy-normalized matched filter
+    (cosine similarity at each lag), so a quieter-but-identical first occurrence
+    scores the same as a louder later one; taking the earliest lag within
+    ``frac`` of the max then picks the true first occurrence, while an
+    out-of-band interloper stays below the fraction.
+    """
+    from scipy.signal import correlate
+
+    cap = np.asarray(capture, dtype=np.float64)
+    stim = np.asarray(stimulus, dtype=np.float64)
+    cap = cap - cap.mean()
+    stim = stim - stim.mean()
+    L = stim.size
+    if cap.size < L or L == 0:
+        return 0
+    stim_norm = float(np.linalg.norm(stim))
+    if stim_norm <= 0.0:
+        return 0
+    num = correlate(cap, stim, mode="valid", method="fft")
+    local_energy = correlate(cap * cap, np.ones(L), mode="valid", method="fft")
+    local_norm = np.sqrt(np.maximum(local_energy, 0.0))
+    # Floor the denominator so silent (near-zero-energy) windows don't blow the
+    # ratio up; a floor at a small fraction of the loudest window is enough.
+    floor = 1e-6 * float(local_norm.max()) + 1e-12
+    ncc = np.abs(num) / (local_norm * stim_norm + floor)
+    peak = float(ncc.max()) if ncc.size else 0.0
+    if peak <= 0.0:
+        return 0
+    return int(np.argmax(ncc >= frac * peak))
+
+
+def _global_offset(
+    program: ExcitationProgram, capture: np.ndarray, sample_rate: int
+) -> tuple[int, ProgramSegment, dict[str, np.ndarray]]:
+    """Locate the first stimulus → integer global offset G. Caches stimuli."""
+    stimuli: dict[str, np.ndarray] = {}
+    first = None
+    for seg in program.segments:
+        if seg.kind in STIMULUS_KINDS:
+            first = seg
+            break
+    if first is None:
+        raise ValueError("program has no stimulus segment to locate against")
+    stim = segment_stimulus(first)
+    stimuli[first.segment_id] = stim
+    arrival = _earliest_strong_peak(capture, stim)
+    global_offset = arrival - first.start_sample
+    return global_offset, first, stimuli
+
+
+def _locate_segments(
+    program: ExcitationProgram,
+    capture: np.ndarray,
+    sample_rate: int,
+    global_offset: int,
+    stimuli: dict[str, np.ndarray],
+) -> list[SegmentLocation]:
+    """Locate every segment at scheduled offset ± window; record integrity."""
+    search = int(round(SEGMENT_SEARCH_S * sample_rate))
+    out: list[SegmentLocation] = []
+    for seg in program.segments:
+        scheduled = global_offset + seg.start_sample
+        if seg.kind in STIMULUS_KINDS:
+            stim = stimuli.get(seg.segment_id)
+            if stim is None:
+                stim = segment_stimulus(seg)
+                stimuli[seg.segment_id] = stim
+            lo = max(0, scheduled - search)
+            hi = min(capture.size, scheduled + seg.n_samples + search)
+            window = capture[lo:hi]
+            if window.size >= stim.size:
+                res = _locate(
+                    window, stim, sample_rate=sample_rate,
+                    max_capture_s=window.size / sample_rate + 1.0,
+                )
+                located = lo + int(res.lag_samples)
+                confidence = float(res.confidence)
+            else:
+                located = scheduled
+                confidence = 0.0
+            seg_samples = capture[located:located + seg.n_samples]
+            out.append(SegmentLocation(
+                segment_id=seg.segment_id,
+                kind=seg.kind,
+                role=seg.role,
+                scheduled_start=scheduled,
+                located_start=located,
+                residual_samples=float(located - scheduled),
+                confidence=confidence,
+                peak_dbfs=_peak_dbfs(seg_samples),
+                clipped=_has_clipped_run(seg_samples),
+            ))
+        else:
+            seg_samples = capture[max(0, scheduled):scheduled + seg.n_samples]
+            out.append(SegmentLocation(
+                segment_id=seg.segment_id,
+                kind=seg.kind,
+                role=seg.role,
+                scheduled_start=scheduled,
+                located_start=scheduled,
+                residual_samples=0.0,
+                confidence=1.0,
+                peak_dbfs=_peak_dbfs(seg_samples),
+                clipped=_has_clipped_run(seg_samples),
+            ))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# drift (MEASURE)
+# --------------------------------------------------------------------------- #
+
+
+def _estimate_drift(
+    program: ExcitationProgram,
+    capture: np.ndarray,
+    global_offset: int,
+    locations: Sequence[SegmentLocation],
+) -> DriftEstimate:
+    by_id = {loc.segment_id: loc for loc in locations}
+    w1 = by_id.get("sweep_w")
+    w2 = by_id.get("sweep_w_rep")
+    stimulus_locs = [loc for loc in locations if loc.kind in STIMULUS_KINDS]
+
+    baselines: dict[str, float] = {}
+    epsilon = 0.0
+    if w1 is not None and w2 is not None:
+        seg_w = program.segment("sweep_w")
+        scheduled_sep = program.segment("sweep_w_rep").start_sample - seg_w.start_sample
+        if scheduled_sep > 0:
+            # Primary: sub-sample separation of the two identical woofer sweeps
+            # (τ cancels; drift is the ratio). Design §3.1 / §5.6.3.
+            measured_sep = _subsample_separation(
+                capture, w1.located_start, w2.located_start, seg_w.n_samples
+            )
+            epsilon = measured_sep / scheduled_sep - 1.0
+            baselines["woofer_repeat"] = epsilon * 1e6
+            # Cross-check baseline: the integer-located separation ratio (no
+            # sub-sample refinement) — a coarse independent view of the same span.
+            eps_int = (w2.located_start - w1.located_start) / scheduled_sep - 1.0
+            baselines["woofer_repeat_integer"] = eps_int * 1e6
+
+    # Per-driver-demeaned schedule residual after applying ε. A driver's own
+    # acoustic delay is a constant offset (removed by demeaning), so this does
+    # NOT flag the real tweeter-vs-woofer delay; it catches a within-driver
+    # desync (a dropped buffer between a driver's own repeated sweeps). A
+    # mid-program dropped buffer between the two woofer sweeps instead surfaces
+    # as an out-of-band ε (the ppm bound below), because the repeat spans it.
+    groups: dict[Any, list[float]] = {}
+    for loc in stimulus_locs:
+        start = program.segment(loc.segment_id).start_sample
+        residual = loc.located_start - (global_offset + start * (1.0 + epsilon))
+        groups.setdefault(loc.role, []).append(residual)
+    max_residual = 0.0
+    for resids in groups.values():
+        mean = sum(resids) / len(resids)
+        for r in resids:
+            max_residual = max(max_residual, abs(r - mean))
+
+    glitch = (
+        abs(epsilon) * 1e6 > MAX_DRIFT_PPM
+        or max_residual > GLITCH_RESIDUAL_SAMPLES
+    )
+    if glitch:
+        log_event(
+            logger,
+            "program_analysis.glitch",
+            level=logging.WARNING,
+            phase=program.phase,
+            program_id=program.program_id,
+            epsilon_ppm=round(epsilon * 1e6, 2),
+            max_residual_samples=round(max_residual, 2),
+        )
+    return DriftEstimate(
+        epsilon_ppm=epsilon * 1e6,
+        baselines_ppm=baselines,
+        max_residual_samples=max_residual,
+        glitch_detected=glitch,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# per-driver response + alignment + candidate (MEASURE)
+# --------------------------------------------------------------------------- #
+
+
+def _deconvolve_window(
+    capture: np.ndarray,
+    segment: ProgramSegment,
+    anchor: int,
+    sample_rate: int,
+    *,
+    epsilon: float = 0.0,
+    pre_guard_s: float = DECONV_PRE_GUARD_S,
+    tail_s: float = 0.5,
+) -> tuple[np.ndarray, int]:
+    """Deconvolve one sweep → ``(full_ir, pre_guard_samples)``.
+
+    The window starts ``pre_guard_samples`` before ``anchor`` (the scheduled
+    capture position ``global_offset + start``), so it fully contains the sweep
+    even though the global offset folds in the first driver's small acoustic
+    delay. With a shared anchor + pre-guard across drivers, each deconvolved IR's
+    direct peak lands at ``pre_guard_samples`` ± the relative delay.
+
+    ``epsilon`` divides the measured clock drift out (design §3.1): the captured
+    sweep is stretched by ``(1+ε)``, so the reference is resampled to match
+    before inversion — keeping the deconvolution sharp (and the delay estimate
+    accurate) under drift instead of smearing the IR.
+    """
+    stim = segment_stimulus(segment)
+    if epsilon != 0.0:
+        from scipy.signal import resample
+
+        stretched_len = int(round(stim.size * (1.0 + epsilon)))
+        if stretched_len > 0:
+            stim = resample(np.asarray(stim, dtype=np.float64), stretched_len)
+    pre = int(round(pre_guard_s * sample_rate))
+    tail = int(round(tail_s * sample_rate))
+    window_start = anchor - pre
+    lo = max(0, window_start)
+    pre_effective = anchor - lo  # shrinks if the window clamps at the capture head
+    hi = min(capture.size, anchor + segment.n_samples + tail)
+    window = np.asarray(capture[lo:hi], dtype=np.float64)
+    if window.size < stim.size:
+        raise ValueError(f"deconvolution window for {segment.segment_id!r} too short")
+    full_ir = deconv.regularized_deconvolution_full(
+        window, np.asarray(stim, dtype=np.float64), sample_rate
+    )
+    return full_ir, pre_effective
+
+
+def _driver_response(
+    role: str,
+    full_ir: np.ndarray,
+    sample_rate: int,
+    *,
+    calibration: "CalibrationCurve | None",
+    ambient_report: Mapping[str, Any] | None,
+    fc_hz: float | None,
+    n_fft: int,
+) -> DriverResponse:
+    peak_idx = int(np.argmax(np.abs(full_ir)))
+    window = deconv.direct_arrival_window(
+        full_ir, sample_rate, direct_peak_idx=peak_idx,
+        pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
+    )
+    ir = deconv.apply_arrival_window(full_ir, window)
+    gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
+    applied = fragment["floor_source"] is not None
+    gating_block = {
+        "applied": applied,
+        "exempt_reason": None,
+        **fragment,
+    }
+    validity_floor_hz = fragment.get("f_valid_floor_hz") if applied else None
+
+    freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
+    mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
+
+    snr_block = None
+    if ambient_report is not None and fc_hz is not None:
+        capture_bands = snr_policy.magnitude_band_levels(freqs, mag_db)
+        _domain, noise_bands = snr_policy.unwrap_noise_report(ambient_report)
+        snr_block = snr_policy.band_snr_verdicts(
+            decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
+            capture_bands=capture_bands,
+            noise_bands=noise_bands,
+            noise_floor_dbfs_scalar=None,
+            relevant_hz=(fc_hz / OVERLAP_OCTAVE_RATIO, fc_hz * OVERLAP_OCTAVE_RATIO),
+            model=DRIVER,
+            band_method="deconvolved_band_difference",
+        )
+    return DriverResponse(
+        role=role,
+        freqs_hz=freqs,
+        magnitude_db=mag_db,
+        complex_tf=H,
+        gating=gating_block,
+        snr=snr_block,
+        validity_floor_hz=validity_floor_hz,
+    )
+
+
+def _aligned_branch_tf(
+    full_ir: np.ndarray,
+    sample_rate: int,
+    n_fft: int,
+    *,
+    calibration: "CalibrationCurve | None",
+):
+    """Delay-referenced complex TF for the sum prediction.
+
+    :func:`deconv.direct_arrival_window` places each branch's direct peak at the
+    same fixed offset (``IR_PRE_MS``) inside the window, so both branches share a
+    common time reference (bulk delay removed) WITHOUT a circular roll — a roll
+    followed by zero-padding to ``n_fft`` is not shift-invariant and would inject
+    a spurious echo into the magnitude.
+    """
+    peak_idx = int(np.argmax(np.abs(full_ir)))
+    window = deconv.direct_arrival_window(
+        full_ir, sample_rate, direct_peak_idx=peak_idx,
+        pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
+    )
+    ir = deconv.apply_arrival_window(full_ir, window)
+    return _complex_tf(ir, sample_rate, n_fft=n_fft, calibration=calibration)
+
+
+def _estimate_alignment(
+    capture: np.ndarray,
+    program: ExcitationProgram,
+    sample_rate: int,
+    global_offset: int,
+    epsilon: float,
+    fc_hz: float,
+    geometry: MeasurementGeometry,
+    priors: MeasurementPriors,
+    *,
+    woofer_full_ir: np.ndarray,
+    tweeter_full_ir: np.ndarray,
+    pre_samples: int,
+) -> AlignmentEstimate:
+    seg_w = program.segment("sweep_w")
+    seg_t = program.segment("sweep_t")
+    lo = fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+
+    max_lag = priors.align_search_ms * 1e-3 * sample_rate
+    # Both IRs were deconvolved from windows sharing the pre-guard + global
+    # offset, so each direct peak sits at ``pre_samples`` ± the relative delay.
+    # Slice the SAME [pre−H, pre+H] region from both (bounds the FFT and keeps
+    # the shared time base), band-limit to the overlap, then GCC-PHAT: the peak
+    # lag is τ + ε·Δstart (tweeter later ⇒ positive).
+    half = int(round(0.010 * sample_rate)) + int(math.ceil(max_lag)) + 1
+    a = max(0, pre_samples - half)
+    b_w = min(woofer_full_ir.size, pre_samples + half)
+    b_t = min(tweeter_full_ir.size, pre_samples + half)
+    b = min(b_w, b_t)
+    ir_w = _bandlimit(np.asarray(woofer_full_ir[a:b], dtype=np.float64), sample_rate, lo, hi)
+    ir_t = _bandlimit(np.asarray(tweeter_full_ir[a:b], dtype=np.float64), sample_rate, lo, hi)
+    length = min(ir_w.size, ir_t.size)
+    ir_w, ir_t = ir_w[:length], ir_t[:length]
+
+    lag_samples, polarity_sign, confidence = _gcc_phat(
+        ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
+        upsample=GCC_UPSAMPLE, max_lag_samples=max_lag,
+    )
+    # ε-correct: the tweeter's schedule offset is stretched by ε.
+    delta_start = seg_t.start_sample - seg_w.start_sample
+    tau_samples = lag_samples - epsilon * delta_start
+    # delay_us = (D_woofer − D_tweeter) = −τ (τ = D_tweeter − D_woofer).
+    raw_delay_us = -tau_samples / sample_rate * 1e6
+    parallax_us = geometry.parallax_us()
+    delay_us = raw_delay_us - parallax_us
+
+    polarity = "normal" if polarity_sign >= 0 else "inverted"
+
+    # Cross-check polarity against the flatter predicted sum.
+    agrees = _flatter_sum_polarity(
+        capture, program, sample_rate, global_offset, fc_hz, priors,
+        woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
+    )
+    polarity_agrees = agrees == polarity_sign
+    return AlignmentEstimate(
+        delay_us=delay_us,
+        raw_delay_us=raw_delay_us,
+        parallax_us=parallax_us,
+        polarity=polarity,
+        polarity_sign=polarity_sign,
+        polarity_agrees_with_sum=polarity_agrees,
+        confidence=confidence,
+    )
+
+
+def _predicted_sum(
+    W: np.ndarray,
+    T: np.ndarray,
+    trim_w_db: float,
+    trim_t_db: float,
+    sign: int,
+) -> np.ndarray:
+    g_w = 10.0 ** (trim_w_db / 20.0)
+    g_t = 10.0 ** (trim_t_db / 20.0)
+    return W * g_w + sign * T * g_t
+
+
+def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
+    mask = (freqs >= lo) & (freqs <= hi)
+    if not np.any(mask):
+        return float("inf")
+    band = magnitude[mask]
+    band_db = 20.0 * np.log10(np.maximum(np.abs(band), 1e-12))
+    return float(np.max(band_db) - np.min(band_db))
+
+
+def _solve_trims(
+    freqs: np.ndarray,
+    W: np.ndarray,
+    T: np.ndarray,
+    fc_hz: float,
+) -> tuple[float, float, float, float]:
+    lo = fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    level_w = _band_average_db(freqs, 20.0 * np.log10(np.maximum(np.abs(W), 1e-12)), lo, hi)
+    level_t = _band_average_db(freqs, 20.0 * np.log10(np.maximum(np.abs(T), 1e-12)), lo, hi)
+    target = min(level_w, level_t)  # attenuate the louder branch
+    return target - level_w, target - level_t, level_w, level_t
+
+
+def _flatter_sum_polarity(
+    capture, program, sample_rate, global_offset, fc_hz, priors,
+    *, woofer_full_ir, tweeter_full_ir,
+) -> int:
+    n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
+    freqs, W = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=None)
+    _f2, T = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=None)
+    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
+    lo = fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    ripple_pos = _ripple_db(freqs, _predicted_sum(W, T, trim_w, trim_t, +1), lo, hi)
+    ripple_neg = _ripple_db(freqs, _predicted_sum(W, T, trim_w, trim_t, -1), lo, hi)
+    return 1 if ripple_pos <= ripple_neg else -1
+
+
+def _n_fft_for(*irs: np.ndarray) -> int:
+    longest = max(ir.size for ir in irs)
+    return max(8192, 1 << (max(longest, 1) - 1).bit_length())
+
+
+# --------------------------------------------------------------------------- #
+# CHECK helpers
+# --------------------------------------------------------------------------- #
+
+
+def _ambient_from_capture(
+    capture: np.ndarray, sample_rate: int, ambient_seg: ProgramSegment, global_offset: int
+) -> dict[str, Any]:
+    start = max(0, global_offset + ambient_seg.start_sample)
+    end = min(capture.size, start + ambient_seg.n_samples)
+    samples = capture[start:end]
+    return snr_policy.framed_ambient_band_report(samples, sample_rate, percentile=95)
+
+
+def _pilot_observations(
+    program: ExcitationProgram,
+    capture: np.ndarray,
+    sample_rate: int,
+    locations: Sequence[SegmentLocation],
+) -> list[PilotObservation]:
+    by_id = {loc.segment_id: loc for loc in locations}
+    roles = sorted({seg.role for seg in program.segments if seg.kind == KIND_PILOT and seg.role})
+    out: list[PilotObservation] = []
+    for role in roles:
+        lo_seg = program.segment(f"pilot_{role}_lo")
+        hi_seg = program.segment(f"pilot_{role}_hi")
+        lo_loc = by_id[f"pilot_{role}_lo"]
+        hi_loc = by_id[f"pilot_{role}_hi"]
+        lo_samples = capture[lo_loc.located_start:lo_loc.located_start + lo_seg.n_samples]
+        hi_samples = capture[hi_loc.located_start:hi_loc.located_start + hi_seg.n_samples]
+        level_lo = _peak_dbfs(lo_samples)
+        level_hi = _peak_dbfs(hi_samples)
+        programmed_delta = hi_seg.gain_db - lo_seg.gain_db
+        captured_delta = level_hi - level_lo
+        linearity_ok = abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
+        channel_ok = _channel_map_ok(hi_samples, sample_rate, hi_seg)
+        out.append(PilotObservation(
+            role=role,
+            level_lo_dbfs=level_lo,
+            level_hi_dbfs=level_hi,
+            programmed_delta_db=programmed_delta,
+            captured_delta_db=captured_delta,
+            linearity_ok=linearity_ok,
+            channel_map_ok=channel_ok,
+        ))
+    return out
+
+
+def _channel_map_ok(samples: np.ndarray, sample_rate: int, seg: ProgramSegment) -> bool:
+    """True when the pilot's energy lands mostly inside its declared band."""
+    x = np.asarray(samples, dtype=np.float64)
+    if x.size < 8 or seg.f1_hz is None or seg.f2_hz is None:
+        return False
+    window = np.hanning(x.size)
+    spectrum = np.abs(np.fft.rfft(x * window)) ** 2
+    freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
+    in_band = (freqs >= seg.f1_hz) & (freqs <= seg.f2_hz)
+    total = float(np.sum(spectrum))
+    if total <= 0:
+        return False
+    return float(np.sum(spectrum[in_band])) / total > 0.5
+
+
+def _solve_gain_plan(
+    program: ExcitationProgram,
+    pilots: Sequence[PilotObservation],
+    ambient_report: Mapping[str, Any],
+    priors: MeasurementPriors,
+) -> GainPlan:
+    target = priors.target_capture_dbfs
+    gains: dict[str, float] = {}
+    predicted_peaks: list[float] = []
+    for pilot in pilots:
+        lo_seg = program.segment(f"pilot_{pilot.role}_lo")
+        hi_seg = program.segment(f"pilot_{pilot.role}_hi")
+        # captured = digital_gain + K (unit slope). K from the two pilots.
+        k_lo = pilot.level_lo_dbfs - lo_seg.gain_db
+        k_hi = pilot.level_hi_dbfs - hi_seg.gain_db
+        k = (k_lo + k_hi) / 2.0
+        gain = target - k
+        gain = min(gain, GAIN_MAX_DIGITAL_PEAK_DBFS)  # ≥6 dB guard
+        gains[pilot.role] = gain
+        predicted_peaks.append(gain)
+    predicted_peak = max(predicted_peaks) if predicted_peaks else GAIN_MAX_DIGITAL_PEAK_DBFS
+
+    snr_floor_ok = _snr_floor_ok(ambient_report, target)
+    return GainPlan(
+        gain_db=gains,
+        predicted_peak_dbfs=predicted_peak,
+        snr_floor_ok=snr_floor_ok,
+    )
+
+
+def _snr_floor_ok(ambient_report: Mapping[str, Any], target_capture_dbfs: float) -> bool:
+    bands = ambient_report.get("bands") if isinstance(ambient_report, Mapping) else None
+    if not bands:
+        return False
+    worst = max(float(b["level_dbfs"]) for b in bands if "level_dbfs" in b)
+    return (target_capture_dbfs - worst) >= DRIVER.snr_ok_db
+
+
+# --------------------------------------------------------------------------- #
+# phase dispatch
+# --------------------------------------------------------------------------- #
+
+
+def analyze_program_capture(
+    program: ExcitationProgram,
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    calibration: "CalibrationCurve | None" = None,
+    geometry: MeasurementGeometry | None = None,
+    priors: MeasurementPriors | None = None,
+) -> ProgramAnalysis:
+    """Analyze a program capture into a :class:`ProgramAnalysis` (design §5.6)."""
+    if sample_rate != program.sample_rate_hz:
+        raise ValueError(
+            f"capture rate {sample_rate} != program rate {program.sample_rate_hz}"
+        )
+    capture = np.asarray(samples, dtype=np.float64).ravel()
+    geometry = geometry or MeasurementGeometry()
+    priors = priors or MeasurementPriors()
+
+    global_offset, _first, stimuli = _global_offset(program, capture, sample_rate)
+    locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
+
+    if program.phase == PHASE_CHECK:
+        return _analyze_check(program, capture, sample_rate, global_offset, locations, priors)
+    if program.phase == PHASE_MEASURE:
+        return _analyze_measure(
+            program, capture, sample_rate, global_offset, locations,
+            calibration, geometry, priors,
+        )
+    if program.phase == PHASE_VERIFY:
+        return _analyze_verify(
+            program, capture, sample_rate, global_offset, locations,
+            calibration, priors,
+        )
+    raise ValueError(f"unknown phase: {program.phase!r}")
+
+
+def _analyze_check(
+    program, capture, sample_rate, global_offset, locations, priors,
+) -> ProgramAnalysis:
+    ambient_seg = program.segment("ambient")
+    ambient_report = _ambient_from_capture(capture, sample_rate, ambient_seg, global_offset)
+    pilots = _pilot_observations(program, capture, sample_rate, locations)
+    linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
+    channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
+    gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)
+    return ProgramAnalysis(
+        phase=program.phase,
+        program_id=program.program_id,
+        locations=tuple(locations),
+        ambient_report=ambient_report,
+        pilots=tuple(pilots),
+        linearity_ok=linearity_ok,
+        channel_map_ok=channel_map_ok,
+        gain_plan=gain_plan,
+    )
+
+
+def _analyze_measure(
+    program, capture, sample_rate, global_offset, locations,
+    calibration, geometry, priors,
+) -> ProgramAnalysis:
+    if priors.crossover_fc_hz is None:
+        raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
+    fc_hz = float(priors.crossover_fc_hz)
+    drift = _estimate_drift(program, capture, global_offset, locations)
+
+    seg_w = program.segment("sweep_w")
+    seg_t = program.segment("sweep_t")
+    epsilon = drift.epsilon_ppm / 1e6
+    # Deconvolve both sweeps anchored at their SCHEDULE window (with a shared
+    # pre-guard) so relative timing survives (the aligner relies on this); the
+    # measured ε is divided out of the reference so drift can't smear the IR.
+    woofer_full_ir, pre_w = _deconvolve_window(
+        capture, seg_w, global_offset + seg_w.start_sample, sample_rate,
+        epsilon=epsilon,
+    )
+    tweeter_full_ir, pre_t = _deconvolve_window(
+        capture, seg_t, global_offset + seg_t.start_sample, sample_rate,
+        epsilon=epsilon,
+    )
+    pre_samples = min(pre_w, pre_t)
+    n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
+
+    responses = (
+        _driver_response(
+            seg_w.role, woofer_full_ir, sample_rate,
+            calibration=calibration, ambient_report=priors.ambient_report,
+            fc_hz=fc_hz, n_fft=n_fft,
+        ),
+        _driver_response(
+            seg_t.role, tweeter_full_ir, sample_rate,
+            calibration=calibration, ambient_report=priors.ambient_report,
+            fc_hz=fc_hz, n_fft=n_fft,
+        ),
+    )
+
+    alignment = _estimate_alignment(
+        capture, program, sample_rate, global_offset, drift.epsilon_ppm / 1e6,
+        fc_hz, geometry, priors,
+        woofer_full_ir=woofer_full_ir, tweeter_full_ir=tweeter_full_ir,
+        pre_samples=pre_samples,
+    )
+
+    candidate = _build_candidate(
+        woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
+        seg_w.role, seg_t.role, alignment, calibration,
+    )
+    return ProgramAnalysis(
+        phase=program.phase,
+        program_id=program.program_id,
+        locations=tuple(locations),
+        drift=drift,
+        driver_responses=responses,
+        alignment=alignment,
+        candidate=candidate,
+        glitch_detected=drift.glitch_detected,
+    )
+
+
+def _build_candidate(
+    woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
+    woofer_role, tweeter_role, alignment, calibration,
+) -> CrossoverCandidate:
+    freqs, W = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
+    _f2, T = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
+    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
+    lo = fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
+    # ``_aligned_branch_tf`` references each branch to its own direct peak, i.e.
+    # the proposed delay is already applied (τ_residual → 0, e^{−jωτ} → 1), so
+    # this is the flattest-achievable aligned sum for the candidate.
+    predicted = _predicted_sum(W, T, trim_w, trim_t, alignment.polarity_sign)
+    ripple = _ripple_db(freqs, predicted, lo, hi)
+    return CrossoverCandidate(
+        trim_db={woofer_role: trim_w, tweeter_role: trim_t},
+        polarity=alignment.polarity,
+        delay_us=alignment.delay_us,
+        predicted_ripple_db=ripple,
+        confidence=alignment.confidence,
+    )
+
+
+def _analyze_verify(
+    program, capture, sample_rate, global_offset, locations,
+    calibration, priors,
+) -> ProgramAnalysis:
+    fc_hz = float(priors.crossover_fc_hz) if priors.crossover_fc_hz else None
+    seg = program.segment("sweep_verify")
+    full_ir, _pre = _deconvolve_window(
+        capture, seg, global_offset + seg.start_sample, sample_rate
+    )
+    n_fft = _n_fft_for(full_ir)
+    summed = _driver_response(
+        "summed", full_ir, sample_rate,
+        calibration=calibration, ambient_report=None, fc_hz=fc_hz, n_fft=n_fft,
+    )
+    ripple = None
+    tracking = None
+    if fc_hz is not None:
+        lo = fc_hz / OVERLAP_OCTAVE_RATIO
+        hi = fc_hz * OVERLAP_OCTAVE_RATIO
+        ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
+        if priors.predicted_sum is not None:
+            pred_freqs, pred_db = priors.predicted_sum
+            measured_db = analysis_mod.smooth_fractional_octave(
+                summed.freqs_hz, summed.magnitude_db, 24
+            )
+            rms, max_abs = analysis_mod.tracking_error_db(
+                summed.freqs_hz,
+                measured_db,
+                np.interp(summed.freqs_hz, pred_freqs, pred_db),
+                (lo, hi),
+            )
+            tracking = {"rms_db": rms, "max_db": max_abs}
+    return ProgramAnalysis(
+        phase=program.phase,
+        program_id=program.program_id,
+        locations=tuple(locations),
+        summed_response=summed,
+        summed_ripple_db=ripple,
+        verify_tracking=tracking,
+    )
