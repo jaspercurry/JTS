@@ -37,17 +37,25 @@ from jasper.active_speaker.crossover_level_run import (
     PHONE_TRANSPORT_GRACE_S,
     state_path as _level_run_state_path,
 )
+from jasper.active_speaker.volume_latch import (
+    EMERGENCY_MEASUREMENT_VOLUME_DB,
+    READBACK_TOLERANCE_DB,
+    set_and_confirm_volume,
+)
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
-EMERGENCY_SWEEP_VOLUME_DB = -60.0
+# The emergency floor + readback tolerance are owned by the shared volume_latch
+# leaf so this per-step lease and the session-scoped SessionVolumePlan cannot
+# drift. Re-exported at the historical names for this module's importers.
+EMERGENCY_SWEEP_VOLUME_DB = EMERGENCY_MEASUREMENT_VOLUME_DB
 _VOLUME_SAFETY_STATE_KIND = "jts_crossover_volume_safety"
 _VOLUME_SAFETY_SCHEMA_VERSION = 1
 _DEFAULT_VOLUME_SAFETY_STATE_PATH = Path(
     "/var/lib/jasper/active_speaker_crossover_volume_safety.json"
 )
-_VOLUME_READBACK_TOLERANCE_DB = 0.05
+_VOLUME_READBACK_TOLERANCE_DB = READBACK_TOLERANCE_DB
 CamillaFactory = Callable[[], Any]
 
 # The level-match ramp's phone-reported noise_floor_dbfs (RampData.noise_floor_dbfs)
@@ -429,20 +437,14 @@ class CrossoverLevelLease:
         set_main_volume_db: Any,
         get_main_volume_db: Any,
     ) -> bool:
-        try:
-            applied = await set_main_volume_db(float(target_db))
-            if applied is False:
-                return False
-            observed = await get_main_volume_db()
-        except (OSError, RuntimeError, TimeoutError, ValueError):
-            return False
-        if (
-            isinstance(observed, bool)
-            or not isinstance(observed, (int, float))
-            or not math.isfinite(float(observed))
-        ):
-            return False
-        return abs(float(observed) - float(target_db)) <= _VOLUME_READBACK_TOLERANCE_DB
+        # Delegates to the shared volume_latch leaf so this lease and
+        # SessionVolumePlan share one confirm-readback implementation.
+        return await set_and_confirm_volume(
+            target_db,
+            set_main_volume_db,
+            get_main_volume_db,
+            tolerance_db=_VOLUME_READBACK_TOLERANCE_DB,
+        )
 
     async def _recover_volume_safety(
         self,
