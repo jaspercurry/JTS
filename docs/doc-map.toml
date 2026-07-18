@@ -21,6 +21,10 @@ session_artifacts = [
   # Execution artifact: per-window build prompts for the barge-in plan in
   # HANDOFF-barge-in.md. Not a canonical scan target; retire when barge-in ships.
   "docs/barge-in-build-prompts.md",
+  # Living on-hardware validation log of the JTS3 crossover+room e2e run. Records
+  # what was exercised and the UX findings; the synthesized plan those findings
+  # fed lives in docs/crossover-measurement-productization-design.md.
+  "docs/crossover-room-e2e-validation-log.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
@@ -28,6 +32,10 @@ session_artifacts = [
 # to them as current operational truth.
 research = [
   "docs/RESEARCH-pipewire-low-latency.md",
+  # Verbatim first-principles deep-research report behind the crossover
+  # measurement productization design; the synthesized decisions live in
+  # docs/crossover-measurement-productization-design.md (a subsystem scan target).
+  "docs/crossover-measurement-deep-research-2026-07-18.md",
 ]
 
 [[subsystem]]
@@ -763,6 +771,7 @@ docs = [
   "docs/HANDOFF-dsp-graph-carrier.md",
   "docs/HANDOFF-distributed-active.md",
   "docs/active-crossover-information-design.md",
+  "docs/crossover-measurement-productization-design.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
 ]
