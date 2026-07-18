@@ -44,6 +44,7 @@ from .camilla_yaml import (
     emit_active_speaker_commissioning_config,
     emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
+    emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
 )
 from .path_safety import (
@@ -419,6 +420,7 @@ __all__ = [
     "emit_active_speaker_baseline_config",
     "emit_active_speaker_driver_domain_config",
     "emit_active_speaker_program_bake_config",
+    "emit_active_speaker_program_config",
     "channel_select_mixer_name",
     "load_active_speaker_preset",
     "load_design_draft",
