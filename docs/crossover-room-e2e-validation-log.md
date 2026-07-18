@@ -83,9 +83,18 @@ per-driver near-field placement.
 |---|---|
 | Woofer level match | ✅ relay `complete`; JTS ramped 250 Hz from quiet, UMIK-2 locked the level |
 | Tweeter level match | ✅ relay `complete`; 6250 Hz protected passband, locked |
-| Measure each driver (3 stationary repeats/driver) | ⏳ woofer sweep in progress |
+| Measure each driver (3 stationary repeats/driver) | ⏳ woofer sweep **captures + persists** (repeat 1 landed in real Chrome); each repeat needs its own real-click ("Next measurement") within 120 s |
 | Align the crossover | ⏳ pending |
 | Apply measured crossover | ⏳ pending |
+
+**Sweep mechanic (validated):** each driver sweep is 3 stationary repeats;
+repeat 1 is the "measure driver" button, repeats 2–3 are a "Next measurement"
+button that must be **really clicked** (getUserMedia gesture — JS `.click()`
+starts "Starting microphone…" but never actually records) within the 120 s
+per-repeat window. The close fixed mic (front of speaker, per the
+flow-validation choice) reads "too loud for the microphone at this distance,"
+so JTS auto-re-levels quieter between attempts — a real measurement-setup nuance
+(a slightly farther mic would converge faster).
 
 ## Room correction (UMIK-2) ⏳ pending
 
@@ -130,6 +139,15 @@ accept. Ingests the UMIK-2 calibration by serial (`/correction/calibration/fetch
    relay + UMIK-2 (relay `complete`, protected passband tones, level locked).
    The capture page recognizes and remembers the mic calibration by serial
    ("miniDSP UMIK-2 · 8494").
+8. **Correct surface split (operator correction):** the **control page is HTTP**
+   on `jts3.local` (its mkcert cert is untrusted in a normal browser — you should
+   not reach it over HTTPS), and the **getUserMedia capture is HTTPS on the
+   jasper.tech relay** (`capture.jasper.tech`, valid public cert). Driving via a
+   scripted headed-Playwright context (HTTPS-jts3 + `--use-fake-ui-for-media-stream`)
+   *level-matched* fine but the driver-**sweep** getUserMedia recording kept
+   resetting; switching to the real extension-controlled Chrome (HTTP control +
+   HTTPS relay capture) fixed it immediately — the sweep tone played and recorded.
+   Lesson: drive this flow through a real browser, not a synthetic media context.
 7. **Relay session TTL + hash-routed capture SPA — automation-driving finding.**
    The `capture.jasper.tech` page is a hash-routed SPA (`#s=<session>…`) and the
    relay session has a short TTL. Two practical consequences for a *scripted*
