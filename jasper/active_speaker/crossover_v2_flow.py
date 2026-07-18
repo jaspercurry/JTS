@@ -110,6 +110,11 @@ REASON_LOCATE_FAILED = "locate_failed"
 REASON_RELAY_TIMEOUT = "relay_timeout"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
+# Internal-only addition BEYOND the §5.10 table: §5.2's "inconclusive —
+# re-verify" verdict (VERIFY's own detected first reflection forced a shorter
+# gate than MEASURE's, so the overlay difference is not evidence about driver
+# alignment). Renders through the same VERIFY-fail template — it is a distinct
+# reason parameterizing that screen's copy, not a fifth screen.
 REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
 
 
@@ -429,6 +434,9 @@ class CrossoverV2Conductor:
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
         gain_plan_db: Mapping[str, float] | None = None,
+        index_phase_map: Mapping[int, str] | None = None,
+        measure_predicted_sum: Any = None,
+        measure_gate_window_ms: float | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -448,6 +456,12 @@ class CrossoverV2Conductor:
         self._accepted = set(accepted_phases)
         self._applied = bool(applied)
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
+        # Relay capture-plan index → phase. The standard 3-entry session uses
+        # the default; a verify-only re-arm session (§5.2 "Re-verify") maps its
+        # single entry {1: PHASE_VERIFY}.
+        self._index_phase_map = (
+            dict(index_phase_map) if index_phase_map is not None else dict(_INDEX_PHASE)
+        )
 
         # Programs — CHECK is composable now; MEASURE waits on the gain solve,
         # VERIFY on Fc (composable now, played only after apply).
@@ -463,11 +477,13 @@ class CrossoverV2Conductor:
         self._phase_attempts: dict[str, int] = {}
         self._last_reason: dict[str, str] = {}
         self._armed_index: int | None = None
-        # MEASURE→VERIFY handoff evidence.
-        self._measure_predicted_sum: Any = None
-        self._measure_gate_window_ms: float | None = None
+        # MEASURE→VERIFY handoff evidence. A verify-only re-arm session
+        # rehydrates both from the persisted state (§5.2 re-verify).
+        self._measure_predicted_sum: Any = measure_predicted_sum
+        self._measure_gate_window_ms: float | None = measure_gate_window_ms
         self._candidate: Any = None
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
+        self._last_failure_code: str | None = None
 
     # --- program composition -------------------------------------------------
 
@@ -552,8 +568,21 @@ class CrossoverV2Conductor:
     def applied(self) -> bool:
         return self._applied
 
+    @property
+    def measure_predicted_sum(self) -> Any:
+        return self._measure_predicted_sum
+
+    @property
+    def measure_gate_window_ms(self) -> float | None:
+        return self._measure_gate_window_ms
+
+    @property
+    def last_failure_code(self) -> str | None:
+        """The most recent rejection's reason code (host persistence reads it)."""
+        return self._last_failure_code
+
     def _phase_of_index(self, index: int) -> str:
-        phase = _INDEX_PHASE.get(index)
+        phase = self._index_phase_map.get(index)
         if phase is None:
             raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
         return phase
@@ -639,8 +668,14 @@ class CrossoverV2Conductor:
                 "awaiting_apply",
                 "waiting for the household to apply the measured crossover",
             )
-        # Budget: the phase's attempt count after this begin vs the last
-        # failure's retry budget. First attempt of any phase is always admitted.
+        # Budget: CUMULATIVE per phase by design — the phase's total attempt
+        # count is compared against the LAST failure's retry budget, so
+        # alternating reason codes cannot restart the meter (a capture that
+        # fails `clipped` then `locate_failed` then `clipped`... would retry
+        # forever under a literal per-code reading of the §5.10 budget
+        # column). This is deliberately stricter than §5.10 read per-code;
+        # the plan's `max_attempts` (8) bounds the whole session regardless.
+        # First attempt of any phase is always admitted.
         count = self._phase_attempts.get(phase, 0) + 1
         last = self._last_reason.get(phase)
         if last is not None and count > REASON_REGISTRY[last].retry_budget + 1:
@@ -701,8 +736,10 @@ class CrossoverV2Conductor:
         if verdict.accepted:
             self._accepted.add(phase)
             self._last_reason.pop(phase, None)
+            self._last_failure_code = None
         elif verdict.code is not None:
             self._last_reason[phase] = verdict.code
+            self._last_failure_code = verdict.code
         log_event(
             logger, "correction.crossover_v2_result",
             session_id=self.session_id, phase=phase,
@@ -727,7 +764,7 @@ class CrossoverV2Conductor:
         self._gain_plan_db = dict(gain_plan.gain_db)
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.publish_check(gain_plan, analysis.ambient_report or {})
-        return PhaseVerdict(True, payload={"phase": PHASE_CHECK})
+        return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
 
     def _consume_measure(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         if not _stimulus_locate_ok(analysis):
@@ -752,7 +789,7 @@ class CrossoverV2Conductor:
         return PhaseVerdict(
             True,
             payload={
-                "phase": PHASE_MEASURE,
+                "measurement_phase": PHASE_MEASURE,
                 "candidate_fingerprint": candidate.fingerprint,
             },
         )
@@ -782,7 +819,7 @@ class CrossoverV2Conductor:
             )
         self._verify_outcome = "pass"
         return PhaseVerdict(
-            True, payload={"phase": PHASE_VERIFY, "tracking": dict(tracking)}
+            True, payload={"measurement_phase": PHASE_VERIFY, "tracking": dict(tracking)}
         )
 
     # --- helpers -------------------------------------------------------------
@@ -934,6 +971,67 @@ def build_v2_capture_plan(
         max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS,
         schema_version=2,
         entries=entries,
+    )
+
+
+def build_v2_verify_capture_plan(fc_hz: float) -> Any:
+    """A 1-entry verify-only plan for the §5.2 re-verify re-arm session.
+
+    Used by ``/crossover/v2/verify`` after a VERIFY fail/inconclusive when the
+    original session has died: the household explicitly chose "Try again," so
+    the single entry requires the tap (no countdown — apply already happened).
+    The hosting conductor maps relay index 1 → VERIFY via ``index_phase_map``.
+    """
+    from jasper.capture_relay.spec import (
+        MAX_CAPTURE_PLAN_ATTEMPTS,
+        CapturePlan,
+        CapturePlanEntry,
+    )
+
+    verify = build_verify_program(
+        fc_hz,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+    )
+    entry = CapturePlanEntry(
+        index=0,
+        kind_label="verify",
+        duration_ms=_program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS,
+        screen={
+            "title": "Verify",
+            "body": (
+                "Keep the phone where it was for the measurement, then tap "
+                "Verify."
+            ),
+            "auto_advance": AUTO_ADVANCE_TAP,
+        },
+    )
+    return CapturePlan(
+        capture_target=1,
+        max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS,
+        schema_version=2,
+        entries=(entry,),
+    )
+
+
+def build_v2_verify_session_spec(
+    fc_hz: float,
+    *,
+    acknowledgement_binding: str,
+    **spec_kwargs: Any,
+) -> Any:
+    """The relay v3 spec for a verify-only re-arm session (§5.2 re-verify)."""
+    from jasper.capture_relay.spec import build_crossover_sweep_spec
+
+    plan = build_v2_verify_capture_plan(fc_hz)
+    return build_crossover_sweep_spec(
+        driver_label="crossover verification",
+        driver_role="summed",
+        acknowledgement_binding=acknowledgement_binding,
+        stimulus_duration_ms=plan.entries[0].duration_ms,
+        capture_plan=plan,
+        **spec_kwargs,
     )
 
 
@@ -1121,6 +1219,8 @@ __all__ = [
     "bind_program_playback_seams",
     "build_v2_capture_plan",
     "build_v2_session_spec",
+    "build_v2_verify_capture_plan",
+    "build_v2_verify_session_spec",
     "derive_session_volume_db",
     "open_measurement_volume",
     "abandon_measurement_volume",

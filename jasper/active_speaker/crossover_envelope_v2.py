@@ -360,9 +360,12 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action={
                 "id": "apply_measured_candidate",
                 "label": "Apply reviewed crossover",
-                "endpoint": "/correction/crossover/apply",
+                # The v2 apply endpoint: reopens the published candidate
+                # artifact (tamper-checked) and rides the existing atomic
+                # apply-with-rollback transaction via the W4
+                # measured_candidate seam; on success it arms VERIFY.
+                "endpoint": "/correction/crossover/v2/apply",
                 "body": {
-                    "tuning_owner": "automatic",
                     "expected_candidate_fingerprint": str(candidate.get("fingerprint") or ""),
                 },
             },

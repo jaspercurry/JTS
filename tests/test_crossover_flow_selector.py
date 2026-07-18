@@ -27,7 +27,12 @@ from jasper.active_speaker.crossover_flow import (
 
 
 # Representative statuses spanning distinct legacy envelope branches: passive,
-# volume recovery, and the active default walk.
+# volume recovery, the setup gate, and two active walks (default + a manual
+# applied profile). The deeper structural guarantee is that the ONLY v2 touch
+# inside build_crossover_envelope is an 11-line early-return guard clause —
+# with the selector resolving legacy, execution falls through to the
+# unmodified legacy body, so these samples pin the dispatch, and the full
+# legacy suite (tests/test_web_correction_crossover_flow.py) pins the body.
 def _statuses() -> list[dict]:
     return [
         {"active": False},
@@ -39,7 +44,26 @@ def _statuses() -> list[dict]:
         },
         {
             "active": True,
+            "setup": {"active": True, "status": "blocked"},
+            "targets": {"drivers": []},
+            "measurements": {},
+            "level_match": {},
+        },
+        {
+            "active": True,
             "setup": {"active": True, "status": "ready"},
+            "targets": {"drivers": []},
+            "measurements": {},
+            "level_match": {},
+        },
+        {
+            "active": True,
+            "setup": {
+                "active": True,
+                "status": "ready",
+                "applied_crossover": {"valid": True, "owner": "manual"},
+                "manual_preservation": {"ready": True},
+            },
             "targets": {"drivers": []},
             "measurements": {},
             "level_match": {},

@@ -97,8 +97,7 @@ def test_review_apply_carries_candidate_fingerprint():
     ))
     assert env["screen"] == "review_apply"
     action = env["next_action"]
-    assert action["endpoint"] == "/correction/crossover/apply"
-    assert action["body"]["tuning_owner"] == "automatic"
+    assert action["endpoint"] == "/correction/crossover/v2/apply"
     assert action["body"]["expected_candidate_fingerprint"] == "fp-123"
     assert env["candidate_review"]["fingerprint"] == "fp-123"
     assert _step_statuses(env)["review_apply"] == "active"
