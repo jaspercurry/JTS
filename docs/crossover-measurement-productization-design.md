@@ -221,14 +221,21 @@ pre-ring for the preceding sweep's band).
 
 CHECK/MEASURE programs are **2-channel WAVs** played once through
 `correction_substream`: a new commissioning graph variant maps capture ch0 →
-the woofer output path and ch1 → the tweeter output path, each behind its
-existing protection (tweeter protective HP, level caps). The schedule lives in
-the WAV channels, so per-driver sequencing is sample-accurate while the
-CamillaDSP graph stays **static and provable** — `graph_safety`'s
-`tweeter_guard_present` / `output_highpass_protected` proofs apply unchanged,
-and no graph reload happens mid-program (v1 loaded a fresh isolated graph per
-sweep). VERIFY plays a mono sweep through the **applied production graph** —
-measuring the real system, not a commissioning construct.
+the woofer output path and ch1 → the tweeter output path. **Each channel
+carries the *target* crossover filter for its driver** (the LR4 high-pass for
+the tweeter — which satisfies the declared protective-HP floor by
+construction, since Fc is aligned to it — and the LR4 low-pass for the
+woofer), plus the existing level caps. Measuring *as-crossed branches* makes
+the two responses directly summable (`P = W_xo + s·T_xo·e^{−jωτ}`), removes
+any protective-filter double-counting from the prediction, and keeps the
+tweeter behind its final ≥24 dB/oct high-pass during every excitation. The
+schedule lives in the WAV channels, so per-driver sequencing is
+sample-accurate while the CamillaDSP graph stays **static and provable** —
+`graph_safety`'s `tweeter_guard_present` / `output_highpass_protected` proofs
+apply unchanged, and no graph reload happens mid-program (v1 loaded a fresh
+isolated graph per sweep). VERIFY plays a mono sweep through the **applied
+production graph** — measuring the real system, not a commissioning
+construct.
 
 ### 5.5 Session volume plan (SSOT)
 
@@ -269,9 +276,12 @@ ProgramAnalysis`:
    subtracted. Polarity from the correlation sign, cross-checked against the
    flatter predicted sum. Confidence gates reuse
    `cross_correlation_alignment`'s shape.
-6. **Prediction/validation:** predicted summed response from the two complex
-   TFs + candidate (trims, delay, polarity) vs target; VERIFY compares the
-   measured sum against this prediction and the ripple tolerance.
+6. **Prediction/validation:** because MEASURE captures as-crossed branches
+   (§5.4), the predicted applied sum is directly
+   `W_xo·10^(trim_w/20) + s·T_xo·10^(trim_t/20)·e^(−jωτ)`; trims level-match
+   the branches through the crossover region and the candidate (trims, s, τ)
+   is validated against the target's ripple tolerance. VERIFY compares the
+   measured post-apply sum against this prediction.
 
 New estimator code (ε, GCC-PHAT sub-sample) is net-new and lands with
 synthetic-fixture tests: composed captures with injected known ε, delay,
