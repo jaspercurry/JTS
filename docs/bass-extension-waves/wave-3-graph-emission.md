@@ -1,6 +1,6 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
-> **Revision 11 (2026-07-18; one-fixture allowlist repair).** Static graph
+> **Revision 12 (2026-07-18; post-apply evidence seam repair).** Static graph
 > groundwork remains
 > narrowed to `sealed_v1`; ported/passive-radiator profiles remain
 > valid retained commissioning artifacts. This revision also freezes
@@ -10,10 +10,12 @@
 > the graph; see its revision 9 safety gate. Revision 10 pins live
 > selected-file provenance, one correction evidence handoff, whole-graph
 > carrier re-proof, and repeated-cancellation rollback drain. Those
-> requirements remain unchanged. Revision 11 authorizes only the seam
-> fixture and acceptance coverage named below for
-> `tests/test_web_correction_tuning.py`. Findings and rationale are in the
-> changelog.
+> requirements remain unchanged. Revision 11 authorizes only its named
+> seam fixture. Revision 12 grows the absolute allowlist to exactly 21
+> production files plus 23 test files, freezes the smallest commissioning
+> post-apply authority handoff, and preserves correction's fail-closed
+> treatment of omitted or malformed bass evidence. Findings and rationale
+> are in the changelog.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–2 merged AND the Wave-0
@@ -125,6 +127,11 @@ against what actually changed.
 ## File allowlist
 
 Modify:
+
+This absolute future-implementation allowlist contains exactly **44 files:
+21 production files and 23 test files**. No other implementation file is
+authorized.
+
 - `jasper/camilla_emit.py` — `emit_linkwitz_transform_biquad(name,
   freq_act, q_act, freq_target, q_target)` and
   `emit_butterworth_highpass(name, freq, order)` (+ shared bounds
@@ -343,6 +350,32 @@ Modify:
   call `load_staged_startup_config()` before classification. Retain
   in-memory staged mappings only for already-frozen direct low-level
   tests, never as persisted host authority.
+- `jasper/active_speaker/commissioning_verification.py` — post-apply
+  evidence seam only. Inside `_capture_current_graph`'s existing
+  `dsp_writer_lock`, invoke `classify_active_bass_extension_graph` exactly
+  once with `producer.topology`, `port.read_active_raw`, and the same five
+  canonical authority paths used by `commissioning_runtime._run_locked`:
+  `Path(DEFAULT_CAMILLA_STATEFILE)`, `baseline_profile_state_path()`,
+  `DEFAULT_PROFILE_PATH`, `BASS_EXTENSION_APPLY_INTENT_PATH`, and
+  `staged_metadata_path()`. Retain
+  `port._bass_extension_authority_paths` as the existing test-only path
+  injection seam. Require `allowed is True` and a `Mapping` at
+  `details["bass_extension_profile_summary"]`; otherwise raise the local
+  typed `graph_authority_unproven` refusal before producer invocation,
+  audio or playback, admission, or artifact publication. Treat the
+  returned mapping as immutable and pass that exact object, without
+  parsing, copying, reconstructing, substituting, or re-proving it, into
+  the initial `CommissioningFreshReadback`, every later fresh readback,
+  and `CommissioningLiveContext`. Do not persist it into
+  `AppliedCandidateProof`, receipts, services, or a new wrapper.
+
+  `commissioning_capture_producer._protection_evidence` consumes that
+  evidence. Delete its missing/non-`Mapping` substitution with
+  `NO_BASS_EXTENSION_PROFILE_SUMMARY`; explicitly refuse missing or
+  non-`Mapping` evidence before admitted playback, then pass the exact
+  `Mapping` object unchanged to `classify_camilla_graph`. Only direct
+  tests may deliberately supply the existing canonical
+  `NO_BASS_EXTENSION_PROFILE_SUMMARY` for this producer seam.
 - `jasper/active_speaker/baseline_profile.py` — thread the accepted
   sealed profile into **`recompose_applied_baseline_yaml`**, the
   immutable production carrier, and through its existing
@@ -417,6 +450,18 @@ Modify:
   session consumes evidence; it does not own bass policy. Existing
   passive/no-profile graphs still arrive as an explicit host-proved
   summary, not as omitted evidence.
+- `jasper/correction/runtime_safety.py` — narrow evidence-forwarding
+  repair only. `assert_correction_graph_safe` must never translate
+  `None` or a non-`Mapping` value into
+  `NO_BASS_EXTENSION_PROFILE_SUMMARY`. Pass a supplied `Mapping` to
+  `classify_camilla_graph` unchanged by identity; cleanly refuse any
+  non-`Mapping` value other than `None`; and forward `None` unchanged to
+  the low-level classifier. Thus baseline-shaped omission retains
+  `bass_extension_evidence_missing`, while independent flat/program-pipe
+  and guarded/all-muted graph classes retain their existing policy. The
+  explicit canonical no-profile `Mapping` remains legal. Leave
+  `reset_config_path`'s explicit full-range/no-profile behavior unchanged.
+  Do not broaden this repair into arbitrary `Mapping` schema hardening.
 - `jasper/bass_extension/__init__.py` — `apply_bass_extension()` /
   `bypass_bass_extension()` seams that recompose from the immutable
   applied baseline snapshot and reuse the existing DSP writer lock,
@@ -663,10 +708,13 @@ Modify:
   `tests/test_active_speaker_baseline_profile.py`,
   `tests/test_active_speaker_commissioning_apply.py`,
   `tests/test_active_speaker_commissioning_runtime.py`,
+  `tests/test_active_speaker_commissioning_verification.py`,
+  `tests/test_active_speaker_commissioning_capture_producer.py`,
   `tests/test_active_speaker_graph_evidence.py`,
   `tests/test_active_speaker_local_subwoofer.py`,
   `tests/test_correction_session.py` (seam-only pins for the explicit
   writer-lock evidence handoff),
+  `tests/test_correction_runtime_safety.py`,
   `tests/test_correction_setup.py`,
   `tests/test_correction_status_and_bundles.py`,
   `tests/test_web_correction_tuning.py` (the one seam-only fixture
@@ -711,6 +759,23 @@ Modify:
   existing honest-failure assertion. This authorizes no production
   fallback, substitution, or reconstruction for missing/non-`Mapping`
   evidence; such evidence must still refuse before load.
+
+  `tests/test_active_speaker_commissioning_verification.py` must pin that
+  the one canonical live proof occurs under the existing writer lock;
+  the exact summary object reaches the initial readback, every later fresh
+  readback, and live context by identity; and unsafe authority, a missing
+  summary, or a non-`Mapping` summary raises `graph_authority_unproven`
+  before producer invocation, audio or playback, admission, or evidence
+  publication. `tests/test_active_speaker_commissioning_capture_producer.py`
+  must update legitimate direct fixtures to supply the explicit canonical
+  no-profile `Mapping`, prove missing and non-`Mapping` evidence refuses
+  before admitted playback, and prove a valid summary reaches
+  `classify_camilla_graph` by identity.
+
+  `tests/test_correction_runtime_safety.py` must pin active-baseline
+  omission and malformed-evidence refusal, explicit canonical no-profile
+  acceptance for a legal no-block graph, identity-preserving supplied
+  `Mapping` forwarding, and unchanged flat-class behavior.
 
   `tests/test_sound_graph_carrier.py` must include the missing-woofer-
   low-pass fault injection described above and assert the stable
@@ -888,6 +953,8 @@ STOP and report — do not restructure the contract to fit.
   tests/test_web_correction_tuning.py \
   tests/test_active_speaker_cli.py \
   tests/test_active_speaker_commissioning_runtime.py \
+  tests/test_active_speaker_commissioning_capture_producer.py \
+  tests/test_active_speaker_commissioning_verification.py \
   tests/test_multiroom_active_leader_config.py \
   tests/test_multiroom_follower_config.py tests/test_doctor.py -q
 scripts/test-fast
@@ -899,6 +966,31 @@ byte identical emission for the no-profile, ported-profile, and
 PR-profile cases vs. pre-change main.
 
 ## Changelog
+
+- **Rev 12 (2026-07-18)** — fresh exact-head review of parked PR #1574 at
+  `6612fdd3abe37deaf51bf20997e2b7b077af7287` found **0 Blocker / 2
+  Should-fix / 0 Nit**. First, post-apply commissioning verification
+  entered admitted capture without performing the canonical live
+  bass-authority proof, while `_protection_evidence` converted missing or
+  malformed evidence into the canonical no-profile summary. Second,
+  `assert_correction_graph_safe` likewise converted `None` and every
+  non-`Mapping` value into no-profile evidence, erasing the low-level
+  classifier's baseline-omission refusal. Rationale: add only the
+  post-apply verification owner and three exact owning test modules;
+  prove commissioning authority once under the existing writer lock;
+  thread its exact immutable `Mapping` object through the existing
+  readback/context seam; remove producer substitution; and preserve the
+  correction classifier's low-level omission and independent flat-class
+  policies. The absolute future implementation allowlist grows from **20
+  production + 20 tests** to exactly **21 production + 23 tests = 44
+  files**. Rejected alternatives were re-proving authority for every
+  fresh readback, copying, reconstructing, or persisting the summary,
+  adding a wrapper or service field, retaining production no-profile
+  substitution, treating correction omission as explicit no-profile
+  authority, or broadening into arbitrary `Mapping` schema hardening.
+  Evidence: [issue #1557 review](https://github.com/jaspercurry/JTS/issues/1557#issuecomment-5012541586).
+  No threshold, Q, limiter, architecture, later-wave, playback, or
+  deployment change is authorized.
 
 - **Rev 11 (2026-07-18)** — `scripts/test-fast` reached **6,093 passed,
   2 skipped** on the revision-10 implementation repair and then exposed
