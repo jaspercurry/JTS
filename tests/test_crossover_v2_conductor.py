@@ -190,12 +190,14 @@ class FakeSeams:
     measure: Any = _measure_analysis
     verify: Any = _verify_analysis
     played: list = field(default_factory=list)
+    analyzed: list = field(default_factory=list)
     published_checks: list = field(default_factory=list)
     published_candidates: list = field(default_factory=list)
     apply_done: bool = False
 
     def seams(self) -> V2FlowSeams:
-        def analyze(program, wav, priors):
+        def analyze(program, result, priors, geometry):
+            self.analyzed.append((program.phase, result, priors, geometry))
             factory = {
                 "check": self.check, "measure": self.measure, "verify": self.verify,
             }[program.phase]
@@ -309,6 +311,29 @@ def test_measure_program_gains_back_off_from_caps():
 def test_back_off_gain_at_cap():
     assert back_off_gain(-45.0, -20.0, -65.0) == pytest.approx(-45.01)
     assert back_off_gain(-50.0, -20.0, -65.0) == pytest.approx(-50.0)
+
+
+def test_conductor_threads_geometry_and_result_to_analyze():
+    """The declared driver spacing + prescribed 1 m mic distance reach the
+    analyze seam (so the §3.2 parallax correction is live, not dead config),
+    and the WHOLE CaptureResult crosses it (the production binding resolves
+    the mic calibration from result.setup/device)."""
+    from jasper.audio_measurement.program_analysis import MeasurementGeometry
+
+    fakes = FakeSeams()
+    c = _conductor(fakes)  # driver_spacing_m=0.15
+    result = _capture()
+    c.authorize_begin(1, 1)
+    c.on_armed()
+    c.consume_capture(1, 1, result)
+    assert len(fakes.analyzed) == 1
+    phase, seen_result, _priors, geometry = fakes.analyzed[0]
+    assert phase == PHASE_CHECK
+    assert seen_result is result  # the CaptureResult itself, not just bytes
+    assert isinstance(geometry, MeasurementGeometry)
+    assert geometry.driver_spacing_m == pytest.approx(0.15)
+    assert geometry.mic_distance_m == pytest.approx(1.0)
+    assert geometry.parallax_us() > 0.0
 
 
 # --- §5.10 failure templates ------------------------------------------------------

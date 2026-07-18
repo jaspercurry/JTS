@@ -329,10 +329,20 @@ def _gate_window_ms(response: Any) -> float | None:
 # seams + snapshot
 # --------------------------------------------------------------------------- #
 
-# Injected seams. Wave 6 binds the real CamillaController-backed playback,
-# analyze_program_capture, verified-WAV source, and commissioning_service chain.
+# Injected seams. The web host binds the production implementations
+# (jasper.web.correction_crossover_v2); tests inject fakes.
 PlayProgram = Callable[[str, ExcitationProgram], None]
-AnalyzeCapture = Callable[[ExcitationProgram, bytes, MeasurementPriors], ProgramAnalysis]
+# analyze(program, capture_result, priors, geometry) → ProgramAnalysis. The
+# second argument is the relay CaptureResult (wav + phone-reported device +
+# setup — the production binding resolves the mic calibration from it; fakes
+# may pass raw bytes). ``geometry`` is the conductor's declared
+# MeasurementGeometry so the parallax correction actually reaches
+# analyze_program_capture — a seam that dropped it would silently analyze
+# with zero spacing.
+AnalyzeCapture = Callable[
+    [ExcitationProgram, Any, MeasurementPriors, MeasurementGeometry],
+    ProgramAnalysis,
+]
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
 ApplyGate = Callable[[], bool]
@@ -725,8 +735,11 @@ class CrossoverV2Conductor:
             else self._verify_priors() if phase == PHASE_VERIFY
             else MeasurementPriors()
         )
-        wav = getattr(result, "wav", result)
-        analysis = self._seams.analyze(program, wav, priors)
+        # The whole CaptureResult crosses the seam (not just wav bytes): the
+        # production analyze binding resolves the mic calibration from the
+        # phone-reported setup/device, and the conductor's declared geometry
+        # rides along so the parallax correction reaches the analysis.
+        analysis = self._seams.analyze(program, result, priors, self._geometry)
         if phase == PHASE_CHECK:
             verdict = self._consume_check(analysis)
         elif phase == PHASE_MEASURE:

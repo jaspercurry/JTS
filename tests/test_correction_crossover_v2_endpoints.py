@@ -164,7 +164,7 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
             index=attempt - 1,
         )
 
-    def analyze(program: Any, wav: bytes, priors: Any) -> Any:
+    def analyze(program: Any, result: Any, priors: Any, geometry: Any) -> Any:
         factory = analyses.get(program.phase) or {
             "check": _check_analysis,
             "measure": _measure_analysis,
@@ -317,6 +317,35 @@ def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume():
     assert env["screen"] == "session_restart"
 
 
+def test_volume_open_failure_purges_the_fresh_relay_session():
+    """An unconfirmed measurement volume must not leave the freshly-minted
+    relay session lingering to worker TTL — it is purged before the raise."""
+    from jasper.capture_relay.session import CaptureFailed
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
+
+    class _FailingVolume:
+        def hooks(self):
+            async def _open():
+                return "failed"
+
+            async def _noop():
+                pass
+
+            return v2host.V2VolumeHooks(open=_open, close=_noop, abandon=_noop)
+
+    class _NoPhone:
+        begun = (1, 1)
+
+    conductor = _conductor(backend, session, _NoPhone(), published=[])
+    runner = _build_runner(conductor, _FailingVolume())
+    with pytest.raises(CaptureFailed):
+        _run(runner, client, session)
+    assert session.session_id not in backend.sessions
+
+
 def test_phone_abort_is_session_death_abandon_and_invalidation():
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
@@ -435,6 +464,118 @@ def test_observe_apply_success_arms_the_deferred_verify_gate():
     assert v2host._applied_gate() is False
     v2host.observe_apply_success("fp-1")
     assert v2host._applied_gate() is True
+
+
+# --- production analyze binding (geometry + calibration) --------------------------
+
+
+def _mono_wav_bytes(n: int = 4800) -> bytes:
+    import io
+
+    from scipy.io import wavfile
+
+    buf = io.BytesIO()
+    wavfile.write(buf, 48000, np.zeros(n, dtype=np.int16))
+    return buf.getvalue()
+
+
+class _FakeResult:
+    def __init__(self, setup=None, device=None) -> None:
+        self.wav = _mono_wav_bytes()
+        self.setup = setup
+        self.device = device
+
+
+def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatch):
+    """bind_production_analyze forwards the conductor's geometry AND the
+    resolved calibration curve into analyze_program_capture."""
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+        seen.update(calibration=calibration, geometry=geometry, rate=rate)
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+
+    curve_sentinel = object()
+
+    class _Record:
+        curve = curve_sentinel
+        calibration_id = "cal-123"
+
+    resolved: list = []
+
+    def resolver(setup, device):
+        resolved.append((setup, device))
+        return _Record()
+
+    meta: dict[str, Any] = {}
+    analyze = v2host.bind_production_analyze(resolve_calibration=resolver, meta=meta)
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
+    result = _FakeResult(setup={"calibration": {"mode": "serial"}}, device={"label": "UMIK-2"})
+    out = analyze(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry)
+
+    assert out == "analysis"
+    # The resolver was invoked with the capture's setup/device.
+    assert resolved == [(result.setup, result.device)]
+    # The resolved curve AND the conductor geometry reached the analysis.
+    assert seen["calibration"] is curve_sentinel
+    assert seen["geometry"] is geometry
+    assert seen["geometry"].driver_spacing_m == pytest.approx(0.15)
+    assert seen["rate"] == 48000
+    # The evidence annotation records the applied calibration.
+    assert meta["calibration"]["verify"] == {
+        "applied": True, "calibration_id": "cal-123",
+    }
+
+
+def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatch, caplog):
+    import logging as _logging
+
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+        seen.update(calibration=calibration)
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    meta: dict[str, Any] = {}
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta=meta
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+        analyze(
+            program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(),
+        )
+    # NOT silent: analysis ran uncalibrated, annotated as a stored fact + WARN.
+    assert seen["calibration"] is None
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert "crossover_v2_uncalibrated_capture" in caplog.text
+
+
+def test_production_analyze_default_resolver_is_the_shared_relay_machinery():
+    """The default resolver IS correction_setup._relay_calibration_from_setup
+    (the one point the room + legacy crossover flows resolve phone calibration
+    choices) — a no-choice setup resolves to None."""
+    assert v2host.resolve_relay_calibration(None, None) is None
+    assert v2host.resolve_relay_calibration({"calibration": {"mode": "none"}}, None) is None
 
 
 # --- status block (S1b) -----------------------------------------------------------

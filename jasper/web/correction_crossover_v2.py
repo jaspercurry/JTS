@@ -378,21 +378,89 @@ def _wav_bytes_to_samples(wav_bytes: bytes) -> tuple[Any, int]:
     return samples, int(rate)
 
 
+def resolve_relay_calibration(setup: Any, device: Any) -> Any:
+    """The production mic-calibration resolver for a v2 capture.
+
+    Reuses ``correction_setup._relay_calibration_from_setup`` — the ONE point
+    the room + legacy crossover relay flows already use to materialize the
+    phone wizard's serial/upload/stored calibration choice as a stored
+    ``CalibrationRecord`` (and persist it as the household default mic).
+    Returns the record or ``None`` (phone mic / no calibration chosen).
+    ``device`` is accepted for parity with the seam signature; the setup
+    payload is the authoritative choice today.
+    """
+    from .correction_setup import _relay_calibration_from_setup
+
+    del device  # the setup payload carries the phone's calibration choice
+    return _relay_calibration_from_setup(
+        dict(setup) if isinstance(setup, Mapping) else None
+    )
+
+
 def bind_production_analyze(
     *,
-    calibration: Any = None,
-    geometry: Any = None,
-) -> Callable[[Any, bytes, Any], Any]:
-    """The real ``analyze`` seam: WAV bytes → ``analyze_program_capture``."""
-    from jasper.audio_measurement.program_analysis import analyze_program_capture
+    resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
+    meta: dict[str, Any] | None = None,
+) -> Callable[[Any, Any, Any, Any], Any]:
+    """The real ``analyze`` seam: CaptureResult → ``analyze_program_capture``.
 
-    def _analyze(program: Any, wav: bytes, priors: Any) -> Any:
+    Design §5.6.4 applies the mic cal to every gated response, so this binding
+    resolves the calibration from the capture's phone-reported setup (the same
+    ``_relay_calibration_from_setup`` machinery the legacy relay flows use)
+    and threads BOTH the resolved curve and the conductor's declared geometry
+    into ``analyze_program_capture``. When no calibration resolves, the
+    analysis still runs — relative timing/level stay valid per the design —
+    but the fact is never silent: a WARN ``event=`` fires and ``meta``
+    (persisted with the session's evidence refs) records the per-phase
+    ``{"applied": False}`` annotation.
+    """
+
+    def _analyze(program: Any, result: Any, priors: Any, geometry: Any) -> Any:
+        from jasper.audio_measurement import program_analysis as _pa
+
+        wav = getattr(result, "wav", result)
         samples, rate = _wav_bytes_to_samples(wav)
-        return analyze_program_capture(
+        record = None
+        if resolve_calibration is not None:
+            try:
+                record = resolve_calibration(
+                    getattr(result, "setup", None), getattr(result, "device", None)
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                # A resolver failure downgrades to an annotated-uncalibrated
+                # analysis, never a crashed capture — but it is logged.
+                log_event(
+                    logger,
+                    "correction.crossover_v2_calibration_resolve_failed",
+                    level=logging.WARNING,
+                    phase=program.phase,
+                )
+                record = None
+        curve = getattr(record, "curve", None)
+        if record is not None and curve is None:
+            # A bare CalibrationCurve (tests / future callers) is accepted too;
+            # anything else stays None (annotated uncalibrated, never a crash).
+            from jasper.audio_measurement.calibration import CalibrationCurve
+
+            if isinstance(record, CalibrationCurve):
+                curve = record
+        if curve is None:
+            log_event(
+                logger,
+                "correction.crossover_v2_uncalibrated_capture",
+                level=logging.WARNING,
+                phase=program.phase,
+            )
+        if meta is not None:
+            meta.setdefault("calibration", {})[program.phase] = {
+                "applied": curve is not None,
+                "calibration_id": getattr(record, "calibration_id", None),
+            }
+        return _pa.analyze_program_capture(
             program,
             samples,
             rate,
-            calibration=calibration,
+            calibration=curve,
             geometry=geometry,
             priors=priors,
         )
@@ -674,6 +742,9 @@ def build_v2_run_and_consume(
         if opened is not None and str(opened_value) != "opened":
             # The plan drained itself (emergency attenuation / failure); the
             # recovery screen keys on needs_recovery via the status block.
+            # The freshly-minted relay session must not linger to worker TTL
+            # when no capture will ever run against it.
+            await _purge_best_effort()
             raise CaptureFailed(
                 "the fixed measurement volume could not be confirmed"
             )
@@ -857,7 +928,17 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         role_targets=role_targets,
         safety_profile=safety_profile,
         session_volume_db=session_volume_db,
-        driver_spacing_m=0.0,  # W6: thread the declared driver spacing (see report)
+        # W6 CHECKLIST ITEM: driver_spacing_m stays 0.0 until a declared
+        # woofer↔tweeter spacing input exists (topology/preset carry none
+        # today), so the §3.2 parallax correction is INERT — the analysis
+        # subtracts nothing. Do not assume VERIFY covers this: a missing
+        # parallax correction is SELF-CANCELLING at the mic position (the
+        # same geometric excess is baked into both MEASURE and VERIFY), so
+        # VERIFY passes while the LISTENING POSITION carries the full error
+        # (~23° at 2 kHz for 15 cm spacing measured at 1 m). W5b/W6 also own
+        # the Undo/restore stale-applied-state cleanup noted in
+        # crossover_envelope_v2's verify-fail action.
+        driver_spacing_m=0.0,
         topology=topology,
         playback_device=playback_device,
         role_channels={"woofer": 0, "tweeter": 1},
@@ -879,7 +960,7 @@ class V2PreparedSession:
     request_stop: Callable[[], None]
 
 
-def _volume_hooks(run_async_unused: Any, camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
+def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
     plan = session_volume_plan()
 
     async def _get() -> Any:
@@ -994,7 +1075,7 @@ def prepare_v2_session(
             session_volume_db=context.session_volume_db,
             seams=V2FlowSeams(
                 play=play,
-                analyze=bind_production_analyze(),
+                analyze=bind_production_analyze(meta=refs),
                 publish_check=publish_check,
                 publish_candidate=publish_candidate,
                 apply_complete=_applied_gate,
@@ -1004,7 +1085,7 @@ def prepare_v2_session(
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(
             conductor,
-            volume=_volume_hooks(run_async, camilla_factory, context),
+            volume=_volume_hooks(camilla_factory, context),
             stop_event=stop_event,
             stop_lock=stop_lock,
             evidence_refs=refs,
@@ -1123,7 +1204,7 @@ def prepare_v2_verify(
             session_volume_db=context.session_volume_db,
             seams=V2FlowSeams(
                 play=play,
-                analyze=bind_production_analyze(),
+                analyze=bind_production_analyze(meta=refs),
                 publish_check=_publish_check,
                 publish_candidate=publish_candidate,
                 apply_complete=_applied_gate,
@@ -1142,7 +1223,7 @@ def prepare_v2_verify(
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(
             conductor,
-            volume=_volume_hooks(run_async, camilla_factory, context),
+            volume=_volume_hooks(camilla_factory, context),
             stop_event=stop_event,
             stop_lock=stop_lock,
             evidence_refs=refs,

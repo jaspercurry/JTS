@@ -224,6 +224,11 @@ def _failure_envelope(
                 {
                     "id": "verify_undo",
                     "label": "Undo (restore previous sound)",
+                    # W5b CHECKLIST ITEM: this rides the legacy restore path
+                    # and does NOT yet clear the durable v2 applied/candidate
+                    # state — after an undo the v2 state still says applied.
+                    # W5b owns v2-aware restore semantics (clear the stale
+                    # applied flag + candidate on successful restore).
                     "endpoint": "/correction/crossover/restore",
                     "body": {},
                 },
