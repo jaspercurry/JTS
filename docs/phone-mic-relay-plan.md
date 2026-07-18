@@ -492,6 +492,15 @@ attempt, accepted, verdict fields}` → the phone renders "Measurement N of
 malformed begins are refused loudly; per-event replay is already blocked by the
 protocol-v2 authenticated-envelope sequence.
 
+**Per-capture entries (plan `schema_version: 2` — dormant).** `capture_plan`
+may additionally carry an `entries` table (one `{index, kind_label,
+duration_ms, screen}` per capture: declared acoustic length + phone-side
+prompt copy for a heterogeneous set), and admission gained a NON-terminal
+`capture_deferred` host phase — a soft-hold the phone auto-retries, unlike
+the terminal `capture_refused`. No shipped builder emits entries yet; the
+crossover v2 flow (W5) will. Design:
+[crossover-measurement-productization-design.md](crossover-measurement-productization-design.md) §5.7.
+
 **Page side (Wave-2 batch):** the 2026-07 capture page
 (`capture-page/js/main.js`'s `onPlanStart`/`runPlanCapture`) implements the
 full v3 choreography, and its `version.json` advertises

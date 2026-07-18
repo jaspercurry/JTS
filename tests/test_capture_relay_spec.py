@@ -747,6 +747,195 @@ def test_plan_attempt_ceiling_stays_in_lockstep_with_the_worker():
     assert spec_mod.SUPPORTED_CAPTURE_PROTOCOL_VERSIONS == (1, 2, 3)
 
 
+def test_worker_stays_opaque_to_capture_plan_entries():
+    # Wave 3 (crossover-measurement-productization-design.md §5.7): entries /
+    # kind_label / duration_ms / screen are Pi-side and page-side ONLY. The
+    # relay never parses capture_spec at all (see its own module docstring);
+    # pin that none of the new field names leaked into the Worker source,
+    # alongside the attempt-ceiling lockstep test above.
+    from pathlib import Path
+
+    worker_src = (
+        Path(__file__).resolve().parent.parent / "relay" / "src" / "worker.js"
+    ).read_text(encoding="utf-8")
+    for token in ("entries", "kind_label", "CapturePlanEntry"):
+        assert token not in worker_src, (
+            f"worker.js must stay opaque to capture_plan.{token} — the relay "
+            "never parses capture_spec"
+        )
+
+
+# --- CapturePlanEntry (per-capture heterogeneity, schema_version 2, SPEC ------
+# --- crossover-measurement-productization-design.md §5.7) --------------------
+
+
+def _entry(index, *, kind_label="check", duration_ms=5000, screen=None):
+    from jasper.capture_relay.spec import CapturePlanEntry
+
+    return CapturePlanEntry(
+        index=index, kind_label=kind_label, duration_ms=duration_ms, screen=screen
+    )
+
+
+def _entries_plan(**overrides):
+    from jasper.capture_relay.spec import CapturePlan
+
+    entries = overrides.pop("entries", None)
+    if entries is None:
+        entries = (
+            _entry(0, kind_label="check", duration_ms=25000),
+            _entry(1, kind_label="measure", duration_ms=20000),
+            _entry(2, kind_label="verify", duration_ms=15000, screen={"title": "Verify"}),
+        )
+    kwargs = dict(
+        capture_target=3, max_attempts=3, schema_version=2, entries=entries
+    )
+    kwargs.update(overrides)
+    return CapturePlan(**kwargs)
+
+
+def test_capture_plan_entries_round_trip_through_to_dict_from_dict():
+    from jasper.capture_relay.spec import CapturePlan
+
+    plan = _entries_plan()
+    d = plan.to_dict()
+    assert d["schema_version"] == 2
+    assert d["entries"] == [
+        {"index": 0, "kind_label": "check", "duration_ms": 25000},
+        {"index": 1, "kind_label": "measure", "duration_ms": 20000},
+        {
+            "index": 2,
+            "kind_label": "verify",
+            "duration_ms": 15000,
+            "screen": {"title": "Verify"},
+        },
+    ]
+    rebuilt = CapturePlan.from_dict(d)
+    assert rebuilt == plan
+
+
+def test_capture_plan_entries_round_trip_via_a_full_spec():
+    spec = _plan_spec(capture_plan=_entries_plan())
+    rebuilt = CaptureSpec.from_dict(spec.to_dict())
+    assert rebuilt.capture_plan == spec.capture_plan
+    assert rebuilt.to_dict() == spec.to_dict()
+
+
+def test_capture_plan_entry_for_index_maps_one_based_wire_index_to_zero_based_entry():
+    from jasper.capture_relay.spec import CapturePlan
+
+    plan = _entries_plan()
+    assert plan.entry_for_index(1) == plan.entries[0]
+    assert plan.entry_for_index(2) == plan.entries[1]
+    assert plan.entry_for_index(3) == plan.entries[2]
+    assert plan.entry_for_index(4) is None  # out of range, never reachable post-validate
+    # A v1 plan (no entry table) always resolves to None — dormant.
+    v1_plan = CapturePlan(capture_target=3, max_attempts=4)
+    assert v1_plan.entry_for_index(1) is None
+
+
+def test_capture_plan_entries_require_schema_version_two_and_vice_versa():
+    from dataclasses import replace
+
+    from jasper.capture_relay.spec import CapturePlan
+
+    # entries present but schema_version left at 1 -> rejected.
+    with pytest.raises(CaptureSpecError, match="schema_version"):
+        _plan_spec(capture_plan=_entries_plan(schema_version=1))
+    # schema_version 2 with NO entries -> rejected (the reciprocal contract).
+    with pytest.raises(CaptureSpecError, match="requires entries"):
+        _plan_spec(capture_plan=replace(_entries_plan(), entries=None))
+    # v1 payload without entries stays exactly as it was — the whole point of
+    # the additive design.
+    _plan_spec(capture_plan=CapturePlan(capture_target=3, max_attempts=4))
+
+
+@pytest.mark.parametrize(
+    ("entries", "match"),
+    [
+        (  # gap: missing index 1
+            (_entry(0), _entry(2)),
+            "0..capture_target-1",
+        ),
+        (  # duplicate index
+            (_entry(0), _entry(0), _entry(1)),
+            "duplicate",
+        ),
+        (  # out-of-range index (only 0..1 valid for capture_target=2... but
+           # here capture_target stays 3 with a 3rd entry indexed 5)
+            (_entry(0), _entry(1), _entry(5)),
+            "0..capture_target-1",
+        ),
+    ],
+    ids=["gap", "duplicate", "out-of-range"],
+)
+def test_capture_plan_entries_must_cover_indexes_exactly(entries, match):
+    with pytest.raises(CaptureSpecError, match=match):
+        _plan_spec(capture_plan=_entries_plan(entries=entries))
+
+
+@pytest.mark.parametrize(
+    ("bad_entry", "match"),
+    [
+        (_entry(0, duration_ms=0), "duration_ms must be positive"),
+        (_entry(0, duration_ms=-100), "duration_ms must be positive"),
+        (_entry(0, kind_label=""), "short lowercase slug"),
+        (_entry(0, kind_label="Check"), "short lowercase slug"),
+        (_entry(0, kind_label="check one"), "short lowercase slug"),
+    ],
+)
+def test_capture_plan_entry_field_bounds_are_strict(bad_entry, match):
+    entries = (bad_entry, _entry(1), _entry(2))
+    with pytest.raises(CaptureSpecError, match=match):
+        _plan_spec(capture_plan=_entries_plan(entries=entries))
+
+
+def test_capture_plan_entry_screen_must_map_strings_to_strings():
+    entries = (
+        _entry(0, screen={"title": 5}),
+        _entry(1),
+        _entry(2),
+    )
+    with pytest.raises(CaptureSpecError, match="strings to strings"):
+        _plan_spec(capture_plan=_entries_plan(entries=entries))
+
+
+def test_capture_plan_entry_screen_is_size_bounded():
+    oversized = {"body": "x" * spec_mod.MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES}
+    entries = (_entry(0, screen=oversized), _entry(1), _entry(2))
+    with pytest.raises(CaptureSpecError, match="exceeds"):
+        _plan_spec(capture_plan=_entries_plan(entries=entries))
+    # Comfortably under the ceiling is fine.
+    fine = {"title": "Verify", "body": "Stand back and stay quiet."}
+    _plan_spec(
+        capture_plan=_entries_plan(
+            entries=(_entry(0, screen=fine), _entry(1), _entry(2))
+        )
+    )
+
+
+def test_capture_plan_entries_from_dict_rejects_unknown_keys_and_bad_shapes():
+    from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
+
+    with pytest.raises(CaptureSpecError, match="unknown keys"):
+        CapturePlanEntry.from_dict(
+            {"index": 0, "kind_label": "check", "duration_ms": 1000, "x": 1}
+        )
+    with pytest.raises(CaptureSpecError, match="must be an object or null"):
+        CapturePlanEntry.from_dict(
+            {"index": 0, "kind_label": "check", "duration_ms": 1000, "screen": "nope"}
+        )
+    with pytest.raises(CaptureSpecError, match="must be a list"):
+        CapturePlan.from_dict(
+            {
+                "schema_version": 2,
+                "capture_target": 1,
+                "max_attempts": 1,
+                "entries": "not-a-list",
+            }
+        )
+
+
 def test_compat_matrix_v3_spec_refuses_todays_v2_page():
     # v3 Pi session + v2-only page → fail closed BEFORE any tone (the page
     # cannot run the session-spanning choreography it never implemented).

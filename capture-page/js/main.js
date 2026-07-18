@@ -1350,6 +1350,27 @@ function planTargetAndAttempts(spec) {
   };
 }
 
+// Per-capture heterogeneity (§5.7): `spec.capture_plan.entries` is 0-based
+// (index 0..capture_target-1); the wire protocol's `begin_capture.index` is
+// 1-based (SPEC W2.3) — mirrors jasper/capture_relay/spec.py's
+// `CapturePlan.entry_for_index`. Returns `null` for a v1/v2 spec (no
+// entries) or an index with no matching entry. An entry's `duration_ms` is
+// the capture's DECLARED acoustic length — presentation data (progress/
+// countdown copy, wired in the crossover-v2 flow), never the recording
+// deadline: waitForSweepComplete's timeout stays the spec-level
+// `duration_ms` backstop for every plan.
+function entryForIndex(spec, index) {
+  const entries = spec && spec.capture_plan && spec.capture_plan.entries;
+  if (!Array.isArray(entries)) return null;
+  return entries.find((e) => e && Number(e.index) === index - 1) || null;
+}
+
+// How long the phone should wait between a `capture_deferred` host event and
+// re-posting the SAME `begin_capture`. A deferral means the Pi is between
+// phases (e.g. parked awaiting the household's Apply tap), not a fast ledger
+// check, so this is slower than the general status-poll cadence.
+const CAPTURE_DEFERRED_RETRY_POLL_MS = 1500;
+
 function stopButtonEl() {
   return el("button", {
     type: "button",
@@ -1411,6 +1432,13 @@ function endPlanSession(ctx) {
 }
 
 function renderPlanNext(ctx, { index, attempt, target }) {
+  // The UPCOMING capture's own entry (§5.7), when the plan carries one —
+  // title/body copy only; a v1/v2 plan (or an entry with no `screen`) falls
+  // back to the generic "Measurement N of target" copy, unchanged.
+  const upcoming = entryForIndex(ctx.spec, index + 1);
+  const screenCopy = (upcoming && upcoming.screen) || {};
+  const heading = String(screenCopy.title || `Measurement ${index} of ${target} ✓`);
+  const body = String(screenCopy.body || "Ready for the next measurement.");
   const next = button("Next measurement", async () => {
     next.disabled = true;
     try {
@@ -1420,8 +1448,8 @@ function renderPlanNext(ctx, { index, attempt, target }) {
     }
   });
   setScreen(ctx.screenEl, [
-    el("h1", { class: "cap-heading", text: `Measurement ${index} of ${target} ✓` }),
-    el("p", { class: "cap-note", text: "Ready for the next measurement." }),
+    el("h1", { class: "cap-heading", text: heading }),
+    el("p", { class: "cap-note", text: body }),
     el("div", { class: "cap-actions" }, [next, stopButtonEl()]),
   ]);
   ctx.captureRefs = { buttons: [{ action: "begin_capture", el: next }], levelMeters: [] };
@@ -1429,6 +1457,14 @@ function renderPlanNext(ctx, { index, attempt, target }) {
 }
 
 function renderPlanRetry(ctx, { index, attempt, target, reason }) {
+  // The CURRENT capture's own entry, if any — only its title informs the
+  // heading; the rejection `reason` always wins the body (more important
+  // than generic per-entry copy).
+  const current = entryForIndex(ctx.spec, index);
+  const screenCopy = (current && current.screen) || {};
+  const heading = String(
+    screenCopy.title || `Measurement ${index} of ${target} needs another try`,
+  );
   const message = reason || "That measurement didn't pass the speaker's quality check.";
   const retry = button("Try again", async () => {
     retry.disabled = true;
@@ -1439,12 +1475,28 @@ function renderPlanRetry(ctx, { index, attempt, target, reason }) {
     }
   });
   setScreen(ctx.screenEl, [
-    el("h1", { class: "cap-heading", text: `Measurement ${index} of ${target} needs another try` }),
+    el("h1", { class: "cap-heading", text: heading }),
     el("p", { class: "cap-note", text: message }),
     el("div", { class: "cap-actions" }, [retry, stopButtonEl()]),
   ]);
   ctx.captureRefs = { buttons: [{ action: "begin_capture", el: retry }], levelMeters: [] };
   setStatus(`Measurement ${index} needs another try — ${message}`, "error");
+}
+
+// A distinct soft-hold screen (§5.7): the Pi is between phases (e.g. parked
+// awaiting the household's Apply tap before VERIFY) and asked the phone to
+// wait, not to act. No begin affordance here — `runPlanCapture`'s deferred
+// handling re-posts the SAME begin_capture automatically after a short poll,
+// so this is purely a waiting state with Stop still wired.
+function renderPlanDeferred(ctx, { index, target, reason }) {
+  const message = reason || "Waiting for the speaker to be ready for the next measurement.";
+  setScreen(ctx.screenEl, [
+    el("h1", { class: "cap-heading", text: `Measurement ${index} of ${target}` }),
+    el("p", { class: "cap-note", text: message }),
+    el("div", { class: "cap-actions" }, [stopButtonEl()]),
+  ]);
+  ctx.captureRefs = { buttons: [], levelMeters: [] };
+  setStatus(`Waiting — ${message}`, "info");
 }
 
 function renderPlanAllDone(ctx) {
@@ -1548,6 +1600,20 @@ async function waitForCaptureAuthorized(client, spec, index, attempt, isAborted)
         error: String(event.error || "The speaker refused this measurement."),
       };
     }
+    if (
+      phase === "capture_deferred" &&
+      Number(event.index) === index &&
+      Number(event.attempt) === attempt
+    ) {
+      // NON-terminal soft-hold (§5.7) — distinct from capture_refused above:
+      // the Pi is between phases, not refusing. The caller re-posts the
+      // SAME begin_capture after a short poll; this does not end the loop.
+      return {
+        deferred: true,
+        code: String(event.code || ""),
+        reason: String(event.error || "Waiting for the speaker."),
+      };
+    }
     await delayMs(pollMs);
   }
   // Marked terminal (mirrors the v2 sweep_failed pattern, XOVER-6) rather
@@ -1637,6 +1703,35 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
   throw failure;
 }
 
+// Post `begin_capture {index, attempt}` and await the Pi's verdict, RETRYING
+// automatically on a `capture_deferred` soft-hold (§5.7) — the Pi replies
+// "not yet" while it is between phases, so the phone reposts the IDENTICAL
+// begin after a short poll rather than surfacing an error or requiring a
+// tap. Renders the waiting screen for each deferral. Returns the same shape
+// `waitForCaptureAuthorized` does (authorized / refused / deferred never
+// escapes this function / aborted / deadSession).
+async function beginAndAwaitAuthorization(ctx, { index, attempt }) {
+  const { spec, client } = ctx;
+  const controller = ctx.planController;
+  const { target } = planTargetAndAttempts(spec);
+  for (;;) {
+    setStatus(`Requesting measurement ${index} of ${target}…`, "info");
+    await client.postEvent({ begin_capture: { index, attempt } });
+    if (controller.aborted) return { aborted: true };
+    const admission = await waitForCaptureAuthorized(
+      client, spec, index, attempt, () => controller.aborted,
+    );
+    if (controller.aborted || admission.aborted) return { aborted: true };
+    if (admission.deferred) {
+      renderPlanDeferred(ctx, { index, target, reason: admission.reason });
+      await delayMs(CAPTURE_DEFERRED_RETRY_POLL_MS);
+      if (controller.aborted) return { aborted: true };
+      continue; // re-post the SAME begin_capture and try again
+    }
+    return admission;
+  }
+}
+
 // The label of the live begin affordance on the current plan screen —
 // "Next measurement" / "Try again" / the spec's own Start-button label —
 // so a pre-arm failure's retry copy names a button that actually exists
@@ -1672,13 +1767,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
   let armedPosted = false;
 
   try {
-    setStatus(`Requesting measurement ${index} of ${target}…`, "info");
-    await client.postEvent({ begin_capture: { index, attempt } });
-    if (controller.aborted) return;
-
-    const admission = await waitForCaptureAuthorized(
-      client, spec, index, attempt, () => controller.aborted,
-    );
+    const admission = await beginAndAwaitAuthorization(ctx, { index, attempt });
     if (controller.aborted || admission.aborted) return;
     if (admission.deadSession) {
       renderSessionExpired(ctx);
@@ -2233,4 +2322,5 @@ export {
   validDefaultSetupHint,
   calibrationModelLabel,
   renderCalibration,
+  entryForIndex,
 };

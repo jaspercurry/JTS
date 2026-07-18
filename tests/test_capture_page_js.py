@@ -97,9 +97,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 3,
         "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260717.3",
+        "capture_page_build": "20260718.1",
     }
-    assert "main.js?v=20260717-3" in index_html
+    assert "main.js?v=20260718-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -481,8 +481,11 @@ def test_capture_page_plan_loop_derives_named_screens_for_every_outcome():
     success terminal — matching SPEC W2.3's choreography."""
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
-    assert 'text: `Measurement ${index} of ${target} ✓`' in main_js
-    assert 'text: `Measurement ${index} of ${target} needs another try`' in main_js
+    # §5.7 wraps these in a per-entry screen-copy fallback (heading/message
+    # variables) rather than an inline `text:` template literal — the
+    # fallback strings themselves are unchanged.
+    assert '`Measurement ${index} of ${target} ✓`' in main_js
+    assert '`Measurement ${index} of ${target} needs another try`' in main_js
     assert "await runPlanCapture(ctx, { index, attempt: attempt + 1 });" in main_js
     assert "await runPlanCapture(ctx, { index: index + 1, attempt: attempt + 1 });" in main_js
     assert '"All measurements done — the speaker continues automatically."' in main_js

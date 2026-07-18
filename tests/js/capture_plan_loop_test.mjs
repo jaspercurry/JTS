@@ -289,7 +289,7 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
   return { client, posted, blobPuts, acceptedCount: () => acceptedCount };
 }
 
-function planSpec({ target = 3, maxAttempts = 4 } = {}) {
+function planSpec({ target = 3, maxAttempts = 4, entries = null } = {}) {
   return {
     kind: "crossover_sweep",
     sample_rate_hz: 48000,
@@ -305,7 +305,15 @@ function planSpec({ target = 3, maxAttempts = 4 } = {}) {
       binding_id: "placement_abcdefghijklmnopqrstuv",
       label: "The mic is fixed on-axis — measure Woofer driver",
     },
-    capture_plan: { schema_version: 1, capture_target: target, max_attempts: maxAttempts },
+    capture_plan: {
+      // §5.7: a plan with `entries` is schema_version 2; the v1 plans every
+      // other test in this file uses stay schema_version 1 (dormant, no
+      // entries) — unchanged.
+      schema_version: entries ? 2 : 1,
+      capture_target: target,
+      max_attempts: maxAttempts,
+      ...(entries ? { entries } : {}),
+    },
     capture_protocol_version: 3,
   };
 }
@@ -709,6 +717,160 @@ async function testPreArmFailureKeepsRetryLiveAndStopWired() {
   ok();
 }
 
+// ============================================================================
+// 8. Per-capture entries (§5.7, crossover-measurement-productization-
+// design.md): `entryForIndex` is a pure, directly-exported helper — pin its
+// 1-based-wire -> 0-based-entry lookup and its null fallbacks.
+// ============================================================================
+async function testEntryForIndexMapsOneBasedWireIndexToZeroBasedEntry() {
+  const { entryForIndex } = await loadModule();
+  const entries = [
+    { index: 0, kind_label: "check", duration_ms: 5000 },
+    { index: 1, kind_label: "measure", duration_ms: 6000, screen: { title: "Measure" } },
+  ];
+  const spec = planSpec({ target: 2, entries });
+
+  assert.equal(entryForIndex(spec, 1), entries[0]);
+  assert.equal(entryForIndex(spec, 2), entries[1]);
+  assert.equal(entryForIndex(spec, 3), null, "out of range -> null");
+  assert.equal(entryForIndex(planSpec({ target: 2 }), 1), null, "v1 spec (no entries) -> null");
+  assert.equal(entryForIndex(null, 1), null);
+  ok();
+}
+
+// ============================================================================
+// 9. An entry's own `screen` copy (title/body) drives the "ready for the next
+// measurement" screen instead of the generic "Measurement N of target ✓" —
+// proves the v3 loop reads the UPCOMING entry, not the current one.
+// ============================================================================
+async function testEntryScreenCopyDrivesTheNextMeasurementScreen() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({
+    target: 2,
+    maxAttempts: 2,
+    entries: [
+      { index: 0, kind_label: "check", duration_ms: 25000 },
+      {
+        index: 1,
+        kind_label: "verify",
+        duration_ms: 15000,
+        screen: { title: "Ready for VERIFY", body: "Stand back and stay quiet." },
+      },
+    ],
+  });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // Capture 1 accepted -> the UPCOMING capture (index 2, entries[1]) supplies
+  // its own screen copy instead of the generic "Measurement 1 of 2 ✓".
+  assert.equal(headingText(ctx.screenEl), "Ready for VERIFY");
+  assert.equal(noteText(ctx.screenEl), "Stand back and stay quiet.");
+  ok();
+}
+
+// ============================================================================
+// 10. A `capture_deferred` host event (§5.7) is a NON-terminal soft-hold: the
+// page renders a waiting screen (no begin button — see renderPlanDeferred)
+// and automatically retries the SAME begin_capture after a short poll,
+// rather than surfacing an error or requiring a tap. Mirrors
+// tests/test_capture_relay_plan.py's Python-side deferred coverage.
+// ============================================================================
+function makeDeferredThenAcceptClient({ target = 1 } = {}) {
+  const posted = [];
+  let last = {};
+  let deferredOnce = false;
+  let pendingResult = null;
+  let acceptedCount = 0;
+  const client = {
+    async postEvent(event) {
+      posted.push(event);
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        if (!deferredOnce) {
+          deferredOnce = true;
+          last = {
+            phase: "capture_deferred",
+            index,
+            attempt,
+            code: "not_ready",
+            error: "Waiting for the previous step to finish.",
+          };
+        } else {
+          last = { phase: "capture_authorized", index, attempt };
+        }
+      } else if (event.armed) {
+        const { index, attempt } = event.begin_capture;
+        last = { phase: "sweep_complete" };
+        pendingResult = { index, attempt };
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: last };
+    },
+    async putBlob() {
+      if (pendingResult) {
+        const { index, attempt } = pendingResult;
+        pendingResult = null;
+        acceptedCount += 1;
+        const resultEvent = { phase: "capture_result", index, attempt, accepted: true };
+        if (acceptedCount >= target) {
+          last = resultEvent;
+          queueMicrotask(() => {
+            last = {
+              phase: "capture_set_complete",
+              accepted: acceptedCount,
+              capture_target: target,
+            };
+          });
+        } else {
+          last = resultEvent;
+        }
+      }
+      return { ok: true, capture_index: 0 };
+    },
+  };
+  return { client, posted };
+}
+
+async function testDeferredBeginRendersWaitingScreenAndRetriesAutomatically() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const { client, posted } = makeDeferredThenAcceptClient({ target: 1 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // The SAME (index=1, attempt=1) pair posted twice — the deferred retry,
+  // never a new attempt number and never a Stop/error.
+  const beginEvents = posted.filter((e) => e.begin_capture && !e.armed);
+  assert.deepEqual(
+    beginEvents.map((e) => [e.begin_capture.index, e.begin_capture.attempt]),
+    [[1, 1], [1, 1]],
+  );
+  assert.ok(
+    statusHistory.some((s) =>
+      s.includes("Waiting — Waiting for the previous step to finish.")
+    ),
+    `expected a deferred waiting status, got: ${JSON.stringify(statusHistory)}`,
+  );
+  // The set completed normally after the retry succeeded.
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -718,6 +880,9 @@ const tests = [
   testStopMidRoundAbortsWholeSession,
   testPostArmUploadFailureIsTerminalNotStaleRetry,
   testPreArmFailureKeepsRetryLiveAndStopWired,
+  testEntryForIndexMapsOneBasedWireIndexToZeroBasedEntry,
+  testEntryScreenCopyDrivesTheNextMeasurementScreen,
+  testDeferredBeginRendersWaitingScreenAndRetriesAutomatically,
 ];
 
 let failure = null;
