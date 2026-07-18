@@ -9,6 +9,7 @@ import os
 import stat
 import tempfile
 import uuid
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -647,8 +648,17 @@ async def apply_bass_extension(
                     config_dir=configs,
                 )
 
+        def capture_forward_failure(_exc_type, exc, _traceback) -> bool:
+            nonlocal forward_failure
+            forward_failure = exc
+            return exc is not None
+
         rollback_after_lock = rollback
-        try:
+        with ExitStack() as forward_attempt:
+            # The exit callback receives cancellation and every other
+            # post-intent failure, then defers propagation until the writer
+            # lock is released and the exact rollback task is drained.
+            forward_attempt.push(capture_forward_failure)
             graph_changed = desired_graph_bytes != predecessor_graph_bytes
             if graph_changed:
                 atomic_write_text(
@@ -676,8 +686,6 @@ async def apply_bass_extension(
                 staged_metadata_path=staged_path,
             )
             _durable_unlink(intent_target)
-        except BaseException as exc:  # noqa: BLE001 - preserve cancellation/failure
-            forward_failure = exc
 
     if forward_failure is None:
         return
