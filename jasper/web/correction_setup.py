@@ -7535,6 +7535,35 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/crossover/recover-volume":
                     from jasper.camilla import CamillaUnavailable
 
+                    # W6.1 E2: when the v2 conductor owns the unresolved (or
+                    # crash-hydrated active) session volume, route to its plan's
+                    # recover_unresolved — the legacy lease holds no unresolved
+                    # state for a v2 session, so it 409'd
+                    # crossover_volume_recovery_not_required and the
+                    # volume_recovery screen's own button was dead.
+                    from . import correction_crossover_v2 as v2host
+
+                    if v2host.v2_volume_recovery_active():
+                        succeeded, recovery = v2host.recover_session_volume(
+                            _run_async, _camilla
+                        )
+                        self._send_json(
+                            {
+                                "status": "recovered" if succeeded else "refused",
+                                "recovery": recovery,
+                                "next_step": (
+                                    "Refresh and continue crossover commissioning."
+                                    if succeeded
+                                    else "Stop playback and retry recovery when "
+                                    "CamillaDSP is available."
+                                ),
+                            },
+                            status=(
+                                HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT
+                            ),
+                        )
+                        return
+
                     if lease.unresolved_volume_safety is None:
                         self._send_json(
                             {
@@ -7755,10 +7784,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/crossover/status":
                 from . import correction_crossover_flow
+                from . import correction_crossover_v2 as v2host
                 try:
+                    # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
+                    # a session volume that outlived its 1800 s ceiling is
+                    # force-drained here (cheap in-memory stale check first).
+                    v2host.enforce_session_volume_ceiling_if_stale(
+                        _run_async, _camilla
+                    )
                     payload, status = correction_crossover_flow.handle_status(
                         relay=_get_relay_capture_for(
-                            "crossover_sweep:", "level_ramp:crossover"
+                            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
                     )
                     self._send_json(payload, status=int(status))
@@ -7768,10 +7804,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/crossover/envelope":
                 from . import correction_crossover_flow
+                from . import correction_crossover_v2 as v2host
                 try:
+                    # W6.1 E3: lazy wall-clock-ceiling enforcement on read (see
+                    # /crossover/status) — the envelope is the wizard's poll, so
+                    # a walked-away session's volume is restored within a poll of
+                    # crossing the ceiling even if no other drain path fires.
+                    v2host.enforce_session_volume_ceiling_if_stale(
+                        _run_async, _camilla
+                    )
                     payload, status = correction_crossover_flow.handle_envelope(
                         relay=_get_relay_capture_for(
-                            "crossover_sweep:", "level_ramp:crossover"
+                            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
                     )
                     self._send_json(payload, status=int(status))

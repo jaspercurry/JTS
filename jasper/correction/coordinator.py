@@ -96,6 +96,42 @@ class MeasurementWindowError(RuntimeError):
     """A precondition failed or isolation could not be proven/restored."""
 
 
+class MeasurementAbortTarget:
+    """Redirectable cancel target for the gate-lease abort (held windows).
+
+    The refresh task's default isolation-loss abort cancels the task that
+    ENTERED the window. That is right for the per-sweep flows (the entering
+    task is the playing task), but a flow that holds one window for a whole
+    multi-capture session (the v2 crossover conductor, W6.1) enters it from
+    its long-lived session task while each play runs as its OWN task — the
+    default cancel would not stop the actual in-flight sweep. Such a holder
+    passes one of these to :func:`measurement_window`:
+
+    * the per-play path ``register()``s the current play task while playing
+      and ``clear()``s it after;
+    * on a renew failure the refresh task calls :meth:`abort`, which latches
+      ``failed`` (the holder's next play must check it and refuse honestly)
+      and cancels the registered play task if one is live, else the fallback
+      (the entering task — the pre-existing behavior).
+    """
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task | None = None
+        self.failed = False
+
+    def register(self, task: asyncio.Task) -> None:
+        self._task = task
+
+    def clear(self) -> None:
+        self._task = None
+
+    def abort(self, fallback: asyncio.Task | None) -> None:
+        self.failed = True
+        task = self._task if self._task is not None else fallback
+        if task is not None:
+            task.cancel()
+
+
 def _measurement_gate_held(payload: dict) -> bool:
     return (
         payload.get("test_source") == MEASUREMENT_FANIN_LABEL
@@ -236,6 +272,7 @@ async def measurement_window(
     voice_socket_path: str = DEFAULT_VOICE_SOCKET_PATH,
     skip_voice_pause: bool = False,
     skip_music_isolation: bool = False,
+    abort_target: MeasurementAbortTarget | None = None,
 ) -> AsyncIterator[None]:
     """Isolate fan-in's correction lane + pause voice, yield, restore.
 
@@ -245,6 +282,9 @@ async def measurement_window(
       skip_voice_pause: don't send MEASURE_PAUSE/RESUME. For tests
         running without a voice daemon.
       skip_music_isolation: don't acquire mux's diagnostic gate. Tests only.
+      abort_target: redirectable cancel target for the isolation-loss abort
+        (see :class:`MeasurementAbortTarget`). ``None`` keeps the default —
+        cancel the task that entered the window.
 
     Raises:
       MeasurementWindowError: a precondition failed or mux isolation could not
@@ -311,7 +351,13 @@ async def measurement_window(
                                 "could re-enter the mix. Check System status "
                                 "and try again."
                             )
-                            if measurement_owner_task is not None:
+                            if abort_target is not None:
+                                # Held-window holder (v2 session): cancel the
+                                # ACTUAL in-flight play task (or latch for the
+                                # next play) — cancelling the entering task
+                                # would not stop the sweep (W6.1 gate fix).
+                                abort_target.abort(measurement_owner_task)
+                            elif measurement_owner_task is not None:
                                 measurement_owner_task.cancel()
                             return
                         delay = MEASUREMENT_LEASE_RETRY_SEC

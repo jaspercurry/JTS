@@ -1033,3 +1033,92 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     env = build_envelope(sess)
     assert "STILL APPLIED" in env["verdict_text"]
     assert "Reset" in env["verdict_text"]
+
+
+# --- W6.1 Findings D + E2: v2 relay visibility + recover-volume routing ----------
+
+
+class _CleanSessionVolumePlan:
+    """A benign session-volume plan for GET-envelope drives (no drain, no
+    recovery) so the lazy-ceiling read + status block stay no-ops."""
+
+    needs_recovery = False
+
+    def stale_active(self, now=None) -> bool:
+        return False
+
+
+def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
+    """Finding D: /crossover/envelope's relay lookup must match crossover_v2:* —
+    it filtered only crossover_sweep:/level_ramp:crossover, so ``relay`` came
+    back null during an awaiting-phone v2 session and a page reload lost the tap
+    link (and the failure copy never reached the household)."""
+    import json
+
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
+    correction_setup._set_relay_capture({
+        "tap_link": "https://capture.test/#s=cap_x",
+        "status": "waiting",
+        "kind": v2host.V2_RELAY_KIND_SESSION,
+    })
+    try:
+        resp = _drive("/crossover/envelope")
+        assert b"200" in resp.split(b"\r\n", 1)[0]
+        body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+        assert body["relay"] is not None
+        assert body["relay"]["tap_link"] == "https://capture.test/#s=cap_x"
+        assert body["relay"]["kind"] == "crossover_v2:session"
+    finally:
+        correction_setup._set_relay_capture(None)
+        v2host.set_volume_plan_for_tests(None)
+
+
+def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
+    """Finding E2: when the v2 conductor owns the unresolved session volume, the
+    recover-volume endpoint must drive SessionVolumePlan.recover_unresolved — the
+    legacy-lease path 409'd crossover_volume_recovery_not_required (the volume
+    holds no lease-unresolved state), leaving the recovery button dead."""
+    import json
+
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
+    from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    drained: list = []
+
+    class _V2Plan:
+        needs_recovery = True
+
+        async def recover_unresolved(self, set_v, get_v):
+            await set_v(-15.0)
+            await get_v()
+            drained.append(True)
+            return SessionVolumeRestoreResult.EXACT_RESTORED
+
+    v2host.set_volume_plan_for_tests(_V2Plan())
+
+    class _Cam:
+        async def set_volume_db(self, db, best_effort=False):
+            return True
+
+        async def get_volume_db(self, best_effort=False):
+            return -15.0
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: _Cam())
+    try:
+        resp = _drive("/crossover/recover-volume", method="POST", body=b"{}")
+        assert b"200" in resp.split(b"\r\n", 1)[0]
+        body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+        assert body["status"] == "recovered"
+        assert body["recovery"] == "exact_restored"
+        assert drained == [True]
+    finally:
+        v2host.set_volume_plan_for_tests(None)
