@@ -43,7 +43,7 @@ from jasper.capture_relay.integrity import (
     capture_spec_mac,
     verify_authenticated_phone_event,
 )
-from jasper.capture_relay.spec import CaptureSpec
+from jasper.capture_relay.spec import CapturePlanEntry, CaptureSpec
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ BEGIN_CAPTURE_EVENT_KEY = "begin_capture"
 HOST_PHASE_CAPTURE_AUTHORIZED = "capture_authorized"
 HOST_PHASE_CAPTURE_RESULT = "capture_result"
 HOST_PHASE_CAPTURE_REFUSED = "capture_refused"
+HOST_PHASE_CAPTURE_DEFERRED = "capture_deferred"
 HOST_PHASE_CAPTURE_SET_COMPLETE = "capture_set_complete"
 HOST_PHASE_CAPTURE_SET_EXHAUSTED = "capture_set_exhausted"
 
@@ -101,6 +102,28 @@ class CaptureBeginRefused(RuntimeError):
     machine reason; ``user_message`` is the phone/operator-facing copy
     (refusal-naming pattern, #1534). Both ride the refusal host event so the
     phone can show why nothing started."""
+
+    def __init__(self, code: str, user_message: str = "") -> None:
+        super().__init__(user_message or code)
+        self.code = str(code)
+        self.user_message = str(user_message or code)
+
+
+class CaptureBeginDeferred(RuntimeError):
+    """A NON-terminal soft-hold on a phone's ``begin_capture`` (protocol v3).
+
+    Distinct from :class:`CaptureBeginRefused` (terminal — ends the whole
+    plan): the host's injected ``authorize_begin`` raises this when the Pi
+    is not YET ready to admit this capture but the plan should stay alive —
+    e.g. a heterogeneous plan (crossover-measurement-productization-design.md
+    §5.7) parked between MEASURE and VERIFY awaiting the household's Apply
+    tap. The Pi replies with a ``capture_deferred`` host event
+    (index/attempt/code/reason) and keeps polling in the SAME
+    ``awaiting_begin`` phase, so the phone may retry the IDENTICAL
+    ``begin_capture {index, attempt}`` — the attempt budget is not spent and
+    the session does not end. ``code`` is the stable machine reason;
+    ``user_message`` is the phone-facing copy (mirrors
+    ``CaptureBeginRefused``)."""
 
     def __init__(self, code: str, user_message: str = "") -> None:
         super().__init__(user_message or code)
@@ -469,6 +492,53 @@ def _call_state_callback(callback: Callable[..., None], state: PollState) -> Non
         callback(state)
     else:
         callback()
+
+
+def _call_with_optional_entry(
+    callback: Callable[..., Any],
+    *args: Any,
+    entry: CapturePlanEntry | None,
+) -> Any:
+    """Call a plan callback, appending ``entry`` only if it accepts one more arg.
+
+    ``authorize_begin(index, attempt)`` and ``consume_capture(index, attempt,
+    result)`` predate per-capture entries (§5.7); every existing caller (e.g.
+    ``jasper/web/correction_crossover_flow.py``) declares exactly ``len(args)``
+    positional parameters and keeps working completely unchanged. A NEW
+    caller that wants the active ``CapturePlanEntry`` (``None`` on a plan
+    with no entry table) declares one more positional parameter and receives
+    it. Mirrors ``_call_state_callback``'s inspect-based polymorphism for
+    ``on_setup``/``on_armed``.
+    """
+    try:
+        sig = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return callback(*args)
+    positional = [
+        p for p in sig.parameters.values()
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+    ]
+    accepts_entry = any(p.kind is p.VAR_POSITIONAL for p in positional) or (
+        len(positional) > len(args)
+    )
+    return callback(*args, entry) if accepts_entry else callback(*args)
+
+
+def _plan_recording_timeout_s(
+    entry: CapturePlanEntry | None,
+    spec_duration_ms: int,
+    default_timeout_s: float,
+) -> float:
+    """The per-capture recording deadline (§5.7): the ENTRY's own
+    ``duration_ms`` when this index has one, else the spec-level
+    ``duration_ms``. Callers only reach this when the plan carries an entry
+    table at all (``plan.entries is not None``) — a plan with NO entry table
+    never calls this, so its deadline math is untouched by this function's
+    existence."""
+    window_ms = entry.duration_ms if entry is not None else spec_duration_ms
+    if window_ms <= 0:
+        return default_timeout_s
+    return window_ms / 1000.0
 
 
 def run_capture(
@@ -968,6 +1038,28 @@ def run_capture_plan(
     ``run_capture``. Accepted captures the host already committed durably
     (ledger writes inside ``consume_capture``) persist across a later abort or
     Stop; this runner never rolls them back.
+
+    **Per-capture entries (schema_version 2, additive — crossover-
+    measurement-productization-design.md §5.7).** When
+    ``session.spec.capture_plan.entries`` is set, this runner exposes the
+    active :class:`~jasper.capture_relay.spec.CapturePlanEntry` (or ``None``
+    on a plan with no entry table) to ``authorize_begin`` and
+    ``consume_capture`` — declare one extra positional parameter to receive
+    it (existing 2-/3-arg callables are unaffected; see
+    ``_call_with_optional_entry``). An entry's own ``duration_ms`` also
+    overrides the per-capture RECORDING deadline (the ``awaiting_upload``
+    phase) once armed, falling back to ``session.spec.duration_ms`` — a plan
+    with no entry table takes the exact prior ``timeout_s``-only deadline
+    path, byte-identical.
+
+    **Deferred admission.** ``authorize_begin`` may raise
+    :class:`CaptureBeginDeferred` instead of :class:`CaptureBeginRefused` for
+    a NON-terminal "not yet" — e.g. a heterogeneous plan parked between
+    MEASURE and VERIFY awaiting the household's Apply tap. The Pi posts a
+    ``capture_deferred`` host event and stays in ``awaiting_begin`` with the
+    attempt budget untouched, so the phone may retry the IDENTICAL
+    ``begin_capture {index, attempt}``; unlike a refusal this never ends the
+    session.
     """
     plan = session.spec.capture_plan
     if plan is None or session.spec.capture_protocol_version < 3:
@@ -1051,6 +1143,12 @@ def _poll_capture_plan(
         post_refusal_best_effort(index, attempt, code, message)
         raise CaptureFailed(message)
 
+    # Guaranteed non-None: run_capture_plan checks `plan is None` before ever
+    # calling this function. Per-capture entries (§5.7) live on it; a plan
+    # with no entry table (`plan.entries is None`, the pre-Wave-3 shape)
+    # makes every entry-aware branch below a no-op.
+    plan = session.spec.capture_plan
+    assert plan is not None
     outcomes: list[PlanCaptureOutcome] = []
     accepted_count = 0
     attempts_used = 0
@@ -1162,8 +1260,44 @@ def _poll_capture_plan(
                     )
                 else:
                     raise_if_stopped()
+                    entry = plan.entry_for_index(index)
                     try:
-                        authorize_begin(index, attempt)
+                        _call_with_optional_entry(
+                            authorize_begin, index, attempt, entry=entry
+                        )
+                    except CaptureBeginDeferred as deferral:
+                        log_event(
+                            logger,
+                            "capture_relay.plan_deferred",
+                            session_id=session.session_id,
+                            index=index,
+                            attempt=attempt,
+                            code=deferral.code,
+                        )
+                        try:
+                            client.post_host_event(
+                                session.session_id,
+                                session.pull_token,
+                                {
+                                    "phase": HOST_PHASE_CAPTURE_DEFERRED,
+                                    "index": index,
+                                    "attempt": attempt,
+                                    "code": deferral.code,
+                                    "error": deferral.user_message,
+                                },
+                            )
+                        except (OSError, RelayError):
+                            logger.warning(
+                                "could not publish capture-begin deferral",
+                                exc_info=True,
+                            )
+                        # NON-terminal soft-hold: `pair` is deliberately NOT
+                        # marked processed and `phase` stays "awaiting_begin",
+                        # so the phone's identical retry of THIS SAME
+                        # (index, attempt) is admitted cleanly next time —
+                        # unlike a refusal, the attempt budget is not spent
+                        # and the session does not end.
+                        deadline = monotonic() + timeout_s
                     except CaptureBeginRefused as refusal:
                         log_event(
                             logger,
@@ -1189,30 +1323,31 @@ def _poll_capture_plan(
                             "the speaker could not admit this capture",
                         )
                         raise
-                    processed.add(pair)
-                    current = pair
-                    attempts_used = attempt
-                    armed_fired = False
-                    phase = "awaiting_arm"
-                    # Between-capture operator time (tapping Next / Retry)
-                    # must not consume the acoustic/upload window.
-                    deadline = monotonic() + timeout_s
-                    log_event(
-                        logger,
-                        "capture_relay.plan_authorized",
-                        session_id=session.session_id,
-                        index=index,
-                        attempt=attempt,
-                    )
-                    client.post_host_event(
-                        session.session_id,
-                        session.pull_token,
-                        {
-                            "phase": HOST_PHASE_CAPTURE_AUTHORIZED,
-                            "index": index,
-                            "attempt": attempt,
-                        },
-                    )
+                    else:
+                        processed.add(pair)
+                        current = pair
+                        attempts_used = attempt
+                        armed_fired = False
+                        phase = "awaiting_arm"
+                        # Between-capture operator time (tapping Next / Retry)
+                        # must not consume the acoustic/upload window.
+                        deadline = monotonic() + timeout_s
+                        log_event(
+                            logger,
+                            "capture_relay.plan_authorized",
+                            session_id=session.session_id,
+                            index=index,
+                            attempt=attempt,
+                        )
+                        client.post_host_event(
+                            session.session_id,
+                            session.pull_token,
+                            {
+                                "phase": HOST_PHASE_CAPTURE_AUTHORIZED,
+                                "index": index,
+                                "attempt": attempt,
+                            },
+                        )
 
         if phase == "awaiting_arm" and state.armed and not armed_fired:
             raise_if_stopped()
@@ -1233,7 +1368,18 @@ def _poll_capture_plan(
                 )
             _verify_acknowledgement_or_refuse(client, session, state)
             armed_fired = True
-            deadline = monotonic() + timeout_s
+            # The per-capture RECORDING deadline (§5.7): a heterogeneous
+            # plan's entry table can size this window per capture (e.g.
+            # CHECK ~25s vs VERIFY ~15s). A plan with NO entry table takes
+            # this exact same `deadline = monotonic() + timeout_s` line as
+            # before per-capture entries existed — byte-identical.
+            if plan.entries is not None:
+                active_entry = plan.entry_for_index(current[0]) if current else None
+                deadline = monotonic() + _plan_recording_timeout_s(
+                    active_entry, session.spec.duration_ms, timeout_s
+                )
+            else:
+                deadline = monotonic() + timeout_s
             if session.spec.acknowledgement is not None:
                 log_event(
                     logger,
@@ -1300,7 +1446,16 @@ def _poll_capture_plan(
                     index=index,
                     attempt=attempt,
                 )
-                verdict = dict(consume_capture(index, attempt, result) or {})
+                verdict = dict(
+                    _call_with_optional_entry(
+                        consume_capture,
+                        index,
+                        attempt,
+                        result,
+                        entry=plan.entry_for_index(index),
+                    )
+                    or {}
+                )
                 accepted = verdict.get("accepted") is True
                 outcomes.append(
                     PlanCaptureOutcome(

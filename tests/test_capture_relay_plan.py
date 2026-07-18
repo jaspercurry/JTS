@@ -36,6 +36,7 @@ from jasper.capture_relay.integrity import authenticated_phone_event
 from jasper.capture_relay.session import (
     CaptureActivityProbe,
     CaptureAborted,
+    CaptureBeginDeferred,
     CaptureBeginRefused,
     CaptureFailed,
     CaptureStopped,
@@ -47,7 +48,11 @@ from jasper.capture_relay.session import (
     run_capture,
     run_capture_plan,
 )
-from jasper.capture_relay.spec import CapturePlan, build_crossover_sweep_spec
+from jasper.capture_relay.spec import (
+    CapturePlan,
+    CapturePlanEntry,
+    build_crossover_sweep_spec,
+)
 
 _BINDING = "placement_abcdefghijklmnopqrstuv"
 
@@ -472,6 +477,349 @@ def test_set_exhausted_when_attempt_budget_spent_before_target():
     assert terminal["accepted"] == 2
     assert terminal["capture_target"] == 3
     assert terminal["attempts"] == 4
+
+
+# --- per-capture entries (heterogeneous v3 plans, SPEC crossover-measurement- --
+# --- productization-design.md §5.7) --------------------------------------------
+
+
+def _entries_plan(capture_target=2, max_attempts=2, **entry_overrides):
+    """A schema_version 2 plan with one entry per index, custom durations."""
+    durations = entry_overrides.pop("durations", None) or [
+        5000 + 1000 * i for i in range(capture_target)
+    ]
+    entries = tuple(
+        CapturePlanEntry(
+            index=i,
+            kind_label=("check", "measure", "verify")[min(i, 2)],
+            duration_ms=durations[i],
+        )
+        for i in range(capture_target)
+    )
+    return CapturePlan(
+        capture_target=capture_target,
+        max_attempts=max_attempts,
+        schema_version=2,
+        entries=entries,
+    )
+
+
+def test_plan_callbacks_receive_the_active_entry_when_they_accept_one():
+    backend = FakePlanRelayBackend()
+    plan = _entries_plan(capture_target=2, max_attempts=2)
+    spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding=_BINDING,
+        stimulus_duration_ms=4000,
+        capture_plan=plan,
+    )
+    session = mint_session(
+        spec, relay_base="https://relay.test", capture_origin="capture.test"
+    )
+    backend_client = RelayClient("https://relay.test", transport=backend)
+    register_session(backend_client, session)
+    phone = PhonePlanDriver(backend, session)
+
+    def transport(method, url, headers, body):
+        if method == "GET" and urllib.parse.urlsplit(url).path.endswith("/status"):
+            phone.step()
+        return backend(method, url, headers, body)
+
+    client = RelayClient("https://relay.test", transport=transport)
+
+    seen_authorize_entries: list[CapturePlanEntry | None] = []
+    seen_consume_entries: list[CapturePlanEntry | None] = []
+
+    def authorize(index, attempt, entry=None):
+        seen_authorize_entries.append(entry)
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        backend.phone_upload(
+            session.session_id, session.content_key, _wav(attempt), index=attempt - 1
+        )
+
+    def consume(index, attempt, result, entry=None):
+        seen_consume_entries.append(entry)
+        return {"accepted": True}
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert [o.accepted for o in outcomes] == [True, True]
+    assert seen_authorize_entries == list(plan.entries)
+    assert seen_consume_entries == list(plan.entries)
+
+
+def test_plan_callbacks_with_old_arity_are_unaffected_by_entries():
+    # jasper/web/correction_crossover_flow.py's existing authorize_begin(index,
+    # attempt) / consume_capture(index, attempt, result) predate entries and
+    # must keep working UNCHANGED against a plan that now carries them.
+    backend = FakePlanRelayBackend()
+    plan = _entries_plan(capture_target=2, max_attempts=2)
+    spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding=_BINDING,
+        stimulus_duration_ms=4000,
+        capture_plan=plan,
+    )
+    session = mint_session(
+        spec, relay_base="https://relay.test", capture_origin="capture.test"
+    )
+    register_session(RelayClient("https://relay.test", transport=backend), session)
+    phone = PhonePlanDriver(backend, session)
+
+    def transport(method, url, headers, body):
+        if method == "GET" and urllib.parse.urlsplit(url).path.endswith("/status"):
+            phone.step()
+        return backend(method, url, headers, body)
+
+    client = RelayClient("https://relay.test", transport=transport)
+    authorize, on_armed, consume, authorized, consumed = _plan_callbacks(
+        backend, session
+    )
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert [o.accepted for o in outcomes] == [True, True]
+    assert authorized == [(1, 1), (2, 2)]
+
+
+def test_entry_duration_overrides_the_awaiting_upload_deadline():
+    # The entry's OWN duration_ms (3s) must govern the recording deadline —
+    # NOT the caller's much larger flat timeout_s (500s). Proven by parking
+    # the phone in "armed, never uploads" and counting status polls: with the
+    # override working, the timeout fires after only a handful of polls; a
+    # regression would spin for ~500 fake ticks before timing out.
+    backend = FakePlanRelayBackend()
+    entries = (CapturePlanEntry(index=0, kind_label="check", duration_ms=3000),)
+    plan = CapturePlan(
+        capture_target=1, max_attempts=1, schema_version=2, entries=entries
+    )
+    spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding=_BINDING,
+        stimulus_duration_ms=4000,
+        capture_plan=plan,
+    )
+    session = mint_session(
+        spec, relay_base="https://relay.test", capture_origin="capture.test"
+    )
+    poll_count = {"n": 0}
+    phone = PhonePlanDriver(backend, session)
+
+    def arm_but_never_upload():
+        if phone.finished:
+            return
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        phase = host.get("phase")
+        if phone.begun is None:
+            phone.begin(1, 1)
+            return
+        key = (host.get("index"), host.get("attempt"))
+        if (
+            phase == "capture_authorized"
+            and key == phone.begun
+            and phone.armed_for != phone.begun
+        ):
+            phone.arm()
+        # else: sit tight forever — no blob ever lands.
+
+    phone.step = arm_but_never_upload
+
+    def transport(method, url, headers, body):
+        if method == "GET" and urllib.parse.urlsplit(url).path.endswith("/status"):
+            poll_count["n"] += 1
+            phone.step()
+        return backend(method, url, headers, body)
+
+    client = RelayClient("https://relay.test", transport=transport)
+    register_session(client, session)
+
+    with pytest.raises(CaptureTimeout) as ei:
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=lambda _i, _a: None,
+            on_armed=lambda _state: None,
+            consume_capture=lambda _i, _a, _r: {"accepted": True},
+            **_run_kwargs(timeout_s=500.0),
+        )
+    assert ei.value.phase == "awaiting_upload"
+    assert poll_count["n"] < 30, (
+        "the awaiting_upload deadline should derive from the entry's own "
+        "duration_ms (3s), not the caller's 500s timeout_s budget"
+    )
+
+
+def test_v1_plan_without_entries_is_byte_identical_no_deadline_change():
+    # Same "arm but never upload" shape as above, but on a v1 plan (no
+    # entries) — the deadline must stay governed by the flat timeout_s, so a
+    # SHORT timeout_s times out fast and a LONG one does not (within a
+    # bounded number of polls), exactly as before per-capture entries existed.
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1, driver=False
+    )
+    poll_count = {"n": 0}
+    phone = PhonePlanDriver(backend, session)
+
+    def arm_but_never_upload():
+        if phone.finished:
+            return
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        phase = host.get("phase")
+        if phone.begun is None:
+            phone.begin(1, 1)
+            return
+        key = (host.get("index"), host.get("attempt"))
+        if (
+            phase == "capture_authorized"
+            and key == phone.begun
+            and phone.armed_for != phone.begun
+        ):
+            phone.arm()
+
+    phone.step = arm_but_never_upload
+
+    def transport(method, url, headers, body):
+        if method == "GET" and urllib.parse.urlsplit(url).path.endswith("/status"):
+            poll_count["n"] += 1
+            phone.step()
+        return backend(method, url, headers, body)
+
+    client = RelayClient("https://relay.test", transport=transport)
+
+    with pytest.raises(CaptureTimeout) as ei:
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=lambda _i, _a: None,
+            on_armed=lambda _state: None,
+            consume_capture=lambda _i, _a, _r: {"accepted": True},
+            **_run_kwargs(timeout_s=3.0),
+        )
+    assert ei.value.phase == "awaiting_upload"
+    # A v1 plan's deadline is governed by the flat timeout_s (3s here), the
+    # same as before per-capture entries existed — bounded and fast.
+    assert poll_count["n"] < 30
+
+
+def test_deferred_begin_is_non_terminal_and_a_retry_succeeds():
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1
+    )
+    calls = {"n": 0}
+
+    def authorize(_index, _attempt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise CaptureBeginDeferred(
+                "not_ready", "Waiting for the previous step to finish."
+            )
+        # second call: admits normally.
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        backend.phone_upload(
+            session.session_id, session.content_key, _wav(attempt), index=attempt - 1
+        )
+
+    def consume(_index, _attempt, _result):
+        return {"accepted": True}
+
+    real_step = phone.step
+
+    def step_retries_on_deferred():
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        if host.get("phase") == "capture_deferred" and phone.begun == (1, 1):
+            # Distinct soft-hold, not a refusal: the SAME (index, attempt)
+            # pair is legal to re-post — the Pi never marked it processed.
+            phone.begun = None
+        real_step()
+
+    phone.step = step_retries_on_deferred
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [(1, 1, True)]
+    assert calls["n"] == 2  # deferred once, then admitted — attempt never bumped
+    phases = backend.phases(session.session_id)
+    assert "capture_deferred" in phases
+    assert phases[-1] == "capture_set_complete"
+    deferred_events = [
+        e
+        for e in backend.host_events[session.session_id]
+        if e.get("phase") == "capture_deferred"
+    ]
+    assert deferred_events == [
+        {
+            "phase": "capture_deferred",
+            "index": 1,
+            "attempt": 1,
+            "code": "not_ready",
+            "error": "Waiting for the previous step to finish.",
+        }
+    ]
+
+
+def test_deferred_begin_does_not_end_the_session_on_stop():
+    # A deferred hold keeps the plan alive across polls; a Stop mid-deferral
+    # is still cooperative CaptureStopped, not a refusal-style CaptureFailed.
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1
+    )
+    stop = {"requested": False}
+
+    def authorize(_index, _attempt):
+        stop["requested"] = True
+        raise CaptureBeginDeferred("not_ready", "still waiting")
+
+    real_step = phone.step
+
+    def step_never_retries():
+        # Only the initial begin — no retry, so the runner stays parked
+        # in the deferred awaiting_begin state until Stop is observed.
+        if phone.begun is None:
+            real_step()
+
+    phone.step = step_never_retries
+
+    with pytest.raises(CaptureStopped):
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=authorize,
+            on_armed=lambda _state: None,
+            consume_capture=lambda _i, _a, _r: {"accepted": True},
+            stop_requested=lambda: stop["requested"],
+            **_run_kwargs(),
+        )
 
 
 # --- begin ordering: dedup / replay / out-of-order / budget --------------------

@@ -32,6 +32,7 @@ Two boundaries are load-bearing and tested:
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -352,7 +353,90 @@ class DefaultSetupCalibration:
         )
 
 
-CAPTURE_PLAN_KEYS = ("schema_version", "capture_target", "max_attempts")
+CAPTURE_PLAN_KEYS = ("schema_version", "capture_target", "max_attempts", "entries")
+CAPTURE_PLAN_ENTRY_KEYS = ("index", "kind_label", "duration_ms", "screen")
+# schema_version 1 is the pre-entries shape (no `entries`, byte-identical to
+# the original v3 contract); 2 is additive — per-capture heterogeneity
+# (crossover-measurement-productization-design.md §5.7). A plan's
+# schema_version and its `entries` presence are kept in strict lockstep by
+# validation (`_validate_capture_plan_entries`) so a reader never has to
+# re-derive one from the other.
+CAPTURE_PLAN_SCHEMA_VERSIONS = (1, 2)
+CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION = 2
+# Per-entry presentation copy is OPAQUE like `presentation_variant` — the
+# schema bounds its size and value types, never its keys/vocabulary — but a
+# size ceiling keeps a spec from smuggling an oversized payload through the
+# relay's opaque-spec contract.
+MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES = 4096
+
+
+@dataclass(frozen=True)
+class CapturePlanEntry:
+    """One capture's identity/timing/copy inside a heterogeneous v3 plan.
+
+    Wave 3 (crossover-measurement-productization-design.md §5.7) extends the
+    session-spanning ``CapturePlan`` from "N repeats of ONE spec" to N
+    captures that may each be a DIFFERENT kind of measurement (e.g. a
+    conductor-model CHECK -> MEASURE -> VERIFY sequence) inside the SAME
+    relay session.
+
+    ``index`` is 0-based (``0..capture_target-1``) — deliberately distinct
+    from the wire protocol's 1-based ``begin_capture.index`` (SPEC W2.3);
+    :meth:`CapturePlan.entry_for_index` does that 1-based -> 0-based lookup
+    so callers never repeat the arithmetic.
+
+    - ``kind_label`` — a short slug naming what this capture measures (e.g.
+      ``"check"`` / ``"measure"`` / ``"verify"``). Display/telemetry only,
+      like ``CaptureStimulus.label`` — never trusted for logic.
+    - ``duration_ms`` — THIS capture's own recording deadline, overriding the
+      spec-level ``duration_ms`` for this index only. A heterogeneous plan's
+      captures can be very different lengths (the design doc's CHECK ~25s,
+      MEASURE ~20s, VERIFY ~15s).
+    - ``screen`` — optional phone-side prompt copy for this capture (a
+      string-to-string mapping such as ``{"title": ..., "body": ...}``).
+      Opaque like ``presentation_variant``: the schema bounds size and value
+      types, never the keys — the capture page decides what to render.
+    """
+
+    index: int
+    kind_label: str
+    duration_ms: int
+    screen: Mapping[str, str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "index": self.index,
+            "kind_label": self.kind_label,
+            "duration_ms": self.duration_ms,
+        }
+        if self.screen is not None:
+            data["screen"] = dict(self.screen)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> CapturePlanEntry:
+        if not isinstance(data, Mapping):
+            raise CaptureSpecError("capture_plan.entries[] must be an object")
+        extra = set(data) - set(CAPTURE_PLAN_ENTRY_KEYS)
+        if extra:
+            raise CaptureSpecError(
+                f"capture_plan.entries[] has unknown keys: {sorted(extra)}"
+            )
+        screen_raw = data.get("screen")
+        if screen_raw is not None and not isinstance(screen_raw, Mapping):
+            raise CaptureSpecError(
+                "capture_plan.entries[].screen must be an object or null"
+            )
+        return cls(
+            index=_as_int(data, "index"),
+            kind_label=str(data.get("kind_label") or ""),
+            duration_ms=_as_int(data, "duration_ms"),
+            screen=(
+                {str(k): str(v) for k, v in screen_raw.items()}
+                if isinstance(screen_raw, Mapping)
+                else None
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -371,20 +455,27 @@ class CapturePlan:
       including rejected/retried ones (e.g. 4). Bounded by
       ``MAX_CAPTURE_PLAN_ATTEMPTS`` so a plan can never authorize a blob index
       past the Worker's key ceiling.
+    - ``entries`` (schema_version 2, additive) — one ``CapturePlanEntry`` per
+      capture index for a HETEROGENEOUS plan (§5.7). ``None``
+      (schema_version 1) is the pre-entries shape: "N repeats of ONE spec",
+      byte-identical to the original v3 contract.
 
-    Carried as DATA in the spec so a single spec drives both sides; per-capture
-    presentation params are a page-PR follow-up (additive)."""
+    Carried as DATA in the spec so a single spec drives both sides."""
 
     capture_target: int
     max_attempts: int
     schema_version: int = 1
+    entries: tuple[CapturePlanEntry, ...] | None = None
 
-    def to_dict(self) -> dict[str, int]:
-        return {
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
             "schema_version": self.schema_version,
             "capture_target": self.capture_target,
             "max_attempts": self.max_attempts,
         }
+        if self.entries is not None:
+            data["entries"] = [entry.to_dict() for entry in self.entries]
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> CapturePlan:
@@ -395,11 +486,36 @@ class CapturePlan:
             raise CaptureSpecError(
                 f"capture_plan has unknown keys: {sorted(extra)}"
             )
+        entries_raw = data.get("entries")
+        entries: tuple[CapturePlanEntry, ...] | None = None
+        if entries_raw is not None:
+            if not isinstance(entries_raw, Sequence) or isinstance(
+                entries_raw, (str, bytes)
+            ):
+                raise CaptureSpecError("capture_plan.entries must be a list")
+            entries = tuple(
+                CapturePlanEntry.from_dict(item) for item in entries_raw
+            )
         return cls(
             capture_target=_as_int(data, "capture_target"),
             max_attempts=_as_int(data, "max_attempts"),
             schema_version=_as_int(data, "schema_version", default=1),
+            entries=entries,
         )
+
+    def entry_for_index(self, index: int) -> CapturePlanEntry | None:
+        """The entry for a 1-based ``begin_capture.index`` (SPEC W2.3).
+
+        ``entries`` is keyed 0-based; the wire protocol is 1-based. Returns
+        ``None`` for a plan with no entry table (schema_version 1) or —
+        never reachable once ``validate()`` has run on the owning spec — an
+        index with no match."""
+        if self.entries is None:
+            return None
+        for entry in self.entries:
+            if entry.index == index - 1:
+                return entry
+        return None
 
 
 # --- Server-driven-UI builders (data, never markup) ---------------------------
@@ -994,8 +1110,11 @@ def _validate_capture_plan(
         return
     if capture_protocol_version < SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION:
         raise CaptureSpecError("capture_plan requires capture protocol 3")
-    if capture_plan.schema_version != 1:
-        raise CaptureSpecError("capture_plan.schema_version must be 1")
+    if capture_plan.schema_version not in CAPTURE_PLAN_SCHEMA_VERSIONS:
+        raise CaptureSpecError(
+            "capture_plan.schema_version must be one of "
+            f"{CAPTURE_PLAN_SCHEMA_VERSIONS}"
+        )
     for name, value in (
         ("capture_target", capture_plan.capture_target),
         ("max_attempts", capture_plan.max_attempts),
@@ -1009,6 +1128,97 @@ def _validate_capture_plan(
     if capture_plan.max_attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CaptureSpecError(
             f"capture_plan.max_attempts must be <= {MAX_CAPTURE_PLAN_ATTEMPTS}"
+        )
+    _validate_capture_plan_entries(capture_plan)
+
+
+def _validate_capture_plan_entries(capture_plan: CapturePlan) -> None:
+    """Reciprocal contract: schema_version 2 <=> entries present.
+
+    v1 payloads without entries stay exactly as strict as before this field
+    existed (``entries is None`` and ``schema_version == 1`` is the only
+    legal pre-Wave-3 shape). A plan that DOES carry entries must cover every
+    index ``0..capture_target-1`` exactly once — contiguous, unique — so the
+    session runner can always resolve "the entry for capture N" with no gaps.
+    """
+    entries = capture_plan.entries
+    if entries is None:
+        if capture_plan.schema_version >= CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION:
+            raise CaptureSpecError(
+                f"capture_plan.schema_version {CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION} "
+                "requires entries"
+            )
+        return
+    if capture_plan.schema_version < CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION:
+        raise CaptureSpecError(
+            "capture_plan.entries requires capture_plan.schema_version >= "
+            f"{CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION}"
+        )
+    if not isinstance(entries, tuple):
+        raise CaptureSpecError("capture_plan.entries must be a tuple")
+    seen_indexes: set[int] = set()
+    for position, entry in enumerate(entries):
+        if not isinstance(entry, CapturePlanEntry):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}] must be a CapturePlanEntry"
+            )
+        if isinstance(entry.index, bool) or not isinstance(entry.index, int):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].index must be an integer"
+            )
+        if entry.index in seen_indexes:
+            raise CaptureSpecError(
+                f"duplicate capture_plan.entries index: {entry.index}"
+            )
+        seen_indexes.add(entry.index)
+        if isinstance(entry.duration_ms, bool) or not isinstance(
+            entry.duration_ms, int
+        ):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].duration_ms must be an integer"
+            )
+        if entry.duration_ms <= 0:
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].duration_ms must be positive"
+            )
+        if not isinstance(entry.kind_label, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_]{0,31}", entry.kind_label
+        ):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].kind_label must be a short "
+                "lowercase slug"
+            )
+        _validate_capture_plan_entry_screen(entry.screen, position)
+    if seen_indexes != set(range(capture_plan.capture_target)):
+        raise CaptureSpecError(
+            "capture_plan.entries must cover indexes 0..capture_target-1 "
+            "exactly, contiguous and unique"
+        )
+
+
+def _validate_capture_plan_entry_screen(
+    screen: Mapping[str, str] | None, position: int
+) -> None:
+    if screen is None:
+        return
+    if not isinstance(screen, Mapping):
+        raise CaptureSpecError(
+            f"capture_plan.entries[{position}].screen must be an object or null"
+        )
+    if not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in screen.items()
+    ):
+        raise CaptureSpecError(
+            f"capture_plan.entries[{position}].screen must map strings to strings"
+        )
+    if (
+        len(json.dumps(screen, separators=(",", ":")))
+        > MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES
+    ):
+        raise CaptureSpecError(
+            f"capture_plan.entries[{position}].screen exceeds "
+            f"{MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES} bytes"
         )
 
 
