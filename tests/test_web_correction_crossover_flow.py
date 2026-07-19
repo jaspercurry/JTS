@@ -18,9 +18,22 @@ import pytest
 
 from jasper.active_speaker import web_measurement
 from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
+from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
 from jasper.web import correction_crossover_backend as backend
 from jasper.web import correction_crossover_flow as flow
 from tests.active_speaker_fixtures import mono_output_topology
+
+
+@pytest.fixture(autouse=True)
+def _pin_legacy_flow(monkeypatch):
+    """This suite pins the LEGACY per-driver flow's behavior.
+
+    Since W6 flipped the product default to the v2 conductor
+    (jasper/active_speaker/crossover_flow.py), the legacy path is opt-in —
+    so the suite opts in explicitly rather than riding the default. Goes
+    away with the suite itself when W5b deletes the legacy flow.
+    """
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
 
 
 def _topology(**kwargs):

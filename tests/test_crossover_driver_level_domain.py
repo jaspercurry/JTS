@@ -883,9 +883,17 @@ def test_effective_excitation_includes_driver_main_lock():
     }) is None
 
 
-def test_sequential_envelope_names_next_driver_frequency_and_optional_calibration():
+def test_sequential_envelope_names_next_driver_frequency_and_optional_calibration(
+    monkeypatch,
+):
     from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from tests.test_web_correction_crossover_flow import _envelope_status
+
+    # This test asserts LEGACY per-driver envelope behavior; since W6 flipped
+    # the product default to the v2 conductor, the legacy path is opt-in.
+    # Goes away with the legacy flow in W5b.
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
 
     status = _envelope_status()
     status["level_match"] = {

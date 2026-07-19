@@ -2,19 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The crossover-measurement flow selector (v2 conductor, Wave 5a).
+"""The crossover-measurement flow selector (v2 conductor, Wave 5a/W6).
 
-``docs/crossover-measurement-productization-design.md`` §6 W5a ships the v2
+``docs/crossover-measurement-productization-design.md`` §6 W5a shipped the v2
 conductor flow (CHECK -> MEASURE -> REVIEW/APPLY -> VERIFY) **alongside** the
-legacy per-driver flow, which stays intact and reachable. One environment flag
-picks which flow the ``/correction/crossover/`` envelope + endpoints run:
+legacy per-driver flow. One environment flag picks which flow the
+``/correction/crossover/`` envelope + endpoints run:
 
-    JASPER_CROSSOVER_FLOW = "legacy"  (default) | "v2"
+    JASPER_CROSSOVER_FLOW = "v2"  (default) | "legacy"
+
+W6 (2026-07-19) validated v2 end-to-end on hardware — scripted and real-UI
+full passes, applied-and-verified candidates, repeatability benchmarks — so
+the default is now ``v2``. ``legacy`` remains an explicit opt-out escape
+hatch until W5b deletes the legacy flow outright; when it goes, this selector
+goes with it.
 
 Codify-don't-memorize: the flag is seeded in ``.env.example`` with a prose
-block, and the default flips to ``v2`` only after W6's first green hardware
-run. Until then ``legacy`` behaves byte-identically to today (pinned by a
-selector byte-identity test).
+block. With the selector resolving legacy, the legacy path behaves
+byte-identically to its pre-W5a self (pinned by a selector byte-identity
+test).
 
 This module owns ONLY the selector — a tiny, env-injectable resolver with no
 product policy. The envelope dispatch and the endpoint wiring read it through
@@ -33,11 +39,12 @@ CROSSOVER_FLOW_ENV = "JASPER_CROSSOVER_FLOW"
 CROSSOVER_FLOW_LEGACY = "legacy"
 CROSSOVER_FLOW_V2 = "v2"
 
-# The default the whole product runs on until W6 flips it. NOT a Config field:
-# this is a transitional deployment flag read at the envelope/endpoint dispatch
-# point (like the JASPER_AEC_* / JASPER_OUTPUTD_* daemon knobs), so it lives in
-# a dedicated resolver rather than jasper.config.Config.
-DEFAULT_CROSSOVER_FLOW = CROSSOVER_FLOW_LEGACY
+# The default the whole product runs on. Flipped legacy -> v2 after W6's
+# hardware validation (2026-07-19). NOT a Config field: this is a transitional
+# deployment flag read at the envelope/endpoint dispatch point (like the
+# JASPER_AEC_* / JASPER_OUTPUTD_* daemon knobs), so it lives in a dedicated
+# resolver rather than jasper.config.Config.
+DEFAULT_CROSSOVER_FLOW = CROSSOVER_FLOW_V2
 
 _VALID_FLOWS = frozenset({CROSSOVER_FLOW_LEGACY, CROSSOVER_FLOW_V2})
 
@@ -45,15 +52,16 @@ _VALID_FLOWS = frozenset({CROSSOVER_FLOW_LEGACY, CROSSOVER_FLOW_V2})
 def active_crossover_flow(env: Mapping[str, str] | None = None) -> str:
     """Resolve the active crossover flow from the environment.
 
-    Returns :data:`CROSSOVER_FLOW_V2` only for the exact literal ``"v2"``
-    (case-insensitive, whitespace-trimmed); any other value — including an
-    unset variable, an empty string, or a typo — resolves to
-    :data:`CROSSOVER_FLOW_LEGACY`. Fail-safe by construction: an unrecognized
-    value can never silently activate the unvalidated v2 path.
+    Returns :data:`CROSSOVER_FLOW_LEGACY` only for the exact literal
+    ``"legacy"`` (case-insensitive, whitespace-trimmed); any other value —
+    including an unset variable, an empty string, or a typo — resolves to
+    :data:`CROSSOVER_FLOW_V2`, the hardware-validated default. Fail-safe by
+    construction: an unrecognized value resolves to the supported flow, and
+    only a deliberate ``legacy`` opt-out reaches the deprecated path.
     """
     raw = (env if env is not None else os.environ).get(CROSSOVER_FLOW_ENV, "")
     value = str(raw or "").strip().lower()
-    return CROSSOVER_FLOW_V2 if value == CROSSOVER_FLOW_V2 else CROSSOVER_FLOW_LEGACY
+    return CROSSOVER_FLOW_LEGACY if value == CROSSOVER_FLOW_LEGACY else CROSSOVER_FLOW_V2
 
 
 def resolve_crossover_flow(
@@ -67,7 +75,8 @@ def resolve_crossover_flow(
     threads the resolved flow onto the status it hands the pure envelope) wins;
     otherwise the process environment via :func:`active_crossover_flow`. An
     invalid override is ignored (fail-safe to the env-resolved flow), never
-    trusted, so a malformed status can't activate v2.
+    trusted, so a malformed status can't pick a flow on its own — only the
+    exact literals ``"legacy"``/``"v2"`` are honoured.
     """
     if isinstance(status, Mapping):
         override = status.get("crossover_flow")
