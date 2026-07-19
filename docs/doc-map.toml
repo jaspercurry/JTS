@@ -763,6 +763,7 @@ docs = [
   "docs/HANDOFF-audio-measurement-core.md",
   "docs/HANDOFF-correction.md",
   "docs/HANDOFF-crossover-measurement-v2.md",
+  "docs/correction-journey-design.md",
   "docs/room-correction-information-design.md",
   "docs/HANDOFF-multiroom.md",
   "docs/HANDOFF-correction-revision-plan.md",

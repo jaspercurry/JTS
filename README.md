@@ -942,6 +942,13 @@ reference. Currently:
   deliberately leaving existing bundles, playback, persistence, and Room
   gates unchanged. The
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
+- [`correction-journey-design.md`](docs/correction-journey-design.md)
+  — **Design record (not yet implemented)** for the three-step calibration
+  journey (1 Crossover → 2 Room → 3 Bass) over the existing `/correction/`
+  tabs: a read-only aggregator + strip that composes the per-tab facts each
+  flow already owns (the Active-to-Room eligibility receipt, the current
+  correction descriptor, the bass-extension classifier) into per-step state
+  and one "next" pointer. Deliberately not a wizard framework.
 - [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
   — **Operational canon for the crossover measurement v2 "conductor" flow**
   (the default `/correction/crossover/` flow since 2026-07-19). The conductor
