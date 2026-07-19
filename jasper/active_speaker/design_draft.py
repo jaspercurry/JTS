@@ -605,6 +605,53 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, float]:
+    """Per-role declared datasheet sensitivities (dB @ 2.83 V/1 m) from the draft.
+
+    The declaration (``manual_settings.drivers``) is the ONE owner of driver
+    sensitivity -- a declared physical property of the driver, not a safety
+    limit -- so the W6.5 sensitivity-derived HF measurement ceiling
+    (:func:`jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings`)
+    reads it from here rather than duplicating it onto the confirmed safety
+    profile. That keeps one copy of the fact and needs zero migration: every
+    already-declared box (JTS3 included) carries the values in its persisted
+    draft today, whereas pre-W6.5 safety profiles never did.
+
+    A role declared more than once with disagreeing values derives nothing for
+    that role (ambiguity fails toward the conservative class-default ceiling).
+    Returns ``{}`` when the draft carries no declaration.
+    """
+
+    if not isinstance(draft, Mapping):
+        return {}
+    manual = draft.get("manual_settings")
+    if not isinstance(manual, Mapping):
+        return {}
+    drivers = manual.get("drivers")
+    out: dict[str, float] = {}
+    conflicted: set[str] = set()
+    for driver in drivers if isinstance(drivers, list) else []:
+        if not isinstance(driver, Mapping):
+            continue
+        role = str(driver.get("role") or "")
+        value = driver.get("sensitivity_db_2v83_1m")
+        if (
+            not role
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            continue
+        number = float(value)
+        if role in out and out[role] != number:
+            conflicted.add(role)
+            continue
+        out[role] = number
+    for role in conflicted:
+        out.pop(role, None)
+    return out
+
+
 def normalise_operator_inputs(raw: Any) -> dict[str, Any]:
     if raw is None or raw == "":
         raw = {}

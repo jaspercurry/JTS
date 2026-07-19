@@ -48,7 +48,7 @@ import logging
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -865,6 +865,7 @@ def bind_production_play(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
+    declared_sensitivities: Mapping[str, float] | None = None,
     config_dir: str | None = None,
 ) -> Callable[[str, Any], None]:
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
@@ -946,6 +947,7 @@ def bind_production_play(
                 safety_profile=safety_profile,
                 role_targets=role_targets,
                 session_volume_db=session_volume_db,
+                declared_sensitivities=declared_sensitivities,
             )
             await play_program(
                 program,
@@ -1357,6 +1359,11 @@ class V2ConductorContext:
     topology: Any
     playback_device: str
     role_channels: dict[str, int]
+    # Per-role declared datasheet sensitivities from the design draft's
+    # declaration (the one owner of that fact — W6.5). Threaded into every cap
+    # resolution AND the play-time readmission so the composed levels and the
+    # admission gate can never disagree about a derived HF ceiling.
+    declared_sensitivities: dict[str, float] = field(default_factory=dict)
 
 
 def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
@@ -1367,7 +1374,10 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.crossover_v2_flow import derive_session_volume_db
-    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.design_draft import (
+        declared_driver_sensitivities,
+        load_design_draft,
+    )
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
         resolve_driver_excitation_ceilings,
@@ -1411,12 +1421,26 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         raise CrossoverV2Refused(
             "the woofer and tweeter measurement targets are not both active"
         )
+    # The declaration's per-role datasheet sensitivities (the one owner of
+    # that fact — W6.5), threaded into every cap resolution below.
+    declared_sensitivities = declared_driver_sensitivities(draft)
     roles_bands = []
     caps: dict[str, float] = {}
     for channel, role in enumerate(("woofer", "tweeter")):
         try:
+            # program_admission=True: this context exists solely to serve the
+            # admission-gated CHECK/MEASURE programs, whose channel routing
+            # carries each driver's crossover filter (the tweeter's protective
+            # HP included) by construction — the proven-HP path, the same
+            # justification as session_volume_plan. Without it the W6.5
+            # derived HF ceiling is inert exactly where it matters: these
+            # context caps clamp every composed level (CHECK pilot bases,
+            # MEASURE back_off_gain, VERIFY min(caps)).
             band, cap = resolve_driver_excitation_ceilings(
-                safety_profile, role_targets[role]
+                safety_profile,
+                role_targets[role],
+                program_admission=True,
+                declared_sensitivities=declared_sensitivities,
             )
         except (ExcitationSafetyPlanError, ValueError) as exc:
             raise CrossoverV2Refused(
@@ -1427,7 +1451,9 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     region = preset.crossover_regions[0]
     fc_hz = float(region.fc_hz)
     session_volume_db = derive_session_volume_db(
-        safety_profile, [role_targets["woofer"], role_targets["tweeter"]]
+        safety_profile,
+        [role_targets["woofer"], role_targets["tweeter"]],
+        declared_sensitivities=declared_sensitivities,
     )
     playback_device, _playback_device_source = resolve_active_playback_device(
         topology
@@ -1464,6 +1490,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         topology=topology,
         playback_device=playback_device,
         role_channels={"woofer": 0, "tweeter": 1},
+        declared_sensitivities=declared_sensitivities,
     )
 
 
@@ -1616,6 +1643,7 @@ def prepare_v2_session(
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
+            declared_sensitivities=context.declared_sensitivities,
         )
         conductor = CrossoverV2Conductor.hydrate(
             prior_snapshot,
@@ -1746,6 +1774,7 @@ def prepare_v2_verify(
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
+            declared_sensitivities=context.declared_sensitivities,
         )
         conductor = CrossoverV2Conductor(
             session_id=relay_session_id,

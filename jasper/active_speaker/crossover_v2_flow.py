@@ -1174,6 +1174,7 @@ def bind_program_playback_seams(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
+    declared_sensitivities: Mapping[str, float] | None = None,
     timeout_s: float = 60.0,
 ) -> dict[str, Any]:
     """The real CamillaController-backed seams for :func:`play_program` (W2's
@@ -1227,6 +1228,10 @@ def bind_program_playback_seams(
         return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)
 
     async def _readmit() -> Any:
+        # ``declared_sensitivities`` MUST match what the conductor composed
+        # against: readmission re-resolves every cap, so a program composed at
+        # the W6.5-derived HF ceiling would be refused here at the legacy one
+        # if the mapping were dropped on this side.
         return readmit_program_from_wav(
             program,
             wav_path,
@@ -1234,6 +1239,7 @@ def bind_program_playback_seams(
             safety_profile=safety_profile,
             role_targets=role_targets,
             session_volume_db=session_volume_db,
+            declared_sensitivities=declared_sensitivities,
         )
 
     return {
@@ -1254,7 +1260,10 @@ def bind_program_playback_seams(
 
 
 def derive_session_volume_db(
-    safety_profile: Mapping[str, Any], target_fingerprints: Sequence[str],
+    safety_profile: Mapping[str, Any],
+    target_fingerprints: Sequence[str],
+    *,
+    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> float:
     """The fixed session measurement volume — the SSOT derivation (§5.5).
 
@@ -1263,10 +1272,16 @@ def derive_session_volume_db(
     so the conductor and its callers reach the one derivation path (least-
     sensitive driver reaches the reference level; more-sensitive drivers
     attenuate down digitally). Kept here so the flow imports one module.
+    ``declared_sensitivities`` rides through so the caps feeding ``max(caps)``
+    are the same W6.5-derived caps admission enforces.
     """
     from .session_volume_plan import session_measurement_volume_db
 
-    return session_measurement_volume_db(safety_profile, target_fingerprints)
+    return session_measurement_volume_db(
+        safety_profile,
+        target_fingerprints,
+        declared_sensitivities=declared_sensitivities,
+    )
 
 
 async def open_measurement_volume(
@@ -1276,6 +1291,7 @@ async def open_measurement_volume(
     target_fingerprints: Sequence[str],
     set_main_volume_db: Any,
     get_main_volume_db: Any,
+    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> Any:
     """Open the one session volume for a fresh v2 session (§5.5).
 
@@ -1288,7 +1304,11 @@ async def open_measurement_volume(
         raise CrossoverV2FlowError(
             "the session volume needs recovery; drain it before opening a session"
         )
-    volume_db = derive_session_volume_db(safety_profile, target_fingerprints)
+    volume_db = derive_session_volume_db(
+        safety_profile,
+        target_fingerprints,
+        declared_sensitivities=declared_sensitivities,
+    )
     return await plan.open(volume_db, set_main_volume_db, get_main_volume_db)
 
 
