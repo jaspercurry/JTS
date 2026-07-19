@@ -20,7 +20,7 @@ returns (``schema_version`` / ``screen`` / ``steps`` / ``verdict_text`` /
 
 The v2-specific state the backend threads onto the status lives under
 ``status["crossover_v2"]`` (phase / failure / verify / candidate /
-needs_recovery / applied); this module never re-derives it — the conductor
+apply_blocked / needs_recovery / applied); this module never re-derives it — the conductor
 (:mod:`jasper.active_speaker.crossover_v2_flow`) owns those decisions and their
 reason codes, and this module maps a reason code to its template copy through
 the shared :data:`~jasper.active_speaker.crossover_v2_flow.REASON_REGISTRY`.
@@ -356,12 +356,30 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         )
     elif phase == PHASE_REVIEW_APPLY:
         candidate = _mapping(v2.get("candidate"))
+        # Finding N: a blocked apply must not be a silent dead end — the last
+        # blocked-apply issue (persisted by the apply endpoint) surfaces here
+        # as a nudge so a repeated "nothing happened" Apply tap has an
+        # explanation, without inventing a new screen/template.
+        apply_blocked = _mapping(v2.get("apply_blocked"))
+        nudges = (
+            [{
+                "code": str(apply_blocked.get("id") or "apply_blocked"),
+                "severity": "warn",
+                "text": str(
+                    apply_blocked.get("message")
+                    or "Applying the reviewed crossover was blocked. Try again."
+                ),
+            }]
+            if apply_blocked
+            else None
+        )
         env = _envelope(
             screen="review_apply", active_step="review_apply",
             verdict=(
                 "Review the measured crossover below. Frequency and slope stay as "
                 "you set them; the measured level, delay, and polarity are applied."
             ),
+            nudges=nudges,
             next_action={
                 "id": "apply_measured_candidate",
                 "label": "Apply reviewed crossover",
