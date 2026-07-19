@@ -866,6 +866,21 @@ def _deconvolve_window(
     return full_ir, pre_effective
 
 
+def _gate_floor_hz(fragment: Mapping[str, Any]) -> float | None:
+    """Validity floor from a gate fragment, or ``None`` when ungateable.
+
+    Shared by every caller that windows an IR through
+    :func:`gating.gate_impulse_response`: ``floor_source is None`` means the
+    IR was never gated (silent/NaN capture, no room to search), so the
+    fragment's ``f_valid_floor_hz`` key is not a real floor even though it's
+    present — mirrors :mod:`gating`'s own ``applied`` rule.
+    """
+    if fragment.get("floor_source") is None:
+        return None
+    floor = fragment.get("f_valid_floor_hz")
+    return float(floor) if isinstance(floor, (int, float)) else None
+
+
 def _driver_response(
     role: str,
     full_ir: np.ndarray,
@@ -889,7 +904,7 @@ def _driver_response(
         "exempt_reason": None,
         **fragment,
     }
-    validity_floor_hz = fragment.get("f_valid_floor_hz") if applied else None
+    validity_floor_hz = _gate_floor_hz(fragment)
 
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
@@ -925,13 +940,25 @@ def _aligned_branch_tf(
     *,
     calibration: "CalibrationCurve | None",
 ):
-    """Delay-referenced complex TF for the sum prediction.
+    """Delay-referenced, gating-consistent complex TF for the sum prediction.
 
     :func:`deconv.direct_arrival_window` places each branch's direct peak at the
     same fixed offset (``IR_PRE_MS``) inside the window, so both branches share a
     common time reference (bulk delay removed) WITHOUT a circular roll — a roll
     followed by zero-padding to ``n_fft`` is not shift-invariant and would inject
     a spurious echo into the magnitude.
+
+    The windowed IR is then run through the SAME adaptive reflection gate
+    :func:`_driver_response` applies (W6.9 forensics, 2026-07-19): before this
+    fix, the prediction composed branches from the fixed ``IR_PRE_MS``/
+    ``IR_POST_MS`` window alone, so a room reflection within that 65 ms tail
+    was baked into the predicted sum even though VERIFY's measured sum (via
+    ``_driver_response``) already reflection-gated it out — a run-7/8 hardware
+    failure traced to a 15 cm desk-bounce reflection producing a spurious
+    ~1125 Hz null in the FIXED-window prediction that the adaptively-gated
+    measured sum never had. Gating a window that already has the peak at a
+    fixed local offset preserves that offset (the gate only shortens/tapers
+    the TAIL), so the shared time base survives.
     """
     peak_idx = int(np.argmax(np.abs(full_ir)))
     window = deconv.direct_arrival_window(
@@ -939,7 +966,9 @@ def _aligned_branch_tf(
         pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
     )
     ir = deconv.apply_arrival_window(full_ir, window)
-    return _complex_tf(ir, sample_rate, n_fft=n_fft, calibration=calibration)
+    gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
+    freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
+    return freqs, H, fragment
 
 
 def _estimate_alignment(
@@ -1052,9 +1081,19 @@ def _solve_trims(
     W: np.ndarray,
     T: np.ndarray,
     fc_hz: float,
+    *,
+    lo_hz: float | None = None,
+    hi_hz: float | None = None,
 ) -> tuple[float, float, float, float]:
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    """Level-match trims over ``[lo_hz, hi_hz]`` (default: Fc ± 1 octave).
+
+    ``lo_hz``/``hi_hz`` let a caller narrow the band away from the nominal
+    overlap — the candidate's gating-consistent trim solve (`_build_candidate`)
+    clamps ``lo_hz`` up to a branch's validity floor when a room reflection
+    gates it tighter than the nominal band.
+    """
+    lo = lo_hz if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = hi_hz if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
     level_w = _band_average_db(freqs, 20.0 * np.log10(np.maximum(np.abs(W), 1e-12)), lo, hi)
     level_t = _band_average_db(freqs, 20.0 * np.log10(np.maximum(np.abs(T), 1e-12)), lo, hi)
     target = min(level_w, level_t)  # attenuate the louder branch
@@ -1066,8 +1105,8 @@ def _flatter_sum_polarity(
     *, woofer_full_ir, tweeter_full_ir,
 ) -> int:
     n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
-    freqs, W = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=None)
-    _f2, T = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=None)
+    freqs, W, _gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=None)
+    _f2, T, _gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=None)
     trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
     lo = fc_hz / OVERLAP_OCTAVE_RATIO
     hi = fc_hz * OVERLAP_OCTAVE_RATIO
@@ -1475,17 +1514,37 @@ def _build_candidate(
     woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
     woofer_role, tweeter_role, alignment, calibration,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
-    freqs, W = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
-    _f2, T = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
-    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
+    freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
+    _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
     lo = fc_hz / OVERLAP_OCTAVE_RATIO
     hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    # Gating-consistent prediction (W6.9 forensics): ``_aligned_branch_tf`` now
+    # reflection-gates each branch the same way ``_driver_response`` does, so a
+    # branch near a reflective mic position can be valid only above a floor
+    # HIGHER than the nominal Fc±1-oct band. Clamp every quantity derived from
+    # W/T — the trim solve, the predicted sum's ripple — to the worse (higher)
+    # of the two branches' floors, never silently trusting sub-floor bins.
+    # If the floor consumes the whole band, `_solve_trims`/`_ripple_db` raise
+    # ValueError on the now-empty mask — the existing catch-all seam in
+    # `jasper.web.correction_crossover_v2` already classifies that as
+    # `internal_error` (see its comment: "analyze/emit raise ValueError"), so
+    # this degrades through an existing signal rather than a new reason code.
+    branch_floor_hz = max(
+        (f for f in (_gate_floor_hz(gate_w), _gate_floor_hz(gate_t)) if f is not None),
+        default=None,
+    )
+    lo_clamped = (
+        max(lo, branch_floor_hz)
+        if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
+        else lo
+    )
+    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
     # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
     # ``_aligned_branch_tf`` references each branch to its own direct peak, i.e.
     # the proposed delay is already applied (τ_residual → 0, e^{−jωτ} → 1), so
     # this is the flattest-achievable aligned sum for the candidate.
     predicted = _predicted_sum(W, T, trim_w, trim_t, alignment.polarity_sign)
-    ripple = _ripple_db(freqs, predicted, lo, hi)
+    ripple = _ripple_db(freqs, predicted, lo_clamped, hi)
     predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12))
     candidate = CrossoverCandidate(
         trim_db={woofer_role: trim_w, tweeter_role: trim_t},
@@ -1523,24 +1582,49 @@ def _analyze_verify(
                 summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION
             )
             predicted_db_interp = np.interp(summed.freqs_hz, pred_freqs, pred_db)
-            # Full band: already behaves sanely (design §5.2's ±1.5 dB pass
-            # criterion). ``max_db`` is kept as a raw DIAGNOSTIC field only —
-            # it is not gated, because a deep predicted notch makes the raw
-            # max meaningless (W6.7 ruling 1).
+            # Validity-floor clamp (W6.9 forensics, 2026-07-19): this capture's
+            # OWN reflection gate (`summed.validity_floor_hz`, from the same
+            # `_driver_response` call above) can be tighter than the nominal
+            # Fc±1-oct band at a reflective mic position — bins below that
+            # floor are not a measurement, they're an artifact of a truncated
+            # gate window (gating.f_valid_floor_hz), so they must not decide
+            # PASS/FAIL either way. This generalizes the W6.7 notch exclusion
+            # from "deep predicted notch" to "below measurement validity": the
+            # W6 run-7/8 hardware failures were a fixed 65 ms prediction
+            # window baking a desk-bounce reflection into the predicted sum's
+            # sub-floor region, invisible to the notch-exclusion rule because
+            # the false notch wasn't always deep enough to trip it. Applies to
+            # BOTH rms and max, and to the notch-exclusion bin set — the two
+            # exclusions compose (clamp first, then still exclude a genuine
+            # deep predicted notch above the floor).
+            floor_hz = summed.validity_floor_hz
+            lo_clamped = (
+                max(lo, floor_hz) if floor_hz is not None and math.isfinite(floor_hz) else lo
+            )
+            tracking_band = (lo_clamped, hi)
             rms, max_abs = analysis_mod.tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db_interp, (lo, hi),
+                summed.freqs_hz, measured_db, predicted_db_interp, tracking_band,
             )
             # Notch-excluded: the actual gating comparator
             # (`crossover_v2_flow._consume_verify` reads ``max_db_notch_excluded``).
             rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db_interp, (lo, hi),
+                summed.freqs_hz, measured_db, predicted_db_interp, tracking_band,
                 notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+            )
+            # Raw full-band (pre-floor-clamp) numbers, kept as DIAGNOSTIC
+            # fields only — never consumed by the gate. What ``rms_db``/
+            # ``max_db`` used to mean before the floor clamp landed.
+            raw_rms, raw_max = analysis_mod.tracking_error_db(
+                summed.freqs_hz, measured_db, predicted_db_interp, (lo, hi),
             )
             tracking = {
                 "rms_db": rms,
                 "max_db": max_abs,
                 "rms_db_notch_excluded": rms_excl,
                 "max_db_notch_excluded": max_excl,
+                "tracking_band_hz": [tracking_band[0], tracking_band[1]],
+                "rms_db_full_band": raw_rms,
+                "max_db_full_band": raw_max,
             }
     # A v2 VERIFY program opens with a leading pilot pair (design §5.2) so the
     # post-apply capture carries its own behavioral-linearity evidence too;
