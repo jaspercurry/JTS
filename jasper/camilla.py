@@ -103,6 +103,44 @@ class CamillaUnavailable(Exception):
     """
 
 
+class CamillaConfigRejected(CamillaUnavailable):
+    """CamillaDSP was reachable and answered, but refused the config itself.
+
+    A ``CamillaUnavailable`` subclass (not a bare sibling) so every existing
+    ``except CamillaUnavailable`` call site keeps working unchanged — this is
+    a journal-honesty distinction, not a new control-flow branch (W6 hardware
+    run 4 finding J). Before this class existed, ``_call`` folded pycamilladsp's
+    ``camilladsp.exceptions.ConfigValidationError`` (raised by a live, healthy
+    CamillaDSP daemon that parsed ``SetConfig``'s payload and rejected it —
+    e.g. "Use of missing mixer 'split_active_2way'") into the same
+    ``CamillaUnavailable`` a dead/unreachable daemon raises, so the journal
+    logged ``reason=CamillaUnavailable`` while Camilla was up and answering.
+    Both generic failure loggers key off ``reason=type(exc).__name__``
+    (``jasper.capture_relay.session._run_with_failure_cues`` and
+    ``jasper.web.correction_setup._relay_failure_reason``), so this class name
+    alone gets an honest ``reason=CamillaConfigRejected`` in both places — no
+    call site needed to change.
+    """
+
+
+def _is_config_validation_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is pycamilladsp's ``ConfigValidationError``.
+
+    Lazy, defensive import mirroring ``CamillaController._ensure``'s own
+    lazy ``camilladsp`` import: by the time this runs, a call reached
+    ``fn(client)`` (or failed inside ``_ensure`` after already importing
+    ``camilladsp``), so the module is already loaded in every real failure
+    path. The ``ImportError`` guard only protects a dev machine without
+    ``camilladsp`` installed at all, where ``exc`` could never legitimately be
+    this type anyway.
+    """
+    try:
+        from camilladsp.exceptions import ConfigValidationError
+    except ImportError:
+        return False
+    return isinstance(exc, ConfigValidationError)
+
+
 class CamillaController:
     """Thin wrapper around pycamilladsp for ducking + volume tools.
 
@@ -329,6 +367,12 @@ class CamillaController:
                     return await self._run_attempt(fn)
                 except Exception as e2:  # noqa: BLE001
                     self._client = None
+                    if _is_config_validation_error(e2):
+                        # Camilla answered and rejected the config itself
+                        # (e.g. "Use of missing mixer '...'") — a distinct
+                        # failure from an unreachable/dead daemon (W6
+                        # hardware run 4 finding J). See CamillaConfigRejected.
+                        raise CamillaConfigRejected(str(e2)) from e2
                     raise CamillaUnavailable(str(e2)) from e2
 
     async def get_volume_db(
