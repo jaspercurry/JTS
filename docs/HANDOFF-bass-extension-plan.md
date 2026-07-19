@@ -1,8 +1,11 @@
 # Handoff: Bass Extension — volume-scheduled low-frequency alignment (plan of record)
 
-> **Status: planning brief / execution plan of record (2026-07-17).**
-> Waves 1–2 (numerics, profile, and observability skeleton) are merged;
-> runtime/audio emission has not shipped. This document is the architecture
+> **Status: planning brief / execution plan of record (2026-07-19).**
+> Waves 1–3 are merged: numerics, profile/observability, sealed
+> natural-at-rest graph emission, whole-graph proof, and the dormant
+> predecessor-aware apply/bypass/recovery transaction. The transaction has
+> no production caller, and commissioning/runtime arming have not shipped.
+> This document is the architecture
 > and phased implementation plan for the feature; it was produced by a
 > six-agent survey of the codebase at `origin/main` `7dd803c8d`
 > (2026-07-16) plus external loudspeaker-science research. Every code
@@ -66,8 +69,9 @@ canonical `listening_level` rises it smoothly retreats through a
 small commissioned family of progressively shallower targets until,
 near maximum volume, the speaker plays its natural protected
 response. Ported/PR commissioning profiles are retained for a later
-runtime carrier but do not alter the live graph. Wave 3 may prepare
-the sealed identity graph; active scheduling remains blocked until
+runtime carrier but do not alter the live graph. Wave 3 prepared
+the sealed identity graph and dormant apply/bypass/recovery transaction;
+active scheduling remains blocked until
 commissioning has a reviewed producer for every target's protective
 limiter value.
 Commissioning reuses the calibrated
@@ -1347,7 +1351,7 @@ adapter_id, runtime_eligible, runtime_deferred_reason,
 apply_recovery_required,
 runtime_armed, current_target, current_extension_hz, deepest_hz,
 natural_hz, anchors: [...], scheduler_alive, last_transition_at}` —
-static fields read fresh from disk. Wave 3 may add
+static fields read fresh from disk. Wave 3 added
 `adapter_id`/eligibility/deferred reason; live fields do not ship until
 a revised Wave 5. When they do, jasper-voice is the sole authoritative
 heartbeat/current-target owner and publishes the exact
@@ -1508,10 +1512,10 @@ wave keeps out of the god-files. Every implementation PR runs
 | Wave | Prompt | Status |
 |---|---|---|
 | 0 | [wave-0](bass-extension-waves/wave-0-hardware-spikes.md) | spikes 1–3 done 2026-07-16 — **R1 confirmed** ([memo](research/2026-07-16-bass-extension-spikes/README.md)); spike 4 + ears-on listen with operator |
-| 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
-| 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553; clean gate after 3 review findings fixed in-session) |
-| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | **merged 2026-07-19** (#1574, contract rev 12; sealed natural-at-rest graph emission + durable predecessor-aware apply/recovery groundwork; runtime arming remains blocked) |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **blocked at contract rev 6** — no implementation until the focused measured limiter-derivation prerequisite is frozen and this prompt is revised |
+| 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, `0670540654a6684f8ac98fb2e70b2e643d65d82f`; contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
+| 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553, `9f39c70e418cf64316c23de535f322d21f825c8e`; clean gate after 3 review findings fixed in-session) |
+| 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | **merged 2026-07-19** (#1574, `bb2919383b408d630f9d70ef24c14fe38ca98be0`; contract rev 12; sealed natural-at-rest graph emission + durable predecessor-aware apply/recovery groundwork; zero production callers; runtime arming remains blocked) |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **blocked at contract rev 6 only on limiter evidence** — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)); no implementation until the focused measured limiter-derivation prerequisite is frozen and this prompt is revised |
 | 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 9** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
@@ -1679,11 +1683,12 @@ atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
    churning in `camilla_yaml`/`runtime_contract`/correction backend
    *today*). Mitigation: wave ordering puts pure-new-file work first;
    Wave 3 is small-PR + same-PR contract updates; rebase discipline.
-3. **The whole correction/crossover substrate is code-complete but
-   hardware-unvalidated** (2026-07-15 assessment). Bass extension
-   inherits that risk transitively — its Wave 7 cannot start until
-   the crossover program's own on-device validation has burned in the
-   shared machinery (ramp, admission, relay). Sequence accordingly.
+3. **The correction/crossover substrate completed hardware burn-in on
+   2026-07-19.** Scripted and real-UI passes on JTS3 exercised the shared
+   measurement machinery through the first fully calibrated run, so the
+   Bass Extension crossover-program prerequisite is met. The evidence and
+   hardware-found bug catalog live in
+   [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md).
 4. **Plant drift with level** (f0/Q0 rise with drive; fb shifts) —
    the deepest target's fit degrades at the top of its range.
    Mitigation: verify-deepest-at-low-level + ladder tracking-error
@@ -1862,4 +1867,4 @@ From the 2026-07-16 deep-research report:
 
 ---
 
-Last verified: 2026-07-17
+Last verified: 2026-07-19
