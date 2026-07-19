@@ -1762,6 +1762,13 @@ POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session af
 POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
                              through the existing atomic apply transaction (W4
                              measured_candidate seam); arms the deferred VERIFY
+POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
+                             pre-candidate applied profile handle_v2_apply
+                             stashed at apply time and clear the durable v2
+                             applied/candidate/failure state (W6 run-8
+                             Blocker Q: the legacy /crossover/restore expects a
+                             pending commissioning-run apply a v2 apply never
+                             creates, and 500s)
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

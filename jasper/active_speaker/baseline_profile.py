@@ -2491,3 +2491,94 @@ async def _apply_baseline_profile_locked(
         "apply": apply_state.to_dict(),
         "issues": applied.get("issues", []),
     }
+
+
+async def restore_applied_baseline_profile(
+    retained_profile: Mapping[str, Any],
+    *,
+    load_config: Callable[[str], Awaitable[bool]],
+    get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
+    state_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+) -> dict[str, Any]:
+    """Restore one previously-applied baseline profile snapshot (the v2 Undo).
+
+    ``retained_profile`` is the frozen ``applied_recomposition_profile`` a
+    later apply preserved before overwriting the Layer-A SSOT (see
+    :func:`build_baseline_profile_candidate`'s ``finalize`` /
+    ``_frozen_applied_profile``). Its ``config.path`` still points at that
+    prior profile's own already-compiled, already-validated YAML — composing
+    a NEW candidate never overwrites a config file an applied anchor still
+    points to (``build_baseline_profile_candidate`` gives the new candidate a
+    content-addressed sibling instead). This reloads THAT exact file — never
+    recomposed — through the same atomic validate-load-confirm-rollback
+    transaction (:func:`jasper.dsp_apply.apply_dsp_config`)
+    :func:`apply_baseline_profile` rides, then persists it back as the
+    applied SSOT via :func:`persist_applied_baseline_profile`.
+
+    Never raises for an ordinary refusal: returns a ``status`` in
+    ``{"restored", "blocked", "restore_failed"}`` the caller maps to an HTTP
+    code, mirroring :func:`apply_baseline_profile`'s own contract.
+    """
+    if (
+        retained_profile.get("kind") != BASELINE_PROFILE_KIND
+        or retained_profile.get("status") != "applied"
+        or not isinstance(retained_profile.get("recomposition_snapshot"), Mapping)
+        or baseline_candidate_fingerprint(retained_profile)
+        != retained_profile.get("candidate_fingerprint")
+    ):
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_invalid",
+                "the previous crossover profile is not a valid applied snapshot",
+            )],
+        }
+    config = retained_profile.get("config")
+    candidate_path = (
+        str(config.get("path") or "") if isinstance(config, Mapping) else ""
+    )
+    candidate_sha256 = (
+        str(config.get("sha256") or "") if isinstance(config, Mapping) else ""
+    )
+    if not candidate_path or not candidate_sha256 or not Path(candidate_path).is_file():
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_missing",
+                "the previous crossover configuration could not be found on "
+                "disk; a full remeasure is required",
+            )],
+        }
+
+    async with dsp_writer_lock(
+        baseline_config_path(config_path).parent,
+        source="active_speaker_baseline_restore",
+    ):
+        try:
+            apply_state = await apply_dsp_config(
+                source="active_speaker_baseline_restore",
+                candidate_path=candidate_path,
+                load_config=load_config,
+                get_current_config_path=get_current_config_path,
+                acquire_lock=False,
+                expected_candidate_sha256=candidate_sha256,
+                validate=validate,
+            )
+        except DspApplyError as exc:
+            return {
+                "status": "restore_failed",
+                "issues": [_issue("blocker", "restore_apply_failed", str(exc))],
+            }
+        restored = persist_applied_baseline_profile(
+            dict(retained_profile),
+            apply_state=apply_state.to_dict(),
+            state_path=state_path,
+        )
+
+    return {"status": "restored", "profile": restored, "apply": apply_state.to_dict()}
