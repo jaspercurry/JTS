@@ -1,24 +1,31 @@
 # Wave 4 — commissioning backend (Codex prompt)
 
-> **Revision 6 (2026-07-17) — implementation blocked.** Accept hands
+> **Revision 7 (2026-07-19) — production implementation blocked.** Accept hands
 > the desired profile in memory to Wave 3's sole profile+DSP commit
 > owner; every adapter uses the same predecessor-aware boundary and
 > never persists first. The existing correction process owns
 > synchronous recovery before readiness and mutating bass routes. The
-> current ladder/sustain/digital evidence still cannot determine a
-> Camilla-stage limiter threshold, so a focused measured-derivation
-> prerequisite is mandatory before any Wave 4 code. Findings and
-> rationale are in the changelog. Accept also refuses without mutation
-> while a bonded program-bake or driver-domain carrier is active.
+> crossover measurement substrate's hardware burn-in is complete. The
+> limiter evidence campaign and pure producer/refusal contract are now frozen
+> in `limiter-evidence-protocol.md`; only that isolated, production-uncallable
+> producer skeleton and its synthetic tests may land before Jasper's bench
+> evidence. The protocol also records that a reviewed bench runner/temporary
+> activation owner is not present yet. Commissioning, persistence, graph,
+> backend, hardware playback, and production wiring remain blocked. Accept
+> also refuses without mutation while a bonded program-bake or driver-domain
+> carrier is active.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–3 merged, AND the
 operator has confirmed the crossover program's measurement machinery
-has had its on-device burn-in (ask if unstated — this wave builds
-directly on it).
+has had its on-device burn-in. That prerequisite is met by the JTS3 campaign
+recorded in `docs/HANDOFF-crossover-measurement-v2.md`.
 
-> ⚠ **Mandatory stop — limiter derivation prerequisite.** Do not
-> create or modify any Wave 4 implementation file from this revision.
+> ⚠ **Mandatory stop — limiter bench-evidence prerequisite.** Do not
+> create or modify commissioning, backend, persistence, playback, graph, or
+> other production implementation files from this revision. The sole code
+> exception is the pure, production-uncallable producer skeleton and synthetic
+> tests specified by `limiter-evidence-protocol.md`.
 > The frozen ladder proves acoustic linearity at one admitted sweep
 > peak and the sustain test proves one admitted noise waveform; the
 > digital clamp proves arithmetic headroom for the alignment. None
@@ -28,9 +35,9 @@ directly on it).
 > `digital_margin_db`, copying the baseline −1 dB value, or assuming a
 > crest factor would invent an audio-safety parameter.
 >
-> Before this prompt can authorize implementation, merge a dated,
-> focused measurement/protection result and revise this prompt. That
-> prerequisite must:
+> Before this prompt can authorize production implementation, Jasper must run
+> the frozen protocol, its accepted bundle must survive independent review,
+> and this prompt must be revised again to name that bundle. The protocol:
 >
 > 1. identify the exact existing limiter definition and detector point
 >    in the emitted bass-owner chain, with units;
@@ -38,18 +45,27 @@ directly on it).
 >    stimulus peak, rung clean ceiling, sustain result, target boost,
 >    and digital-clamp evidence are sufficient; if not, specify the
 >    smallest additional measured stimulus/evidence needed;
-> 3. freeze one deterministic evidence-to-threshold derivation for
+> 3. freezes one deterministic measured-candidate selection for
 >    every sealed target, including missing/invalid-evidence refusal
 >    and conservative ordering across targets;
-> 4. provide hardware-free test vectors derived from retained evidence
->    plus the on-device validation that justifies the mapping; and
-> 5. revise Wave 4 to name the pure producer and require every accepted
+> 4. requires hardware-free synthetic test vectors plus the later on-device
+>    validation that justifies the mapping; and
+> 5. names the pure producer and requires every accepted
 >    sealed target to carry a finite `limiter_threshold_dbfs`.
 >
 > This is a focused prerequisite, not permission to add a compressor,
 > signal-aware controller, new threshold knob, default, or formula in
 > this prompt. Ported/PR profile retention remains in the intended Wave
 > 4 flow, but this blocked prompt publishes no new profile of any kind.
+
+The binding protocol is
+[`limiter-evidence-protocol.md`](limiter-evidence-protocol.md). The pure entry
+point is
+`jasper.bass_extension.limiter_evidence.produce_limiter_thresholds(evidence,
+*, required_context)`;
+it returns a typed `LimiterThresholdSet` or a total
+`LimiterEvidenceRefusal`. It must remain unimported and uncalled by all
+production paths until a later Wave 4 revision explicitly authorizes wiring.
 
 ## Intended mission after the prerequisite is resolved
 
@@ -109,6 +125,16 @@ builds against.
   names in `driver_safety.py`).
 
 ## File allowlist
+
+The sole prerequisite-skeleton allowlist authorized by Revision 7 is:
+
+Create:
+- `jasper/bass_extension/limiter_evidence.py`
+- `tests/test_bass_extension_limiter_evidence.py`
+
+Do not modify any production caller, package export, graph emitter, backend,
+profile, or runtime file for that skeleton. The Wave 4 implementation allowlist
+below remains blocked until a later revision names accepted bench evidence.
 
 Create:
 - `jasper/bass_extension/ladder.py` — pure state machine (~350 lines)
@@ -252,10 +278,12 @@ in `review`.
 
 This revision does **not** derive or publish
 `limiter_threshold_dbfs`; the mandatory stop above applies before any
-Wave 4 implementation. The replacement prompt must name the measured
-pure producer, and accepted sealed profiles must then contain a finite
-threshold for every target. Ported/PR remains profile-retention-only
-and does not imply a runtime threshold contract.
+Wave 4 production implementation. It authorizes only the isolated pure
+producer skeleton and synthetic refusal/determinism tests. A replacement
+prompt must name an independently reviewed real bench bundle, and accepted
+sealed profiles must then contain a finite threshold for every target.
+Ported/PR remains profile-retention-only and does not imply a runtime
+threshold contract.
 
 ## HTTP contract (frozen — Wave 6 builds against this)
 
@@ -369,6 +397,16 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 7 (2026-07-19)** — the crossover measurement substrate completed its
+  JTS3 hardware burn-in, and the focused limiter-evidence protocol froze the
+  exact detector, explicit bench-owner gap, target/candidate activation and
+  restoration receipts, replayable bundle shape, separate trusted freshness
+  context, deterministic measured-candidate selector, and total refusal
+  taxonomy. Rationale: allow the pure, production-uncallable producer skeleton
+  and synthetic tests to land while retaining the stop on all commissioning,
+  hardware playback, and production wiring until the bench runner is reviewed,
+  Jasper's real bundle is accepted, and a later contract revision names it.
 
 - **Rev 6 (2026-07-17)** — Wave 3's final cross-path audit found that
   bonded active speakers use a driver-domain/program-bake graph split
