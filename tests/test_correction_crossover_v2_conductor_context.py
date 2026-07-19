@@ -96,6 +96,13 @@ def _status() -> dict[str, Any]:
     }
 
 
+# The REAL derivation functions, stashed at import time BEFORE the autouse
+# stub below replaces the module attributes — the W6.5 context-caps test
+# restores them so the true resolver runs against a real profile.
+_REAL_RESOLVE_CEILINGS = excitation_safety_plan_mod.resolve_driver_excitation_ceilings
+_REAL_DERIVE_SESSION_VOLUME = crossover_v2_flow.derive_session_volume_db
+
+
 @pytest.fixture(autouse=True)
 def _stub_non_topology_inputs(monkeypatch):
     """Stub every conductor-context input EXCEPT topology/playback-device
@@ -112,10 +119,12 @@ def _stub_non_topology_inputs(monkeypatch):
     monkeypatch.setattr(
         excitation_safety_plan_mod,
         "resolve_driver_excitation_ceilings",
-        lambda safety_profile, fingerprint: (FrequencyBand(20.0, 20000.0), 90.0),
+        lambda safety_profile, fingerprint, **kw: (FrequencyBand(20.0, 20000.0), 90.0),
     )
     monkeypatch.setattr(
-        crossover_v2_flow, "derive_session_volume_db", lambda safety_profile, fps: -20.0
+        crossover_v2_flow,
+        "derive_session_volume_db",
+        lambda safety_profile, fps, **kw: -20.0,
     )
     monkeypatch.delenv(ACTIVE_PLAYBACK_DEVICE_ENV, raising=False)
     yield
@@ -168,6 +177,121 @@ def test_explicit_env_playback_device_is_honored(monkeypatch):
     context = v2host.resolve_conductor_context(_status())
 
     assert context.playback_device == "hw:Lab"
+
+
+def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
+    """The W6.5 gate blocker probe: ``resolve_conductor_context`` must resolve
+    caps on the proven-HP path with the declaration's sensitivities — the
+    reviewer proved the derived ceiling was inert here (context caps
+    {tweeter: -65} vs admission caps {tweeter: -35}; composed CHECK pilot
+    -65.01). Runs the REAL resolver against a REAL confirmed safety profile
+    plus a declaration-shaped draft, and asserts the context caps EQUAL what
+    admission resolves with the same inputs — one derivation, two consumers.
+    """
+    from jasper.active_speaker.driver_safety import build_driver_safety_profile
+    from jasper.active_speaker.measurement import active_driver_targets
+
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+
+    def _driver(role, peak, filters, diameter, **extra):
+        return {
+            "target_id": f"mono:{role}",
+            "role": role,
+            "model": f"model-{role}",
+            "hard_excitation_band_hz": [500, 20_000],
+            "measurement_band_hz": [500, 10_000],
+            "crossover_search_band_hz": [1500, 2500],
+            "level_duration_limits": {
+                "max_effective_peak_dbfs": peak,
+                "max_sweep_duration_s": 6,
+                "max_repeat_count": 3,
+                "minimum_cooldown_s": 0,
+            },
+            "required_protection_filters": filters,
+            "cabinet": {
+                "enclosure_kind": "sealed",
+                "radiator_count": 1,
+                "effective_radiating_diameter_mm": diameter,
+                **extra,
+            },
+        }
+
+    # JTS3 shape: woofer cap -8; tweeter cap left at the -65 class-default seed.
+    settings = {
+        "drivers": [
+            _driver(
+                "woofer", -8,
+                [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}],
+                132, baffle_width_mm=210,
+            ),
+            _driver(
+                "tweeter", -65,
+                [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
+                25,
+            ),
+        ],
+        "crossover_candidates": [],
+    }
+    profile = build_driver_safety_profile(
+        topo,
+        manual_settings=settings,
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-07-19T12:00:00Z",
+    )
+    targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topo)}
+    status = {
+        "active": True,
+        "setup": {"status": "ready"},
+        "targets": {
+            "drivers": [
+                {"role": role, "target_fingerprint": fingerprint}
+                for role, fingerprint in targets.items()
+            ],
+        },
+    }
+    # The declaration section as it lives on JTS3's persisted design draft:
+    # sensitivities under manual_settings.drivers (83.3 / 108.5).
+    draft = {
+        "driver_safety_profile": profile,
+        "manual_settings": {
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
+            ],
+            "crossover_candidates": [],
+        },
+    }
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: draft)
+    # Restore the REAL derivation functions over the autouse stubs.
+    monkeypatch.setattr(
+        excitation_safety_plan_mod,
+        "resolve_driver_excitation_ceilings",
+        _REAL_RESOLVE_CEILINGS,
+    )
+    monkeypatch.setattr(
+        crossover_v2_flow, "derive_session_volume_db", _REAL_DERIVE_SESSION_VOLUME
+    )
+
+    context = v2host.resolve_conductor_context(status)
+
+    # The derived {-8, -35}, not the pre-fix {-8, -65}.
+    assert context.driver_caps_dbfs == {
+        "woofer": -8.0,
+        "tweeter": pytest.approx(-35.0),
+    }
+    assert context.declared_sensitivities == {"woofer": 83.3, "tweeter": 108.5}
+    assert context.session_volume_db == -20.0
+    # Probe: context caps == admission caps, per role, from the same inputs.
+    for role, fingerprint in targets.items():
+        _band, admission_cap = _REAL_RESOLVE_CEILINGS(
+            profile,
+            fingerprint,
+            program_admission=True,
+            declared_sensitivities=context.declared_sensitivities,
+        )
+        assert context.driver_caps_dbfs[role] == pytest.approx(admission_cap)
 
 
 # --------------------------------------------------------------------------- #

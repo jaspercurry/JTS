@@ -14,7 +14,9 @@ from jasper.active_speaker.calibration_level import (
 from jasper.active_speaker.driver_protection import (
     AUTO_LEVEL_DECISION_KIND,
     DRIVER_PROTECTION_KIND,
+    HF_MEASUREMENT_ABS_CEILING_DBFS,
     auto_level_decision,
+    derive_hf_measurement_ceiling_dbfs,
     driver_protection_payload,
     driver_protection_profile,
 )
@@ -238,3 +240,46 @@ def test_undeclared_tweeter_style_keeps_conservative_floor_when_hardware_ceiling
     declared = driver_protection_profile("tweeter", driver_style="compression_driver")
     assert declared.min_highpass_hz == 2000.0
     assert declared.min_highpass_hz <= 4000.0
+
+
+# --- derive_hf_measurement_ceiling_dbfs (W6.5 two-invariant protection model) -
+
+
+def test_jts3_worked_example_abs_ceiling_binds() -> None:
+    # The operator's own worked example (2026-07-19 ruling): woofer cap -8,
+    # sensitivities 83.3 (Epique E150HE-44) / 108.5 (B&C DE250-8) -> a 25.2 dB
+    # delta. min(-8 - 25.2, -35) = min(-33.2, -35) = -35: the absolute
+    # hearing-safety ceiling binds, not the sensitivity-relative one.
+    ceiling = derive_hf_measurement_ceiling_dbfs(
+        declared_lf_driver_cap_dbfs=-8.0,
+        sens_hf_db=108.5,
+        sens_lf_db=83.3,
+    )
+    assert ceiling == pytest.approx(-35.0)
+    assert ceiling == HF_MEASUREMENT_ABS_CEILING_DBFS
+
+
+def test_sensitivity_relative_ceiling_binds_when_lower_than_abs_ceiling() -> None:
+    # A quieter LF cap (-30) with a 16 dB sensitivity delta: -30 - 16 = -46,
+    # BELOW the -35 abs ceiling, so the sensitivity-relative term is the more
+    # restrictive (quieter) of the two and binds instead of the abs ceiling.
+    ceiling = derive_hf_measurement_ceiling_dbfs(
+        declared_lf_driver_cap_dbfs=-30.0,
+        sens_hf_db=100.0,
+        sens_lf_db=84.0,
+    )
+    assert ceiling == pytest.approx(-46.0)
+    assert ceiling < HF_MEASUREMENT_ABS_CEILING_DBFS
+
+
+def test_zero_sensitivity_delta_still_bounded_by_abs_ceiling() -> None:
+    # Equal sensitivities: the sensitivity-relative term equals the LF cap
+    # outright (-20), but the -35 abs ceiling is still more restrictive, so
+    # it wins -- this is a hearing-safety FLOOR the relative term can never
+    # exceed, not merely a tie-break.
+    ceiling = derive_hf_measurement_ceiling_dbfs(
+        declared_lf_driver_cap_dbfs=-20.0,
+        sens_hf_db=90.0,
+        sens_lf_db=90.0,
+    )
+    assert ceiling == pytest.approx(-35.0)

@@ -22,6 +22,7 @@ from jasper.active_speaker import (
 from jasper.active_speaker.design_draft import (
     ActiveSpeakerDesignDraftRevisionConflict,
     _normalise_candidate,
+    declared_driver_sensitivities,
 )
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
@@ -636,3 +637,91 @@ def test_existing_draft_fixtures_stay_byte_identical_without_polarity_delay():
     assert "upper_polarity" not in candidate
     assert "delay_ms" not in candidate
     assert "delay_target_role" not in candidate
+
+
+# --- declared_driver_sensitivities: the declaration is the sensitivity SSOT ----
+#
+# W6.5 (2026-07-19 gate): sensitivity is a declared physical property whose one
+# owner is the declaration (manual_settings) — the confirmed safety profile
+# never carries a second copy, and JTS3's persisted draft (83.3 / 108.5 under
+# sensitivity_db_2v83_1m) makes the derived HF ceiling fire with no migration.
+
+
+def test_declared_driver_sensitivities_reads_the_declaration():
+    draft = {
+        "manual_settings": {
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
+                {"role": "mid"},  # declared but no sensitivity — omitted
+            ],
+            "crossover_candidates": [],
+        },
+    }
+    assert declared_driver_sensitivities(draft) == {
+        "woofer": 83.3,
+        "tweeter": 108.5,
+    }
+
+
+def test_declared_driver_sensitivities_fails_soft_on_absent_or_malformed():
+    assert declared_driver_sensitivities(None) == {}
+    assert declared_driver_sensitivities({}) == {}
+    assert declared_driver_sensitivities({"manual_settings": None}) == {}
+    assert declared_driver_sensitivities(
+        {"manual_settings": {"drivers": "not-a-list"}}
+    ) == {}
+    # Non-numeric / boolean / non-finite values are skipped, not raised on —
+    # this reader runs inside the conductor-context resolution.
+    draft = {
+        "manual_settings": {
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": "loud"},
+                {"role": "mid", "sensitivity_db_2v83_1m": True},
+                {"role": "tweeter", "sensitivity_db_2v83_1m": float("nan")},
+            ],
+        },
+    }
+    assert declared_driver_sensitivities(draft) == {}
+
+
+def test_declared_driver_sensitivities_drops_conflicting_role_rows():
+    # Two rows for one role with DISAGREEING values (e.g. stereo declarations
+    # that drifted apart): ambiguity derives nothing for that role, failing
+    # toward the conservative class-default ceiling. Agreeing duplicates keep
+    # the value.
+    draft = {
+        "manual_settings": {
+            "drivers": [
+                {"role": "tweeter", "target_id": "left:tweeter",
+                 "sensitivity_db_2v83_1m": 108.5},
+                {"role": "tweeter", "target_id": "right:tweeter",
+                 "sensitivity_db_2v83_1m": 95.0},
+                {"role": "woofer", "target_id": "left:woofer",
+                 "sensitivity_db_2v83_1m": 83.3},
+                {"role": "woofer", "target_id": "right:woofer",
+                 "sensitivity_db_2v83_1m": 83.3},
+            ],
+        },
+    }
+    assert declared_driver_sensitivities(draft) == {"woofer": 83.3}
+
+
+def test_declared_sensitivities_survive_the_normalised_persisted_draft():
+    # End-to-end through the REAL normaliser + draft builder: what
+    # resolve_conductor_context reads is the persisted draft's
+    # manual_settings, so pin the values' survival through that path.
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
+            ],
+            "crossover_candidates": [],
+        },
+    )
+    assert declared_driver_sensitivities(payload) == {
+        "woofer": 83.3,
+        "tweeter": 108.5,
+    }
