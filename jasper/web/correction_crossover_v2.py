@@ -1081,6 +1081,35 @@ def build_v2_run_and_consume(
                     raise CaptureStopped("capture stopped")
             conductor.authorize_begin(index, attempt, entry)
 
+        def _post_sweep_phase_best_effort(phase: str) -> None:
+            """Tell the phone playback is starting/finished (§5.10 progress).
+
+            The capture page's ``waitForSweepComplete``
+            (``capture-page/js/main.js``) polls ``host_event.phase`` for
+            ``"sweep_started"`` / ``"sweep_complete"`` around its own play
+            wait and otherwise sits until ITS OWN timeout elapses — the v2
+            runner posted neither (W6 run 5), so a real phone could never
+            complete a v2 capture. Mirrors the legacy per-driver capture-plan
+            flow's ``post_phase`` around its own play call
+            (``correction_crossover_flow.py``). Best-effort like that
+            sibling: a transient post failure here is a progress-only miss,
+            not a capture failure — the existing terminal host event (or the
+            phone's own wait timeout) still resolves the phone's wait on any
+            real failure.
+            """
+            armed = conductor.armed_capture
+            index, attempt = armed if armed is not None else (None, None)
+            try:
+                client.post_host_event(
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    {"phase": phase, "index": index, "attempt": attempt},
+                )
+            except (OSError, RuntimeError, ValueError):
+                logger.warning(
+                    "v2 sweep progress host-event post failed", exc_info=True
+                )
+
         def on_armed(state: Any) -> None:
             if stop_event.is_set():
                 raise CaptureStopped("capture stopped")
@@ -1088,10 +1117,12 @@ def build_v2_run_and_consume(
             # LOCAL seam (the DSP writer lock, CamillaController) — an OSError
             # here (e.g. EROFS opening the lock file) is not a relay-transport
             # death and must not be caught by the relay-death arm below.
+            _post_sweep_phase_best_effort("sweep_started")
             try:
                 conductor.on_armed(state)
             except OSError as exc:
                 raise CrossoverV2LocalSeamError(str(exc)) from exc
+            _post_sweep_phase_best_effort("sweep_complete")
 
         def consume(index: int, attempt: int, result: Any, entry: Any = None):
             # Same local-seam boundary as on_armed, for consume_capture's
