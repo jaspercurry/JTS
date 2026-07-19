@@ -942,13 +942,21 @@ reference. Currently:
   deliberately leaving existing bundles, playback, persistence, and Room
   gates unchanged. The
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
+- [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
+  — **Operational canon for the crossover measurement v2 "conductor" flow**
+  (the default `/correction/crossover/` flow since 2026-07-19). The conductor
+  model (phone = dumb recorder, Pi = conductor, analysis = pure functions), the
+  CHECK → MEASURE → REVIEW/APPLY → VERIFY capture flow, the `JASPER_CROSSOVER_FLOW`
+  selector, the file map, invariants, failure taxonomy, session-state paths, the
+  W6 hardware bug catalog, and the W5b future-work list. Read this for how the
+  flow works today; the design/decision record below is the "why."
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
-  — **Design proposal / decision record (pre-implementation)** for making the
+  — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
   phone-mic users: the first-principles framework, the resolved level/distance/
-  phase-delay tradeoffs, the staged adaptation plan (Stage 1 leveling & cadence,
-  Stage 2 single-capture-both-drivers aligner, Stage 3 drift correction), and the
-  empirical gaps to close on our own hardware before building the aligner.
+  phase-delay tradeoffs, and the conductor architecture (§5) that superseded the
+  earlier staged plan. Read for the decision archaeology; current operational
+  truth lives in `HANDOFF-crossover-measurement-v2.md` above.
   Motivated by the e2e validation log; the verbatim deep-research report behind it
   is the linked primary source
   [`crossover-measurement-deep-research-2026-07-18.md`](docs/crossover-measurement-deep-research-2026-07-18.md).
