@@ -438,6 +438,27 @@ def compression_curve(
     )
 
 
+def _offset_invariant_rms_and_max(
+    measured: np.ndarray, predicted: np.ndarray
+) -> tuple[float, float]:
+    """RMS and max-absolute of ``measured - predicted``, mean-centered.
+
+    Mean-centering makes the comparison level-offset-invariant: a uniform gain
+    difference between measured and predicted (e.g. mic sensitivity, session
+    volume) does not by itself read as a tracking error.
+    """
+    error = measured - predicted
+    error -= float(np.mean(error))
+    return float(np.sqrt(np.mean(error ** 2))), float(np.max(np.abs(error)))
+
+
+def _band_mask(frequencies: np.ndarray, band: tuple[float, float]) -> np.ndarray:
+    mask = (frequencies >= band[0]) & (frequencies <= band[1])
+    if not np.any(mask):
+        raise ValueError("tracking band has no frequency bins")
+    return mask
+
+
 def tracking_error_db(
     freqs,
     measured_db,
@@ -453,9 +474,46 @@ def tracking_error_db(
         raise ValueError("tracking arrays must be 1-D")
     if not (len(frequencies) == len(measured) == len(predicted)):
         raise ValueError("tracking arrays must have matching lengths")
-    mask = (frequencies >= band[0]) & (frequencies <= band[1])
-    if not np.any(mask):
-        raise ValueError("tracking band has no frequency bins")
-    error = measured[mask] - predicted[mask]
-    error -= float(np.mean(error))
-    return float(np.sqrt(np.mean(error ** 2))), float(np.max(np.abs(error)))
+    mask = _band_mask(frequencies, band)
+    return _offset_invariant_rms_and_max(measured[mask], predicted[mask])
+
+
+def notch_excluded_tracking_error_db(
+    freqs,
+    measured_db,
+    predicted_db,
+    band,
+    *,
+    notch_exclusion_db: float,
+) -> tuple[float, float]:
+    """Tracking error, excluding bins inside a deep PREDICTED notch.
+
+    Same level-offset-invariant RMS/max as :func:`tracking_error_db`, but first
+    drops any bin whose PREDICTED level sits more than ``notch_exclusion_db``
+    below this band's own predicted median. Inside a deep predicted
+    interference notch, the notch depth is hypersensitive to sub-dB/
+    sub-degree branch differences, so depth agreement there is not a
+    meaningful tracking signal — see the VERIFY comparator in
+    ``jasper.active_speaker.crossover_v2_flow`` (W6.7 ruling 1, the run-7
+    hardware bug where a 27.8 dB "max" tracking error was entirely a shifted
+    predicted notch, not a broadband alignment problem).
+
+    Falls back to the full band when every bin would be excluded (a
+    degenerate all-notch band), so the comparator is never computed over an
+    empty set.
+    """
+    frequencies = np.asarray(freqs, dtype=np.float64)
+    measured = np.asarray(measured_db, dtype=np.float64)
+    predicted = np.asarray(predicted_db, dtype=np.float64)
+    if not (frequencies.ndim == measured.ndim == predicted.ndim == 1):
+        raise ValueError("tracking arrays must be 1-D")
+    if not (len(frequencies) == len(measured) == len(predicted)):
+        raise ValueError("tracking arrays must have matching lengths")
+    mask = _band_mask(frequencies, band)
+    band_predicted = predicted[mask]
+    band_measured = measured[mask]
+    median_predicted = float(np.median(band_predicted))
+    keep = band_predicted >= (median_predicted - notch_exclusion_db)
+    if not np.any(keep):
+        keep = np.ones_like(keep, dtype=bool)
+    return _offset_invariant_rms_and_max(band_measured[keep], band_predicted[keep])

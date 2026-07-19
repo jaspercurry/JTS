@@ -36,6 +36,8 @@ from jasper.audio_measurement.program import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     PROGRAM_SAMPLE_RATE_HZ,
+    VERIFY_PILOT_F_HI_HZ,
+    VERIFY_PILOT_F_LO_HZ,
     ExcitationProgram,
     ProgramSegment,
     RoleBand,
@@ -170,6 +172,27 @@ def test_verify_widens_low_bound_for_low_fc():
     prog = build_verify_program(200.0, sweep_s=1.0)
     # f1 = min(150, fc/2) = 100 so the lower shoulder fc/2 is excited.
     assert prog.segment("sweep_verify").f1_hz == pytest.approx(100.0)
+
+
+def test_verify_leading_pilot_rides_its_own_flat_band_not_the_notched_sweep_band():
+    """W6.7 ruling 2: the leading VERIFY pilot pair must NOT share the summed
+    sweep's full band — that band deliberately crosses the crossover overlap
+    (the sweep needs to see the interference notch there), but a pilot chirp
+    swept through that same notch goes noise-dominated and misfires the
+    ±0.5 dB linearity ratio check (the W6 run-7 hardware bug). The pilot
+    rides its own flat mid-woofer band instead."""
+    prog = build_verify_program(1600.0, sweep_s=1.0, leading_pilot_gains_db=(-20.0, -10.0))
+    sweep = prog.segment("sweep_verify")
+    pilot_lo = prog.segment("pilot_summed_lo")
+    pilot_hi = prog.segment("pilot_summed_hi")
+    assert pilot_lo.f1_hz == pytest.approx(VERIFY_PILOT_F_LO_HZ)
+    assert pilot_lo.f2_hz == pytest.approx(VERIFY_PILOT_F_HI_HZ)
+    assert pilot_hi.f1_hz == pytest.approx(VERIFY_PILOT_F_LO_HZ)
+    assert pilot_hi.f2_hz == pytest.approx(VERIFY_PILOT_F_HI_HZ)
+    # The pilot band sits comfortably below the sweep's own low shoulder for
+    # a normal (well above ~1 kHz) crossover -- it is NOT the sweep's band.
+    assert VERIFY_PILOT_F_HI_HZ < sweep.f2_hz
+    assert (pilot_lo.f1_hz, pilot_lo.f2_hz) != (sweep.f1_hz, sweep.f2_hz)
 
 
 # --------------------------------------------------------------------------- #
