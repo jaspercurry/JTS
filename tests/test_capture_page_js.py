@@ -715,6 +715,26 @@ def test_capture_page_mic_picker_never_erases_the_stored_preference():
     assert "never erase the stored" in main_js or "do NOT erase the stored" in main_js
 
 
+def test_capture_page_reboot_clears_the_stale_mic_picker_not_appends():
+    """W6.11 cosmetic fix: buildMicPicker() inserts its "Microphone:" selector
+    as a SIBLING just before `screenEl`, not as a child of it, so it lives
+    outside what setScreen()'s replaceChildren() clears on every fresh
+    boot(). A hashchange re-boot (onHashChange -> bootFromHash -> boot) used
+    to leave the PRIOR boot's picker in place and stack a second one beside
+    it. boot() now removes the tracked picker before rendering the fresh
+    loading screen, instead of appending on top of it."""
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "let micPickerEl = null;" in main_js
+    assert "micPickerEl = wrap;" in main_js
+    boot_start = main_js.index("async function boot() {")
+    boot_body = main_js[boot_start: boot_start + 1200]
+    assert "micPickerEl.remove()" in boot_body
+    # The removal must happen BEFORE setScreen() clears the loading screen,
+    # not after.
+    assert boot_body.index("micPickerEl.remove()") < boot_body.index("setScreen(screenEl")
+
+
 def test_capture_page_dead_relay_session_never_offers_a_doomed_retry():
     """Run-19 defect (c): every phone-facing relay endpoint 404s "not_found"
     once a session's TTL lapses or the Pi purges it, so "Tap Start to try

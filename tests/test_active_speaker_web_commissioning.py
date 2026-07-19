@@ -3016,3 +3016,51 @@ def test_summed_test_playback_dispatches_off_loop_primitive():
         "_play_summed_commission_tone reintroduced a blocking subprocess.run "
         "on the correction loop (C4a-6 regression)"
     )
+
+
+def test_regenerate_crossover_preview_matches_sound_setups_preview_button(
+    monkeypatch, tmp_path,
+):
+    """W6.11: the v2 flow's session-start preview ensure
+    (``jasper.web.correction_crossover_v2.ensure_crossover_preview_ready``)
+    calls :func:`web.regenerate_crossover_preview_from_current_draft` instead
+    of reimplementing ``/sound/``'s Preview-button generation. Pin that it
+    really is the SAME machinery: seeded against the same design
+    draft/topology, its output matches
+    ``jasper.web.sound_setup``'s own
+    ``_active_speaker_crossover_preview_save_payload()`` byte-for-byte except
+    for the wall-clock ``created_at``/``updated_at`` timestamps."""
+    import json
+
+    from jasper.output_topology import save_output_topology
+    from jasper.web import sound_setup
+
+    from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
+
+    topology = _dual_apple_topology()
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(topology, topology_path)
+
+    draft = _draft(topology)
+    draft_path = tmp_path / "design_draft.json"
+    draft_path.write_text(json.dumps(draft), encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "via_web_commissioning.json"),
+    )
+    via_new = web.regenerate_crossover_preview_from_current_draft()
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "via_sound_setup.json"),
+    )
+    via_sound = sound_setup._active_speaker_crossover_preview_save_payload()
+
+    assert via_new["status"] == "ready_for_protected_staging"
+    ignored = {"path", "created_at", "updated_at"}
+    assert {k: v for k, v in via_new.items() if k not in ignored} == {
+        k: v for k, v in via_sound.items() if k not in ignored
+    }

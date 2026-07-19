@@ -1574,9 +1574,15 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     same pattern as ``tests/test_active_speaker_setup_status.py``), plus the
     baseline-profile/config and DSP-apply state paths. Returns
     ``(topology, preset)`` so a caller can build a ``MeasuredCrossoverCandidate``
-    against the exact preset the seam will recompile from the same files."""
+    against the exact preset the seam will recompile from the same files.
+
+    W6.11: the crossover-preview file is no longer hand-built and written
+    directly — that sidestepped the exact bug this wave fixed (only
+    ``/sound/``'s Preview button ever generated it; v2 never did). It is
+    produced by ``v2host.ensure_crossover_preview_ready()``, the real
+    session-start seam, so this fixture proves the same machinery a browser
+    session would drive."""
     from jasper.active_speaker import compile_preset_from_crossover_preview
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.output_topology import save_output_topology
 
     from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
@@ -1591,12 +1597,11 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     draft_path.write_text(json.dumps(draft), encoding="utf-8")
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
 
-    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
-    preview_path = tmp_path / "crossover_preview.json"
-    preview_path.write_text(json.dumps(preview), encoding="utf-8")
     monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE", str(preview_path)
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "crossover_preview.json"),
     )
+    preview = v2host.ensure_crossover_preview_ready()
 
     # No driver-test measurements recorded — the run-6 shape: a household
     # applies purely from the reviewed measured candidate.
@@ -1749,11 +1754,11 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
 ):
     """Negative, through the REAL seam: the household reviewed a candidate
     measured against one crossover design, but the design moved on
-    underneath (a second /sound/ save) before Apply landed. The seam's own
+    underneath (a second /sound/ save, followed by a fresh v2 session start
+    that re-ensures the preview) before Apply landed. The seam's own
     ``measured_candidate_preset_mismatch`` gate must refuse — never silently
     apply the wrong preset — and Finding N's wiring must name that issue and
     persist it for the review_apply nudge, instead of 200 + silent no-op."""
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import build_design_draft
 
     from tests.test_active_speaker_baseline_profile import _research
@@ -1769,7 +1774,10 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
     })
 
     # The crossover design moved on (a second tab/session saved a different
-    # crossover frequency) after this candidate was measured.
+    # crossover frequency) after this candidate was measured — write the
+    # moved DESIGN DRAFT directly (that part is /sound/'s job, out of this
+    # wave's scope), then re-ensure the preview through the REAL seam, the
+    # same way a fresh v2 session start would after that save.
     moved_research = _research()
     moved_research["crossover_candidates"][0]["frequency_hz"] = 3000
     moved_draft = build_design_draft(
@@ -1778,12 +1786,7 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
     (tmp_path / "design_draft.json").write_text(
         json.dumps(moved_draft), encoding="utf-8"
     )
-    moved_preview = build_crossover_preview(
-        moved_draft, created_at="2026-07-18T12:31:00Z",
-    )
-    (tmp_path / "crossover_preview.json").write_text(
-        json.dumps(moved_preview), encoding="utf-8"
-    )
+    v2host.ensure_crossover_preview_ready()
 
     payload = v2host.handle_v2_apply(
         {
@@ -2034,3 +2037,152 @@ def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
 
     with pytest.raises(v2host.CrossoverV2Refused, match="no previous crossover"):
         v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+
+# --- W6.11: the real session-start preview-ensure seam, end to end ---
+#
+# The P0: ``/sound/``'s Preview button was the ONLY historical writer of
+# ``active_speaker_crossover_preview.json``; the v2 flow never called it. A
+# candidate measured without a preview baked its ``source_preset`` against
+# ``resolve_capture_preset``'s generic-bundled-preset fallback, which then
+# could NEVER match a preview generated later — apply refused
+# ``measured_candidate_preset_mismatch`` forever, and Start-over (which
+# deletes the preview by design, see ``jasper.active_speaker.reset``)
+# poisoned every subsequent apply. ``_seed_baseline_apply_environment``
+# itself was part of the problem: it hand-built and wrote the preview file
+# directly, sidestepping the exact fallback path that shipped broken.
+#
+# These tests drive the REAL fix end to end, through the real seams, with
+# NO hand-seeded preview file anywhere: v2 session start
+# (``v2host.ensure_crossover_preview_ready`` — the seam both
+# ``resolve_conductor_context`` callers, ``prepare_v2_session`` and
+# ``prepare_v2_verify``, share) generates the preview from the current
+# design draft when absent, reusing ``/sound/``'s own generator
+# (``jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft``
+# -> ``crossover_preview.save_crossover_preview``).
+
+
+def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
+    monkeypatch, tmp_path,
+):
+    """The full real journey: no preview on disk -> session start ensures one
+    (asserted on disk, ready) -> measure-shaped candidate baked against the
+    resolved preset -> handle_v2_apply SUCCEEDS through the real
+    apply_baseline_profile guard -> Start-over (the REAL handle_reset)
+    deletes the preview by design -> a fresh session start re-ensures it from
+    the (unchanged) design draft -> apply succeeds again. The test never
+    once hand-writes active_speaker_crossover_preview.json."""
+    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.web import correction_crossover_backend as reset_backend
+    from jasper.web import correction_crossover_flow as reset_flow
+
+    preview_path = tmp_path / "crossover_preview.json"
+    assert not preview_path.exists()
+
+    # _seed_baseline_apply_environment's own preview-generation step IS a v2
+    # session start (it calls ensure_crossover_preview_ready — no direct
+    # build_crossover_preview()+write since W6.11). Assert the file landed
+    # ready, proving the ensure step actually ran rather than being a no-op.
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    assert preview_path.exists()
+    on_disk = json.loads(preview_path.read_text(encoding="utf-8"))
+    assert on_disk["status"] == "ready_for_protected_staging"
+
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_e2e_1",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert payload["status"] == "applied", payload.get("issues")
+
+    # Start-over — the REAL handle_reset (real reset_measurement_journey, a
+    # fresh no-op CrossoverLevelLease; only the envelope-rendering tail is
+    # stubbed, mirroring test_correction_crossover_reset.py's real-clear
+    # pattern). The other measurement-journey artifacts route to tmp_path too
+    # so the real clear never touches /var/lib/jasper.
+    for env_name in (
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
+        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
+    ):
+        monkeypatch.setenv(env_name, str(tmp_path / f"{env_name.lower()}.json"))
+    fresh_lease = reset_backend.CrossoverLevelLease()
+    monkeypatch.setattr(reset_backend, "level_lease", lambda: fresh_lease)
+    monkeypatch.setattr(reset_flow, "handle_status", lambda *, relay=None: ({}, 200))
+    monkeypatch.setattr(reset_flow, "_active_group_member", lambda: False)
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+        lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
+    )
+
+    _reset_payload, reset_status = reset_flow.handle_reset()
+
+    assert reset_status == 200
+    # The preview really is gone — reset.py's documented by-design deletion.
+    assert not preview_path.exists()
+
+    # A fresh v2 session start re-ensures the preview from the unchanged
+    # design draft — still no hand-seeding.
+    reensured = v2host.ensure_crossover_preview_ready()
+    assert reensured["status"] == "ready_for_protected_staging"
+    assert preview_path.exists()
+
+    preset_again, issues, _gates = compile_preset_from_crossover_preview(
+        topology, reensured,
+    )
+    assert preset_again is not None, issues
+    candidate_again = _run6_measured_candidate(preset_again)
+    v2host.save_v2_state({
+        "session_id": "cap_e2e_2",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate_again.fingerprint},
+        "applied": False,
+    })
+    payload_again = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate_again.fingerprint,
+            "candidate": candidate_again.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert payload_again["status"] == "applied", payload_again.get("issues")
+
+
+def test_v2_session_start_refuses_by_name_when_draft_cannot_produce_a_ready_preview(
+    monkeypatch, tmp_path,
+):
+    """Negative: no design draft has ever been saved, so the ensure step's
+    regeneration attempt cannot reach ready_for_protected_staging. Session
+    start must refuse BY NAME (CrossoverV2Refused, naming the actual
+    blocker) — never a silent pass-through that only surfaces as an
+    apply-time 409 later."""
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft_never_saved.json"),
+    )
+    preview_path = tmp_path / "crossover_preview.json"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE", str(preview_path)
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="not ready for measurement"):
+        v2host.ensure_crossover_preview_ready()
+
+    # The regeneration attempt still ran (the same machinery /sound/ would
+    # have run) and left an honest "blocked" preview on disk, never a
+    # ready_for_protected_staging one.
+    assert preview_path.exists()
+    blocked = json.loads(preview_path.read_text(encoding="utf-8"))
+    assert blocked["status"] == "blocked"

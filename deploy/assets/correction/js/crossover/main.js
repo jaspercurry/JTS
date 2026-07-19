@@ -398,6 +398,14 @@ async function startOver() {
   } finally {
     busy = false;
     els.startOver.disabled = false;
+    // render(response) above (success path) builds the action row's buttons
+    // WHILE busy was still true, baking `disabled: busy` into every one of
+    // them — including buttons unrelated to Start-over, like "Start
+    // measurement". Nothing re-rendered after busy flipped back to false, so
+    // those buttons stayed disabled until a manual reload. Match the sibling
+    // pattern (stopRelay/runAction's finally) exactly: always re-render the
+    // action row against the now-correct busy=false.
+    renderActionRow(envelope);
   }
 }
 

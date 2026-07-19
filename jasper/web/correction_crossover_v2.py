@@ -1491,6 +1491,69 @@ class V2ConductorContext:
     declared_sensitivities: dict[str, float] = field(default_factory=dict)
 
 
+def ensure_crossover_preview_ready() -> dict[str, Any]:
+    """Ensure a ready crossover preview exists before a v2 session reads one.
+
+    ``/sound/``'s Preview button was the ONLY historical writer of
+    ``active_speaker_crossover_preview.json``; the v2 flow never called it, so
+    a household that went straight to ``/correction/`` without visiting
+    ``/sound/`` first baked its MEASURE candidate's ``source_preset`` against
+    the generic bundled-preset fallback (:func:`~jasper.active_speaker.commission_wiring.resolve_capture_preset`'s
+    no-preview branch) — which then can NEVER match a preview generated later,
+    so Apply refuses ``measured_candidate_preset_mismatch`` forever. This is
+    called at the top of :func:`resolve_conductor_context` — the one place
+    both session-open (:func:`prepare_v2_session`) and the verify re-arm
+    (:func:`prepare_v2_verify`) resolve the design draft/topology — so the
+    fallback branch is never reached from a v2 entry point again.
+
+    Reuses the SAME generator ``/sound/`` drives
+    (:func:`~jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft`,
+    itself a thin wrapper around :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`)
+    rather than reimplementing preview generation. Idempotent: an existing
+    preview that is already ``ready_for_protected_staging`` for the CURRENT
+    design draft (the freshness/fingerprint check already built into
+    :func:`~jasper.active_speaker.crossover_preview.load_crossover_preview`)
+    is left byte-untouched — reused, not regenerated. Anything else (absent,
+    stale, or blocked) is regenerated once; if the fresh attempt still cannot
+    reach ``ready_for_protected_staging`` (an unconfirmed safety profile, a
+    blocked design draft, etc.), this raises a named :class:`CrossoverV2Refused`
+    pointing at ``/sound/`` instead of leaving the surprise for apply time.
+    """
+    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.web_commissioning import (
+        regenerate_crossover_preview_from_current_draft,
+    )
+
+    preview = load_crossover_preview(current_design_draft=load_design_draft())
+    outcome = "reused"
+    if preview.get("status") != "ready_for_protected_staging":
+        preview = regenerate_crossover_preview_from_current_draft()
+        outcome = (
+            "generated"
+            if preview.get("status") == "ready_for_protected_staging"
+            else "refused"
+        )
+    log_event(
+        logger,
+        "correction.crossover_v2_preview_ensured",
+        outcome=outcome,
+        preview_status=str(preview.get("status")),
+    )
+    if outcome == "refused":
+        messages = [
+            str(issue.get("message") or issue.get("code"))
+            for issue in (preview.get("issues") or [])
+            if isinstance(issue, Mapping) and issue.get("severity") == "blocker"
+        ]
+        raise CrossoverV2Refused(
+            "the crossover preview is not ready for measurement; finish "
+            "speaker setup at /sound/ first"
+            + (": " + "; ".join(messages[:2]) if messages else "")
+        )
+    return preview
+
+
 def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     """Resolve preset/bands/caps/targets/volume from live status + topology.
 
@@ -1521,6 +1584,10 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             "protected speaker setup is not ready; finish it before measuring"
         )
     topology = load_output_topology()
+    # Ensure a ready crossover preview BEFORE resolving the capture preset —
+    # otherwise resolve_capture_preset's no-preview fallback silently bakes
+    # the generic bundled preset into every MEASURE candidate (see docstring).
+    ensure_crossover_preview_ready()
     preset = resolve_capture_preset(topology)
     if preset.way_count != 2:
         raise CrossoverV2Refused("the v2 conductor flow is scoped to 2-way presets")

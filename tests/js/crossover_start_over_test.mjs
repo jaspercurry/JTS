@@ -162,4 +162,26 @@ assert.ok(
   `partial message should be honest, got: ${statusEl.textContent}`,
 );
 
-console.log(JSON.stringify({ ok: true, passed: 9 }));
+// --- W6.11: the finally re-renders the action row (sibling parity) --------
+// render(response) inside the try runs WHILE busy is still true, so a fresh
+// next_action's button bakes `disabled: busy` = true. Only a re-render
+// AFTER busy flips back to false (the finally, matching stopRelay/runAction)
+// clears it — before this fix "Start measurement" stayed disabled until a
+// manual reload.
+render({ ...baseEnvelope, grouping_member: false });
+confirmAnswer = true;
+postResponse = {
+  ...baseEnvelope,
+  reset: { status: "cleared", errors: [] },
+  next_action: { label: "Start measurement", endpoint: "/x" },
+};
+await startOver();
+const actionEl = elements.get("crossover-action");
+assert.equal(actionEl.children.length, 1, "the fresh next_action rendered");
+assert.equal(
+  actionEl.children[0].disabled,
+  false,
+  "the action button must not stay disabled after Start over completes",
+);
+
+console.log(JSON.stringify({ ok: true, passed: 11 }));
