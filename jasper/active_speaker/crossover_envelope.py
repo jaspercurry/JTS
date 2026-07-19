@@ -581,10 +581,12 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
 
 
 def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
-    # Flow selector (design §6 W5a): JASPER_CROSSOVER_FLOW=v2 activates the
-    # conductor flow; anything else (the default) runs the legacy flow below,
-    # byte-identically to today. The v2 branch is a single early return, so the
-    # legacy path is untouched — pinned by the selector byte-identity test.
+    # Flow selector (design §6; default flipped to v2 post-W6, 2026-07-19):
+    # the conductor flow is the default — only an explicit
+    # JASPER_CROSSOVER_FLOW=legacy opt-out runs the deprecated legacy flow
+    # below, byte-identically to its pre-W5a self. The v2 branch is a single
+    # early return, so the legacy path is untouched — pinned by the selector
+    # byte-identity test. Legacy (and this dispatch) go away in W5b.
     from .crossover_flow import CROSSOVER_FLOW_V2, resolve_crossover_flow
 
     if resolve_crossover_flow(status) == CROSSOVER_FLOW_V2:

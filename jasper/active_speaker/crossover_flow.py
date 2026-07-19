@@ -75,7 +75,8 @@ def resolve_crossover_flow(
     threads the resolved flow onto the status it hands the pure envelope) wins;
     otherwise the process environment via :func:`active_crossover_flow`. An
     invalid override is ignored (fail-safe to the env-resolved flow), never
-    trusted, so a malformed status can't activate v2.
+    trusted, so a malformed status can't pick a flow on its own — only the
+    exact literals ``"legacy"``/``"v2"`` are honoured.
     """
     if isinstance(status, Mapping):
         override = status.get("crossover_flow")
