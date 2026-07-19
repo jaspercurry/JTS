@@ -31,6 +31,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve, resample_poly
 
+from jasper.audio_measurement import deconv
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     RoleBand,
@@ -43,12 +44,23 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
     CAPTURE_BOUND_MARGIN_S,
+    IR_POST_MS,
+    IR_PRE_MS,
+    AlignmentEstimate,
     MeasurementGeometry,
     MeasurementPriors,
+    _aligned_branch_tf,
     _band_exclusive_pieces,
+    _build_candidate,
+    _complex_tf,
+    _gate_floor_hz,
     _gcc_phat,
     _global_offset,
     _locate_segments,
+    _n_fft_for,
+    _predicted_sum,
+    _ripple_db,
+    _solve_trims,
     analyze_program_capture,
 )
 
@@ -745,6 +757,257 @@ def test_verify_tracking_notch_exclusion_reduces_max_through_the_pipeline():
     # measurably shrinks it.
     assert tracking["max_db_notch_excluded"] < tracking["max_db"]
     assert tracking["rms_db_notch_excluded"] < tracking["rms_db"]
+
+
+# --------------------------------------------------------------------------- #
+# W6.9 — gating-consistent prediction + validity-floor tracking clamp
+# --------------------------------------------------------------------------- #
+#
+# W6.9 forensics (2026-07-19) numerically reproduced a W6 run-7/8 hardware
+# VERIFY failure and traced it to two compounding bugs: (1) the MEASURE-side
+# prediction composed each branch's TF from a FIXED 65 ms window
+# (`IR_PRE_MS` + `IR_POST_MS`), so a 15 cm desk-bounce reflection at the mic
+# position was baked into the predicted sum (a spurious ~1125 Hz null) even
+# though (2) VERIFY's own measured sum is adaptively reflection-gated
+# (`_driver_response`) and never had that reflection to begin with — and the
+# VERIFY tracking comparator's band never clamped to that adaptive gate's own
+# validity floor (`gating.f_valid_floor_hz`), so sub-validity bins decided the
+# verdict. Fix 1 (validity-floor clamp) and Fix 2 (gating-consistent
+# `_aligned_branch_tf`) are exercised together below; the mechanism was also
+# validated against the actual forensics hardware capture (run-8 a5:
+# `analyze_program_capture` on the real WAV yields tracking
+# rms=1.496/max=5.115 dB against the ≈1.50/5.12 forensics target — see the
+# W6.9 commit message for the reproduction, not re-run here since the WAV/npz
+# fixtures are hardware artifacts, not part of this hardware-free suite).
+
+
+def _reflection_branch(peak: int, f_lo: float, f_hi: float, amp: float,
+                        *, reflection_delay_s: float = 0.0, reflection_amp: float = 0.0,
+                        n: int = 8192) -> np.ndarray:
+    """A band-passed direct-arrival impulse, optionally with a genuine near
+    reflection: a scaled, delayed COPY of the direct arrival's own shape
+    (causal — zeroed before the reflection onset), the same construction
+    ``gate_test.py`` (W6.9 forensics) used to reproduce the hardware desk
+    bounce. ``reflection_delay_s`` must be ≥ ``gating.SEARCH_T_MIN_MS`` (0.5
+    ms) to be detectable at all — a reflection that close to the direct
+    arrival's own tail is structurally invisible to
+    ``gating.detect_first_reflection``'s search window by design."""
+    direct = _band_impulse(peak, f_lo, f_hi, amp, n=n)
+    if reflection_amp == 0.0:
+        return direct
+    delay_samples = int(round(reflection_delay_s * SR))
+    reflection = reflection_amp * np.roll(direct, delay_samples)
+    reflection[:delay_samples] = 0.0
+    return direct + reflection
+
+
+def _old_fixed_window_branch_tf(full_ir: np.ndarray, n_fft: int):
+    """Byte-for-byte the pre-W6.9 ``_aligned_branch_tf``: fixed
+    ``IR_PRE_MS``/``IR_POST_MS`` window, no reflection gating."""
+    peak_idx = int(np.argmax(np.abs(full_ir)))
+    window = deconv.direct_arrival_window(
+        full_ir, SR, direct_peak_idx=peak_idx,
+        pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
+    )
+    ir = deconv.apply_arrival_window(full_ir, window)
+    return _complex_tf(ir, SR, n_fft=n_fft, calibration=None)
+
+
+def _reflection_fixture(fc_hz: float, *, peak: int = 300, n: int = 8192):
+    """Woofer branch with a genuine near reflection at +0.70 ms (a real
+    ``gating.detect_first_reflection`` hit — comfortably inside its [0.5, 7]
+    ms search window, standing in for the forensics' ~0.6-0.7 ms hardware
+    desk bounce); tweeter branch clean. Returns
+    ``(woofer_ir, tweeter_ir, n_fft)``."""
+    woofer_ir = _reflection_branch(
+        peak, 150.0, 6000.0, 1.0,
+        reflection_delay_s=0.70e-3, reflection_amp=1.0, n=n,
+    )
+    tweeter_ir = _reflection_branch(peak, 300.0, 20000.0, 0.7, n=n)
+    return woofer_ir, tweeter_ir, _n_fft_for(woofer_ir, tweeter_ir)
+
+
+def test_aligned_branch_tf_applies_the_same_adaptive_gate_as_driver_response():
+    """Fix 2, isolated: ``_aligned_branch_tf`` must reflection-gate exactly
+    like ``_driver_response`` does, not use the fixed 65 ms window alone."""
+    fc_hz = 2000.0
+    woofer_ir, _tweeter_ir, n_fft = _reflection_fixture(fc_hz)
+
+    freqs, W_new, fragment = _aligned_branch_tf(woofer_ir, SR, n_fft, calibration=None)
+    assert fragment["floor_source"] == "measured_reflection"
+    floor_hz = _gate_floor_hz(fragment)
+    assert floor_hz is not None and floor_hz > fc_hz / 2.0  # gate is tighter than the nominal band
+
+    _f2, W_old = _old_fixed_window_branch_tf(woofer_ir, n_fft)
+    # Around the injected reflection's comb notch, the OLD fixed-window TF is
+    # badly depressed while the NEW gated TF stays flat — the collapse the
+    # forensics cited (a fixed-window null vs. a gated peak at the same bin).
+    lo, hi = fc_hz / 2.0, fc_hz * 2.0
+    band = (freqs >= lo) & (freqs <= hi)
+    old_db = 20.0 * np.log10(np.maximum(np.abs(W_old[band]), 1e-12))
+    new_db = 20.0 * np.log10(np.maximum(np.abs(W_new[band]), 1e-12))
+    old_ripple = float(old_db.max() - old_db.min())
+    new_ripple = float(new_db.max() - new_db.min())
+    assert old_ripple > 5.0
+    assert new_ripple < 1.0
+    assert new_ripple < old_ripple - 4.0
+
+
+def test_gating_consistent_candidate_removes_reflection_notch_end_to_end():
+    """Fix 2, end to end: a fixed-window prediction bakes a real near
+    reflection into a notch that fails VERIFY tolerance; the gating-
+    consistent prediction is clean and the SAME real capture passes."""
+    fc_hz = 2000.0
+    lo, hi = fc_hz / 2.0, fc_hz * 2.0
+    woofer_ir, tweeter_ir, n_fft = _reflection_fixture(fc_hz)
+
+    alignment = AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+    )
+    candidate, (pred_freqs, pred_db) = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
+    )
+    # NEW: gating-consistent prediction is clean.
+    assert candidate.predicted_ripple_db < 1.5
+
+    # OLD: byte-for-byte the pre-fix fixed-window path bakes in a notch that
+    # would fail the same ±1.5 dB VERIFY tolerance the run-7/8 bug tripped.
+    freqs_old, W_old = _old_fixed_window_branch_tf(woofer_ir, n_fft)
+    _f2, T_old = _old_fixed_window_branch_tf(tweeter_ir, n_fft)
+    trim_w_old, trim_t_old, _lw, _lt = _solve_trims(freqs_old, W_old, T_old, fc_hz)
+    old_ripple = _ripple_db(
+        freqs_old, _predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1), lo, hi,
+    )
+    assert old_ripple > 5.0
+    assert old_ripple > candidate.predicted_ripple_db + 4.0
+    old_pred_db = 20.0 * np.log10(np.maximum(
+        np.abs(_predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1)), 1e-12,
+    ))
+
+    # The REAL physical system (the reflection is reality — it doesn't get
+    # gated away by wishing) is the raw time-domain sum of both branches at
+    # the candidate's own solved trims; VERIFY captures this same system.
+    g_w = 10.0 ** (candidate.trim_db["woofer"] / 20.0)
+    g_t = 10.0 ** (candidate.trim_db["tweeter"] / 20.0)
+    combined_ir = g_w * woofer_ir + alignment.polarity_sign * g_t * tweeter_ir
+
+    prog = build_verify_program(fc_hz, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    mono = fftconvolve(pcm[:, 0], combined_ir)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(42).normal(0.0, 1e-5, cap.size)
+
+    res_new = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=fc_hz, predicted_sum=(pred_freqs, pred_db)),
+    )
+    assert res_new.verify_tracking is not None
+    assert res_new.verify_tracking["max_db_notch_excluded"] < 1.5  # NEW: tracking passes
+
+    res_old = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=fc_hz, predicted_sum=(freqs_old, old_pred_db)),
+    )
+    assert res_old.verify_tracking is not None
+    assert res_old.verify_tracking["max_db_notch_excluded"] > 1.5  # OLD: same capture, false fail
+
+
+def test_validity_floor_clamp_excludes_only_sub_floor_divergence():
+    """Fix 1: the VERIFY tracking comparator drops bins below THIS capture's
+    own gate-derived validity floor. A predicted-sum divergence placed
+    entirely below that floor must not move the gated numbers (though it
+    still shows up in the raw ``*_full_band`` diagnostics); the identical
+    divergence placed above the floor must still fail the gate."""
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir, n_fft = _reflection_fixture(fc_hz)
+    alignment = AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+    )
+    candidate, (pred_freqs, pred_db) = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
+    )
+    g_w = 10.0 ** (candidate.trim_db["woofer"] / 20.0)
+    g_t = 10.0 ** (candidate.trim_db["tweeter"] / 20.0)
+    combined_ir = g_w * woofer_ir + alignment.polarity_sign * g_t * tweeter_ir
+
+    prog = build_verify_program(fc_hz, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    mono = fftconvolve(pcm[:, 0], combined_ir)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(42).normal(0.0, 1e-5, cap.size)
+
+    # This capture's OWN reflection gate clamps the tracking band above the
+    # nominal Fc/2 — confirm the fixture actually exercises the clamp before
+    # trusting the below/above assertions that depend on it.
+    baseline = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=fc_hz, predicted_sum=(pred_freqs, pred_db)),
+    )
+    band_lo = baseline.verify_tracking["tracking_band_hz"][0]
+    assert band_lo > fc_hz / 2.0
+
+    def _predicted_with_bump(center_hz: float, *, width_octave: float = 0.06) -> tuple[np.ndarray, np.ndarray]:
+        # A narrow (0.06-octave) log-Gaussian bump so it decays to
+        # negligible well before the clamped band edge — a wide bump would
+        # leak enough tail across the floor to confound the below/above
+        # assertions below.
+        with np.errstate(divide="ignore"):
+            ratio = np.where(pred_freqs > 0, pred_freqs / center_hz, 1.0)
+        bump = 10.0 * np.exp(-0.5 * (np.log2(ratio) / width_octave) ** 2)
+        return pred_freqs, pred_db + bump
+
+    below_center = band_lo * 0.75  # inside the nominal [Fc/2, 2Fc] band, below the clamped floor
+    assert below_center > fc_hz / 2.0
+    res_below = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=fc_hz, predicted_sum=_predicted_with_bump(below_center),
+        ),
+    )
+    tracking_below = res_below.verify_tracking
+    assert tracking_below["max_db_notch_excluded"] < 1.5  # excluded: not gated
+    assert tracking_below["max_db_full_band"] > 5.0  # still visible as a diagnostic
+
+    above_center = band_lo * 1.3  # comfortably above the clamped floor
+    res_above = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=fc_hz, predicted_sum=_predicted_with_bump(above_center),
+        ),
+    )
+    tracking_above = res_above.verify_tracking
+    assert tracking_above["max_db_notch_excluded"] > 1.5  # not excluded: still gates
+
+
+def test_build_candidate_raises_when_validity_floor_consumes_whole_band():
+    """If a branch's reflection gate is tight enough that the clamped low
+    edge reaches/exceeds the band's high edge, `_solve_trims`/`_ripple_db`
+    raise on the now-empty mask rather than silently computing over nothing.
+    This is deliberate: `jasper.web.correction_crossover_v2`'s existing
+    catch-all seam already classifies an analyze-time ValueError as
+    `internal_error` (its own comment names this exact case), so a
+    degenerate floor surfaces through that EXISTING signal instead of a new,
+    invented reason code."""
+    fc_hz = 100.0  # hi = 200 Hz — easy for a close reflection's floor to exceed
+    woofer_ir = _reflection_branch(
+        300, 50.0, 500.0, 1.0,
+        reflection_delay_s=1.5e-3, reflection_amp=1.0,  # floor ~ 1/0.0015 = 667 Hz > 200 Hz
+    )
+    tweeter_ir = _reflection_branch(300, 100.0, 500.0, 0.7)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    alignment = AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+    )
+    with pytest.raises(ValueError):
+        _build_candidate(
+            woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
+        )
 
 
 # --------------------------------------------------------------------------- #

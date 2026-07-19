@@ -904,13 +904,22 @@ class CrossoverV2Conductor:
             self._verify_outcome = "inconclusive"
             return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
         tracking = analysis.verify_tracking or {}
-        # Notch-aware comparator (W6.7 ruling 1): gate on the NOTCH-EXCLUDED
-        # max, not the raw full-band max. Inside a predicted interference
-        # notch, depth agreement is hypersensitive to sub-dB/sub-degree branch
-        # differences and is not a meaningful tracking signal — the run-7
-        # hardware failure (27.83 dB raw max, against a predicted sum whose
-        # OWN ripple was ~30 dB) was entirely that. ``max_db`` (raw, full
-        # band) still travels in the persisted evidence as a diagnostic field.
+        # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
+        # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
+        # max — and both are now computed over `tracking["tracking_band_hz"]`,
+        # this capture's own gate-derived validity floor clamped up from the
+        # nominal band (`program_analysis._analyze_verify`), not the nominal
+        # [Fc/2, 2·Fc] band alone. Inside a predicted interference notch, or
+        # below measurement validity, depth/level agreement is hypersensitive
+        # to sub-dB/sub-degree branch differences (or outright unmeasurable)
+        # and is not a meaningful tracking signal — the run-7 hardware failure
+        # (27.83 dB raw max, against a predicted sum whose OWN ripple was
+        # ~30 dB) was entirely that; the run-7/8 sequel traced the SAME class
+        # of false divergence to a fixed-window prediction baking a room
+        # reflection into a sub-floor region the notch rule alone didn't
+        # always catch. ``max_db``/``rms_db`` (still clamped, just not
+        # notch-excluded) and the pre-clamp ``*_full_band`` numbers still
+        # travel in the persisted evidence as diagnostic fields only.
         max_db = tracking.get("max_db_notch_excluded")
         if not isinstance(max_db, (int, float)) or max_db > VERIFY_TOLERANCE_DB:
             self._verify_outcome = "fail"

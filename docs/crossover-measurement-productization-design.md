@@ -201,14 +201,39 @@ misfires the linearity ratio on noise rather than AGC behavior).
   pair + one summed sweep through the applied production graph. **Pass =
   |measured sum − predicted sum| ≤ ±1.5 dB over [Fc/2, 2·Fc] at 1/6-octave
   smoothing, with VERIFY analysis windowed to MEASURE's accepted gate
-  parameters**; bins where the PREDICTED sum sits more than 12 dB
-  (provisional — W6.7) below its own band median are excluded from that MAX
-  comparator — inside a predicted interference notch, depth agreement is
-  hypersensitive to sub-dB/sub-degree branch differences and is not a
-  meaningful tracking signal (the W6 run-7 hardware failure: a 27.83 dB raw
-  max against a predicted sum whose own ripple was ~30 dB). RMS stays
-  full-band. If VERIFY's own detected first reflection forces a shorter
-  gate than MEASURE's, the verdict is "inconclusive — re-verify," not fail
+  parameters**; two exclusions narrow that comparator before the ±1.5 dB
+  test runs, both keyed on the PREDICTED side, both applied to RMS and MAX
+  alike (W6.9): bins where the predicted sum sits more than 12 dB
+  (provisional — W6.7) below its own band median are excluded — inside a
+  predicted interference notch, depth agreement is hypersensitive to
+  sub-dB/sub-degree branch differences and is not a meaningful tracking
+  signal (the W6 run-7 hardware failure: a 27.83 dB raw max against a
+  predicted sum whose own ripple was ~30 dB); and bins below THIS capture's
+  own gate-derived validity floor (`gating.f_valid_floor_hz` of the applied
+  reflection gate) are excluded outright, generalizing the notch exclusion
+  from "deep predicted notch" to "below measurement validity" (W6.9 — a
+  room reflection close enough to gate VERIFY's measured sum tighter than
+  the nominal band makes anything under that floor an artifact of a
+  truncated window, not evidence about driver alignment). Both the raw
+  full-band numbers and the clamped/excluded comparator are reported (the
+  former as a diagnostic only, never gating). **The gate-comparability rule
+  described just below now covers the prediction path by construction**: the
+  run-7/8 hardware failures were traced to the MEASURE-side prediction
+  composing each branch from a FIXED 65 ms window regardless of gate state,
+  so a room reflection inside that tail was baked into the predicted sum
+  even though VERIFY's adaptively-gated measured sum never had it —
+  invisible to the comparability rule because it only ever compared the two
+  ADAPTIVE gates (MEASURE's driver responses vs VERIFY's summed response)
+  and had no way to see the fixed-window prediction at all. The prediction
+  path now shares the identical adaptive reflection gate `_driver_response`
+  uses, so there is no longer a hidden third window for the rule to miss.
+  A mic position close enough to a hard reflective surface can still push
+  the validity floor high enough to make part of [Fc/2, 2·Fc] structurally
+  unverifiable at that position — that is an honest limit of the
+  measurement, not a new gap, and the existing ~1 m on-axis placement
+  prompt above is the mitigation already in place, not a new one. If
+  VERIFY's own detected first reflection forces a shorter gate than
+  MEASURE's, the verdict is "inconclusive — re-verify," not fail
   (a different gate manufactures overlay differences that aren't driver
   alignment). Target-tracking is displayed but does not gate. **On fail: the
   applied graph stays in force** (it is proof-checked safe regardless); the
@@ -655,7 +680,13 @@ the ask) is archived at `deep-research-crossover-measurement-prompt.md`
 
 ---
 
-_Last updated: 2026-07-19 (v2.2 — W6.7 measurement-honesty fixes folded: VERIFY
-notch-excluded MAX tracking, the VERIFY pilot pair's own flat band, the
-VERIFY-phase failure-screen override, and the review_apply low-confidence
-nudge; v2.1 design-review amendments folded; W1/W3/W4 merged, W2 in flight)._
+_Last updated: 2026-07-19 (v2.3 — W6.9 forensics fixes folded: the VERIFY
+tracking comparator (RMS and MAX, and the notch-exclusion bin set) now clamps
+to this capture's own gate-derived validity floor, and the MEASURE-side
+prediction (`_aligned_branch_tf`) now shares VERIFY's adaptive reflection gate
+instead of a fixed 65 ms window, closing the run-7/8 hardware bug where a room
+reflection was baked into the predicted sum invisibly to the gate-comparability
+check; v2.2's W6.7 measurement-honesty fixes folded: VERIFY notch-excluded MAX
+tracking, the VERIFY pilot pair's own flat band, the VERIFY-phase
+failure-screen override, and the review_apply low-confidence nudge; v2.1
+design-review amendments folded; W1/W3/W4 merged, W2 in flight)._
