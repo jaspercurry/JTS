@@ -1957,10 +1957,13 @@ def test_crossover_module_is_a_thin_server_envelope_renderer():
     # action row shows — plus its own definition.
     assert source.count("renderActions(") == 2
     assert "function renderActionRow(env)" in source
-    # render(), stopRelay()'s finally, and both of runAction()'s relay
-    # touch-points (the optimistic hide, and the finally re-render) all route
-    # through the one authority: definition + 4 call sites.
-    assert source.count("renderActionRow(") == 5
+    # render(), stopRelay()'s finally, both of runAction()'s relay
+    # touch-points (the optimistic hide, and the finally re-render), and
+    # startOver()'s finally (W6.11 — busy flips back to false there, so it
+    # must re-render too, or a fresh next_action's button stays baked
+    # disabled until a manual reload) all route through the one authority:
+    # definition + 5 call sites.
+    assert source.count("renderActionRow(") == 6
     # The relay-in-flight predicate is centralized in one helper for the
     # action-row gate (renderRelay() keeps its own separate RELAY_IN_FLIGHT
     # check to decide the relay panel/QR/stop-button visibility — a different
@@ -2032,7 +2035,9 @@ def test_start_over_confirm_is_grouping_aware_and_partial_is_honest():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert result == {"ok": True, "passed": 9}
+    # W6.11: +2 for the startOver-finally re-render pin (the fix for
+    # "Start measurement" staying disabled after a successful Start over).
+    assert result == {"ok": True, "passed": 11}
 
 
 def test_applied_chip_renders_server_state_and_hides_for_none():

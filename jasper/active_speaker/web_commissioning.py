@@ -247,6 +247,45 @@ def request_missing_software_guards(
     return updated, changed
 
 
+def regenerate_crossover_preview_from_current_draft() -> dict[str, Any]:
+    """Rebuild and persist a fresh crossover preview from the saved design draft.
+
+    This is the exact machinery ``/sound/``'s Preview button drives
+    (``jasper.web.sound_setup._active_speaker_crossover_preview_save_payload``):
+    request any missing software guards on the current topology, rebuild the
+    design draft against it (preserving the saved draft's own inputs and
+    revision), then persist through :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`
+    — the one real generator, never reimplemented. Exposed here rather than
+    imported from the `/sound/` page module so a second caller (the v2 flow's
+    session-start preview ensure) can reuse it without importing a wizard page
+    — the same reason this module already re-exposes
+    :func:`request_missing_software_guards` for its own startup-anchor use.
+
+    Returns whatever :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`
+    produces, ready or not — callers decide what a non-ready result means.
+    """
+    from jasper.active_speaker.crossover_preview import save_crossover_preview
+    from jasper.active_speaker.design_draft import build_design_draft, load_design_draft
+
+    draft = load_design_draft()
+    if draft.get("status") not in {"not_saved", "unreadable"}:
+        saved_revision = draft.get("revision", 0)
+        topology, _guards_changed = request_missing_software_guards(
+            load_output_topology()
+        )
+        draft = build_design_draft(
+            topology,
+            driver_research_request=draft.get("driver_research_request"),
+            driver_research=draft.get("driver_research"),
+            manual_settings=draft.get("manual_settings"),
+            operator_inputs=draft.get("operator_inputs"),
+            prior_safety_profile=draft.get("driver_safety_profile"),
+            created_at=draft.get("created_at"),
+        )
+        draft["revision"] = saved_revision
+    return save_crossover_preview(draft)
+
+
 def _stage_startup_config(
     topology: OutputTopology,
     *,

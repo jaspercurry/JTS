@@ -2287,6 +2287,15 @@ async function onStart(ctx) {
 
 async function boot() {
   const screenEl = document.getElementById("screen");
+  // buildMicPicker() inserts its "Microphone:" selector as a SIBLING just
+  // before `screenEl`, not as a child of it — so it lives outside what
+  // setScreen()'s replaceChildren() below clears. Without this removal, a
+  // hashchange re-boot (onHashChange -> bootFromHash -> boot) left the PRIOR
+  // boot's picker in place and stacked a second one beside it.
+  if (micPickerEl && micPickerEl.parentNode) {
+    micPickerEl.remove();
+  }
+  micPickerEl = null;
   // Own the screen with a clear, NON-interactive loading affordance for the
   // couple of seconds boot takes (blocker #4d). This also clears any stale
   // controls — e.g. a bfcache-restored DOM whose handlers are not yet
@@ -2408,6 +2417,12 @@ async function boot() {
   }
 }
 
+// The currently-inserted mic-picker element, if any — tracked so a re-boot
+// can remove the PRIOR boot's picker (see boot() above) instead of appending
+// a second one beside it, since the picker lives outside the boot-render
+// root (`screenEl`) that setScreen() clears.
+let micPickerEl = null;
+
 // Best-effort input picker for a USB-C measurement mic plugged into the phone.
 // Progressive enhancement: it appears only when the browser exposes ≥2 labeled
 // audio inputs (Android Chrome typically does). It stays hidden when labels are
@@ -2454,6 +2469,7 @@ async function buildMicPicker(beforeEl) {
   wrap.appendChild(select);
   if (beforeEl && beforeEl.parentNode) {
     beforeEl.parentNode.insertBefore(wrap, beforeEl);
+    micPickerEl = wrap;
   }
 }
 

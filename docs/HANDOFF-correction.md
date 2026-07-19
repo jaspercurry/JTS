@@ -1831,6 +1831,25 @@ enumerates) lives as a comment on
 in `tests/test_active_speaker_reset.py` and `tests/test_correction_crossover_reset.py`
 pin it.
 
+**W6.11 (2026-07-19): the next v2 session start re-arms the cleared
+preview.** Before this fix, nothing regenerated `crossover_preview` after
+Start-over — or after a fresh `/correction/` visit that never touched
+`/sound/`'s Preview button at all. Every measured candidate baked its
+`source_preset` against `resolve_capture_preset`'s generic bundled-preset
+fallback, which could never match a preview generated later, so Apply
+refused `measured_candidate_preset_mismatch` forever.
+`resolve_conductor_context` — the shared entry both `POST
+/crossover/v2/session` and `POST /crossover/v2/verify` resolve through —
+now calls `jasper.web.correction_crossover_v2.ensure_crossover_preview_ready()`
+before resolving the capture preset: an already-`ready_for_protected_staging`
+preview for the CURRENT design draft is reused byte-untouched; anything else
+(absent — including right after Start-over — stale, or blocked) is
+regenerated through the SAME machinery `/sound/`'s Preview button drives
+(`jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft`
+→ `crossover_preview.save_crossover_preview`). If the design draft still
+cannot produce a ready preview, session start refuses by name
+(`CrossoverV2Refused`) instead of leaving the surprise for apply time.
+
 Endpoint shape mirrors `/crossover/relay-cancel`: same
 `_POST_ROUTES`/`guard_mutating_request`/CSRF path, plus the existing
 `volume_sensitive_routes` gate (refuses while the crossover listening

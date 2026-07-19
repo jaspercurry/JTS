@@ -116,6 +116,14 @@ def _stub_non_topology_inputs(monkeypatch):
     monkeypatch.setattr(
         design_draft, "load_design_draft", lambda **kw: {"driver_safety_profile": {}}
     )
+    # W6.11 landed a real crossover-preview ensure step at the top of
+    # resolve_conductor_context (before resolve_capture_preset runs). It reads
+    # real global state (load_output_topology, the on-disk design draft) that
+    # this module deliberately does not stub — stubbing it here (like
+    # resolve_capture_preset above) keeps this file focused on the ONE seam
+    # under test; the ensure step itself is covered in
+    # tests/test_correction_crossover_v2_endpoints.py.
+    monkeypatch.setattr(v2host, "ensure_crossover_preview_ready", lambda: None)
     monkeypatch.setattr(
         excitation_safety_plan_mod,
         "resolve_driver_excitation_ceilings",
