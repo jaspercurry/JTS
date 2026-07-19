@@ -156,6 +156,22 @@ LINEARITY_TOLERANCE_DB = 0.5
 CHANNEL_MAP_TARGET_RISE_DB = 12.0
 CHANNEL_MAP_CROSS_RISE_DB = 6.0
 
+# VERIFY tracking-error smoothing: 1/6-octave, the constant design §5.2 names
+# for the pass/fail comparison (previously 1/24-oct, a display-grade
+# smoothing far finer than the design spec).
+VERIFY_TRACKING_SMOOTHING_FRACTION = 6
+
+# VERIFY tracking MAX comparator (W6.7 ruling 1): a bin is excluded from the
+# max-tracking comparator when the PREDICTED sum sits more than this many dB
+# below its own median level over the tracking band. Inside a predicted
+# interference notch, depth agreement is hypersensitive to sub-dB/sub-degree
+# branch differences and is not a meaningful tracking signal — the W6 run-7
+# hardware failure (3.05 dB rms / 27.83 dB max) was entirely a shifted
+# predicted notch, not a broadband divergence. RMS stays full-band (it
+# already behaves sanely — see `_analyze_verify`). PROVISIONAL pending W6
+# bench distributions on notch depth/shift variability.
+VERIFY_NOTCH_EXCLUSION_DB = 12.0
+
 ANALYSIS_KIND = "jts_program_analysis"
 
 
@@ -1504,15 +1520,28 @@ def _analyze_verify(
         if priors.predicted_sum is not None:
             pred_freqs, pred_db = priors.predicted_sum
             measured_db = analysis_mod.smooth_fractional_octave(
-                summed.freqs_hz, summed.magnitude_db, 24
+                summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION
             )
+            predicted_db_interp = np.interp(summed.freqs_hz, pred_freqs, pred_db)
+            # Full band: already behaves sanely (design §5.2's ±1.5 dB pass
+            # criterion). ``max_db`` is kept as a raw DIAGNOSTIC field only —
+            # it is not gated, because a deep predicted notch makes the raw
+            # max meaningless (W6.7 ruling 1).
             rms, max_abs = analysis_mod.tracking_error_db(
-                summed.freqs_hz,
-                measured_db,
-                np.interp(summed.freqs_hz, pred_freqs, pred_db),
-                (lo, hi),
+                summed.freqs_hz, measured_db, predicted_db_interp, (lo, hi),
             )
-            tracking = {"rms_db": rms, "max_db": max_abs}
+            # Notch-excluded: the actual gating comparator
+            # (`crossover_v2_flow._consume_verify` reads ``max_db_notch_excluded``).
+            rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
+                summed.freqs_hz, measured_db, predicted_db_interp, (lo, hi),
+                notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+            )
+            tracking = {
+                "rms_db": rms,
+                "max_db": max_abs,
+                "rms_db_notch_excluded": rms_excl,
+                "max_db_notch_excluded": max_excl,
+            }
     # A v2 VERIFY program opens with a leading pilot pair (design §5.2) so the
     # post-apply capture carries its own behavioral-linearity evidence too;
     # legacy VERIFY programs carry none and the verdicts stay ``None``.

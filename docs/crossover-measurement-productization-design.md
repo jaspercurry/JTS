@@ -163,7 +163,12 @@ later captures, **every MEASURE and VERIFY program also opens with a short
 two-level pilot pair (~2 s)** so each capture carries its own linearity
 evidence, and MEASURE acceptance additionally requires the woofer repeat
 pair to agree in level within ±0.3 dB (a gain-riding detector complementing
-the timing baselines).
+the timing baselines). The VERIFY pilot pair rides its own flat mid-woofer
+band (~200–800 Hz, hi bound clamped to Fc/2.5 for low-Fc presets, with an
+[Fc/8, Fc/4] fallback), NOT the summed sweep's full band (W6.7 — the sweep
+deliberately crosses the crossover overlap to see the applied interference
+notch; a pilot chirp swept through that same notch goes noise-dominated and
+misfires the linearity ratio on noise rather than AGC behavior).
 
 - **CHECK (~25 s capture, one phone tap).** Program: leading silence (the
   session's ambient measurement, reusing the framed-ambient policy) + per
@@ -188,20 +193,35 @@ the timing baselines).
 - **REVIEW + APPLY (control page, no capture).** The proposed candidate —
   trims, polarity, delay, predicted summed response vs target — with one
   Apply action (existing fingerprint pattern). Crossover Fc/slope stay
-  preset-owned, now with measured trims/delay/polarity.
+  preset-owned, now with measured trims/delay/polarity. When the alignment
+  estimator's confidence is low (< 0.6, provisional — W6.7), the screen
+  carries a warn nudge suggesting a re-measure at a cleaner mic position;
+  Apply is NOT blocked (informed consent, not a gate).
 - **VERIFY (~15 s capture, one phone tap, after apply).** Two-level pilot
   pair + one summed sweep through the applied production graph. **Pass =
   |measured sum − predicted sum| ≤ ±1.5 dB over [Fc/2, 2·Fc] at 1/6-octave
   smoothing, with VERIFY analysis windowed to MEASURE's accepted gate
-  parameters**; if VERIFY's own detected first reflection forces a shorter
+  parameters**; bins where the PREDICTED sum sits more than 12 dB
+  (provisional — W6.7) below its own band median are excluded from that MAX
+  comparator — inside a predicted interference notch, depth agreement is
+  hypersensitive to sub-dB/sub-degree branch differences and is not a
+  meaningful tracking signal (the W6 run-7 hardware failure: a 27.83 dB raw
+  max against a predicted sum whose own ripple was ~30 dB). RMS stays
+  full-band. If VERIFY's own detected first reflection forces a shorter
   gate than MEASURE's, the verdict is "inconclusive — re-verify," not fail
   (a different gate manufactures overlay differences that aren't driver
   alignment). Target-tracking is displayed but does not gate. **On fail: the
   applied graph stays in force** (it is proof-checked safe regardless); the
   user is offered Re-verify (capture again), Re-measure (back to MEASURE,
   evidence replaced), or Restore previous (the existing apply-rollback
-  path), with one specific reason shown. Rendered as the before/after
-  overlay; pairs with the existing A/B affordances as the user's proof.
+  path), with one specific reason shown — ANY failure code surfacing once
+  VERIFY is reached (not just the two VERIFY-specific reasons) renders this
+  same screen, because the candidate is already applied by that point and
+  the household is entitled to the Undo affordance regardless of which
+  check failed (W6.7 — a run-7 `agc_behavioral_fail` mid-VERIFY had
+  rendered the ordinary fix_and_retry screen instead, hiding Undo).
+  Rendered as the before/after overlay; pairs with the existing A/B
+  affordances as the user's proof.
 
 User cost: place the mic once, ~3 phone taps + review/apply, **~2–3 minutes**.
 **Only the first capture of a session requires a tap:** an accepted CHECK
@@ -635,5 +655,7 @@ the ask) is archived at `deep-research-crossover-measurement-prompt.md`
 
 ---
 
-_Last updated: 2026-07-18 (v2.1 — design-review amendments folded; W1/W3/W4
-merged, W2 in flight)._
+_Last updated: 2026-07-19 (v2.2 — W6.7 measurement-honesty fixes folded: VERIFY
+notch-excluded MAX tracking, the VERIFY pilot pair's own flat band, the
+VERIFY-phase failure-screen override, and the review_apply low-confidence
+nudge; v2.1 design-review amendments folded; W1/W3/W4 merged, W2 in flight)._

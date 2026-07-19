@@ -36,6 +36,8 @@ from jasper.audio_measurement.program import (
     PHASE_MEASURE,
     PHASE_VERIFY,
     PROGRAM_SAMPLE_RATE_HZ,
+    VERIFY_PILOT_F_HI_HZ,
+    VERIFY_PILOT_F_LO_HZ,
     ExcitationProgram,
     ProgramSegment,
     RoleBand,
@@ -170,6 +172,51 @@ def test_verify_widens_low_bound_for_low_fc():
     prog = build_verify_program(200.0, sweep_s=1.0)
     # f1 = min(150, fc/2) = 100 so the lower shoulder fc/2 is excited.
     assert prog.segment("sweep_verify").f1_hz == pytest.approx(100.0)
+
+
+def test_verify_leading_pilot_rides_its_own_flat_band_not_the_notched_sweep_band():
+    """W6.7 ruling 2: the leading VERIFY pilot pair must NOT share the summed
+    sweep's full band — that band deliberately crosses the crossover overlap
+    (the sweep needs to see the interference notch there), but a pilot chirp
+    swept through that same notch goes noise-dominated and misfires the
+    ±0.5 dB linearity ratio check (the W6 run-7 hardware bug). The pilot
+    rides its own flat mid-woofer band instead. At the reference rig's
+    fc=2000 the Fc clamp (fc/2.5 = 800) coincides with the fixed hi bound —
+    the band stays [200, 800]."""
+    prog = build_verify_program(2000.0, sweep_s=1.0, leading_pilot_gains_db=(-20.0, -10.0))
+    sweep = prog.segment("sweep_verify")
+    pilot_lo = prog.segment("pilot_summed_lo")
+    pilot_hi = prog.segment("pilot_summed_hi")
+    assert pilot_lo.f1_hz == pytest.approx(VERIFY_PILOT_F_LO_HZ)
+    assert pilot_lo.f2_hz == pytest.approx(VERIFY_PILOT_F_HI_HZ)
+    assert pilot_hi.f1_hz == pytest.approx(VERIFY_PILOT_F_LO_HZ)
+    assert pilot_hi.f2_hz == pytest.approx(VERIFY_PILOT_F_HI_HZ)
+    # The pilot band sits comfortably below the sweep's own low shoulder for
+    # a normal (well above ~1 kHz) crossover -- it is NOT the sweep's band.
+    assert VERIFY_PILOT_F_HI_HZ < sweep.f2_hz
+    assert (pilot_lo.f1_hz, pilot_lo.f2_hz) != (sweep.f1_hz, sweep.f2_hz)
+
+
+def test_verify_pilot_hi_bound_tracks_a_low_fc_below_the_crossover_shoulder():
+    """W6.7 gate N1: a low-Fc preset would bring the crossover overlap
+    ([Fc/2, 2·Fc]) down into the fixed 200-800 Hz window, so the pilot's hi
+    bound is clamped to fc/2.5 — below the Fc/2 shoulder with margin."""
+    prog = build_verify_program(1000.0, sweep_s=1.0, leading_pilot_gains_db=(-20.0, -10.0))
+    pilot = prog.segment("pilot_summed_hi")
+    assert pilot.f1_hz == pytest.approx(VERIFY_PILOT_F_LO_HZ)
+    assert pilot.f2_hz == pytest.approx(400.0)  # fc/2.5, not the fixed 800
+    # Entirely below the crossover overlap's lower shoulder fc/2 = 500.
+    assert pilot.f2_hz < 1000.0 / 2.0
+
+
+def test_verify_pilot_falls_back_below_the_crossover_for_degenerate_low_fc():
+    """When fc/2.5 collapses the [200, hi] band entirely (very low Fc), the
+    composer falls back to [fc/8, fc/4] — still below the crossover region."""
+    prog = build_verify_program(400.0, sweep_s=1.0, leading_pilot_gains_db=(-20.0, -10.0))
+    pilot = prog.segment("pilot_summed_hi")
+    assert pilot.f1_hz == pytest.approx(400.0 / 8.0)  # 50
+    assert pilot.f2_hz == pytest.approx(400.0 / 4.0)  # 100
+    assert pilot.f2_hz < 400.0 / 2.0
 
 
 # --------------------------------------------------------------------------- #

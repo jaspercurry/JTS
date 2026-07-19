@@ -244,7 +244,9 @@ PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[
 # A located stimulus below this correlation confidence reads as "couldn't hear
 # the speaker" (locate_failed).
 LOCATE_MIN_CONFIDENCE = 0.1
-# VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2).
+# VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
+# measured against the notch-excluded max (W6.7 ruling 1 —
+# `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
@@ -902,7 +904,14 @@ class CrossoverV2Conductor:
             self._verify_outcome = "inconclusive"
             return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
         tracking = analysis.verify_tracking or {}
-        max_db = tracking.get("max_db")
+        # Notch-aware comparator (W6.7 ruling 1): gate on the NOTCH-EXCLUDED
+        # max, not the raw full-band max. Inside a predicted interference
+        # notch, depth agreement is hypersensitive to sub-dB/sub-degree branch
+        # differences and is not a meaningful tracking signal — the run-7
+        # hardware failure (27.83 dB raw max, against a predicted sum whose
+        # OWN ripple was ~30 dB) was entirely that. ``max_db`` (raw, full
+        # band) still travels in the persisted evidence as a diagnostic field.
+        max_db = tracking.get("max_db_notch_excluded")
         if not isinstance(max_db, (int, float)) or max_db > VERIFY_TOLERANCE_DB:
             self._verify_outcome = "fail"
             return PhaseVerdict(

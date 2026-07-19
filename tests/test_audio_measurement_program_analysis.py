@@ -691,6 +691,60 @@ def test_verify_tracking_against_predicted_sum():
     )
     assert res.verify_tracking is not None
     assert res.verify_tracking["rms_db"] < 3.0
+    # W6.7 ruling 1: a flat prediction has no bin more than
+    # ``VERIFY_NOTCH_EXCLUSION_DB`` below its own median, so nothing is
+    # excluded — the notch-excluded fields are byte-identical to the raw
+    # full-band ones.
+    assert res.verify_tracking["max_db_notch_excluded"] == pytest.approx(
+        res.verify_tracking["max_db"]
+    )
+    assert res.verify_tracking["rms_db_notch_excluded"] == pytest.approx(
+        res.verify_tracking["rms_db"]
+    )
+
+
+def test_verify_tracking_notch_exclusion_reduces_max_through_the_pipeline():
+    """W6.7 ruling 1, wired end-to-end through ``analyze_program_capture``: a
+    real captured null (a two-tap comb filter — an actual acoustic-style
+    interference notch, not a hand-drawn curve) compared against a predicted
+    null of the same general shape but a slightly different exact
+    frequency/depth (the "sub-dB/sub-degree branch difference" the run-7
+    architect's analysis names). The exact numeric OLD-fails/NEW-passes
+    contract is pinned directly against ``notch_excluded_tracking_error_db``
+    in test_audio_measurement_harmonics.py; this test only pins that the
+    pipeline actually WIRES the exclusion in (1/6-oct smoothing, the notch
+    boundary applied) and that it measurably shrinks the max here too."""
+    prog = build_verify_program(FC_HZ, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    null_delay = int(round(SR / FC_HZ))
+    ir = np.zeros(8192)
+    ir[200] = 1.0
+    ir[200 + null_delay] = -1.0
+    spectrum = np.fft.rfft(ir)
+    freqs_ir = np.fft.rfftfreq(ir.size, 1.0 / SR)
+    spectrum[(freqs_ir < 150.0) | (freqs_ir > 20000.0)] = 0.0
+    ir = np.fft.irfft(spectrum, ir.size)
+    mono = fftconvolve(pcm[:, 0], ir)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(11).normal(0.0, 1e-4, cap.size)
+
+    pred_freqs = np.geomspace(100.0, 20000.0, 400)
+    # The predicted null assumes a slightly different delay -- the analytic
+    # comb-filter magnitude for the SAME shape, a hair off in frequency.
+    predicted_mag = 2.0 * np.abs(np.sin(np.pi * pred_freqs * (null_delay + 0.4) / SR))
+    pred_db = 20.0 * np.log10(np.maximum(predicted_mag, 1e-6))
+
+    res = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ, predicted_sum=(pred_freqs, pred_db)),
+    )
+    assert res.verify_tracking is not None
+    tracking = res.verify_tracking
+    # The raw full-band max is dominated by the notch-position mismatch
+    # (the run-7 bug shape); excluding the predicted notch's own interior
+    # measurably shrinks it.
+    assert tracking["max_db_notch_excluded"] < tracking["max_db"]
+    assert tracking["rms_db_notch_excluded"] < tracking["rms_db"]
 
 
 # --------------------------------------------------------------------------- #

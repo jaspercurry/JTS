@@ -127,6 +127,25 @@ DEFAULT_VERIFY_TAIL_S = 0.5
 VERIFY_F_LO_HZ = 150.0
 VERIFY_F_HI_HZ = 20_000.0
 
+# The leading VERIFY pilot pair's OWN band (W6.7 ruling 2) — deliberately NOT
+# the summed sweep's full band. The sweep spans the crossover overlap on
+# purpose (it needs to see the interference notch there), but a pilot chirp
+# swept through that same notch goes noise-dominated across the notched
+# portion, and the ±0.5 dB behavioral-linearity ratio (`LINEARITY_TOLERANCE_DB`
+# in program_analysis.py) misfires on that noise rather than on actual AGC/gain
+# behavior — the W6 run-7 hardware bug this fixes. PROVISIONAL: 200-800 Hz is a
+# flat mid-woofer region of the applied summed response for a typical 2-way
+# crossover (e.g. the 2000 Hz reference rig). The hi bound is additionally
+# clamped to fc/VERIFY_PILOT_FC_CLEARANCE_RATIO at compose time so a low-Fc
+# preset can't bring the crossover overlap ([Fc/2, 2·Fc]) back into the pilot
+# band: 2.5 keeps the pilot's top edge below the Fc/2 shoulder with margin
+# (fc/2.5 < fc/2). When even that collapses the band (very low Fc), the
+# composer falls back to [fc/8, fc/4] — still comfortably below the crossover
+# region. All three constants PROVISIONAL pending W6 bench distributions.
+VERIFY_PILOT_F_LO_HZ = 200.0
+VERIFY_PILOT_F_HI_HZ = 800.0
+VERIFY_PILOT_FC_CLEARANCE_RATIO = 2.5
+
 
 @dataclass(frozen=True)
 class RoleBand:
@@ -749,10 +768,17 @@ def build_verify_program(
     ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
 
     ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
-    prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``, same
-    full-band as the summed sweep) so VERIFY also carries its own
-    behavioral-linearity evidence. ``None`` is byte-identical to the pre-v2
-    composer.
+    prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``) so
+    VERIFY also carries its own behavioral-linearity evidence. The pilot rides
+    its OWN band (W6.7 ruling 2) — a flat mid-woofer region of the applied
+    summed response, ``[VERIFY_PILOT_F_LO_HZ, min(VERIFY_PILOT_F_HI_HZ,
+    fc/VERIFY_PILOT_FC_CLEARANCE_RATIO)]``, falling back to ``[fc/8, fc/4]``
+    when a very low Fc collapses that band — rather than the summed sweep's
+    full band: the sweep deliberately crosses the crossover overlap (it needs
+    to see the interference notch there), and a pilot swept through that same
+    notch goes noise-dominated across the notched portion, misfiring the
+    linearity ratio check on noise rather than on AGC/gain behavior. ``None``
+    is byte-identical to the pre-v2 composer.
     """
     if not (fc_hz > 0) or not math.isfinite(fc_hz):
         raise ValueError("fc_hz must be finite and positive")
@@ -766,12 +792,20 @@ def build_verify_program(
     if leading_pilot_gains_db is not None:
         if len(leading_pilot_gains_db) != 2:
             raise ValueError("leading_pilot_gains_db must be exactly two levels")
+        # Fc-aware pilot band (see the VERIFY_PILOT_* constants block): the
+        # fixed 200-800 Hz window is only flat while the crossover overlap
+        # sits above it, so the hi bound is clamped below the Fc/2 shoulder,
+        # with an [fc/8, fc/4] fallback when the clamp collapses the band.
+        pilot_lo = VERIFY_PILOT_F_LO_HZ
+        pilot_hi = min(VERIFY_PILOT_F_HI_HZ, fc_hz / VERIFY_PILOT_FC_CLEARANCE_RATIO)
+        if not pilot_lo < pilot_hi:
+            pilot_lo, pilot_hi = fc_hz / 8.0, fc_hz / 4.0
         cursor = _append_leading_pilot_pair(
             segments, cursor,
             role=VERIFY_PILOT_ROLE,
             channel=0,
-            f1_hz=f1_hz,
-            f2_hz=f2_hz,
+            f1_hz=pilot_lo,
+            f2_hz=pilot_hi,
             gains_db=leading_pilot_gains_db,
             pilot_duration_s=pilot_duration_s,
             pilot_gap_s=pilot_gap_s,

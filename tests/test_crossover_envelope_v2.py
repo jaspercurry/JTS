@@ -20,6 +20,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 )
 from jasper.active_speaker.crossover_v2_flow import (
     REASON_REGISTRY,
+    REASON_AGC_BEHAVIORAL_FAIL,
     REASON_CLIPPED,
     REASON_CHANNEL_MAP_MISMATCH,
     REASON_RELAY_TIMEOUT,
@@ -241,6 +242,89 @@ def test_unknown_failure_code_still_renders_a_retry_screen():
     ))
     assert env["screen"] == "fix_and_retry"
     assert env["next_action"] is not None
+
+
+# --- W6.7 ruling 3: VERIFY-phase failures always get the verify_fail screen ------
+
+
+def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
+    """The run-7 hardware bug: an agc_behavioral_fail during VERIFY (post-
+    apply) rendered fix_and_retry and displaced the verify_fail screen's Undo
+    affordance. REASON_AGC_BEHAVIORAL_FAIL's OWN registry template is
+    fix_and_retry (correct for CHECK/MEASURE, where nothing is applied yet);
+    once phase is verify, the applied graph is already live, so the same
+    code must render verify_fail instead."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
+    ))
+    assert env["screen"] == "verify_fail"
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_AGC_BEHAVIORAL_FAIL].message
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
+    undo = next(a for a in env["alternate_actions"] if a["id"] == "verify_undo")
+    assert undo["endpoint"] == "/correction/crossover/restore"
+
+
+def test_check_phase_agc_failure_still_renders_its_normal_template():
+    """The SAME code at CHECK (nothing applied yet) is untouched — still
+    fix_and_retry, no Undo affordance to offer."""
+    env = build_crossover_envelope_v2(_status(
+        phase="check", failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
+    ))
+    assert env["screen"] == "fix_and_retry"
+    assert env["alternate_actions"] == []
+
+
+def test_verify_phase_relay_timeout_also_renders_verify_fail():
+    """A non-agc code (REASON_RELAY_TIMEOUT's own template is
+    session_restart) gets the same VERIFY-phase override -- ANY failure code
+    surfacing post-apply is entitled to the Undo affordance."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", failure={"code": REASON_RELAY_TIMEOUT},
+    ))
+    assert env["screen"] == "verify_fail"
+
+
+def test_verify_phase_unknown_code_renders_verify_fail_too():
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", failure={"code": "some_future_code"},
+    ))
+    assert env["screen"] == "verify_fail"
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
+
+
+# --- W6.7 ruling 4: low-confidence nudge on review_apply -------------------------
+
+
+def test_review_apply_nudges_on_low_alignment_confidence():
+    env = build_crossover_envelope_v2(_status(
+        phase="review_apply",
+        candidate={"fingerprint": "fp-123", "alignment_confidence": 0.3},
+    ))
+    assert env["screen"] == "review_apply"
+    codes = [n["code"] for n in env["nudges"]]
+    assert "crossover_v2_alignment_low_confidence" in codes
+    # Apply is NOT blocked -- informed consent, not a gate.
+    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/apply"
+
+
+def test_review_apply_no_nudge_when_confidence_is_high():
+    env = build_crossover_envelope_v2(_status(
+        phase="review_apply",
+        candidate={"fingerprint": "fp-123", "alignment_confidence": 0.9},
+    ))
+    assert env["nudges"] == []
+
+
+def test_review_apply_no_nudge_when_confidence_is_absent():
+    """A legacy/trims-only candidate with no alignment estimate at all must
+    not nudge -- only a KNOWN low confidence value nudges."""
+    env = build_crossover_envelope_v2(_status(
+        phase="review_apply",
+        candidate={"fingerprint": "fp-123"},
+    ))
+    assert env["nudges"] == []
 
 
 @pytest.mark.parametrize("code,template", [
