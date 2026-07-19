@@ -46,12 +46,15 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
     emit_active_speaker_driver_domain_config,
+    emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
 )
 import jasper.active_speaker.camilla_yaml as camilla_yaml
+from jasper.active_speaker.camilla_yaml import _assert_pipeline_references_closed
 from jasper.active_speaker.graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     output_highpass_protected,
+    pipeline_reference_closure_errors,
     unprotected_tweeter_outputs,
     view_from_emitted_text,
 )
@@ -529,3 +532,171 @@ def test_emit_gate_allows_protected_driver_domain_follower() -> None:
         program_channel="left",
     )
     assert "pipeline:" in yaml
+
+
+# --- pipeline reference closure (#4) ------------------------------------------
+#
+# W6 hardware run 4 finding I: emit_active_speaker_program_config's pipeline
+# (reused verbatim from _emit_commissioning_pipeline) hardcoded a Mixer step
+# named split_active_{way}way, but its OWN mixer helper
+# (_emit_role_routed_mixer) named the mixer it emitted program_route_{way}way
+# -- CamillaDSP's SetConfig rejected every program-graph load with
+# "Use of missing mixer 'split_active_2way'". None of the predicates above
+# could have caught this: GraphView drops Mixer pipeline steps entirely
+# (view_from_emitted_text / _emitted_step returns None for anything but
+# type: Filter) and never tracks the mixers: section at all, so every test in
+# this file up to here is blind to a mixer-name mismatch by construction.
+# pipeline_reference_closure_errors is the dedicated, independent primitive
+# that closes that hole; these tests pin it directly and at the
+# build-and-prove boundary of BOTH emitters that assemble their filters,
+# mixer, and pipeline from independent helper calls (program config and
+# baseline config).
+
+ROLE_CHANNELS = {"woofer": 0, "tweeter": 1}
+
+_CLOSED_GRAPH = {
+    "mixers": {"split_active_2way": {"channels": {"in": 2, "out": 2}}},
+    "filters": {
+        "active_startup_headroom": {"type": "Gain", "parameters": {"gain": 0.0}},
+    },
+    "pipeline": [
+        {"type": "Filter", "channels": [0, 1], "names": ["active_startup_headroom"]},
+        {"type": "Mixer", "name": "split_active_2way"},
+    ],
+}
+
+
+def test_pipeline_reference_closure_errors_passes_a_closed_graph() -> None:
+    assert pipeline_reference_closure_errors(_CLOSED_GRAPH) == ()
+
+
+def test_pipeline_reference_closure_errors_catches_the_w6_run4_shape() -> None:
+    # The exact regression: pipeline references split_active_2way, but mixers:
+    # defines program_route_2way instead (the pre-fix _emit_role_routed_mixer
+    # name).
+    broken = {
+        **_CLOSED_GRAPH,
+        "mixers": {"program_route_2way": {"channels": {"in": 2, "out": 2}}},
+    }
+    errors = pipeline_reference_closure_errors(broken)
+    assert len(errors) == 1
+    assert "split_active_2way" in errors[0]
+
+
+def test_pipeline_reference_closure_errors_catches_dangling_filter() -> None:
+    broken = {**_CLOSED_GRAPH, "filters": {}}
+    errors = pipeline_reference_closure_errors(broken)
+    assert len(errors) == 1
+    assert "active_startup_headroom" in errors[0]
+
+
+def test_pipeline_reference_closure_errors_reports_every_dangling_name_at_once() -> None:
+    # CamillaDSP's SetConfig only reports the FIRST missing reference (one
+    # fix-and-retry cycle at a time on real hardware); this primitive reports
+    # every dangling reference in a single pass.
+    broken = {**_CLOSED_GRAPH, "mixers": {}, "filters": {}}
+    errors = pipeline_reference_closure_errors(broken)
+    assert len(errors) == 2
+
+
+def test_pipeline_reference_closure_errors_fails_closed_on_bad_shapes() -> None:
+    assert pipeline_reference_closure_errors({"mixers": {}, "filters": {}}) != ()
+    assert pipeline_reference_closure_errors("not a mapping") != ()
+
+
+def test_assert_pipeline_references_closed_passes_the_real_program_config() -> None:
+    preset = _preset("mono", 2)
+    yaml_text = emit_active_speaker_program_config(
+        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+    )
+    _assert_pipeline_references_closed(yaml_text, preset)  # must not raise
+
+
+def test_assert_pipeline_references_closed_passes_the_real_baseline_config() -> None:
+    preset = _preset("mono", 2)
+    yaml_text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, baseline_id="closure-check"
+    )
+    _assert_pipeline_references_closed(yaml_text, preset)  # must not raise
+
+
+def test_build_and_prove_refuses_program_graph_with_dropped_mixer(monkeypatch) -> None:
+    """Mutated-graph negative: recreate the exact W6 run 4 regression by
+    renaming the program graph's OWN emitted mixer out from under the
+    pipeline's hardcoded split_active_2way reference. If a future edit ever
+    deletes the reference-closure gate from emit_active_speaker_program_config,
+    this test starts shipping a graph CamillaDSP would refuse to load."""
+    original = camilla_yaml._emit_role_routed_mixer
+
+    def _renamed(*args, **kwargs):
+        text = original(*args, **kwargs)
+        return text.replace("split_active_2way", "program_route_2way", 1)
+
+    monkeypatch.setattr(camilla_yaml, "_emit_role_routed_mixer", _renamed)
+    with pytest.raises(ActiveSpeakerConfigError, match="undefined mixer"):
+        emit_active_speaker_program_config(
+            _preset("mono", 2),
+            role_channels=ROLE_CHANNELS,
+            playback_device=ACTIVE_PCM,
+        )
+
+
+def test_build_and_prove_refuses_baseline_graph_with_dropped_mixer(monkeypatch) -> None:
+    """Mutated-graph negative for the baseline emitter: same shape as the
+    program-graph test above, applied to _emit_split_mixer (the mixer
+    _emit_baseline_pipeline's hardcoded Mixer step references)."""
+    original = camilla_yaml._emit_split_mixer
+
+    def _renamed(*args, **kwargs):
+        text = original(*args, **kwargs)
+        return text.replace("split_active_2way", "renamed_split_mixer", 1)
+
+    monkeypatch.setattr(camilla_yaml, "_emit_split_mixer", _renamed)
+    with pytest.raises(ActiveSpeakerConfigError, match="undefined mixer"):
+        emit_active_speaker_baseline_config(
+            _preset("mono", 2), playback_device=ACTIVE_PCM, baseline_id="broken"
+        )
+
+
+def test_program_config_mixer_is_named_split_active_not_program_route() -> None:
+    """Direct regression pin for the rename itself (W6 finding I): the
+    role-routed program mixer must share its NAME with the commissioning/
+    baseline/startup split mixer -- both because _emit_commissioning_pipeline
+    (reused verbatim by the program graph) hardcodes that name, and because
+    jasper.active_speaker.environment's _ACTIVE_SPLIT_RE ecosystem contract
+    keys on it (see test_active_speaker_environment.py for that half)."""
+    yaml_text = emit_active_speaker_program_config(
+        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+    )
+    assert "split_active_2way" in yaml_text
+    assert "program_route_2way" not in yaml_text
+
+
+def test_program_config_round_trips_through_camillas_own_check(tmp_path) -> None:
+    """Best-effort extra proof beyond the structural closure check above: round
+    -trip the emitted program YAML through CamillaDSP's OWN validator.
+
+    The task asked for a round-trip through "the camilladsp python lib's
+    validate_config". That pip package (jasper.camilla lazily imports it as
+    `camilladsp`) only exposes RPC-style config validation
+    (Config.validate/validate_yaml/validate_json) that proxies a live
+    websocket connection to an already-running CamillaDSP daemon -- there is
+    no purely offline validator in that package to call standalone. The
+    closest hardware-free equivalent already established in this codebase is
+    jasper.dsp_apply.validate_camilla_config, which shells out to the REAL
+    Rust camilladsp binary's own `--check` flag (the same validation SetConfig
+    runs, just without a live daemon connection) -- so it is used here
+    instead. Skips (matching validate_camilla_config's own MISSING
+    classification) when that binary is not installed, which is every
+    developer machine and CI runner today (the binary is Pi-only)."""
+    from jasper.dsp_apply import ValidationStatus, validate_camilla_config
+
+    yaml_text = emit_active_speaker_program_config(
+        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+    )
+    cfg_path = tmp_path / "program.yml"
+    cfg_path.write_text(yaml_text)
+    result = validate_camilla_config(cfg_path)
+    if result.status == ValidationStatus.MISSING:
+        pytest.skip("camilladsp binary not installed in this environment")
+    assert result.status == ValidationStatus.VALID, result.stderr_tail

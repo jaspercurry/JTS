@@ -8,6 +8,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from jasper.active_speaker import ActiveSpeakerPreset, emit_active_speaker_program_config
 from jasper.active_speaker.environment import (
     classify_camilla_config_text,
     parse_aplay_playback_devices,
@@ -22,6 +23,7 @@ from jasper.active_speaker.path_safety import (
     requirements_payload,
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from tests.test_active_speaker_profile import _two_way_preset
 
 
 _APLAY_STDOUT = """
@@ -193,6 +195,36 @@ def test_classify_active_config_blocks_missing_active_split() -> None:
 
     assert active["classification"] == "active_startup_candidate"
     assert "active_split_missing" in {issue["code"] for issue in active["issues"]}
+
+
+def test_program_config_mixer_satisfies_active_split_ecosystem_contract() -> None:
+    """W6 hardware run 4 finding I, the environment-contract half: the
+    renamed program-graph mixer (jasper.active_speaker.camilla_yaml's
+    _emit_role_routed_mixer, now emitted as split_active_{way}way) must also
+    satisfy _ACTIVE_SPLIT_RE -- the runtime ecosystem's OWN active-config
+    recognizer -- not just resolve the pipeline's Mixer reference (pinned
+    separately in tests/test_active_speaker_emit_gate.py). Drives the real
+    emitter output through classify_camilla_config_text end to end, rather
+    than the hand-built _active_config_text() fixture above, so a future
+    rename that satisfies the pipeline but drifts from the ecosystem
+    vocabulary would fail here."""
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+    text = emit_active_speaker_program_config(
+        preset,
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="hw:CARD=DAC8x,DEV=0",
+    )
+
+    active = classify_camilla_config_text(text)
+
+    assert active["classification"] == "active_startup_candidate"
+    assert active["active_split"]["present"] is True
+    assert active["active_split"]["way_count"] == 2
+    assert active["active_split"]["mixer_output_channels"] == 2
+    issue_codes = {issue["code"] for issue in active["issues"]}
+    assert "active_split_missing" not in issue_codes
+    assert "active_split_output_channels_missing" not in issue_codes
+    assert "active_playback_channels_mismatch" not in issue_codes
 
 
 def test_alsa_probe_failure_has_stable_issue_count() -> None:

@@ -41,6 +41,7 @@ from jasper.capture_relay.session import (
     CapturePageIncompatible,
     CaptureStopped,
     CaptureTimeout,
+    _run_with_failure_cues,
     classify_status,
     mint_session,
     register_session,
@@ -1130,6 +1131,30 @@ def test_failure_logs_warning_with_reason_and_traceback(caplog):
         )
     assert "capture_relay.failed" in caplog.text
     assert "CaptureAborted" in caplog.text  # operator can see the real cause
+
+
+def test_failure_reason_names_config_rejected_not_camilla_unavailable(caplog):
+    """W6 hardware run 4 finding J: a healthy CamillaDSP that REJECTED a config
+    (e.g. "Use of missing mixer 'split_active_2way'") used to log
+    ``reason=CamillaUnavailable`` here -- indistinguishable from an actually
+    unreachable/dead daemon. ``CamillaConfigRejected`` (jasper.camilla) is a
+    ``CamillaUnavailable`` subclass raised for exactly that case; this reason
+    field is derived generically as ``type(exc).__name__`` (see
+    ``_run_with_failure_cues`` above), so the honest ``reason=
+    CamillaConfigRejected`` falls out for free -- no change needed here."""
+    from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
+
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakeRelayBackend()
+    _client, session = _mint(backend)
+
+    def runner():
+        raise CamillaConfigRejected("Use of missing mixer 'split_active_2way'")
+
+    with pytest.raises(CamillaUnavailable):
+        _run_with_failure_cues(session, None, runner)
+    assert "reason=CamillaConfigRejected" in caplog.text
+    assert "reason=CamillaUnavailable" not in caplog.text
 
 
 def test_classify_status():

@@ -1039,3 +1039,72 @@ def bass_extension_block_valid(
         tuple(sorted(references[0].channels)) if len(references) == 1 else (),
         None if valid else "bass_extension_block_invalid",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline reference closure — a structural check, independent of GraphView.
+#
+# W6 hardware run 4 finding I: ``emit_active_speaker_program_config`` emitted a
+# pipeline ``Mixer`` step naming ``split_active_2way`` (reused verbatim from
+# ``_emit_commissioning_pipeline``) while its own ``mixers:`` section defined
+# only ``program_route_2way`` — CamillaDSP's ``SetConfig`` rejected the graph at
+# LOAD time ("Use of missing mixer 'split_active_2way'"), and nothing upstream
+# had proven the two sides of the graph agreed at BUILD time. Every existing L0
+# proof in this module (``tweeter_guard_present``, `output_highpass_protected``,
+# …) runs on ``GraphView``, which by design DROPS ``Mixer`` steps entirely
+# (``_emitted_step`` returns ``None`` for anything but ``type: Filter`` — see
+# its comment) and never tracks the ``mixers:`` section at all, so none of them
+# could have caught this class of bug regardless of how thorough the tweeter
+# proofs were. This is a deliberately separate, narrower primitive: it does not
+# reason about channels, filter parameters, or protection — only whether every
+# name the pipeline points at actually exists.
+#
+# Dict-taking like ``view_from_yaml_dict``/``view_from_camilla_dict``: this
+# module stays a stdlib-only leaf (see the module docstring), so the caller
+# owns ``yaml.safe_load`` and hands the parsed mapping in.
+# --------------------------------------------------------------------------- #
+
+
+def pipeline_reference_closure_errors(payload: Any) -> tuple[str, ...]:
+    """Every pipeline ``Mixer``/``Filter`` reference that resolves to nothing.
+
+    A CamillaDSP pipeline step's ``Mixer.name`` must be a key under the
+    top-level ``mixers:`` map, and every entry of a ``Filter.names`` list must
+    be a key under ``filters:``. Returns a tuple of human-readable error
+    strings (empty when the graph is reference-closed). Fails closed: a
+    non-mapping payload or a missing/non-list ``pipeline`` is reported as an
+    error rather than silently passing.
+    """
+    if not isinstance(payload, dict):
+        return ("config is not a YAML mapping",)
+    mixers = payload.get("mixers")
+    mixer_names = set(mixers) if isinstance(mixers, dict) else set()
+    filters = payload.get("filters")
+    filter_names = set(filters) if isinstance(filters, dict) else set()
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ("config has no pipeline list",)
+
+    errors: list[str] = []
+    for index, step in enumerate(pipeline):
+        if not isinstance(step, dict):
+            continue
+        step_type = step.get("type")
+        if step_type == "Mixer":
+            name = step.get("name")
+            if name not in mixer_names:
+                errors.append(
+                    f"pipeline step {index} (Mixer) references undefined "
+                    f"mixer {name!r}"
+                )
+        elif step_type == "Filter":
+            names = step.get("names")
+            if not isinstance(names, list):
+                continue
+            for filter_name in names:
+                if filter_name not in filter_names:
+                    errors.append(
+                        f"pipeline step {index} (Filter) references undefined "
+                        f"filter {filter_name!r}"
+                    )
+    return tuple(errors)

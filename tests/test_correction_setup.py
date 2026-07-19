@@ -574,6 +574,22 @@ def test_server_owned_step_mismatch_message_is_plain_not_the_raw_guard_string():
     assert isinstance(exc, ValueError)
 
 
+def test_relay_failure_reason_names_config_rejected_not_camilla_unavailable():
+    """W6 hardware run 4 finding J: a healthy CamillaDSP daemon that REJECTED a
+    config (e.g. "Use of missing mixer 'split_active_2way'") used to surface
+    ``reason=CamillaUnavailable`` here too -- the same misleading collapse as
+    ``capture_relay.session``'s failure logger, since a live-but-rejecting
+    daemon and a dead/unreachable one raised the identical exception type.
+    ``CamillaConfigRejected`` (jasper.camilla) falls through
+    ``_relay_failure_reason``'s generic ``type(exc).__name__`` tail exactly
+    like ``ValueError``/``OSError`` do -- no branch added here."""
+    from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
+
+    exc = CamillaConfigRejected("Use of missing mixer 'split_active_2way'")
+    assert isinstance(exc, CamillaUnavailable)  # every `except CamillaUnavailable` still catches it
+    assert correction_setup._relay_failure_reason(exc) == "CamillaConfigRejected"
+
+
 def test_run_async_timeout_waits_for_coroutine_cleanup():
     started = threading.Event()
     cleanup_started = threading.Event()

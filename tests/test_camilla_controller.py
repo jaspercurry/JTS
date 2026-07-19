@@ -347,6 +347,54 @@ async def test_silent_recv_uses_socket_timeout_and_keeps_one_retry(monkeypatch):
     assert controller._client is None
 
 
+@pytest.mark.asyncio
+async def test_call_classifies_config_validation_error_as_config_rejected(monkeypatch):
+    """W6 hardware run 4 finding J: a healthy CamillaDSP that REJECTED a config
+    (e.g. "Use of missing mixer 'split_active_2way'") used to be folded into
+    the same ``CamillaUnavailable`` a dead/unreachable daemon raises, so the
+    journal logged ``reason=CamillaUnavailable`` while Camilla was up and
+    answering. Exercised directly against the REAL
+    ``camilladsp.exceptions.ConfigValidationError`` (the pip package is a real
+    project dependency, not a fake stand-in) via ``_call``'s own retry/classify
+    boundary -- bypassing transport with a stubbed ``_ensure`` the same way
+    ``test_wall_budget_aborts_each_attempt_and_bounds_retry`` does above."""
+    from camilladsp.exceptions import ConfigValidationError
+
+    from jasper.camilla import CamillaConfigRejected
+
+    controller = CamillaController("127.0.0.1", 1234)
+    monkeypatch.setattr(controller, "_ensure", lambda _cancelled=None: object())
+
+    def operation(_client) -> None:
+        raise ConfigValidationError(
+            message="Use of missing mixer 'split_active_2way'", value=None,
+        )
+
+    with pytest.raises(CamillaConfigRejected, match="split_active_2way") as exc_info:
+        await controller._call(operation)
+    # A CamillaUnavailable subclass: every existing `except CamillaUnavailable`
+    # call site keeps catching it unchanged.
+    assert isinstance(exc_info.value, CamillaUnavailable)
+
+
+@pytest.mark.asyncio
+async def test_call_still_raises_bare_camilla_unavailable_for_other_errors(monkeypatch):
+    """The new classification is SPECIFIC to ConfigValidationError -- an
+    unrelated failure (e.g. a genuinely unreachable daemon) still raises the
+    bare CamillaUnavailable, not the config-rejected subclass."""
+    from jasper.camilla import CamillaConfigRejected
+
+    controller = CamillaController("127.0.0.1", 1234)
+    monkeypatch.setattr(controller, "_ensure", lambda _cancelled=None: object())
+
+    def operation(_client) -> None:
+        raise OSError("connection reset")
+
+    with pytest.raises(CamillaUnavailable, match="connection reset") as exc_info:
+        await controller._call(operation)
+    assert not isinstance(exc_info.value, CamillaConfigRejected)
+
+
 class _BlockingWebSocket(_FakeWebSocket):
     def __init__(
         self,
