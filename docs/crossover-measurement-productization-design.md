@@ -1,5 +1,17 @@
 # Crossover measurement & tuning — productization design
 
+> **Shipped (2026-07-19).** This is the design/decision record — *why*
+> the conductor flow exists and the alternatives it rejected. Waves
+> W1–W6 are complete (PRs #1578–#1604); the v2 flow is hardware-validated
+> on JTS3 + UMIK-2 and the `JASPER_CROSSOVER_FLOW` default flipped to
+> `v2` on 2026-07-19. **Current operational truth — how to run it, the
+> file map, invariants, the failure taxonomy, and the W6 bug catalog —
+> now lives in
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).**
+> Read this doc for the decision archaeology; read the HANDOFF for what
+> the flow does today. Legacy remains reachable via
+> `JASPER_CROSSOVER_FLOW=legacy` until its scheduled W5b deletion.
+
 > **Status: v2.1 design / decision record (2026-07-18, in implementation).**
 > v1 (earlier the same day) synthesized the first-principles deep-research
 > pass (Appendix A) into a staged adaptation plan. v2 — same day, after an
@@ -9,9 +21,10 @@
 > v2.1 folds in an independent adversarial *design* review (3 blockers /
 > 8 should-fixes, all accepted — §5.4 placement contract, §5.5 lifecycle,
 > per-capture gain integrity, phase persistence, VERIFY semantics, failure
-> taxonomy, scope boundaries). Wave status: W1 (measurement core) and W3
-> (relay entries) merged; W4 (apply extension) gated + in PR; W2/W5/W6
-> pending. Motivated by the end-to-end hardware-validation run
+> taxonomy, scope boundaries). Wave status (updated 2026-07-19): W1–W6
+> all complete and merged (W5b deletion pending); the shipped-state
+> summary is in the banner above. Motivated by the end-to-end
+> hardware-validation run
 > ([crossover-room-e2e-validation-log.md](crossover-room-e2e-validation-log.md)).
 > This doc does **not** restate the canonical measurement/correction references
 > ([docs/HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md),
@@ -690,4 +703,5 @@ reflection was baked into the predicted sum invisibly to the gate-comparability
 check; v2.2's W6.7 measurement-honesty fixes folded: VERIFY notch-excluded MAX
 tracking, the VERIFY pilot pair's own flat band, the VERIFY-phase
 failure-screen override, and the review_apply low-confidence nudge; v2.1
-design-review amendments folded; W1/W3/W4 merged, W2 in flight)._
+design-review amendments folded; W1–W6 complete, default flipped to v2
+2026-07-19, W5b deletion pending)._

@@ -15,6 +15,19 @@
 
 ## Status
 
+- ✅ **Crossover measurement is now the v2 conductor flow (default flipped
+  2026-07-19).** The `/correction/crossover/` measurement + tuning flow is
+  the three-capture conductor (CHECK → MEASURE → REVIEW/APPLY → VERIFY, one
+  mic position). Its canonical operational truth — how to run it, the file
+  map, invariants, failure taxonomy, session-state paths, and the W6 bug
+  catalog — lives in
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+  this doc does not restate it. The **legacy per-driver crossover flow is
+  deprecated**: reachable only via the explicit opt-out
+  `JASPER_CROSSOVER_FLOW=legacy`, and scheduled for deletion (design-doc
+  wave W5b). The legacy per-driver measurement details that remain below
+  (level-match ramps, near-field/reference-axis geometry, `/crossover/*`
+  per-driver endpoints, scoped reset) describe that deprecated path.
 - 🧱 **Wave-2 household-mic persistence — loop complete (Pi record + phone
   one-tap confirm).** Before this, nothing about the measurement mic
   survived across sessions: the phone relay's setup validates against a

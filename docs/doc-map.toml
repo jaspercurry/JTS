@@ -762,6 +762,7 @@ code = [
 docs = [
   "docs/HANDOFF-audio-measurement-core.md",
   "docs/HANDOFF-correction.md",
+  "docs/HANDOFF-crossover-measurement-v2.md",
   "docs/room-correction-information-design.md",
   "docs/HANDOFF-multiroom.md",
   "docs/HANDOFF-correction-revision-plan.md",
@@ -779,6 +780,7 @@ requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
   "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
+  "The v2 crossover conductor flow (excitation program, phase state machine, session volume plan, JASPER_CROSSOVER_FLOW selector, or the v2 apply/verify/restore endpoints) changes — scan HANDOFF-crossover-measurement-v2.md.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
@@ -1204,9 +1206,11 @@ code = [
 docs = [
   "docs/phone-mic-relay-plan.md",
   "docs/room-correction-information-design.md",
+  "docs/HANDOFF-crossover-measurement-v2.md",
 ]
 requires_docs_when = [
   "The relay API contract, the opaque-spec/blob invariant, the E2E wire format (AES-256-GCM, IV-prepended, plaintext SHA-256), the DATA-only renderer's component/theme allowlist, the capture-page CSP, a measurement-validity gate (realized-constraints / alignment-confidence / clock-drift), a failure cue, or the deploy steps change.",
+  "The heterogeneous per-capture plan (CapturePlanEntry), the deferred begin/hold (CaptureBeginDeferred / REVIEW_HOLD_BUDGET_S), the first-begin timeout, or the capture page's v3 session loop / per-begin setup piggyback changes — scan HANDOFF-crossover-measurement-v2.md.",
 ]
 verification = [
   "python3 scripts/docs-impact.py --validate-only",
