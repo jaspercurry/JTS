@@ -13,6 +13,7 @@ import yaml
 
 from pathlib import Path
 
+import jasper.active_speaker.runtime_contract as runtime_contract_module
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
     ActiveSpeakerPreset,
@@ -2628,6 +2629,88 @@ def test_statefile_repair_preserves_existing_volume_and_mute(tmp_path: Path) -> 
     assert f"config_path: {flat}" in repaired
     assert "volume: -20.0" in repaired
     assert "- true" in repaired
+
+
+@pytest.mark.parametrize(
+    "graph_kind",
+    ["flat", "approved_active", "all_muted_active"],
+)
+def test_preserve_current_uses_exact_persisted_boot_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+    graph_kind: str,
+) -> None:
+    proved = tmp_path / f"proved-{graph_kind}.yml"
+    if graph_kind == "flat":
+        topology = _full_range_stereo()
+        proved.write_text(_flat_yaml(), encoding="utf-8")
+        authority = _write_authority(tmp_path)
+    else:
+        topology = _active_topology("mono", "active_2_way")
+        if graph_kind == "approved_active":
+            proved.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
+            authority = _write_authority(tmp_path)
+        else:
+            proved.write_text(
+                _active_yaml("mono", 2, frozenset()),
+                encoding="utf-8",
+            )
+            authority = _write_authority(
+                tmp_path,
+                staged=_staged_metadata(topology, proved),
+            )
+
+    stale = tmp_path / "stale-preliminary.yml"
+    stale.write_text(_flat_yaml(), encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(
+        f"config_path: {stale}\n"
+        "volume: -20.0\n"
+        "mute:\n"
+        "- true\n"
+        "- false\n",
+        encoding="utf-8",
+    )
+    real_classify = runtime_contract_module.classify_bass_extension_graph
+    switched = False
+
+    def switch_selector_before_canonical_proof(*args, **kwargs):
+        nonlocal switched
+        if kwargs.get("evidence_source") == "persisted_boot" and not switched:
+            switched = True
+            statefile.write_text(
+                f"config_path: {proved}\n"
+                "volume: -20.0\n"
+                "mute:\n"
+                "- true\n"
+                "- false\n",
+                encoding="utf-8",
+            )
+        return real_classify(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime_contract_module,
+        "classify_bass_extension_graph",
+        switch_selector_before_canonical_proof,
+    )
+    decision = safe_graph_for_current_topology(
+        topology,
+        statefile_path=statefile,
+        consider_applied_baseline=False,
+        **authority,
+    )
+
+    assert switched is True
+    assert decision.status == "preserve_current"
+    assert decision.current_graph is not None
+    assert decision.current_graph.config_path == str(proved)
+    assert decision.selected_config_path == str(proved)
+    statefile_after_proof = statefile.read_bytes()
+    assert apply_safe_graph_decision_to_statefile(
+        decision,
+        statefile_path=statefile,
+    ) is False
+    assert statefile.read_bytes() == statefile_after_proof
 
 
 # --------------------------------------------------------------------------- #

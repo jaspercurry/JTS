@@ -411,6 +411,7 @@ async def apply_bass_extension(
     from jasper.dsp_apply import dsp_writer_lock, validate_camilla_config
     from jasper.output_topology import load_output_topology_strict
     from jasper.sound.graph_carrier import (
+        CarrierCannotHostEq,
         recompose_active_baseline_for_bass_extension,
     )
 
@@ -524,6 +525,15 @@ async def apply_bass_extension(
                 sound_settings_path=sound_settings_path,
             )
             natural_bytes = natural_text.encode("utf-8")
+            if _normal_fingerprint(natural_text) != _normal_fingerprint(
+                predecessor_text
+            ):
+                raise CarrierCannotHostEq(
+                    "bass_extension_recompose_unavailable",
+                    "JTS could not reproduce the selected active-speaker graph "
+                    "without changing its semantics; its current DSP state is "
+                    "unchanged.",
+                )
             atomic_write_text(
                 selected,
                 natural_text,

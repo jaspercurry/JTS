@@ -3333,12 +3333,8 @@ def safe_graph_for_current_topology(
         "intent_path": apply_intent_path,
         "staged_metadata_path": staged_path_authority,
     }
-    current_path = (
-        str(current_config_path)
-        if current_config_path
-        else _statefile_config_path(statefile)
-    )
     if current_config_path:
+        current_path = str(current_config_path)
         current_graph = classify_bass_extension_graph(
             topology,
             evidence_source="persisted_candidate",
@@ -3346,15 +3342,14 @@ def safe_graph_for_current_topology(
             candidate_path=Path(current_config_path),
             **authority,
         )
-    elif current_path:
+    else:
         current_graph = classify_bass_extension_graph(
             topology,
             evidence_source="persisted_boot",
             statefile_path=statefile,
             **authority,
         )
-    else:
-        current_graph = None
+        current_path = current_graph.config_path
     preferred_graph = (
         classify_bass_extension_graph(
             topology,

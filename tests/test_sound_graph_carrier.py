@@ -26,6 +26,7 @@ from unittest import mock
 
 import numpy as np
 import pytest
+import yaml
 
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -33,6 +34,7 @@ from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )
+from jasper.camilla_config_contract import PeqFilter
 from jasper.fanin_coupling import (
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
@@ -44,7 +46,8 @@ from jasper.sound.graph_carrier import (
     ReemitResult,
     carrier_for_loaded_config,
 )
-from jasper.sound.profile import SoundProfile
+from jasper.sound.profile import SimpleEq, SoundProfile, build_sound_filters
+from jasper.sound.settings import SoundSettings, output_trim_db
 from tests.test_active_speaker_runtime_contract import (
     _applied_baseline,
     _active_baseline_yaml,
@@ -60,6 +63,53 @@ _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 def classify_camilla_graph(*args, **kwargs):
     kwargs.setdefault("bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY)
     return _classify_camilla_graph(*args, **kwargs)
+
+
+def _real_active_applied_baseline(tmp_path):
+    from jasper.active_speaker.baseline_profile import (
+        build_baseline_profile_candidate,
+    )
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from tests.test_active_speaker_baseline_profile import (
+        _draft,
+        _dual_apple_topology,
+        _measurements,
+        _valid_config,
+    )
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=build_crossover_preview(draft),
+        measurements=_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "active-speaker-profile.json",
+        config_path=tmp_path / "configs" / "active-speaker-baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+    return topology, applied
+
+
+def _write_program_overlay_sources(
+    tmp_path,
+    *,
+    profile: SoundProfile,
+    settings: SoundSettings,
+):
+    preference_path = tmp_path / "sound-profile.json"
+    preference_path.write_text(
+        json.dumps(profile.to_dict()),
+        encoding="utf-8",
+    )
+    settings_path = tmp_path / "sound-settings.json"
+    settings_path.write_text(
+        json.dumps(settings.to_dict()),
+        encoding="utf-8",
+    )
+    return preference_path, settings_path
 
 
 def _program_bake_yaml() -> str:
@@ -860,32 +910,28 @@ def test_bass_extension_recompose_reproves_missing_woofer_lowpass(
     assert tampered != emitted
     assert "bass_ext_lt" in tampered
     assert "bass_ext_subsonic" in tampered
+    selected = tmp_path / "selected.yml"
+    selected.write_text(emitted, encoding="utf-8")
+    preference_path = tmp_path / "sound-profile.json"
+    preference_path.write_text(
+        json.dumps(SoundProfile(enabled=False).to_dict()),
+        encoding="utf-8",
+    )
+    settings_path = tmp_path / "sound-settings.json"
+    settings_path.write_text("{}\n", encoding="utf-8")
 
     with mock.patch(
         "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
         return_value=(tampered, []),
-    ), mock.patch(
-        "jasper.sound.graph_carrier.extract_room_peqs_from_config",
-        return_value=[],
-    ), mock.patch(
-        "jasper.sound.profile.load_profile",
-        return_value=SoundProfile(enabled=False),
-    ), mock.patch(
-        "jasper.sound.profile.build_sound_filters",
-        return_value=(),
-    ), mock.patch(
-        "jasper.sound.settings.load_sound_settings",
-        return_value=mock.sentinel.settings,
-    ), mock.patch(
-        "jasper.sound.settings.output_trim_db",
-        return_value=0.0,
     ):
         with pytest.raises(CarrierCannotHostEq) as exc:
             recompose_active_baseline_for_bass_extension(
                 topology,
                 applied_profile=applied,
                 desired_profile=profile,
-                current_config_path=tmp_path / "selected.yml",
+                current_config_path=selected,
+                preference_profile_path=preference_path,
+                sound_settings_path=settings_path,
             )
 
     assert exc.value.reason_code == "bass_extension_recompose_unavailable"
@@ -909,34 +955,262 @@ def test_bass_extension_recompose_proves_no_block_predecessors(
             status="bypassed",
         )
     emitted = _active_baseline_yaml("mono", 2)
+    selected = tmp_path / "selected.yml"
+    selected.write_text(emitted, encoding="utf-8")
+    preference_path = tmp_path / "sound-profile.json"
+    preference_path.write_text(
+        json.dumps(SoundProfile(enabled=False).to_dict()),
+        encoding="utf-8",
+    )
+    settings_path = tmp_path / "sound-settings.json"
+    settings_path.write_text("{}\n", encoding="utf-8")
 
     with mock.patch(
         "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
         return_value=(emitted, []),
-    ), mock.patch(
-        "jasper.sound.graph_carrier.extract_room_peqs_from_config",
-        return_value=[],
-    ), mock.patch(
-        "jasper.sound.profile.load_profile",
-        return_value=SoundProfile(enabled=False),
-    ), mock.patch(
-        "jasper.sound.profile.build_sound_filters",
-        return_value=(),
-    ), mock.patch(
-        "jasper.sound.settings.load_sound_settings",
-        return_value=mock.sentinel.settings,
-    ), mock.patch(
-        "jasper.sound.settings.output_trim_db",
-        return_value=0.0,
     ):
         result = recompose_active_baseline_for_bass_extension(
             topology,
             applied_profile=applied,
             desired_profile=desired_profile,
-            current_config_path=tmp_path / "selected.yml",
+            current_config_path=selected,
+            preference_profile_path=preference_path,
+            sound_settings_path=settings_path,
         )
 
     assert result == emitted
+
+
+def test_bass_extension_recompose_preserves_exact_program_overlays(
+    tmp_path,
+) -> None:
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.sound.graph_carrier import (
+        recompose_active_baseline_for_bass_extension,
+    )
+
+    topology, applied = _real_active_applied_baseline(tmp_path)
+    preference = SoundProfile(
+        simple_eq=SimpleEq(bass_db=4.0),
+        updated_at="2026-07-19T12:00:00Z",
+    )
+    settings = SoundSettings(headroom_trim_db=6.0)
+    room_peqs = [PeqFilter(freq=83.0, q=4.2, gain=-3.0)]
+    current, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=room_peqs,
+        preference_filters=build_sound_filters(preference),
+        output_trim_db=output_trim_db(preference, settings),
+    )
+    assert issues == []
+    assert current is not None
+    assert "room_peq_1" in current
+    assert "active_baseline_headroom" in current
+    selected = tmp_path / "configs" / "active-speaker-baseline.yml"
+    selected.parent.mkdir(exist_ok=True)
+    selected.write_text(current, encoding="utf-8")
+    preference_path, settings_path = _write_program_overlay_sources(
+        tmp_path,
+        profile=preference,
+        settings=settings,
+    )
+
+    recomposed = recompose_active_baseline_for_bass_extension(
+        topology,
+        applied_profile=applied,
+        desired_profile=None,
+        current_config_path=selected,
+        preference_profile_path=preference_path,
+        sound_settings_path=settings_path,
+    )
+
+    assert recomposed == current
+
+
+@pytest.mark.parametrize("changed_source", ["preference", "settings"])
+def test_bass_extension_recompose_refuses_program_overlay_reset(
+    tmp_path,
+    changed_source,
+) -> None:
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.sound.graph_carrier import (
+        recompose_active_baseline_for_bass_extension,
+    )
+
+    topology, applied = _real_active_applied_baseline(tmp_path)
+    selected_preference = SoundProfile(
+        simple_eq=SimpleEq(bass_db=4.0),
+        updated_at="2026-07-19T12:00:00Z",
+    )
+    selected_settings = SoundSettings(headroom_trim_db=6.0)
+    current, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        preference_filters=build_sound_filters(selected_preference),
+        output_trim_db=output_trim_db(selected_preference, selected_settings),
+    )
+    assert issues == []
+    assert current is not None
+    selected = tmp_path / "configs" / "active-speaker-baseline.yml"
+    selected.parent.mkdir(exist_ok=True)
+    selected.write_text(current, encoding="utf-8")
+    persisted_preference = (
+        SoundProfile(enabled=False, updated_at="2026-07-19T12:00:00Z")
+        if changed_source == "preference"
+        else selected_preference
+    )
+    persisted_settings = (
+        SoundSettings()
+        if changed_source == "settings"
+        else selected_settings
+    )
+    preference_path, settings_path = _write_program_overlay_sources(
+        tmp_path,
+        profile=persisted_preference,
+        settings=persisted_settings,
+    )
+
+    with pytest.raises(CarrierCannotHostEq) as exc:
+        recompose_active_baseline_for_bass_extension(
+            topology,
+            applied_profile=applied,
+            desired_profile=None,
+            current_config_path=selected,
+            preference_profile_path=preference_path,
+            sound_settings_path=settings_path,
+        )
+
+    assert exc.value.reason_code == "bass_extension_recompose_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("broken_source", "broken_value"),
+    [
+        ("preference", "missing"),
+        ("preference", "malformed"),
+        ("settings", "missing"),
+        ("settings", "malformed"),
+        ("selected_graph", "driver_semantics"),
+    ],
+)
+async def test_bass_apply_refuses_unreproducible_predecessor_before_mutation(
+    tmp_path,
+    broken_source,
+    broken_value,
+) -> None:
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.bass_extension import apply_bass_extension
+    from jasper.bass_extension.profile import save_bass_extension_profile
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+
+    topology, applied = _real_active_applied_baseline(tmp_path)
+    preference = SoundProfile(
+        simple_eq=SimpleEq(bass_db=4.0),
+        updated_at="2026-07-19T12:00:00Z",
+    )
+    settings = SoundSettings(headroom_trim_db=6.0)
+    current, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        preference_filters=build_sound_filters(preference),
+        output_trim_db=output_trim_db(preference, settings),
+    )
+    assert issues == []
+    assert current is not None
+    configs = tmp_path / "configs"
+    configs.mkdir(exist_ok=True)
+    selected = configs / "active-speaker-baseline.yml"
+    selected.write_text(current, encoding="utf-8")
+    selected.chmod(0o664)
+    preference_path, settings_path = _write_program_overlay_sources(
+        tmp_path,
+        profile=preference,
+        settings=settings,
+    )
+    if broken_source == "selected_graph":
+        changed_graph = yaml.safe_load(selected.read_text(encoding="utf-8"))
+        highpass_name = next(
+            name
+            for name in changed_graph["filters"]
+            if name.startswith("as_tweeter_") and name.endswith("_hp")
+        )
+        parameters = changed_graph["filters"][highpass_name]["parameters"]
+        parameters["freq"] = float(parameters["freq"]) + 1.0
+        selected.write_text(
+            yaml.safe_dump(changed_graph, sort_keys=False),
+            encoding="utf-8",
+        )
+    else:
+        broken_path = (
+            preference_path if broken_source == "preference" else settings_path
+        )
+        if broken_value == "missing":
+            broken_path.unlink()
+        else:
+            broken_path.write_text("{ malformed", encoding="utf-8")
+    applied_path = tmp_path / "applied.json"
+    applied_path.write_text(json.dumps(applied), encoding="utf-8")
+    statefile = tmp_path / "outputd-statefile.yml"
+    statefile.write_text(f"config_path: {selected}\n", encoding="utf-8")
+    staged_path = tmp_path / "staged.json"
+    staged_path.write_text("{}\n", encoding="utf-8")
+    profile_path = tmp_path / "bass-profile.json"
+    desired = _sealed_profile(topology, applied)
+    predecessor = replace(desired, status="bypassed")
+    save_bass_extension_profile(predecessor, profile_path)
+    intent_path = tmp_path / "bass-intent.json"
+
+    class NoReloadController:
+        def __init__(self) -> None:
+            self.reload_count = 0
+
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(selected)
+
+        async def get_active_config_raw(self, *, best_effort=False):
+            return selected.read_text(encoding="utf-8")
+
+        async def reload(self, *, best_effort=False):
+            self.reload_count += 1
+            return True
+
+    controller = NoReloadController()
+    graph_before = selected.read_bytes()
+    graph_mode_before = selected.stat().st_mode
+    profile_before = profile_path.read_bytes()
+    selector_before = statefile.read_bytes()
+
+    with pytest.raises(CarrierCannotHostEq) as exc:
+        await apply_bass_extension(
+            desired,
+            topology=topology,
+            controller=controller,
+            statefile_path=statefile,
+            applied_baseline_path=applied_path,
+            profile_path=profile_path,
+            intent_path=intent_path,
+            staged_metadata_path=staged_path,
+            config_dir=configs,
+            preference_profile_path=preference_path,
+            sound_settings_path=settings_path,
+            validate=lambda _path: SimpleNamespace(ok_to_apply=True),
+        )
+
+    assert exc.value.reason_code == "bass_extension_recompose_unavailable"
+    assert selected.read_bytes() == graph_before
+    assert selected.stat().st_mode == graph_mode_before
+    assert profile_path.read_bytes() == profile_before
+    assert statefile.read_bytes() == selector_before
+    assert controller.reload_count == 0
+    assert not intent_path.exists()
 
 
 # --- inv 6: refusals are typed with a stable reason_code ----------------
