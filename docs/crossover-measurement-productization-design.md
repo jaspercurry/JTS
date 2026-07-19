@@ -461,7 +461,7 @@ one-reason/one-action copy:
 |---|---|---|---|
 | `agc_behavioral_fail` | CHECK (re-armed on stream change) | 1 | name the browser/AGC cause; retry after re-permission |
 | `snr_floor` | CHECK / MEASURE | 1 | "room is too loud right now" / "move the phone closer" |
-| `channel_map_mismatch` | CHECK | 0 (hard stop) | "check speaker wiring" — never auto-swap |
+| `channel_map_mismatch` | CHECK | 0 (hard stop) | "check speaker wiring, or if the room is noisy, quiet it" — never auto-swap |
 | `clipped` | MEASURE / VERIFY | 1 (gain-adjusted) | automatic quieter retry, say so |
 | `drift_baselines_disagree` (glitch) | MEASURE | 1 | "capture glitched — retrying" |
 | `delay_exceeds_search_window` | MEASURE | 1 | re-check mic placement vs the picture |

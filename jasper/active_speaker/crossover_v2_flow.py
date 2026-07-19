@@ -161,8 +161,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
         REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        # Fix 3 (W6.4): with Fix 1's band-relative discriminator this should
+        # be rare and genuinely wiring, but the honest failure mode also
+        # includes a very quiet/noisy room (the discriminator needs both a
+        # driver's own band to rise over its ambient AND the other driver's
+        # band to stay quiet) — name both causes rather than blaming wiring
+        # unconditionally.
         "The drivers didn't play in the expected order — check the speaker "
-        "wiring before measuring again.",
+        "wiring, or if the room is noisy, quiet it and try again.",
     ),
     REASON_CLIPPED: ReasonSpec(
         REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,

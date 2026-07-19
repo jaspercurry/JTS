@@ -45,7 +45,10 @@ from jasper.audio_measurement.program_analysis import (
     CAPTURE_BOUND_MARGIN_S,
     MeasurementGeometry,
     MeasurementPriors,
+    _band_exclusive_pieces,
     _gcc_phat,
+    _global_offset,
+    _locate_segments,
     analyze_program_capture,
 )
 
@@ -481,10 +484,29 @@ def test_parallax_is_subtracted():
 # --------------------------------------------------------------------------- #
 
 
+def _check_roles() -> list[RoleBand]:
+    """Disjoint bands for the CHECK fixtures below (Fix 1, W6.4).
+
+    Unlike ``_roles()``'s heavily-overlapping MEASURE-style bands (needed
+    elsewhere for Fc-overlap trim solving), the band-relative channel-map test
+    (`_channel_map_ok`) measures absolute dB rise rather than a total-energy
+    fraction, so a CROSS band immediately adjacent to a shared boundary now
+    also picks up the stimulus generator's own ~5 ms fade-in/out spectral
+    splatter (`synchronized_swept_sine`) — real, but concentrated within
+    about an octave of a chirp's own start/end frequency, same as a real
+    driver's transition band. Keeping these two bands clearly apart avoids
+    exercising that (real, but here irrelevant) edge effect.
+    """
+    return [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 1200.0)),
+        RoleBand("tweeter", 1, FrequencyBand(2500.0, 20000.0)),
+    ]
+
+
 def _check_capture(program, *, compress_hi: bool = False, seed: int = 3):
     pcm = render_program_pcm(program)
-    woofer_ir = _band_impulse(200, 150.0, 6000.0, 1.0)
-    tweeter_ir = _band_impulse(225, 300.0, 20000.0, 0.7)
+    woofer_ir = _band_impulse(200, 150.0, 1200.0, 1.0)
+    tweeter_ir = _band_impulse(225, 2500.0, 20000.0, 0.7)
     mono = (
         fftconvolve(pcm[:, 0], woofer_ir)[: pcm.shape[0]]
         + fftconvolve(pcm[:, 1], tweeter_ir)[: pcm.shape[0]]
@@ -502,7 +524,7 @@ def _check_capture(program, *, compress_hi: bool = False, seed: int = 3):
 
 
 def test_check_linearity_and_channel_map_pass_for_clean_capture():
-    prog = build_check_program(_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog)
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
     assert res.linearity_ok is True
@@ -512,7 +534,7 @@ def test_check_linearity_and_channel_map_pass_for_clean_capture():
 
 
 def test_check_linearity_fails_under_simulated_agc():
-    prog = build_check_program(_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog, compress_hi=True)
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
     # The programmed 10 dB delta is captured as ~4 dB ⇒ linearity fails loud.
@@ -520,7 +542,7 @@ def test_check_linearity_fails_under_simulated_agc():
 
 
 def test_check_gain_plan_targets_measure_window_with_guard():
-    prog = build_check_program(_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog)
     res = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(target_capture_dbfs=-10.5),
@@ -535,11 +557,103 @@ def test_check_gain_plan_targets_measure_window_with_guard():
 
 
 def test_check_ambient_report_present():
-    prog = build_check_program(_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog)
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
     assert res.ambient_report is not None
     assert res.ambient_report["bands"]
+
+
+# --------------------------------------------------------------------------- #
+# CHECK channel map — band-relative discriminator (Fix 1, W6.4)
+# --------------------------------------------------------------------------- #
+
+
+def test_channel_map_exclusive_pieces_subtract_overlap():
+    """Direct unit coverage for `_band_exclusive_pieces` (production helper):
+    two drivers' declared bands legitimately overlap around the crossover
+    point, so the CROSS test only looks at the part of the OTHER role's band
+    that this role's own band does NOT already cover."""
+    # Overlapping bands (MEASURE-style): only the non-overlapping remainder
+    # of `other` survives.
+    assert _band_exclusive_pieces((300.0, 20000.0), (150.0, 6000.0)) == [(6000.0, 20000.0)]
+    assert _band_exclusive_pieces((150.0, 6000.0), (300.0, 20000.0)) == [(150.0, 300.0)]
+    # Disjoint bands: nothing to subtract, `other` passes through whole.
+    assert _band_exclusive_pieces((2500.0, 20000.0), (150.0, 1200.0)) == [(2500.0, 20000.0)]
+    # `other` fully inside `own`: nothing left of `other` at all.
+    assert _band_exclusive_pieces((1000.0, 2000.0), (150.0, 6000.0)) == []
+
+
+def test_channel_map_survives_concurrent_room_rumble():
+    """Reproduces the W6 run-5 hardware shape (2026-07-18/19, jts3): a
+    cap-clamped, genuinely-quiet tweeter pilot (~25 dB of real TARGET rise
+    over its own ambient — not the ~50-70 dB the other CHECK fixtures use)
+    plays alongside a strong, CONTINUOUS low-frequency room rumble present
+    for the WHOLE capture — the leading ambient window AND every pilot
+    window alike, not a burst timed to coincide with the tweeter pilot (a
+    real room's noise floor doesn't know when the tweeter is playing).
+
+    Under the OLD total-in-band-energy-FRACTION test (reimplemented inline
+    below, exactly as `_channel_map_ok` computed it pre-Fix-1), the rumble's
+    energy in the (unrelated) woofer band dominates the tweeter pilot
+    window's TOTAL spectral energy, driving the in-band fraction to ~0.12 —
+    comfortably under the old >0.5 threshold, so the old code would veto the
+    tweeter's channel-map verdict even though the tweeter played correctly.
+    This was the run-5 bug. The NEW band-relative test isn't fooled: the
+    rumble is equally present in the long ambient window, so it contributes
+    ~0 dB of CROSS rise regardless of which band it lives in."""
+    roles = _check_roles()
+    chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
+    pcm = render_program_pcm(chk)
+
+    # Cap-clamped tweeter: the pilot plays, just quietly (unlike the ~0.7-1.0
+    # unit-gain drivers used elsewhere in this file).
+    tweeter_gain = 0.05
+    mono = pcm[:, 0] + tweeter_gain * pcm[:, 1]
+    cap = np.concatenate([np.zeros(500), mono, np.zeros(5000)])
+
+    # Strong, continuous LF room rumble (three low tones, present across the
+    # entire capture) plus a modest broadband noise floor.
+    t = np.arange(cap.size) / SR
+    rumble = 0.02 * (
+        np.sin(2 * np.pi * 40.0 * t) + np.sin(2 * np.pi * 70.0 * t) + np.sin(2 * np.pi * 110.0 * t)
+    )
+    full_cap = cap + rumble + np.random.default_rng(30).normal(0.0, 3e-4, cap.size)
+
+    res = analyze_program_capture(chk, full_cap, SR, priors=MeasurementPriors())
+    assert res.channel_map_ok is True
+    for pilot in res.pilots:
+        assert pilot.channel_map_ok is True
+
+    # OLD math, reimplemented inline: >50% of the tweeter pilot's TOTAL
+    # spectral energy must land in its own declared band. It does not.
+    global_offset, _first, stimuli = _global_offset(chk, full_cap, SR)
+    locations = _locate_segments(chk, full_cap, SR, global_offset, stimuli)
+    by_id = {loc.segment_id: loc for loc in locations}
+    hi_seg = chk.segment("pilot_tweeter_hi")
+    hi_loc = by_id["pilot_tweeter_hi"]
+    hi_samples = full_cap[hi_loc.located_start:hi_loc.located_start + hi_seg.n_samples]
+    window = np.hanning(hi_samples.size)
+    spectrum = np.abs(np.fft.rfft(hi_samples * window)) ** 2
+    freqs = np.fft.rfftfreq(hi_samples.size, 1.0 / SR)
+    in_band = (freqs >= hi_seg.f1_hz) & (freqs <= hi_seg.f2_hz)
+    old_fraction = float(np.sum(spectrum[in_band])) / float(np.sum(spectrum))
+    assert old_fraction < 0.5
+
+
+def test_channel_map_fails_when_no_driver_played():
+    """No pilot signal at all (pure noise capture) ⇒ channel-map still fails.
+    Neither driver's own band ever rises above its ambient, so TARGET fails
+    for both roles regardless of how quiet/loud the room noise floor is."""
+    roles = _check_roles()
+    chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
+    pcm = render_program_pcm(chk)
+    n = pcm.shape[0] + 500 + 5000
+    cap = np.random.default_rng(31).normal(0.0, 3e-4, n)
+    res = analyze_program_capture(chk, cap, SR, priors=MeasurementPriors())
+    assert res.channel_map_ok is False
+    for pilot in res.pilots:
+        assert pilot.channel_map_ok is False
 
 
 # --------------------------------------------------------------------------- #
