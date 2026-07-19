@@ -580,9 +580,20 @@ def test_persisted_candidate_boundary_derives_only_declared_provenance(
     assert invalid.issues[0]["code"] == "bass_extension_candidate_invalid"
 
 
+@pytest.mark.parametrize(
+    "authority_key",
+    [
+        "applied_baseline_path",
+        "profile_path",
+        "intent_path",
+        "staged_metadata_path",
+    ],
+    ids=["applied-baseline", "profile", "intent", "staged-metadata"],
+)
 def test_persisted_boundary_retries_once_then_refuses_unstable_authority(
     tmp_path: Path,
     monkeypatch,
+    authority_key: str,
 ) -> None:
     topology = _active_topology("mono", "active_2_way")
     authority = _persisted_boundary(
@@ -590,7 +601,7 @@ def test_persisted_boundary_retries_once_then_refuses_unstable_authority(
         topology=topology,
         graph_text=_active_baseline_yaml("mono", 2),
     )
-    profile_path = authority["profile_path"]
+    changing_path = authority[authority_key]
     calls = 0
 
     from jasper.active_speaker import runtime_contract as contract_module
@@ -599,7 +610,7 @@ def test_persisted_boundary_retries_once_then_refuses_unstable_authority(
 
     def alternating_read(path: Path):
         nonlocal calls
-        if path == profile_path:
+        if path == changing_path:
             calls += 1
             return b"first" if calls % 2 else b"second"
         return real_read(path)
@@ -610,12 +621,245 @@ def test_persisted_boundary_retries_once_then_refuses_unstable_authority(
         evidence_source="persisted_boot",
         statefile_path=authority["statefile_path"],
         applied_baseline_path=authority["applied_baseline_path"],
-        profile_path=profile_path,
+        profile_path=authority["profile_path"],
         intent_path=authority["intent_path"],
         staged_metadata_path=authority["staged_metadata_path"],
     )
 
     assert calls == 4
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_snapshot_unstable"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["selected_graph", "selector"],
+    ids=["selected-graph", "selector-target"],
+)
+def test_persisted_boundary_refuses_selected_authority_mutation(
+    tmp_path: Path,
+    monkeypatch,
+    mutation: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    alternate = tmp_path / "alternate-active-speaker-baseline.yml"
+    alternate.write_text(text, encoding="utf-8")
+    selected_path = authority["config"]
+    statefile_path = authority["statefile_path"]
+    selected_bytes = selected_path.read_bytes()
+    real_read = Path.read_bytes
+    calls = 0
+
+    def alternating_read(path: Path) -> bytes:
+        nonlocal calls
+        target = selected_path if mutation == "selected_graph" else statefile_path
+        if path != target:
+            return real_read(path)
+        calls += 1
+        if mutation == "selected_graph":
+            suffix = b"# first\n" if calls % 2 else b"# second\n"
+            return selected_bytes + suffix
+        selected = selected_path if calls % 2 else alternate
+        return f"config_path: {selected}\nvolume: -18.0\nmute: false\n".encode()
+
+    monkeypatch.setattr(Path, "read_bytes", alternating_read)
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=statefile_path,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert calls == 4
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_snapshot_unstable"
+
+
+@pytest.mark.parametrize(
+    ("candidate_kind", "mutation"),
+    [
+        ("explicit", "bytes"),
+        ("applied_baseline", "bytes"),
+        ("applied_baseline", "locator"),
+        ("staged_all_muted", "bytes"),
+        ("staged_all_muted", "locator"),
+    ],
+)
+def test_persisted_candidate_boundary_refuses_each_mutating_seam(
+    tmp_path: Path,
+    monkeypatch,
+    candidate_kind: str,
+    mutation: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    selected_path = authority["config"]
+    authority["staged_metadata_path"].write_text(
+        json.dumps(_staged_metadata(topology, selected_path)),
+        encoding="utf-8",
+    )
+    alternate = tmp_path / "alternate-candidate.yml"
+    alternate.write_text(text, encoding="utf-8")
+    calls = 0
+
+    if mutation == "bytes":
+        selected_bytes = selected_path.read_bytes()
+        real_read = Path.read_bytes
+
+        def alternating_read(path: Path) -> bytes:
+            nonlocal calls
+            if path != selected_path:
+                return real_read(path)
+            calls += 1
+            suffix = b"# first\n" if calls % 2 else b"# second\n"
+            return selected_bytes + suffix
+
+        monkeypatch.setattr(Path, "read_bytes", alternating_read)
+    else:
+        from jasper.active_speaker import runtime_contract as contract_module
+
+        def alternating_locator(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return selected_path if calls % 2 else alternate
+
+        monkeypatch.setattr(
+            contract_module,
+            "_candidate_locator",
+            alternating_locator,
+        )
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_candidate",
+        candidate_kind=candidate_kind,
+        candidate_path=selected_path if candidate_kind == "explicit" else None,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert calls == 4
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_snapshot_unstable"
+
+
+@pytest.mark.parametrize(
+    "candidate_kind",
+    ["explicit", "applied_baseline", "staged_all_muted"],
+)
+@pytest.mark.parametrize(
+    "authority_key",
+    [
+        "applied_baseline_path",
+        "profile_path",
+        "intent_path",
+        "staged_metadata_path",
+    ],
+    ids=["applied-baseline", "profile", "intent", "staged-metadata"],
+)
+def test_persisted_candidate_refuses_each_authority_mutation(
+    tmp_path: Path,
+    monkeypatch,
+    candidate_kind: str,
+    authority_key: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    selected_path = authority["config"]
+    authority["staged_metadata_path"].write_text(
+        json.dumps(_staged_metadata(topology, selected_path)),
+        encoding="utf-8",
+    )
+    changing_path = authority[authority_key]
+    first = {"snapshot_marker": "first"}
+    second = {"snapshot_marker": "second"}
+    if authority_key == "applied_baseline_path":
+        first = {**authority["applied"], **first}
+        second = {**authority["applied"], **second}
+    elif authority_key == "staged_metadata_path":
+        staged = _staged_metadata(topology, selected_path)
+        first = {**staged, **first}
+        second = {**staged, **second}
+    alternating_bytes = (
+        json.dumps(first).encode("utf-8"),
+        json.dumps(second).encode("utf-8"),
+    )
+    calls = 0
+
+    from jasper.active_speaker import runtime_contract as contract_module
+
+    real_read = contract_module._read_optional_bytes
+
+    def alternating_read(path: Path):
+        nonlocal calls
+        if path != changing_path:
+            return real_read(path)
+        value = alternating_bytes[calls % 2]
+        calls += 1
+        return value
+
+    monkeypatch.setattr(contract_module, "_read_optional_bytes", alternating_read)
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_candidate",
+        candidate_kind=candidate_kind,
+        candidate_path=selected_path if candidate_kind == "explicit" else None,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert calls == 4
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_snapshot_unstable"
+
+
+def test_persisted_boundary_refuses_embedded_nul_locator_without_raising(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+    authority["statefile_path"].write_text(
+        "config_path: bad\x00path\nvolume: -18.0\nmute: false\n",
+        encoding="utf-8",
+    )
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
     assert graph.allowed is False
     assert graph.issues[0]["code"] == "bass_extension_snapshot_unstable"
 
@@ -657,6 +901,69 @@ async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
     assert graph.allowed is True
 
 
+@pytest.mark.parametrize(
+    "authority_key",
+    [
+        "applied_baseline_path",
+        "profile_path",
+        "intent_path",
+        "staged_metadata_path",
+    ],
+    ids=["applied-baseline", "profile", "intent", "staged-metadata-guard"],
+)
+async def test_live_boundary_refuses_each_authority_mutation_across_await(
+    tmp_path: Path,
+    authority_key: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    alternate = tmp_path / "alternate-active-speaker-baseline.yml"
+    alternate.write_text(text, encoding="utf-8")
+    changing_path = authority[authority_key]
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        if authority_key == "applied_baseline_path":
+            applied = dict(authority["applied"])
+            applied["config"] = {
+                "path": str(
+                    alternate if callback_count % 2 else authority["config"]
+                )
+            }
+            changing_path.write_text(json.dumps(applied), encoding="utf-8")
+        elif authority_key == "staged_metadata_path":
+            staged = _staged_metadata(topology, authority["config"])
+            staged["software_guard"]["passed"] = callback_count % 2 == 0
+            changing_path.write_text(json.dumps(staged), encoding="utf-8")
+        else:
+            changing_path.write_text(
+                json.dumps({"mutation": callback_count}),
+                encoding="utf-8",
+            )
+        return text
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
 async def test_live_boundary_refuses_mismatched_live_yaml_as_unstable(
     tmp_path: Path,
 ) -> None:
@@ -676,6 +983,43 @@ async def test_live_boundary_refuses_mismatched_live_yaml_as_unstable(
         nonlocal callback_count
         callback_count += 1
         return mismatched_live
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
+@pytest.mark.parametrize(
+    "live_result",
+    [None, b"not-text", "filters: [\n"],
+    ids=["none", "non-text", "malformed-yaml"],
+)
+async def test_live_boundary_refuses_invalid_live_result_with_stable_selected_file(
+    tmp_path: Path,
+    live_result,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+    callback_count = 0
+
+    async def active_readback():
+        nonlocal callback_count
+        callback_count += 1
+        return live_result
 
     graph = await classify_active_bass_extension_graph(
         topology,
@@ -784,6 +1128,73 @@ async def test_live_boundary_refuses_unparseable_selected_file_as_unstable(
         nonlocal callback_count
         callback_count += 1
         return broken
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
+async def test_live_boundary_refuses_embedded_nul_locator_without_raising(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+    authority["statefile_path"].write_text(
+        "config_path: bad\x00path\nvolume: -18.0\nmute: false\n",
+        encoding="utf-8",
+    )
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        return _active_baseline_yaml("mono", 2)
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 0
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
+async def test_live_boundary_refuses_recursive_yaml_without_raising(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    recursive = "graph: &graph [*graph]\n"
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=recursive,
+    )
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        return recursive
 
     graph = await classify_active_bass_extension_graph(
         topology,
@@ -954,6 +1365,70 @@ def test_pending_intent_authorizes_only_recorded_graph_profile_pair(
     assert refused.allowed is False
     assert "bass_extension_authority_invalid" in {
         issue["code"] for issue in refused.issues
+    }
+
+
+@pytest.mark.parametrize(
+    "malformed_field",
+    ["desired_profile_bytes", "desired_graph_bytes"],
+)
+def test_pending_intent_refuses_unpaired_surrogate_without_raising(
+    tmp_path: Path,
+    malformed_field: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    profile = _sealed_profile(topology, applied)
+    predecessor = _active_baseline_yaml("mono", 2).encode()
+    desired = _active_baseline_yaml(
+        "mono", 2, bass_extension_profile=profile
+    ).encode()
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=desired.decode(),
+        profile=profile,
+    )
+    authority["applied_baseline_path"].write_text(
+        json.dumps({
+            **applied,
+            "status": "applied",
+            "config": {"path": str(authority["config"])},
+        }),
+        encoding="utf-8",
+    )
+    profile_bytes = authority["profile_path"].read_bytes()
+    intent = _intent_payload(
+        predecessor_identity=ExactDspStateIdentity(
+            {"config_path": str(authority["config"]), "graph": "predecessor"}
+        ),
+        predecessor_profile_bytes=None,
+        desired_profile_bytes=profile_bytes,
+        selected_path=authority["config"],
+        selected_mode=0o640,
+        predecessor_graph_bytes=predecessor,
+        desired_graph_bytes=desired,
+        selector_target=authority["config"],
+    )
+    if malformed_field == "desired_profile_bytes":
+        intent["profiles"]["desired"]["bytes"] = "\ud800"
+    else:
+        intent["config"]["desired_bytes"] = "\ud800"
+    authority["intent_path"].write_text(json.dumps(intent), encoding="utf-8")
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=authority["statefile_path"],
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert graph.allowed is False
+    assert "bass_extension_authority_invalid" in {
+        issue["code"] for issue in graph.issues
     }
 
 

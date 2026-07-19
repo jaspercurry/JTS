@@ -362,46 +362,53 @@ async def apply_active_leader_bake(*, camilla_factory=_camilla) -> str:
     is up (the pipe's reader exists — a FIFO write-open blocks until a reader
     exists, exactly like the passive leader's apply_bonded_leader_config).
     """
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.active_speaker.runtime_contract import GRAPH_PROGRAM_BAKE_PIPE
+    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     cam = camilla_factory()
-    current = await cam.get_config_file_path(best_effort=True)
-    await apply_dsp_config(
+    async with dsp_writer_lock(
+        Path(LEADER_BAKE_CONFIG_PATH).parent,
         source=REGEN_SOURCE,
-        candidate_path=LEADER_BAKE_CONFIG_PATH,
-        load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
-        get_current_config_path=lambda: cam.get_config_file_path(
-            best_effort=True,
-        ),
-    )
-    try:
-        await follower_config._prove_live_bass_extension_graph(cam)
-    except RuntimeError as exc:
-        if current and current != LEADER_BAKE_CONFIG_PATH:
-            await apply_dsp_config(
-                source=f"{REGEN_SOURCE}-proof-rollback",
-                candidate_path=current,
-                load_config=lambda p: cam.set_config_file_path(
-                    p, best_effort=False
-                ),
-                get_current_config_path=lambda: cam.get_config_file_path(
-                    best_effort=True
-                ),
-            )
-        raise ActiveLeaderError(
-            "bake_graph_unprovable",
-            "active leader program-bake graph failed canonical live re-proof",
-        ) from exc
-    # Stash the prior solo-active config for the unwind — but only a genuinely
-    # different (solo) config, never the bake itself. (The shared restore ladder
-    # re-proves every candidate, so even a stale/odd stash can never load a
-    # passive graph onto the active sink.) Same on-disk shape the shared
-    # follower_config.read_stash reads (a config PATH + trailing newline, mode
-    # 0644 — matching the sibling FOLLOWER_PRIOR_STASH; a non-secret path).
-    if current and current != LEADER_BAKE_CONFIG_PATH:
-        atomic_io.atomic_write_text(
-            LEADER_BAKE_PRIOR_STASH, current + "\n", mode=0o644,
+    ):
+        current = await cam.get_config_file_path(best_effort=True)
+        await apply_dsp_config(
+            source=REGEN_SOURCE,
+            candidate_path=LEADER_BAKE_CONFIG_PATH,
+            load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(
+                best_effort=True,
+            ),
+            acquire_lock=False,
         )
+        try:
+            await follower_config._prove_live_bass_extension_graph(
+                cam,
+                expected_config_path=LEADER_BAKE_CONFIG_PATH,
+                expected_classification=GRAPH_PROGRAM_BAKE_PIPE,
+            )
+        except RuntimeError as exc:
+            if current and current != LEADER_BAKE_CONFIG_PATH:
+                await apply_dsp_config(
+                    source=f"{REGEN_SOURCE}-proof-rollback",
+                    candidate_path=current,
+                    load_config=lambda p: cam.set_config_file_path(
+                        p, best_effort=False
+                    ),
+                    get_current_config_path=lambda: cam.get_config_file_path(
+                        best_effort=True
+                    ),
+                    acquire_lock=False,
+                )
+            raise ActiveLeaderError(
+                "bake_graph_unprovable",
+                "active leader program-bake graph failed canonical live re-proof",
+            ) from exc
+        # Stash the prior solo-active config for the unwind — but only a
+        # genuinely different (solo) config, never the bake itself.
+        if current and current != LEADER_BAKE_CONFIG_PATH:
+            atomic_io.atomic_write_text(
+                LEADER_BAKE_PRIOR_STASH, current + "\n", mode=0o644,
+            )
     log_event(
         logger,
         "multiroom.camilla_apply",

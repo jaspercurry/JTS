@@ -2600,7 +2600,7 @@ def _normalized_graph_fingerprint(text: str) -> str | None:
         if not isinstance(parsed, dict) or not parsed:
             return None
         return NormalizedActiveRawIdentity(parsed).active_raw_fingerprint
-    except (ValueError, yaml.YAMLError):
+    except (RecursionError, UnicodeError, ValueError, yaml.YAMLError):
         return None
 
 
@@ -2667,7 +2667,10 @@ def _intent_profile_bytes(
         return None if text is None and digest is None else _INVALID_BYTES
     if not isinstance(text, str):
         return _INVALID_BYTES
-    raw = text.encode("utf-8")
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _INVALID_BYTES
     if digest != hashlib.sha256(raw).hexdigest():
         return _INVALID_BYTES
     return raw
@@ -2733,10 +2736,20 @@ def _snapshot_profile_summary(
         or not isinstance(desired_graph, str)
         or intent.get("boot_selector_target") != config_path
         or selected_config_path != config_path
-        or config.get("predecessor_sha256")
-        != hashlib.sha256(predecessor_graph.encode("utf-8")).hexdigest()
-        or config.get("desired_sha256")
-        != hashlib.sha256(desired_graph.encode("utf-8")).hexdigest()
+    ):
+        return {"authority_valid": False, "runtime_block_required": False}
+    try:
+        predecessor_sha256 = hashlib.sha256(
+            predecessor_graph.encode("utf-8")
+        ).hexdigest()
+        desired_sha256 = hashlib.sha256(
+            desired_graph.encode("utf-8")
+        ).hexdigest()
+    except UnicodeEncodeError:
+        return {"authority_valid": False, "runtime_block_required": False}
+    if (
+        config.get("predecessor_sha256") != predecessor_sha256
+        or config.get("desired_sha256") != desired_sha256
         or graphs.get("predecessor")
         != _normalized_graph_fingerprint(predecessor_graph)
         or graphs.get("desired") != _normalized_graph_fingerprint(desired_graph)
@@ -2948,7 +2961,7 @@ def classify_bass_extension_graph(
             profile2 = _read_optional_bytes(profile_path)
             intent2 = _read_optional_bytes(intent_path)
             applied2 = _read_optional_bytes(applied_baseline_path)
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError, ValueError):
             continue
         if not all((
             applied1 == applied2,
@@ -3016,7 +3029,7 @@ async def classify_active_bass_extension_graph(
                 continue
             selected_path = Path(selected1_s)
             selected1 = selected_path.read_bytes()
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError, ValueError):
             continue
 
         (active_result,) = await asyncio.gather(
@@ -3037,7 +3050,7 @@ async def classify_active_bass_extension_graph(
             profile2 = _read_optional_bytes(profile_path)
             intent2 = _read_optional_bytes(intent_path)
             applied2 = _read_optional_bytes(applied_baseline_path)
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError, ValueError):
             continue
         if (
             not isinstance(active_text, str)

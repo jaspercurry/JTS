@@ -345,10 +345,25 @@ async def test_task_local_reentry_inherits_only_outer_recovery_permission(
 
 async def test_pending_intent_race_orders_ordinary_writer_before_recovery(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     intent = tmp_path / "bass-intent.json"
     ordinary_entered = asyncio.Event()
     release_ordinary = asyncio.Event()
+    publisher_contended = asyncio.Event()
+    real_try_acquire = dsp_apply_module._FileLock.try_acquire
+
+    def observe_contention(lock) -> bool:
+        acquired = real_try_acquire(lock)
+        if not acquired:
+            publisher_contended.set()
+        return acquired
+
+    monkeypatch.setattr(
+        dsp_apply_module._FileLock,
+        "try_acquire",
+        observe_contention,
+    )
 
     async def ordinary() -> None:
         async with _dsp_apply_lock(
@@ -371,7 +386,7 @@ async def test_pending_intent_race_orders_ordinary_writer_before_recovery(
     first = asyncio.create_task(ordinary())
     await ordinary_entered.wait()
     publisher = asyncio.create_task(publish_intent())
-    await asyncio.sleep(0.03)
+    await asyncio.wait_for(publisher_contended.wait(), timeout=1.0)
     assert not intent.exists()
     release_ordinary.set()
     await first

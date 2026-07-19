@@ -49,10 +49,23 @@ from jasper.active_speaker.crossover_preview import build_crossover_preview
 
 @pytest.fixture(autouse=True)
 def _stable_live_graph_authority(monkeypatch):
-    async def prove(*_args, **_kwargs):
+    async def prove(
+        cam,
+        *,
+        expected_config_path,
+        expected_classification,
+        **_kwargs,
+    ):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        assert await cam.get_config_file_path() == str(expected_config_path)
+        assert expected_classification in {
+            runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+        }
         return runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+            classification=expected_classification,
             allowed=True,
+            config_path=str(expected_config_path),
         )
 
     monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
@@ -126,7 +139,9 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
 
 
 def _fake_apply_dsp_config():
-    async def _apply(*, load_config, candidate_path, **_kw):
+    async def _apply(*, load_config, candidate_path, acquire_lock, **_kw):
+        assert acquire_lock is False
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         await load_config(str(candidate_path))
         return SimpleNamespace(to_dict=lambda: {"result": "applied"})
 
@@ -403,6 +418,14 @@ def test_apply_bake_loads_camilla1_and_stashes(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(alc, "LEADER_BAKE_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    real_atomic_write = alc.atomic_io.atomic_write_text
+
+    def atomic_write_while_locked(path, text, *, mode):
+        assert path == alc.LEADER_BAKE_PRIOR_STASH
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        real_atomic_write(path, text, mode=mode)
+
+    monkeypatch.setattr(alc.atomic_io, "atomic_write_text", atomic_write_while_locked)
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     applied = asyncio.run(alc.apply_active_leader_bake(camilla_factory=lambda: cam))
@@ -412,6 +435,47 @@ def test_apply_bake_loads_camilla1_and_stashes(monkeypatch, tmp_path) -> None:
     assert fc.read_stash(alc.LEADER_BAKE_PRIOR_STASH) == (
         "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
     )
+
+
+def test_apply_bake_live_proof_failure_rolls_back_before_unlock(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        alc,
+        "LEADER_BAKE_CONFIG_PATH",
+        str(tmp_path / "grouping_active_leader_bake.yml"),
+    )
+    monkeypatch.setattr(alc, "LEADER_BAKE_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    prior = str(tmp_path / "active_speaker_baseline.yml")
+
+    async def refuse(
+        cam,
+        *,
+        expected_config_path,
+        expected_classification,
+        **_kwargs,
+    ):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        assert expected_config_path == alc.LEADER_BAKE_CONFIG_PATH
+        assert (
+            expected_classification
+            == runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE
+        )
+        assert await cam.get_config_file_path() == alc.LEADER_BAKE_CONFIG_PATH
+        raise RuntimeError("candidate proof refused")
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    cam = _FakeCamilla(current=prior)
+
+    with pytest.raises(alc.ActiveLeaderError) as exc:
+        asyncio.run(alc.apply_active_leader_bake(camilla_factory=lambda: cam))
+
+    assert exc.value.reason == "bake_graph_unprovable"
+    assert cam.loaded == [alc.LEADER_BAKE_CONFIG_PATH, prior]
+    assert fc.read_stash(alc.LEADER_BAKE_PRIOR_STASH) is None
+    assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is None
 
 
 def test_apply_bake_does_not_stash_itself(monkeypatch, tmp_path) -> None:
@@ -454,7 +518,9 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
     )
+
     def decide(_topology, *, current_config_path=None, **_kwargs):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         graph = SimpleNamespace(
             allowed=allowed,
             classification="x" if allowed else "unsafe",
@@ -482,6 +548,13 @@ def test_restore_prefers_leader_stash(monkeypatch, tmp_path) -> None:
     solo = tmp_path / "active_speaker_baseline.yml"
     solo.write_text("# solo active baseline\n", encoding="utf-8")
     fc._write_stash(str(solo), path=alc.LEADER_BAKE_PRIOR_STASH)
+    real_clear_stash = fc._clear_stash
+
+    def clear_stash_while_locked(path):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        real_clear_stash(path)
+
+    monkeypatch.setattr(fc, "_clear_stash", clear_stash_while_locked)
 
     cam = _FakeCamilla(current=alc.LEADER_BAKE_CONFIG_PATH)
     restored = asyncio.run(alc.restore_active_leader_solo(camilla_factory=lambda: cam))
