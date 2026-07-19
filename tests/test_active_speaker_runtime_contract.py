@@ -657,6 +657,149 @@ async def test_live_boundary_keeps_readback_inside_whole_snapshot_sandwich(
     assert graph.allowed is True
 
 
+async def test_live_boundary_refuses_mismatched_live_yaml_as_unstable(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    live_payload = yaml.safe_load(text)
+    live_payload["devices"]["samplerate"] += 1
+    mismatched_live = yaml.safe_dump(live_payload, sort_keys=False)
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        return mismatched_live
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
+async def test_live_boundary_refuses_changed_selector_as_unstable(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    alternate = tmp_path / "alternate-active-speaker-baseline.yml"
+    alternate.write_text(text, encoding="utf-8")
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        selected = alternate if callback_count % 2 else authority["config"]
+        authority["statefile_path"].write_text(
+            f"config_path: {selected}\nvolume: -18.0\nmute: false\n",
+            encoding="utf-8",
+        )
+        return text
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
+async def test_live_boundary_refuses_changed_selected_file_as_unstable(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    text = _active_baseline_yaml("mono", 2)
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=text,
+    )
+    selected_path = authority["config"]
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        before = selected_path.read_text(encoding="utf-8")
+        after = text if before != text else text + "# snapshot churn\n"
+        selected_path.write_text(after, encoding="utf-8")
+        return before
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
+async def test_live_boundary_refuses_unparseable_selected_file_as_unstable(
+    tmp_path: Path,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    authority = _persisted_boundary(
+        tmp_path,
+        topology=topology,
+        graph_text=_active_baseline_yaml("mono", 2),
+    )
+    broken = "filters: [\n"
+    authority["config"].write_text(broken, encoding="utf-8")
+    callback_count = 0
+
+    async def active_readback() -> str:
+        nonlocal callback_count
+        callback_count += 1
+        return broken
+
+    graph = await classify_active_bass_extension_graph(
+        topology,
+        statefile_path=authority["statefile_path"],
+        read_active_graph_text=active_readback,
+        applied_baseline_path=authority["applied_baseline_path"],
+        profile_path=authority["profile_path"],
+        intent_path=authority["intent_path"],
+        staged_metadata_path=authority["staged_metadata_path"],
+    )
+
+    assert callback_count == 2
+    assert graph.allowed is False
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+
+
 async def test_live_boundary_preserves_stable_selected_classifier_issue(
     tmp_path: Path,
 ) -> None:

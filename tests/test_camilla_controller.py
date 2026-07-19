@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import jasper.camilla as camilla_module
+import jasper.dsp_apply as dsp_apply_module
 from jasper.camilla import (
     CAMILLA_ATTEMPT_BUDGET_S,
     CAMILLA_OPERATION_TIMEOUT_S,
@@ -21,6 +22,7 @@ from jasper.camilla import (
     CamillaUnavailable,
     crossover_controller,
 )
+from jasper.dsp_apply import BassExtensionApplyPending, dsp_writer_lock
 
 
 class _FakeVolume:
@@ -216,6 +218,146 @@ async def test_all_graph_mutations_enter_the_lowest_admission_context(
     ]
     assert fake.file_paths == [str(tmp_path / "candidate.yml")]
     assert fake.reload_count == 2
+
+
+@pytest.mark.asyncio
+async def test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    intent.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
+        intent,
+    )
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+
+    with pytest.raises(BassExtensionApplyPending):
+        await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
+    with pytest.raises(BassExtensionApplyPending):
+        await cam.set_active_config_raw("---\nfilters: {}\n")
+    with pytest.raises(BassExtensionApplyPending):
+        await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
+    with pytest.raises(BassExtensionApplyPending):
+        await cam.reload()
+
+    assert fake.file_paths == []
+    assert fake.active_raw_values == []
+    assert fake.queries == []
+    assert fake.reload_count == 0
+
+
+@pytest.mark.asyncio
+async def test_direct_graph_mutation_wins_race_before_intent_publication(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    monkeypatch.setattr(
+        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
+        intent,
+    )
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    mutation_entered = asyncio.Event()
+    release_mutation = asyncio.Event()
+    lock_contended = asyncio.Event()
+    real_try_acquire = dsp_apply_module._FileLock.try_acquire
+
+    def observe_contention(lock) -> bool:
+        acquired = real_try_acquire(lock)
+        if not acquired:
+            lock_contended.set()
+        return acquired
+
+    monkeypatch.setattr(
+        dsp_apply_module._FileLock,
+        "try_acquire",
+        observe_contention,
+    )
+
+    async def blocked_call(fn):
+        mutation_entered.set()
+        await release_mutation.wait()
+        return fn(fake)
+
+    cam._call = blocked_call  # type: ignore[method-assign]
+
+    async def publish_intent() -> None:
+        async with dsp_writer_lock(
+            tmp_path,
+            source="bass_extension.apply",
+            allow_pending_bass_extension_recovery=True,
+        ):
+            intent.write_text("{}\n", encoding="utf-8")
+
+    mutation = asyncio.create_task(cam.reload())
+    await mutation_entered.wait()
+    publisher = asyncio.create_task(publish_intent())
+    await asyncio.wait_for(lock_contended.wait(), timeout=1.0)
+    assert not intent.exists()
+
+    release_mutation.set()
+    assert await mutation is True
+    await publisher
+
+    assert fake.reload_count == 1
+    assert intent.exists()
+
+
+@pytest.mark.asyncio
+async def test_intent_publication_wins_race_before_direct_graph_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    monkeypatch.setattr(
+        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
+        intent,
+    )
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    publication_entered = asyncio.Event()
+    release_publication = asyncio.Event()
+    lock_contended = asyncio.Event()
+    real_try_acquire = dsp_apply_module._FileLock.try_acquire
+
+    def observe_contention(lock) -> bool:
+        acquired = real_try_acquire(lock)
+        if not acquired:
+            lock_contended.set()
+        return acquired
+
+    monkeypatch.setattr(
+        dsp_apply_module._FileLock,
+        "try_acquire",
+        observe_contention,
+    )
+
+    async def publish_intent() -> None:
+        async with dsp_writer_lock(
+            tmp_path,
+            source="bass_extension.apply",
+            allow_pending_bass_extension_recovery=True,
+        ):
+            intent.write_text("{}\n", encoding="utf-8")
+            publication_entered.set()
+            await release_publication.wait()
+
+    publisher = asyncio.create_task(publish_intent())
+    await publication_entered.wait()
+    mutation = asyncio.create_task(cam.reload())
+    await asyncio.wait_for(lock_contended.wait(), timeout=1.0)
+    assert not mutation.done()
+
+    release_publication.set()
+    await publisher
+    with pytest.raises(BassExtensionApplyPending):
+        await mutation
+
+    assert fake.reload_count == 0
 
 
 class _FakeWebSocket:

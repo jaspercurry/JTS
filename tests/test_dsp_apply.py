@@ -289,6 +289,39 @@ async def test_private_admission_refuses_pending_bass_intent_for_any_source(
             pytest.fail("a source label granted recovery permission")
 
 
+async def test_apply_dsp_config_refuses_pending_bass_intent_before_load(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    intent.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
+        intent,
+    )
+    candidate = tmp_path / "candidate.yml"
+    candidate.write_text("---\ndevices:\n  volume_limit: 0.0\n", encoding="utf-8")
+    loaded: list[str] = []
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        return True
+
+    with pytest.raises(BassExtensionApplyPending):
+        await apply_dsp_config(
+            source="ordinary_apply",
+            candidate_path=candidate,
+            load_config=load,
+            validate=lambda path: CamillaConfigValidationResult(
+                status=ValidationStatus.VALID,
+                path=str(path),
+            ),
+            state_path=tmp_path / "state.json",
+        )
+
+    assert loaded == []
+
+
 async def test_task_local_reentry_inherits_only_outer_recovery_permission(
     tmp_path: Path,
 ) -> None:

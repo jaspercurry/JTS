@@ -2793,6 +2793,7 @@ async def _snapshot_running_room_graph(
     cam: Any,
     *,
     current_path: str | Path | None = None,
+    bass_profile_summary: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Path, Mapping[str, Any]]:
     """Persist one validated, content-stable copy of Camilla's running graph."""
 
@@ -2817,10 +2818,11 @@ async def _snapshot_running_room_graph(
             "CamillaDSP is running a configuration JTS didn't generate, so "
             "Room cannot preserve it for exact restoration.",
         )
-    live_authority = await _classify_live_bass_extension_graph(cam)
-    bass_profile_summary = live_authority.details[
-        "bass_extension_profile_summary"
-    ]
+    if bass_profile_summary is None:
+        live_authority = await _classify_live_bass_extension_graph(cam)
+        bass_profile_summary = live_authority.details[
+            "bass_extension_profile_summary"
+        ]
     raw = await cam.get_active_config_raw(best_effort=False)
     if not isinstance(raw, str) or not raw.strip():
         raise RuntimeError("CamillaDSP did not report a running graph")
@@ -2886,14 +2888,18 @@ async def _load_measurement_baseline(
         # apply_dsp_config invokes prepare while /start owns the shared
         # DSP-writer lock. Re-read Active's decision here so the graph being
         # re-emitted cannot rely on a Layer-A sample taken before reservation.
-        await _assert_room_authority_current(cam, expected_authority_binding)
+        bass_profile_summary = await _assert_room_authority_current(
+            cam,
+            expected_authority_binding,
+        )
         anchor = await cam.get_config_file_path(best_effort=False)
         if not anchor:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
-        _, restore_path, bass_profile_summary = await _snapshot_running_room_graph(
+        _, restore_path, _ = await _snapshot_running_room_graph(
             sess,
             cam,
             current_path=anchor,
+            bass_profile_summary=bass_profile_summary,
         )
         carrier = carrier_for_loaded_config(
             restore_path,

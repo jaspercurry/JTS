@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from http import HTTPStatus
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -45,6 +45,7 @@ from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
 )
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
@@ -1358,6 +1359,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
 
     async def authority_current(_cam, expected):
         authority_checks.append(expected)
+        return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
         correction_setup,
@@ -1478,17 +1480,38 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
     )
+    summary = MappingProxyType({
+        "authority_valid": True,
+        "runtime_block_required": False,
+    })
+    authority_checks = 0
+    safety_summaries = []
+
+    def graph_safe(_text, *, bass_profile_summary=None):
+        safety_summaries.append(bass_profile_summary)
+
     monkeypatch.setattr(
         "jasper.correction.runtime_safety.assert_correction_graph_safe",
-        lambda text, **_kwargs: None,
+        graph_safe,
     )
+
     async def authority_current(_cam, _expected):
-        return None
+        nonlocal authority_checks
+        authority_checks += 1
+        return summary
+
+    async def duplicate_proof(_cam):
+        raise AssertionError("measurement start performed a second live proof")
 
     monkeypatch.setattr(
         correction_setup,
         "_assert_room_authority_current",
         authority_current,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_classify_live_bass_extension_graph",
+        duplicate_proof,
     )
     sess = _make_session(tmp_path)
     sess.cfg.config_dir.mkdir()
@@ -1548,6 +1571,9 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     assert payload["current_correction_at_start"]["current_correction"][
         "session_id"
     ] == "sound"
+    assert authority_checks == 1
+    assert len(safety_summaries) == 2
+    assert all(item is summary for item in safety_summaries)
 
 
 @pytest.mark.asyncio
@@ -1642,7 +1668,7 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
         },
     )
     async def authority_current(_cam, _expected):
-        return None
+        return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
         correction_setup,
@@ -1699,7 +1725,7 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
     async def authority_current(_cam, _expected):
-        return None
+        return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
         correction_setup,
