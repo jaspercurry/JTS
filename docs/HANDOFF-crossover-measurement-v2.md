@@ -21,19 +21,22 @@ this doc is the current operational truth.
 - **Flow selector — `JASPER_CROSSOVER_FLOW`.** Resolved by
   `active_crossover_flow()` in
   [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py).
-  **As of 2026-07-19 the default is `v2`;** the single opt-out is the
-  exact literal `JASPER_CROSSOVER_FLOW=legacy` (case-insensitive,
-  trimmed). Any unrecognized value resolves to the default — fail-safe
-  by construction. The default-flip PR lands 2026-07-19 alongside this
-  doc; a tree checked out before it will still show
-  `DEFAULT_CROSSOVER_FLOW = legacy` and require exact `v2` to activate.
+  **The default is `v2`** (flipped from `legacy` on 2026-07-19 after W6
+  hardware validation); the single opt-out is the exact literal
+  `JASPER_CROSSOVER_FLOW=legacy` (case-insensitive, trimmed). Any
+  unrecognized value resolves to the default — fail-safe by
+  construction.
 - **Phone capture page:** the Cloudflare Pages app under
   [`capture-page/`](../capture-page/README.md), served at
-  `capture.jasper.tech`, relaying through `relay.jasper.tech`. Deploy:
-  `npx wrangler pages deploy dist --project-name jts-capture-page`
-  (see the capture-page README's release ordering — the page's
-  `supported_capture_protocol_versions` must include a protocol before
-  the Pi emits it).
+  `capture.jasper.tech`, relaying through `relay.jasper.tech`. Deploy
+  from the repo root:
+  `npx wrangler pages deploy capture-page/dist --project-name jts-capture-page --branch=main`
+  — `--branch=main` is load-bearing: without it wrangler deploys a
+  preview alias and the production domain keeps serving the stale page
+  (the W6.10 Chrome-deadlock bug class); the custom domain lags the
+  deploy by ~5 min. See the capture-page README's release ordering —
+  the page's `supported_capture_protocol_versions` must include a
+  protocol before the Pi emits it.
 
 ## Current status (2026-07-19)
 
@@ -247,7 +250,7 @@ and the shared `/correction/crossover/recover-volume`.
 
 Attributed as campaign measurements, not code guarantees:
 
-- **Start → applied crossover: 75 s** (first fully-calibrated run).
+- **Start → applied crossover: 75 s** (run 7, scripted full pass, 2026-07-18).
 - **ε (clock drift):** ≈30 ppm, repeatable 29.90–30.02 ppm across runs
   (0.68 µs equivalent delay repeat), agreeing with an independent bench
   probe to 0.1 ppm. Uncorrected, the same rig would accumulate
