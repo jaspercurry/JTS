@@ -175,7 +175,10 @@ def _verify_analysis(
         locations=(_loc("sweep_verify", "summed_sweep", confidence=locate_confidence),),
         summed_response=_driver_response("summed", gate_ms),
         summed_ripple_db=1.1,
-        verify_tracking={"rms_db": 0.4, "max_db": max_db},
+        # W6.7 ruling 1: the conductor gates on the notch-excluded max, not the
+        # raw ``max_db`` — this fake keeps them equal (a fake with no notch to
+        # exclude), so the ``max_db`` parameter still controls the gate.
+        verify_tracking={"rms_db": 0.4, "max_db": max_db, "max_db_notch_excluded": max_db},
         linearity_ok=linearity,
     )
 

@@ -600,11 +600,15 @@ def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
 def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
     if candidate is None:
         return None
+    analysis = candidate.analysis if isinstance(candidate.analysis, Mapping) else {}
     return {
         "fingerprint": candidate.fingerprint,
         "program_id": candidate.program_id,
         "trims_db": dict(candidate.role_attenuations_db),
         "alignment": candidate.alignment.to_dict(),
+        # Threaded through for the review_apply low-confidence nudge (W6.7
+        # ruling 4, crossover_envelope_v2.ALIGNMENT_CONFIDENCE_NUDGE_FLOOR).
+        "alignment_confidence": analysis.get("alignment_confidence"),
     }
 
 

@@ -49,6 +49,14 @@ logger = logging.getLogger(__name__)
 
 CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 7
 
+# Below this alignment-estimator confidence (see AlignmentEstimate.confidence
+# in program_analysis.py), the review_apply screen carries a warn nudge
+# suggesting a re-measure at a cleaner mic position (W6.7 ruling 4 — the
+# run-7 hardware pass applied a candidate at confidence 0.485). This is
+# informed consent, NOT a gate: Apply stays available regardless. PROVISIONAL
+# pending W6 bench distributions on confidence-vs-outcome correlation.
+ALIGNMENT_CONFIDENCE_NUDGE_FLOOR = 0.6
+
 # The v2 step tuple (§5.9). The step machinery inside each step is gone; these
 # five are the whole journey.
 _STEP_IDS = (
@@ -162,18 +170,89 @@ def _envelope(
     }
 
 
+def _verify_fail_envelope(
+    code: str, message: str, status: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The VERIFY-fail screen (§5.2): one default "Try again" + "Undo".
+
+    Shared by ``REASON_VERIFY_OUT_OF_TOLERANCE`` / ``REASON_VERIFY_INCONCLUSIVE``
+    (whose own REASON_REGISTRY template is already ``verify_fail``) AND the
+    VERIFY-phase override in :func:`_failure_envelope` (W6.7 ruling 3) for any
+    OTHER code surfacing once the candidate is applied — the household is
+    entitled to the Undo affordance the moment something is live on the
+    speaker, regardless of which check failed.
+    """
+    return _envelope(
+        screen="verify_fail", active_step="verify",
+        verdict=message,
+        nudges=[{"code": code, "severity": "warn", "text": message}],
+        next_action={
+            "id": "verify_retry",
+            "label": "Try again",
+            "endpoint": "/correction/crossover/v2/verify",
+            "body": {},
+        },
+        alternate_actions=[
+            {
+                "id": "verify_undo",
+                "label": "Undo (restore previous sound)",
+                # W5b CHECKLIST ITEM: this rides the legacy restore path
+                # and does NOT yet clear the durable v2 applied/candidate
+                # state — after an undo the v2 state still says applied.
+                # W5b owns v2-aware restore semantics (clear the stale
+                # applied flag + candidate on successful restore).
+                # W5b CHECKLIST ITEM (W6.7 gate N2): a session reset that
+                # clears the durable v2 state while the applied graph is
+                # still live loses this Undo affordance (no verify-phase
+                # state remains to render verify_fail from) — W5b's
+                # v2-aware restore/reset semantics should keep an Undo
+                # path reachable whenever an applied candidate is in force.
+                "endpoint": "/correction/crossover/restore",
+                "body": {},
+            },
+            {
+                "id": "verify_remeasure",
+                "label": "Re-measure",
+                "endpoint": "/correction/crossover/v2/session",
+                "body": {},
+                "expert": True,
+            },
+        ],
+        status=status,
+    )
+
+
 def _failure_envelope(
     code: str, status: Mapping[str, Any], active_step: str,
 ) -> dict[str, Any]:
-    """Render one of the four §5.10 templates from a reason code."""
+    """Render one of the four §5.10 templates from a reason code.
+
+    VERIFY-phase override (W6.7 ruling 3): once ``active_step`` is
+    ``"verify"`` the candidate is already applied — ``_phase_from_state``
+    (jasper.web.correction_crossover_v2) only reports the VERIFY phase once
+    ``applied`` is True — so ANY failure code surfacing there renders through
+    the ``verify_fail`` template regardless of REASON_REGISTRY's own owning
+    template. fix_and_retry / hard_stop / session_restart / silent_auto_retry
+    all hide the Undo affordance the household is entitled to the moment
+    something is live on the speaker (the run-7 hardware bug: an
+    ``agc_behavioral_fail`` during VERIFY rendered ``fix_and_retry`` and
+    displaced the VERIFY-fail screen's Undo action). REASON_REGISTRY stays
+    the single copy source — only the template choice is overridden here.
+    """
     spec = REASON_REGISTRY.get(code)
     if spec is None:  # defensive — an unknown code still names a retry, never a bare code
+        if active_step == "verify":
+            return _verify_fail_envelope(
+                code, "Something went wrong with that measurement. Try again.", status,
+            )
         return _envelope(
             screen="fix_and_retry", active_step=active_step,
             verdict="Something went wrong with that measurement. Try again.",
             next_action={"id": "retry", "label": "Try again"},
             status=status,
         )
+    if active_step == "verify" and spec.template != TEMPLATE_VERIFY_FAIL:
+        return _verify_fail_envelope(code, spec.message or spec.banner, status)
     template = spec.template
     if template == TEMPLATE_SILENT_AUTO_RETRY:
         # No decision screen: stay on the phase screen with a banner; the phone
@@ -210,38 +289,7 @@ def _failure_envelope(
         # One default — "Try again" (internally re-verify once, then re-measure)
         # — plus "Undo (restore previous sound)"; the explicit trio lives behind
         # the expert disclosure (§5.2).
-        return _envelope(
-            screen="verify_fail", active_step="verify",
-            verdict=spec.message,
-            nudges=[{"code": code, "severity": "warn", "text": spec.message}],
-            next_action={
-                "id": "verify_retry",
-                "label": "Try again",
-                "endpoint": "/correction/crossover/v2/verify",
-                "body": {},
-            },
-            alternate_actions=[
-                {
-                    "id": "verify_undo",
-                    "label": "Undo (restore previous sound)",
-                    # W5b CHECKLIST ITEM: this rides the legacy restore path
-                    # and does NOT yet clear the durable v2 applied/candidate
-                    # state — after an undo the v2 state still says applied.
-                    # W5b owns v2-aware restore semantics (clear the stale
-                    # applied flag + candidate on successful restore).
-                    "endpoint": "/correction/crossover/restore",
-                    "body": {},
-                },
-                {
-                    "id": "verify_remeasure",
-                    "label": "Re-measure",
-                    "endpoint": "/correction/crossover/v2/session",
-                    "body": {},
-                    "expert": True,
-                },
-            ],
-            status=status,
-        )
+        return _verify_fail_envelope(code, spec.message, status)
     # TEMPLATE_FIX_AND_RETRY (the default decision screen).
     return _envelope(
         screen="fix_and_retry", active_step=active_step,
@@ -361,18 +409,33 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # as a nudge so a repeated "nothing happened" Apply tap has an
         # explanation, without inventing a new screen/template.
         apply_blocked = _mapping(v2.get("apply_blocked"))
-        nudges = (
-            [{
+        nudges: list[dict[str, str]] = []
+        if apply_blocked:
+            nudges.append({
                 "code": str(apply_blocked.get("id") or "apply_blocked"),
                 "severity": "warn",
                 "text": str(
                     apply_blocked.get("message")
                     or "Applying the reviewed crossover was blocked. Try again."
                 ),
-            }]
-            if apply_blocked
-            else None
-        )
+            })
+        # Low-confidence nudge (W6.7 ruling 4) — informed consent, not a gate:
+        # Apply below is untouched either way.
+        confidence = candidate.get("alignment_confidence")
+        if (
+            isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and confidence < ALIGNMENT_CONFIDENCE_NUDGE_FLOOR
+        ):
+            nudges.append({
+                "code": "crossover_v2_alignment_low_confidence",
+                "severity": "warn",
+                "text": (
+                    "Alignment is less certain at this mic position — for best "
+                    "results, place the mic about 1 m in front of the speaker at "
+                    "tweeter height and re-measure."
+                ),
+            })
         env = _envelope(
             screen="review_apply", active_step="review_apply",
             verdict=(
