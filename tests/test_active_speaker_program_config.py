@@ -63,7 +63,7 @@ def test_program_config_routes_each_channel_to_its_driver_output():
     assert parsed["devices"]["capture"]["channels"] == 2
     assert parsed["devices"]["volume_limit"] == 0.0
 
-    mixer = parsed["mixers"]["program_route_2way"]
+    mixer = parsed["mixers"]["split_active_2way"]
     routing = {
         entry["dest"]: [s["channel"] for s in entry["sources"]]
         for entry in mixer["mapping"]
@@ -119,7 +119,7 @@ def test_program_config_stereo_routes_both_woofers_and_both_tweeters():
     parsed = yaml_lib.safe_load(out)
     routing = {
         entry["dest"]: entry["sources"][0]["channel"]
-        for entry in parsed["mixers"]["program_route_2way"]["mapping"]
+        for entry in parsed["mixers"]["split_active_2way"]["mapping"]
     }
     # Both woofer outputs take program ch0; both tweeter outputs take ch1.
     assert routing == {0: 0, 1: 1, 2: 0, 3: 1}
@@ -214,7 +214,7 @@ _FILTERS_BLOCK = f"""filters:
 
 _ROUTED_PIPELINE = f"""pipeline:
   - type: Mixer
-    name: program_route_2way
+    name: split_active_2way
   - type: Filter
     channels: [1]
     names: [{_TWEETER_HP}, as_tweeter_delay, {_TWEETER_LIMITER}]
@@ -225,7 +225,7 @@ _PRESPLIT_PIPELINE = f"""pipeline:
     channels: [1]
     names: [{_TWEETER_HP}]
   - type: Mixer
-    name: program_route_2way
+    name: split_active_2way
   - type: Filter
     channels: [1]
     names: [as_tweeter_delay, {_TWEETER_LIMITER}]
@@ -264,7 +264,7 @@ def test_build_and_prove_refuses_pre_split_hp_graph():
     doctored = (
         "---\n"
         + _FILTERS_BLOCK
-        + "\nmixers:\n  program_route_2way:\n    channels: { in: 2, out: 2 }\n"
+        + "\nmixers:\n  split_active_2way:\n    channels: { in: 2, out: 2 }\n"
         + _PRESPLIT_PIPELINE
     )
     with pytest.raises(ActiveSpeakerConfigError, match="provably high-pass"):

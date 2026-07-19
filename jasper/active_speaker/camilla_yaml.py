@@ -17,6 +17,8 @@ import re
 from pathlib import Path
 from typing import Sequence
 
+import yaml
+
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -49,6 +51,7 @@ from jasper.sound.profile import SoundProfile
 from .graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     output_highpass_protected,
+    pipeline_reference_closure_errors,
     tweeter_guard_present,
     unprotected_tweeter_outputs,
     view_from_emitted_text,
@@ -1511,6 +1514,21 @@ def _emit_role_routed_mixer(
     Region polarity is carried exactly as the commissioning mixer carries it, so
     the routed graph differs from the commissioning graph ONLY in its source
     selection, never in polarity or level.
+
+    The emitted mixer is named ``split_active_{way_count}way`` — the SAME name
+    :func:`_emit_split_mixer` uses — for two independent reasons that both land
+    on the identical spelling: (1) :func:`_emit_commissioning_pipeline`, reused
+    verbatim by the program graph, hardcodes a ``Mixer`` pipeline step under
+    that exact name (CamillaDSP's ``SetConfig`` refuses to load a pipeline step
+    referencing an undefined mixer — W6 hardware run 4 finding I: the program
+    graph shipped as ``program_route_{way}way`` here while the pipeline pointed
+    at ``split_active_{way}way``, and every program-graph load was rejected);
+    (2) ``jasper.active_speaker.environment``'s ``_ACTIVE_SPLIT_RE`` — the
+    runtime ecosystem's active-config classifier — recognizes an active-speaker
+    config by the presence of a ``split_active_Nway`` mixer name. It is ecosystem
+    vocabulary, not a routing claim: this mixer's ROUTING stays role-routed
+    (see above), never side-routed like the commissioning/baseline/startup
+    split — only the NAME is shared.
     """
     region_polarity = _role_polarity(preset)
     polarity = (
@@ -1530,7 +1548,7 @@ def _emit_role_routed_mixer(
     ]
     labels = [output.label for output in outputs]
     return emit_mixer(
-        f"program_route_{preset.way_count}way",
+        f"split_active_{preset.way_count}way",
         channels_in=channels_in,
         channels_out=output_count,
         mapping=mapping,
@@ -1636,6 +1654,55 @@ def _assert_tweeter_crossover_hp_satisfies_floor(
             )
 
 
+def _assert_pipeline_references_closed(
+    yaml_text: str, preset: ActiveSpeakerPreset
+) -> None:
+    """Fail-closed L0 emit gate: refuse a graph whose pipeline points at an
+    undefined mixer or filter name.
+
+    Runs on every active-speaker graph THIS module emits, right before it is
+    returned or written — the same "prove it against the emitted text" shape as
+    :func:`_assert_tweeter_outputs_protected`, but a structural check rather
+    than a protection one: it does not reason about channels or filter
+    parameters, only whether every ``Mixer.name``/``Filter.names`` entry the
+    pipeline references resolves against the graph's own ``mixers:``/
+    ``filters:`` sections.
+
+    This closes the W6 hardware run 4 finding I hole: the program graph's
+    pipeline (reused verbatim from ``_emit_commissioning_pipeline``) named its
+    routing mixer ``split_active_2way`` while the graph's own ``mixers:``
+    section defined ``program_route_2way`` — a mismatch CamillaDSP's
+    ``SetConfig`` only caught at LOAD time on real hardware ("Use of missing
+    mixer 'split_active_2way'"), and even then reported only the first
+    dangling reference. Every emitter in this module composes its filter
+    definitions, mixer, and pipeline from independent helper calls
+    (see ``emit_active_speaker_program_config`` and
+    ``emit_active_speaker_baseline_config``); nothing upstream of this gate
+    proves the three pieces agree.
+    """
+    try:
+        payload = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        raise ActiveSpeakerConfigError(
+            f"emitted active-speaker config did not parse as YAML: {e}"
+        ) from e
+    errors = pipeline_reference_closure_errors(payload)
+    if not errors:
+        return
+    log_event(
+        logger,
+        "active_speaker.emit_gate",
+        level=logging.ERROR,
+        result="blocked_dangling_pipeline_reference",
+        preset_id=preset.preset_id,
+        detail="; ".join(errors),
+    )
+    raise ActiveSpeakerConfigError(
+        "refusing to emit an active-speaker config whose pipeline references "
+        "undefined mixer/filter name(s): " + "; ".join(errors)
+    )
+
+
 def _assert_program_graph_proven(
     yaml_text: str,
     preset: ActiveSpeakerPreset,
@@ -1644,17 +1711,20 @@ def _assert_program_graph_proven(
 ) -> None:
     """Build-and-prove the emitted program graph against graph_safety (fail-closed).
 
-    Runs the three L0 tweeter proofs on the EMITTED text — the same evidence a
+    Runs the reference-closure gate (:func:`_assert_pipeline_references_closed`)
+    plus the three L0 tweeter proofs on the EMITTED text — the same evidence a
     later readback would inspect — and refuses to return a graph that does not
-    prove all three. This is the program builder's return contract: it cannot
-    emit a graph whose tweeter output is not high-pass protected (against the
-    declared floor) AND wrapped by its crossover high-pass + soft-clip limiter in
-    one post-mixer step. A pre-split per-channel high-pass (which
+    prove all four. This is the program builder's return contract: it cannot
+    emit a graph whose pipeline points at an undefined mixer/filter name, nor
+    one whose tweeter output is not high-pass protected (against the declared
+    floor) AND wrapped by its crossover high-pass + soft-clip limiter in one
+    post-mixer step. A pre-split per-channel high-pass (which
     ``output_highpass_protected`` alone could false-PASS on the 2-way preset,
     where program ch1 numerically coincides with tweeter output 1) is rejected
     here because ``tweeter_guard_present`` requires the high-pass AND the limiter
     together on exactly the tweeter output channels.
     """
+    _assert_pipeline_references_closed(yaml_text, preset)
     tweeter_channels = _channels_for_role(preset, "tweeter")
     if not tweeter_channels:
         return
@@ -2057,6 +2127,13 @@ pipeline:
     # its crossover / protective high-pass before it can leave the emitter — a
     # flat/unprotected tweeter baseline is the shrill hot-tweeter hazard.
     _assert_tweeter_outputs_protected(yaml, preset)
+    # Reference-closure gate (fail-closed): the durable baseline shares the
+    # same "filters/mixer/pipeline assembled from independent helper calls"
+    # shape the program graph does (see the W6 finding I comment on
+    # _assert_pipeline_references_closed) — cheap enough to run on every
+    # baseline build, and it is what would have caught a dangling mixer/filter
+    # name here before it ever reached a live CamillaDSP load.
+    _assert_pipeline_references_closed(yaml, preset)
 
     if out_path is not None:
         out_path = Path(out_path)
