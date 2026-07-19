@@ -88,6 +88,68 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+# Presentation order for the per-role trim rows on the review screen — woofer
+# before tweeter reads low-to-high like the crossover itself; any other role
+# falls to the end alphabetically.
+_ROLE_ORDER = {"woofer": 0, "tweeter": 1}
+
+
+def _finite(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _candidate_review_payload(
+    candidate: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Map the persisted ``_candidate_summary`` (jasper.web.correction_crossover_v2)
+    into the plain-language shape the review screen renders (§5.2: trims, delay,
+    polarity, plus fingerprint provenance).
+
+    W6.10 blocker #2: the generic renderer's review body expected a candidate
+    shape (``retained_crossover_regions``/``drivers``) the conductor never
+    builds, so ``#crossover-review-body`` rendered empty. This is the single
+    conversion point from what ``_candidate_summary`` DOES build (trims_db /
+    alignment / confidence / fingerprint) into rows the page can display; the
+    renderer is fixed to consume exactly this shape.
+    """
+    if not candidate:
+        return None
+    trims_db = _mapping(candidate.get("trims_db"))
+    trims: list[dict[str, Any]] = []
+    for role, value in sorted(
+        trims_db.items(), key=lambda kv: (_ROLE_ORDER.get(str(kv[0]), 99), str(kv[0]))
+    ):
+        db = _finite(value)
+        if db is not None:
+            trims.append({"role": str(role), "attenuation_db": db})
+
+    alignment = _mapping(candidate.get("alignment"))
+    delay_us = _finite(alignment.get("delay_us"))
+    delay_role = alignment.get("delay_role")
+    delay: dict[str, Any] | None = None
+    if delay_us is not None and isinstance(delay_role, str) and delay_role.strip():
+        delay = {"role": delay_role, "delay_ms": delay_us / 1000.0}
+    polarity = alignment.get("polarity")
+    polarity_str = polarity if isinstance(polarity, str) and polarity.strip() else None
+
+    payload: dict[str, Any] = {
+        "trims": trims,
+        "delay": delay,
+        "polarity": polarity_str,
+        "confidence": _finite(candidate.get("alignment_confidence")),
+        "fingerprint": str(candidate.get("fingerprint") or ""),
+        "program_id": str(candidate.get("program_id") or ""),
+    }
+    # A candidate with nothing displayable (no trims, no alignment) stays hidden
+    # rather than rendering an empty card — the Apply action still shows.
+    if not trims and delay is None and polarity_str is None:
+        return None
+    return payload
+
+
 def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(status.get("crossover_v2"))
 
@@ -152,6 +214,7 @@ def _envelope(
     alternate_actions: list[dict[str, Any]] | None = None,
     status: Mapping[str, Any],
     candidate_review: Mapping[str, Any] | None = None,
+    advertise_relay: bool = True,
 ) -> dict[str, Any]:
     return {
         "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
@@ -161,7 +224,9 @@ def _envelope(
         "steps": _step_payload(active_step, _done_before(active_step)),
         "verdict_text": verdict,
         "nudges": nudges or [],
-        "relay": _mapping(status.get("relay")) or None,
+        # A terminal / restart screen must stop advertising the dead phone link
+        # and its QR (W6.10 fold-in) — the session it pointed at is gone.
+        "relay": (_mapping(status.get("relay")) or None) if advertise_relay else None,
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
         "progress": _progress(active_step),
@@ -268,6 +333,10 @@ def _failure_envelope(
             status=status,
         )
     if template == TEMPLATE_HARD_STOP:
+        # hard_stop keeps the relay block (Finding D contract): the failure
+        # copy + the phone's stopped/failed status stay visible together. The
+        # renderer only shows the QR for an IN-FLIGHT relay, so a purged
+        # session never re-advertises a live link here.
         return _envelope(
             screen="hard_stop", active_step=active_step,
             verdict=spec.message,
@@ -287,6 +356,9 @@ def _failure_envelope(
                 "body": {},
             },
             status=status,
+            # The session this screen replaced is dead — do not re-advertise its
+            # phone link / QR (W6.10 fold-in). Start over mints a fresh one.
+            advertise_relay=False,
         )
     if template == TEMPLATE_VERIFY_FAIL:
         # One default — "Try again" (internally re-verify once, then re-measure)
@@ -457,9 +529,15 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "body": {
                     "expected_candidate_fingerprint": str(candidate.get("fingerprint") or ""),
                 },
+                # Apply is the review screen's PRIMARY action and must render even
+                # while the phone relay is still in flight (the phone is parked in
+                # the "waiting for apply" hold). The renderer's relay gate — which
+                # otherwise suppresses next_action beside a live phone link to
+                # prevent a second capture-start — honours this flag (W6.10 #2).
+                "show_during_relay": True,
             },
             status=status,
-            candidate_review=candidate or None,
+            candidate_review=_candidate_review_payload(candidate or None),
         )
     elif phase == PHASE_VERIFY:
         env = _envelope(

@@ -871,6 +871,150 @@ async function testDeferredBeginRendersWaitingScreenAndRetriesAutomatically() {
   ok();
 }
 
+// ============================================================================
+// 11. Blocker #4a (auto-advance on_apply): after an accepted capture whose NEXT
+// entry is on_apply, the hold state OWNS the whole screen — the entry's own
+// title, NO begin affordance (a stale "Next measurement" pill/button was the
+// round-2 defect) — and a begin is auto-scheduled (the deferred loop posts it
+// as liveness; no tap).
+// ============================================================================
+async function testOnApplyNextEntryHoldsScreenWithNoBeginAffordance() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({
+    target: 2,
+    maxAttempts: 2,
+    entries: [
+      { index: 0, kind_label: "check", duration_ms: 25000, screen: { auto_advance: "tap" } },
+      {
+        index: 1,
+        kind_label: "verify",
+        duration_ms: 15000,
+        screen: {
+          title: "Waiting for apply",
+          body: "Apply the measured crossover on the speaker page.",
+          auto_advance: "on_apply",
+        },
+      },
+    ],
+  });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(headingText(ctx.screenEl), "Waiting for apply");
+  assert.equal(
+    ctx.captureRefs.buttons.length,
+    0,
+    "the hold state must not render a begin affordance (blocker #4a)",
+  );
+  // The begin is auto-scheduled (liveness) — clear it so the harness does not
+  // spin the never-authorized deferred loop.
+  assert.notEqual(ctx.autoAdvanceTimer, null, "on_apply auto-schedules the next begin");
+  clearTimeout(ctx.autoAdvanceTimer);
+  ctx.autoAdvanceTimer = null;
+  ok();
+}
+
+// ============================================================================
+// 12. Blocker #4b (auto-advance countdown): after an accepted capture whose
+// NEXT entry is countdown, the page shows a VISIBLE cancelable countdown (the
+// policy was carried but never rendered) — the entry copy, a "Starting in N…"
+// counter, no begin affordance — with the auto-begin armed on an interval.
+// ============================================================================
+async function testCountdownNextEntryShowsVisibleCancelableCountdown() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({
+    target: 2,
+    maxAttempts: 2,
+    entries: [
+      { index: 0, kind_label: "check", duration_ms: 25000, screen: { auto_advance: "tap" } },
+      {
+        index: 1,
+        kind_label: "measure",
+        duration_ms: 15000,
+        screen: { title: "Measuring", auto_advance: "countdown", countdown_s: "5" },
+      },
+    ],
+  });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(headingText(ctx.screenEl), "Measuring");
+  const paras = ctx.screenEl.children.filter((c) => c.tagName === "P");
+  assert.ok(
+    paras.some((p) => p.textContent.includes("Starting in 5")),
+    `expected a visible countdown, got: ${JSON.stringify(paras.map((p) => p.textContent))}`,
+  );
+  assert.equal(
+    ctx.captureRefs.buttons.length,
+    0,
+    "the countdown owns the screen — no begin affordance until it elapses or cancels",
+  );
+  assert.notEqual(ctx.autoAdvanceInterval, null, "the countdown arms an interval");
+  clearInterval(ctx.autoAdvanceInterval);
+  ctx.autoAdvanceInterval = null;
+  ok();
+}
+
+// ============================================================================
+// 13. Blocker #3 (phone side): a SESSION-terminal host event
+// (capture_set_exhausted — what the watchdog-collapse relay-death arm now posts)
+// arriving while the phone is waiting to begin must end the session (the "Link
+// expired" terminal), not leave it polling a dead session forever. Round 2:
+// "the phone saw nothing" during a collapse in the hold.
+// ============================================================================
+function makeSessionOverOnBeginClient() {
+  let last = {};
+  const posted = [];
+  return {
+    posted,
+    async postEvent(event) {
+      posted.push(event);
+      if (event.begin_capture && !event.armed) {
+        last = { phase: "capture_set_exhausted", accepted: 0, capture_target: 1 };
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: last };
+    },
+    async putBlob() {
+      return { ok: true };
+    },
+  };
+}
+
+async function testSessionTerminalDuringWaitEndsTheSession() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const client = makeSessionOverOnBeginClient();
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // Terminal "Link expired" — not a stuck waiting screen, and no stale retry.
+  assert.equal(headingText(ctx.screenEl), "Link expired");
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -883,6 +1027,9 @@ const tests = [
   testEntryForIndexMapsOneBasedWireIndexToZeroBasedEntry,
   testEntryScreenCopyDrivesTheNextMeasurementScreen,
   testDeferredBeginRendersWaitingScreenAndRetriesAutomatically,
+  testOnApplyNextEntryHoldsScreenWithNoBeginAffordance,
+  testCountdownNextEntryShowsVisibleCancelableCountdown,
+  testSessionTerminalDuringWaitEndsTheSession,
 ];
 
 let failure = null;

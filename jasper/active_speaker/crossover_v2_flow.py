@@ -190,8 +190,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_RELAY_TIMEOUT: ReasonSpec(
         REASON_RELAY_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
-        "The measurement link timed out. Open the link again to start over — "
-        "the quick microphone check runs first.",
+        # The old link is dead once the session collapses — do NOT tell the
+        # household to "open the link again" (W6.10 fold-in: that link and its
+        # QR are gone). Start over mints a FRESH session from this page.
+        "The measurement link timed out. Start over from this page to measure "
+        "again — the quick microphone check runs first.",
     ),
     REASON_VOLUME_UNRESOLVED: ReasonSpec(
         REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
@@ -996,6 +999,14 @@ AUTO_ADVANCE_TAP = "tap"            # requires the user's tap (first capture)
 AUTO_ADVANCE_COUNTDOWN = "countdown"  # auto-begins behind a cancelable countdown
 AUTO_ADVANCE_ON_APPLY = "on_apply"  # armed by the apply-complete host event
 
+# PROVISIONAL (W6.10 fold-in): phone-inactivity budget for the very FIRST begin
+# of a v2 session (before any capture). The microphone-check screen's placement
+# instructions alone legitimately take longer than the general 120 s
+# ``DEFAULT_TIMEOUT_S`` to read — Chrome round 1 collapsed here — so the v2 runner
+# widens only this first window. Every later window keeps the tight per-phase
+# arm/upload backstop; re-derive from W6 bench observation.
+V2_FIRST_BEGIN_TIMEOUT_S = 300.0
+
 
 def _program_duration_ms(program: ExcitationProgram) -> int:
     return int(round(program.total_samples / program.sample_rate_hz * 1000))
@@ -1367,6 +1378,7 @@ __all__ = [
     "PHASE_DONE",
     "CAPTURE_PHASES",
     "CAPTURE_PLAN_TARGET",
+    "V2_FIRST_BEGIN_TIMEOUT_S",
     "alignment_to_candidate_fields",
     "back_off_gain",
     "TEMPLATE_SILENT_AUTO_RETRY",

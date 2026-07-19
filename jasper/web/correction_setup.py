@@ -4198,6 +4198,7 @@ async def _run_relay_level_match(
     """
     from jasper.capture_relay.integrity import CaptureIntegrityError
     from jasper.capture_relay.session import (
+        CAPTURE_INCOMPATIBLE_USER_MESSAGE,
         CaptureFailed,
         CaptureStopped,
         PhoneEventVerifier,
@@ -4312,7 +4313,9 @@ async def _run_relay_level_match(
                         pi_session,
                         {
                             "phase": "capture_incompatible",
-                            "error": "capture control integrity check failed",
+                            # Friendly household-facing copy (W6.10 blocker #4e) —
+                            # the raw "integrity check failed" is developer jargon.
+                            "error": CAPTURE_INCOMPATIBLE_USER_MESSAGE,
                         },
                         hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                     )

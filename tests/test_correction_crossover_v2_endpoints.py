@@ -230,6 +230,11 @@ def _run(runner, client, session):
 def _build_runner(conductor, volume, **kwargs):
     kwargs.setdefault("poll_interval_s", 0.01)  # fast polling for tests
     kwargs.setdefault("timeout_s", 20.0)
+    # Keep the first-begin window equal to the (small) test timeout_s rather
+    # than inheriting the production 300s V2_FIRST_BEGIN_TIMEOUT_S default, so a
+    # first-begin timeout test still fires fast. Tests that specifically exercise
+    # the 300s widening live in test_capture_relay_plan.py.
+    kwargs.setdefault("first_begin_timeout_s", kwargs["timeout_s"])
     return v2host.build_v2_run_and_consume(
         conductor,
         volume=volume.hooks(),
@@ -335,7 +340,19 @@ def test_happy_path_three_phases_with_deferred_verify_release():
 # --- relay-session death: timeout + abort (S1c) ---------------------------------
 
 
-def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume():
+def _skip_purge_grace(monkeypatch):
+    """No-op the relay-death / catch-all cleanup grace sleep so a test that only
+    cares about the terminal outcome does not wait the real
+    TERMINAL_FAILURE_PURGE_GRACE_S. The poll loop uses time.sleep on its own
+    thread, so only the async cleanup grace is affected."""
+    async def _instant(_seconds):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _instant)
+
+
+def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume(monkeypatch):
+    _skip_purge_grace(monkeypatch)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     # No phone driver: the session times out awaiting the first begin.
@@ -356,6 +373,11 @@ def test_capture_timeout_maps_to_relay_timeout_and_abandons_volume():
     assert state["failure"] == {"code": "relay_timeout"}
     # Pre-apply session death invalidates capture evidence (§5.6).
     assert state["accepted_phases"] == []
+    # Blocker #3: the phone gets a session-level terminal before the purge 404,
+    # so its deferred-retry loop stops instead of polling forever.
+    assert backend.host_events[session.session_id][-1]["phase"] == (
+        "capture_set_exhausted"
+    )
     assert session.session_id not in backend.sessions
     # The envelope renders the session-restart template from this state.
     from jasper.active_speaker.crossover_envelope_v2 import (
@@ -399,7 +421,8 @@ def test_volume_open_failure_purges_the_fresh_relay_session():
     assert session.session_id not in backend.sessions
 
 
-def test_phone_abort_is_session_death_abandon_and_invalidation():
+def test_phone_abort_is_session_death_abandon_and_invalidation(monkeypatch):
+    _skip_purge_grace(monkeypatch)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec)
@@ -1381,6 +1404,7 @@ def test_transport_oserror_still_classifies_as_relay_timeout(monkeypatch):
     on_armed/consume) must still hit the relay-death arm and classify as
     relay_timeout, exactly as before. The fix narrows the misclassification;
     it must not also swallow real relay deaths into internal_error."""
+    _skip_purge_grace(monkeypatch)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
@@ -1467,6 +1491,50 @@ def test_terminal_failure_purge_waits_for_grace_but_volume_restore_is_immediate(
     # The grace ran, then the purge — in exactly that order, exactly once each.
     assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
     assert session.session_id not in backend.sessions
+
+
+def test_watchdog_collapse_posts_session_over_then_grace_then_purge(monkeypatch):
+    """W6.10 blocker #3: a watchdog collapse (CaptureTimeout) — the review-hold
+    inactivity death — must reach the phone. The relay-death arm posts a
+    session-level terminal (capture_set_exhausted), waits the purge grace so it
+    reaches the phone's next poll, THEN purges — the same terminal-then-grace-
+    then-purge the catch-all arm already uses. Before this the arm posted
+    nothing and purged immediately, so the phone's deferred-retry loop saw no
+    terminal at all (round 2: 'the phone saw nothing')."""
+    from jasper.capture_relay import session as session_mod
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
+
+    class _NoPhone:
+        begun = (1, 1)
+
+    conductor = _conductor(backend, session, _NoPhone(), published=[])
+
+    order: list[str] = []
+    real_purge = session_mod.purge
+
+    def recording_purge(client_arg, pi_session_arg):
+        order.append("purge")
+        return real_purge(client_arg, pi_session_arg)
+
+    monkeypatch.setattr(session_mod, "purge", recording_purge)
+
+    async def fake_sleep(seconds):
+        order.append(f"sleep:{seconds}")
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    runner = _build_runner(
+        conductor, VolumeRecorder(), poll_interval_s=0.01, timeout_s=0.2
+    )
+    with pytest.raises(CaptureTimeout):
+        _run(runner, client, session)
+
+    events = backend.host_events[session.session_id]
+    assert events[-1]["phase"] == "capture_set_exhausted"
+    assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
 
 
 # --- W6 run-6 Blocker M + Finding N: apply's real fingerprint-vocabulary seam ---

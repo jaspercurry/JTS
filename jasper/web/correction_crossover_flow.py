@@ -231,6 +231,18 @@ def handle_reset(
             "error": str(exc),
         }, HTTPStatus.CONFLICT
 
+    # Clear the durable v2 conductor state too (W6.10 fold-in). Without this,
+    # Start-over left the stale v2 candidate/verify/failure in place, so the v2
+    # envelope re-rendered "Ready to start again" with stale verify-fail actions
+    # and no start button instead of the clean microphone_check start screen
+    # (round-1 finding #4). Start-over means "restart the measurement" — the
+    # applied crossover keeps playing via the legacy applied-crossover contract,
+    # so this only resets the guided journey, not what the speaker is emitting.
+    from .correction_crossover_v2 import clear_v2_state, v2_flow_active
+
+    if v2_flow_active():
+        clear_v2_state()
+
     status, _ = handle_status(relay=relay)
     envelope = build_crossover_envelope_logged(status)
     envelope["grouping_member"] = _active_group_member()

@@ -99,11 +99,17 @@ function renderNudges(nudges) {
   els.nudges.replaceChildren(...rows);
 }
 
+// The measured-crossover candidate the household reviews before applying
+// (crossover_envelope_v2._candidate_review_payload — trims / delay / polarity,
+// derived from the conductor's _candidate_summary). W6.10 blocker #2: the prior
+// renderer expected a retained_crossover_regions/drivers shape the conductor
+// never builds, so #crossover-review-body rendered empty; this consumes exactly
+// the shape the envelope now sends.
 function renderCandidateReview(review) {
-  const regions = review && Array.isArray(review.retained_crossover_regions)
-    ? review.retained_crossover_regions : [];
-  const drivers = review && Array.isArray(review.drivers) ? review.drivers : [];
-  const visible = Boolean(review && regions.length && drivers.length);
+  const trims = review && Array.isArray(review.trims) ? review.trims : [];
+  const hasDelay = Boolean(review && review.delay);
+  const hasPolarity = Boolean(review && review.polarity);
+  const visible = Boolean(review && (trims.length || hasDelay || hasPolarity));
   els.review.hidden = !visible;
   if (!visible) {
     els.reviewBody.replaceChildren();
@@ -111,51 +117,54 @@ function renderCandidateReview(review) {
   }
 
   const rows = [];
-  regions.forEach((region) => {
-    const polarity = `${region.lower_role}: ${region.lower_polarity}; ` +
-      `${region.upper_role}: ${region.upper_polarity}`;
+  trims.forEach((trim) => {
     rows.push(el('div', {class: 'measurement-row'}, [
       el('div', {}, [
-        el('p', {
-          class: 'measurement-row__title',
-          text: `${region.lower_role} / ${region.upper_role}`,
-        }),
+        el('p', {class: 'measurement-row__title', text: `${trim.role} level`}),
         el('p', {
           class: 'measurement-row__meta',
-          text: `${Number(region.fc_hz).toLocaleString()} Hz · ` +
-            `${region.filter_family} order ${region.order} · ${polarity}`,
+          text: `${Number(trim.attenuation_db).toFixed(1)} dB`,
         }),
       ]),
     ]));
   });
-  drivers.forEach((driver) => {
+  if (hasDelay) {
     rows.push(el('div', {class: 'measurement-row'}, [
       el('div', {}, [
-        el('p', {class: 'measurement-row__title', text: driver.role}),
+        el('p', {class: 'measurement-row__title', text: 'Alignment delay'}),
         el('p', {
           class: 'measurement-row__meta',
-          text: `${Number(driver.attenuation_db).toFixed(1)} dB attenuation · ` +
-            `${Number(driver.delay_ms).toFixed(3)} ms delay · ${driver.polarity}`,
+          text: `${Number(review.delay.delay_ms).toFixed(3)} ms on the ` +
+            `${review.delay.role}`,
         }),
       ]),
     ]));
-  });
-  // Raw content hashes and the algorithm id/version are provenance for
-  // support/debugging, not primary copy a household member needs to judge
-  // the candidate — collapse them behind a disclosure so the plain-language
-  // region/driver rows above stay the first thing read.
-  const evidence = review.evidence || {};
-  const isolated = evidence.isolated_artifact || {};
-  const summed = evidence.summed_artifact || {};
-  rows.push(el('details', {class: 'candidate-provenance'}, [
-    el('summary', {text: 'Technical details'}),
-    el('p', {
-      class: 'measurement-row__meta',
-      text: `Evidence ${isolated.fingerprint || 'unavailable'} (drivers), ` +
-        `${summed.fingerprint || 'unavailable'} (combined); ` +
-        `${evidence.algorithm_id || 'unknown'} v${evidence.algorithm_version || '?'}.`,
-    }),
-  ]));
+  }
+  if (hasPolarity) {
+    const polarityText = review.polarity === 'invert'
+      ? 'Inverted (measured)'
+      : 'Kept as set';
+    rows.push(el('div', {class: 'measurement-row'}, [
+      el('div', {}, [
+        el('p', {class: 'measurement-row__title', text: 'Polarity'}),
+        el('p', {class: 'measurement-row__meta', text: polarityText}),
+      ]),
+    ]));
+  }
+  // Alignment confidence + the candidate fingerprint are support/provenance
+  // detail, not primary copy a household member needs to judge the candidate —
+  // collapse them behind a disclosure so the plain-language rows stay first.
+  const details = [];
+  if (typeof review.confidence === 'number') {
+    details.push(`alignment confidence ${review.confidence.toFixed(2)}`);
+  }
+  if (review.fingerprint) details.push(`candidate ${review.fingerprint}`);
+  if (details.length) {
+    rows.push(el('details', {class: 'candidate-provenance'}, [
+      el('summary', {text: 'Technical details'}),
+      el('p', {class: 'measurement-row__meta', text: `${details.join('; ')}.`}),
+    ]));
+  }
   els.reviewBody.replaceChildren(
     el('div', {class: 'measurement-list'}, rows),
   );
@@ -229,7 +238,12 @@ function renderActions(primary, alternates = []) {
   });
 }
 
-function renderRelay(relay) {
+// `suppressConnectAffordance` keeps the relay ACTIVE (so polling continues and
+// Stop stays wired) but hides the "Open phone capture" link + QR — used on the
+// review screen, where the phone is already connected and parked in the
+// "waiting for apply" hold, so a "scan to connect" prompt beside the Apply
+// button would be a misleading second primary (W6.10 blocker #2).
+function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
   const active = relay && RELAY_IN_FLIGHT.has(relay.status);
   const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
   els.relay.hidden = !active;
@@ -261,6 +275,12 @@ function renderRelay(relay) {
     els.relayStatus.textContent = 'The phone is finishing and uploading the measurement…';
     return;
   }
+  if (suppressConnectAffordance) {
+    // Phone connected and holding for apply — keep the section (Stop stays
+    // wired, polling continues) but do not re-advertise a connect link/QR.
+    els.relayStatus.textContent = 'Your phone is connected — review and apply below.';
+    return;
+  }
   if (relay.tap_link) {
     els.relayLink.href = relay.tap_link;
     els.relayLink.hidden = false;
@@ -284,8 +304,15 @@ function relayIsActive(relay) {
 function renderActionRow(env) {
   if (!env) return;
   const relayActive = relayIsActive(env.relay);
+  // The relay gate suppresses a next_action beside a live phone link so a
+  // second capture can't be started (the 2026-07-16 two-primary-buttons bug).
+  // The review screen's Apply is the exception: it is the PRIMARY action while
+  // the phone is parked in the "waiting for apply" hold, so the envelope marks
+  // it show_during_relay and it renders through (W6.10 blocker #2).
+  const showPrimary = !relayActive
+    || (env.next_action && env.next_action.show_during_relay);
   renderActions(
-    relayActive ? null : env.next_action,
+    showPrimary ? env.next_action : null,
     relayActive ? [] : env.alternate_actions,
   );
 }
@@ -297,7 +324,12 @@ function render(env) {
   renderSteps(env.steps);
   renderNudges(env.nudges);
   renderCandidateReview(env.candidate_review);
-  renderRelay(env.relay);
+  // On the review screen the show_during_relay primary (Apply) owns the phone —
+  // keep the relay live for polling/Stop but hide its connect link/QR.
+  const suppressConnectAffordance = Boolean(
+    env.next_action && env.next_action.show_during_relay,
+  );
+  renderRelay(env.relay, {suppressConnectAffordance});
   renderActionRow(env);
   schedulePoll(relayIsActive(env.relay) ? POLL_MS : null);
 }

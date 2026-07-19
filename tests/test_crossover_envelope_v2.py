@@ -91,17 +91,71 @@ def test_measure_phase_is_phone_driven():
     assert _step_statuses(env)["measure"] == "active"
 
 
+# A realistic persisted candidate summary (jasper.web.correction_crossover_v2's
+# _candidate_summary shape): trims_db + alignment (delay_us/delay_role/polarity)
+# + alignment_confidence + fingerprint. The renderer reads exactly this.
+def _candidate_summary(**overrides) -> dict:
+    base = {
+        "fingerprint": "fp-123",
+        "program_id": "prog-9",
+        "trims_db": {"woofer": -3.1, "tweeter": 0.0},
+        "alignment": {"delay_us": 250.0, "delay_role": "woofer", "polarity": "invert"},
+        "alignment_confidence": 0.82,
+    }
+    base.update(overrides)
+    return base
+
+
 def test_review_apply_carries_candidate_fingerprint():
     env = build_crossover_envelope_v2(_status(
         phase="review_apply",
-        candidate={"fingerprint": "fp-123", "trims": {"woofer": -3.1}},
+        candidate=_candidate_summary(),
     ))
     assert env["screen"] == "review_apply"
     action = env["next_action"]
     assert action["endpoint"] == "/correction/crossover/v2/apply"
     assert action["body"]["expected_candidate_fingerprint"] == "fp-123"
+    # Apply is the primary action and must render even while the phone relay is
+    # still in flight (the "waiting for apply" hold) — W6.10 blocker #2.
+    assert action["show_during_relay"] is True
     assert env["candidate_review"]["fingerprint"] == "fp-123"
     assert _step_statuses(env)["review_apply"] == "active"
+
+
+def test_review_apply_candidate_review_is_display_shape():
+    """W6.10 blocker #2: candidate_review carries the plain-language rows the
+    renderer displays (trims / delay / polarity), derived from _candidate_summary
+    — NOT the raw summary the generic renderer could not read."""
+    env = build_crossover_envelope_v2(_status(
+        phase="review_apply",
+        candidate=_candidate_summary(),
+    ))
+    review = env["candidate_review"]
+    assert review["trims"] == [
+        {"role": "woofer", "attenuation_db": -3.1},
+        {"role": "tweeter", "attenuation_db": 0.0},
+    ]
+    assert review["delay"] == {"role": "woofer", "delay_ms": 0.25}
+    assert review["polarity"] == "invert"
+    assert review["confidence"] == 0.82
+    assert review["fingerprint"] == "fp-123"
+
+
+def test_review_apply_candidate_review_trims_only_candidate():
+    """A trims-only candidate (no measured delay/polarity) still renders its
+    trim rows; delay/polarity are absent, not zero-valued noise."""
+    env = build_crossover_envelope_v2(_status(
+        phase="review_apply",
+        candidate=_candidate_summary(
+            alignment={"delay_us": None, "delay_role": None, "polarity": None},
+            alignment_confidence=None,
+        ),
+    ))
+    review = env["candidate_review"]
+    assert [row["role"] for row in review["trims"]] == ["woofer", "tweeter"]
+    assert review["delay"] is None
+    assert review["polarity"] is None
+    assert review["confidence"] is None
 
 
 def test_review_apply_surfaces_last_blocked_apply_as_a_nudge():

@@ -97,9 +97,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 3,
         "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260718.1",
+        "capture_page_build": "20260719.1",
     }
-    assert "main.js?v=20260718-1" in index_html
+    assert "main.js?v=20260719-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js
@@ -437,17 +437,18 @@ def test_capture_page_names_the_device_instead_of_ambiguous_this_page():
 def test_crossover_candidate_review_collapses_provenance_hashes():
     """PHONE-4: renderCandidateReview() lives in the Pi-served /correction/
     crossover wizard (deploy/assets/correction/js/crossover/main.js), not
-    capture-page/ — the reviewer's cited surface is what actually renders
-    candidate hashes to the household. Raw fingerprints/algorithm id+version
-    move behind a collapsed <details> disclosure; the region/driver rows stay
-    primary, plain-language copy."""
+    capture-page/ — the reviewer's cited surface is what actually renders the
+    candidate to the household. The raw fingerprint + alignment confidence move
+    behind a collapsed <details> disclosure; the plain-language trims / delay /
+    polarity rows stay primary (W6.10 blocker #2 reworked the shape)."""
     crossover_js = (
         _REPO / "deploy/assets/correction/js/crossover/main.js"
     ).read_text(encoding="utf-8")
 
     assert "el('details', {class: 'candidate-provenance'}" in crossover_js
     assert "el('summary', {text: 'Technical details'})" in crossover_js
-    assert "evidence.algorithm_id" in crossover_js
+    # The raw candidate fingerprint is provenance, behind the disclosure.
+    assert "review.fingerprint" in crossover_js
 
 
 # ---------------------------------------------------------------------------

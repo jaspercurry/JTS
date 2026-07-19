@@ -275,16 +275,24 @@ class PhonePlanDriver:
 
 
 def _mint_plan_session(
-    backend, *, capture_target=3, max_attempts=4, driver=True
+    backend, *, capture_target=3, max_attempts=4, driver=True, entries=None
 ):
+    plan = (
+        CapturePlan(
+            capture_target=capture_target,
+            max_attempts=max_attempts,
+            schema_version=2,
+            entries=tuple(entries),
+        )
+        if entries is not None
+        else CapturePlan(capture_target=capture_target, max_attempts=max_attempts)
+    )
     spec = build_crossover_sweep_spec(
         driver_label="Woofer driver",
         driver_role="woofer",
         acknowledgement_binding=_BINDING,
         stimulus_duration_ms=4000,
-        capture_plan=CapturePlan(
-            capture_target=capture_target, max_attempts=max_attempts
-        ),
+        capture_plan=plan,
     )
     session = mint_session(
         spec, relay_base="https://relay.test", capture_origin="capture.test"
@@ -856,6 +864,190 @@ def test_repeated_identical_deferrals_post_and_log_once_per_hold(caplog):
     ] == [logging.INFO, logging.DEBUG, logging.DEBUG, logging.INFO], (
         "first deferral INFO, two identical repeats DEBUG, code change INFO"
     )
+
+
+# --- W6.10 blocker #1: the on_apply REVIEW hold rescopes the inactivity clock --
+
+
+def test_on_apply_literal_matches_the_v2_flow_vocabulary():
+    # session.py keeps a local "on_apply" literal so the generic runner does not
+    # import the v2 flow upward; pin the two equal so a rename can't silently
+    # break the REVIEW-hold rescope.
+    from jasper.capture_relay.session import AUTO_ADVANCE_ON_APPLY
+    from jasper.active_speaker.crossover_v2_flow import (
+        AUTO_ADVANCE_ON_APPLY as FLOW_ON_APPLY,
+    )
+
+    assert AUTO_ADVANCE_ON_APPLY == FLOW_ON_APPLY == "on_apply"
+
+
+def _review_plan_entries():
+    """A 2-entry heterogeneous plan: a normal capture, then an on_apply-gated
+    one (the "waiting for apply" REVIEW hold between MEASURE and VERIFY)."""
+    return (
+        CapturePlanEntry(index=0, kind_label="measure", duration_ms=4000),
+        CapturePlanEntry(
+            index=1,
+            kind_label="verify",
+            duration_ms=4000,
+            screen={"title": "Waiting for apply", "auto_advance": "on_apply"},
+        ),
+    )
+
+
+def _steady_clock():
+    """A monotonic clock the test advances 1.0 per poll (via sleep)."""
+    clock = {"t": 0.0}
+
+    def monotonic():
+        return clock["t"]
+
+    def sleep(_s):
+        clock["t"] += 1.0
+
+    return clock, monotonic, sleep
+
+
+def test_on_apply_hold_survives_past_the_120s_budget_then_apply_proceeds():
+    # MEASURE accepted, then the on_apply VERIFY entry is deferred while the
+    # household reviews. The phone re-posts the SAME begin as liveness; the hold
+    # must outlast the OLD 120s inactivity budget and then complete once apply
+    # releases it — the Chrome round-2 blocker was a 120s watchdog destroying
+    # the accepted MEASURE mid-review.
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=2, max_attempts=4, entries=_review_plan_entries()
+    )
+    clock, monotonic, sleep = _steady_clock()
+    applied = {"at": None}
+
+    def authorize(index, _attempt):
+        if index == 2 and clock["t"] < 150.0:  # deferred-by-design until "apply"
+            raise CaptureBeginDeferred("awaiting_apply", "waiting for apply")
+        if index == 2 and applied["at"] is None:
+            applied["at"] = clock["t"]
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        backend.phone_upload(
+            session.session_id, session.content_key, _wav(attempt), index=attempt - 1
+        )
+
+    real_step = phone.step
+
+    def step_reposts_during_hold():
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        key = (host.get("index"), host.get("attempt"))
+        if host.get("phase") == "capture_deferred" and key == (2, 2):
+            phone.begin(2, 2)  # re-post the SAME begin (liveness) — not index 1
+            return
+        real_step()
+
+    phone.step = step_reposts_during_hold
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=lambda _i, _a, _r: {"accepted": True},
+        timeout_s=120.0,
+        poll_interval_s=0.0,
+        sleep=sleep,
+        monotonic=monotonic,
+    )
+
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True),
+        (2, 2, True),
+    ]
+    # The hold demonstrably outlasted the old 120s budget before apply released.
+    assert applied["at"] is not None and applied["at"] >= 150.0
+
+
+def test_on_apply_hold_collapses_at_review_budget_when_phone_vanishes():
+    # The phone vanishes during the review hold (never posts the VERIFY begin).
+    # The session must NOT collapse at 120s — it holds to the long REVIEW budget
+    # (~900s) and only then times out, phase awaiting_begin, so the caller can
+    # tear down. Proves the rescope is in force even before a first deferral.
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=2, max_attempts=4, entries=_review_plan_entries()
+    )
+    clock, monotonic, sleep = _steady_clock()
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        backend.phone_upload(
+            session.session_id, session.content_key, _wav(attempt), index=attempt - 1
+        )
+
+    # Drive index 1 by hand (the shared PhonePlanDriver.step auto-advances to
+    # index 2 on an accepted result — exactly what "the phone vanished" must
+    # NOT do), then walk away: never begin index 2.
+    seen_result = {"v": False}
+
+    def step_index1_then_vanish():
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        phase = host.get("phase")
+        key = (host.get("index"), host.get("attempt"))
+        if seen_result["v"]:
+            return
+        if phone.begun is None:
+            phone.begin(1, 1)
+            return
+        if phase == "capture_authorized" and key == (1, 1) and phone.armed_for != (1, 1):
+            phone.arm()
+            return
+        if phase == "capture_result" and key == (1, 1):
+            seen_result["v"] = True  # index 1 done — walk away, never begin index 2
+
+    phone.step = step_index1_then_vanish
+
+    with pytest.raises(CaptureTimeout) as ei:
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=lambda _i, _a: None,
+            on_armed=on_armed,
+            consume_capture=lambda _i, _a, _r: {"accepted": True},
+            timeout_s=120.0,
+            poll_interval_s=0.0,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
+    assert ei.value.phase == "awaiting_begin"
+    # Held to the REVIEW budget, not the tight 120s one.
+    assert "within 900s" in str(ei.value)
+    assert clock["t"] >= 900.0
+
+
+def test_first_begin_timeout_widens_only_the_first_window():
+    # The first begin (reading placement instructions) gets first_begin_timeout_s,
+    # not the general timeout_s — a v2 fold-in so Chrome doesn't die reading the
+    # microphone-check screen.
+    backend = FakePlanRelayBackend()
+    client, session, _phone = _mint_plan_session(
+        backend, capture_target=1, max_attempts=1, driver=False
+    )
+    clock, monotonic, sleep = _steady_clock()
+
+    with pytest.raises(CaptureTimeout) as ei:
+        run_capture_plan(
+            client,
+            session,
+            authorize_begin=lambda _i, _a: None,
+            on_armed=lambda _state: None,
+            consume_capture=lambda _i, _a, _r: {"accepted": True},
+            timeout_s=120.0,
+            first_begin_timeout_s=300.0,
+            poll_interval_s=0.0,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
+    assert ei.value.phase == "awaiting_begin"
+    assert "within 300s" in str(ei.value)
+    assert clock["t"] >= 300.0
 
 
 def test_deferred_begin_does_not_end_the_session_on_stop():

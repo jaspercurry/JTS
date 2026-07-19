@@ -187,6 +187,73 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
     }
 
 
+def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path):
+    """W6.10 fold-in: Start-over must clear the durable v2 conductor state so the
+    next envelope serves the clean start screen. Without this, a stale
+    candidate/verify/failure re-rendered "Ready to start again" with stale
+    verify-fail actions and no start button (round-1 finding #4)."""
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
+    from jasper.web import correction_crossover_v2 as v2
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
+    try:
+        v2.save_v2_state({
+            "session_id": "cap_x",
+            "accepted_phases": ["microphone_check", "measure"],
+            "applied": True,
+            "candidate": {"fingerprint": "fp"},
+            "failure": {"code": "verify_out_of_tolerance"},
+        })
+        assert v2.load_v2_state() is not None
+
+        monkeypatch.setattr(backend, "reset_measurement_journey", lambda: {
+            "status": "cleared", "cleared_ids": [], "missing_ids": [],
+            "error_ids": [], "kept_ids": [],
+        })
+        monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
+        monkeypatch.setattr(flow, "_active_group_member", lambda: False)
+        monkeypatch.setattr(
+            "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+            lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
+        )
+
+        payload, status = flow.handle_reset()
+
+        assert status == 200
+        # The durable v2 state is gone — a fresh journey starts at the
+        # microphone check, not the stale verify-fail screen.
+        assert v2.load_v2_state() is None
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def test_handle_reset_refusal_leaves_v2_state_intact(monkeypatch, tmp_path):
+    """A refused reset (volume-safety unresolved / measurement still stopping)
+    must NOT clear the v2 state — nothing was reset, so nothing is lost."""
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
+    from jasper.web import correction_crossover_v2 as v2
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
+    try:
+        v2.save_v2_state({"session_id": "cap_x", "accepted_phases": ["microphone_check"]})
+
+        def _refuse():
+            raise backend.MeasurementJourneyResetRefused(
+                "still stopping", reason="measurement_in_progress",
+            )
+
+        monkeypatch.setattr(backend, "reset_measurement_journey", _refuse)
+
+        payload, status = flow.handle_reset()
+
+        assert status == 409
+        assert v2.load_v2_state() is not None  # untouched on refusal
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
 def test_handle_envelope_carries_grouping_member_flag(monkeypatch) -> None:
     """The polled envelope carries the grouping-member flag the grouping-aware
     Start-over confirm copy reads (adversarial-review S1b)."""

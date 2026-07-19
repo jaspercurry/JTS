@@ -280,4 +280,45 @@ check(
 check(!relayLinkVisible(), "stopRelay finally: relay link is hidden once terminal");
 assertSinglePrimary("stopRelay finally");
 
+// --- (e) review screen: Apply shows during the hold; connect link suppressed -
+// W6.10 blocker #2: on review_apply the phone is parked in the "waiting for
+// apply" hold (relay in flight), but the Apply action is the PRIMARY. The
+// envelope marks it show_during_relay, so it renders as the SINGLE primary
+// while the misleading "Open phone capture" link/QR is suppressed and the
+// candidate card is shown.
+const applyAction = {
+  id: "apply_measured_candidate",
+  label: "Apply reviewed crossover",
+  endpoint: "/correction/crossover/v2/apply",
+  body: { expected_candidate_fingerprint: "fp-1" },
+  show_during_relay: true,
+};
+render({
+  verdict_text: "Review the measured crossover",
+  steps: [],
+  nudges: [],
+  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=e" },
+  next_action: applyAction,
+  alternate_actions: [],
+  candidate_review: {
+    trims: [{ role: "woofer", attenuation_db: -2.5 }],
+    delay: { role: "woofer", delay_ms: 0.25 },
+    polarity: "invert",
+    confidence: 0.8,
+    fingerprint: "fp-1",
+  },
+});
+check(
+  actionRowChildren().length === 1
+    && String(actionRowChildren()[0].className).includes("btn--primary")
+    && actionRowChildren()[0].textContent === "Apply reviewed crossover",
+  "(e) review: Apply renders as the primary during the hold",
+);
+check(!relayLinkVisible(), "(e) review: the connect link/QR is suppressed");
+check(
+  !elements.get("crossover-review").hidden,
+  "(e) review: the candidate card is shown",
+);
+assertSinglePrimary("(e) review during hold");
+
 console.log(JSON.stringify({ ok: true, passed }));

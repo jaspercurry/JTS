@@ -211,27 +211,15 @@ postGate = null;
 render({
   ...terminalEnvelope,
   candidate_review: {
-    retained_crossover_regions: [{
-      lower_role: "woofer",
-      upper_role: "tweeter",
-      fc_hz: 1600,
-      filter_family: "LinkwitzRiley",
-      order: 4,
-      lower_polarity: "non-inverted",
-      upper_polarity: "non-inverted",
-    }],
-    drivers: [{
-      role: "woofer",
-      attenuation_db: 0,
-      delay_ms: 0.0375,
-      polarity: "non-inverted",
-    }],
-    evidence: {
-      isolated_artifact: {fingerprint: "isolated-proof"},
-      summed_artifact: {fingerprint: "summed-proof"},
-      algorithm_id: "candidate-evaluator",
-      algorithm_version: "1",
-    },
+    trims: [
+      {role: "woofer", attenuation_db: -2.5},
+      {role: "tweeter", attenuation_db: 0},
+    ],
+    delay: {role: "woofer", delay_ms: 0.0375},
+    polarity: "keep",
+    confidence: 0.71,
+    fingerprint: "cand-proof",
+    program_id: "prog-1",
   },
 });
 assert.equal(elements.get("crossover-review").hidden, false);
