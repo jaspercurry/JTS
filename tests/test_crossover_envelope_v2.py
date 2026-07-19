@@ -233,7 +233,7 @@ def test_verify_fail_one_default_screen():
     # The applied graph stays in force — undo routes through the existing
     # apply-rollback path.
     undo = next(a for a in env["alternate_actions"] if a["id"] == "verify_undo")
-    assert undo["endpoint"] == "/correction/crossover/restore"
+    assert undo["endpoint"] == "/correction/crossover/v2/restore"
 
 
 def test_unknown_failure_code_still_renders_a_retry_screen():
@@ -262,7 +262,7 @@ def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Undo (restore previous sound)" in labels
     undo = next(a for a in env["alternate_actions"] if a["id"] == "verify_undo")
-    assert undo["endpoint"] == "/correction/crossover/restore"
+    assert undo["endpoint"] == "/correction/crossover/v2/restore"
 
 
 def test_check_phase_agc_failure_still_renders_its_normal_template():

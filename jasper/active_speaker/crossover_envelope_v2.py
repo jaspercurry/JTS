@@ -196,18 +196,21 @@ def _verify_fail_envelope(
             {
                 "id": "verify_undo",
                 "label": "Undo (restore previous sound)",
-                # W5b CHECKLIST ITEM: this rides the legacy restore path
-                # and does NOT yet clear the durable v2 applied/candidate
-                # state — after an undo the v2 state still says applied.
-                # W5b owns v2-aware restore semantics (clear the stale
-                # applied flag + candidate on successful restore).
-                # W5b CHECKLIST ITEM (W6.7 gate N2): a session reset that
+                # W6 run-8 Blocker Q fix: rides the v2-aware restore path
+                # (jasper.web.correction_crossover_v2.handle_v2_restore),
+                # which reloads the pre-candidate applied profile
+                # ``handle_v2_apply`` stashed at apply time and clears the
+                # durable v2 applied/candidate/failure state on success — the
+                # legacy ``/crossover/restore`` expects a PENDING
+                # commissioning-run candidate apply that a v2 apply never
+                # creates, and 500s here instead.
+                # OPEN CHECKLIST ITEM (W6.7 gate N2): a session reset that
                 # clears the durable v2 state while the applied graph is
                 # still live loses this Undo affordance (no verify-phase
-                # state remains to render verify_fail from) — W5b's
-                # v2-aware restore/reset semantics should keep an Undo
-                # path reachable whenever an applied candidate is in force.
-                "endpoint": "/correction/crossover/restore",
+                # state remains to render verify_fail from) — a future fix
+                # should keep an Undo path reachable whenever an applied
+                # candidate is in force, independent of a reset elsewhere.
+                "endpoint": "/correction/crossover/v2/restore",
                 "body": {},
             },
             {
