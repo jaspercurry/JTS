@@ -2127,6 +2127,31 @@ async function runPlanCapture(ctx, { index, attempt }) {
   }
 }
 
+// W6.13: a v2 capture-plan session has no calibration-picker/confirm screen
+// to post setup from — unlike the legacy level_ramp flow, whose Continue tap
+// (validateSetupBeforeContinue) posts `setup` well before the household ever
+// starts a capture. `applyDefaultCalibrationHintSilently` (boot()) already
+// set setupState.calibration for this page load (either the silently-applied
+// household-mic hint, or whatever this page load already had); until now
+// nothing put it on the wire until the FIRST round's `armed` event
+// (runPlanCapture) — posted only AFTER begin_capture is authorized, mic
+// permission is granted, and the recorder starts. Round-5 hardware evidence
+// (crossover_v2_uncalibrated_capture, phase=check) showed resolve_relay_
+// calibration reading nothing at CHECK. Post it explicitly here, once, before
+// the first begin_capture — mirroring the legacy flow's "setup lands before
+// any begin" shape — so the Pi's sticky PollState.setup accumulator
+// (jasper.capture_relay.session.run_capture_plan) has it the moment the
+// session opens, not only if a later poll happens to land on the armed
+// event. Best-effort: a relay hiccup here is not fatal since every round's
+// own `armed` event still carries the identical setup as a fallback.
+async function postPlanSetupBeforeFirstBegin(ctx) {
+  try {
+    await ctx.client.postEvent({ setup: setupWirePayload() });
+  } catch {
+    /* best-effort — armed carries the same setup as a fallback */
+  }
+}
+
 // Entry point wired to the spec's own `begin_capture` button (rendered by
 // the standard DATA renderer, same as v2's onStart) for a v3
 // (capture_protocol_version=3 + capture_plan) spec. Captures the operator's
@@ -2147,6 +2172,8 @@ async function onPlanStart(ctx) {
   const controller = makePlanController(ctx);
   ctx.planController = controller;
   activeAbort = controller.abort;
+  await postPlanSetupBeforeFirstBegin(ctx);
+  if (controller.aborted) return;
   await runPlanCapture(ctx, { index: 1, attempt: 1 });
 }
 

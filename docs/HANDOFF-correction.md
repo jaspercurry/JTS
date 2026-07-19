@@ -73,10 +73,24 @@
   resolves it (reusing `_default_setup_calibration_for_spec`) and threads it
   into `build_v2_session_spec`/`build_v2_verify_session_spec` via their
   existing `**spec_kwargs` forward; the capture page applies it SILENTLY
-  (`applyDefaultCalibrationHintSilently`, `capture_page_build=20260719.2`) —
-  no extra tap, since a v2 session is designed around a minimal, fixed tap
-  count and there is no picker screen to hang a confirm on. Never overrides
-  an explicit choice already present for the page load.
+  (`applyDefaultCalibrationHintSilently`) — no extra tap, since a v2 session
+  is designed around a minimal, fixed tap count and there is no picker
+  screen to hang a confirm on. Never overrides an explicit choice already
+  present for the page load.
+- 🧱 **v2 calibration handoff, page half (W6.13, 2026-07-19).** Round-5
+  hardware evidence showed `crossover_v2_uncalibrated_capture phase=check`
+  even with the W6.12 fix above deployed: the silently-applied calibration
+  never reached the wire until the plan loop's `armed` event
+  (`runPlanCapture`), which posts well AFTER the first `begin_capture` is
+  authorized and the mic starts recording — a v2 session has no
+  `validateSetupBeforeContinue`-style confirm-screen post (unlike
+  `level_ramp`) to carry it earlier. Fix: `onPlanStart` now posts a
+  standalone `{setup: setupWirePayload()}` event before the FIRST
+  `begin_capture`, so `jasper.capture_relay.session.run_capture_plan`'s
+  sticky `PollState.setup` accumulator has the household-mic choice from
+  round 1 (CHECK) regardless of which specific event a Pi poll lands on;
+  `armed` still carries the same setup redundantly. `capture_page_build`
+  bumped to `20260719.3`.
 - 🧱 **Wave 2 playback core extracted; Room behavior retained.**
   `jasper.audio_measurement.playback` now owns policy-free WAV-process cleanup
   and deterministic sine-WAV generation. This Room module keeps
@@ -3092,7 +3106,13 @@ Internal:
 
 ---
 
-Last verified: 2026-07-17 (in-flow scoped crossover reset added —
+Last verified: 2026-07-19 (v2 calibration handoff page-side fix, W6.13 — see
+the new Status bullet above: `onPlanStart` now posts a standalone
+`{setup: ...}` event before the first `begin_capture` so the household-mic
+hint reaches `resolve_relay_calibration` from the CHECK-phase capture
+onward; `capture_page_build` bumped to `20260719.3`. Hardware-free tests
+only — round-6 on-device confirmation still owed.) Prior 2026-07-17
+(in-flow scoped crossover reset added —
 `POST /crossover/reset` / `clear_active_speaker_measurement_journey`; see
 the new "Scoped crossover reset" section above. KEEP/CLEAR split for
 `startup_load`/`baseline_profile` confirmed against read-only JTS3 state
