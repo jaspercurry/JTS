@@ -590,8 +590,16 @@ two drivers' declared sensitivities, `min(declared_lf_cap − (sens_hf −
 sens_lf), −35 dBFS)`, superseding the class-default seed only when the
 household hasn't already typed a real, different value. Every other caller
 (isolated driver capture, the v1 ramp solver, ear-check ramps) is unaffected.
-See `jasper.active_speaker.driver_protection.derive_hf_measurement_ceiling_dbfs`
-and `jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings`.
+The sensitivities' one owner is the DECLARATION — the design draft's
+`manual_settings` (`declared_driver_sensitivities`), never a second copy on
+the confirmed safety profile — so already-declared boxes (JTS3's persisted
+draft carries 83.3/108.5 today) fire the derivation with zero migration. The
+conductor context resolves caps on this path and threads the same declared
+mapping into program admission AND play-time readmission, so composed levels
+and the admission gate cannot disagree about a derived ceiling.
+See `jasper.active_speaker.driver_protection.derive_hf_measurement_ceiling_dbfs`,
+`jasper.active_speaker.design_draft.declared_driver_sensitivities`, and
+`jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings`.
 
 ## 8. Primary sources
 

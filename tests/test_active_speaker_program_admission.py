@@ -35,22 +35,11 @@ from jasper.audio_measurement.program import (
 from tests.active_speaker_fixtures import mono_output_topology
 
 
-def _profile_and_targets(
-    *,
-    woofer_peak: float = 0.0,
-    tweeter_peak: float = -65.0,
-    sensitivities: dict[str, float] | None = None,
-):
+def _profile_and_targets(*, woofer_peak: float = 0.0, tweeter_peak: float = -65.0):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
-    derivation must handle — symmetric fixtures masked the min/max inversion.
-
-    ``sensitivities`` is optional and unset by default (no existing fixture
-    call declares it) -- passing it (W6.5) is what activates the
-    program-admission path's sensitivity-derived HF measurement ceiling.
-    """
+    derivation must handle — symmetric fixtures masked the min/max inversion."""
     topology = mono_output_topology()
-    sensitivities = sensitivities or {}
 
     def _limits(peak):
         return {
@@ -82,11 +71,6 @@ def _profile_and_targets(
                     "effective_radiating_diameter_mm": 132,
                     "baffle_width_mm": 210,
                 },
-                **(
-                    {"sensitivity_db_2v83_1m": sensitivities["woofer"]}
-                    if "woofer" in sensitivities
-                    else {}
-                ),
             },
             {
                 **common,
@@ -102,11 +86,6 @@ def _profile_and_targets(
                     "radiator_count": 1,
                     "effective_radiating_diameter_mm": 25,
                 },
-                **(
-                    {"sensitivity_db_2v83_1m": sensitivities["tweeter"]}
-                    if "tweeter" in sensitivities
-                    else {}
-                ),
             },
         ],
         "crossover_candidates": [],
@@ -215,34 +194,63 @@ def test_asymmetric_caps_woofer_reaches_reference_while_tweeter_lands_at_cap():
     assert facts["woofer"].peak_within_cap and facts["tweeter"].peak_within_cap
 
 
-def test_jts3_sensitivity_derived_ceiling_flows_through_composition_and_admission():
-    """W6.5: same asymmetric-cap shape as above, but with JTS3's declared
-    sensitivities (woofer 83.3 dB, tweeter 108.5 dB -- a 25.2 dB delta) and
-    the tweeter cap left at its -65 seed. Admission derives the tweeter's
-    measurement ceiling to -35 (the abs ceiling binds: min(-8 - 25.2, -35) =
-    -35) with NO composer change -- ``build_measure_program`` takes the same
-    plain gain plan it always did; only admission's resolved cap moved.
+def test_jts3_derived_ceiling_flows_through_production_composition_and_admission():
+    """W6.5: the JTS3 shape (woofer cap -8, tweeter cap at its -65 seed) with
+    the DECLARED sensitivities (woofer 83.3 dB, tweeter 108.5 dB -- 25.2 dB
+    delta, from the declaration, not the profile). Caps are resolved the way
+    the production conductor context resolves them (``program_admission=True``
+    + the declared mapping), and the gain plan is clamped through the
+    production ``back_off_gain`` derivation against those caps -- NOT a
+    hand-fed number -- so this pins that the derived -35 ceiling
+    (min(-8 - 25.2, -35) = -35, abs ceiling binds) actually drives what gets
+    composed, then admits end-to-end with the same mapping.
     """
-    topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8.0,
-        tweeter_peak=-65.0,
-        sensitivities={"woofer": 83.3, "tweeter": 108.5},
+    from jasper.active_speaker.crossover_v2_flow import back_off_gain
+    from jasper.active_speaker.excitation_safety_plan import (
+        resolve_driver_excitation_ceilings,
     )
-    sv = session_measurement_volume_db(profile, targets.values())
+    from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+
+    declared = {"woofer": 83.3, "tweeter": 108.5}
+    topology, profile, targets = _profile_and_targets(
+        woofer_peak=-8.0, tweeter_peak=-65.0
+    )
+    # The production context-site resolution (probe a: these ARE the caps
+    # admission enforces below — one derivation, two consumers).
+    caps = {}
+    for role, fingerprint in targets.items():
+        _band, cap = resolve_driver_excitation_ceilings(
+            profile,
+            fingerprint,
+            program_admission=True,
+            declared_sensitivities=declared,
+        )
+        caps[role] = float(cap)
+    assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-35.0)}
+    sv = session_measurement_volume_db(
+        profile, targets.values(), declared_sensitivities=declared
+    )
     # max(caps) is still the woofer's -8 (its ceiling is untouched by the HF
     # derivation), so the session volume itself is unaffected by the change.
     assert sv == -20.0
-    # Tweeter gain -15 dB lands exactly at its NEW -35 cap (-15 + -20 = -35) --
-    # under the old -65 cap this same program would have been refused as
-    # CHANNEL_PEAK_OVER_CAP, since -35 > -65.
-    prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -15.0})
+    # The production composition clamp (the same call _compose_measure_program
+    # makes): nominal reference gain backed off against each resolved cap. The
+    # tweeter's composed level is cap-DRIVEN: -35 - sv - 0.01 = -15.01 dB
+    # digital -> -35.01 dBFS effective. Under the old -65 cap this program
+    # would have been refused as CHANNEL_PEAK_OVER_CAP.
+    gains = {
+        role: back_off_gain(BASE_STIMULUS_PEAK_DBFS, sv, caps[role])
+        for role in caps
+    }
+    prog = _measure_program(sv, gains=gains)
     adm = admit_excitation_program(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
+        declared_sensitivities=declared,
     )
     assert adm.allowed
     by_id = {s.segment_id: s for s in adm.segments}
-    assert by_id["sweep_t"].effective_peak_dbfs == pytest.approx(-35.0)
+    assert by_id["sweep_t"].effective_peak_dbfs == pytest.approx(-35.01)
     assert by_id["sweep_t"].execution_allowed
     facts = {c.role: c for c in adm.channels}
     assert facts["tweeter"].cap_dbfs == pytest.approx(-35.0)

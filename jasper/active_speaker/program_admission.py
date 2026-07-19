@@ -276,6 +276,7 @@ def _evaluate_program(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
+    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> ProgramAdmission:
     import numpy as np
 
@@ -319,7 +320,11 @@ def _evaluate_program(
             # protective HP included) by construction -- the proven-HP path
             # (see resolve_driver_excitation_ceilings).
             prepared = prepare_driver_excitation_plan(
-                topology, safety_profile, requested, program_admission=True
+                topology,
+                safety_profile,
+                requested,
+                program_admission=True,
+                declared_sensitivities=declared_sensitivities,
             )
         except ExcitationSafetyPlanError as exc:
             reason = _map_safety_plan_error(exc)
@@ -354,7 +359,10 @@ def _evaluate_program(
                 # the whole-file cap the rendered channel's true peak is
                 # attested against.
                 _band, cap_dbfs = resolve_driver_excitation_ceilings(
-                    safety_profile, target_fingerprint, program_admission=True
+                    safety_profile,
+                    target_fingerprint,
+                    program_admission=True,
+                    declared_sensitivities=declared_sensitivities,
                 )
             except ExcitationSafetyPlanError as exc:
                 refusals.append(_map_safety_plan_error(exc))
@@ -476,6 +484,7 @@ def admit_excitation_program(
     role_targets: Mapping[str, str],
     session_volume_db: float,
     pcm: Any = None,
+    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> ProgramAdmission:
     """Admit a program at composition time (N segment plans + M channel facts).
 
@@ -486,6 +495,11 @@ def admit_excitation_program(
     it folds into every segment's and channel's effective peak so caps are
     enforced regardless of its value. ``pcm`` defaults to a deterministic render
     of ``program`` — pass an explicit array only to attest already-rendered bytes.
+    ``declared_sensitivities`` (per-role, from the declaration — see
+    :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`)
+    activates the W6.5 sensitivity-derived HF measurement ceiling; the caller
+    MUST pass the same mapping it composed against, or a program composed at
+    the derived cap is refused here at the legacy one.
     """
     _validate_program(program)
     if not isinstance(topology, OutputTopology):
@@ -499,6 +513,7 @@ def admit_excitation_program(
         safety_profile=safety_profile,
         role_targets=role_targets,
         session_volume_db=session_volume_db,
+        declared_sensitivities=declared_sensitivities,
     )
 
 
@@ -510,6 +525,7 @@ def readmit_program_from_wav(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
+    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> ProgramAdmission:
     """Re-admit a program from a FRESH readback of its rendered WAV bytes.
 
@@ -562,4 +578,5 @@ def readmit_program_from_wav(
         safety_profile=safety_profile,
         role_targets=role_targets,
         session_volume_db=session_volume_db,
+        declared_sensitivities=declared_sensitivities,
     )

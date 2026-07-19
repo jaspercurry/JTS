@@ -7,11 +7,11 @@
 The closed sweep/level ledger below derives every field passed to Shared's
 persisted admission types. It deliberately remains pure: the production
 adapter owns fresh live-graph proof, persistence, exact WAV binding, guarded
-playback, and writer-lock lifetime. The one deliberate exception is a single
-``log_event`` call in :func:`resolve_driver_excitation_ceilings` when it
+playback, and writer-lock lifetime. The one deliberate exception is the pair
+of ``log_event`` calls in :func:`resolve_driver_excitation_ceilings` when it
 supersedes a stale HF class-default ceiling with the sensitivity-derived one
--- an audit line, not a state mutation; see the W6.5 ruling in that function's
-docstring.
+(or names why it could not) -- audit lines, not state mutations; see the W6.5
+ruling in that function's docstring.
 """
 
 from __future__ import annotations
@@ -362,16 +362,26 @@ def _target_for_request(
     return matches[0]
 
 
-def _sensitivity_db(target: Mapping[str, Any]) -> float | None:
-    """A target's declared ``sensitivity_db_2v83_1m``, or ``None`` if absent.
+def _declared_sensitivity(
+    declared_sensitivities: Mapping[str, Any] | None,
+    role: str,
+) -> float | None:
+    """One role's declared datasheet sensitivity from the caller's mapping.
 
-    Optional field on the confirmed safety profile: many households won't
-    know their driver's datasheet sensitivity, and the derivation below
-    degrades gracefully (falls back to the class-default ceiling) when it's
-    missing on either side.
+    ``declared_sensitivities`` is read from the DECLARATION -- the design
+    draft's ``manual_settings`` (see
+    :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
+    the one owner of this declared physical property. It never rides the
+    confirmed safety profile: duplicating it there would make a second copy of
+    the fact and would have required every already-declared box to re-declare
+    before the derivation could fire. Many households won't know the value at
+    all, and the derivation degrades gracefully (class-default ceiling) when
+    it's missing on either side.
     """
 
-    value = target.get("sensitivity_db_2v83_1m")
+    if not isinstance(declared_sensitivities, Mapping):
+        return None
+    value = declared_sensitivities.get(role)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
@@ -380,10 +390,11 @@ def _sensitivity_db(target: Mapping[str, Any]) -> float | None:
 
 def _derived_hf_ceiling_dbfs(
     safety_profile: Mapping[str, Any],
-    hf_target: Mapping[str, Any],
+    hf_role: str,
+    declared_sensitivities: Mapping[str, Any] | None,
 ) -> float | None:
-    """The sensitivity-derived HF ceiling for ``hf_target``, or ``None`` when
-    the declared specs cannot support one (missing sensitivity on either
+    """The sensitivity-derived ceiling for ``hf_role``, or ``None`` when the
+    declared specs cannot support one (missing declared sensitivity on either
     side) -- the caller then keeps the existing class-default ceiling.
 
     Conservative across multiple low-frequency siblings (a 3-way's woofer AND
@@ -392,7 +403,7 @@ def _derived_hf_ceiling_dbfs(
     ceiling never exceeds what is safe against any one of them.
     """
 
-    sens_hf = _sensitivity_db(hf_target)
+    sens_hf = _declared_sensitivity(declared_sensitivities, hf_role)
     if sens_hf is None:
         return None
     targets = safety_profile.get("targets")
@@ -402,9 +413,10 @@ def _derived_hf_ceiling_dbfs(
     for candidate in targets:
         if not isinstance(candidate, Mapping):
             continue
-        if str(candidate.get("role") or "") not in LOW_FREQUENCY_ROLES:
+        candidate_role = str(candidate.get("role") or "")
+        if candidate_role not in LOW_FREQUENCY_ROLES:
             continue
-        sens_lf = _sensitivity_db(candidate)
+        sens_lf = _declared_sensitivity(declared_sensitivities, candidate_role)
         if sens_lf is None:
             continue
         lf_fingerprint = str(candidate.get("target_fingerprint") or "")
@@ -431,6 +443,7 @@ def resolve_driver_excitation_ceilings(
     target_fingerprint: str,
     *,
     program_admission: bool = False,
+    declared_sensitivities: Mapping[str, Any] | None = None,
 ) -> tuple[FrequencyBand, float]:
     """The confirmed permitted band + maximum effective-peak ceiling for one
     driver target.
@@ -449,15 +462,22 @@ def resolve_driver_excitation_ceilings(
     stays the declared hard band + proven HP, untouched; too-loud becomes ONE
     derived ceiling instead of stacked hedges). Callers whose excitation rides
     a graph that carries the driver's crossover high-pass by construction --
-    :mod:`jasper.active_speaker.program_admission` and its per-segment plans
-    -- pass ``True`` so a high-frequency driver's measurement ceiling can be
-    derived from a low-frequency sibling's own declared cap and the two
-    drivers' declared sensitivities, rather than pinned at the naked-tone
-    class default (sized for an UNPROTECTED tone, not a HP-proven one).
-    Every other caller (isolated driver capture, the v1 ramp solver, ear-check
-    ramps) defaults to ``False`` and keeps exactly today's
+    the v2 conductor context, :mod:`jasper.active_speaker.program_admission`'s
+    per-segment plans + per-channel facts, and the session-volume derivation
+    that serves them -- pass ``True`` so a high-frequency driver's measurement
+    ceiling can be derived from a low-frequency sibling's own declared cap and
+    the two drivers' declared sensitivities, rather than pinned at the
+    naked-tone class default (sized for an UNPROTECTED tone, not a HP-proven
+    one). Every other caller (isolated driver capture, the v1 ramp solver,
+    ear-check ramps) defaults to ``False`` and keeps exactly today's
     ``min(declared, class_default)`` ceiling -- one conditional, no new
     subsystem.
+
+    ``declared_sensitivities`` is the per-role declared datasheet sensitivity
+    mapping read from the DECLARATION (the design draft's ``manual_settings``
+    -- :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
+    which is the one owner of that physical property. Optional: without it the
+    proven-HP path simply keeps the class-default ceiling (and logs the skip).
     """
 
     target = _target_for_request(safety_profile, target_fingerprint)
@@ -504,13 +524,35 @@ def resolve_driver_excitation_ceilings(
     # operator choice, so it is safe to replace with the derived ceiling. A
     # declared value that differs (even if quieter) is a real household
     # choice and is always respected as-is, never overridden.
+    #
+    # Known corner: a household value typed LOUDER than the class default
+    # (e.g. -50 against the -65 seed) also fails this equality, so no
+    # derivation runs -- and the min() above still clamps it back to -65.
+    # Safe direction (quieter than the typed intent), but the intent is
+    # silently unmet; wizard-side validation of the declared HF cap is the
+    # noted follow-up.
     if (
         program_admission
         and role in HIGH_FREQUENCY_ROLES
         and declared_peak == protection.max_auto_level_dbfs
     ):
-        derived_peak = _derived_hf_ceiling_dbfs(safety_profile, target)
-        if derived_peak is not None and derived_peak != maximum_peak:
+        derived_peak = _derived_hf_ceiling_dbfs(
+            safety_profile, role, declared_sensitivities
+        )
+        if derived_peak is None:
+            # Named skip: the proven-HP path WOULD derive here but a declared
+            # sensitivity is missing on one side, so the (usually far too
+            # quiet) class default stays in force. Without this line a
+            # near-inaudible HF measurement is a puzzling triage.
+            log_event(
+                logger,
+                "active_speaker.excitation_ceiling_derivation_skipped",
+                target_id=target_id,
+                role=role,
+                reason="declared_sensitivity_missing",
+                ceiling_dbfs=f"{maximum_peak:.1f}",
+            )
+        elif derived_peak != maximum_peak:
             log_event(
                 logger,
                 "active_speaker.excitation_ceiling_superseded",
@@ -529,12 +571,13 @@ def prepare_driver_excitation_plan(
     requested_plan: RequestedDriverExcitationPlan,
     *,
     program_admission: bool = False,
+    declared_sensitivities: Mapping[str, Any] | None = None,
 ) -> PreparedDriverExcitationPlan:
     """Bind exact current policy for Shared admission or a typed refusal.
 
-    ``program_admission`` is forwarded verbatim to
-    :func:`resolve_driver_excitation_ceilings` -- see that function's
-    docstring for the proven-HP-path ceiling derivation it gates.
+    ``program_admission`` and ``declared_sensitivities`` are forwarded
+    verbatim to :func:`resolve_driver_excitation_ceilings` -- see that
+    function's docstring for the proven-HP-path ceiling derivation they gate.
     """
 
     if not isinstance(topology, OutputTopology):
@@ -569,6 +612,7 @@ def prepare_driver_excitation_plan(
         safety_profile,
         requested_plan.target_fingerprint,
         program_admission=program_admission,
+        declared_sensitivities=declared_sensitivities,
     )
     protection = driver_protection_profile(
         role,

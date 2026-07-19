@@ -112,6 +112,8 @@ class SessionVolumeRestoreResult(str, Enum):
 def session_measurement_volume_db(
     safety_profile: Mapping[str, Any],
     target_fingerprints: Iterable[str],
+    *,
+    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> float:
     """The fixed session measurement volume DERIVED from the profile's ceilings.
 
@@ -153,9 +155,15 @@ def session_measurement_volume_db(
     for target_fingerprint in target_fingerprints:
         # program_admission=True: this session volume exists ONLY to serve
         # the v2 conductor's CHECK/MEASURE programs (this module's own
-        # docstring) -- always the proven-HP path.
+        # docstring) -- always the proven-HP path. ``declared_sensitivities``
+        # (the declaration's per-role datasheet values) rides along so the
+        # caps entering max(caps) are the SAME derived caps admission
+        # enforces.
         _band, maximum_peak = resolve_driver_excitation_ceilings(
-            safety_profile, target_fingerprint, program_admission=True
+            safety_profile,
+            target_fingerprint,
+            program_admission=True,
+            declared_sensitivities=declared_sensitivities,
         )
         caps.append(float(maximum_peak))
     if not caps:

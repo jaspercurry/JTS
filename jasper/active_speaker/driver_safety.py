@@ -1192,17 +1192,6 @@ def _normalise_profile_manual_settings(
             value = _text(raw.get(key), f"{field_name}.{key}", max_chars=max_chars)
             if value:
                 driver[key] = value
-        # Optional datasheet sensitivity (2.83V/1m), carried through verbatim
-        # so the confirmed profile can serve as the "declared specs" input to
-        # excitation_safety_plan's sensitivity-derived HF measurement ceiling.
-        # Absence is fine -- that derivation gracefully falls back when a
-        # household hasn't recorded it.
-        sensitivity = _finite_float(
-            raw.get("sensitivity_db_2v83_1m"),
-            f"{field_name}.sensitivity_db_2v83_1m",
-        )
-        if sensitivity is not None:
-            driver["sensitivity_db_2v83_1m"] = sensitivity
         driver.update(
             normalise_driver_safety_fields(
                 raw,
@@ -1430,7 +1419,6 @@ def _profile_core(
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
-            "sensitivity_db_2v83_1m": visible.get("sensitivity_db_2v83_1m"),
             "hard_excitation_band_hz": visible.get("hard_excitation_band_hz"),
             "required_protection_filters": visible.get(
                 "required_protection_filters", []
@@ -1701,7 +1689,6 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 "physical_output_index",
                 "model",
                 "manufacturer",
-                "sensitivity_db_2v83_1m",
                 "hard_excitation_band_hz",
                 "required_protection_filters",
                 "measurement_band_hz",
@@ -1752,16 +1739,6 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 required=False,
                 max_chars=120,
             )
-        if "sensitivity_db_2v83_1m" in target:
-            sensitivity_value = target.get("sensitivity_db_2v83_1m")
-            if (
-                isinstance(sensitivity_value, bool)
-                or not isinstance(sensitivity_value, (int, float))
-                or not math.isfinite(float(sensitivity_value))
-            ):
-                raise DriverSafetyProfileError(
-                    f"{field_name}.sensitivity_db_2v83_1m must be a finite number"
-                )
         _require_canonical_text_field(
             target,
             "driver_style",

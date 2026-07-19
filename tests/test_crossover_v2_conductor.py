@@ -571,7 +571,7 @@ def test_open_measurement_volume_derives_via_ssot(monkeypatch):
     import jasper.active_speaker.session_volume_plan as svp
 
     monkeypatch.setattr(
-        svp, "session_measurement_volume_db", lambda profile, fps: -20.0
+        svp, "session_measurement_volume_db", lambda profile, fps, **kw: -20.0
     )
     result = asyncio.run(open_measurement_volume(
         plan,
@@ -868,3 +868,85 @@ def test_verify_wav_rendered_sample_peak_respects_min_cap(tmp_path):
     # And it is not clamped into oblivion: the sweep sits within a few dB of
     # the cap-backoff level (the clamp targets the cap, not silence).
     assert peak_dbfs + sv >= binding_cap - 1.0
+
+
+# --- W6.5: the sensitivity-derived HF ceiling drives PRODUCTION composition -----
+#
+# The 2026-07-19 gate blocker: the derived ceiling existed in admission but the
+# conductor context resolved caps WITHOUT the proven-HP flag, so every composed
+# level (CHECK pilot bases, MEASURE back_off_gain, VERIFY min(caps)) still
+# clamped to the legacy -65 — reviewer-measured composed CHECK pilot: -65.01.
+# This pin drives the conductor with caps resolved EXACTLY the way the fixed
+# resolve_conductor_context resolves them (program_admission=True + the
+# declaration's sensitivities) and asserts the composed tweeter hi pilot lands
+# at the derived cap, then that admission (same declared mapping) agrees.
+
+
+def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
+    from jasper.active_speaker.excitation_safety_plan import (
+        resolve_driver_excitation_ceilings,
+    )
+    from jasper.active_speaker.program_admission import admit_excitation_program
+    from jasper.active_speaker.session_volume_plan import (
+        session_measurement_volume_db,
+    )
+
+    from tests.test_active_speaker_program_admission import _profile_and_targets
+
+    # JTS3 declaration: Epique E150HE-44 83.3 dB / B&C DE250-8 108.5 dB.
+    declared = {"woofer": 83.3, "tweeter": 108.5}
+    topology, profile, targets = _profile_and_targets(
+        woofer_peak=-8.0, tweeter_peak=-65.0
+    )
+    # PRODUCTION cap resolution — the exact call the fixed context site makes.
+    caps = {}
+    for role, fingerprint in targets.items():
+        _band, cap = resolve_driver_excitation_ceilings(
+            profile,
+            fingerprint,
+            program_admission=True,
+            declared_sensitivities=declared,
+        )
+        caps[role] = float(cap)
+    # Probe (a): context caps == admission caps == the derived {-8, -35}.
+    assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-35.0)}
+    sv = session_measurement_volume_db(
+        profile, targets.values(), declared_sensitivities=declared
+    )
+    assert sv == -20.0  # max(caps) is still the woofer's — volume unchanged
+
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
+        RoleBand("tweeter", 1, FrequencyBand(1600.0, 10000.0)),
+    ]
+    c = CrossoverV2Conductor(
+        session_id=SESSION,
+        source_preset=_preset(),
+        roles_bands=roles,
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=caps,
+        session_volume_db=sv,
+        seams=FakeSeams().seams(),
+        driver_spacing_m=0.15,
+    )
+    # Probe (b): the composed CHECK tweeter hi pilot rides the DERIVED cap
+    # (back_off margin under -35), not the legacy -65.01 the gate measured.
+    t_hi = c._check_program.segment("pilot_tweeter_hi")
+    assert t_hi.effective_peak_dbfs == pytest.approx(-35.0 - GAIN_CAP_BACKOFF_DB)
+    # And the play-time gate (same declared mapping, as bind_production_play
+    # now threads it) admits what the conductor composed.
+    adm = admit_excitation_program(
+        c._check_program, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+        declared_sensitivities=declared,
+    )
+    assert adm.allowed, adm.refusals
+    facts = {f.role: f for f in adm.channels}
+    assert facts["tweeter"].cap_dbfs == pytest.approx(-35.0)
+    # Without the declared mapping (the pre-fix admission view) the SAME
+    # composed program is refused — the incoherence the threading closes.
+    stale = admit_excitation_program(
+        c._check_program, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert not stale.allowed
