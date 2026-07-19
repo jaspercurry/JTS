@@ -409,6 +409,7 @@ _POST_ROUTES = frozenset({
     "/crossover/v2/session",
     "/crossover/v2/verify",
     "/crossover/v2/apply",
+    "/crossover/v2/restore",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -6516,6 +6517,15 @@ def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any
     return v2host.handle_v2_apply(raw, _run_async, _camilla)
 
 
+def _handle_crossover_v2_restore(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /crossover/v2/restore: the v2-aware Undo (W6 run-8 Blocker Q)."""
+    _read_json_body(handler)  # no fields consumed; drains the request body
+
+    from . import correction_crossover_v2 as v2host
+
+    return v2host.handle_v2_restore(_run_async, _camilla)
+
+
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/reset: in-flow "start over" for the crossover flow.
 
@@ -7509,6 +7519,29 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             HTTPStatus.CONFLICT
                             if payload.get("status") == "blocked"
                             else HTTPStatus.OK
+                        ),
+                    )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/restore":
+                try:
+                    payload = _handle_crossover_v2_restore(self)
+                    # Mirrors /crossover/v2/apply: a refused/failed restore
+                    # must not read as success.
+                    self._send_json(
+                        payload,
+                        status=(
+                            HTTPStatus.OK
+                            if payload.get("status") == "restored"
+                            else HTTPStatus.CONFLICT
                         ),
                     )
                 except ValueError as e:

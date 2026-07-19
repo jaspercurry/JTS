@@ -181,9 +181,22 @@ def clear_v2_state() -> None:
             )
 
 
-def observe_apply_success(candidate_fingerprint: str) -> None:
+def observe_apply_success(
+    candidate_fingerprint: str,
+    *,
+    pre_apply_profile: Mapping[str, Any] | None = None,
+) -> None:
     """Mark the v2 candidate applied — the apply-complete event that arms the
-    soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success."""
+    soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success.
+
+    ``pre_apply_profile`` is the frozen applied-baseline snapshot the apply
+    replaced (``build_baseline_profile_candidate``'s
+    ``applied_recomposition_profile`` — see ``handle_v2_apply``), stashed here
+    because the apply's own persisted profile pops that field once it becomes
+    the new applied SSOT. This is the ONLY durable record of what the Undo
+    path (``handle_v2_restore``) restores to; ``None`` when this was the
+    speaker's first-ever applied crossover (nothing to undo back to).
+    """
     state = load_v2_state()
     if state is None:
         return
@@ -203,8 +216,32 @@ def observe_apply_success(candidate_fingerprint: str) -> None:
     state["applied"] = True
     state["failure"] = None
     state["apply_blocked"] = None
+    state["pre_apply_profile"] = (
+        dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
+    )
     save_v2_state(state)
     log_event(logger, "correction.crossover_v2_applied")
+
+
+def observe_restore() -> None:
+    """Clear the durable v2 state after a successful Undo (mirrors
+    :func:`observe_apply_success`). Resets the whole flow to a clean
+    unmeasured state — matching the reset a pre-apply terminal failure
+    already gets (:func:`_persist_terminal_failure`) — so the envelope lands
+    back on the pre-measurement screen rather than a half-consistent
+    review_apply pointing at the now-undone candidate."""
+    state = load_v2_state()
+    if state is None:
+        return
+    state["applied"] = False
+    state["candidate"] = None
+    state["verify"] = None
+    state["failure"] = None
+    state["apply_blocked"] = None
+    state["pre_apply_profile"] = None
+    state["accepted_phases"] = []
+    state["gain_plan_db"] = None
+    save_v2_state(state)
 
 
 def _applied_gate() -> bool:
@@ -1484,9 +1521,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         # parallax correction is SELF-CANCELLING at the mic position (the
         # same geometric excess is baked into both MEASURE and VERIFY), so
         # VERIFY passes while the LISTENING POSITION carries the full error
-        # (~23° at 2 kHz for 15 cm spacing measured at 1 m). W5b/W6 also own
-        # the Undo/restore stale-applied-state cleanup noted in
-        # crossover_envelope_v2's verify-fail action.
+        # (~23° at 2 kHz for 15 cm spacing measured at 1 m).
         # W6 CHECKLIST ITEM (pre-existing): a deliberate household volume
         # action mid-session (dial / voice "louder" / :8780 HTTP) still moves
         # the CamillaDSP main volume — the session measurement pause holds off
@@ -1942,6 +1977,15 @@ def handle_v2_apply(
     baseline_expected_fingerprint = str(
         reviewed_baseline.get("candidate_fingerprint") or ""
     )
+    # The pre-candidate applied profile, if any (``None`` on the speaker's
+    # first-ever apply). ``build_baseline_profile_candidate`` freezes it here
+    # as ``applied_recomposition_profile`` before the actual apply below
+    # commits and pops that field off the new applied SSOT — this is the
+    # ONLY place it survives to stash for the v2 Undo path
+    # (``handle_v2_restore``).
+    pre_apply_profile = reviewed_baseline.get("applied_recomposition_profile")
+    if not isinstance(pre_apply_profile, Mapping):
+        pre_apply_profile = None
 
     cam = camilla_factory()
     payload = run_async(
@@ -1962,7 +2006,7 @@ def handle_v2_apply(
         )
     )
     if payload.get("status") == "applied":
-        observe_apply_success(expected)
+        observe_apply_success(expected, pre_apply_profile=pre_apply_profile)
     issue = None
     if payload.get("status") == "blocked":
         # Finding N: name the blocker compactly (not buried in the full
@@ -1983,6 +2027,73 @@ def handle_v2_apply(
         "correction.crossover_v2_apply",
         status=payload.get("status"),
         candidate_fingerprint=expected,
+    )
+    return payload
+
+
+def handle_v2_restore(
+    run_async: Any,
+    camilla_factory: Any,
+) -> dict[str, Any]:
+    """POST /crossover/v2/restore — the v2-aware Undo (§5.2 verify_fail).
+
+    The legacy ``/crossover/restore`` expects a PENDING candidate-apply
+    transaction from the per-driver commissioning-run machinery
+    (``commissioning_apply.restore_pending_candidate_apply``); a v2 apply
+    never creates one — :func:`handle_v2_apply` commits straight through
+    :func:`~jasper.active_speaker.baseline_profile.apply_baseline_profile`'s
+    atomic transaction, so by the time a household reaches ``verify_fail``
+    there is nothing "pending" left for the legacy path to find, and it
+    500s (W6 run-8 Blocker Q: ``there is no pending candidate apply to
+    restore``). This is the v2-aware replacement: reload the pre-candidate
+    applied profile ``handle_v2_apply`` stashed (``pre_apply_profile`` in the
+    durable v2 state) through the SAME apply transaction family
+    (:func:`~jasper.active_speaker.baseline_profile.restore_applied_baseline_profile`),
+    then clear the durable v2 applied/candidate/failure state so the
+    envelope returns to a clean measure/review state.
+
+    Never raises a bare exception for an ordinary refusal — every refusal is
+    a :class:`CrossoverV2Refused` (maps to 400 at the dispatch ladder,
+    exactly like every other v2 endpoint refusal) so a household stuck on a
+    bad-sounding candidate always gets a named answer, never a 500.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        restore_applied_baseline_profile,
+    )
+
+    if not v2_flow_active():
+        raise CrossoverV2Refused(
+            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
+        )
+    state = load_v2_state()
+    if not state or not state.get("applied"):
+        raise CrossoverV2Refused(
+            "nothing is applied to undo; measure and apply a crossover first"
+        )
+    pre_apply_profile = state.get("pre_apply_profile")
+    if not isinstance(pre_apply_profile, Mapping):
+        raise CrossoverV2Refused(
+            "there is no previous crossover to restore to; remove the active "
+            "crossover from speaker setup instead"
+        )
+    cam = camilla_factory()
+    payload = run_async(
+        restore_applied_baseline_profile(
+            pre_apply_profile,
+            load_config=lambda path: cam.set_config_file_path(
+                path, best_effort=False
+            ),
+            get_current_config_path=lambda: cam.get_config_file_path(
+                best_effort=False
+            ),
+        )
+    )
+    if payload.get("status") == "restored":
+        observe_restore()
+    log_event(
+        logger,
+        "correction.crossover_v2_restored",
+        status=payload.get("status"),
     )
     return payload
 

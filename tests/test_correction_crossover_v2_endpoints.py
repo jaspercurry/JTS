@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -472,6 +473,8 @@ def test_prepare_refuses_under_legacy_flow(monkeypatch):
         )
     with pytest.raises(v2host.CrossoverV2Refused):
         v2host.handle_v2_apply({}, None, None)
+    with pytest.raises(v2host.CrossoverV2Refused):
+        v2host.handle_v2_restore(None, None)
 
 
 def test_prepare_refuses_when_volume_needs_recovery():
@@ -529,6 +532,72 @@ def test_observe_apply_success_clears_a_stale_apply_blocked_nudge():
     })
     v2host.observe_apply_success("fp-1")
     assert v2host.load_v2_state()["apply_blocked"] is None
+
+
+def test_observe_apply_success_stashes_the_pre_apply_profile():
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": False,
+    })
+    v2host.observe_apply_success("fp-1", pre_apply_profile={"status": "applied"})
+    assert v2host.load_v2_state()["pre_apply_profile"] == {"status": "applied"}
+    # The speaker's first-ever apply has nothing to stash.
+    v2host.observe_apply_success("fp-1", pre_apply_profile=None)
+    assert v2host.load_v2_state()["pre_apply_profile"] is None
+
+
+def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
+    """Mirrors observe_apply_success: the Undo path's durable-state clear
+    (W6 run-8 Blocker Q) resets the flow to a clean unmeasured state rather
+    than leaving a half-consistent review_apply pointing at the undone
+    candidate."""
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "verify": {"outcome": "fail"},
+        "applied": True,
+        "apply_blocked": {"id": "x", "message": "x"},
+        "pre_apply_profile": {"status": "applied"},
+        "gain_plan_db": {"woofer": -3.0},
+    })
+    v2host.observe_restore()
+    state = v2host.load_v2_state()
+    assert state["applied"] is False
+    assert state["candidate"] is None
+    assert state["verify"] is None
+    assert state["failure"] is None
+    assert state["apply_blocked"] is None
+    assert state["pre_apply_profile"] is None
+    assert state["accepted_phases"] == []
+    assert state["gain_plan_db"] is None
+    assert v2host._applied_gate() is False
+
+
+def test_restore_refuses_when_nothing_applied():
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [],
+        "applied": False,
+    })
+    with pytest.raises(v2host.CrossoverV2Refused, match="nothing is applied"):
+        v2host.handle_v2_restore(None, None)
+
+
+def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
+    """The speaker's first-ever apply has no predecessor to undo back to —
+    a policy refusal, never a 500 (the legacy path's failure mode)."""
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": None,
+    })
+    with pytest.raises(v2host.CrossoverV2Refused, match="no previous crossover"):
+        v2host.handle_v2_restore(None, None)
 
 
 def test_status_block_surfaces_apply_blocked():
@@ -1663,3 +1732,156 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
 
     saved_state = v2host.load_v2_state()
     assert saved_state["apply_blocked"] == payload["issue"]
+
+
+# --- W6 run-8 Blocker Q: the v2-aware Undo, through the REAL apply/restore seams --
+#
+# The verify_fail screen's "Undo" posted to the legacy /crossover/restore,
+# which expects a PENDING candidate-apply transaction from the per-driver
+# commissioning-run machinery. handle_v2_apply commits straight through
+# apply_baseline_profile's own atomic transaction and never creates one, so
+# the legacy path 500s ("there is no pending candidate apply to restore")
+# and a household stuck on a bad-sounding measured candidate has no way
+# back. These tests drive handle_v2_apply then handle_v2_restore through
+# the REAL seams (same fixture shape as the Blocker M tests above) — not a
+# faked apply gate — so the fix is proven end to end.
+
+
+def _prior_measured_candidate(preset):
+    """The household's pre-existing applied crossover — deliberately a
+    DIFFERENT measured candidate from the run-8 shape below, so a passing
+    restore is proof of reversion rather than a no-op."""
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverAlignment,
+        MeasuredCrossoverCandidate,
+    )
+
+    return MeasuredCrossoverCandidate(
+        program_id="prog-prior-1",
+        analysis={"epsilon_ppm": 5.0, "predicted_ripple_db": 1.2},
+        source_preset=preset,
+        role_attenuations_db={"tweeter": -2.0, "woofer": 0.0},
+        alignment=MeasuredCrossoverAlignment(
+            delay_us=250.0, delay_role="tweeter", polarity="keep",
+        ),
+    )
+
+
+def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
+    monkeypatch, tmp_path,
+):
+    """Apply the household's pre-existing crossover, apply a run-8-shaped
+    measured candidate over it (landing on a content-addressed sibling file
+    — the prior config is never overwritten), then Undo. The active config,
+    the applied-baseline identity, and the durable v2 state must all revert
+    — never the legacy path's 500."""
+    from jasper.active_speaker.baseline_profile import (
+        apply_baseline_profile,
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+    from tests.test_active_speaker_baseline_profile import _draft
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    state_path = tmp_path / "baseline_profile.json"
+
+    prior_candidate = _prior_measured_candidate(preset)
+    prior_cam = _FakeApplyCam()
+    prior_payload = _bg_run_async(
+        apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=prior_cam.set_config_file_path,
+            get_current_config_path=prior_cam.get_config_file_path,
+            tuning_owner="automatic",
+            measured_candidate=prior_candidate,
+        )
+    )
+    assert prior_payload["status"] == "applied", prior_payload.get("issues")
+    prior_config_text = config_path.read_text(encoding="utf-8")
+
+    run8_candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_run8",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": run8_candidate.fingerprint},
+        "applied": False,
+    })
+    apply_payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": run8_candidate.fingerprint,
+            "candidate": run8_candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert apply_payload["status"] == "applied", apply_payload.get("issues")
+    run8_config_path = Path(apply_payload["profile"]["config"]["path"])
+    assert run8_config_path != config_path
+    # The run-8 apply must not have clobbered the prior profile's own file.
+    assert config_path.read_text(encoding="utf-8") == prior_config_text
+
+    state_after_apply = v2host.load_v2_state()
+    assert state_after_apply["applied"] is True
+    pre_apply_profile = state_after_apply.get("pre_apply_profile")
+    assert isinstance(pre_apply_profile, dict)
+    assert (
+        pre_apply_profile["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+
+    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert config_path.read_text(encoding="utf-8") == prior_config_text
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert (
+        active["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+
+    state_after_restore = v2host.load_v2_state()
+    assert state_after_restore["applied"] is False
+    assert state_after_restore["candidate"] is None
+    assert state_after_restore["pre_apply_profile"] is None
+    assert state_after_restore["accepted_phases"] == []
+    # The envelope lands back on the pre-measurement screen — a clean
+    # measure/review state, never a half-consistent review_apply pointing at
+    # the now-undone candidate.
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+
+
+def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
+    monkeypatch, tmp_path,
+):
+    """No pre-existing applied profile ⇒ nothing to Undo back to — a named
+    policy refusal (never a 500), through the REAL apply seam."""
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_run8",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert payload["status"] == "applied", payload.get("issues")
+    assert v2host.load_v2_state()["pre_apply_profile"] is None
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="no previous crossover"):
+        v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)

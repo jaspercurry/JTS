@@ -478,6 +478,7 @@ def test_known_post_routes_reach_csrf_guard():
         # v2 conductor flow (Wave 5a) — registered unconditionally; each
         # handler refuses fail-closed unless JASPER_CROSSOVER_FLOW=v2.
         "/crossover/v2/session", "/crossover/v2/verify", "/crossover/v2/apply",
+        "/crossover/v2/restore",
         "/crossover/driver-test",
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",
@@ -591,6 +592,76 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     )
 
     resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+
+
+def test_restore_refusal_maps_to_400_not_500(monkeypatch):
+    """W6 run-8 Blocker Q regression pin: the v2-aware Undo endpoint must
+    answer a named 400 for an ordinary refusal, never the legacy path's bare
+    500 ("there is no pending candidate apply to restore")."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+
+    def _refuse(run_async, camilla_factory):
+        raise v2host_mod.CrossoverV2Refused(
+            "nothing is applied to undo; measure and apply a crossover first"
+        )
+
+    monkeypatch.setattr(v2host_mod, "handle_v2_restore", _refuse)
+
+    resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
+
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    assert b"nothing is applied to undo" in body
+
+
+def test_restore_blocked_status_maps_to_409(monkeypatch):
+    """Mirrors the apply endpoint's status-content-driven mapping: a refused
+    (blocked/restore_failed) restore payload must not read as success."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_restore",
+        lambda run_async, camilla_factory: {
+            "status": "blocked",
+            "issues": [{
+                "severity": "blocker",
+                "code": "restore_target_missing",
+                "message": "the previous crossover configuration could not "
+                "be found on disk",
+            }],
+        },
+    )
+
+    resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
+
+    assert b"409" in resp.split(b"\r\n", 1)[0]
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    assert b"restore_target_missing" in body
+
+
+def test_restore_restored_status_maps_to_200(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_restore",
+        lambda run_async, camilla_factory: {"status": "restored", "profile": {}},
+    )
+
+    resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
 
     assert b"200" in resp.split(b"\r\n", 1)[0]
 

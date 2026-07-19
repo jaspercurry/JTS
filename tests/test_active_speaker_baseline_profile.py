@@ -34,6 +34,7 @@ from jasper.active_speaker.baseline_profile import (
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
     recompose_applied_baseline_yaml,
+    restore_applied_baseline_profile,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
@@ -4481,3 +4482,226 @@ async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
     assert payload["status"] == "blocked"
     issue_codes = {issue["code"] for issue in payload["issues"]}
     assert "baseline_candidate_fingerprint_mismatch" in issue_codes
+
+
+# --- v2 Undo — restore the pre-candidate applied profile (W6 run-8 Blocker Q) --
+#
+# The verify_fail screen's Undo posted to the LEGACY /crossover/restore, which
+# expects a pending commissioning-run candidate apply — a v2 apply never
+# creates one (it commits straight through apply_baseline_profile's own
+# atomic transaction), so the legacy path 500s ("there is no pending
+# candidate apply to restore") and the household is stuck on the bad-sounding
+# candidate. restore_applied_baseline_profile is the v2-aware fix: reload the
+# frozen pre-candidate applied_recomposition_profile through the SAME
+# apply_dsp_config transaction the forward apply rides, never recomposed.
+
+
+async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
+    """Apply one profile (the household's pre-existing crossover), then a
+    SECOND (the run-8-shaped measured candidate) over it. Returns
+    ``(state_path, config_path, load_config, current_config_path,
+    prior_payload, run8_payload, retained)`` — ``retained`` is the exact
+    frozen snapshot ``handle_v2_apply`` would have stashed as
+    ``pre_apply_profile`` at the moment of the run-8 apply."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    prior_candidate = _v2_candidate(preset, tweeter_gain_db=-2.0, delay_us=250.0)
+    prior_payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=prior_candidate,
+    )
+    assert prior_payload["status"] == "applied"
+
+    run8_candidate = _v2_candidate(
+        preset, tweeter_gain_db=-13.0327, delay_us=404.777,
+    )
+    # Captured BEFORE the run-8 apply below persists — exactly like
+    # handle_v2_apply's own read-only "reviewed_baseline" recompose, which
+    # runs before apply_baseline_profile commits. Capturing it AFTER the
+    # run-8 apply would read the run-8 profile's own (already-applied) state
+    # back as its "prior", not the profile it actually replaced.
+    retained = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=state_path,
+        config_path=config_path,
+        tuning_owner="automatic",
+        measured_candidate=run8_candidate,
+    )["applied_recomposition_profile"]
+    assert retained is not None
+    assert (
+        retained["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+
+    run8_payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=run8_candidate,
+    )
+    assert run8_payload["status"] == "applied"
+    run8_config_path = Path(run8_payload["profile"]["config"]["path"])
+    assert run8_config_path != config_path, "run-8 must land on a content-addressed sibling"
+    assert "applied_recomposition_profile" not in run8_payload["profile"]
+
+    return (
+        state_path, config_path, load_config, current_config_path,
+        prior_payload, run8_payload, retained,
+    )
+
+
+async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, load_config, current_config_path,
+        prior_payload, run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    prior_config_text = config_path.read_text(encoding="utf-8")
+    run8_config_text = Path(
+        run8_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+    # Sanity: the two profiles' own delay values are genuinely distinct
+    # before restoring, so a passing restore is proof of REVERSION, not a
+    # no-op.
+    assert "delay: 0.2500" in prior_config_text
+    assert "delay: 0.4048" in run8_config_text
+    assert "delay: 0.4048" not in prior_config_text
+
+    restore_payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    # Reloaded the PRIOR profile's own already-compiled file, unmutated —
+    # never recomposed, so the file's bytes are exactly what they were, and
+    # the run-8 candidate's delay is gone from the ACTIVE config.
+    assert config_path.read_text(encoding="utf-8") == prior_config_text
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert (
+        active["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+    assert active["candidate_fingerprint"] != run8_payload["profile"]["candidate_fingerprint"]
+    assert active["config"]["path"] == str(config_path)
+
+
+async def test_restore_applied_baseline_profile_blocked_when_config_missing(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    config_path.unlink()
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_missing"}
+
+
+async def test_restore_applied_baseline_profile_blocked_on_invalid_snapshot(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    tampered = dict(retained)
+    tampered["candidate_fingerprint"] = "declared-wrong"
+
+    payload = await restore_applied_baseline_profile(
+        tampered,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_invalid"}
+
+
+async def test_restore_applied_baseline_profile_reports_restore_failed(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, _load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+
+    async def failing_load_config(_path: str) -> bool:
+        return False
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=failing_load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "restore_failed"
+    assert {issue["code"] for issue in payload["issues"]} == {"restore_apply_failed"}
+    # A failed restore must not clobber the currently-applied (run-8) SSOT.
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert (
+        active["candidate_fingerprint"]
+        != retained["candidate_fingerprint"]
+    )
