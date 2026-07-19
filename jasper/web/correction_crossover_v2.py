@@ -85,6 +85,24 @@ class CrossoverV2Refused(ValueError):
     """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder)."""
 
 
+class CrossoverV2LocalSeamError(RuntimeError):
+    """A LOCAL play/analyze seam raised ``OSError`` — not a relay-transport death.
+
+    W6 hardware run 3 finding G: the DSP writer lock's ``os.open`` on a
+    read-only ``config_dir`` (finding F) raised a bare ``OSError`` from inside
+    ``on_armed`` — the exact same exception TYPE
+    ``jasper.capture_relay.session.run_capture_plan``'s transport polling
+    loop raises on a genuine relay-connection failure (``client.status``
+    reaching an unreachable host). ``build_v2_run_and_consume``'s relay-death
+    except arm cannot tell those apart by type alone, so it misclassified a
+    local filesystem fault as ``relay_timeout``. ``on_armed``/``consume``
+    convert a local ``OSError`` to THIS type at the seam boundary before it
+    can reach that arm, so it falls through to the catch-all cleanup arm's
+    honest ``internal_error`` classification instead — a genuine transport
+    ``OSError`` (never wrapped) still hits the relay-death arm unchanged.
+    """
+
+
 # --------------------------------------------------------------------------- #
 # flow selector + durable state
 # --------------------------------------------------------------------------- #
@@ -847,7 +865,7 @@ def bind_production_play(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
-    config_dir: str = "/etc/camilladsp",
+    config_dir: str | None = None,
 ) -> Callable[[str, Any], None]:
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
 
@@ -860,13 +878,32 @@ def bind_production_play(
     no graph load). Both run inside the mux measurement window so the
     correction lane actually reaches the speaker.
 
+    ``config_dir`` defaults to the SAME
+    :data:`jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR` every
+    sibling DSP writer (commissioning apply/verify, ``web_commissioning``,
+    ``correction_setup``) locks against — W6 hardware run 3 finding F caught
+    this binding still defaulting to the stale literal ``"/etc/camilladsp"``:
+    two defects at once. (a) ``jasper-correction-web`` runs
+    ``ProtectSystem=full`` with ``ReadWritePaths=/var/lib/jasper
+    /var/lib/camilladsp`` only (see ``deploy/jasper-correction-web.service``),
+    so opening ``/etc/camilladsp/.dsp_apply.lock`` raised EROFS 70 ms into the
+    first play. (b) even under a writable ``/etc``, it would have been the
+    WRONG lock identity — every other writer locks
+    ``/var/lib/camilladsp/configs/.dsp_apply.lock``, so a real ``/etc``
+    lock would not have serialized against them at all.
+
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         PHASE_VERIFY,
         bind_program_playback_seams,
     )
+    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.program import write_program_wav
+
+    resolved_config_dir = (
+        config_dir if config_dir is not None else str(DEFAULT_CAMILLA_CONFIG_DIR)
+    )
 
     def _play(phase: str, program: Any) -> None:
         bundle_dir = evidence_store.bundle_dir
@@ -902,7 +939,7 @@ def bind_production_play(
                 camilla_factory(),
                 bundle_dir=str(bundle_dir),
                 artifact=artifact,
-                config_dir=config_dir,
+                config_dir=resolved_config_dir,
                 program=program,
                 wav_path=str(wav_path),
                 topology=topology,
@@ -952,6 +989,18 @@ class V2VolumeHooks:
     abandon: Callable[[], Any]   # async
 
 
+# W6 hardware run 3 finding H: the catch-all cleanup arm below posts a
+# terminal host event (§5.10's ``capture_result``) so the phone stops
+# recording into silence, then purges the relay session. Purging
+# immediately after can race the phone's very next poll — the driver saw a
+# bare 404 on the session's own status endpoint ~1 s after the terminal
+# event, because the session was already gone. This grace gives the just-
+# posted event a bounded window to actually reach the phone (over the
+# public relay) before the session disappears; it does not delay the
+# household's volume restore, which stays immediate.
+TERMINAL_FAILURE_PURGE_GRACE_S = 3.0
+
+
 def build_v2_run_and_consume(
     conductor: Any,
     *,
@@ -974,7 +1023,13 @@ def build_v2_run_and_consume(
 
     * ``CaptureTimeout`` / ``CaptureAborted`` / ``RelayError`` / ``OSError`` /
       generic ``CaptureFailed`` — relay-session death ⇒ ``relay_timeout``
-      failure state + volume ABANDON (the §5.5 walked-away guarantee).
+      failure state + volume ABANDON (the §5.5 walked-away guarantee). The
+      ``OSError`` here is genuinely the relay TRANSPORT (e.g.
+      ``run_capture_plan``'s poll loop reaching an unreachable host) — a
+      LOCAL play/analyze seam OSError never reaches this arm: ``on_armed``/
+      ``consume`` below convert it to :class:`CrossoverV2LocalSeamError`
+      first (W6 hardware run 3 finding G), so it falls through to the
+      catch-all arm's ``internal_error`` instead.
     * ``CaptureBeginRefused`` — the conductor already recorded the phase's own
       failure code; persist it + abandon.
     * ``CaptureStopped`` / cancellation — expected control flow: abandon the
@@ -983,8 +1038,12 @@ def build_v2_run_and_consume(
       raise open-endedly (``CamillaUnavailable`` is a bare Exception), so
       every non-relay failure posts a terminal host event, persists
       ``program_unplayable`` (program/admission/flow classes) or
-      ``internal_error`` (everything else), abandons the volume (releasing
-      the session measurement pause), purges, and re-raises.
+      ``internal_error`` (everything else — including
+      ``CrossoverV2LocalSeamError``), abandons the volume (releasing the
+      session measurement pause), waits a bounded grace period (finding H —
+      the just-posted terminal host event must reach the phone before the
+      relay session is purged out from under its next poll), purges, and
+      re-raises.
     * Plan complete with VERIFY accepted ⇒ CLOSE (exact restore); a completed
       plan that did not reach done (attempt budget exhausted) abandons.
     """
@@ -1025,10 +1084,22 @@ def build_v2_run_and_consume(
         def on_armed(state: Any) -> None:
             if stop_event.is_set():
                 raise CaptureStopped("capture stopped")
-            conductor.on_armed(state)
+            # Finding G: on_armed's ``conductor.on_armed`` → ``seams.play`` is a
+            # LOCAL seam (the DSP writer lock, CamillaController) — an OSError
+            # here (e.g. EROFS opening the lock file) is not a relay-transport
+            # death and must not be caught by the relay-death arm below.
+            try:
+                conductor.on_armed(state)
+            except OSError as exc:
+                raise CrossoverV2LocalSeamError(str(exc)) from exc
 
         def consume(index: int, attempt: int, result: Any, entry: Any = None):
-            verdict = conductor.consume_capture(index, attempt, result, entry)
+            # Same local-seam boundary as on_armed, for consume_capture's
+            # analyze seam.
+            try:
+                verdict = conductor.consume_capture(index, attempt, result, entry)
+            except OSError as exc:
+                raise CrossoverV2LocalSeamError(str(exc)) from exc
             code = verdict.get("code") if isinstance(verdict, Mapping) else None
             persist_conductor_state(
                 conductor,
@@ -1205,6 +1276,11 @@ def build_v2_run_and_consume(
             await _post_terminal_failure_host_event(code)
             _persist_terminal_failure(conductor, code)
             await _abandon_best_effort()
+            # Finding H: give the just-posted terminal host event a bounded
+            # grace window to reach the phone before the session is purged
+            # out from under its next poll. Volume restore above stays
+            # immediate — only the purge waits.
+            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
             raise
         # Plan finished without a transport failure.

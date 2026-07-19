@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -1119,3 +1120,217 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 
     asyncio.run(scenario())
     assert body_ran == []  # refused before any audio
+
+
+# --- W6 hardware run 3, finding F: bind_production_play's config_dir SSOT -------
+
+
+def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> str:
+    """Drive ``bind_production_play`` far enough to observe the ``config_dir``
+    it threads into ``bind_program_playback_seams`` — short-circuiting via a
+    sentinel exception BEFORE any real DSP graph emission/playback, since this
+    probe cares only about the config_dir plumbing (graph emission and
+    playback have their own coverage elsewhere)."""
+    from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    import jasper.audio_measurement.program as program_mod
+
+    captured: dict[str, Any] = {}
+
+    class _ShortCircuit(Exception):
+        pass
+
+    def fake_bind_program_playback_seams(cam, **kwargs):
+        captured["config_dir"] = kwargs["config_dir"]
+        raise _ShortCircuit("captured config_dir — stop before the DSP plumbing")
+
+    monkeypatch.setattr(
+        flow_mod, "bind_program_playback_seams", fake_bind_program_playback_seams
+    )
+    _patch_measurement_window(monkeypatch, [])
+    monkeypatch.setattr(
+        camilla_yaml_mod,
+        "emit_active_speaker_program_config",
+        lambda *a, **kw: "placeholder-graph-yaml",
+    )
+    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
+
+    class _FakeEvidenceStore:
+        bundle_dir = tmp_path
+
+        def identify_artifact(self, rel):
+            return SimpleNamespace(fingerprint="fake")
+
+    play = v2host.bind_production_play(
+        run_async=asyncio.run,
+        camilla_factory=lambda: object(),
+        evidence_store=_FakeEvidenceStore(),
+        relay_session_id="cap_config_dir_probe",
+        topology=object(),
+        preset=object(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="hw:Test",
+        safety_profile={},
+        role_targets={},
+        session_volume_db=-20.0,
+    )
+    with pytest.raises(_ShortCircuit):
+        play(PHASE_CHECK, object())
+    return captured["config_dir"]
+
+
+def test_bind_production_play_default_config_dir_matches_ssot(monkeypatch, tmp_path):
+    """W6 hardware run 3 finding F: bind_production_play's config_dir default
+    must resolve to the SAME canonical constant every sibling DSP writer
+    (commissioning apply/verify, web_commissioning, correction_setup) locks
+    against — jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR — not
+    the stale "/etc/camilladsp" literal this binding shipped with. An SSOT
+    pin: if either side's default drifts away from the other, this fails."""
+    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
+
+    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
+    assert resolved == str(DEFAULT_CAMILLA_CONFIG_DIR)
+
+
+def test_bind_production_play_default_config_dir_lock_lands_under_var_lib_camilladsp(
+    monkeypatch, tmp_path
+):
+    """The resolved config_dir's DSP writer lock must land under
+    /var/lib/camilladsp — the ONLY tree jasper-correction-web's
+    ProtectSystem=full leaves writable (ReadWritePaths=/var/lib/jasper
+    /var/lib/camilladsp; see deploy/jasper-correction-web.service). A lock
+    under /etc/camilladsp is exactly the EROFS W6 run 3 hit 70 ms into the
+    first play."""
+    from jasper.dsp_apply import dsp_apply_lock_path
+
+    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
+    assert str(dsp_apply_lock_path(resolved)).startswith("/var/lib/camilladsp")
+
+
+# --- W6 hardware run 3, finding G: local seam OSError vs. relay transport death -
+
+
+def test_local_seam_oserror_from_play_maps_to_internal_error(monkeypatch):
+    """W6 run 3: the DSP writer lock's os.open raising EROFS (finding F) is a
+    bare OSError from the LOCAL play seam — it must not be misclassified as
+    relay_timeout. It has to hit the same catch-all internal_error arm as any
+    other local seam failure (CamillaUnavailable, a ValueError from analyze,
+    etc.), with full cleanup and a terminal host event so the phone stops
+    waiting."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+
+    def erofs_play(phase: str, program: Any) -> None:
+        raise OSError(30, "Read-only file system")
+
+    conductor._seams = V2FlowSeams(
+        play=erofs_play,
+        analyze=conductor._seams.analyze,
+        publish_check=conductor._seams.publish_check,
+        publish_candidate=conductor._seams.publish_candidate,
+        apply_complete=conductor._seams.apply_complete,
+    )
+    hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
+    runner = v2host.build_v2_run_and_consume(
+        conductor, volume=hooks, stop_event=threading.Event(),
+        stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
+    )
+    with pytest.raises(v2host.CrossoverV2LocalSeamError):
+        _run(runner, client, session)
+    _assert_full_cleanup(plan, cam, log, backend, session, code="internal_error")
+
+
+def test_transport_oserror_still_classifies_as_relay_timeout(monkeypatch):
+    """The flip side of finding G: a genuine relay-TRANSPORT OSError (the
+    poll loop's client.status reaching an unreachable host — never wrapped by
+    on_armed/consume) must still hit the relay-death arm and classify as
+    relay_timeout, exactly as before. The fix narrows the misclassification;
+    it must not also swallow real relay deaths into internal_error."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
+
+    def raising_status(session_id, pull_token):
+        raise OSError("Connection refused")
+
+    monkeypatch.setattr(client, "status", raising_status)
+
+    class _NoPhone:
+        begun = (1, 1)
+
+    conductor = _conductor(backend, session, _NoPhone(), published=[])
+    volume = VolumeRecorder()
+    runner = _build_runner(conductor, volume)
+    with pytest.raises(OSError):
+        _run(runner, client, session)
+
+    assert volume.events == ["open", "abandon"]
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": "relay_timeout"}
+
+
+# --- W6 hardware run 3, finding H: terminal-failure purge races the phone -------
+
+
+def test_terminal_failure_purge_waits_for_grace_but_volume_restore_is_immediate(
+    monkeypatch,
+):
+    """W6 run 3: the driver's very next poll of the relay session's own status
+    endpoint got a bare 404 ~1 s after a terminal capture_result was posted —
+    the relay-death cleanup purged the session immediately, racing the
+    phone's next poll. The catch-all cleanup arm must wait
+    TERMINAL_FAILURE_PURGE_GRACE_S before purging (giving the just-posted
+    event a window to actually reach the phone), while the household's volume
+    restore stays immediate — no delay on the audible/safety-relevant side."""
+    from jasper.capture_relay import session as session_mod
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+
+    def erofs_play(phase: str, program: Any) -> None:
+        raise OSError(30, "Read-only file system")
+
+    conductor._seams = V2FlowSeams(
+        play=erofs_play,
+        analyze=conductor._seams.analyze,
+        publish_check=conductor._seams.publish_check,
+        publish_candidate=conductor._seams.publish_candidate,
+        apply_complete=conductor._seams.apply_complete,
+    )
+    hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
+
+    order: list[str] = []
+    real_purge = session_mod.purge
+
+    def recording_purge(client_arg, pi_session_arg):
+        order.append("purge")
+        return real_purge(client_arg, pi_session_arg)
+
+    monkeypatch.setattr(session_mod, "purge", recording_purge)
+
+    async def fake_sleep(seconds):
+        order.append(f"sleep:{seconds}")
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    runner = v2host.build_v2_run_and_consume(
+        conductor, volume=hooks, stop_event=threading.Event(),
+        stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
+    )
+    with pytest.raises(v2host.CrossoverV2LocalSeamError):
+        _run(runner, client, session)
+
+    # Volume restored immediately — no delay on the household-audible side.
+    assert plan.measurement_volume_db is None
+    assert cam.vol == -15.0
+    # The terminal host event was posted before either.
+    events = backend.host_events[session.session_id]
+    assert events[-1]["phase"] == "capture_result"
+    assert events[-1]["code"] == "internal_error"
+    # The grace ran, then the purge — in exactly that order, exactly once each.
+    assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
+    assert session.session_id not in backend.sessions
