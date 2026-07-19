@@ -73,10 +73,38 @@
   resolves it (reusing `_default_setup_calibration_for_spec`) and threads it
   into `build_v2_session_spec`/`build_v2_verify_session_spec` via their
   existing `**spec_kwargs` forward; the capture page applies it SILENTLY
-  (`applyDefaultCalibrationHintSilently`, `capture_page_build=20260719.2`) —
-  no extra tap, since a v2 session is designed around a minimal, fixed tap
-  count and there is no picker screen to hang a confirm on. Never overrides
-  an explicit choice already present for the page load.
+  (`applyDefaultCalibrationHintSilently`) — no extra tap, since a v2 session
+  is designed around a minimal, fixed tap count and there is no picker
+  screen to hang a confirm on. Never overrides an explicit choice already
+  present for the page load.
+- 🧱 **v2 calibration handoff, page half (W6.13, 2026-07-19).** Round-5
+  hardware evidence showed `crossover_v2_uncalibrated_capture phase=check`
+  even with the W6.12 fix above deployed: the silently-applied calibration
+  never reached the wire until the plan loop's `armed` event
+  (`runPlanCapture`), which posts well AFTER the first `begin_capture` is
+  authorized and the mic starts recording — a v2 session has no
+  `validateSetupBeforeContinue`-style confirm-screen post (unlike
+  `level_ramp`) to carry it earlier. Fix: `setup: setupWirePayload()` now
+  PIGGYBACKS on every `begin_capture` post
+  (`beginAndAwaitAuthorization`) — not a separate standalone event, because
+  the relay's phone-event slot is last-write-wins and a standalone setup
+  post would be overwritten by the begin within one write-RTT, usually
+  before the Pi's ~0.75 s poll saw it (the same overwrite class the
+  ambient_stats piggyback avoids). `jasper.capture_relay.session.
+  run_capture_plan`'s sticky `PollState.setup` accumulator therefore has
+  the household-mic choice from round 1 (CHECK) no matter which event a Pi
+  poll lands on; `armed` still carries the same setup redundantly.
+  Diagnostic riding along (Pi side): the
+  `crossover_v2_uncalibrated_capture` WARN now carries
+  `setup_mode`/`setup_calibration_id` (redacted-safe — never a serial or an
+  uploaded file body; `_setup_calibration_observation` in
+  `jasper/web/correction_crossover_v2.py`), so the next live CHECK settles
+  empirically whether the phone sent nothing (`setup_mode=absent`) or a
+  choice that didn't resolve. `capture_page_build` bumped to `20260719.4` —
+  needs a Cloudflare Pages deploy to reach phones. Note the round-5
+  mechanism is not fully proven: the `armed` event has carried setup since
+  the phone-relay flow shipped, so on-device round-6 confirmation (with the
+  new WARN fields) is owed.
 - 🧱 **Wave 2 playback core extracted; Room behavior retained.**
   `jasper.audio_measurement.playback` now owns policy-free WAV-process cleanup
   and deterministic sine-WAV generation. This Room module keeps
@@ -3092,7 +3120,14 @@ Internal:
 
 ---
 
-Last verified: 2026-07-17 (in-flow scoped crossover reset added —
+Last verified: 2026-07-19 (v2 calibration handoff page-side fix, W6.13 — see
+the new Status bullet above: `setup` now piggybacks on every
+`begin_capture` post so the household-mic hint reaches
+`resolve_relay_calibration` from the CHECK-phase capture onward, and the
+uncalibrated-capture WARN now names the observed `setup_mode`/
+`setup_calibration_id`; `capture_page_build` bumped to `20260719.4`.
+Hardware-free tests only — round-6 on-device confirmation still owed.)
+Prior 2026-07-17 (in-flow scoped crossover reset added —
 `POST /crossover/reset` / `clear_active_speaker_measurement_journey`; see
 the new "Scoped crossover reset" section above. KEEP/CLEAR split for
 `startup_load`/`baseline_profile` confirmed against read-only JTS3 state

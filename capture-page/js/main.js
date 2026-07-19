@@ -1885,13 +1885,31 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
 // tap. Renders the waiting screen for each deferral. Returns the same shape
 // `waitForCaptureAuthorized` does (authorized / refused / deferred never
 // escapes this function / aborted / deadSession).
+//
+// W6.13: `setup` PIGGYBACKS on every begin post. A v2 capture-plan session
+// has no calibration-picker/confirm screen to post setup from — unlike the
+// legacy level_ramp flow, whose Continue tap (validateSetupBeforeContinue)
+// posts it well before any capture — so until this fix the silently-applied
+// household-mic calibration (`applyDefaultCalibrationHintSilently`, boot())
+// only ever reached the wire inside the much later `armed` event. Riding the
+// begin itself (not a separate standalone post) matters because the relay's
+// phone-event slot is last-write-wins: a standalone setup event would be
+// overwritten by this begin within one write-RTT, usually before the Pi's
+// ~0.75 s poll ever saw it — the exact overwrite class the ambient_stats
+// piggyback comment in onStart documents. On EVERY begin (not just
+// the first) so deferral re-posts and later rounds keep the slot carrying
+// setup no matter which event a Pi poll lands on; `armed` still carries the
+// identical setup as belt-and-suspenders.
 async function beginAndAwaitAuthorization(ctx, { index, attempt }) {
   const { spec, client } = ctx;
   const controller = ctx.planController;
   const { target } = planTargetAndAttempts(spec);
   for (;;) {
     setStatus(`Requesting measurement ${index} of ${target}…`, "info");
-    await client.postEvent({ begin_capture: { index, attempt } });
+    await client.postEvent({
+      begin_capture: { index, attempt },
+      setup: setupWirePayload(),
+    });
     if (controller.aborted) return { aborted: true };
     const admission = await waitForCaptureAuthorized(
       client, spec, index, attempt, () => controller.aborted,
