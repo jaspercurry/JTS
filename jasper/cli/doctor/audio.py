@@ -3088,10 +3088,9 @@ def check_camilla_volume_limit() -> CheckResult:
 def check_active_speaker_runtime_graph() -> CheckResult:
     """Fail closed if a roleful/protected topology is running flat stereo."""
     from jasper.active_speaker.runtime_contract import (
-        classify_camilla_graph,
+        classify_bass_extension_graph,
         classify_output_contract,
     )
-    from jasper.active_speaker.staging import load_staged_startup_config
     from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
     try:
@@ -3127,10 +3126,19 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             "fail",
             f"statefile points at missing config {config_path}",
         )
-    graph = classify_camilla_graph(
-        path,
+    from ...active_speaker.baseline_profile import baseline_profile_state_path
+    from ...active_speaker.staging import staged_metadata_path
+    from ...bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from ...bass_extension.profile import DEFAULT_PROFILE_PATH
+
+    graph = classify_bass_extension_graph(
         topology,
-        staged_config=load_staged_startup_config(),
+        evidence_source="persisted_boot",
+        statefile_path=Path(statefile),
+        applied_baseline_path=baseline_profile_state_path(),
+        profile_path=DEFAULT_PROFILE_PATH,
+        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+        staged_metadata_path=staged_metadata_path(),
     )
     if graph.allowed:
         return CheckResult(

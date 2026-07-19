@@ -25,6 +25,10 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 import yaml as yaml_parser
 
 from jasper.atomic_io import atomic_write_text
+from jasper.bass_extension.profile import (
+    BassExtensionProfile,
+    evaluate_bass_extension_profile,
+)
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -81,6 +85,7 @@ DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_baseline_profile.json"
 DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
+_DEFAULT_PERSISTED_BASS_PROFILE = object()
 
 # Sensitivity deltas below this magnitude (dB) are treated as level-matched and
 # get no derived trim, so the least-sensitive (reference) driver and any ties
@@ -111,6 +116,35 @@ _GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
     "estimate": PROVENANCE_RECOMMENDED_START,
     "sensitivity": PROVENANCE_RECOMMENDED_START,
 }
+
+
+def _bass_extension_graph_summary(
+    profile: BassExtensionProfile | None,
+) -> dict[str, Any]:
+    """Freeze authority evidence beside one just-emitted composition."""
+
+    if (
+        profile is None
+        or profile.status != "accepted"
+        or profile.enclosure["adapter_id"] != "sealed_v1"
+    ):
+        return {"authority_valid": True, "runtime_block_required": False}
+    natural = profile.targets[-1]
+    protected = all(target.subsonic is not None for target in profile.targets)
+    return {
+        "authority_valid": protected,
+        "runtime_block_required": True,
+        "bass_owner_channels": list(profile.bass_owner["channels"]),
+        "natural": {
+            "fp_hz": natural.fp_hz,
+            "qp": natural.qp,
+            "boost_headroom_db": natural.boost_headroom_db,
+            "subsonic": (
+                dict(natural.subsonic) if natural.subsonic is not None else None
+            ),
+        },
+    }
+
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1156,6 +1190,7 @@ def build_baseline_profile_candidate(
         validate_camilla_config
     ),
     created_at: str | None = None,
+    bass_extension_profile: BassExtensionProfile | None = None,
 ) -> dict[str, Any]:
     """Build or write a baseline candidate from current accepted evidence.
 
@@ -1643,6 +1678,14 @@ def build_baseline_profile_candidate(
             str(automatic_candidate["detail"]),
         ))
     provisional = bool(correction_meta.get("provisional"))
+    if driver_domain and bass_extension_profile is None:
+        applied_bass_anchor = load_applied_baseline_profile_state()
+        evaluation = evaluate_bass_extension_profile(
+            topology=topology,
+            applied_baseline_state=applied_bass_anchor,
+        )
+        if evaluation.status == "accepted":
+            bass_extension_profile = evaluation.profile
     validation = {"status": "skipped", "reason": "not_written"}
     if write:
         config_target.parent.mkdir(parents=True, exist_ok=True)
@@ -1666,6 +1709,7 @@ def build_baseline_profile_candidate(
                 capture_format=capture_format,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+                bass_extension_profile=bass_extension_profile,
             )
         else:
             yaml = emit_active_speaker_baseline_config(
@@ -1676,6 +1720,7 @@ def build_baseline_profile_candidate(
                 capture_format=capture_format,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+                bass_extension_profile=bass_extension_profile,
             )
             # A v2 measured candidate carrying delay/polarity re-proves its
             # exact requested delay binding against the freshly compiled text
@@ -1826,6 +1871,13 @@ def build_baseline_profile_candidate(
             **candidate_graph_context,
         },
     }
+    if driver_domain:
+        # The bond precheck consumes this immutable sidecar in the independent
+        # whole-graph verifier. It comes from the already-evaluated profile
+        # passed to the emitter, never from filter-name inference or caller I/O.
+        payload["bass_extension_profile_summary"] = (
+            _bass_extension_graph_summary(bass_extension_profile)
+        )
     payload = finalize(payload)
     payload["candidate_fingerprint"] = baseline_candidate_fingerprint(payload)
     if write:
@@ -1846,6 +1898,9 @@ def recompose_applied_baseline_yaml(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
+    bass_extension_profile: BassExtensionProfile | None | object = (
+        _DEFAULT_PERSISTED_BASS_PROFILE
+    ),
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit Layer A strictly from the immutable applied-profile snapshot.
 
@@ -1889,6 +1944,14 @@ def recompose_applied_baseline_yaml(
                 "output topology; reapply speaker setup first"
             ),
         )]
+    if bass_extension_profile is _DEFAULT_PERSISTED_BASS_PROFILE:
+        evaluation = evaluate_bass_extension_profile(
+            topology=topology,
+            applied_baseline_state=applied_profile,
+        )
+        bass_extension_profile = (
+            evaluation.profile if evaluation.status == "accepted" else None
+        )
     try:
         preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
     except (ActiveSpeakerConfigError, TypeError, ValueError) as exc:
@@ -1926,6 +1989,11 @@ def recompose_applied_baseline_yaml(
         baseline_id=str(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
+        ),
+        bass_extension_profile=(
+            bass_extension_profile
+            if isinstance(bass_extension_profile, BassExtensionProfile)
+            else None
         ),
     )
     return yaml, []
@@ -2271,7 +2339,11 @@ async def _apply_baseline_profile_locked(
 
     state_target = baseline_profile_state_path(state_path)
 
-    def build_candidate(*, write: bool) -> dict[str, Any]:
+    def build_candidate(
+        *,
+        write: bool,
+        bass_extension_profile: BassExtensionProfile | None = None,
+    ) -> dict[str, Any]:
         return build_baseline_profile_candidate(
             topology,
             design_draft=design_draft,
@@ -2289,6 +2361,7 @@ async def _apply_baseline_profile_locked(
             preserved_applied_profile=preserved_applied_profile,
             measured_candidate=measured_candidate,
             validate=validate,
+            bass_extension_profile=bass_extension_profile,
         )
 
     def matches_expected(candidate: Mapping[str, Any]) -> bool:
@@ -2321,12 +2394,26 @@ async def _apply_baseline_profile_locked(
             "issues": refused["issues"],
         }
 
+    reviewed_candidate = build_candidate(write=False)
+    candidate_bass_emission_profile = None
+    candidate_bass_proof_profile = None
+    if not driver_domain:
+        bass_evaluation = evaluate_bass_extension_profile(
+            topology=topology,
+            applied_baseline_state=reviewed_candidate,
+        )
+        candidate_bass_proof_profile = bass_evaluation.profile
+        if bass_evaluation.status == "accepted":
+            candidate_bass_emission_profile = bass_evaluation.profile
+
     if expected_candidate_fingerprint is not None:
-        reviewed_candidate = build_candidate(write=False)
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
 
-    candidate = build_candidate(write=True)
+    candidate = build_candidate(
+        write=True,
+        bass_extension_profile=candidate_bass_emission_profile,
+    )
     if expected_candidate_fingerprint is not None and not matches_expected(candidate):
         return await refuse_stale(candidate)
     snapshot_state = crossover_snapshot_state(
@@ -2355,6 +2442,53 @@ async def _apply_baseline_profile_locked(
             mode=0o640,
             group_from_parent=True,
         )
+    if not driver_domain and candidate.get("permissions", {}).get("may_apply"):
+        from jasper.active_speaker.runtime_contract import (
+            GRAPH_APPROVED_ACTIVE_RUNTIME,
+            classify_bass_extension_graph,
+        )
+
+        try:
+            candidate_graph_text = Path(
+                str((candidate.get("config") or {}).get("path") or "")
+            ).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            graph_proof = None
+            proof_detail = f"the emitted active graph is unreadable: {type(exc).__name__}"
+        else:
+            graph_proof = classify_bass_extension_graph(
+                topology,
+                evidence_source="desired",
+                graph_text=candidate_graph_text,
+                applied_baseline_state=candidate,
+                desired_profile=candidate_bass_proof_profile,
+            )
+            proof_detail = (
+                graph_proof.issues[0].get("message")
+                if graph_proof.issues
+                else "the emitted active graph failed whole-graph proof"
+            )
+        if (
+            graph_proof is None
+            or not graph_proof.allowed
+            or graph_proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME
+        ):
+            candidate["status"] = "compiled_apply_blocked"
+            candidate["permissions"]["may_apply"] = False
+            candidate["issues"] = [
+                *candidate.get("issues", []),
+                _issue(
+                    "blocker",
+                    "baseline_graph_safety_proof_failed",
+                    proof_detail,
+                ),
+            ]
+            atomic_write_text(
+                state_target,
+                json.dumps(candidate, indent=2, sort_keys=True) + "\n",
+                mode=0o640,
+                group_from_parent=True,
+            )
     if not candidate.get("permissions", {}).get("may_apply"):
         await _record_apply_outcome_into_bundle(
             measurements,

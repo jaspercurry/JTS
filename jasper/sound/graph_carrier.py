@@ -23,7 +23,10 @@ neither depends back.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -33,6 +36,7 @@ from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_prece
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
     extract_room_peqs_from_config,
+    extract_room_peqs_from_config_text,
     is_base_config,
     is_jts_generated_config,
 )
@@ -445,21 +449,33 @@ def _recompose_active_baseline_with_eq(
     )
     from jasper.active_speaker.runtime_contract import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
-        classify_camilla_graph,
+        classify_bass_extension_graph,
     )
+    from jasper.bass_extension.profile import evaluate_bass_extension_profile
     from jasper.output_topology import load_output_topology
     from jasper.sound.profile import build_sound_filters
 
     topology = load_output_topology()
-    applied_profile = load_applied_baseline_profile_state()
+    applied_profile = load_applied_baseline_profile_state() or {}
+    bass_evaluation = evaluate_bass_extension_profile(
+        topology=topology,
+        applied_baseline_state=applied_profile,
+    )
+    bass_emission_profile = (
+        bass_evaluation.profile
+        if bass_evaluation.status == "accepted"
+        else None
+    )
+    bass_proof_profile = bass_evaluation.profile
     preference_filters = build_sound_filters(profile)
     yaml, issues = recompose_applied_baseline_yaml(
         topology,
-        applied_profile=applied_profile or {},
+        applied_profile=applied_profile,
         room_peqs=room_peqs or [],
         preference_filters=preference_filters,
         output_trim_db=output_trim_db,
-        out_path=out_path,
+        out_path=None,
+        bass_extension_profile=bass_emission_profile,
     )
     if yaml is None:
         detail = (issues[0].get("message") if issues else None) or (
@@ -470,18 +486,221 @@ def _recompose_active_baseline_with_eq(
             "JTS couldn't rebuild this speaker's active baseline to add sound EQ: "
             f"{detail}. Your crossover and driver protection are unchanged.",
         )
-    graph = classify_camilla_graph(topology=topology, text=yaml)
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=yaml,
+        applied_baseline_state=applied_profile,
+        desired_profile=bass_proof_profile,
+    )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         detail = (
             graph.issues[0].get("message") if graph.issues else None
         ) or "the recomposed active baseline did not pass the runtime contract"
         raise CarrierCannotHostEq(
-            "active_baseline_recompose_unsafe",
+            "active_baseline_recompose_unavailable",
             "JTS rebuilt this speaker's active baseline, but the safety "
             f"contract rejected it: {detail}. Your crossover and driver "
             "protection are unchanged.",
         )
+    if out_path is not None:
+        target = Path(out_path)
+        if not target.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {target.parent}"
+            )
+        atomic_write_text(target, yaml, mode=0o640)
     return yaml
+
+
+def recompose_active_baseline_for_bass_extension(
+    topology,
+    *,
+    applied_profile,
+    desired_profile,
+    current_config_path: str | Path,
+    preference_profile_path: str | Path | None = None,
+    sound_settings_path: str | Path | None = None,
+) -> str:
+    """Rebuild the selected solo baseline with every persisted program overlay.
+
+    This is the narrow Wave-3 carrier seam. Room PEQs are extracted through the
+    existing canonical reader; preference EQ and output trim are rebuilt from
+    their own persisted models. The loaded YAML is never spliced.
+    """
+
+    from jasper.active_speaker.baseline_profile import (
+        recompose_applied_baseline_yaml,
+    )
+    from jasper.sound.profile import PROFILE_PATH, SoundProfile, build_sound_filters
+    from jasper.sound.settings import (
+        SETTINGS_PATH,
+        SoundSettings,
+        output_trim_db,
+    )
+
+    def strict_json_mapping(path: Path, *, label: str) -> Mapping[str, object]:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise CarrierCannotHostEq(
+                "bass_extension_recompose_unavailable",
+                f"JTS could not read the persisted {label}; the current "
+                "active-speaker graph is unchanged.",
+            ) from exc
+        if not isinstance(raw, Mapping):
+            raise CarrierCannotHostEq(
+                "bass_extension_recompose_unavailable",
+                f"JTS could not interpret the persisted {label}; the current "
+                "active-speaker graph is unchanged.",
+            )
+        return raw
+
+    preference_path = Path(
+        preference_profile_path
+        or os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH)
+    )
+    settings_path = Path(
+        sound_settings_path
+        or os.environ.get("JASPER_SOUND_SETTINGS_PATH", SETTINGS_PATH)
+    )
+    preference = SoundProfile.from_mapping(
+        strict_json_mapping(preference_path, label="sound preference profile")
+    )
+    settings = SoundSettings.from_mapping(
+        strict_json_mapping(settings_path, label="sound settings")
+    )
+    try:
+        current_text = Path(current_config_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise CarrierCannotHostEq(
+            "bass_extension_recompose_unavailable",
+            "JTS could not read the selected active-speaker graph; its current "
+            "DSP state is unchanged.",
+        ) from exc
+    room_peqs = extract_room_peqs_from_config_text(current_text)
+    current_program = _active_program_overlay_projection(current_text)
+    yaml, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied_profile,
+        room_peqs=room_peqs,
+        preference_filters=build_sound_filters(preference),
+        output_trim_db=output_trim_db(preference, settings),
+        out_path=None,
+        bass_extension_profile=desired_profile,
+    )
+    if yaml is not None:
+        if _active_program_overlay_projection(yaml) != current_program:
+            raise CarrierCannotHostEq(
+                "bass_extension_recompose_unavailable",
+                "JTS could not reproduce the selected graph's program-layer "
+                "room, preference, and headroom overlays exactly; its current "
+                "DSP state is unchanged.",
+            )
+        from jasper.active_speaker.runtime_contract import (
+            classify_bass_extension_graph,
+        )
+
+        proof = classify_bass_extension_graph(
+            topology,
+            evidence_source="desired",
+            graph_text=yaml,
+            applied_baseline_state=applied_profile,
+            desired_profile=desired_profile,
+        )
+        if proof.allowed:
+            return yaml
+        detail = (proof.issues[0].get("message") if proof.issues else None) or (
+            "the recomposed active baseline failed whole-graph proof"
+        )
+    else:
+        detail = (issues[0].get("message") if issues else None) or (
+            "the immutable applied baseline cannot be recomposed"
+        )
+    raise CarrierCannotHostEq(
+        "bass_extension_recompose_unavailable",
+        f"JTS could not rebuild the active baseline: {detail}",
+    )
+
+
+def _active_program_overlay_projection(text: str) -> dict[str, object]:
+    """Return the exact ordered program layer before the driver split.
+
+    This is proof-only parsing: emission still comes exclusively from the
+    immutable applied-baseline recomposer. Bass ownership begins after the
+    split mixer, so the projection is invariant across apply/bypass while
+    binding room PEQs, preference EQ, and the shared headroom filter.
+    """
+
+    import yaml
+
+    try:
+        document = yaml.safe_load(text)
+    except (RecursionError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+        raise CarrierCannotHostEq(
+            "bass_extension_recompose_unavailable",
+            "JTS could not interpret the selected active-speaker program layer; "
+            "its current DSP state is unchanged.",
+        ) from exc
+    if not isinstance(document, Mapping):
+        raise CarrierCannotHostEq(
+            "bass_extension_recompose_unavailable",
+            "JTS could not interpret the selected active-speaker program layer; "
+            "its current DSP state is unchanged.",
+        )
+    pipeline = document.get("pipeline")
+    filters = document.get("filters")
+    if not isinstance(pipeline, list) or not isinstance(filters, Mapping):
+        raise CarrierCannotHostEq(
+            "bass_extension_recompose_unavailable",
+            "JTS could not identify the selected active-speaker program layer; "
+            "its current DSP state is unchanged.",
+        )
+    split_index = next(
+        (
+            index
+            for index, step in enumerate(pipeline)
+            if isinstance(step, Mapping) and step.get("type") == "Mixer"
+        ),
+        None,
+    )
+    if split_index is None:
+        raise CarrierCannotHostEq(
+            "bass_extension_recompose_unavailable",
+            "JTS could not identify the selected active-speaker driver split; "
+            "its current DSP state is unchanged.",
+        )
+    program_pipeline = pipeline[:split_index]
+    names: list[str] = []
+    for step in program_pipeline:
+        if not isinstance(step, Mapping):
+            raise CarrierCannotHostEq(
+                "bass_extension_recompose_unavailable",
+                "JTS could not interpret the selected active-speaker program "
+                "pipeline; its current DSP state is unchanged.",
+            )
+        if step.get("type") != "Filter":
+            continue
+        step_names = step.get("names")
+        if not isinstance(step_names, list) or not all(
+            isinstance(name, str) for name in step_names
+        ):
+            raise CarrierCannotHostEq(
+                "bass_extension_recompose_unavailable",
+                "JTS could not interpret the selected active-speaker program "
+                "filters; its current DSP state is unchanged.",
+            )
+        names.extend(step_names)
+    if any(name not in filters for name in names):
+        raise CarrierCannotHostEq(
+            "bass_extension_recompose_unavailable",
+            "JTS could not resolve every selected active-speaker program filter; "
+            "its current DSP state is unchanged.",
+        )
+    return {
+        "pipeline": program_pipeline,
+        "filters": {name: filters[name] for name in names},
+    }
 
 
 def _classify_loaded_config(current_path: str | Path) -> dict | None:

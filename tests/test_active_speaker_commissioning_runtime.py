@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,10 +16,38 @@ import pytest
 import yaml
 
 from jasper.active_speaker import commissioning_runtime as runtime
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GraphSafety,
+)
+
+
+@pytest.fixture(autouse=True)
+def _stable_no_bass_graph_authority(monkeypatch):
+    """Legacy in-memory ports inherit one explicit canonical host decision."""
+
+    async def classify(*_args, **_kwargs):
+        return GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": {
+                    "authority_valid": True,
+                    "runtime_block_required": False,
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        runtime,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
 from jasper.active_speaker.runtime_contract import (
     GRAPH_GUARDED_COMMISSIONING,
-    classify_camilla_graph,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_camilla_graph as _classify_camilla_graph,
 )
 from jasper.audio_measurement.admitted_playback import GeneratedExcitationWav
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
@@ -39,6 +69,8 @@ from jasper.audio_measurement.null_walk import NullWalkSpec
 from jasper.dsp_apply import (
     DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     DspWriterLockTimeout,
+    camilla_graph_mutation,
+    dsp_apply_lock_path,
     dsp_writer_lock,
 )
 from jasper.output_topology import OutputTopology
@@ -47,6 +79,13 @@ from tests.test_active_speaker_runtime_contract import (
     _active_baseline_yaml,
     _active_topology,
 )
+
+
+def classify_camilla_graph(*args, **kwargs):
+    kwargs.setdefault(
+        "bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY
+    )
+    return _classify_camilla_graph(*args, **kwargs)
 
 _HASH_A = "a" * 64
 _HASH_B = "b" * 64
@@ -96,10 +135,70 @@ def _raw(graph: dict) -> str:
     return yaml.safe_dump(graph, sort_keys=False)
 
 
+def _fake_predecessor_raw() -> str:
+    text = _active_baseline_yaml("mono", 2)
+    return (
+        text.replace(
+            "  as_woofer_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.0000\n",
+            "  as_woofer_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.7000\n",
+            1,
+        )
+        .replace(
+            "  as_woofer_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: 0.0000, inverted: false, mute: false }\n",
+            "  as_woofer_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: -1.0000, inverted: false, mute: false }\n",
+            1,
+        )
+        .replace(
+            "  as_tweeter_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.0000\n",
+            "  as_tweeter_delay:\n"
+            "    type: Delay\n"
+            "    parameters:\n"
+            "      delay: 0.1000\n",
+            1,
+        )
+        .replace(
+            "  as_tweeter_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: 0.0000, inverted: false, mute: false }\n",
+            "  as_tweeter_baseline_gain:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: -2.0000, inverted: false, mute: false }\n",
+            1,
+        )
+    )
+
+
 class FakePort:
     def __init__(self) -> None:
-        self.raw = _raw(_graph(woofer_delay=0.7, tweeter_delay=0.1))
+        self.raw = _fake_predecessor_raw()
+        self._authority_tmp = tempfile.TemporaryDirectory(
+            prefix="jts-bass-authority-"
+        )
+        self._authority_dir = Path(self._authority_tmp.name)
         self.path = "/etc/camilladsp/applied.yml"
+        self._authority_config_path = self._authority_dir / "applied.yml"
+        self._authority_config_path.write_text(self.raw, encoding="utf-8")
+        self._statefile_path = self._authority_dir / "statefile.yml"
+        self._statefile_path.write_text(
+            f"config_path: {self._authority_config_path}\n"
+            "volume: -28.0\nmute: false\n",
+            encoding="utf-8",
+        )
+        self._applied_baseline_path = self._authority_dir / "applied.json"
+        self._applied_baseline_path.write_text(json.dumps({}), encoding="utf-8")
         self.volume = -28.0
         self.apply_calls: list[str] = []
         self.volume_calls: list[float] = []
@@ -149,6 +248,13 @@ class FakePort:
             read_config_path=self.read_config_path,
             read_listening_volume_db=self.read_volume,
             set_listening_volume_db=self.set_volume,
+            _bass_extension_authority_paths={
+                "statefile_path": self._statefile_path,
+                "applied_baseline_path": self._applied_baseline_path,
+                "profile_path": self._authority_dir / "bass-profile.json",
+                "intent_path": self._authority_dir / "bass-intent.json",
+                "staged_metadata_path": self._authority_dir / "staged.json",
+            },
         )
 
 
@@ -330,10 +436,25 @@ async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
     tmp_path: Path,
 ) -> None:
     fake = FakePort()
+    base = fake.port()
     predecessor_raw = fake.raw
     observed: list[runtime.CommissioningLiveContext] = []
     intents: list = []
     restores: list = []
+    mutation_tasks: list[asyncio.Task] = []
+
+    async def apply_active_raw(raw: str) -> bool:
+        async with camilla_graph_mutation(
+            source="test.summed_capture",
+            lock_path=dsp_apply_lock_path(tmp_path),
+            bass_extension_intent_path=tmp_path / "bass-intent.json",
+        ):
+            task = asyncio.current_task()
+            assert task is not None
+            mutation_tasks.append(task)
+            return await base.apply_active_raw(raw)
+
+    port = replace(base, apply_active_raw=apply_active_raw)
 
     async def capture(context: runtime.CommissioningLiveContext):
         observed.append(context)
@@ -352,7 +473,7 @@ async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
         return _admitted({"null_depth_db": 8.0})
 
     result = await runtime.run_summed_capture(
-        fake.port(),
+        port,
         _request(),
         capture,
         topology=_TOPOLOGY,
@@ -369,6 +490,8 @@ async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
     assert fake.events[:2] == ["volume", "graph"]
     assert intents == [result.predecessor]
     assert restores == [result.restore]
+    assert len(mutation_tasks) == 2
+    assert len({id(task) for task in mutation_tasks}) == 1
 
 
 @pytest.mark.asyncio
@@ -681,12 +804,28 @@ async def test_restore_marker_failure_reports_known_live_restore(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_durable_predecessor_can_be_exactly_recovered(tmp_path: Path) -> None:
     fake = FakePort()
+    base = fake.port()
+    operation = "capture"
+    mutation_tasks: list[tuple[str, asyncio.Task]] = []
+
+    async def apply_active_raw(raw: str) -> bool:
+        async with camilla_graph_mutation(
+            source="test.summed_recovery",
+            lock_path=dsp_apply_lock_path(tmp_path),
+            bass_extension_intent_path=tmp_path / "bass-intent.json",
+        ):
+            task = asyncio.current_task()
+            assert task is not None
+            mutation_tasks.append((operation, task))
+            return await base.apply_active_raw(raw)
+
+    port = replace(base, apply_active_raw=apply_active_raw)
 
     async def capture(_context: runtime.CommissioningLiveContext):
         return _admitted()
 
     result = await runtime.run_summed_capture(
-        fake.port(),
+        port,
         _request(),
         capture,
         topology=_TOPOLOGY,
@@ -695,9 +834,10 @@ async def test_durable_predecessor_can_be_exactly_recovered(tmp_path: Path) -> N
     )
     fake.raw = _request("reverse").normal_active_raw
     fake.volume = -10.0
+    operation = "recovery"
 
     recovery = await runtime.recover_summed_predecessor(
-        fake.port(), result.predecessor, config_dir=tmp_path
+        port, result.predecessor, config_dir=tmp_path
     )
 
     assert recovery.cancelled is False
@@ -706,6 +846,63 @@ async def test_durable_predecessor_can_be_exactly_recovered(tmp_path: Path) -> N
     )
     assert recovery.observation.config_path == result.predecessor.state["config_path"]
     assert fake.volume == -28.0
+    capture_tasks = [task for phase, task in mutation_tasks if phase == "capture"]
+    recovery_tasks = [task for phase, task in mutation_tasks if phase == "recovery"]
+    assert len(capture_tasks) == 2
+    assert len({id(task) for task in capture_tasks}) == 1
+    assert len(recovery_tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_recovery_cancellation_drains_exact_owner_task_restore(
+    tmp_path: Path,
+) -> None:
+    fake = FakePort()
+    base = fake.port()
+    predecessor = await runtime.snapshot_exact_dsp_state(base)
+    predecessor_raw = fake.raw
+    fake.raw = _request("reverse").normal_active_raw
+    fake.volume = -10.0
+    restore_started = asyncio.Event()
+    release_restore = asyncio.Event()
+    mutation_tasks: list[asyncio.Task] = []
+
+    async def apply_active_raw(raw: str) -> bool:
+        async with camilla_graph_mutation(
+            source="test.summed_recovery_cancel",
+            lock_path=dsp_apply_lock_path(tmp_path),
+            bass_extension_intent_path=tmp_path / "bass-intent.json",
+        ):
+            owner = asyncio.current_task()
+            assert owner is not None
+            mutation_tasks.append(owner)
+            restore_started.set()
+            await release_restore.wait()
+            return await base.apply_active_raw(raw)
+
+    port = replace(base, apply_active_raw=apply_active_raw)
+    task = asyncio.create_task(
+        runtime.recover_summed_predecessor(
+            port,
+            predecessor,
+            config_dir=tmp_path,
+        )
+    )
+    await asyncio.wait_for(restore_started.wait(), timeout=2.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release_restore.set()
+
+    result = await task
+
+    assert result.cancelled is True
+    assert fake.raw == predecessor_raw
+    assert fake.path == "/etc/camilladsp/applied.yml"
+    assert fake.volume == -28.0
+    assert len(mutation_tasks) == 1
 
 
 @pytest.mark.asyncio
@@ -1814,8 +2011,8 @@ async def test_shared_lock_default_and_explicit_bound_refuse_before_mutation(
         return _admitted()
 
     async with dsp_writer_lock(tmp_path, source="test_holder"):
-        with pytest.raises(DspWriterLockTimeout) as raised:
-            await runtime.run_summed_capture(
+        contender = asyncio.create_task(
+            runtime.run_summed_capture(
                 fake.port(),
                 _request(),
                 capture,
@@ -1824,6 +2021,9 @@ async def test_shared_lock_default_and_explicit_bound_refuse_before_mutation(
                 config_dir=tmp_path,
                 lock_timeout_s=0.001,
             )
+        )
+        with pytest.raises(DspWriterLockTimeout) as raised:
+            await contender
 
     assert (
         runtime.DEFAULT_SUMMED_RUNTIME_LOCK_TIMEOUT_S
@@ -1850,6 +2050,32 @@ async def test_cancellation_while_waiting_for_lock_is_pre_mutation(
                 capture,
                 topology=_TOPOLOGY,
                 mutation_journal=_journal(),
+                config_dir=tmp_path,
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(runtime.CommissioningRuntimeCancelled) as raised:
+            await task
+
+    assert raised.value.side_effects == runtime.RuntimeSideEffectState(
+        False, False, False, None
+    )
+    assert fake.apply_calls == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_cancellation_while_waiting_for_lock_is_pre_mutation(
+    tmp_path: Path,
+) -> None:
+    fake = FakePort()
+    predecessor = await runtime.snapshot_exact_dsp_state(fake.port())
+
+    async with dsp_writer_lock(tmp_path, source="test_holder"):
+        task = asyncio.create_task(
+            runtime.recover_summed_predecessor(
+                fake.port(),
+                predecessor,
                 config_dir=tmp_path,
             )
         )

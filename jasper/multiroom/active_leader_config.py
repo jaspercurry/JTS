@@ -67,6 +67,7 @@ import asyncio
 import logging
 import os
 import shutil
+from pathlib import Path
 
 from .. import atomic_io
 from ..audio_runtime_plan import coupling_supported_for_route
@@ -168,7 +169,10 @@ async def precheck_active_leader(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.runtime_contract import classify_camilla_graph
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_DRIVER_DOMAIN_BASELINE,
+        classify_camilla_graph,
+    )
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -283,15 +287,25 @@ async def precheck_active_leader(
             "this speaker as an active speaker before leading a bond",
         )
     crossover_graph = classify_camilla_graph(
-        config_path=CROSSOVER_CONFIG_PATH, topology=topology,
+        topology=topology,
+        text=Path(CROSSOVER_CONFIG_PATH).read_text(encoding="utf-8"),
+        config_path=CROSSOVER_CONFIG_PATH,
+        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
     )
-    if not crossover_graph.allowed:
-        codes = [i.get("code") for i in crossover_graph.issues if isinstance(i, dict)]
+    if (
+        not crossover_graph.allowed
+        or crossover_graph.classification != GRAPH_DRIVER_DOMAIN_BASELINE
+    ):
+        codes = [
+            issue.get("code")
+            for issue in crossover_graph.issues
+            if isinstance(issue, dict)
+        ]
         raise ActiveLeaderError(
             "crossover_graph_unprovable",
-            "active leader camilla#2 driver-domain graph failed re-proof "
-            f"(classification={crossover_graph.classification}, issues={codes}); "
-            "refusing to bond (no full-range emit)",
+            "active leader camilla#2 driver-domain graph failed whole-graph "
+            f"re-proof (classification={crossover_graph.classification}, "
+            f"issues={codes}); refusing to bond (no full-range emit)",
         )
 
     # 2. camilla#1 program bake (Layer B/C + headroom, File -> SNAPFIFO,
@@ -318,16 +332,23 @@ async def precheck_active_leader(
         out_path=LEADER_BAKE_CONFIG_PATH,
         profile_id=f"grouping-{cfg.bond_id or 'bond'}",
     )
+    # Program-bake graphs cannot carry the optional baseline bass block, so
+    # their pre-publication proof is a frozen in-memory composition check.  The
+    # late apply still performs the canonical live authority sandwich.
+    from jasper.active_speaker.runtime_contract import (
+        NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
+
     bake_graph = classify_camilla_graph(
-        config_path=LEADER_BAKE_CONFIG_PATH, topology=topology,
+        config_path=LEADER_BAKE_CONFIG_PATH,
+        topology=topology,
+        text=Path(LEADER_BAKE_CONFIG_PATH).read_text(encoding="utf-8"),
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
     )
     if not bake_graph.allowed:
-        codes = [i.get("code") for i in bake_graph.issues if isinstance(i, dict)]
         raise ActiveLeaderError(
             "bake_graph_unprovable",
-            "active leader camilla#1 program-bake graph failed re-proof "
-            f"(classification={bake_graph.classification}, issues={codes}); "
-            "refusing to bond",
+            "active leader program-bake graph failed pre-publication re-proof",
         )
     return LEADER_BAKE_CONFIG_PATH, CROSSOVER_CONFIG_PATH
 
@@ -341,28 +362,53 @@ async def apply_active_leader_bake(*, camilla_factory=_camilla) -> str:
     is up (the pipe's reader exists — a FIFO write-open blocks until a reader
     exists, exactly like the passive leader's apply_bonded_leader_config).
     """
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.active_speaker.runtime_contract import GRAPH_PROGRAM_BAKE_PIPE
+    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     cam = camilla_factory()
-    current = await cam.get_config_file_path(best_effort=True)
-    await apply_dsp_config(
+    async with dsp_writer_lock(
+        Path(LEADER_BAKE_CONFIG_PATH).parent,
         source=REGEN_SOURCE,
-        candidate_path=LEADER_BAKE_CONFIG_PATH,
-        load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
-        get_current_config_path=lambda: cam.get_config_file_path(
-            best_effort=True,
-        ),
-    )
-    # Stash the prior solo-active config for the unwind — but only a genuinely
-    # different (solo) config, never the bake itself. (The shared restore ladder
-    # re-proves every candidate, so even a stale/odd stash can never load a
-    # passive graph onto the active sink.) Same on-disk shape the shared
-    # follower_config.read_stash reads (a config PATH + trailing newline, mode
-    # 0644 — matching the sibling FOLLOWER_PRIOR_STASH; a non-secret path).
-    if current and current != LEADER_BAKE_CONFIG_PATH:
-        atomic_io.atomic_write_text(
-            LEADER_BAKE_PRIOR_STASH, current + "\n", mode=0o644,
+    ):
+        current = await cam.get_config_file_path(best_effort=True)
+        await apply_dsp_config(
+            source=REGEN_SOURCE,
+            candidate_path=LEADER_BAKE_CONFIG_PATH,
+            load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(
+                best_effort=True,
+            ),
+            acquire_lock=False,
         )
+        try:
+            await follower_config._prove_live_bass_extension_graph(
+                cam,
+                expected_config_path=LEADER_BAKE_CONFIG_PATH,
+                expected_classification=GRAPH_PROGRAM_BAKE_PIPE,
+            )
+        except RuntimeError as exc:
+            if current and current != LEADER_BAKE_CONFIG_PATH:
+                await apply_dsp_config(
+                    source=f"{REGEN_SOURCE}-proof-rollback",
+                    candidate_path=current,
+                    load_config=lambda p: cam.set_config_file_path(
+                        p, best_effort=False
+                    ),
+                    get_current_config_path=lambda: cam.get_config_file_path(
+                        best_effort=True
+                    ),
+                    acquire_lock=False,
+                )
+            raise ActiveLeaderError(
+                "bake_graph_unprovable",
+                "active leader program-bake graph failed canonical live re-proof",
+            ) from exc
+        # Stash the prior solo-active config for the unwind — but only a
+        # genuinely different (solo) config, never the bake itself.
+        if current and current != LEADER_BAKE_CONFIG_PATH:
+            atomic_io.atomic_write_text(
+                LEADER_BAKE_PRIOR_STASH, current + "\n", mode=0o644,
+            )
     log_event(
         logger,
         "multiroom.camilla_apply",

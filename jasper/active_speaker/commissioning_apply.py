@@ -39,6 +39,7 @@ from jasper.output_topology import OutputTopology
 from .baseline_profile import (
     baseline_candidate_fingerprint,
     baseline_config_path,
+    baseline_profile_state_path,
     build_baseline_profile_candidate,
     persist_applied_baseline_profile,
 )
@@ -61,7 +62,7 @@ from .commissioning_runtime import (
     snapshot_exact_dsp_state,
 )
 from .measured_candidate import MeasuredElectricalCandidate
-from .runtime_contract import classify_camilla_graph
+from .runtime_contract import classify_active_bass_extension_graph
 
 APPLY_PURPOSE = "measured_candidate_apply"
 APPLY_SOURCE = "active_speaker_measured_candidate_apply"
@@ -415,6 +416,7 @@ async def _restore_failed_mutation_locked(
     candidate_config_path: str,
     apply_state: DspApplyState | None,
     observed_graph: NormalizedActiveRawIdentity | None,
+    restore_started: asyncio.Event,
 ) -> dict[str, Any]:
     """Exactly restore, then durably resolve the pending apply before unlock."""
 
@@ -435,10 +437,11 @@ async def _restore_failed_mutation_locked(
         failure_code=failure_code,
     )
     try:
-        cancelled_during_restore = await _shielded_restore_locked(
+        await _shielded_restore_locked(
             runtime_port,
             predecessor,
             load_config_path=load_config_path,
+            restore_started=restore_started,
         )
     except BaseException as restore_exc:  # noqa: BLE001 - evidence for cancellation too
         observed_apply_state = (
@@ -562,8 +565,6 @@ async def _restore_failed_mutation_locked(
         raise CommissioningApplyError(
             "run_generation_stale", "exact candidate restore lost run ownership"
         )
-    if cancelled_during_restore:
-        raise asyncio.CancelledError()
     return {
         "status": "rolled_back",
         "failure_code": failure_code,
@@ -576,24 +577,16 @@ async def _shielded_restore_locked(
     predecessor: ExactDspStateIdentity,
     *,
     load_config_path: LoadConfigPath,
-) -> bool:
-    """Finish exact restoration despite cancellation while the lock is held."""
+    restore_started: asyncio.Event,
+) -> None:
+    """Restore in the lock-owning task while its caller shields that task."""
 
-    task = asyncio.create_task(
-        restore_exact_dsp_state_locked(
-            runtime_port,
-            predecessor,
-            load_config_path=load_config_path,
-        )
+    restore_started.set()
+    await restore_exact_dsp_state_locked(
+        runtime_port,
+        predecessor,
+        load_config_path=load_config_path,
     )
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    task.result()
-    return cancelled
 
 
 async def _shielded_pending_restore(
@@ -1073,7 +1066,7 @@ def _finalize_restored_recovery(
     return {"status": "rolled_back", "rollback": restored.to_dict()}
 
 
-async def apply_measured_candidate(
+async def _apply_measured_candidate_owned(
     *,
     run: CommissioningRunHandle,
     run_store: CommissioningRunStore,
@@ -1088,6 +1081,7 @@ async def apply_measured_candidate(
     runtime_port: CommissioningRuntimePort,
     load_config_path: LoadConfigPath,
     verify_current: Callable[[], None],
+    restore_started: asyncio.Event,
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
@@ -1224,9 +1218,23 @@ async def apply_measured_candidate(
                             failure_code,
                             "fresh graph, path, or listening-volume readback mismatched",
                         )
-                    graph_safety = classify_camilla_graph(
-                        topology=topology,
-                        text=str(observed.state["active_raw"]),
+                    from jasper.active_speaker.environment import (
+                        DEFAULT_CAMILLA_STATEFILE,
+                    )
+                    from jasper.active_speaker.staging import staged_metadata_path
+                    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+                    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+
+                    graph_safety = await classify_active_bass_extension_graph(
+                        topology,
+                        statefile_path=Path(DEFAULT_CAMILLA_STATEFILE),
+                        read_active_graph_text=runtime_port.read_active_raw,
+                        applied_baseline_path=baseline_profile_state_path(
+                            state_path
+                        ),
+                        profile_path=DEFAULT_PROFILE_PATH,
+                        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+                        staged_metadata_path=staged_metadata_path(),
                     )
                     if not graph_safety.allowed:
                         failure_code = "protection_proof_failed"
@@ -1290,6 +1298,7 @@ async def apply_measured_candidate(
                         candidate_config_path=_candidate_path(baseline),
                         apply_state=apply_state,
                         observed_graph=observed_graph,
+                        restore_started=restore_started,
                     )
                     if isinstance(exc, asyncio.CancelledError):
                         raise
@@ -1356,3 +1365,68 @@ async def apply_measured_candidate(
                     "candidate_apply_failed_before_mutation", detail
                 ) from block_exc
         raise
+
+
+async def apply_measured_candidate(
+    *,
+    run: CommissioningRunHandle,
+    run_store: CommissioningRunStore,
+    store: CommissioningEvidenceStore,
+    candidate: MeasuredElectricalCandidate,
+    target_plan: RequiredTargetPlan,
+    safety_profile_fingerprint: str,
+    topology: OutputTopology,
+    design_draft: Mapping[str, Any],
+    crossover_preview: Mapping[str, Any],
+    measurements: Mapping[str, Any],
+    runtime_port: CommissioningRuntimePort,
+    load_config_path: LoadConfigPath,
+    verify_current: Callable[[], None],
+    state_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+) -> dict[str, Any]:
+    """Run apply and exact rollback in one shielded writer-lock owner task."""
+
+    restore_started = asyncio.Event()
+    task = asyncio.create_task(
+        _apply_measured_candidate_owned(
+            run=run,
+            run_store=run_store,
+            store=store,
+            candidate=candidate,
+            target_plan=target_plan,
+            safety_profile_fingerprint=safety_profile_fingerprint,
+            topology=topology,
+            design_draft=design_draft,
+            crossover_preview=crossover_preview,
+            measurements=measurements,
+            runtime_port=runtime_port,
+            load_config_path=load_config_path,
+            verify_current=verify_current,
+            restore_started=restore_started,
+            state_path=state_path,
+            config_path=config_path,
+            validate=validate,
+        )
+    )
+    cancelled = False
+    cancellation_forwarded = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+            if (
+                not restore_started.is_set()
+                and not cancellation_forwarded
+                and not task.done()
+            ):
+                task.cancel()
+                cancellation_forwarded = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError()
+    return result

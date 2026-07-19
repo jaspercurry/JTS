@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import stat
@@ -12,13 +13,21 @@ from pathlib import Path
 
 import pytest
 
+import jasper.dsp_apply as dsp_apply_module
+
 from jasper.dsp_apply import (
+    BassExtensionApplyPending,
+    CANONICAL_DSP_WRITER_LOCK_PATH,
     CamillaConfigValidationResult,
     DspApplyError,
     DspApplyState,
     DspWriterLockTimeout,
     ValidationStatus,
     apply_dsp_config,
+    camilla_graph_mutation,
+    _DSP_LOCK_OWNERSHIP,
+    _dsp_apply_lock,
+    _default_apply_lock_path,
     dsp_apply_lock_path,
     dsp_write_epoch,
     dsp_write_epoch_from_state,
@@ -102,13 +111,15 @@ async def test_dsp_writer_lock_times_out_without_stealing_ownership(
 ):
     caplog.set_level("INFO")
     async with dsp_writer_lock(tmp_path, source="holder"):
-        with pytest.raises(DspWriterLockTimeout) as caught:
+        async def contend():
             async with dsp_writer_lock(
                 tmp_path,
                 timeout_s=0.05,
                 source="contender",
             ):
                 pytest.fail("contended writer lock was admitted")
+        with pytest.raises(DspWriterLockTimeout) as caught:
+            await asyncio.create_task(contend())
 
     assert caught.value.source == "contender"
     assert caught.value.timeout_s == pytest.approx(0.05)
@@ -263,6 +274,184 @@ async def test_dsp_writer_lock_acquires_after_contention_before_deadline(
     assert acquired.is_set()
 
 
+async def test_private_admission_refuses_pending_bass_intent_for_any_source(
+    tmp_path: Path,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    intent.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(BassExtensionApplyPending):
+        async with _dsp_apply_lock(
+            tmp_path / ".dsp_apply.lock",
+            source="bass_extension.recovery",
+            bass_extension_intent_path=intent,
+        ):
+            pytest.fail("a source label granted recovery permission")
+
+
+async def test_apply_dsp_config_refuses_pending_bass_intent_before_load(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    intent.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.bass_extension.BASS_EXTENSION_APPLY_INTENT_PATH",
+        intent,
+    )
+    candidate = tmp_path / "candidate.yml"
+    candidate.write_text("---\ndevices:\n  volume_limit: 0.0\n", encoding="utf-8")
+    loaded: list[str] = []
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        return True
+
+    with pytest.raises(BassExtensionApplyPending):
+        await apply_dsp_config(
+            source="ordinary_apply",
+            candidate_path=candidate,
+            load_config=load,
+            validate=lambda path: CamillaConfigValidationResult(
+                status=ValidationStatus.VALID,
+                path=str(path),
+            ),
+            state_path=tmp_path / "state.json",
+        )
+
+    assert loaded == []
+
+
+async def test_task_local_reentry_inherits_only_outer_recovery_permission(
+    tmp_path: Path,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    intent.write_text("{}\n", encoding="utf-8")
+    lock_path = dsp_apply_lock_path(tmp_path)
+
+    async with dsp_writer_lock(
+        tmp_path,
+        source="bass_extension.recovery",
+        allow_pending_bass_extension_recovery=True,
+        bass_extension_intent_path=intent,
+    ):
+        async with camilla_graph_mutation(
+            source="camilla.reload",
+            lock_path=lock_path,
+            bass_extension_intent_path=intent,
+        ):
+            pass
+
+
+async def test_pending_intent_race_orders_ordinary_writer_before_recovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    ordinary_entered = asyncio.Event()
+    release_ordinary = asyncio.Event()
+    publisher_contended = asyncio.Event()
+    real_try_acquire = dsp_apply_module._FileLock.try_acquire
+
+    def observe_contention(lock) -> bool:
+        acquired = real_try_acquire(lock)
+        if not acquired:
+            publisher_contended.set()
+        return acquired
+
+    monkeypatch.setattr(
+        dsp_apply_module._FileLock,
+        "try_acquire",
+        observe_contention,
+    )
+
+    async def ordinary() -> None:
+        async with _dsp_apply_lock(
+            dsp_apply_lock_path(tmp_path),
+            source="ordinary",
+            bass_extension_intent_path=intent,
+        ):
+            ordinary_entered.set()
+            await release_ordinary.wait()
+
+    async def publish_intent() -> None:
+        async with dsp_writer_lock(
+            tmp_path,
+            source="bass_extension.apply",
+            allow_pending_bass_extension_recovery=True,
+            bass_extension_intent_path=intent,
+        ):
+            intent.write_text("{}\n", encoding="utf-8")
+
+    first = asyncio.create_task(ordinary())
+    await ordinary_entered.wait()
+    publisher = asyncio.create_task(publish_intent())
+    await asyncio.wait_for(publisher_contended.wait(), timeout=1.0)
+    assert not intent.exists()
+    release_ordinary.set()
+    await first
+    await publisher
+
+    with pytest.raises(BassExtensionApplyPending):
+        async with _dsp_apply_lock(
+            dsp_apply_lock_path(tmp_path),
+            source="later-ordinary",
+            bass_extension_intent_path=intent,
+        ):
+            pytest.fail("writer entered after intent publication")
+
+
+def test_recovery_permission_literal_is_owned_only_by_bass_transaction() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    owners = {
+        path.relative_to(repo).as_posix()
+        for path in (repo / "jasper").rglob("*.py")
+        if "allow_pending_bass_extension_recovery=True" in path.read_text(
+            encoding="utf-8"
+        )
+    }
+
+    assert owners == {"jasper/bass_extension/__init__.py"}
+
+
+def test_apply_lock_is_fixed_in_production_with_explicit_pytest_temp_injection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    candidate = tmp_path / "candidate.yml"
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    assert _default_apply_lock_path(candidate) == CANONICAL_DSP_WRITER_LOCK_PATH
+
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "test seam")
+    assert _default_apply_lock_path(candidate) == dsp_apply_lock_path(tmp_path)
+
+
+async def test_public_writer_lock_uses_same_fixed_production_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths: list[Path] = []
+
+    @contextlib.asynccontextmanager
+    async def capture(path: Path, **_kwargs):
+        paths.append(path)
+        yield
+
+    monkeypatch.setattr(dsp_apply_module, "_dsp_apply_lock", capture)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    async with dsp_writer_lock(tmp_path, source="production-path-proof"):
+        pass
+
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "test seam")
+    async with dsp_writer_lock(tmp_path, source="pytest-path-proof"):
+        pass
+
+    assert paths == [
+        CANONICAL_DSP_WRITER_LOCK_PATH,
+        dsp_apply_lock_path(tmp_path),
+    ]
+
+
 async def test_apply_dsp_config_skips_lock_when_caller_already_owns_it(
     tmp_path: Path,
 ):
@@ -283,6 +472,37 @@ async def test_apply_dsp_config_skips_lock_when_caller_already_owns_it(
         )
 
     assert result.result == "success"
+
+
+async def test_apply_dsp_config_false_hint_acquires_when_ownership_is_absent(
+    tmp_path: Path,
+) -> None:
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")
+    loaded: list[str] = []
+
+    async def load(path: str) -> bool:
+        owned = _DSP_LOCK_OWNERSHIP.get()
+        assert owned is not None
+        assert owned.task is asyncio.current_task()
+        assert owned.path == dsp_apply_lock_path(tmp_path)
+        loaded.append(path)
+        return True
+
+    result = await apply_dsp_config(
+        source="legacy_nested_apply",
+        candidate_path=cfg,
+        load_config=load,
+        acquire_lock=False,
+        validate=lambda path: CamillaConfigValidationResult(
+            status=ValidationStatus.VALID,
+            path=str(path),
+        ),
+        state_path=tmp_path / "state.json",
+    )
+
+    assert result.result == "success"
+    assert loaded == [str(cfg)]
 
 
 def test_validate_camilla_config_classifies_invalid_config(

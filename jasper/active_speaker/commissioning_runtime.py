@@ -70,7 +70,10 @@ from .graph_evidence import (
 )
 from .measurement import active_driver_targets
 from .profile import ADJACENT_PAIRS_BY_WAY
-from .runtime_contract import classify_camilla_graph
+from .runtime_contract import (
+    classify_active_bass_extension_graph,
+    classify_camilla_graph,
+)
 from .test_signal_plan import (
     MAX_DRIVER_TEST_FREQUENCY_HZ,
     MIN_DRIVER_TEST_FREQUENCY_HZ,
@@ -104,6 +107,7 @@ class CommissioningRuntimePort:
     read_config_path: ReadConfigPath
     read_listening_volume_db: ReadListeningVolume
     set_listening_volume_db: SetListeningVolume
+    _bass_extension_authority_paths: Mapping[str, Path] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -115,6 +119,17 @@ class CommissioningRuntimePort:
         ):
             if not callable(getattr(self, name)):
                 raise CommissioningRuntimeError(f"{name} must be callable")
+        paths = self._bass_extension_authority_paths
+        if paths is not None and set(paths) != {
+            "statefile_path",
+            "applied_baseline_path",
+            "profile_path",
+            "intent_path",
+            "staged_metadata_path",
+        }:
+            raise CommissioningRuntimeError(
+                "test bass-extension authority paths are incomplete"
+            )
 
 
 def _role(value: Any, *, field: str) -> str:
@@ -266,6 +281,7 @@ class CommissioningFreshReadback:
     config_path: str
     listening_volume_db: float
     delay_confirmation: DelayCandidateConfirmation | None
+    bass_profile_summary: Mapping[str, Any] | None = None
 
 
 FreshCommissioningReadback: TypeAlias = Callable[
@@ -283,6 +299,7 @@ class CommissioningLiveContext:
     listening_volume_db: float
     delay_confirmation: DelayCandidateConfirmation | None
     fresh_readback: FreshCommissioningReadback
+    bass_profile_summary: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.fresh_readback):
@@ -924,6 +941,7 @@ async def _apply_graph(
     expected_path: str,
     expected_volume_db: float,
     set_volume: bool,
+    bass_profile_summary: Mapping[str, Any],
 ) -> tuple[str, NormalizedActiveRawIdentity, float]:
     if set_volume and not await port.set_listening_volume_db(expected_volume_db):
         raise _OperationFailure(
@@ -957,7 +975,11 @@ async def _apply_graph(
         raise _OperationFailure(
             "graph_readback_mismatch", "fresh active_raw did not equal the candidate"
         )
-    safety = classify_camilla_graph(topology=topology, text=raw)
+    safety = classify_camilla_graph(
+        topology=topology,
+        text=raw,
+        bass_profile_summary=bass_profile_summary,
+    )
     if not safety.allowed:
         issue_codes = ",".join(
             str(issue.get("code") or "unknown") for issue in safety.issues
@@ -990,6 +1012,7 @@ async def _confirm_candidate_still_live(
     expected_path: str,
     expected_volume_db: float,
     delay_confirmation: DelayCandidateConfirmation | None,
+    bass_profile_summary: Mapping[str, Any],
 ) -> CommissioningFreshReadback:
     raw = await port.read_active_raw()
     observed = _active_identity(
@@ -1024,6 +1047,7 @@ async def _confirm_candidate_still_live(
         config_path=path,
         listening_volume_db=volume,
         delay_confirmation=delay_confirmation,
+        bass_profile_summary=bass_profile_summary,
     )
 
 
@@ -1267,37 +1291,49 @@ async def recover_summed_predecessor(
     ):
         raise CommissioningRuntimeError("lock_timeout_s must be finite and positive")
     exact = _predecessor_from_identity(predecessor)
-    entered = False
-    try:
+    entered = asyncio.Event()
+
+    async def restore() -> _RestoreResult:
         async with dsp_writer_lock(
             config_dir,
             source="active_speaker_summed_recovery",
             timeout_s=float(lock_timeout_s),
         ):
-            entered = True
-            task = asyncio.create_task(_restore(port, exact))
-            cancelled = False
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    cancelled = True
-            result = task.result()
-            side_effects = RuntimeSideEffectState(True, False, True, result.error is None)
-            if result.error is not None or result.observation is None:
-                raise CommissioningRuntimeFailure(
-                    "restore_failed",
-                    result.error or "exact recovery readback failed",
-                    side_effects=side_effects,
-                    cancelled=cancelled,
-                )
-            return SummedRecoveryResult(result.observation, cancelled)
+            entered.set()
+            return await _restore(port, exact)
+
+    task = asyncio.create_task(restore())
+    cancelled = False
+    cancellation_forwarded = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+            if (
+                not entered.is_set()
+                and not cancellation_forwarded
+                and not task.done()
+            ):
+                task.cancel()
+                cancellation_forwarded = True
+    try:
+        result = task.result()
     except asyncio.CancelledError as exc:
-        if entered or isinstance(exc, CommissioningRuntimeCancelled):
+        if entered.is_set():
             raise
         raise CommissioningRuntimeCancelled(
             side_effects=RuntimeSideEffectState(False, False, False, None)
         ) from exc
+    side_effects = RuntimeSideEffectState(True, False, True, result.error is None)
+    if result.error is not None or result.observation is None:
+        raise CommissioningRuntimeFailure(
+            "restore_failed",
+            result.error or "exact recovery readback failed",
+            side_effects=side_effects,
+            cancelled=cancelled,
+        )
+    return SummedRecoveryResult(result.observation, cancelled)
 
 
 async def _run_locked(
@@ -1326,6 +1362,33 @@ async def _run_locked(
         nonlocal mutation_attempted
         nonlocal predecessor
 
+        from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+        from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+        from jasper.active_speaker.staging import staged_metadata_path
+        from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+        from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+
+        authority_paths = port._bass_extension_authority_paths or {
+            "statefile_path": Path(DEFAULT_CAMILLA_STATEFILE),
+            "applied_baseline_path": baseline_profile_state_path(),
+            "profile_path": DEFAULT_PROFILE_PATH,
+            "intent_path": BASS_EXTENSION_APPLY_INTENT_PATH,
+            "staged_metadata_path": staged_metadata_path(),
+        }
+        authority = await classify_active_bass_extension_graph(
+            topology,
+            read_active_graph_text=port.read_active_raw,
+            **authority_paths,
+        )
+        bass_profile_summary = authority.details.get(
+            "bass_extension_profile_summary"
+        )
+        if not authority.allowed or not isinstance(bass_profile_summary, Mapping):
+            raise _OperationFailure(
+                "graph_authority_unproven",
+                "live CamillaDSP graph and bass-extension authority could not be proved",
+            )
+
         predecessor = await _snapshot(port)
         try:
             normal = _normal_graph(request, binding)
@@ -1334,6 +1397,7 @@ async def _run_locked(
         safety = classify_camilla_graph(
             topology=topology,
             text=request.normal_active_raw,
+            bass_profile_summary=bass_profile_summary,
         )
         if not safety.allowed:
             issue_codes = ",".join(
@@ -1373,6 +1437,7 @@ async def _run_locked(
                 expected_path=predecessor.path,
                 expected_volume_db=request.listening_volume_db,
                 set_volume=True,
+                bass_profile_summary=bass_profile_summary,
             )
             snapshot = _delay_snapshot(
                 request,
@@ -1398,6 +1463,7 @@ async def _run_locked(
                     expected_path=predecessor.path,
                     expected_volume_db=request.listening_volume_db,
                     set_volume=False,
+                    bass_profile_summary=bass_profile_summary,
                 )
             delay_confirmation = confirm_delay_candidate(
                 snapshot,
@@ -1419,6 +1485,7 @@ async def _run_locked(
                 expected_path=predecessor.path,
                 expected_volume_db=request.listening_volume_db,
                 set_volume=True,
+                bass_profile_summary=bass_profile_summary,
             )
         readback_open = True
 
@@ -1434,6 +1501,7 @@ async def _run_locked(
                 expected_path=predecessor.path,
                 expected_volume_db=request.listening_volume_db,
                 delay_confirmation=delay_confirmation,
+                bass_profile_summary=bass_profile_summary,
             )
             if not readback_open:
                 raise CommissioningRuntimeError(
@@ -1451,6 +1519,7 @@ async def _run_locked(
                     listening_volume_db=candidate_volume,
                     delay_confirmation=delay_confirmation,
                     fresh_readback=fresh_readback,
+                    bass_profile_summary=bass_profile_summary,
                 )
             )
         finally:
@@ -1467,6 +1536,7 @@ async def _run_locked(
             expected_path=predecessor.path,
             expected_volume_db=request.listening_volume_db,
             delay_confirmation=delay_confirmation,
+            bass_profile_summary=bass_profile_summary,
         )
 
     transaction = await _capture_awaitable(_execute_live_transaction())
@@ -1570,6 +1640,34 @@ async def _await_cancellation_resilient(
     return result
 
 
+async def _run_summed_capture_under_writer_lock(
+    port: CommissioningRuntimePort,
+    request: SummedGraphRequest,
+    topology: OutputTopology,
+    binding: _SummedTopologyBinding,
+    mutation_journal: CommissioningMutationJournal,
+    capture_callback: CaptureCallback[T],
+    *,
+    config_dir: str | Path,
+    lock_timeout_s: float,
+) -> SummedCaptureRuntimeResult[T]:
+    """Own the writer lock in the task that performs every graph mutation."""
+
+    async with dsp_writer_lock(
+        config_dir,
+        source="active_speaker_summed_commissioning",
+        timeout_s=lock_timeout_s,
+    ):
+        return await _run_locked(
+            port,
+            request,
+            topology,
+            binding,
+            mutation_journal,
+            capture_callback,
+        )
+
+
 async def run_summed_capture(
     port: CommissioningRuntimePort,
     request: SummedGraphRequest,
@@ -1615,32 +1713,20 @@ async def run_summed_capture(
         or float(lock_timeout_s) <= 0.0
     ):
         raise CommissioningRuntimeError("lock_timeout_s must be finite and positive")
-    entered = False
-    try:
-        async with dsp_writer_lock(
-            config_dir,
-            source="active_speaker_summed_commissioning",
-            timeout_s=float(lock_timeout_s),
-        ):
-            entered = True
-            return await _await_cancellation_resilient(
-                asyncio.create_task(
-                    _run_locked(
-                        port,
-                        request,
-                        topology,
-                        binding,
-                        mutation_journal,
-                        capture_callback,
-                    )
-                )
+    return await _await_cancellation_resilient(
+        asyncio.create_task(
+            _run_summed_capture_under_writer_lock(
+                port,
+                request,
+                topology,
+                binding,
+                mutation_journal,
+                capture_callback,
+                config_dir=config_dir,
+                lock_timeout_s=float(lock_timeout_s),
             )
-    except asyncio.CancelledError as exc:
-        if entered or isinstance(exc, CommissioningRuntimeCancelled):
-            raise
-        raise CommissioningRuntimeCancelled(
-            side_effects=RuntimeSideEffectState(False, False, False, None)
-        ) from exc
+        )
+    )
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -51,6 +52,108 @@ def test_session_room_defaults_match_named_owners(tmp_path):
         "balanced"
     )
     assert sess.repeat_main_position is DEFAULT_REPEAT_MAIN_POSITION is True
+
+
+@pytest.mark.asyncio
+async def test_apply_forwards_exact_guard_bass_summary_before_load(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from jasper.correction import runtime_safety
+    from jasper import dsp_apply
+    from jasper.sound import graph_carrier, profile as sound_profile
+
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.READY
+    summary = MappingProxyType({
+        "authority_valid": True,
+        "runtime_block_required": False,
+    })
+    events: list[str] = []
+
+    async def guard():
+        events.append("guard")
+        return summary
+
+    async def get_current() -> str:
+        return str(tmp_path / "active.yml")
+
+    async def load(path: str) -> bool:
+        events.append("load")
+        return True
+
+    async def apply_config(**kwargs):
+        await kwargs["prepare"]()
+        await kwargs["load_config"](str(kwargs["candidate_path"]))
+        return SimpleNamespace()
+
+    class Carrier:
+        def reemit(self, *_args, **_kwargs):
+            return SimpleNamespace(yaml="canonical candidate")
+
+    def assert_safe(text, *, bass_profile_summary, **_kwargs):
+        events.append("safety")
+        assert text == "canonical candidate"
+        assert bass_profile_summary is summary
+
+    monkeypatch.setattr(dsp_apply, "apply_dsp_config", apply_config)
+    monkeypatch.setattr(graph_carrier, "carrier_for_loaded_config", lambda *_a, **_k: Carrier())
+    monkeypatch.setattr(sound_profile, "load_profile", lambda: object())
+    monkeypatch.setattr(sound_profile, "build_sound_filters", lambda _profile: ())
+    monkeypatch.setattr(runtime_safety, "assert_correction_graph_safe", assert_safe)
+
+    await sess.apply(
+        load,
+        camilla_get_config=get_current,
+        prepare_guard=guard,
+    )
+
+    assert events == ["guard", "safety", "load"]
+    assert sess.state == SessionState.APPLIED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "guard_value",
+    ["missing", None, object(), [], "not-a-mapping"],
+    ids=["missing", "none", "object", "list", "string"],
+)
+async def test_apply_refuses_invalid_bass_summary_before_load(
+    tmp_path: Path,
+    monkeypatch,
+    guard_value,
+) -> None:
+    from jasper import dsp_apply
+
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.READY
+    loads: list[str] = []
+
+    async def get_current() -> str:
+        return str(tmp_path / "active.yml")
+
+    async def load(path: str) -> bool:
+        loads.append(path)
+        return True
+
+    async def guard():
+        return guard_value
+
+    async def apply_config(**kwargs):
+        await kwargs["prepare"]()
+        await kwargs["load_config"](str(kwargs["candidate_path"]))
+        return SimpleNamespace()
+
+    monkeypatch.setattr(dsp_apply, "apply_dsp_config", apply_config)
+
+    with pytest.raises(RuntimeError, match="bass authority evidence"):
+        await sess.apply(
+            load,
+            camilla_get_config=get_current,
+            prepare_guard=None if guard_value == "missing" else guard,
+        )
+
+    assert loads == []
 
 
 def _synthesize_room_capture(

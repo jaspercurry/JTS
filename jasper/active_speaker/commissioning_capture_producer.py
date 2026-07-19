@@ -94,7 +94,9 @@ from .driver_acoustics import (
 from .driver_safety import evaluate_driver_safety_profile
 from .graph_evidence import driver_baseline_gain_name
 from .measurement import active_driver_targets
-from .runtime_contract import classify_camilla_graph
+from .runtime_contract import (
+    classify_camilla_graph,
+)
 from .runtime_contract import GRAPH_GUARDED_COMMISSIONING
 from .test_signal_plan import (
     CROSSOVER_AMBIENT_DURATION_S,
@@ -668,6 +670,12 @@ class SummedCaptureProducer:
         boundary: str,
         post_apply: bool = False,
     ) -> ProtectionEvidence:
+        bass_profile_summary = readback.bass_profile_summary
+        if not isinstance(bass_profile_summary, Mapping):
+            raise SummedCaptureProducerError(
+                "graph_authority_unproven",
+                "bass-extension graph authority evidence is unavailable",
+            )
         current_targets = {
             value["target_fingerprint"]: value
             for value in active_driver_targets(self.topology)
@@ -718,7 +726,9 @@ class SummedCaptureProducer:
                 }
             )
         graph_safety = classify_camilla_graph(
-            topology=self.topology, text=readback.active_raw
+            topology=self.topology,
+            text=readback.active_raw,
+            bass_profile_summary=bass_profile_summary,
         )
         devices = readback.graph.normalized_active_raw.get("devices")
         volume_limit = (

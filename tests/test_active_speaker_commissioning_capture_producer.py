@@ -59,6 +59,9 @@ from jasper.active_speaker.driver_safety import (
 )
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.runtime_contract import (
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+)
 from jasper.audio_measurement import admitted_playback
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
@@ -226,7 +229,11 @@ def _harness(tmp_path: Path, *, layout: str = "mono") -> _Harness:
     )
 
 
-def _context(raw: str) -> runtime.CommissioningLiveContext:
+def _context(
+    raw: str,
+    *,
+    bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+) -> runtime.CommissioningLiveContext:
     graph = NormalizedActiveRawIdentity(yaml.safe_load(raw))
 
     async def fresh_readback() -> runtime.CommissioningFreshReadback:
@@ -236,6 +243,7 @@ def _context(raw: str) -> runtime.CommissioningLiveContext:
             config_path="/tmp/producer-test.yml",
             listening_volume_db=-32.0,
             delay_confirmation=None,
+            bass_profile_summary=bass_profile_summary,
         )
 
     return runtime.CommissioningLiveContext(
@@ -245,6 +253,7 @@ def _context(raw: str) -> runtime.CommissioningLiveContext:
         listening_volume_db=-32.0,
         delay_confirmation=None,
         fresh_readback=fresh_readback,
+        bass_profile_summary=bass_profile_summary,
     )
 
 
@@ -352,6 +361,74 @@ async def test_allowed_baseline_is_not_summed_protection(tmp_path: Path) -> None
 
     assert raised.value.code == "generation_refused"
     assert transport_called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bass_profile_summary", [None, "invalid"])
+async def test_bass_authority_evidence_is_required_before_transport(
+    tmp_path: Path,
+    bass_profile_summary,
+) -> None:
+    harness = _harness(tmp_path)
+    transport_called = False
+
+    async def transport(play):
+        nonlocal transport_called
+        transport_called = True
+        raise AssertionError("missing graph authority must refuse before transport")
+
+    with pytest.raises(SummedCaptureProducerError) as raised:
+        await harness.producer(transport).capture(
+            harness.operation,
+            _context(
+                harness.guarded_raw,
+                bass_profile_summary=bass_profile_summary,
+            ),
+        )
+
+    assert raised.value.code == "graph_authority_unproven"
+    assert transport_called is False
+
+
+def test_bass_authority_evidence_reaches_classifier_by_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness(tmp_path)
+    producer = harness.producer(lambda _play: None)
+    summary = {
+        "authority_valid": True,
+        "runtime_block_required": False,
+    }
+    context = _context(
+        harness.guarded_raw,
+        bass_profile_summary=summary,
+    )
+    prepared, _meta = producer._prepare_sweep(harness.operation, context)
+    original = producer_module.classify_camilla_graph
+    observed: list[object] = []
+
+    def classify(*args, bass_profile_summary=None, **kwargs):
+        observed.append(bass_profile_summary)
+        return original(
+            *args,
+            bass_profile_summary=bass_profile_summary,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(producer_module, "classify_camilla_graph", classify)
+
+    producer._protection_evidence(
+        harness.operation,
+        prepared,
+        context,
+        expected_graph_fingerprint=context.graph.active_raw_fingerprint,
+        expected_volume_db=context.listening_volume_db,
+        boundary="generation",
+    )
+
+    assert observed == [summary]
+    assert observed[0] is summary
 
 
 @pytest.mark.asyncio

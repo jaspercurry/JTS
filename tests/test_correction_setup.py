@@ -26,7 +26,7 @@ import io
 import inspect
 import json
 import logging
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 import threading
 import time
 import urllib.error
@@ -39,8 +39,33 @@ import pytest
 from pathlib import Path
 
 from jasper.web import correction_setup, correction_tuning
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GraphSafety,
+)
 
 from ._web_test_helpers import request_with_csrf
+
+
+@pytest.fixture(autouse=True)
+def _stable_no_bass_graph_authority(monkeypatch):
+    async def classify(_cam):
+        return GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": {
+                    "authority_valid": True,
+                    "runtime_block_required": False,
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_classify_live_bass_extension_graph",
+        classify,
+    )
 
 # The page's behaviour was relocated VERBATIM into a static ES module when
 # /correction/ migrated to the canonical design system (chrome-only restyle).
@@ -4380,7 +4405,7 @@ async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
     )
     safety_calls = []
 
-    def fail_candidate_after_snapshot(text):
+    def fail_candidate_after_snapshot(text, **_kwargs):
         safety_calls.append(text)
         if len(safety_calls) == 2:
             raise RuntimeError("post-write safety refusal")
@@ -4463,7 +4488,10 @@ async def test_room_reversal_rejects_unverified_no_room_fallback(
         reemit_fails,
     )
     async def snapshot_current(_sess, _cam):
-        return fallback, fallback
+        return fallback, fallback, {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
 
     monkeypatch.setattr(
         correction_setup,
@@ -4523,7 +4551,10 @@ async def test_reset_accepts_verified_no_room_active_fallback(
         reemit_fails,
     )
     async def snapshot_current(_sess, _cam):
-        return no_room, no_room
+        return no_room, no_room, {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
 
     monkeypatch.setattr(
         correction_setup,
@@ -4584,15 +4615,20 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
         reemitted_from.append(
             await current_cam.get_config_file_path(best_effort=False)
         )
-        return new_active, old_active_snapshot
+        return new_active, old_active_snapshot, {
+            "authority_valid": True,
+            "runtime_block_required": False,
+        }
 
     async def reemit_current(
         _sess,
         _current_cam,
         *,
         current_snapshot_path=None,
+        bass_profile_summary=None,
     ):
         assert current_snapshot_path == old_active_snapshot
+        assert bass_profile_summary is not None
         return no_room_new_active
 
     monkeypatch.setattr(
@@ -4656,6 +4692,62 @@ def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     assert restored == [-20.0]
 
 
+def test_room_authority_guard_returns_exact_canonical_bass_summary(
+    monkeypatch,
+) -> None:
+    from jasper.active_speaker import setup_status
+
+    expected = (True, "manual_applied_profile", "layer-a-current")
+    summary = MappingProxyType({
+        "authority_valid": True,
+        "runtime_block_required": False,
+    })
+    graph = GraphSafety(
+        classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+        allowed=True,
+        details={"bass_extension_profile_summary": summary},
+    )
+    classifications = 0
+
+    async def classify(_cam):
+        nonlocal classifications
+        classifications += 1
+        return graph
+
+    class Cam:
+        async def get_active_config_raw(self, *, best_effort=False):
+            return "running graph"
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_classify_live_bass_extension_graph",
+        classify,
+    )
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {
+            "active": True,
+            "room_correction_allowed": True,
+            "acoustic_commissioning": {
+                "decision_schema_version": 1,
+                "authority": "manual_applied_profile",
+                "layer_a_identity": "layer-a-current",
+                "allowed": True,
+                "status": "ready",
+                "setup_href": "/correction/crossover/",
+            },
+        },
+    )
+
+    returned = asyncio.run(
+        correction_setup._assert_room_authority_current(Cam(), expected)
+    )
+
+    assert returned is summary
+    assert classifications == 1
+
+
 def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
     from jasper.correction.session import SessionState
 
@@ -4692,10 +4784,22 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
 
     monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    async def changed_authority_with_graph(cam):
+        return await changed_authority(cam), GraphSafety(
+            classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            allowed=True,
+            details={
+                "bass_extension_profile_summary": {
+                    "authority_valid": True,
+                    "runtime_block_required": False,
+                }
+            },
+        )
+
     monkeypatch.setattr(
         correction_setup,
-        "_read_room_correction_readiness",
-        changed_authority,
+        "_read_room_correction_readiness_with_graph",
+        changed_authority_with_graph,
     )
     monkeypatch.setattr(
         correction_setup,

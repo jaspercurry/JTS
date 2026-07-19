@@ -17,6 +17,7 @@ round-trips ARE the safety net (a wrong crossover blows a driver).
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 import pytest
 import yaml
@@ -35,12 +36,80 @@ from jasper.active_speaker.profile import (
 )
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
-    classify_camilla_graph,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_bass_extension_graph,
+    classify_camilla_graph as _classify_camilla_graph,
     classify_output_contract,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from tests.test_bass_extension_profile import _applied_baseline, _profile
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+
+def classify_camilla_graph(*args, **kwargs):
+    kwargs.setdefault("bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY)
+    return _classify_camilla_graph(*args, **kwargs)
+
+
+def test_local_sub_owns_one_natural_bass_extension_pair() -> None:
+    topology = _active_2way_sub_topology()
+    applied = _applied_baseline()
+    profile = replace(
+        _profile(topology=topology, applied_baseline=applied),
+        bass_owner={
+            "kind": "local_sub",
+            "roles": ["subwoofer"],
+            "channels": [4],
+        },
+    )
+    text = emit_active_speaker_baseline_config(
+        _active_2way_sub_preset(),
+        playback_device=ACTIVE_PCM,
+        bass_extension_profile=profile,
+    )
+    payload = yaml.safe_load(text)
+
+    owner_steps = [
+        step for step in payload["pipeline"]
+        if step.get("channels") == [4]
+    ]
+    assert len(owner_steps) == 1
+    assert owner_steps[0]["names"] == [
+        "as_sub_lowpass",
+        "bass_ext_lt",
+        "bass_ext_subsonic",
+        "as_sub_baseline_gain",
+        "as_sub_baseline_limiter",
+    ]
+    proof = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+        desired_profile=profile,
+    )
+    assert proof.allowed is True
+    assert proof.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+    limiter = payload["filters"]["as_sub_baseline_limiter"]["parameters"]
+    assert limiter["clip_limit"] == -1.0
+    limiter["clip_limit"] = -2.0
+    source = next(
+        line for line in text.splitlines() if line.startswith("# Source:")
+    )
+    tampered = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}",
+        applied_baseline_state=applied,
+        desired_profile=profile,
+    )
+
+    assert tampered.allowed is False
+    assert "active_output_driver_chain_unrecognized" in {
+        issue["code"] for issue in tampered.issues
+    }
 
 
 # --------------------------------------------------------------------------- #

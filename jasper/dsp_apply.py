@@ -31,8 +31,10 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -45,6 +47,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_DSP_APPLY_STATE_PATH = Path("/var/lib/jasper/dsp_apply_state.json")
 DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S = 10.0
 DEFAULT_DSP_WRITER_LOCK_POLL_INTERVAL_S = 0.05
+CANONICAL_CAMILLA_CONFIG_DIR = Path("/var/lib/camilladsp/configs")
+CANONICAL_DSP_WRITER_LOCK_PATH = CANONICAL_CAMILLA_CONFIG_DIR / ".dsp_apply.lock"
+
+
+class BassExtensionApplyPending(RuntimeError):
+    """A graph mutation was refused while durable bass rollback is pending."""
+
+
+@dataclass(frozen=True)
+class _DspLockOwnership:
+    path: Path
+    task: asyncio.Task[Any]
+    recovery_permitted: bool
+
+
+_DSP_LOCK_OWNERSHIP: ContextVar[_DspLockOwnership | None] = ContextVar(
+    "jasper_dsp_lock_ownership", default=None
+)
 
 
 class DspWriterLockTimeout(TimeoutError):
@@ -423,6 +443,8 @@ async def _dsp_apply_lock(
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     poll_interval_s: float = DEFAULT_DSP_WRITER_LOCK_POLL_INTERVAL_S,
     source: str = "unspecified",
+    allow_pending_bass_extension_recovery: bool = False,
+    bass_extension_intent_path: str | Path | None = None,
 ):
     timeout = _positive_finite(timeout_s, field_name="timeout_s")
     poll_interval = _positive_finite(
@@ -431,6 +453,24 @@ async def _dsp_apply_lock(
     )
     if not isinstance(source, str) or not source or source != source.strip():
         raise ValueError("source must be non-empty trimmed text")
+    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+
+    task = asyncio.current_task()
+    if task is None:  # pragma: no cover - an async context always has a task
+        raise RuntimeError("DSP writer lock requires an asyncio task")
+    intent_path = Path(
+        bass_extension_intent_path or BASS_EXTENSION_APPLY_INTENT_PATH
+    )
+    owned = _DSP_LOCK_OWNERSHIP.get()
+    if owned is not None and owned.task is task and owned.path == path:
+        permitted = owned.recovery_permitted
+        if intent_path.exists() and not permitted:
+            raise BassExtensionApplyPending(
+                "bass-extension rollback is pending; graph mutation refused"
+            )
+        yield
+        return
+
     lock = _FileLock(path)
     started = time.monotonic()
     deadline = started + timeout
@@ -490,7 +530,17 @@ async def _dsp_apply_lock(
                 source=source,
                 wait_ms=round(max(0.0, time.monotonic() - started) * 1000),
             )
-        yield
+        if intent_path.exists() and not allow_pending_bass_extension_recovery:
+            raise BassExtensionApplyPending(
+                "bass-extension rollback is pending; graph mutation refused"
+            )
+        token = _DSP_LOCK_OWNERSHIP.set(
+            _DspLockOwnership(path, task, allow_pending_bass_extension_recovery)
+        )
+        try:
+            yield
+        finally:
+            _DSP_LOCK_OWNERSHIP.reset(token)
     except asyncio.CancelledError:
         if contended and not admitted:
             log_event(
@@ -514,11 +564,22 @@ async def _maybe_dsp_apply_lock(
     acquire: bool = True,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     source: str = "unspecified",
+    allow_pending_bass_extension_recovery: bool = False,
+    bass_extension_intent_path: str | Path | None = None,
 ):
-    if not acquire:
-        yield
-        return
-    async with _dsp_apply_lock(path, timeout_s=timeout_s, source=source):
+    # ``acquire`` is the historical nested-call hint.  The private admission
+    # boundary is now authoritative: it reuses same-task ownership and acquires
+    # otherwise, so a stale/incorrect ``False`` can never bypass the lock or
+    # pending-intent check.
+    async with _dsp_apply_lock(
+        path,
+        timeout_s=timeout_s,
+        source=source,
+        allow_pending_bass_extension_recovery=(
+            allow_pending_bass_extension_recovery
+        ),
+        bass_extension_intent_path=bass_extension_intent_path,
+    ):
         yield
 
 
@@ -528,19 +589,62 @@ def dsp_apply_lock_path(config_dir: str | Path) -> Path:
     return Path(config_dir) / ".dsp_apply.lock"
 
 
+def _production_or_pytest_lock_path(config_dir: str | Path) -> Path:
+    """Return the canonical production lock or an injected pytest-local lock."""
+
+    directory = Path(config_dir)
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            directory.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+        except (OSError, ValueError):
+            pass
+        else:
+            return dsp_apply_lock_path(directory)
+    return CANONICAL_DSP_WRITER_LOCK_PATH
+
+
+def _default_apply_lock_path(candidate: Path) -> Path:
+    """Use the fixed production lock, retaining pytest temp-path injection."""
+
+    return _production_or_pytest_lock_path(candidate.parent)
+
+
 @contextlib.asynccontextmanager
 async def dsp_writer_lock(
     config_dir: str | Path,
     *,
     source: str,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
+    allow_pending_bass_extension_recovery: bool = False,
+    bass_extension_intent_path: str | Path | None = None,
 ):
     """Serialize JTS DSP writers with bounded, cancellation-safe admission."""
 
     async with _dsp_apply_lock(
-        dsp_apply_lock_path(config_dir),
+        _production_or_pytest_lock_path(config_dir),
         timeout_s=timeout_s,
         source=source,
+        allow_pending_bass_extension_recovery=(
+            allow_pending_bass_extension_recovery
+        ),
+        bass_extension_intent_path=bass_extension_intent_path,
+    ):
+        yield
+
+
+@contextlib.asynccontextmanager
+async def camilla_graph_mutation(
+    *,
+    source: str,
+    lock_path: str | Path = CANONICAL_DSP_WRITER_LOCK_PATH,
+    bass_extension_intent_path: str | Path | None = None,
+):
+    """Admit one CamillaDSP graph mutation at the global writer boundary."""
+
+    async with _dsp_apply_lock(
+        Path(lock_path),
+        source=source,
+        bass_extension_intent_path=bass_extension_intent_path,
     ):
         yield
 
@@ -611,10 +715,10 @@ async def apply_dsp_config(
     (`/sound/`, `/correction/`, and future DSP surfaces). CamillaDSP is
     still the authority for whether the candidate can actually run.
 
-    ``acquire_lock=False`` is only for a caller already inside
-    :func:`dsp_writer_lock`, so it can make a lock-protected decision and then
-    use the same validation/reload/rollback lifecycle without re-entering the
-    file lock.
+    ``acquire_lock=False`` remains a compatibility hint for callers that expect
+    to be inside :func:`dsp_writer_lock`.  The private boundary verifies that
+    task-local ownership and acquires the same lock when it is absent; the flag
+    cannot bypass admission or pending-intent refusal.
 
     ``lock_timeout_s`` bounds only admission to the shared writer boundary.
     Once admitted, this function runs validation, mutation, confirmation, and
@@ -626,7 +730,11 @@ async def apply_dsp_config(
     """
 
     candidate = Path(candidate_path)
-    lock = Path(lock_path) if lock_path else dsp_apply_lock_path(candidate.parent)
+    lock = (
+        Path(lock_path)
+        if lock_path is not None
+        else _default_apply_lock_path(candidate)
+    )
     state = DspApplyState(
         schema_version=1,
         op_id=uuid.uuid4().hex,
