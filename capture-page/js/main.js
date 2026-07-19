@@ -642,6 +642,31 @@ function validDefaultSetupHint(spec) {
   return hint;
 }
 
+// W6.12: a `crossover_sweep` capture (both the legacy per-driver flow and
+// the v2 capture-plan session) has NO calibration-picker screen of its own
+// — `boot()` renders straight to the fixed DATA screen for this kind. The
+// legacy flow gets its calibration from the `level_ramp` level-match page
+// visited FIRST in the same tab (this module's `setupState` survives that
+// in-tab hash navigation); a v2 session has no preceding page, so it never
+// had anywhere to apply the SAME household-mic hint `renderCalibrationConfirm`
+// offers as a one-tap Confirm for level_ramp/room_sweep. Apply it SILENTLY
+// here instead — a v2 session is designed around a minimal, fixed tap
+// count, so there is no screen to hang a confirm button on, and the
+// household already confirmed this calibration once when it was first set
+// up. Never overrides a choice already present for this page load (a fresh
+// `setupState.calibration.mode !== "none"` means something already claimed
+// it — defensive, since nothing sets it before `boot()` calls this today).
+function applyDefaultCalibrationHintSilently(spec) {
+  if (String((setupState.calibration || {}).mode || "none") !== "none") return;
+  const hint = validDefaultSetupHint(spec);
+  if (!hint) return;
+  setupState.calibration = {
+    mode: "stored",
+    calibration_id: String(hint.calibration_id),
+    model: String(hint.model || ""),
+  };
+}
+
 function calibrationModelLabel(spec, modelKey) {
   const models = Array.isArray(spec.calibration_models) ? spec.calibration_models : [];
   const found = models.find((model) => model && model.key === modelKey);
@@ -1492,19 +1517,37 @@ function renderPlanRetry(ctx, { index, attempt, target, reason }) {
 // handling re-posts the SAME begin_capture automatically after a short poll,
 // so this is purely a waiting state with Stop still wired. Prefers the waiting
 // entry's own title ("Waiting for apply") so the hold state reads coherently.
+// The heading node is captured on `ctx.captureRefs.heading` — W6.12:
+// `runPlanCapture` advances it to "Verifying…" once the hold actually
+// resolves and recording starts, so the household is not staring at
+// "Waiting for apply" through the whole verify capture.
 function renderPlanDeferred(ctx, { index, target, reason }) {
   const entry = entryForIndex(ctx.spec, index);
   const screenCopy = (entry && entry.screen) || {};
   const heading = String(screenCopy.title || `Measurement ${index} of ${target}`);
   const message = reason || String(screenCopy.body ||
     "Waiting for the speaker to be ready for the next measurement.");
+  const headingEl = el("h1", { class: "cap-heading", text: heading });
   setScreen(ctx.screenEl, [
-    el("h1", { class: "cap-heading", text: heading }),
+    headingEl,
     el("p", { class: "cap-note", text: message }),
     el("div", { class: "cap-actions" }, [stopButtonEl()]),
   ]);
-  ctx.captureRefs = { buttons: [], levelMeters: [] };
+  ctx.captureRefs = { buttons: [], levelMeters: [], heading: headingEl };
   setStatus(`Waiting — ${message}`, "info");
+}
+
+// W6.12: once the on_apply hold's deferral actually resolves and recording
+// starts, advance the still-visible "Waiting for apply" heading — otherwise
+// it covers the WHOLE verify capture (the sweep runs for several seconds),
+// so a household glancing at the phone mid-recording still read a heading
+// describing a wait that already ended. `heading` is only ever set by
+// renderPlanDeferred, so this is a safe no-op for every entry that never
+// held (check/measure) or whose hold already moved on to a later screen.
+function advanceDeferredHoldHeading(ctx) {
+  if (ctx.captureRefs && ctx.captureRefs.heading) {
+    ctx.captureRefs.heading.textContent = "Verifying…";
+  }
 }
 
 // §5.2 auto-advance policy carried per-entry in `screen.auto_advance` (page
@@ -1923,6 +1966,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
       return;
     }
 
+    advanceDeferredHoldHeading(ctx);
     setStatus("Starting microphone…", "info");
     recorder = await createMonoRecorder({
       sampleRate: spec.sample_rate_hz || 48000,
@@ -2400,6 +2444,10 @@ async function boot() {
     // + capture_plan are both required together (CaptureSpec.validate()), so
     // checking capture_plan alone is sufficient, but check both defensively.
     const isPlanSpec = spec.capture_protocol_version === 3 && Boolean(spec.capture_plan);
+    // W6.12: this branch (crossover_sweep, legacy or v2 plan) has no
+    // calibration-picker screen — apply the household-mic hint silently
+    // before the first `armed`/`setup` event carries setupWirePayload().
+    applyDefaultCalibrationHintSilently(spec);
     ctx.captureRefs = renderScreen(screenEl, spec, {
       handlers: {
         begin_capture: () => (isPlanSpec ? onPlanStart(ctx) : onStart(ctx)),
@@ -2524,7 +2572,11 @@ export {
   stopCapture,
   isDeadSessionError,
   validDefaultSetupHint,
+  applyDefaultCalibrationHintSilently,
+  setupWirePayload,
   calibrationModelLabel,
   renderCalibration,
   entryForIndex,
+  renderPlanDeferred,
+  advanceDeferredHoldHeading,
 };

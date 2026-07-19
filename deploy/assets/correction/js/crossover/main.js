@@ -295,6 +295,20 @@ function relayIsActive(relay) {
   return Boolean(relay && RELAY_IN_FLIGHT.has(relay.status));
 }
 
+// The last action row this function actually rendered, as a stable
+// serialization of everything the row's appearance depends on (see
+// actionRowKey below). null before the first render.
+let lastActionRowKey = null;
+
+// A stable, order-preserving serialization of exactly what the action-row
+// builder below would build from these inputs — the fields the DOM
+// actually depends on, nothing else (no envelope fields like verdict_text/
+// steps that render() already updates through their own, non-destructive
+// setters).
+function actionRowKey(primary, alternates) {
+  return JSON.stringify({primary: primary || null, alternates, busy});
+}
+
 // Sole authority for what the action row shows given an envelope. Every
 // call-site (render, stopRelay's finally, runAction's finally) routes
 // through this so the relay-in-flight gate can't be forgotten or duplicated
@@ -311,10 +325,34 @@ function renderActionRow(env) {
   // it show_during_relay and it renders through (W6.10 blocker #2).
   const showPrimary = !relayActive
     || (env.next_action && env.next_action.show_during_relay);
-  renderActions(
-    showPrimary ? env.next_action : null,
-    relayActive ? [] : env.alternate_actions,
-  );
+  const alternates = Array.isArray(env.alternate_actions) ? env.alternate_actions : [];
+  // W6.12: the same show_during_relay escape hatch, per-alternate. Before
+  // this the gate blanket-cleared EVERY alternate action while the relay was
+  // in flight, so the verify_fail screen's Undo / Re-measure — the "get me
+  // out of this" affordances — vanished behind a live relay link the
+  // operator had no obvious reason to expect (they had to guess "hit Stop"
+  // to make them reappear). Only alternates the envelope explicitly marks
+  // show_during_relay survive the gate; every other alternate stays hidden
+  // while a relay is in flight, unchanged from before.
+  const shownAlternates = relayActive
+    ? alternates.filter((action) => action && action.show_during_relay)
+    : alternates;
+  const primary = showPrimary ? env.next_action : null;
+  // W6.12: the row builder below unconditionally tears down and rebuilds
+  // the row (els.action.replaceChildren()), which every ~1.5s poll
+  // (render()'s own call, below) ran through even when NOTHING about the
+  // row had changed — hardware round 4 lost 4 taps this way, the classic
+  // "the poll fired between pointerdown and click and replaced the button
+  // out from under the tap" failure mode. Skip the rebuild when the row
+  // would come out byte-identical to what is already on screen; busy is
+  // included in the key because it changes each button's baked-in
+  // `disabled` without otherwise touching primary/alternates (see
+  // stopRelay/runAction/startOver's finally blocks, which rely on THIS
+  // function re-rendering once busy flips back to false).
+  const key = actionRowKey(primary, shownAlternates);
+  if (key === lastActionRowKey) return;
+  lastActionRowKey = key;
+  renderActions(primary, shownAlternates);
 }
 
 function render(env) {

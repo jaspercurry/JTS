@@ -52,6 +52,31 @@
   safe. A session that establishes a DIFFERENT mic is never blocked; the
   new success replaces the record
   (`event=correction.household_mic_replaced`).
+- 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
+  2026-07-19).** Every v2 crossover capture logged
+  `crossover_v2_uncalibrated_capture` even with a resolvable stored mic
+  (e.g. a UMIK-2 by serial). Root cause: the hint above only ever reached
+  `level_ramp`/`room_sweep` specs — the ONLY screen that reads
+  `spec.default_setup.calibration` is `renderCalibration`'s one-tap confirm,
+  which a `crossover_sweep` capture (legacy per-driver OR the v2
+  capture-plan session) never renders (`boot()` goes straight to the fixed
+  DATA screen for that kind). The legacy per-driver flow gets away with this
+  because its calibration choice comes from the `level_ramp` level-match
+  page the household visits FIRST in the same phone tab (the capture page's
+  `setupState` module variable survives the in-tab hash navigation into the
+  driver sweeps that follow); a v2 session has no preceding page — by
+  design, CHECK's own pilot pairs solve gain, so the old level-match step
+  doesn't exist — so it never had a carrier for the hint. Fix:
+  `build_crossover_sweep_spec` gained the same `default_setup_calibration`
+  parameter `build_level_ramp_spec` already has;
+  `jasper.web.correction_crossover_v2.default_setup_calibration_for_v2()`
+  resolves it (reusing `_default_setup_calibration_for_spec`) and threads it
+  into `build_v2_session_spec`/`build_v2_verify_session_spec` via their
+  existing `**spec_kwargs` forward; the capture page applies it SILENTLY
+  (`applyDefaultCalibrationHintSilently`, `capture_page_build=20260719.2`) —
+  no extra tap, since a v2 session is designed around a minimal, fixed tap
+  count and there is no picker screen to hang a confirm on. Never overrides
+  an explicit choice already present for the page load.
 - 🧱 **Wave 2 playback core extracted; Room behavior retained.**
   `jasper.audio_measurement.playback` now owns policy-free WAV-process cleanup
   and deterministic sine-WAV generation. This Room module keeps

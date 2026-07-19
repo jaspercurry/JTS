@@ -246,6 +246,20 @@ def _verify_fail_envelope(
     OTHER code surfacing once the candidate is applied — the household is
     entitled to the Undo affordance the moment something is live on the
     speaker, regardless of which check failed.
+
+    ``verify_undo`` and ``verify_remeasure`` carry ``show_during_relay``
+    (W6.12, the same seam W6.10 added for the review screen's Apply): the
+    JS action-row renderer's relay-in-flight gate otherwise blanket-clears
+    EVERY alternate action while the relay object is still transitioning
+    (``finishing`` / ``committing`` / ``stopping`` — a real window right
+    after a failed capture, before the phone side has fully wound down), so
+    a household landing on this screen saw no buttons at all and had to
+    guess "hit Stop" to make them reappear. ``verify_retry`` (the primary
+    "Try again") deliberately keeps NO such flag: it starts a brand-new
+    relay session, and doing that while the prior one is still tearing down
+    is exactly the race the gate exists to prevent — Undo and Re-measure are
+    the "get me out of this" affordances that must stay reachable
+    regardless.
     """
     return _envelope(
         screen="verify_fail", active_step="verify",
@@ -277,6 +291,7 @@ def _verify_fail_envelope(
                 # candidate is in force, independent of a reset elsewhere.
                 "endpoint": "/correction/crossover/v2/restore",
                 "body": {},
+                "show_during_relay": True,
             },
             {
                 "id": "verify_remeasure",
@@ -284,6 +299,7 @@ def _verify_fail_envelope(
                 "endpoint": "/correction/crossover/v2/session",
                 "body": {},
                 "expert": True,
+                "show_during_relay": True,
             },
         ],
         status=status,
