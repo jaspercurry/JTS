@@ -755,6 +755,70 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
     assert seen["calibration"] is None
     assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
     assert "crossover_v2_uncalibrated_capture" in caplog.text
+    # W6.13 round-5 diagnostic: the WARN names what the phone-reported setup
+    # actually held at resolve time — here nothing at all.
+    assert "setup_mode=absent" in caplog.text
+
+
+def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
+    monkeypatch, caplog,
+):
+    """W6.13: the round-5 ambiguity was 'did the phone send NO setup, or a
+    setup whose calibration did not resolve?' — the uncalibrated-capture WARN
+    now carries the observed calibration mode + id (redacted-safe: never a
+    serial or an uploaded file body) so one live journal line settles it."""
+    import logging as _logging
+
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    monkeypatch.setattr(
+        pa_mod, "analyze_program_capture", lambda *a, **k: "analysis"
+    )
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={}
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    result = _FakeResult(
+        setup={
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": "cal-stale",
+                "model": "minidsp_umik2",
+                "serial": "SECRET-810",
+            },
+        },
+    )
+    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+        analyze(
+            program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(),
+        )
+    assert "crossover_v2_uncalibrated_capture" in caplog.text
+    assert "setup_mode=stored" in caplog.text
+    assert "setup_calibration_id=cal-stale" in caplog.text
+    # Redaction: the serial never reaches the journal.
+    assert "SECRET-810" not in caplog.text
+
+
+def test_setup_calibration_observation_is_redacted_safe():
+    """The extractor itself: absent / mode-none / stored shapes, and only
+    mode + calibration_id ever come back."""
+    assert v2host._setup_calibration_observation(None) == ("absent", "")
+    assert v2host._setup_calibration_observation({}) == ("absent", "")
+    assert v2host._setup_calibration_observation(
+        {"calibration": {"mode": "none"}}
+    ) == ("none", "")
+    assert v2host._setup_calibration_observation(
+        {"calibration": {"mode": "stored", "calibration_id": "cal-1"}}
+    ) == ("stored", "cal-1")
+    assert v2host._setup_calibration_observation(
+        {"calibration": {"mode": "serial", "serial": "810-8494"}}
+    ) == ("serial", "")
 
 
 def test_production_analyze_default_resolver_is_the_shared_relay_machinery():

@@ -1095,17 +1095,19 @@ async function testSessionTerminalDuringWaitEndsTheSession() {
 
 // ============================================================================
 // 14. W6.13: a v2 crossover_sweep session has no calibration-picker/confirm
-// screen to post setup from (unlike level_ramp's Continue tap). Round-5
-// hardware evidence showed resolve_relay_calibration reading nothing for the
-// CHECK-phase capture even though the spec carried a resolvable
-// household-mic hint and applyDefaultCalibrationHintSilently had already run
-// — the silently-applied calibration never reached the wire until the LATER
-// `armed` event, well after the first begin_capture. Pins two things: (a)
-// onPlanStart now posts a standalone `{setup: ...}` event BEFORE the first
-// begin_capture, carrying whatever applyDefaultCalibrationHintSilently
-// applied; (b) that pre-post never clobbers a calibration choice this page
-// load already claimed (the W6.12 guard) — a LATER spec's default hint must
-// not override an earlier one.
+// screen to post setup from (unlike level_ramp's Continue tap), so the
+// silently-applied household-mic calibration
+// (applyDefaultCalibrationHintSilently, boot()) previously never reached the
+// wire until the LATER `armed` event — well after the first begin_capture
+// was admitted and CHECK's resolution ran. The fix PIGGYBACKS `setup` on the
+// begin event itself (beginAndAwaitAuthorization): the relay's phone-event
+// slot is last-write-wins, so a standalone setup post would be overwritten
+// by the begin within one write-RTT (the same overwrite class the
+// ambient_stats piggyback comment documents) — riding the SAME event is
+// order-race-proof by construction. Pins two things: (a) EVERY begin event
+// carries the applied calibration in `setup`; (b) a LATER spec's default
+// hint never clobbers a calibration this page load already claimed (the
+// W6.12 guard) — the begin still posts the ORIGINAL choice.
 //
 // setupState is a module-scoped variable shared by every test in this FILE
 // (loadModule()'s data: URL is byte-identical across calls, so Node's ESM
@@ -1114,7 +1116,7 @@ async function testSessionTerminalDuringWaitEndsTheSession() {
 // file that touches calibration, so it owns BOTH scenarios in one function
 // rather than risking order-dependent leakage across two.
 // ============================================================================
-async function testDefaultCalibrationHintPostsBeforeFirstBeginAndNeverClobbersAnExplicitChoice() {
+async function testEveryBeginCarriesTheAppliedCalibrationAndNeverClobbersAnExplicitChoice() {
   statusHistory.length = 0;
   const { onPlanStart, applyDefaultCalibrationHintSilently } = await loadModule();
   globalThis.__recorder = makeRecorder();
@@ -1122,9 +1124,9 @@ async function testDefaultCalibrationHintPostsBeforeFirstBeginAndNeverClobbersAn
   globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
 
   // --- (a) a fresh page load with a resolvable default hint applies it
-  // silently (boot()'s call, mirrored here) and the plan flow posts it
-  // BEFORE the first begin_capture.
-  const specWithHint = planSpec({ target: 1, maxAttempts: 1 });
+  // silently (boot()'s call, mirrored here) and every begin event carries
+  // it — including the retry begin after a rejected attempt.
+  const specWithHint = planSpec({ target: 2, maxAttempts: 3 });
   specWithHint.default_setup = {
     calibration: {
       mode: "serial",
@@ -1135,31 +1137,40 @@ async function testDefaultCalibrationHintPostsBeforeFirstBeginAndNeverClobbersAn
   };
   applyDefaultCalibrationHintSilently(specWithHint);
 
-  const { client, posted } = makeFakePlanClient({ target: 1, maxAttempts: 1 });
+  const { client, posted } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 3,
+    resultFor: (index, attempt) => (
+      attempt === 1 ? { accepted: false, error: "SNR too low." } : { accepted: true }
+    ),
+  });
   const ctx = makeCtx(specWithHint, client);
   await onPlanStart(ctx);
+  // Attempt 1 rejected -> "Try again" -> attempt 2 accepted -> "Next" ->
+  // attempt 3 accepted (set complete): three begin posts total.
+  let next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+  next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
 
-  const setupOnlyEvents = posted.filter(
-    (e) => e.setup && !e.begin_capture && !e.armed,
-  );
+  const beginEvents = posted.filter((e) => e.begin_capture && !e.armed);
   assert.equal(
-    setupOnlyEvents.length, 1,
-    `expected exactly one standalone setup pre-post, got: ${JSON.stringify(posted)}`,
+    beginEvents.length, 3,
+    `expected three begin posts (reject, retry, next), got: ${JSON.stringify(posted)}`,
   );
-  assert.deepEqual(setupOnlyEvents[0].setup.calibration, {
-    mode: "stored", calibration_id: "cal-household", model: "minidsp_umik2",
-  });
-  const setupIndex = posted.indexOf(setupOnlyEvents[0]);
-  const firstBeginIndex = posted.findIndex((e) => e.begin_capture && !e.armed);
-  assert.ok(
-    setupIndex >= 0 && firstBeginIndex >= 0 && setupIndex < firstBeginIndex,
-    "the setup pre-post must precede the first begin_capture",
-  );
+  for (const event of beginEvents) {
+    assert.deepEqual(
+      event.setup && event.setup.calibration,
+      { mode: "stored", calibration_id: "cal-household", model: "minidsp_umik2" },
+      `every begin event must piggyback the applied calibration, got: ${JSON.stringify(event)}`,
+    );
+  }
 
   // --- (b) a DIFFERENT default hint arriving in a later spec (a fresh
   // boot() in the same tab, or a subsequent session) must never clobber the
   // calibration this page load already claimed (W6.12's existing guard) —
-  // and the plan flow must still post the ORIGINAL choice, not the new hint.
+  // and the begin must still post the ORIGINAL choice, not the new hint.
   const specWithDifferentHint = planSpec({ target: 1, maxAttempts: 1 });
   specWithDifferentHint.default_setup = {
     calibration: {
@@ -1175,12 +1186,10 @@ async function testDefaultCalibrationHintPostsBeforeFirstBeginAndNeverClobbersAn
   const ctx2 = makeCtx(specWithDifferentHint, client2);
   await onPlanStart(ctx2);
 
-  const setupOnlyEvents2 = posted2.filter(
-    (e) => e.setup && !e.begin_capture && !e.armed,
-  );
-  assert.equal(setupOnlyEvents2.length, 1);
+  const beginEvents2 = posted2.filter((e) => e.begin_capture && !e.armed);
+  assert.equal(beginEvents2.length, 1);
   assert.deepEqual(
-    setupOnlyEvents2[0].setup.calibration,
+    beginEvents2[0].setup.calibration,
     { mode: "stored", calibration_id: "cal-household", model: "minidsp_umik2" },
     "a later default hint must never clobber the calibration this page load already claimed",
   );
@@ -1204,7 +1213,7 @@ const tests = [
   testAdvanceDeferredHoldHeadingIsANoOpWhenNothingHeld,
   testCountdownNextEntryShowsVisibleCancelableCountdown,
   testSessionTerminalDuringWaitEndsTheSession,
-  testDefaultCalibrationHintPostsBeforeFirstBeginAndNeverClobbersAnExplicitChoice,
+  testEveryBeginCarriesTheAppliedCalibrationAndNeverClobbersAnExplicitChoice,
 ];
 
 let failure = null;

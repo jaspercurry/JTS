@@ -97,9 +97,9 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         "schema_version": 1,
         "capture_protocol_version": 3,
         "supported_capture_protocol_versions": [1, 2, 3],
-        "capture_page_build": "20260719.3",
+        "capture_page_build": "20260719.4",
     }
-    assert "main.js?v=20260719-3" in index_html
+    assert "main.js?v=20260719-4" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     assert 'from "./render.js?v=20260711-1"' in main_js
     assert 'from "./measurement-audio.js?v=20260711-4"' in main_js

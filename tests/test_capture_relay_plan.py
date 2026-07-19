@@ -197,12 +197,12 @@ class PhonePlanDriver:
         self.results_seen = 0
         self.finished = False
         # W6.13: the page-side fix (capture-page/js/main.js's
-        # postPlanSetupBeforeFirstBegin) posts the household-mic setup once
-        # before the very first begin_capture, rather than only inside the
-        # later `armed` event — the relay's mutable event slot is last-write-
-        # wins, so whichever event a Pi poll actually observes must carry
-        # `setup` for PollState.setup to accumulate it from round 1. Opt-in
-        # (default None) so every existing test's begin() payload stays
+        # beginAndAwaitAuthorization) PIGGYBACKS the household-mic setup on
+        # every begin_capture post, rather than only inside the later `armed`
+        # event — the relay's mutable event slot is last-write-wins, so
+        # whichever event a Pi poll actually observes must carry `setup` for
+        # PollState.setup to accumulate it from round 1. Opt-in (default
+        # None) so every existing test's begin() payload stays
         # byte-identical; set to model that fix's shape.
         self.setup = setup
 
@@ -419,16 +419,17 @@ def test_full_plan_round_trip_three_accepted_captures(caplog):
 
 
 def test_first_round_result_setup_reflects_whatever_event_carried_it(caplog):
-    """W6.13: capture-page/js/main.js's onPlanStart now posts a standalone
-    ``{setup: ...}`` event before the first begin_capture (the page-side fix
-    for the v2 crossover flow's "no calibration-picker screen" gap —
+    """W6.13: capture-page/js/main.js's beginAndAwaitAuthorization now
+    piggybacks ``setup`` on every begin_capture post (the page-side fix for
+    the v2 crossover flow's "no calibration-picker screen" gap —
     jasper.web.correction_crossover_v2.resolve_relay_calibration read nothing
     for the CHECK-phase capture because the household-mic hint only ever rode
     the LATER `armed` event). Pin the Pi-side half: PollState.setup is a
     generic field read off WHATEVER event the phone last posted, not
     special-cased to `armed` — so CaptureResult.setup for the very FIRST
-    round (CHECK) carries the calibration even when it rides the phone's
-    `begin_capture` post (this test) rather than only its later `armed` post
+    round (CHECK) carries the calibration when it rides the phone's
+    `begin_capture` post (this test — the piggyback shape) rather than only
+    its later `armed` post
     (test_full_plan_round_trip_three_accepted_captures's shape, which never
     sets `setup` at all)."""
     caplog.set_level(logging.INFO, logger="jasper.capture_relay.session")

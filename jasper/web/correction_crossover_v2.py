@@ -838,6 +838,28 @@ def default_setup_calibration_for_v2() -> Any | None:
         return None
 
 
+def _setup_calibration_observation(setup: Any) -> tuple[str, str]:
+    """What the capture's phone-reported setup held, redacted-safe (W6.13).
+
+    Returns ``(mode, calibration_id)`` for the uncalibrated-capture WARN so a
+    live journal line settles empirically whether the phone sent NO setup at
+    all (``mode="absent"``) or sent one whose calibration didn't resolve
+    (e.g. ``mode="none"``, or a stale ``calibration_id``) — the round-5
+    ambiguity. Only the mode and the calibration_id (a stored-record id, not
+    a secret) are ever extracted; a serial or an uploaded calibration file
+    body never reaches the journal.
+    """
+    if not isinstance(setup, Mapping):
+        return "absent", ""
+    calibration = setup.get("calibration")
+    if not isinstance(calibration, Mapping):
+        return "absent", ""
+    return (
+        str(calibration.get("mode") or ""),
+        str(calibration.get("calibration_id") or ""),
+    )
+
+
 def bind_production_analyze(
     *,
     resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
@@ -861,11 +883,12 @@ def bind_production_analyze(
 
         wav = getattr(result, "wav", result)
         samples, rate = _wav_bytes_to_samples(wav)
+        setup = getattr(result, "setup", None)
         record = None
         if resolve_calibration is not None:
             try:
                 record = resolve_calibration(
-                    getattr(result, "setup", None), getattr(result, "device", None)
+                    setup, getattr(result, "device", None)
                 )
             except (OSError, RuntimeError, TypeError, ValueError):
                 # A resolver failure downgrades to an annotated-uncalibrated
@@ -886,11 +909,22 @@ def bind_production_analyze(
             if isinstance(record, CalibrationCurve):
                 curve = record
         if curve is None:
+            # W6.13 round-5 diagnostic: name what the phone-reported setup
+            # actually held at resolve time so a live journal line
+            # distinguishes "the phone sent nothing" (setup_mode=absent)
+            # from "the phone sent a choice that didn't resolve"
+            # (setup_mode=none/stored/..., with its id). Redacted-safe —
+            # see _setup_calibration_observation.
+            setup_mode, setup_calibration_id = _setup_calibration_observation(
+                setup
+            )
             log_event(
                 logger,
                 "correction.crossover_v2_uncalibrated_capture",
                 level=logging.WARNING,
                 phase=program.phase,
+                setup_mode=setup_mode,
+                setup_calibration_id=setup_calibration_id,
             )
         if meta is not None:
             meta.setdefault("calibration", {})[program.phase] = {
