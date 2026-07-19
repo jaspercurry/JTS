@@ -314,8 +314,12 @@ def _evaluate_program(
             program_id=program.program_id,
         )
         try:
+            # program_admission=True: a CHECK/MEASURE program's channel
+            # routing carries each driver's crossover filter (the tweeter's
+            # protective HP included) by construction -- the proven-HP path
+            # (see resolve_driver_excitation_ceilings).
             prepared = prepare_driver_excitation_plan(
-                topology, safety_profile, requested
+                topology, safety_profile, requested, program_admission=True
             )
         except ExcitationSafetyPlanError as exc:
             reason = _map_safety_plan_error(exc)
@@ -346,8 +350,11 @@ def _evaluate_program(
             if not target_fingerprint:
                 continue  # already refused above as TARGET_NOT_MAPPED
             try:
+                # Same proven-HP path as the per-segment plans above: this is
+                # the whole-file cap the rendered channel's true peak is
+                # attested against.
                 _band, cap_dbfs = resolve_driver_excitation_ceilings(
-                    safety_profile, target_fingerprint
+                    safety_profile, target_fingerprint, program_admission=True
                 )
             except ExcitationSafetyPlanError as exc:
                 refusals.append(_map_safety_plan_error(exc))

@@ -7,13 +7,18 @@
 The closed sweep/level ledger below derives every field passed to Shared's
 persisted admission types. It deliberately remains pure: the production
 adapter owns fresh live-graph proof, persistence, exact WAV binding, guarded
-playback, and writer-lock lifetime.
+playback, and writer-lock lifetime. The one deliberate exception is a single
+``log_event`` call in :func:`resolve_driver_excitation_ceilings` when it
+supersedes a stale HF class-default ceiling with the sensitivity-derived one
+-- an audit line, not a state mutation; see the W6.5 ruling in that function's
+docstring.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import logging
 import math
 from typing import Any, Mapping
 
@@ -23,10 +28,16 @@ from jasper.audio_measurement.excitation_admission import (
     ExcitationRequest,
     FrequencyBand,
 )
+from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from ._common import require_sha256_hex
-from .driver_protection import driver_protection_profile
+from .driver_protection import (
+    HIGH_FREQUENCY_ROLES,
+    LOW_FREQUENCY_ROLES,
+    derive_hf_measurement_ceiling_dbfs,
+    driver_protection_profile,
+)
 from .driver_safety import evaluate_driver_safety_profile
 from .measurement import active_driver_targets
 from .test_signal_plan import (
@@ -38,6 +49,8 @@ from .test_signal_plan import (
 SCHEMA_VERSION = 1
 PREPARED_PLAN_KIND = "jts_active_prepared_driver_excitation_plan"
 ACTIVE_DRIVER_MAX_REPEAT_COUNT = 3
+
+logger = logging.getLogger(__name__)
 
 
 class ExcitationSafetyPlanError(ValueError):
@@ -349,9 +362,75 @@ def _target_for_request(
     return matches[0]
 
 
+def _sensitivity_db(target: Mapping[str, Any]) -> float | None:
+    """A target's declared ``sensitivity_db_2v83_1m``, or ``None`` if absent.
+
+    Optional field on the confirmed safety profile: many households won't
+    know their driver's datasheet sensitivity, and the derivation below
+    degrades gracefully (falls back to the class-default ceiling) when it's
+    missing on either side.
+    """
+
+    value = target.get("sensitivity_db_2v83_1m")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _derived_hf_ceiling_dbfs(
+    safety_profile: Mapping[str, Any],
+    hf_target: Mapping[str, Any],
+) -> float | None:
+    """The sensitivity-derived HF ceiling for ``hf_target``, or ``None`` when
+    the declared specs cannot support one (missing sensitivity on either
+    side) -- the caller then keeps the existing class-default ceiling.
+
+    Conservative across multiple low-frequency siblings (a 3-way's woofer AND
+    mid): takes the MINIMUM derived candidate across every low-frequency
+    target with a declared sensitivity, so the high-frequency driver's
+    ceiling never exceeds what is safe against any one of them.
+    """
+
+    sens_hf = _sensitivity_db(hf_target)
+    if sens_hf is None:
+        return None
+    targets = safety_profile.get("targets")
+    if not isinstance(targets, list):
+        return None
+    candidates: list[float] = []
+    for candidate in targets:
+        if not isinstance(candidate, Mapping):
+            continue
+        if str(candidate.get("role") or "") not in LOW_FREQUENCY_ROLES:
+            continue
+        sens_lf = _sensitivity_db(candidate)
+        if sens_lf is None:
+            continue
+        lf_fingerprint = str(candidate.get("target_fingerprint") or "")
+        if not lf_fingerprint:
+            continue
+        try:
+            _lf_band, lf_cap = resolve_driver_excitation_ceilings(
+                safety_profile, lf_fingerprint
+            )
+        except ExcitationSafetyPlanError:
+            continue
+        candidates.append(
+            derive_hf_measurement_ceiling_dbfs(
+                declared_lf_driver_cap_dbfs=lf_cap,
+                sens_hf_db=sens_hf,
+                sens_lf_db=sens_lf,
+            )
+        )
+    return min(candidates) if candidates else None
+
+
 def resolve_driver_excitation_ceilings(
     safety_profile: Mapping[str, Any],
     target_fingerprint: str,
+    *,
+    program_admission: bool = False,
 ) -> tuple[FrequencyBand, float]:
     """The confirmed permitted band + maximum effective-peak ceiling for one
     driver target.
@@ -364,6 +443,21 @@ def resolve_driver_excitation_ceilings(
     via :func:`prepare_driver_excitation_plan`) still re-derives and
     re-validates these same ceilings against the actual requested plan; this
     function has no authority of its own, it is shared math.
+
+    ``program_admission`` marks the PROVEN protective-HP path (operator
+    ruling, 2026-07-19: two invariants, one owner each -- wrong-frequency-range
+    stays the declared hard band + proven HP, untouched; too-loud becomes ONE
+    derived ceiling instead of stacked hedges). Callers whose excitation rides
+    a graph that carries the driver's crossover high-pass by construction --
+    :mod:`jasper.active_speaker.program_admission` and its per-segment plans
+    -- pass ``True`` so a high-frequency driver's measurement ceiling can be
+    derived from a low-frequency sibling's own declared cap and the two
+    drivers' declared sensitivities, rather than pinned at the naked-tone
+    class default (sized for an UNPROTECTED tone, not a HP-proven one).
+    Every other caller (isolated driver capture, the v1 ramp solver, ear-check
+    ramps) defaults to ``False`` and keeps exactly today's
+    ``min(declared, class_default)`` ceiling -- one conditional, no new
+    subsystem.
     """
 
     target = _target_for_request(safety_profile, target_fingerprint)
@@ -401,10 +495,31 @@ def resolve_driver_excitation_ceilings(
         role,
         driver_style=target.get("driver_style"),
     )
-    maximum_peak = min(
-        float(profile_limits["max_effective_peak_dbfs"]),
-        protection.max_auto_level_dbfs,
-    )
+    declared_peak = float(profile_limits["max_effective_peak_dbfs"])
+    maximum_peak = min(declared_peak, protection.max_auto_level_dbfs)
+    # Supersede-the-seed rule (W6.5): only on the proven-HP path, only for
+    # high-frequency roles, and only when the declared cap still EQUALS the
+    # class-default seed the wizard writes at declaration time -- a value
+    # that exactly matches the seed is the unedited default, not a deliberate
+    # operator choice, so it is safe to replace with the derived ceiling. A
+    # declared value that differs (even if quieter) is a real household
+    # choice and is always respected as-is, never overridden.
+    if (
+        program_admission
+        and role in HIGH_FREQUENCY_ROLES
+        and declared_peak == protection.max_auto_level_dbfs
+    ):
+        derived_peak = _derived_hf_ceiling_dbfs(safety_profile, target)
+        if derived_peak is not None and derived_peak != maximum_peak:
+            log_event(
+                logger,
+                "active_speaker.excitation_ceiling_superseded",
+                target_id=target_id,
+                role=role,
+                legacy_ceiling_dbfs=f"{maximum_peak:.1f}",
+                derived_ceiling_dbfs=f"{derived_peak:.1f}",
+            )
+            maximum_peak = derived_peak
     return permitted_band, maximum_peak
 
 
@@ -412,8 +527,15 @@ def prepare_driver_excitation_plan(
     topology: OutputTopology,
     safety_profile: Mapping[str, Any],
     requested_plan: RequestedDriverExcitationPlan,
+    *,
+    program_admission: bool = False,
 ) -> PreparedDriverExcitationPlan:
-    """Bind exact current policy for Shared admission or a typed refusal."""
+    """Bind exact current policy for Shared admission or a typed refusal.
+
+    ``program_admission`` is forwarded verbatim to
+    :func:`resolve_driver_excitation_ceilings` -- see that function's
+    docstring for the proven-HP-path ceiling derivation it gates.
+    """
 
     if not isinstance(topology, OutputTopology):
         raise ExcitationSafetyPlanError("topology must be OutputTopology")
@@ -444,7 +566,9 @@ def prepare_driver_excitation_plan(
             ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
         )
     permitted_band, maximum_peak = resolve_driver_excitation_ceilings(
-        safety_profile, requested_plan.target_fingerprint
+        safety_profile,
+        requested_plan.target_fingerprint,
+        program_admission=program_admission,
     )
     protection = driver_protection_profile(
         role,

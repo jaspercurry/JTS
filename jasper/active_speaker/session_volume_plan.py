@@ -151,8 +151,11 @@ def session_measurement_volume_db(
     """
     caps: list[float] = []
     for target_fingerprint in target_fingerprints:
+        # program_admission=True: this session volume exists ONLY to serve
+        # the v2 conductor's CHECK/MEASURE programs (this module's own
+        # docstring) -- always the proven-HP path.
         _band, maximum_peak = resolve_driver_excitation_ceilings(
-            safety_profile, target_fingerprint
+            safety_profile, target_fingerprint, program_admission=True
         )
         caps.append(float(maximum_peak))
     if not caps:

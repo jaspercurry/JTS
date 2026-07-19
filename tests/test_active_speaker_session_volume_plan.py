@@ -29,11 +29,17 @@ from jasper.active_speaker.session_volume_plan import (
 from tests.active_speaker_fixtures import mono_output_topology
 
 
-def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -70.0):
+def _profile_and_targets(
+    *,
+    woofer_peak: float = -30.0,
+    tweeter_peak: float = -70.0,
+    sensitivities: dict[str, float] | None = None,
+):
     topology = mono_output_topology()
+    sensitivities = sensitivities or {}
 
     def _driver(target_id, role, peak, required):
-        return {
+        entry = {
             "target_id": target_id,
             "role": role,
             "model": f"model-{role}",
@@ -54,6 +60,9 @@ def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -7
                 **({"baffle_width_mm": 210} if role == "woofer" else {}),
             },
         }
+        if role in sensitivities:
+            entry["sensitivity_db_2v83_1m"] = sensitivities[role]
+        return entry
 
     settings = {
         "drivers": [
@@ -124,6 +133,22 @@ def test_session_measurement_volume_targets_the_least_sensitive_driver():
     profile2, targets2 = _profile_and_targets(woofer_peak=-30.0, tweeter_peak=-70.0)
     # caps: woofer -30, tweeter -70; max = -30 -> V = min(-20, -30) = -30.
     assert session_measurement_volume_db(profile2, targets2.values()) == -30.0
+
+
+def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
+    """W6.5 pin: this module exclusively serves the program-admission v2
+    conductor, so it always resolves ceilings on the proven-HP path. With
+    JTS3's sensitivities declared and the tweeter at its -65 seed, the
+    tweeter's OWN resolved cap moves from -65 to -35 (derived) -- but
+    ``max(caps)`` is still the woofer's -8, so the derived session volume is
+    unchanged. No behavior change expected; this pins that.
+    """
+    profile, targets = _profile_and_targets(
+        woofer_peak=-8.0,
+        tweeter_peak=-65.0,
+        sensitivities={"woofer": 83.3, "tweeter": 108.5},
+    )
+    assert session_measurement_volume_db(profile, targets.values()) == -20.0
 
 
 def test_session_measurement_volume_refuses_unmeasurable_profile():

@@ -576,6 +576,23 @@ registers, keeping the mux gate-lease abort able to stop an in-flight sweep;
 slot; (E) the stale-active reset, recover-volume routing, and 1800 s ceiling
 didn't actually recover.
 
+**W6.5 — sensitivity-derived HF measurement ceiling (2026-07-19 ruling).**
+The −65 dBFS tweeter cap above was hardware-measured to read near-inaudible
+(27 dB in-band SNR) against the woofer's comfortable −26 dBFS-effective
+pilots — a 25.2 dB sensitivity delta (B&C DE250-8 ~108.5 dB vs Dayton Epique
+E150HE-44 ~83.3 dB) the naked-tone class default never accounted for. Driver
+protection is now exactly two invariants, one owner each: wrong-frequency-range
+(the declared hard band + the proven protective HP, unchanged) and too-loud
+(one derived ceiling instead of stacked hedges). On the program-admission path
+only — a graph that carries the driver's crossover HP by construction — an
+HF driver's ceiling is derived from a low-frequency sibling's own cap and the
+two drivers' declared sensitivities, `min(declared_lf_cap − (sens_hf −
+sens_lf), −35 dBFS)`, superseding the class-default seed only when the
+household hasn't already typed a real, different value. Every other caller
+(isolated driver capture, the v1 ramp solver, ear-check ramps) is unaffected.
+See `jasper.active_speaker.driver_protection.derive_hf_measurement_ceiling_dbfs`
+and `jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings`.
+
 ## 8. Primary sources
 
 - **Appendix A** — v1 deep-research report (verbatim), including the citation
