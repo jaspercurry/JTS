@@ -22,7 +22,10 @@ from jasper.active_speaker import (
     emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
 )
-from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+from jasper.active_speaker.camilla_yaml import (
+    BASELINE_LIMITER_CLIP_LIMIT_DB,
+    STARTUP_MUTE_GAIN_DB,
+)
 from jasper.active_speaker.runtime_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -251,7 +254,12 @@ def _active_baseline_yaml(
 
 
 def _driver_domain_yaml(
-    layout: str, way: int, *, channel: str = "left", pair_trim_db: float = 0.0,
+    layout: str,
+    way: int,
+    *,
+    channel: str = "left",
+    pair_trim_db: float = 0.0,
+    bass_extension_profile=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_driver_domain_config(
@@ -260,6 +268,7 @@ def _driver_domain_yaml(
         program_channel=channel,
         pair_trim_db=pair_trim_db,
         baseline_id=f"follower-{layout}-{way}way",
+        bass_extension_profile=bass_extension_profile,
     )
 
 
@@ -467,6 +476,55 @@ def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
     assert accepted.allowed is True
     assert refused.allowed is False
     assert refused.issues[0]["code"] == "bass_extension_source_invalid"
+
+
+@pytest.mark.parametrize("graph_kind", ["solo", "driver_domain"])
+def test_desired_sealed_graph_requires_unchanged_bass_owner_limiter(
+    graph_kind: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    profile = _sealed_profile(topology, applied)
+    if graph_kind == "solo":
+        text = _active_baseline_yaml(
+            "mono", 2, bass_extension_profile=profile
+        )
+    else:
+        text = _driver_domain_yaml(
+            "mono", 2, bass_extension_profile=profile
+        )
+
+    pristine = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=text,
+        applied_baseline_state=applied,
+        desired_profile=profile,
+    )
+    assert pristine.allowed is True, pristine.issues
+    assert pristine.classification == (
+        GRAPH_APPROVED_ACTIVE_RUNTIME
+        if graph_kind == "solo"
+        else GRAPH_DRIVER_DOMAIN_BASELINE
+    )
+
+    payload = yaml.safe_load(text)
+    limiter = payload["filters"]["as_woofer_baseline_limiter"]["parameters"]
+    assert limiter["clip_limit"] == BASELINE_LIMITER_CLIP_LIMIT_DB
+    limiter["clip_limit"] = -2.0
+
+    graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="desired",
+        graph_text=_dump_baseline(text, payload),
+        applied_baseline_state=applied,
+        desired_profile=profile,
+    )
+
+    assert graph.allowed is False
+    assert "active_output_driver_chain_unrecognized" in {
+        issue["code"] for issue in graph.issues
+    }
 
 
 def test_desired_boundary_distinguishes_explicit_no_profile_from_omission() -> None:

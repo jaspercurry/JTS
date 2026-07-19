@@ -1056,6 +1056,7 @@ def _baseline_gain_limiter_safe(
     *,
     gain_name: str,
     limiter_name: str,
+    exact_baseline_limiter: bool = False,
 ) -> bool:
     gain_params = _filter_params(payload, gain_name)
     gain = _strict_finite_number(gain_params.get("gain"))
@@ -1069,7 +1070,11 @@ def _baseline_gain_limiter_safe(
         and gain_params.get("mute") is False
         and _filter_type(payload, limiter_name) == "Limiter"
         and clip_limit is not None
-        and clip_limit <= 0.0
+        and (
+            clip_limit == BASELINE_LIMITER_CLIP_LIMIT_DB
+            if exact_baseline_limiter
+            else clip_limit <= 0.0
+        )
         and limiter_params.get("soft_clip") is True
     )
 
@@ -1105,6 +1110,7 @@ def _baseline_output_chain(
                     payload,
                     gain_name=_sub_baseline_gain_name(),
                     limiter_name=_sub_baseline_limiter_name(),
+                    exact_baseline_limiter=bass_extension,
                 )
             )
             else None
@@ -1170,6 +1176,7 @@ def _baseline_output_chain(
             payload,
             gain_name=expected_tail[1],
             limiter_name=limiter_name,
+            exact_baseline_limiter=bass_extension,
         )
     ):
         return None
