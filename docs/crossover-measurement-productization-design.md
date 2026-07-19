@@ -164,7 +164,8 @@ two-level pilot pair (~2 s)** so each capture carries its own linearity
 evidence, and MEASURE acceptance additionally requires the woofer repeat
 pair to agree in level within ±0.3 dB (a gain-riding detector complementing
 the timing baselines). The VERIFY pilot pair rides its own flat mid-woofer
-band (~200–800 Hz), NOT the summed sweep's full band (W6.7 — the sweep
+band (~200–800 Hz, hi bound clamped to Fc/2.5 for low-Fc presets, with an
+[Fc/8, Fc/4] fallback), NOT the summed sweep's full band (W6.7 — the sweep
 deliberately crosses the crossover overlap to see the applied interference
 notch; a pilot chirp swept through that same notch goes noise-dominated and
 misfires the linearity ratio on noise rather than AGC behavior).

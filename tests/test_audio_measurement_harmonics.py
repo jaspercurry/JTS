@@ -238,3 +238,57 @@ def test_notch_excluded_tracking_still_fails_on_genuine_broadband_divergence():
     )
     assert old_max > 1.5
     assert new_max > 1.5
+
+
+def test_measured_notch_at_predicted_flat_bins_still_fails():
+    """W6.7 gate case A — pins the measured-side asymmetry. The exclusion key
+    MUST be the PREDICTED level, never the measured one: a deep MEASURED
+    notch where the prediction is FLAT is the wrong-polarity/wrong-alignment
+    discriminant — real evidence the applied graph does not sum the way the
+    candidate predicted — and must count in full. If the exclusion key were
+    ever flipped to the measured level, this fixture's measured notch would
+    be excluded and the gate would silently pass a broken apply; the failing
+    assertions below are the guard against that flip."""
+    freqs = np.geomspace(200.0, 20000.0, 4000)
+    band = (500.0, 8000.0)
+    ripple = 0.2 * np.sin(np.log(freqs) * 7.0)
+
+    predicted_db = ripple.copy()  # flat prediction: no bin is ever excluded
+    measured_db = _synthetic_notch_db(
+        freqs, center_hz=2000.0, depth_db=25.0, half_width_octave=0.2
+    ) + ripple
+
+    rms, max_abs = notch_excluded_tracking_error_db(
+        freqs, measured_db, predicted_db, band, notch_exclusion_db=12.0,
+    )
+    assert rms > 1.5  # both comparators fail: nothing was excluded
+    assert max_abs > 1.5
+    # And byte-identical to the raw comparator -- a flat prediction has no
+    # notch interior to exclude.
+    raw_rms, raw_max = tracking_error_db(freqs, measured_db, predicted_db, band)
+    assert max_abs == pytest.approx(raw_max)
+    assert rms == pytest.approx(raw_rms)
+
+
+def test_full_interference_inversion_still_fails():
+    """W6.7 gate case B — a polarity inversion of the applied sum. Two-tap
+    comb model: the predicted (in-phase) sum nulls at k·2000 Hz; the
+    inverted-polarity measured sum fills those nulls and nulls instead at
+    the half-period offsets (1000/3000/5000 Hz…) where the prediction is
+    FLAT. Exclusion (keyed on the prediction) removes only the PREDICTED
+    null interiors; the measured nulls at predicted-flat bins remain fully
+    counted and fail the gate by a wide margin."""
+    freqs = np.geomspace(200.0, 20000.0, 4000)
+    band = (500.0, 8000.0)
+    tau = 1.0 / 2000.0
+    predicted_db = 20.0 * np.log10(
+        np.maximum(2.0 * np.abs(np.sin(np.pi * freqs * tau)), 1e-6)
+    )
+    measured_db = 20.0 * np.log10(
+        np.maximum(2.0 * np.abs(np.cos(np.pi * freqs * tau)), 1e-6)
+    )
+    rms, max_abs = notch_excluded_tracking_error_db(
+        freqs, measured_db, predicted_db, band, notch_exclusion_db=12.0,
+    )
+    assert rms > 1.5
+    assert max_abs > 1.5

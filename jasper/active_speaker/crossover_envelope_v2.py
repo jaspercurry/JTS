@@ -201,6 +201,12 @@ def _verify_fail_envelope(
                 # state — after an undo the v2 state still says applied.
                 # W5b owns v2-aware restore semantics (clear the stale
                 # applied flag + candidate on successful restore).
+                # W5b CHECKLIST ITEM (W6.7 gate N2): a session reset that
+                # clears the durable v2 state while the applied graph is
+                # still live loses this Undo affordance (no verify-phase
+                # state remains to render verify_fail from) — W5b's
+                # v2-aware restore/reset semantics should keep an Undo
+                # path reachable whenever an applied candidate is in force.
                 "endpoint": "/correction/crossover/restore",
                 "body": {},
             },

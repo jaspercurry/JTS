@@ -498,6 +498,15 @@ def notch_excluded_tracking_error_db(
     hardware bug where a 27.8 dB "max" tracking error was entirely a shifted
     predicted notch, not a broadband alignment problem).
 
+    The exclusion key is deliberately asymmetric: it reads the PREDICTED
+    level only, never the measured one. A deep MEASURED notch at bins where
+    the prediction is flat is the wrong-polarity / wrong-alignment
+    discriminant — real evidence the applied graph does not sum as the
+    candidate predicted — and must count in full. Keying on the measured
+    level would exclude exactly that evidence and silently pass a broken
+    apply (pinned by the case-A/case-B fixtures in
+    ``tests/test_audio_measurement_harmonics.py``).
+
     Falls back to the full band when every bin would be excluded (a
     degenerate all-notch band), so the comparator is never computed over an
     empty set.
