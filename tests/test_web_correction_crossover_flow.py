@@ -2014,7 +2014,9 @@ def test_action_row_has_a_single_render_authority():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert result == {"ok": True, "passed": 15}
+    # 15 original cases + 3 W6.10 review-during-hold cases (Apply renders as
+    # the single primary while the phone holds; connect link/QR suppressed).
+    assert result == {"ok": True, "passed": 18}
 
 
 def test_start_over_confirm_is_grouping_aware_and_partial_is_honest():

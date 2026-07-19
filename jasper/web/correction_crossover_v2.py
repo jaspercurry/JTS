@@ -181,6 +181,45 @@ def clear_v2_state() -> None:
             )
 
 
+def reset_v2_journey_state() -> None:
+    """Start-over's v2 clear (W6.10, gate-amended for W6.8's Undo).
+
+    Clears the measurement-JOURNEY fields (session binding, accepted phases,
+    candidate, verify, failure, gain plan, priors, evidence) so the envelope
+    serves the clean start screen — but when a candidate is APPLIED, preserves
+    ``applied`` + ``pre_apply_profile``: those are the ONLY durable pointers the
+    v2-aware Undo (:func:`handle_v2_restore`, W6.8) restores from. A full
+    :func:`clear_v2_state` here would unlink the sole reference to the retained
+    pre-candidate snapshot, leaving the applied graph playing with Undo
+    permanently unreachable. Not applied ⇒ full clear, as before.
+    """
+    state = load_v2_state()
+    if state is None:
+        return
+    if not state.get("applied"):
+        clear_v2_state()
+        return
+    pre_apply_profile = state.get("pre_apply_profile")
+    save_v2_state({
+        "session_id": None,
+        "accepted_phases": [],
+        "applied": True,
+        "gain_plan_db": None,
+        "candidate": None,
+        "verify": None,
+        "failure": None,
+        "apply_blocked": None,
+        "verify_priors": None,
+        "evidence": None,
+        "pre_apply_profile": (
+            dict(pre_apply_profile)
+            if isinstance(pre_apply_profile, Mapping)
+            else None
+        ),
+    })
+    log_event(logger, "correction.crossover_v2_journey_reset_kept_applied")
+
+
 def observe_apply_success(
     candidate_fingerprint: str,
     *,
@@ -1055,6 +1094,7 @@ def build_v2_run_and_consume(
     evidence_refs: Mapping[str, Any] | None = None,
     poll_interval_s: float | None = None,
     timeout_s: float | None = None,
+    first_begin_timeout_s: float | None = None,
 ) -> Callable[[Any, Any], Any]:
     """The async ``run_and_consume(client, pi_session)`` for one v2 session.
 
@@ -1112,6 +1152,7 @@ def build_v2_run_and_consume(
             REASON_PROGRAM_UNPLAYABLE,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
+            V2_FIRST_BEGIN_TIMEOUT_S,
             TRANSIENT_AUTO_RETRY_CODES,
             CrossoverV2FlowError,
         )
@@ -1241,6 +1282,34 @@ def build_v2_run_and_consume(
                     "v2 terminal host-event post failed", exc_info=True
                 )
 
+        async def _post_session_over_host_event() -> None:
+            """Tell the phone the whole SESSION ended so its deferred-retry loop
+            stops waiting (W6.10 blocker #3).
+
+            A watchdog collapse during the "waiting for apply" REVIEW hold
+            (``CaptureTimeout``) otherwise left the phone re-posting the same
+            ``begin_capture`` against a still-200 relay session with NO terminal
+            signal — it sat on the hold screen forever (Chrome round 2: "the
+            phone saw nothing"). Unlike ``_post_terminal_failure_host_event``
+            this is session-level (``capture_set_exhausted``), not addressed to
+            the last-armed capture (MEASURE was accepted — a per-index
+            ``capture_result`` there would misreport it): the collapse is not a
+            per-capture verdict. Best-effort — the purge-driven 404 the phone
+            reads as ``deadSession`` is the backstop, and this post fails
+            harmlessly when the failure was the relay transport itself.
+            """
+            try:
+                await asyncio.to_thread(
+                    client.post_host_event,
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    {"phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED},
+                )
+            except (OSError, RuntimeError, ValueError):
+                logger.warning(
+                    "v2 session-over host-event post failed", exc_info=True
+                )
+
         try:
             opened = await volume.open()
         except (SessionVolumePlanError, MeasurementWindowError) as exc:
@@ -1275,6 +1344,13 @@ def build_v2_run_and_consume(
             plan_kwargs["poll_interval_s"] = poll_interval_s
         if timeout_s is not None:
             plan_kwargs["timeout_s"] = timeout_s
+        # The FIRST begin gets the wider v2 placement-reading budget (fold-in);
+        # every later window (arm/upload/between-capture) keeps the tight
+        # per-phase backstop. The REVIEW hold's own rescope lives in the runner.
+        plan_kwargs["first_begin_timeout_s"] = (
+            first_begin_timeout_s if first_begin_timeout_s is not None
+            else V2_FIRST_BEGIN_TIMEOUT_S
+        )
         capture_task = asyncio.create_task(
             asyncio.to_thread(
                 run_capture_plan,
@@ -1318,9 +1394,15 @@ def build_v2_run_and_consume(
             raise
         except (CaptureTimeout, CaptureAborted, CaptureFailed, RelayError, OSError):
             # Relay-session death (§5.10): relay_timeout ⇒ session restart; the
-            # walked-away user's volume is always drained.
+            # walked-away user's volume is always drained. Tell the phone the
+            # session is over BEFORE purging (W6.10 blocker #3) — mirror the
+            # catch-all arm's terminal-then-grace-then-purge so a watchdog
+            # collapse during the REVIEW hold reaches the phone's deferred-retry
+            # loop instead of leaving it polling a still-live session forever.
+            await _post_session_over_host_event()
             _persist_terminal_failure(conductor, REASON_RELAY_TIMEOUT)
             await _abandon_best_effort()
+            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
             raise
         except Exception as exc:  # noqa: BLE001 — cleanup-and-reraise, see below

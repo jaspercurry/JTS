@@ -1394,6 +1394,9 @@ function makePlanController(ctx) {
   state.abort = async (reason) => {
     if (state.aborted) return;
     state.aborted = true;
+    // A pending auto-advance countdown / scheduled begin must never fire a
+    // begin against a session the household just stopped.
+    clearAutoAdvance(ctx);
     if (reason === "stopped") {
       renderStoppedScreen(ctx);
     } else {
@@ -1487,16 +1490,127 @@ function renderPlanRetry(ctx, { index, attempt, target, reason }) {
 // awaiting the household's Apply tap before VERIFY) and asked the phone to
 // wait, not to act. No begin affordance here — `runPlanCapture`'s deferred
 // handling re-posts the SAME begin_capture automatically after a short poll,
-// so this is purely a waiting state with Stop still wired.
+// so this is purely a waiting state with Stop still wired. Prefers the waiting
+// entry's own title ("Waiting for apply") so the hold state reads coherently.
 function renderPlanDeferred(ctx, { index, target, reason }) {
-  const message = reason || "Waiting for the speaker to be ready for the next measurement.";
+  const entry = entryForIndex(ctx.spec, index);
+  const screenCopy = (entry && entry.screen) || {};
+  const heading = String(screenCopy.title || `Measurement ${index} of ${target}`);
+  const message = reason || String(screenCopy.body ||
+    "Waiting for the speaker to be ready for the next measurement.");
   setScreen(ctx.screenEl, [
-    el("h1", { class: "cap-heading", text: `Measurement ${index} of ${target}` }),
+    el("h1", { class: "cap-heading", text: heading }),
     el("p", { class: "cap-note", text: message }),
     el("div", { class: "cap-actions" }, [stopButtonEl()]),
   ]);
   ctx.captureRefs = { buttons: [], levelMeters: [] };
   setStatus(`Waiting — ${message}`, "info");
+}
+
+// §5.2 auto-advance policy carried per-entry in `screen.auto_advance` (page
+// policy, opaque to the wire schema): the FIRST capture requires a tap; MEASURE
+// auto-advances behind a visible cancelable countdown; VERIFY arms on the
+// apply-complete host event. Mirrors jasper/active_speaker/crossover_v2_flow.py.
+const AUTO_ADVANCE_TAP = "tap";
+const AUTO_ADVANCE_COUNTDOWN = "countdown";
+const AUTO_ADVANCE_ON_APPLY = "on_apply";
+
+function nextEntryAutoAdvance(ctx, nextIndex) {
+  const entry = entryForIndex(ctx.spec, nextIndex);
+  const screenCopy = (entry && entry.screen) || {};
+  return String(screenCopy.auto_advance || AUTO_ADVANCE_TAP);
+}
+
+// Cancel any pending auto-advance countdown / scheduled begin. Called before a
+// fresh round, on Stop, and on a re-boot (a stale timer must never fire a begin
+// against a new or dead session).
+function clearAutoAdvance(ctx) {
+  if (ctx.autoAdvanceTimer != null) {
+    clearTimeout(ctx.autoAdvanceTimer);
+    ctx.autoAdvanceTimer = null;
+  }
+  if (ctx.autoAdvanceInterval != null) {
+    clearInterval(ctx.autoAdvanceInterval);
+    ctx.autoAdvanceInterval = null;
+  }
+}
+
+// Start the next capture as a FRESH runPlanCapture (a macrotask, so the current
+// round's finally cleanup has already run) — mirrors a "Next measurement" tap
+// without the tap. Used for the on_apply hold (post the begin immediately as
+// liveness) and after a countdown elapses.
+function scheduleAutoBegin(ctx, { index, attempt }) {
+  clearAutoAdvance(ctx);
+  const controller = ctx.planController;
+  ctx.autoAdvanceTimer = setTimeout(() => {
+    ctx.autoAdvanceTimer = null;
+    if (controller && controller.aborted) return;
+    void runPlanCapture(ctx, { index, attempt });
+  }, 0);
+}
+
+// §5.2 visible, cancelable countdown between an accepted capture and the next
+// (MEASURE). Renders the upcoming entry's copy plus a live "Starting in N…"
+// counter with a Cancel that drops back to a manual begin affordance; on
+// elapse it auto-begins. Blocker #4b — the policy was carried but never shown.
+function renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttempt }) {
+  clearAutoAdvance(ctx);
+  const entry = entryForIndex(ctx.spec, nextIndex);
+  const screenCopy = (entry && entry.screen) || {};
+  const heading = String(screenCopy.title || `Measurement ${nextIndex} of ${target}`);
+  const body = String(screenCopy.body || "Starting the next measurement.");
+  let seconds = Math.max(1, Number(screenCopy.countdown_s) || 5);
+  const counter = el("p", { class: "cap-note", text: `Starting in ${seconds}…` });
+  const begin = () => {
+    clearAutoAdvance(ctx);
+    void runPlanCapture(ctx, { index: nextIndex, attempt: nextAttempt });
+  };
+  const cancel = button("Cancel", () => {
+    // Cancel drops to a manual begin affordance (the countdown is cancelable
+    // per §5.2) — the household starts when ready.
+    clearAutoAdvance(ctx);
+    renderPlanNext(ctx, { index, attempt, target });
+  }, true);
+  setScreen(ctx.screenEl, [
+    el("h1", { class: "cap-heading", text: heading }),
+    el("p", { class: "cap-note", text: body }),
+    counter,
+    el("div", { class: "cap-actions" }, [cancel, stopButtonEl()]),
+  ]);
+  ctx.captureRefs = { buttons: [], levelMeters: [] };
+  setStatus(`Next measurement starts in ${seconds}s — tap Cancel to hold.`, "info");
+  ctx.autoAdvanceInterval = setInterval(() => {
+    if (ctx.planController && ctx.planController.aborted) {
+      clearAutoAdvance(ctx);
+      return;
+    }
+    seconds -= 1;
+    if (seconds <= 0) {
+      begin();
+      return;
+    }
+    counter.textContent = `Starting in ${seconds}…`;
+  }, 1000);
+}
+
+// After an accepted capture, route to the next screen by the UPCOMING entry's
+// auto-advance policy (§5.2). on_apply → the hold owns the screen and the
+// deferred loop auto-posts the begin (no tap); countdown → a cancelable
+// countdown; tap (or a plan with no policy) → the manual "Next measurement".
+function advanceAfterAccepted(ctx, { index, attempt, target }) {
+  const nextIndex = index + 1;
+  const nextAttempt = attempt + 1;
+  const policy = nextEntryAutoAdvance(ctx, nextIndex);
+  if (policy === AUTO_ADVANCE_ON_APPLY) {
+    renderPlanDeferred(ctx, { index: nextIndex, target });
+    scheduleAutoBegin(ctx, { index: nextIndex, attempt: nextAttempt });
+    return;
+  }
+  if (policy === AUTO_ADVANCE_COUNTDOWN) {
+    renderPlanCountdown(ctx, { index, attempt, target, nextIndex, nextAttempt });
+    return;
+  }
+  renderPlanNext(ctx, { index, attempt, target });
 }
 
 function renderPlanAllDone(ctx) {
@@ -1598,6 +1712,24 @@ async function waitForCaptureAuthorized(client, spec, index, attempt, isAborted)
         refused: true,
         code: String(event.code || ""),
         error: String(event.error || "The speaker refused this measurement."),
+      };
+    }
+    if (phase === "capture_set_exhausted") {
+      // The whole SESSION ended while we were waiting to begin — a watchdog
+      // collapse during the "waiting for apply" hold posts capture_set_exhausted
+      // (W6.10 blocker #3). Treat it as terminal so the deferred-retry loop
+      // stops instead of polling a dead session forever, rather than waiting
+      // out the 20s admission timeout. Deliberately NOT extended to a rejected
+      // `capture_result`: the host-event slot is last-write-wins and nothing
+      // clears it when the phone consumes a verdict, so a retry begin's FIRST
+      // poll reads the PREVIOUS attempt's stale rejected verdict (the real Pi
+      // authorizes asynchronously ~0.75 s later) — matching on it would kill
+      // every first retry (the W6.10 gate blocker). A catch-all failure that
+      // posts a terminal capture_result still resolves via the purge-driven
+      // 404 (deadSession) a few seconds later.
+      return {
+        sessionOver: true,
+        reason: String(event.reason || event.error || "The measurement ended."),
       };
     }
     if (
@@ -1752,6 +1884,9 @@ async function runPlanCapture(ctx, { index, attempt }) {
   const { spec, client } = ctx;
   const controller = ctx.planController;
   const { target } = planTargetAndAttempts(spec);
+  // A fresh round cancels any pending auto-advance (e.g. a countdown, or a Cancel
+  // that dropped to the manual tap then the tap fired) so no stale timer fires.
+  clearAutoAdvance(ctx);
   let recorder = null;
   let wakeLock = null;
   let disposeWatch = () => {};
@@ -1770,6 +1905,14 @@ async function runPlanCapture(ctx, { index, attempt }) {
     const admission = await beginAndAwaitAuthorization(ctx, { index, attempt });
     if (controller.aborted || admission.aborted) return;
     if (admission.deadSession) {
+      renderSessionExpired(ctx);
+      endPlanSession(ctx);
+      return;
+    }
+    if (admission.sessionOver) {
+      // The session collapsed while we were holding/awaiting (blocker #3) —
+      // terminal, exactly like a dead session; the speaker page shows the
+      // specific reason and how to start over.
       renderSessionExpired(ctx);
       endPlanSession(ctx);
       return;
@@ -1888,7 +2031,9 @@ async function runPlanCapture(ctx, { index, attempt }) {
       return;
     }
     if (verdict.accepted) {
-      renderPlanNext(ctx, { index, attempt, target });
+      // Route by the UPCOMING entry's auto-advance policy (§5.2): a hold that
+      // owns the screen (on_apply), a cancelable countdown, or the manual tap.
+      advanceAfterAccepted(ctx, { index, attempt, target });
     } else {
       renderPlanRetry(ctx, { index, attempt, target, reason: verdict.error });
     }
@@ -2142,6 +2287,15 @@ async function onStart(ctx) {
 
 async function boot() {
   const screenEl = document.getElementById("screen");
+  // Own the screen with a clear, NON-interactive loading affordance for the
+  // couple of seconds boot takes (blocker #4d). This also clears any stale
+  // controls — e.g. a bfcache-restored DOM whose handlers are not yet
+  // re-attached would otherwise present dead, tap-swallowing buttons — so the
+  // household never taps a control that silently does nothing.
+  setScreen(screenEl, [
+    el("h1", { class: "cap-heading", text: "Connecting to your speaker…" }),
+    el("p", { class: "cap-note", text: "One moment — getting this measurement ready." }),
+  ]);
   let handle;
   try {
     handle = parseFragment(globalThis.location ? globalThis.location.hash : "");
@@ -2303,11 +2457,45 @@ async function buildMicPicker(beforeEl) {
   }
 }
 
+// The fragment (`#…`) the current wizard instance booted from. A hashchange to
+// a DIFFERENT fragment (a freshly-scanned QR / a new link, or the speaker page
+// swapping the link) must re-initialize the whole wizard — a page navigated by
+// fragment alone never re-runs its module, so without this the new session
+// would never load (blocker #4c).
+let currentBootHash = null;
+
+function readBootHash() {
+  return globalThis.location ? globalThis.location.hash : "";
+}
+
+async function bootFromHash() {
+  currentBootHash = readBootHash();
+  await boot();
+}
+
+function onHashChange() {
+  if (readBootHash() === currentBootHash) return;
+  // Tear down any in-flight capture on the OLD session first so its loop cannot
+  // clobber the fresh boot's render; the re-boot then rebuilds the wizard state
+  // from the new fragment.
+  if (typeof activeAbort === "function") void activeAbort("restarted");
+  void bootFromHash();
+}
+
 if (typeof document !== "undefined" && typeof window !== "undefined") {
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("hashchange", onHashChange);
+    // bfcache restore (Back/Forward): the DOM is restored with buttons whose
+    // handlers are NOT re-bound, so taps would be silently swallowed (blocker
+    // #4d). Re-boot to re-attach handlers against a fresh wizard state.
+    window.addEventListener("pageshow", (event) => {
+      if (event && event.persisted) void bootFromHash();
+    });
+  }
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
+    document.addEventListener("DOMContentLoaded", bootFromHash);
   } else {
-    boot();
+    void bootFromHash();
   }
 }
 
