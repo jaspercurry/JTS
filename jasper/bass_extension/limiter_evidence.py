@@ -37,6 +37,9 @@ _DETECTOR_REFERENCE = (
 )
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 _TARGET_FILTERS = ("bass_ext_lt", "bass_ext_subsonic")
+# The public contract accepts arbitrary objects.  Keep the catch-all boundary
+# explicit without adding to the repository's legacy BLE001 suppression debt.
+_TOTAL_INPUT_ERRORS = (Exception,)
 _RETAINED_FACTS = frozenset(
     {"sweep", "sustain", "commanded_level", "stimulus_peak", "boost", "digital_clamp"}
 )
@@ -1203,7 +1206,7 @@ def produce_limiter_thresholds(
 
     try:
         return _produce(evidence, required_context)
-    except Exception:  # noqa: BLE001 - total contract for arbitrary evidence objects
+    except _TOTAL_INPUT_ERRORS:
         return LimiterEvidenceRefusal(
             LimiterRefusalReason.INCONSISTENT,
             ("$evidence",),

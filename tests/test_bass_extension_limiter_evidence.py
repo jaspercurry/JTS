@@ -402,11 +402,7 @@ def test_inconsistent_evidence_never_raises_or_defaults(
 ) -> None:
     bundle, context = accepted
     mutation(bundle, context)
-    if isinstance(bundle, dict):
-        try:
-            _refresh(bundle)
-        except Exception:  # noqa: BLE001 - deliberately malformed fixtures
-            pass
+    _refresh(bundle)
     _refusal(bundle, context, LimiterRefusalReason.INCONSISTENT)
 
 
