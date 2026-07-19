@@ -270,6 +270,26 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     phases = backend.phases(session.session_id)
     assert "capture_deferred" in phases
     assert phases[-1] == "capture_set_complete"
+    # Fix 2 (W6.4): the CHECK capture's host-event sequence includes the
+    # sweep progress pair a real phone's `waitForSweepComplete`
+    # (capture-page/js/main.js:1252-1327) polls for around its own play
+    # wait -- "sweep_started" (cosmetic status text, line 1291-1293) then
+    # "sweep_complete" (the ONLY phase that makes `waitForSweepComplete`
+    # return, unblocking the phone to stop recording and upload -- line
+    # 1294-1295, 1311). Before Fix 2 the v2 runner posted neither, so a real
+    # phone would sit until that function's own timeout (line 1326) and
+    # never complete a v2 capture (W6 run 5). CHECK is index 1, the first
+    # phase authorized in a fresh session.
+    check_events = backend.host_events[session.session_id]
+    check_phases = [e.get("phase") for e in check_events]
+    authorized_at = check_phases.index("capture_authorized")
+    result_at = check_phases.index("capture_result")
+    assert check_phases[authorized_at:result_at + 1] == [
+        "capture_authorized", "sweep_started", "sweep_complete", "capture_result",
+    ]
+    # Exact shape `waitForSweepComplete` reads: `status.host_event.phase`.
+    assert check_events[authorized_at + 1]["phase"] == "sweep_started"
+    assert check_events[authorized_at + 2]["phase"] == "sweep_complete"
     # §5.5: exactly one volume open, closed (exact restore) on the done path.
     assert volume.events[0] == "open"
     assert volume.events[-1] == "close"
@@ -430,7 +450,8 @@ def test_verify_rearm_session_runs_exactly_one_capture():
     # The relay hosted exactly ONE capture — accepted phases were skipped at
     # the relay layer via the 1-entry plan + index map, not re-measured.
     assert backend.phases(session.session_id) == [
-        "capture_authorized", "capture_result", "capture_set_complete",
+        "capture_authorized", "sweep_started", "sweep_complete",
+        "capture_result", "capture_set_complete",
     ]
     assert volume.events == ["open", "close"]
 

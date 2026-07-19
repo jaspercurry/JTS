@@ -145,6 +145,17 @@ GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
 # the programmed delta.
 LINEARITY_TOLERANCE_DB = 0.5
 
+# Channel-map discriminator (Fix 1, W6.4 — see `_channel_map_ok`). PROVISIONAL
+# pending more W6 hardware runs. Derived from the run-5 hardware table
+# (2026-07-18/19, jts3): woofer pilots showed +22-30 dB TARGET rise / +<=2 dB
+# CROSS rise, tweeter pilots +27 dB TARGET rise / +1.9 dB CROSS rise — both
+# comfortably clear of these thresholds even though concurrent room LF rumble
+# had put the tweeter pilot's TOTAL in-band energy fraction (the pre-fix test)
+# at a coin flip (-51.8 dBFS in-band vs -51.1 dBFS of simultaneous woofer-band
+# room noise, against a -78.9 dBFS ambient floor — 27 dB of real, ignored SNR).
+CHANNEL_MAP_TARGET_RISE_DB = 12.0
+CHANNEL_MAP_CROSS_RISE_DB = 6.0
+
 ANALYSIS_KIND = "jts_program_analysis"
 
 
@@ -1061,11 +1072,59 @@ def _n_fft_for(*irs: np.ndarray) -> int:
 
 def _ambient_from_capture(
     capture: np.ndarray, sample_rate: int, ambient_seg: ProgramSegment, global_offset: int
-) -> dict[str, Any]:
+) -> tuple[np.ndarray, dict[str, Any]]:
     start = max(0, global_offset + ambient_seg.start_sample)
     end = min(capture.size, start + ambient_seg.n_samples)
     samples = capture[start:end]
-    return snr_policy.framed_ambient_band_report(samples, sample_rate, percentile=95)
+    return samples, snr_policy.framed_ambient_band_report(samples, sample_rate, percentile=95)
+
+
+def _band_rms_dbfs(samples: np.ndarray, sample_rate: int, f1_hz: float, f2_hz: float) -> float:
+    """RMS level (dBFS) of ``samples`` restricted to ``[f1_hz, f2_hz]``.
+
+    Hann-windowed before :func:`_bandlimit`'s zero-phase FFT bandpass: a raw
+    slice (a pilot window, or the ambient window) almost never starts/ends at
+    a zero crossing, so an un-windowed brick-wall FFT filter treats the slice
+    as implicitly periodic and leaks broadband energy from that boundary
+    discontinuity into every band — including a driver's OWN declared band
+    read back out of its own capture. The Hann taper (a fixed, length-
+    independent mean-square ratio) suppresses that leak; the constant
+    windowing loss it introduces cancels out of the TARGET / CROSS RISE
+    comparisons (`_channel_map_ok`) since both sides of every rise go through
+    the identical treatment, so it does not need correcting for here.
+    """
+    x = np.asarray(samples, dtype=np.float64)
+    if x.size < 8:
+        return DBFS_FLOOR
+    filtered = _bandlimit(x * np.hanning(x.size), sample_rate, f1_hz, f2_hz)
+    rms = float(np.sqrt(np.mean(np.square(filtered))))
+    if rms <= 0 or not math.isfinite(rms):
+        return DBFS_FLOOR
+    return max(DBFS_FLOOR, 20.0 * math.log10(rms))
+
+
+def _band_exclusive_pieces(
+    other_band: tuple[float, float], own_band: tuple[float, float]
+) -> list[tuple[float, float]]:
+    """The part(s) of ``other_band`` that fall OUTSIDE ``own_band``.
+
+    Two drivers' declared bands legitimately overlap around the crossover
+    point (design §5.2/§5.4 — MEASURE needs response through the Fc overlap
+    from both drivers), so a role's own pilot content routinely also falls
+    inside the shared part of an adjacent role's declared band — that shared
+    part carries no map-discrimination signal. The CROSS test (see
+    `_channel_map_ok`) only asks about the EXCLUSIVE remainder of the other
+    role's band (interval subtraction; 0, 1, or 2 pieces), where a
+    correctly-wired driver's own out-of-band rolloff makes energy absent.
+    """
+    o1, o2 = other_band
+    a1, a2 = own_band
+    pieces: list[tuple[float, float]] = []
+    if o1 < a1:
+        pieces.append((o1, min(o2, a1)))
+    if o2 > a2:
+        pieces.append((max(o1, a2), o2))
+    return [(lo, hi) for lo, hi in pieces if hi > lo]
 
 
 def _pilot_observations(
@@ -1073,9 +1132,21 @@ def _pilot_observations(
     capture: np.ndarray,
     sample_rate: int,
     locations: Sequence[SegmentLocation],
+    *,
+    ambient_samples: np.ndarray | None = None,
 ) -> list[PilotObservation]:
     by_id = {loc.segment_id: loc for loc in locations}
     roles = sorted({seg.role for seg in program.segments if seg.kind == KIND_PILOT and seg.role})
+    # Every role's declared band, so each role's channel-map check can ask
+    # whether energy also rose in every OTHER role's band (the CROSS test).
+    # A pilot (stimulus) segment always carries f1_hz/f2_hz — enforced by
+    # ProgramSegment.__post_init__ — so a None here means a corrupt schedule.
+    role_bands: dict[str, tuple[float, float]] = {}
+    for role in roles:
+        hi_seg = program.segment(f"pilot_{role}_hi")
+        if hi_seg.f1_hz is None or hi_seg.f2_hz is None:
+            raise ValueError(f"pilot segment for role {role!r} has no declared band")
+        role_bands[role] = (hi_seg.f1_hz, hi_seg.f2_hz)
     out: list[PilotObservation] = []
     for role in roles:
         lo_seg = program.segment(f"pilot_{role}_lo")
@@ -1089,7 +1160,17 @@ def _pilot_observations(
         programmed_delta = hi_seg.gain_db - lo_seg.gain_db
         captured_delta = level_hi - level_lo
         linearity_ok = abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
-        channel_ok = _channel_map_ok(hi_samples, sample_rate, hi_seg)
+        own_band = role_bands[role]
+        other_bands = tuple(
+            piece
+            for other_role, other_band in role_bands.items()
+            if other_role != role
+            for piece in _band_exclusive_pieces(other_band, own_band)
+        )
+        channel_ok = _channel_map_ok(
+            hi_samples, sample_rate, hi_seg,
+            ambient_samples=ambient_samples, other_bands=other_bands,
+        )
         out.append(PilotObservation(
             role=role,
             level_lo_dbfs=level_lo,
@@ -1114,7 +1195,10 @@ def _pilot_verdicts(
     VERIFY program), so a caller can distinguish "no pilot evidence" from
     "pilot evidence, all clean". Shared by CHECK, and by v2 MEASURE / VERIFY
     whose leading pilot pair (design §5.2) carries per-capture linearity
-    evidence CHECK-only verification cannot.
+    evidence CHECK-only verification cannot. Unlike CHECK, a MEASURE/VERIFY
+    pilot pair has no leading ambient window of its own (no silence precedes
+    it), so its channel-map check falls back to `_channel_map_ok`'s
+    total-in-band-energy-fraction test (unchanged from before Fix 1).
     """
     pilots = _pilot_observations(program, capture, sample_rate, locations)
     linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
@@ -1122,19 +1206,63 @@ def _pilot_verdicts(
     return tuple(pilots), linearity_ok, channel_map_ok
 
 
-def _channel_map_ok(samples: np.ndarray, sample_rate: int, seg: ProgramSegment) -> bool:
-    """True when the pilot's energy lands mostly inside its declared band."""
+def _channel_map_ok(
+    samples: np.ndarray,
+    sample_rate: int,
+    seg: ProgramSegment,
+    *,
+    ambient_samples: np.ndarray | None = None,
+    other_bands: Sequence[tuple[float, float]] = (),
+) -> bool:
+    """Band-relative channel-map sanity (design note above `CHANNEL_MAP_*`).
+
+    Given a leading ambient (room-noise) window — CHECK's own 12 s ambient
+    segment — this asks two independent questions per pilot instead of the
+    old single "is most of the TOTAL energy in-band" fraction test (which a
+    concurrent, unrelated room-noise band could veto even when the driver
+    under test was behaving correctly — the run-5 hardware bug):
+
+    1. TARGET: did THIS driver's own declared band rise
+       ``CHANNEL_MAP_TARGET_RISE_DB`` above that band's ambient level? (the
+       driver actually played, above the room's floor in its own band.)
+    2. CROSS: did every OTHER driver's band stay BELOW
+       ``CHANNEL_MAP_CROSS_RISE_DB`` above ITS ambient level during this same
+       pilot window? (energy did not land in the wrong driver's band — the
+       actual map-swap discriminator.)
+
+    Without an ambient window (v2 MEASURE/VERIFY's leading pilot pair has none
+    — see `_pilot_verdicts`), falls back to the original test: energy inside
+    the declared band must exceed half of the pilot window's TOTAL spectral
+    energy.
+    """
     x = np.asarray(samples, dtype=np.float64)
     if x.size < 8 or seg.f1_hz is None or seg.f2_hz is None:
         return False
-    window = np.hanning(x.size)
-    spectrum = np.abs(np.fft.rfft(x * window)) ** 2
-    freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
-    in_band = (freqs >= seg.f1_hz) & (freqs <= seg.f2_hz)
-    total = float(np.sum(spectrum))
-    if total <= 0:
+
+    if ambient_samples is None or np.asarray(ambient_samples).size < 8:
+        window = np.hanning(x.size)
+        spectrum = np.abs(np.fft.rfft(x * window)) ** 2
+        freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
+        in_band = (freqs >= seg.f1_hz) & (freqs <= seg.f2_hz)
+        total = float(np.sum(spectrum))
+        if total <= 0:
+            return False
+        return float(np.sum(spectrum[in_band])) / total > 0.5
+
+    target_rise = (
+        _band_rms_dbfs(x, sample_rate, seg.f1_hz, seg.f2_hz)
+        - _band_rms_dbfs(ambient_samples, sample_rate, seg.f1_hz, seg.f2_hz)
+    )
+    if target_rise < CHANNEL_MAP_TARGET_RISE_DB:
         return False
-    return float(np.sum(spectrum[in_band])) / total > 0.5
+    for other_f1, other_f2 in other_bands:
+        cross_rise = (
+            _band_rms_dbfs(x, sample_rate, other_f1, other_f2)
+            - _band_rms_dbfs(ambient_samples, sample_rate, other_f1, other_f2)
+        )
+        if cross_rise >= CHANNEL_MAP_CROSS_RISE_DB:
+            return False
+    return True
 
 
 def _solve_gain_plan(
@@ -1234,8 +1362,12 @@ def _analyze_check(
     program, capture, sample_rate, global_offset, locations, priors,
 ) -> ProgramAnalysis:
     ambient_seg = program.segment("ambient")
-    ambient_report = _ambient_from_capture(capture, sample_rate, ambient_seg, global_offset)
-    pilots = _pilot_observations(program, capture, sample_rate, locations)
+    ambient_samples, ambient_report = _ambient_from_capture(
+        capture, sample_rate, ambient_seg, global_offset
+    )
+    pilots = _pilot_observations(
+        program, capture, sample_rate, locations, ambient_samples=ambient_samples,
+    )
     linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
     channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
     gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)
