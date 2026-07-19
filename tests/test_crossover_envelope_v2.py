@@ -103,6 +103,38 @@ def test_review_apply_carries_candidate_fingerprint():
     assert _step_statuses(env)["review_apply"] == "active"
 
 
+def test_review_apply_surfaces_last_blocked_apply_as_a_nudge():
+    """Finding N (b): a blocked apply must not be a silent dead end. The
+    endpoint persists the last blocked-apply issue into the durable v2
+    state; the envelope surfaces it as a nudge on the SAME review_apply
+    screen (no new template — the household stays where the Apply button
+    already is, with an explanation instead of nothing happening)."""
+    env = build_crossover_envelope_v2(_status(
+        phase="review_apply",
+        candidate={"fingerprint": "fp-123", "trims": {"woofer": -3.1}},
+        apply_blocked={
+            "id": "measured_candidate_preset_mismatch",
+            "message": "the reviewed measured candidate no longer equals the saved crossover",
+        },
+    ))
+    assert env["screen"] == "review_apply"
+    assert env["nudges"] == [{
+        "code": "measured_candidate_preset_mismatch",
+        "severity": "warn",
+        "text": "the reviewed measured candidate no longer equals the saved crossover",
+    }]
+    # The Apply action itself is untouched — the household can still retry.
+    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/apply"
+
+
+def test_review_apply_has_no_nudge_when_nothing_is_blocked():
+    env = build_crossover_envelope_v2(_status(
+        phase="review_apply",
+        candidate={"fingerprint": "fp-123", "trims": {"woofer": -3.1}},
+    ))
+    assert env["nudges"] == []
+
+
 def test_verify_phase_screen():
     env = build_crossover_envelope_v2(_status(phase="verify"))
     assert env["screen"] == "verify"

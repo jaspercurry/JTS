@@ -534,6 +534,67 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     assert "phone-mic relay capture is not configured" in message
 
 
+def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
+    """Finding N (a): a blocked apply must not read as success. Before this
+    fix, /crossover/v2/apply always answered 200 regardless of payload
+    contents — a household's browser had no signal that tapping Apply
+    silently did nothing (run6-apply-blocked.log: 200 OK on every attempt)."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: {
+            "status": "blocked",
+            "profile": {"status": "blocked"},
+            "apply": None,
+            "issues": [{
+                "severity": "blocker",
+                "code": "measured_candidate_preset_mismatch",
+                "message": (
+                    "the reviewed measured candidate no longer equals the "
+                    "saved crossover"
+                ),
+            }],
+            "issue": {
+                "id": "measured_candidate_preset_mismatch",
+                "message": (
+                    "the reviewed measured candidate no longer equals the "
+                    "saved crossover"
+                ),
+            },
+        },
+    )
+
+    resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+
+    assert b"409" in resp.split(b"\r\n", 1)[0]
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    assert b"measured_candidate_preset_mismatch" in body
+
+
+def test_apply_applied_status_still_maps_to_200(monkeypatch):
+    """The 409 mapping is status-content-driven, not blanket — a successful
+    apply must still read 200."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: {"status": "applied", "profile": {}},
+    )
+
+    resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+
+
 # ---------------------------------------------------------------------------
 # Public surface unchanged.
 # ---------------------------------------------------------------------------
