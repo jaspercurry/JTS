@@ -1714,16 +1714,19 @@ async function waitForCaptureAuthorized(client, spec, index, attempt, isAborted)
         error: String(event.error || "The speaker refused this measurement."),
       };
     }
-    if (
-      phase === "capture_set_exhausted" ||
-      (phase === "capture_result" && event.accepted === false)
-    ) {
+    if (phase === "capture_set_exhausted") {
       // The whole SESSION ended while we were waiting to begin — a watchdog
       // collapse during the "waiting for apply" hold posts capture_set_exhausted
-      // (W6.10 blocker #3), and a catch-all failure re-posts a terminal
-      // capture_result to the last-armed (already past) index. Treat either as
-      // terminal so the deferred-retry loop stops instead of polling a dead
-      // session forever, rather than waiting out the 20s admission timeout.
+      // (W6.10 blocker #3). Treat it as terminal so the deferred-retry loop
+      // stops instead of polling a dead session forever, rather than waiting
+      // out the 20s admission timeout. Deliberately NOT extended to a rejected
+      // `capture_result`: the host-event slot is last-write-wins and nothing
+      // clears it when the phone consumes a verdict, so a retry begin's FIRST
+      // poll reads the PREVIOUS attempt's stale rejected verdict (the real Pi
+      // authorizes asynchronously ~0.75 s later) — matching on it would kill
+      // every first retry (the W6.10 gate blocker). A catch-all failure that
+      // posts a terminal capture_result still resolves via the purge-driven
+      // 404 (deadSession) a few seconds later.
       return {
         sessionOver: true,
         reason: String(event.reason || event.error || "The measurement ended."),

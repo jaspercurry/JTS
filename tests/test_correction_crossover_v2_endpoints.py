@@ -1926,6 +1926,87 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
+def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
+    monkeypatch, tmp_path,
+):
+    """W6.10 gate should-fix, driven through the REAL restore seam: apply the
+    prior crossover, apply a measured candidate over it, Start-over
+    (reset_v2_journey_state — what handle_reset calls under the v2 flow), then
+    Undo. The reset must serve the clean start screen WITHOUT unlinking the
+    `applied`/`pre_apply_profile` pointers, so handle_v2_restore still reverts
+    the active config to the prior profile afterward."""
+    from jasper.active_speaker.baseline_profile import (
+        apply_baseline_profile,
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+    from tests.test_active_speaker_baseline_profile import _draft
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-19T09:00:00Z")
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    state_path = tmp_path / "baseline_profile.json"
+
+    prior_candidate = _prior_measured_candidate(preset)
+    prior_cam = _FakeApplyCam()
+    prior_payload = _bg_run_async(
+        apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=prior_cam.set_config_file_path,
+            get_current_config_path=prior_cam.get_config_file_path,
+            tuning_owner="automatic",
+            measured_candidate=prior_candidate,
+        )
+    )
+    assert prior_payload["status"] == "applied", prior_payload.get("issues")
+    prior_config_text = config_path.read_text(encoding="utf-8")
+
+    run8_candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_run8",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": run8_candidate.fingerprint},
+        "applied": False,
+    })
+    apply_payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": run8_candidate.fingerprint,
+            "candidate": run8_candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert apply_payload["status"] == "applied", apply_payload.get("issues")
+
+    # Start-over while applied — the selective journey reset.
+    v2host.reset_v2_journey_state()
+
+    state = v2host.load_v2_state()
+    assert state is not None
+    assert state["applied"] is True
+    assert isinstance(state["pre_apply_profile"], dict)
+    assert state["accepted_phases"] == []
+    assert state["candidate"] is None
+    # The envelope serves the clean start screen…
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+
+    # …AND Undo still works, through the real restore seam.
+    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert config_path.read_text(encoding="utf-8") == prior_config_text
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert (
+        active["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+
+
 def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
     monkeypatch, tmp_path,
 ):

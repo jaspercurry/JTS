@@ -187,11 +187,25 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
     }
 
 
+def _reset_scaffold(monkeypatch):
+    monkeypatch.setattr(backend, "reset_measurement_journey", lambda: {
+        "status": "cleared", "cleared_ids": [], "missing_ids": [],
+        "error_ids": [], "kept_ids": [],
+    })
+    monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
+    monkeypatch.setattr(flow, "_active_group_member", lambda: False)
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+        lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
+    )
+
+
 def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path):
     """W6.10 fold-in: Start-over must clear the durable v2 conductor state so the
     next envelope serves the clean start screen. Without this, a stale
     candidate/verify/failure re-rendered "Ready to start again" with stale
-    verify-fail actions and no start button (round-1 finding #4)."""
+    verify-fail actions and no start button (round-1 finding #4). NOT-applied
+    ⇒ the clear is total (nothing worth preserving)."""
     from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from jasper.web import correction_crossover_v2 as v2
 
@@ -200,30 +214,68 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
     try:
         v2.save_v2_state({
             "session_id": "cap_x",
-            "accepted_phases": ["microphone_check", "measure"],
-            "applied": True,
+            "accepted_phases": ["check", "measure"],
+            "applied": False,
             "candidate": {"fingerprint": "fp"},
-            "failure": {"code": "verify_out_of_tolerance"},
+            "failure": {"code": "relay_timeout"},
         })
         assert v2.load_v2_state() is not None
-
-        monkeypatch.setattr(backend, "reset_measurement_journey", lambda: {
-            "status": "cleared", "cleared_ids": [], "missing_ids": [],
-            "error_ids": [], "kept_ids": [],
-        })
-        monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
-        monkeypatch.setattr(flow, "_active_group_member", lambda: False)
-        monkeypatch.setattr(
-            "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
-            lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
-        )
+        _reset_scaffold(monkeypatch)
 
         payload, status = flow.handle_reset()
 
         assert status == 200
         # The durable v2 state is gone — a fresh journey starts at the
-        # microphone check, not the stale verify-fail screen.
+        # microphone check, not the stale failure screen.
         assert v2.load_v2_state() is None
+    finally:
+        v2.set_state_path_for_tests(None)
+
+
+def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
+    """Gate ruling (W6.10 should-fix): Start-over while a candidate is APPLIED
+    must preserve `applied` + `pre_apply_profile` — the only durable pointers
+    W6.8's Undo (handle_v2_restore) restores from — while clearing the journey
+    fields so the envelope serves the clean start screen. A full clear here
+    would strand the household on the applied graph with Undo permanently
+    unreachable."""
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
+    from jasper.web import correction_crossover_v2 as v2
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    v2.set_state_path_for_tests(tmp_path / "v2_state.json")
+    try:
+        pre_apply = {"candidate_fingerprint": "fp-prior", "config": {"path": "/x.yml"}}
+        v2.save_v2_state({
+            "session_id": "cap_x",
+            "accepted_phases": ["check", "measure"],
+            "applied": True,
+            "candidate": {"fingerprint": "fp-new"},
+            "verify": {"outcome": "fail"},
+            "failure": {"code": "verify_out_of_tolerance"},
+            "gain_plan_db": {"woofer": -6.0},
+            "pre_apply_profile": pre_apply,
+        })
+        _reset_scaffold(monkeypatch)
+
+        payload, status = flow.handle_reset()
+
+        assert status == 200
+        state = v2.load_v2_state()
+        assert state is not None
+        # Undo pointers preserved…
+        assert state["applied"] is True
+        assert state["pre_apply_profile"] == pre_apply
+        # …journey fields cleared, so the envelope lands on the clean start
+        # screen (phase derives to the microphone check).
+        assert state["accepted_phases"] == []
+        assert state["candidate"] is None
+        assert state["verify"] is None
+        assert state["failure"] is None
+        assert state["gain_plan_db"] is None
+        assert state["session_id"] is None
+        block = v2.crossover_v2_status_block()
+        assert block is not None and block["phase"] == "check"
     finally:
         v2.set_state_path_for_tests(None)
 

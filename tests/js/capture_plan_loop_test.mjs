@@ -220,6 +220,17 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
   const blobPuts = [];
   let acceptedCount = 0;
   let last = {};
+  // FIDELITY (W6.10 gate blocker): the real relay's host-event slot is
+  // last-write-wins and nothing clears it when the phone consumes a verdict;
+  // the Pi authorizes asynchronously (~0.75 s poll cadence). So the phone's
+  // FIRST status poll after posting a begin reads whatever is STILL in the
+  // slot — after a rejected attempt, that is the stale rejected
+  // capture_result. The original fake overwrote the slot synchronously inside
+  // postEvent, which masked a phone-side bug that matched the stale verdict
+  // and killed every first retry. Stage the admission verdict behind one
+  // fetchPhoneStatus poll instead, so the retry path exercises the
+  // real-world ordering: stale slot first, verdict on the next poll.
+  let queuedAdmission = null;
   let pendingResult = null;
   const client = {
     async postEvent(event) {
@@ -227,7 +238,7 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
       if (event.begin_capture && !event.armed) {
         const { index, attempt } = event.begin_capture;
         if (refuseAttempt && attempt === refuseAttempt) {
-          last = {
+          queuedAdmission = {
             phase: "capture_refused",
             code: "budget_exceeded",
             error: "The household's driver repeat budget is exhausted.",
@@ -235,7 +246,7 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
             attempt,
           };
         } else {
-          last = { phase: "capture_authorized", index, attempt };
+          queuedAdmission = { phase: "capture_authorized", index, attempt };
         }
       } else if (event.armed) {
         const { index, attempt } = event.begin_capture;
@@ -245,7 +256,14 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
       return { ok: true };
     },
     async fetchPhoneStatus() {
-      return { host_event: last };
+      const status = { host_event: last };
+      if (queuedAdmission) {
+        // Promote the staged admission AFTER serving this poll — the caller
+        // sees the stale slot once, the verdict on its next poll.
+        last = queuedAdmission;
+        queuedAdmission = null;
+      }
+      return status;
     },
     async putBlob(blob, plaintextLen, sha256, captureIndex) {
       blobPuts.push({ length: blob.length, plaintextLen, sha256, captureIndex });
@@ -384,6 +402,13 @@ async function testFullAcceptedRoundTripEndsAllDone() {
 // ============================================================================
 // 2. A capture_result rejection renders "Try again" (SAME slot, next
 //    attempt); retrying succeeds and the set eventually completes.
+//
+// REGRESSION PIN (W6.10 gate blocker): with makeFakePlanClient's staged
+// admission, the retry begin's FIRST status poll reads the STALE rejected
+// capture_result still sitting in the last-write-wins slot — the real relay
+// ordering. A waitForCaptureAuthorized that treats a rejected capture_result
+// as session-terminal turns this into "Link expired" after every first
+// rejection; this test's completed round trip pins that it must not.
 // ============================================================================
 async function testRejectedResultOffersTryAgainSameSlot() {
   statusHistory.length = 0;

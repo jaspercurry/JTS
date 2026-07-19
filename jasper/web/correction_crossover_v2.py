@@ -181,6 +181,45 @@ def clear_v2_state() -> None:
             )
 
 
+def reset_v2_journey_state() -> None:
+    """Start-over's v2 clear (W6.10, gate-amended for W6.8's Undo).
+
+    Clears the measurement-JOURNEY fields (session binding, accepted phases,
+    candidate, verify, failure, gain plan, priors, evidence) so the envelope
+    serves the clean start screen — but when a candidate is APPLIED, preserves
+    ``applied`` + ``pre_apply_profile``: those are the ONLY durable pointers the
+    v2-aware Undo (:func:`handle_v2_restore`, W6.8) restores from. A full
+    :func:`clear_v2_state` here would unlink the sole reference to the retained
+    pre-candidate snapshot, leaving the applied graph playing with Undo
+    permanently unreachable. Not applied ⇒ full clear, as before.
+    """
+    state = load_v2_state()
+    if state is None:
+        return
+    if not state.get("applied"):
+        clear_v2_state()
+        return
+    pre_apply_profile = state.get("pre_apply_profile")
+    save_v2_state({
+        "session_id": None,
+        "accepted_phases": [],
+        "applied": True,
+        "gain_plan_db": None,
+        "candidate": None,
+        "verify": None,
+        "failure": None,
+        "apply_blocked": None,
+        "verify_priors": None,
+        "evidence": None,
+        "pre_apply_profile": (
+            dict(pre_apply_profile)
+            if isinstance(pre_apply_profile, Mapping)
+            else None
+        ),
+    })
+    log_event(logger, "correction.crossover_v2_journey_reset_kept_applied")
+
+
 def observe_apply_success(
     candidate_fingerprint: str,
     *,
