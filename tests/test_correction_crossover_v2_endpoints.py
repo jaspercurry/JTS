@@ -28,6 +28,7 @@ flow-selector refusals the dispatch relies on.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -516,6 +517,48 @@ def test_observe_apply_success_arms_the_deferred_verify_gate():
     assert v2host._applied_gate() is False
     v2host.observe_apply_success("fp-1")
     assert v2host._applied_gate() is True
+
+
+def test_observe_apply_success_clears_a_stale_apply_blocked_nudge():
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": False,
+        "apply_blocked": {"id": "baseline_profile_not_ready_to_apply", "message": "x"},
+    })
+    v2host.observe_apply_success("fp-1")
+    assert v2host.load_v2_state()["apply_blocked"] is None
+
+
+def test_status_block_surfaces_apply_blocked():
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": False,
+        "apply_blocked": {"id": "measured_candidate_preset_mismatch", "message": "x"},
+    })
+    assert v2host.crossover_v2_status_block()["apply_blocked"] == {
+        "id": "measured_candidate_preset_mismatch", "message": "x",
+    }
+
+
+def test_blocking_apply_issue_prefers_a_blocker_over_earlier_non_blocker_issues():
+    payload = {
+        "issues": [
+            {"severity": "info", "code": "manual_crossover_preserved", "message": "kept"},
+            {"severity": "blocker", "code": "the_real_reason", "message": "why"},
+            {"severity": "blocker", "code": "generic_trailer", "message": "trailer"},
+        ]
+    }
+    assert v2host._blocking_apply_issue(payload) == {
+        "id": "the_real_reason", "message": "why",
+    }
+
+
+def test_blocking_apply_issue_none_when_no_issues():
+    assert v2host._blocking_apply_issue({"issues": []}) is None
+    assert v2host._blocking_apply_issue({}) is None
 
 
 # --- production analyze binding (geometry + calibration) --------------------------
@@ -1355,3 +1398,268 @@ def test_terminal_failure_purge_waits_for_grace_but_volume_restore_is_immediate(
     # The grace ran, then the purge — in exactly that order, exactly once each.
     assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
     assert session.session_id not in backend.sessions
+
+
+# --- W6 run-6 Blocker M + Finding N: apply's real fingerprint-vocabulary seam ---
+#
+# Every prior test in this file that reaches "applied" fakes the apply gate
+# directly (``observe_apply_success`` called from the phone-driver's
+# ``on_deferred`` hook) rather than driving ``handle_v2_apply`` through the
+# REAL ``apply_baseline_profile`` guard end to end. That gap is exactly how
+# W6 hardware run 6 shipped an apply path that could never succeed: the
+# guard compares against ``baseline_candidate_fingerprint`` (the composed
+# baseline candidate's own identity), not the MEASURED candidate's
+# fingerprint this endpoint reviews with the household — a vocabulary
+# mismatch the endpoint tests never caught because they never crossed the
+# seam. These tests seed the real topology/design-draft/crossover-preview
+# files ``handle_v2_apply``'s real loaders read and drive the actual seam.
+
+
+class _FakeApplyCam:
+    """A CamillaController stand-in for handle_v2_apply's ``camilla_factory``."""
+
+    def __init__(self) -> None:
+        self.path: str | None = None
+
+    async def set_config_file_path(
+        self, path: str, *, best_effort: bool = False,
+    ) -> bool:
+        self.path = path
+        return True
+
+    async def get_config_file_path(self, *, best_effort: bool = False) -> str | None:
+        return self.path
+
+
+def _seed_baseline_apply_environment(monkeypatch, tmp_path):
+    """Seed the real topology/design-draft/crossover-preview/measurements
+    files ``handle_v2_apply``'s real loaders read (env-var overrides — the
+    same pattern as ``tests/test_active_speaker_setup_status.py``), plus the
+    baseline-profile/config and DSP-apply state paths. Returns
+    ``(topology, preset)`` so a caller can build a ``MeasuredCrossoverCandidate``
+    against the exact preset the seam will recompile from the same files."""
+    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.output_topology import save_output_topology
+
+    from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
+
+    topology = _dual_apple_topology()
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(topology, topology_path)
+
+    draft = _draft(topology)
+    draft_path = tmp_path / "design_draft.json"
+    draft_path.write_text(json.dumps(draft), encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
+
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preview_path = tmp_path / "crossover_preview.json"
+    preview_path.write_text(json.dumps(preview), encoding="utf-8")
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE", str(preview_path)
+    )
+
+    # No driver-test measurements recorded — the run-6 shape: a household
+    # applies purely from the reviewed measured candidate.
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+        str(tmp_path / "measurements_missing.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
+        str(tmp_path / "baseline_profile.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
+        str(tmp_path / "active_speaker_baseline.yml"),
+    )
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    return topology, preset
+
+
+def _run6_measured_candidate(preset):
+    """A candidate shaped like W6 run 6's evidence (candidate_evidence.json):
+    woofer delay 404.777 µs (quantizes to 0.4048 ms), tweeter -13.0327 dB and
+    inverted."""
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverAlignment,
+        MeasuredCrossoverCandidate,
+    )
+
+    return MeasuredCrossoverCandidate(
+        program_id=(
+            "9579a1bb9e2a3d1d8988670628bdbf6f348de3400e76baa63139abbed5ae0207"
+        ),
+        analysis={"epsilon_ppm": 29.924, "predicted_ripple_db": 29.6952},
+        source_preset=preset,
+        role_attenuations_db={"tweeter": -13.0327, "woofer": 0.0},
+        alignment=MeasuredCrossoverAlignment(
+            delay_us=404.7770086705022, delay_role="woofer", polarity="invert",
+        ),
+    )
+
+
+def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
+    monkeypatch, tmp_path,
+):
+    """Blocker M, positive: drives handle_v2_apply through the REAL
+    apply_baseline_profile guard end to end (no faked apply gate) with a
+    run-6-shaped measured candidate, and asserts the guard passes and the
+    emitted config carries the measured delay + inversion."""
+    from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+
+    v2host.save_v2_state({
+        "session_id": "cap_run6",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+
+    assert payload["status"] == "applied", payload.get("issues")
+    corrections = payload["profile"]["corrections"]
+    assert corrections["woofer"]["delay_ms"] == pytest.approx(0.4048, abs=1e-4)
+    assert corrections["woofer"]["inverted"] is False
+    assert corrections["tweeter"]["delay_ms"] == 0.0
+    assert corrections["tweeter"]["gain_db"] == pytest.approx(-13.0327, abs=1e-4)
+    assert corrections["tweeter"]["inverted"] is True
+    config_text = (tmp_path / "active_speaker_baseline.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "delay: 0.4048" in config_text
+
+    # The fingerprint that actually reached the seam is the COMPOSED baseline
+    # candidate's own identity, never the measured candidate's fingerprint —
+    # confirming the vocabulary translation happened rather than the two
+    # values accidentally colliding.
+    assert payload["profile"]["candidate_fingerprint"] != candidate.fingerprint
+    assert payload["profile"][
+        "candidate_fingerprint"
+    ] == baseline_candidate_fingerprint(payload["profile"])
+
+    # Success arms the deferred VERIFY gate and clears any stale apply-blocked
+    # nudge (Finding N).
+    assert v2host._applied_gate() is True
+    saved_state = v2host.load_v2_state()
+    assert saved_state["apply_blocked"] is None
+
+
+def test_apply_refuses_when_composition_is_no_longer_bound_to_reviewed_candidate(
+    monkeypatch, tmp_path,
+):
+    """TOCTOU note pin: the host's own compose-then-verify precheck refuses by
+    name (rather than silently applying) if the composition it just built no
+    longer binds to the measured candidate the household reviewed — the
+    guard the ARCHITECT ruling asked for, exercised directly rather than by
+    trying to win a real race."""
+    from jasper.active_speaker import baseline_profile as baseline_profile_mod
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+
+    v2host.save_v2_state({
+        "session_id": "cap_run6",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    real_build = baseline_profile_mod.build_baseline_profile_candidate
+
+    def _tampered_build(*args, **kwargs):
+        out = dict(real_build(*args, **kwargs))
+        source = dict(out.get("source") or {})
+        source["measured_candidate_fingerprint"] = "not-the-reviewed-candidate"
+        out["source"] = source
+        return out
+
+    monkeypatch.setattr(
+        baseline_profile_mod, "build_baseline_profile_candidate", _tampered_build,
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="no longer current"):
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            _FakeApplyCam,
+        )
+    assert v2host._applied_gate() is False
+
+
+def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
+    monkeypatch, tmp_path,
+):
+    """Negative, through the REAL seam: the household reviewed a candidate
+    measured against one crossover design, but the design moved on
+    underneath (a second /sound/ save) before Apply landed. The seam's own
+    ``measured_candidate_preset_mismatch`` gate must refuse — never silently
+    apply the wrong preset — and Finding N's wiring must name that issue and
+    persist it for the review_apply nudge, instead of 200 + silent no-op."""
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.active_speaker.design_draft import build_design_draft
+
+    from tests.test_active_speaker_baseline_profile import _research
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+
+    v2host.save_v2_state({
+        "session_id": "cap_run6",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+
+    # The crossover design moved on (a second tab/session saved a different
+    # crossover frequency) after this candidate was measured.
+    moved_research = _research()
+    moved_research["crossover_candidates"][0]["frequency_hz"] = 3000
+    moved_draft = build_design_draft(
+        topology, driver_research=moved_research, created_at="2026-07-18T12:30:00Z",
+    )
+    (tmp_path / "design_draft.json").write_text(
+        json.dumps(moved_draft), encoding="utf-8"
+    )
+    moved_preview = build_crossover_preview(
+        moved_draft, created_at="2026-07-18T12:31:00Z",
+    )
+    (tmp_path / "crossover_preview.json").write_text(
+        json.dumps(moved_preview), encoding="utf-8"
+    )
+
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["issue"]["id"] == "measured_candidate_preset_mismatch"
+    assert v2host._applied_gate() is False
+
+    saved_state = v2host.load_v2_state()
+    assert saved_state["apply_blocked"] == payload["issue"]

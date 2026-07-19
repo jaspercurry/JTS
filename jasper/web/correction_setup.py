@@ -7425,7 +7425,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
             if path == "/crossover/v2/apply":
                 try:
-                    self._send_json(_handle_crossover_v2_apply(self))
+                    payload = _handle_crossover_v2_apply(self)
+                    # Finding N: a blocked apply must not read as success — the
+                    # same "compute status from payload contents" shape
+                    # /crossover/relay-capture already uses above.
+                    self._send_json(
+                        payload,
+                        status=(
+                            HTTPStatus.CONFLICT
+                            if payload.get("status") == "blocked"
+                            else HTTPStatus.OK
+                        ),
+                    )
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},

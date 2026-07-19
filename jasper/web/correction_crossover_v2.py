@@ -10,7 +10,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
 
 * the **durable v2 flow state** (one JSON file) that ``status_payload`` threads
   into the envelope as ``status["crossover_v2"]`` — phase / candidate / verify
-  / failure / needs_recovery / applied;
+  / failure / apply_blocked / needs_recovery / applied;
 * the **session volume plan** singleton (one fixed measurement volume per
   session, §5.5) and its open/close/abandon wiring — including the
   walked-away guarantee: every terminal relay outcome drains the restore-once
@@ -202,6 +202,7 @@ def observe_apply_success(candidate_fingerprint: str) -> None:
         return
     state["applied"] = True
     state["failure"] = None
+    state["apply_blocked"] = None
     save_v2_state(state)
     log_event(logger, "correction.crossover_v2_applied")
 
@@ -569,6 +570,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "candidate": (state or {}).get("candidate"),
         "verify": (state or {}).get("verify"),
         "failure": (state or {}).get("failure"),
+        "apply_blocked": (state or {}).get("apply_blocked"),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
         "session_id": (state or {}).get("session_id"),
@@ -1844,8 +1846,26 @@ def handle_v2_apply(
     atomic apply-with-rollback transaction —
     ``apply_baseline_profile(measured_candidate=...)`` (the W4 seam) — then
     marks the durable v2 state applied, which arms the deferred VERIFY.
+
+    W6 run-6 Blocker M: the seam's own freshness guard
+    (``apply_baseline_profile``'s ``expected_candidate_fingerprint``) compares
+    against ``baseline_candidate_fingerprint`` — the COMPOSED baseline
+    candidate's own identity — never the MEASURED candidate's fingerprint
+    this endpoint reviews with the household. Forwarding the measured
+    fingerprint straight through made every apply refuse
+    ``baseline_candidate_fingerprint_mismatch``, unconditionally. This host
+    translates between the two vocabularies: it composes the baseline
+    candidate read-only first (``build_baseline_profile_candidate(...,
+    write=False)`` — the exact builder the seam itself uses), asserts that
+    composition is still bound to the reviewed MEASURED candidate (preserving
+    the review-freshness guarantee at the measured-candidate level), then
+    passes the COMPOSED candidate's own ``candidate_fingerprint`` through to
+    the seam.
     """
-    from jasper.active_speaker.baseline_profile import apply_baseline_profile
+    from jasper.active_speaker.baseline_profile import (
+        apply_baseline_profile,
+        build_baseline_profile_candidate,
+    )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measured_crossover_candidate import (
@@ -1891,6 +1911,34 @@ def handle_v2_apply(
     draft = load_design_draft(topology=topology)
     preview = load_crossover_preview(current_design_draft=draft)
     measurements = load_measurement_state(topology)
+
+    # Blocker M translation: compose read-only (the seam's own build_candidate
+    # closure re-derives this identically under its writer lock, so this is a
+    # deterministic recompose, not a second opinion) and confirm the
+    # composition is still bound to the reviewed measured candidate before
+    # asking the seam to apply anything.
+    reviewed_baseline = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    reviewed_measured_fingerprint = str(
+        (reviewed_baseline.get("source") or {}).get("measured_candidate_fingerprint")
+        or ""
+    )
+    if reviewed_measured_fingerprint != expected:
+        raise CrossoverV2Refused(
+            "the reviewed crossover is no longer current; review the newest "
+            "measurement before applying"
+        )
+    baseline_expected_fingerprint = str(
+        reviewed_baseline.get("candidate_fingerprint") or ""
+    )
+
     cam = camilla_factory()
     payload = run_async(
         apply_baseline_profile(
@@ -1905,12 +1953,27 @@ def handle_v2_apply(
                 best_effort=False
             ),
             tuning_owner="automatic",
-            expected_candidate_fingerprint=expected,
+            expected_candidate_fingerprint=baseline_expected_fingerprint,
             measured_candidate=candidate,
         )
     )
     if payload.get("status") == "applied":
         observe_apply_success(expected)
+    issue = None
+    if payload.get("status") == "blocked":
+        # Finding N: name the blocker compactly (not buried in the full
+        # composed profile) and persist it so the review_apply screen can
+        # surface it instead of looking like a dead button forever.
+        issue = _blocking_apply_issue(payload)
+        if issue is not None:
+            payload["issue"] = issue
+        _persist_apply_blocked(issue)
+        log_event(
+            logger,
+            "correction.crossover_v2_apply_blocked",
+            level=logging.WARNING,
+            issue_id=(issue or {}).get("id", ""),
+        )
     log_event(
         logger,
         "correction.crossover_v2_apply",
@@ -1918,6 +1981,42 @@ def handle_v2_apply(
         candidate_fingerprint=expected,
     )
     return payload
+
+
+def _blocking_apply_issue(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """The single most relevant blocker from a blocked apply payload.
+
+    ``payload["issues"]`` already carries the full severity-tagged list; this
+    picks the first blocker (the seam always orders the real cause before any
+    generic trailer issue) so a compact ``{id, message}`` pointer reaches the
+    browser without digging through the composed profile.
+    """
+    issues = payload.get("issues")
+    if not isinstance(issues, list):
+        return None
+    candidates = [issue for issue in issues if isinstance(issue, Mapping)]
+    for issue in candidates:
+        if issue.get("severity") == "blocker":
+            return {
+                "id": str(issue.get("code") or ""),
+                "message": str(issue.get("message") or ""),
+            }
+    if candidates:
+        first = candidates[0]
+        return {
+            "id": str(first.get("code") or ""),
+            "message": str(first.get("message") or ""),
+        }
+    return None
+
+
+def _persist_apply_blocked(issue: Mapping[str, str] | None) -> None:
+    """Record (or clear) the last blocked-apply issue for the review_apply nudge."""
+    state = load_v2_state()
+    if state is None:
+        return
+    state["apply_blocked"] = dict(issue) if issue else None
+    save_v2_state(state)
 
 
 def _reopen_candidate_artifact(
