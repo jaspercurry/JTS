@@ -947,6 +947,59 @@ async function testOnApplyNextEntryHoldsScreenWithNoBeginAffordance() {
 }
 
 // ============================================================================
+// 11b. W6.12 nit: the on_apply hold's "Waiting for apply" heading advances to
+// "Verifying…" once the deferral resolves and recording actually starts.
+// Before this fix the heading stayed "Waiting for apply" through the WHOLE
+// verify capture (the sweep runs for several seconds) — a household glancing
+// at the phone mid-recording read a heading describing a wait that already
+// ended. Unit-tested directly against the two functions involved
+// (renderPlanDeferred sets the hold screen + captures the heading node;
+// runPlanCapture calls advanceDeferredHoldHeading once beginAndAwaitAuthorization
+// resolves as authorized) rather than through the full async capture loop,
+// which has no real pause point between authorization and completion once
+// the fake relay auto-resolves everything.
+// ============================================================================
+async function testDeferredHoldHeadingAdvancesWhenRecordingStarts() {
+  const { renderPlanDeferred, advanceDeferredHoldHeading } = await loadModule();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({
+    target: 1,
+    maxAttempts: 1,
+    entries: [
+      {
+        index: 0,
+        kind_label: "verify",
+        duration_ms: 15000,
+        screen: {
+          title: "Waiting for apply",
+          body: "Apply the measured crossover on the speaker page.",
+          auto_advance: "on_apply",
+        },
+      },
+    ],
+  });
+  const ctx = { spec, screenEl: makeScreenEl(), captureRefs: {} };
+
+  renderPlanDeferred(ctx, { index: 1, target: 1 });
+  assert.equal(headingText(ctx.screenEl), "Waiting for apply");
+
+  advanceDeferredHoldHeading(ctx);
+  assert.equal(headingText(ctx.screenEl), "Verifying…");
+  ok();
+}
+
+async function testAdvanceDeferredHoldHeadingIsANoOpWhenNothingHeld() {
+  const { advanceDeferredHoldHeading } = await loadModule();
+  // check/measure never call renderPlanDeferred, so captureRefs.heading is
+  // never set for them — must not throw, must not invent a heading.
+  advanceDeferredHoldHeading({ captureRefs: {} });
+  advanceDeferredHoldHeading({});
+  ok();
+}
+
+// ============================================================================
 // 12. Blocker #4b (auto-advance countdown): after an accepted capture whose
 // NEXT entry is countdown, the page shows a VISIBLE cancelable countdown (the
 // policy was carried but never rendered) — the entry copy, a "Starting in N…"
@@ -1053,6 +1106,8 @@ const tests = [
   testEntryScreenCopyDrivesTheNextMeasurementScreen,
   testDeferredBeginRendersWaitingScreenAndRetriesAutomatically,
   testOnApplyNextEntryHoldsScreenWithNoBeginAffordance,
+  testDeferredHoldHeadingAdvancesWhenRecordingStarts,
+  testAdvanceDeferredHoldHeadingIsANoOpWhenNothingHeld,
   testCountdownNextEntryShowsVisibleCancelableCountdown,
   testSessionTerminalDuringWaitEndsTheSession,
 ];

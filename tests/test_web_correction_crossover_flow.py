@@ -2018,8 +2018,13 @@ def test_action_row_has_a_single_render_authority():
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
     # 15 original cases + 3 W6.10 review-during-hold cases (Apply renders as
-    # the single primary while the phone holds; connect link/QR suppressed).
-    assert result == {"ok": True, "passed": 18}
+    # the single primary while the phone holds; connect link/QR suppressed)
+    # + 5 W6.12 verify_fail-during-a-live-relay cases (Undo/Re-measure render
+    # via show_during_relay; Try again stays gated behind Stop) + 4 W6.12
+    # click-swallowing cases (a click dispatched between two identical-
+    # envelope renders lands on the surviving node, and runAction still
+    # runs to completion).
+    assert result == {"ok": True, "passed": 27}
 
 
 def test_start_over_confirm_is_grouping_aware_and_partial_is_honest():

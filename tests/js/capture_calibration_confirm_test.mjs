@@ -407,6 +407,64 @@ async function testUseDifferentMicrophoneFallsBackWithoutSubmit() {
   ok();
 }
 
+// ---- applyDefaultCalibrationHintSilently (W6.12: v2's calibration handoff) ---
+//
+// A crossover_sweep capture (legacy per-driver OR the v2 capture-plan
+// session) has no calibration-picker screen of its own — boot() renders
+// straight to the fixed DATA screen for this kind, unlike level_ramp/
+// room_sweep. This applies the SAME household-mic hint SILENTLY (no tap,
+// no screen) so a v2 session — which never visits a preceding level_ramp
+// page — still gets the household's stored calibration into
+// setupWirePayload(), instead of posting {mode: "none"} on every capture.
+
+async function testSilentHintAppliesWhenResolvableAndNothingChosen() {
+  const { applyDefaultCalibrationHintSilently, setupWirePayload } = await loadModule();
+  const spec = specWithHint({}, { kind: "crossover_sweep" });
+  assert.equal(setupWirePayload().calibration.mode, "none");
+
+  applyDefaultCalibrationHintSilently(spec);
+
+  const wire = setupWirePayload();
+  assert.deepEqual(wire.calibration, {
+    mode: "stored",
+    calibration_id: HINT.calibration_id,
+    model: HINT.model,
+  });
+  ok();
+}
+
+async function testSilentHintNoOpWhenHintIsInvalidOrAbsent() {
+  const { applyDefaultCalibrationHintSilently, setupWirePayload } = await loadModule();
+  applyDefaultCalibrationHintSilently({ kind: "crossover_sweep" });
+  assert.equal(setupWirePayload().calibration.mode, "none");
+
+  // Same compat rule as validDefaultSetupHint: an unresolvable hint (an
+  // older Pi build) is never silently applied either.
+  applyDefaultCalibrationHintSilently(
+    specWithHint({ resolvable: false }, { kind: "crossover_sweep" }),
+  );
+  assert.equal(setupWirePayload().calibration.mode, "none");
+  ok();
+}
+
+async function testSilentHintNeverOverridesAlreadyChosenCalibration() {
+  const { applyDefaultCalibrationHintSilently, setupWirePayload } = await loadModule();
+  const firstSpec = specWithHint(
+    { calibration_id: "vendor-first" }, { kind: "crossover_sweep" },
+  );
+  applyDefaultCalibrationHintSilently(firstSpec);
+  assert.equal(setupWirePayload().calibration.calibration_id, "vendor-first");
+
+  // A second call with a DIFFERENT hint (e.g. the household record changed
+  // mid-session) must not clobber whatever this page load already claimed.
+  const secondSpec = specWithHint(
+    { calibration_id: "vendor-second" }, { kind: "crossover_sweep" },
+  );
+  applyDefaultCalibrationHintSilently(secondSpec);
+  assert.equal(setupWirePayload().calibration.calibration_id, "vendor-first");
+  ok();
+}
+
 const tests = [
   testResolvableSerialHintIsAccepted,
   testResolvableUploadHintIsAccepted,
@@ -418,6 +476,9 @@ const tests = [
   testHintWithoutResolvableRendersTodaysPicker,
   testStoredRejectionFallsBackToPickerWithPlainSentence,
   testUseDifferentMicrophoneFallsBackWithoutSubmit,
+  testSilentHintAppliesWhenResolvableAndNothingChosen,
+  testSilentHintNoOpWhenHintIsInvalidOrAbsent,
+  testSilentHintNeverOverridesAlreadyChosenCalibration,
 ];
 
 let failure = null;

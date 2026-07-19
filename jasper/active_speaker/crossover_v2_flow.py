@@ -101,6 +101,16 @@ TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
 # Reason codes (internal — never a bare code reaches the household; the envelope
 # renders each through its template copy).
 REASON_AGC_BEHAVIORAL_FAIL = "agc_behavioral_fail"
+# W6.12: the SAME captured-delta-vs-programmed-delta pilot mismatch
+# ``REASON_AGC_BEHAVIORAL_FAIL`` names has a second, honest cause hardware
+# round 4 proved distinct from the phone's own AGC: a loud ambient burst
+# during the pilot pair corrupts the captured level just as effectively, with
+# the phone's AGC verifiably off. ``_consume_check`` distinguishes the two
+# using the CHECK gain solve's own SNR-floor verdict (``gain_plan.
+# snr_floor_ok``, already computed against this exact capture's ambient bands
+# independent of the linearity outcome) rather than blaming the phone's
+# microphone when the room itself was the problem.
+REASON_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
 REASON_SNR_FLOOR = "snr_floor"
 REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 REASON_CLIPPED = "clipped"
@@ -153,6 +163,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_AGC_BEHAVIORAL_FAIL, TEMPLATE_FIX_AND_RETRY, 1, "",
         "Your phone's microphone changed its own levels mid-measurement. "
         "Re-allow the microphone, then try again.",
+    ),
+    REASON_NOISY_ROOM_LINEARITY: ReasonSpec(
+        REASON_NOISY_ROOM_LINEARITY, TEMPLATE_FIX_AND_RETRY, 1, "",
+        "The room got loud during that measurement — quiet it and try again.",
     ),
     REASON_SNR_FLOOR: ReasonSpec(
         REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1, "",
@@ -852,6 +866,18 @@ class CrossoverV2Conductor:
         if analysis.channel_map_ok is False:
             return PhaseVerdict(False, REASON_CHANNEL_MAP_MISMATCH)
         if analysis.linearity_ok is False:
+            # W6.12: don't blame the phone's mic when the room was the actual
+            # cause. The CHECK gain solve ALREADY computes an SNR-floor
+            # verdict against THIS capture's own ambient bands (``_analyze_check``
+            # runs ``_solve_gain_plan`` unconditionally, before this branch),
+            # independent of whether linearity itself passed — reuse that
+            # existing evidence rather than re-deriving a second ambient
+            # judgment. Only CHECK gets this distinction: MEASURE/VERIFY's
+            # leading pilot pair has no ambient window of its own (see
+            # ``_pilot_verdicts``'s docstring), so there is no comparably
+            # clean signal to judge "was the room loud" there yet.
+            if analysis.gain_plan is not None and not analysis.gain_plan.snr_floor_ok:
+                return PhaseVerdict(False, REASON_NOISY_ROOM_LINEARITY)
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         gain_plan = analysis.gain_plan
         if gain_plan is None or not gain_plan.snr_floor_ok:
@@ -1388,6 +1414,7 @@ __all__ = [
     "TEMPLATE_VERIFY_FAIL",
     "TEMPLATE_VOLUME_RECOVERY",
     "REASON_AGC_BEHAVIORAL_FAIL",
+    "REASON_NOISY_ROOM_LINEARITY",
     "REASON_SNR_FLOOR",
     "REASON_CHANNEL_MAP_MISMATCH",
     "REASON_CLIPPED",

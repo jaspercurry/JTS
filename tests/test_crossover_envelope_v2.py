@@ -23,6 +23,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_AGC_BEHAVIORAL_FAIL,
     REASON_CLIPPED,
     REASON_CHANNEL_MAP_MISMATCH,
+    REASON_NOISY_ROOM_LINEARITY,
     REASON_RELAY_TIMEOUT,
     REASON_SNR_FLOOR,
     REASON_VERIFY_OUT_OF_TOLERANCE,
@@ -248,6 +249,21 @@ def test_fix_and_retry_template():
     assert env["next_action"]["id"] == "retry"
 
 
+def test_noisy_room_linearity_renders_its_own_fix_and_retry_copy():
+    """W6.12: a distinct reason from agc_behavioral_fail, naming the room
+    instead of the phone's microphone — same template, different verdict
+    text, so the household gets an honest fix (quiet the room) rather than a
+    misdirected one (re-allow the mic)."""
+    env = build_crossover_envelope_v2(_status(
+        phase="check", failure={"code": REASON_NOISY_ROOM_LINEARITY},
+    ))
+    assert env["screen"] == "fix_and_retry"
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_NOISY_ROOM_LINEARITY].message
+    assert "room" in env["verdict_text"]
+    assert "microphone" not in env["verdict_text"]
+    assert env["next_action"]["id"] == "retry"
+
+
 def test_hard_stop_template():
     env = build_crossover_envelope_v2(_status(
         phase="check", failure={"code": REASON_CHANNEL_MAP_MISMATCH},
@@ -288,6 +304,17 @@ def test_verify_fail_one_default_screen():
     # apply-rollback path.
     undo = next(a for a in env["alternate_actions"] if a["id"] == "verify_undo")
     assert undo["endpoint"] == "/correction/crossover/v2/restore"
+    # W6.12: Undo and Re-measure must survive the JS action-row's relay-in-
+    # flight gate (a real window right after a failed capture, before the
+    # phone side has fully wound down) — the same show_during_relay escape
+    # hatch W6.10 gave the review screen's Apply. "Try again" starts a brand
+    # new relay session, so it deliberately does NOT carry the flag.
+    remeasure = next(
+        a for a in env["alternate_actions"] if a["id"] == "verify_remeasure"
+    )
+    assert undo["show_during_relay"] is True
+    assert remeasure["show_during_relay"] is True
+    assert "show_during_relay" not in env["next_action"]
 
 
 def test_unknown_failure_code_still_renders_a_retry_screen():

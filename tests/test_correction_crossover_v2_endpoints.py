@@ -619,7 +619,7 @@ def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
         "applied": True,
         "pre_apply_profile": None,
     })
-    with pytest.raises(v2host.CrossoverV2Refused, match="no previous crossover"):
+    with pytest.raises(v2host.CrossoverV2Refused, match="first measured crossover"):
         v2host.handle_v2_restore(None, None)
 
 
@@ -763,6 +763,166 @@ def test_production_analyze_default_resolver_is_the_shared_relay_machinery():
     choices) — a no-choice setup resolves to None."""
     assert v2host.resolve_relay_calibration(None, None) is None
     assert v2host.resolve_relay_calibration({"calibration": {"mode": "none"}}, None) is None
+
+
+# --- W6.12: v2 calibration handoff — the household-mic hint reaches a v2 session --
+#
+# Every v2 capture logged crossover_v2_uncalibrated_capture even with a
+# resolvable stored household mic (a UMIK-2 by serial) — root cause: a v2
+# capture-plan session has no calibration-picker screen of its own (unlike
+# level_ramp/room_sweep) and, unlike the legacy per-driver crossover flow
+# (which inherits its choice from the level_ramp page visited first in the
+# same tab), never had anywhere to carry the Wave-2 household-mic hint. The
+# fix threads correction_setup._default_setup_calibration_for_spec() into
+# build_v2_session_spec/build_v2_verify_session_spec (their existing
+# **spec_kwargs already forwards to build_crossover_sweep_spec's new
+# default_setup_calibration parameter) and applies it silently on the
+# capture page. These tests pin each link of that handoff.
+
+
+def _seed_household_mic(tmp_path, monkeypatch):
+    """A resolvable stored household mic (mirrors
+    test_default_setup_calibration_for_spec_present_and_absent)."""
+    cal_root = tmp_path / "cal"
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_root))
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+
+    from jasper.audio_measurement.calibration import store_calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
+    )
+
+    record = store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=cal_root,
+    )
+    write_household_mic(
+        household_mic_from_calibration(record, serial="810-8494"),
+        path=household_path,
+    )
+    return record
+
+
+def test_default_setup_calibration_for_v2_reuses_the_household_mic_hint(
+    tmp_path, monkeypatch,
+):
+    """No household mic ⇒ no hint (fail-soft); a resolvable one ⇒ the SAME
+    hint correction_setup._default_setup_calibration_for_spec builds for
+    level_ramp, now available to a v2 session too."""
+    assert v2host.default_setup_calibration_for_v2() is None
+
+    record = _seed_household_mic(tmp_path, monkeypatch)
+
+    hint = v2host.default_setup_calibration_for_v2()
+    assert hint is not None
+    assert hint.mode == "serial"
+    assert hint.calibration_id == record.calibration_id
+    assert hint.resolvable is True
+
+
+def test_v2_session_and_verify_specs_carry_the_default_calibration_hint(
+    tmp_path, monkeypatch,
+):
+    """build_v2_session_spec / build_v2_verify_session_spec's existing
+    **spec_kwargs forwards default_setup_calibration through to
+    build_crossover_sweep_spec's new parameter, landing on the WIRE spec the
+    phone actually receives."""
+    from jasper.active_speaker.crossover_v2_flow import (
+        build_v2_session_spec,
+        build_v2_verify_session_spec,
+    )
+
+    record = _seed_household_mic(tmp_path, monkeypatch)
+    hint = v2host.default_setup_calibration_for_v2()
+    assert hint is not None
+
+    session_spec = build_v2_session_spec(
+        _roles(), FC_HZ,
+        acknowledgement_binding=_BINDING,
+        default_setup_calibration=hint,
+    )
+    verify_spec = build_v2_verify_session_spec(
+        FC_HZ, acknowledgement_binding=_BINDING, default_setup_calibration=hint,
+    )
+    for spec in (session_spec, verify_spec):
+        wire = spec.to_dict()
+        assert wire["default_setup"]["calibration"]["calibration_id"] == (
+            record.calibration_id
+        )
+        assert wire["default_setup"]["calibration"]["mode"] == "serial"
+
+    # Omitted (the pre-W6.12 default): no hint on the wire — every existing
+    # caller (including the two legacy correction_setup.py handlers, which
+    # never pass this) stays byte-identical.
+    bare = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING,
+    ).to_dict()
+    assert "default_setup" not in bare
+
+
+def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
+    tmp_path, monkeypatch, caplog,
+):
+    """THE handoff pin: once the capture page applies the household-mic hint
+    (a v2 capture posting setup.calibration = {mode: "stored", calibration_id,
+    model} — the exact shape applyDefaultCalibrationHintSilently now submits),
+    bind_production_analyze's PRODUCTION resolver (resolve_relay_calibration,
+    not a mock) must actually apply the calibration curve and record it in the
+    persisted evidence — never silently falling back to uncalibrated."""
+    import logging as _logging
+
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    record = _seed_household_mic(tmp_path, monkeypatch)
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+        seen["calibration"] = calibration
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+
+    meta: dict[str, Any] = {}
+    # resolve_calibration defaults to resolve_relay_calibration — the REAL
+    # production seam — proving the fix through the exact path a live
+    # v2 session rides, not a test double.
+    analyze = v2host.bind_production_analyze(meta=meta)
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    result = _FakeResult(
+        setup={
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": record.calibration_id,
+                "model": "minidsp_umik2",
+            },
+        },
+        device={"label": "UMIK-2"},
+    )
+    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+        out = analyze(
+            program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(),
+        )
+
+    assert out == "analysis"
+    assert seen["calibration"] is not None
+    assert meta["calibration"]["verify"] == {
+        "applied": True, "calibration_id": record.calibration_id,
+    }
+    assert "crossover_v2_uncalibrated_capture" not in caplog.text
 
 
 # --- status block (S1b) -----------------------------------------------------------
@@ -1929,6 +2089,149 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
+def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
+    monkeypatch, tmp_path,
+):
+    """W6.12 P0 regression: the durable Undo stash must survive the deferred
+    VERIFY that always auto-arms right after every apply.
+
+    Drives handle_v2_apply TWICE in sequence, both through the production
+    seam (not seeded state) — a v2-written prior profile ("run 1"), then a
+    v2 apply over it ("run 2 over run 1"), matching the round-4 hardware
+    differential. Round-4 found ``pre_apply_profile: null`` after EVERY
+    apply on real hardware even though a standalone compose probe showed the
+    host DOES attach ``applied_recomposition_profile`` — the drop was never
+    in ``handle_v2_apply``/``observe_apply_success`` (both prove correct
+    here); it was that ``persist_conductor_state`` built a fresh state dict
+    that never carried ``pre_apply_profile`` forward, so the deferred VERIFY
+    that auto-arms after every apply (``prepare_v2_verify`` mints a NEW relay
+    session id and immediately calls ``persist_conductor_state`` to "rebind"
+    it — see its own call site) wiped the just-stashed pointer before a
+    household could ever reach the verify_fail Undo screen. This test
+    reproduces that exact rebind call (a real ``CrossoverV2Conductor``, not a
+    mock) between each apply and the next, and pins that the stash survives
+    it."""
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_VERIFY,
+        CrossoverV2Conductor,
+        V2FlowSeams,
+    )
+
+    from tests.test_crossover_v2_conductor import CAPS, FC_HZ, SESSION_VOLUME_DB, _roles
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    state_path = tmp_path / "baseline_profile.json"
+
+    def _simulate_deferred_verify_rearm(*, verify_session_id: str) -> None:
+        """Exactly what ``prepare_v2_verify``'s ``_open`` does: mint a fresh
+        conductor bound to a NEW relay session id, applied=True, and
+        immediately persist it ("Keep the durable candidate/applied facts;
+        rebind the session id.") — the real production seam this regression
+        traces to, not a synthetic stand-in."""
+        conductor = CrossoverV2Conductor(
+            session_id=verify_session_id,
+            source_preset=preset,
+            roles_bands=_roles(),
+            fc_hz=FC_HZ,
+            driver_caps_dbfs=CAPS,
+            session_volume_db=SESSION_VOLUME_DB,
+            seams=V2FlowSeams(
+                play=lambda *a, **k: None,
+                analyze=lambda *a, **k: None,
+                publish_check=lambda *a, **k: None,
+                publish_candidate=lambda *a, **k: None,
+                apply_complete=v2host._applied_gate,
+            ),
+            driver_spacing_m=0.15,
+            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+            applied=True,
+            index_phase_map={1: PHASE_VERIFY},
+        )
+        v2host.persist_conductor_state(conductor, failure_code=None)
+
+    # --- run 1: a v2-written apply, no pre-existing profile to restore to ---
+    run1_candidate = _prior_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "cap_run1",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": run1_candidate.fingerprint},
+        "applied": False,
+    })
+    run1_payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": run1_candidate.fingerprint,
+            "candidate": run1_candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert run1_payload["status"] == "applied", run1_payload.get("issues")
+    run1_config_text = config_path.read_text(encoding="utf-8")
+    assert v2host.load_v2_state()["pre_apply_profile"] is None  # speaker's first-ever apply
+
+    # The deferred VERIFY always auto-arms right after an apply — reproduce
+    # its rebind-and-persist before the household ever reaches run 2.
+    _simulate_deferred_verify_rearm(verify_session_id="verify_of_run1")
+    assert v2host.load_v2_state()["applied"] is True
+    assert v2host.load_v2_state()["pre_apply_profile"] is None
+
+    # --- run 2 over run 1: also v2-written, through the SAME production seam ---
+    run2_candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        **v2host.load_v2_state(),
+        "session_id": "cap_run2",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": run2_candidate.fingerprint},
+    })
+    run2_payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": run2_candidate.fingerprint,
+            "candidate": run2_candidate.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert run2_payload["status"] == "applied", run2_payload.get("issues")
+    assert config_path.read_text(encoding="utf-8") == run1_config_text  # never clobbered
+
+    state_after_run2_apply = v2host.load_v2_state()
+    pre_apply_profile = state_after_run2_apply.get("pre_apply_profile")
+    assert isinstance(pre_apply_profile, dict)
+    assert (
+        pre_apply_profile["candidate_fingerprint"]
+        == run1_payload["profile"]["candidate_fingerprint"]
+    )
+
+    # The P0 assertion: run 2's own deferred VERIFY rebind must NOT wipe the
+    # stash — before the fix this is exactly where it went null.
+    _simulate_deferred_verify_rearm(verify_session_id="verify_of_run2")
+    state_after_verify_rearm = v2host.load_v2_state()
+    assert state_after_verify_rearm["applied"] is True
+    pre_apply_profile_after_verify = state_after_verify_rearm.get("pre_apply_profile")
+    assert isinstance(pre_apply_profile_after_verify, dict)
+    assert (
+        pre_apply_profile_after_verify["candidate_fingerprint"]
+        == run1_payload["profile"]["candidate_fingerprint"]
+    )
+
+    # Undo must now succeed, through the real restore seam, reverting to run 1.
+    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert config_path.read_text(encoding="utf-8") == run1_config_text
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert (
+        active["candidate_fingerprint"] == run1_payload["profile"]["candidate_fingerprint"]
+    )
+    state_after_restore = v2host.load_v2_state()
+    assert state_after_restore["applied"] is False
+    assert state_after_restore["pre_apply_profile"] is None
+
+
 def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
     monkeypatch, tmp_path,
 ):
@@ -2035,8 +2338,9 @@ def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
     assert payload["status"] == "applied", payload.get("issues")
     assert v2host.load_v2_state()["pre_apply_profile"] is None
 
-    with pytest.raises(v2host.CrossoverV2Refused, match="no previous crossover"):
+    with pytest.raises(v2host.CrossoverV2Refused, match="first measured crossover"):
         v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+
 
 
 # --- W6.11: the real session-start preview-ensure seam, end to end ---

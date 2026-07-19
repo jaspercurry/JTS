@@ -394,6 +394,8 @@ def test_locate_failed_and_budget_exhaustion():
 
 
 def test_check_agc_and_snr_and_channel_map_verdicts():
+    # linearity=False with ambient looking clean (snr_floor_ok defaults True)
+    # ⇒ the phone's own AGC is the honest cause.
     fakes = FakeSeams()
     fakes.check = lambda program: _check_analysis(program, linearity=False)
     c = _conductor(fakes)
@@ -413,6 +415,24 @@ def test_check_agc_and_snr_and_channel_map_verdicts():
     # Hard stop: budget 0 ⇒ the very next begin is refused.
     with pytest.raises(CaptureBeginRefused):
         c.authorize_begin(1, 2)
+
+
+def test_check_linearity_fail_blames_the_room_when_ambient_is_elevated():
+    """W6.12: agc_behavioral_fail's copy blames the phone's mic, but hardware
+    round 4 proved a distinct honest cause with the identical symptom (the
+    captured pilot-pair delta drifting from the programmed delta) — a loud
+    ambient burst during the pilot pair, with the phone's AGC verifiably off.
+    When the SAME capture's ambient bands ALSO fail the CHECK gain solve's own
+    SNR-floor verdict (computed unconditionally, independent of linearity),
+    the room — not the phone — is named."""
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(
+        program, linearity=False, snr_floor_ok=False,
+    )
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["code"] == "noisy_room_linearity"
+    assert verdict["template"] == "fix_and_retry"
 
 
 def test_delay_exceeds_search_window_verdict():

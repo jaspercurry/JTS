@@ -1502,6 +1502,7 @@ def build_crossover_sweep_spec(
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ambient_duration_ms: int = 0,
     capture_plan: CapturePlan | None = None,
+    default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work. Same acoustic shape as `room_sweep` (a clean log sweep,
@@ -1540,6 +1541,24 @@ def build_crossover_sweep_spec(
     flag, gates the rollout — see the module docstring. A plan requires an
     ``acknowledgement_binding`` (placement gates run per capture, exactly as
     today).
+
+    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
+    (Wave-2 persistence, ``jasper.correction.household_mic`` — same field
+    ``build_level_ramp_spec`` already carries). W6.12: unlike ``level_ramp``,
+    a ``crossover_sweep`` capture (legacy per-driver OR the v2 capture-plan
+    session) has NO calibration-picker screen of its own — the legacy flow's
+    calibration comes from the ``level_ramp`` level-match page the household
+    visits FIRST in the same phone tab (its choice survives in the page's
+    module state across the in-tab hash navigation into the driver sweeps
+    that follow); v2 has no such preceding page, so its capture always
+    carried ``setup.calibration.mode == "none"`` and every v2 capture logged
+    ``crossover_v2_uncalibrated_capture`` even when the household had a
+    resolvable stored mic. The capture page applies this hint SILENTLY (no
+    extra tap — a v2 session is designed around a minimal, fixed tap count)
+    when nothing has already been chosen for this page load. Omitted by
+    default so every existing caller (including the two legacy handlers in
+    ``jasper/web/correction_setup.py``, which resolve calibration through the
+    preceding level-match page instead) stays byte-identical.
     """
     if stimulus_duration_ms is None:
         # Lazy import: the kernel module pulls numpy/scipy, and the socket-
@@ -1656,6 +1675,7 @@ def build_crossover_sweep_spec(
         max_upload_bytes=max_upload_bytes,
         acknowledgement=acknowledgement,
         capture_plan=capture_plan,
+        default_setup_calibration=default_setup_calibration,
         capture_protocol_version=(
             SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION
             if capture_plan is not None

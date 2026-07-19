@@ -40,7 +40,15 @@ function element(id = "") {
     disabled: false,
     textContent: "",
     href: "",
-    addEventListener() {},
+    _listeners: {},
+    addEventListener(event, fn) {
+      (this._listeners[event] = this._listeners[event] || []).push(fn);
+    },
+    click() {
+      let result;
+      for (const fn of this._listeners.click || []) result = fn();
+      return result;
+    },
     append(...children) { this.children.push(...children); },
     replaceChildren(...children) { this.children = children; },
     setAttribute(key, value) { this[key] = String(value); },
@@ -320,5 +328,118 @@ check(
   "(e) review: the candidate card is shown",
 );
 assertSinglePrimary("(e) review during hold");
+
+// --- (f) verify_fail during a live relay: Undo + Re-measure show, Try again gated -
+// W6.12 P0-adjacent fix: right after a failed VERIFY capture the relay object
+// can still be transitioning ("finishing" while the phone uploads, or
+// "committing"/"stopping") for a real window before it settles. Before this
+// fix the relay gate blanket-cleared EVERY alternate action during that
+// window, so the household saw NO buttons at all on the verify_fail screen
+// and had no obvious reason to guess "hit Stop" to make them reappear.
+// verify_undo and verify_remeasure now carry show_during_relay (the same
+// escape hatch (e) uses for Apply); verify_retry ("Try again") deliberately
+// does not, since it starts a brand-new relay session and racing the one
+// still tearing down is exactly what the gate exists to prevent.
+const verifyRetryAction = {
+  id: "verify_retry",
+  label: "Try again",
+  endpoint: "/correction/crossover/v2/verify",
+  body: {},
+};
+const verifyUndoAction = {
+  id: "verify_undo",
+  label: "Undo (restore previous sound)",
+  endpoint: "/correction/crossover/v2/restore",
+  body: {},
+  show_during_relay: true,
+};
+const verifyRemeasureAction = {
+  id: "verify_remeasure",
+  label: "Re-measure",
+  endpoint: "/correction/crossover/v2/session",
+  body: {},
+  expert: true,
+  show_during_relay: true,
+};
+render({
+  verdict_text: "That measurement didn't check out.",
+  steps: [],
+  nudges: [{ code: "verify_out_of_tolerance", severity: "warn", text: "x" }],
+  relay: { status: "finishing" },
+  next_action: verifyRetryAction,
+  alternate_actions: [verifyUndoAction, verifyRemeasureAction],
+});
+const fLabels = actionRowChildren().map((child) => child.textContent);
+check(
+  actionRowChildren().length === 2,
+  "(f) verify_fail during a live relay: exactly Undo + Re-measure render",
+);
+check(
+  fLabels.includes("Undo (restore previous sound)"),
+  "(f) verify_fail during a live relay: Undo renders",
+);
+check(
+  fLabels.includes("Re-measure"),
+  "(f) verify_fail during a live relay: Re-measure renders",
+);
+check(
+  !fLabels.includes("Try again"),
+  "(f) verify_fail during a live relay: Try again stays gated until Stop",
+);
+check(!relayLinkVisible(), "(f) verify_fail during a live relay: relay link stays hidden");
+assertSinglePrimary("(f) verify_fail during a live relay");
+
+// --- (g) click-swallowing: an unchanged envelope must not replace the row --
+// W6.12: renderActions() used to call els.action.replaceChildren() on EVERY
+// render(), tearing the row down and rebuilding it even when nothing about
+// it had changed — every ~1.5s poll ran through this unconditionally.
+// Hardware round 4 lost 4 taps this way: a poll landed between pointerdown
+// and click and replaced the button the tap was headed for out from under
+// it. A click dispatched against the SAME node across two identical-content
+// renders (exactly what a repeated poll response looks like — same fields,
+// a fresh object each time) must still land.
+const clickAction = {
+  id: "level_match",
+  label: "Continue",
+  endpoint: "/correction/crossover/level-match",
+  body: {},
+  enabled: true,
+};
+const clickEnvelope = () => ({
+  verdict_text: "Ready",
+  steps: [],
+  nudges: [],
+  relay: null,
+  next_action: clickAction,
+  alternate_actions: [],
+});
+render(clickEnvelope());
+const survivingButton = actionRowChildren()[0];
+check(Boolean(survivingButton), "(g) click-swallowing: a button rendered");
+
+// A poll landing with an unchanged envelope — a fresh object, identical
+// content.
+render(clickEnvelope());
+check(
+  actionRowChildren()[0] === survivingButton,
+  "(g) click-swallowing: the SAME node survives an identical-content re-render",
+);
+
+postResponse = { status: "ok" };
+nextEnvelope = clickEnvelope();
+const clickResult = survivingButton.click();
+check(
+  survivingButton.disabled === true,
+  "(g) click-swallowing: the click on the surviving node landed synchronously",
+);
+await clickResult;
+// runAction's own finally re-renders once busy clears — by then the action
+// row is legitimately allowed to rebuild (busy is part of the key); the
+// fresh button coming out re-enabled proves the click ran to completion
+// rather than getting stuck disabled or throwing.
+check(
+  actionRowChildren()[0].disabled === false,
+  "(g) click-swallowing: runAction ran to completion and the row re-enabled",
+);
 
 console.log(JSON.stringify({ ok: true, passed }));

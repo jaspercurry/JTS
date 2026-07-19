@@ -724,6 +724,24 @@ def persist_conductor_state(
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
         if prior.get("session_id") == snap.session_id:
             state["evidence"] = dict(prior["evidence"])
+    # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
+    # handle_v2_restore) and ``apply_blocked`` (the review_apply nudge) are
+    # NOT conductor-owned fields: the conductor neither produces nor reads
+    # either one, so they are absent from the ``state`` literal above and
+    # every OTHER caller of this function only ever sets the fields it does
+    # know about. Unlike ``candidate``/``evidence``, this carry-forward is
+    # unconditional (not gated on a matching session_id): the deferred
+    # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
+    # relay session id (``prepare_v2_verify`` mints one and "rebinds" the
+    # conductor's session_id before its own ``persist_conductor_state``
+    # call), so a session-id-gated carry-forward would still lose the stash
+    # on that very first post-apply snapshot. W6.12 P0: without this, the
+    # verify phase that always immediately follows an apply wiped the
+    # just-stashed ``pre_apply_profile`` before a household could ever reach
+    # the verify_fail Undo screen — ``/crossover/v2/restore`` 400'd with "no
+    # previous crossover to restore to" after literally every apply.
+    state["pre_apply_profile"] = prior.get("pre_apply_profile")
+    state["apply_blocked"] = prior.get("apply_blocked")
     save_v2_state(state)
 
 
@@ -780,6 +798,44 @@ def resolve_relay_calibration(setup: Any, device: Any) -> Any:
     return _relay_calibration_from_setup(
         dict(setup) if isinstance(setup, Mapping) else None
     )
+
+
+def default_setup_calibration_for_v2() -> Any | None:
+    """The v2 session's OPTIONAL household-mic prefill hint (W6.12).
+
+    Every v2 capture logged ``crossover_v2_uncalibrated_capture`` even when
+    the household had a resolvable stored mic (a UMIK-2 by serial, ingested
+    via ``/correction/calibration/fetch``). Root cause: ``resolve_relay_calibration``
+    is only as good as what the phone posts in ``setup.calibration`` — and a
+    v2 capture-plan session has no calibration-picker screen of its own. The
+    LEGACY per-driver crossover flow gets away with this because its
+    calibration choice comes from the ``level_ramp`` level-match page the
+    household visits FIRST in the same phone tab (the capture page's
+    ``setupState`` module variable survives the in-tab hash navigation from
+    that page into the driver sweeps that follow); v2 has no preceding
+    level-match page (design: CHECK's own pilot pairs solve gain), so it
+    never had a carrier for the same hint.
+
+    Reuses ``correction_setup._default_setup_calibration_for_spec`` — the
+    SAME household-mic-hint resolver the legacy level-match handlers already
+    pass into ``build_level_ramp_spec``. Threaded into
+    ``build_v2_session_spec``/``build_v2_verify_session_spec`` via their
+    shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``
+    (W6.12 added the parameter there); the capture page applies it SILENTLY
+    (no extra tap) when nothing has already been chosen for that page load.
+    Fail-soft: any resolution miss yields no hint, never blocks session open.
+    """
+    from .correction_setup import _default_setup_calibration_for_spec
+
+    try:
+        return _default_setup_calibration_for_spec()
+    except (OSError, RuntimeError, ValueError):
+        log_event(
+            logger,
+            "correction.crossover_v2_default_calibration_hint_failed",
+            level=logging.WARNING,
+        )
+        return None
 
 
 def bind_production_analyze(
@@ -1808,6 +1864,7 @@ def prepare_v2_session(
             context.roles_bands,
             context.fc_hz,
             acknowledgement_binding=acknowledgement_binding,
+            default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
             client,
@@ -1940,6 +1997,7 @@ def prepare_v2_verify(
         spec = build_v2_verify_session_spec(
             context.fc_hz,
             acknowledgement_binding=acknowledgement_binding,
+            default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
             client,
@@ -2221,9 +2279,14 @@ def handle_v2_restore(
         )
     pre_apply_profile = state.get("pre_apply_profile")
     if not isinstance(pre_apply_profile, Mapping):
+        # Now that persist_conductor_state carries pre_apply_profile forward
+        # across every conductor snapshot (W6.12 P0), this branch is reached
+        # ONLY on a genuine first-ever apply — there was never an earlier
+        # profile to stash. Say so plainly rather than reading like a bug
+        # report or a generic "no undo available" error.
         raise CrossoverV2Refused(
-            "there is no previous crossover to restore to; remove the active "
-            "crossover from speaker setup instead"
+            "this is the first measured crossover on this speaker — there's "
+            "no earlier one to restore; use Speaker setup to remove it instead"
         )
     cam = camilla_factory()
     payload = run_async(
