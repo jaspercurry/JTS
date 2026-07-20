@@ -1978,6 +1978,73 @@ def _calibration_device_mismatch(
     return None
 
 
+def _normalize_label_token(value: str) -> str:
+    """Lowercase, punctuation-stripped comparison key for a device label.
+
+    Shared normalization so ``"UMIK-2 (2752:002b)"`` and an alias of
+    ``"umik-2"`` compare equal regardless of casing/hyphenation/parenthetical
+    USB descriptor suffixes the OS appends.
+    """
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _stored_calibration_model_mismatch(
+    record: Any, device: Mapping[str, Any] | None
+) -> str | None:
+    """Detect a resolved measurement-mic calibration that is for a DIFFERENT
+    external mic than the one this capture's ``device`` reports (2026-07-20
+    incident: a Dayton iMM-6C capture silently carried a remembered UMIK-2
+    calibration — ``setup.calibration.mode == "stored"`` re-confirms whatever
+    calibration_id the phone echoes, independent of which mic actually
+    recorded). Calibration is frequency-magnitude, so applying the WRONG
+    mic's curve corrupts a same-frequency measurement just as surely as the
+    built-in-mic case `_calibration_device_mismatch` guards — this is that
+    check's sibling for external-mic-vs-external-mic identity.
+
+    Conservative and anchored, never a fuzzy label guess: reuses the SAME
+    curated ``SUPPORTED_MODELS``/``model_label_aliases`` registry the wizard's
+    own label-based auto-inference uses (single source of truth for "which OS
+    label names which model" — not a new heuristic). Only trips when the
+    device's own reported label positively matches a DIFFERENT registered
+    model's aliases than the record's own model. An unrecognized model on
+    either side, or a device label that matches nothing (or matches its OWN
+    model), is NOT a mismatch — there's nothing concrete to contradict the
+    stored choice with, so the current (apply) behavior is preserved.
+    """
+    from jasper.audio_measurement.calibration import (
+        SUPPORTED_MODELS,
+        model_label_aliases,
+    )
+
+    model_key = str(getattr(record, "model", "") or "")
+    if model_key not in SUPPORTED_MODELS:
+        return None
+    label = ""
+    if isinstance(device, Mapping):
+        label = str(device.get("label") or device.get("browser_label") or "")
+    if not label:
+        return None
+    normalized_label = _normalize_label_token(label)
+    if any(
+        _normalize_label_token(alias) in normalized_label
+        for alias in model_label_aliases(model_key)
+    ):
+        return None  # matches its own model — fine
+    for other_key, spec in SUPPORTED_MODELS.items():
+        if other_key == model_key:
+            continue
+        if any(
+            _normalize_label_token(alias) in normalized_label
+            for alias in model_label_aliases(other_key)
+        ):
+            return (
+                f'stored calibration is for "{SUPPORTED_MODELS[model_key]["label"]}" '
+                f'but the captured device "{label}" looks like a '
+                f'"{spec["label"]}"'
+            )
+    return None
+
+
 def _relay_device_calibration_block(
     mic_calibration: Any, device: dict[str, Any] | None
 ) -> str | None:
@@ -3279,7 +3346,9 @@ def _handle_calibration_upload(
     return _calibration_payload(record)
 
 
-def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
+def _relay_calibration_from_setup(
+    setup: dict[str, Any] | None, *, device: Mapping[str, Any] | None = None,
+) -> Any | None:
     """Materialize the phone wizard's calibration choice on the Pi.
 
     The phone cannot call the Pi directly, so serial/upload/stored choices
@@ -3296,6 +3365,20 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
     follow-up) re-confirms an already-remembered calibration rather than
     establishing a new one, but still counts as success here for the same
     reason: the household explicitly confirmed intent to use it.
+
+    ``device`` (optional, the capture's phone-reported input device — see
+    `CaptureResult.device`) is consulted ONLY in the `mode == "stored"`
+    branch: a re-confirmed calibration is a passive carry-over the household
+    never re-selects a mic for, so it is the one mode where a DIFFERENT
+    physical mic can silently ride a stale pairing (the 2026-07-20 incident —
+    see `_stored_calibration_model_mismatch`). A detected mismatch skips the
+    household-mic save (never re-persists the wrong pairing) and returns
+    `None` — the caller's existing "no calibration resolved" path already
+    degrades to an annotated-uncalibrated analysis, never a blocked capture.
+    `serial`/`upload` are the household actively establishing a NEW pairing
+    in the moment, a different risk shape, and are unchanged here — callers
+    that don't have a `device` to offer (the default) see byte-identical
+    behavior.
     """
     calibration = setup.get("calibration") if isinstance(setup, dict) else None
     if not isinstance(calibration, dict):
@@ -3373,6 +3456,24 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
                 "the remembered microphone calibration is no longer available; "
                 "set it up again"
             )
+        mismatch = _stored_calibration_model_mismatch(resolved, device)
+        if mismatch is not None:
+            # Refuse to apply AND refuse to re-persist the wrong pairing —
+            # never a blocked capture (the caller degrades to an annotated-
+            # uncalibrated analysis), but never silent either.
+            device_label = (
+                str(device.get("label") or device.get("browser_label") or "")
+                if isinstance(device, Mapping) else ""
+            )
+            log_event(
+                logger,
+                "correction.calibration_device_identity_mismatch",
+                level=logging.WARNING,
+                stored_model=resolved.model,
+                device_label=_short_text(device_label) or "",
+                reason=mismatch,
+            )
+            return None
         # `serial=` is documented as the RAW serial, but a stored re-confirm
         # never sees one — the phone only echoes calibration_id + model. The
         # already-truncated last-4 display is fed back deliberately:

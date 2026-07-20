@@ -3617,6 +3617,111 @@ def test_relay_calibration_stored_mode_resolves_vendor_cached(
     assert "event=correction.household_mic_replaced" not in caplog.text
 
 
+def test_relay_calibration_stored_mode_refuses_on_device_mismatch(
+    tmp_path, monkeypatch, caplog,
+):
+    """The 2026-07-20 incident, reproduced end to end: a `mode="stored"`
+    re-confirm for the household's UMIK-2 calibration, but THIS capture's
+    reported device is a Dayton iMM-6C. Must refuse to apply (returns None —
+    the caller's existing uncalibrated-analysis path takes over), must NOT
+    re-persist the household record, and must log the new distinct
+    mismatch event (never blocking the capture itself)."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        read_household_mic,
+        write_household_mic,
+    )
+
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=tmp_path / "cal",
+    )
+    seeded = household_mic_from_calibration(record, serial="810-8494")
+    write_household_mic(seeded, path=household_path)
+    before = household_path.read_text()
+    caplog.clear()
+
+    resolved = correction_setup._relay_calibration_from_setup(
+        {
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": record.calibration_id,
+                "model": "minidsp_umik2",
+            },
+        },
+        device={"label": "iMM-6C", "device_id": "some-dayton-device-id"},
+    )
+
+    assert resolved is None  # refused, never a crash or a partial apply
+    # Never re-persisted: the file on disk is byte-identical to the seed.
+    assert household_path.read_text() == before
+    saved = read_household_mic(path=household_path)
+    assert saved is not None
+    assert saved.model_key == "minidsp_umik2"  # unchanged, not overwritten
+
+    assert "event=correction.calibration_device_identity_mismatch" in caplog.text
+    assert "stored_model=minidsp_umik2" in caplog.text
+    assert "iMM-6C" in caplog.text
+    assert "event=correction.household_mic_saved" not in caplog.text
+    assert "event=correction.household_mic_replaced" not in caplog.text
+
+
+def test_relay_calibration_stored_mode_matching_device_still_applies(
+    tmp_path, monkeypatch, caplog,
+):
+    """Same shape, matching device: the fix must not regress the ordinary
+    re-confirm path — see also
+    `test_relay_calibration_stored_mode_resolves_vendor_cached`, which pins
+    the no-device (``device=None``) call shape unaffected."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
+
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import household_mic_from_calibration, write_household_mic
+
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial="810-8494",
+        root=tmp_path / "cal",
+    )
+    write_household_mic(
+        household_mic_from_calibration(record, serial="810-8494"), path=household_path,
+    )
+    caplog.clear()
+
+    resolved = correction_setup._relay_calibration_from_setup(
+        {
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": record.calibration_id,
+                "model": "minidsp_umik2",
+            },
+        },
+        device={"label": "UMIK-2 (2752:002b)"},
+    )
+    assert resolved is not None
+    assert resolved.calibration_id == record.calibration_id
+    assert "event=correction.calibration_device_identity_mismatch" not in caplog.text
+    assert "event=correction.household_mic_saved" in caplog.text
+
+
 def test_relay_calibration_stored_mode_resolves_upload(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
@@ -4148,6 +4253,62 @@ def test_calibration_device_mismatch_ignores_manual_and_absent():
     ) is None
     assert correction_setup._calibration_device_mismatch(
         _cal("dayton_audio"), None
+    ) is None
+
+
+# --- 2026-07-20 incident: stored calibration must not cross mic identities --
+# A Dayton iMM-6C capture ran with the STORED UMIK-2 calibration silently
+# applied (setup.calibration.mode="stored" re-confirms whatever
+# calibration_id the phone echoes, independent of which mic actually
+# recorded). This is `_calibration_device_mismatch`'s sibling: that gate
+# catches "vendor curve on the phone's OWN built-in mic"; this one catches
+# "vendor curve for a DIFFERENT external measurement mic than reported".
+
+
+def test_stored_calibration_model_mismatch_detects_different_supported_model():
+    record = types.SimpleNamespace(model="minidsp_umik2")
+    msg = correction_setup._stored_calibration_model_mismatch(
+        record, {"label": "iMM-6C"},
+    )
+    assert msg is not None
+    assert "UMIK-2" in msg
+    assert "iMM-6C" in msg
+
+
+def test_stored_calibration_model_mismatch_allows_matching_device():
+    record = types.SimpleNamespace(model="minidsp_umik2")
+    # Exact vendor label, and the real-world browser-reported USB descriptor
+    # suffix shape (parenthetical VID:PID) both match.
+    assert correction_setup._stored_calibration_model_mismatch(
+        record, {"label": "UMIK-2"},
+    ) is None
+    assert correction_setup._stored_calibration_model_mismatch(
+        record, {"label": "UMIK-2 (2752:002b)"},
+    ) is None
+
+
+def test_stored_calibration_model_mismatch_preserves_current_behavior_when_absent():
+    # No device reported at all → nothing to contradict the stored choice with.
+    record = types.SimpleNamespace(model="minidsp_umik2")
+    assert correction_setup._stored_calibration_model_mismatch(record, None) is None
+    assert correction_setup._stored_calibration_model_mismatch(
+        record, {"label": ""},
+    ) is None
+    # The record itself carries no recognized model identity (a legacy/manual
+    # upload) → preserve current (apply) behavior per the same "no identity,
+    # no check" rule.
+    unrecognized = types.SimpleNamespace(model="other")
+    assert correction_setup._stored_calibration_model_mismatch(
+        unrecognized, {"label": "iMM-6C"},
+    ) is None
+
+
+def test_stored_calibration_model_mismatch_allows_unrecognized_device_label():
+    # A device label that matches NO known model's aliases is not a positive
+    # mismatch — only a positive match to a DIFFERENT model trips the gate.
+    record = types.SimpleNamespace(model="minidsp_umik2")
+    assert correction_setup._stored_calibration_model_mismatch(
+        record, {"label": "Unknown USB Microphone"},
     ) is None
 
 

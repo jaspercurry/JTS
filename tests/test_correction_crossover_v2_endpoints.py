@@ -989,6 +989,69 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
     assert "crossover_v2_uncalibrated_capture" not in caplog.text
 
 
+def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
+    tmp_path, monkeypatch, caplog,
+):
+    """The 2026-07-20 incident, through the full production seam: the
+    household's UMIK-2 calibration is the resolvable stored default, but THIS
+    capture's phone-reported device is a Dayton iMM-6C. The real
+    ``resolve_relay_calibration`` seam must refuse to apply it — the
+    analysis still runs (never blocked), annotated uncalibrated, with BOTH
+    the existing ``crossover_v2_uncalibrated_capture`` WARN and the NEW
+    distinct mismatch event."""
+    import logging as _logging
+
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    record = _seed_household_mic(tmp_path, monkeypatch)
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+        seen["calibration"] = calibration
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+
+    meta: dict[str, Any] = {}
+    analyze = v2host.bind_production_analyze(meta=meta)
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    result = _FakeResult(
+        setup={
+            "calibration": {
+                "mode": "stored",
+                "calibration_id": record.calibration_id,
+                "model": "minidsp_umik2",
+            },
+        },
+        device={"label": "iMM-6C", "device_id": "some-dayton-device-id"},
+    )
+    with caplog.at_level(_logging.WARNING):
+        out = analyze(
+            program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(),
+        )
+
+    assert out == "analysis"
+    assert seen["calibration"] is None  # never mis-applied
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert "crossover_v2_uncalibrated_capture" in caplog.text
+    assert "calibration_device_identity_mismatch" in caplog.text
+
+    # The household record was never re-persisted against the wrong device.
+    from jasper.correction.household_mic import read_household_mic
+    from jasper.web.correction_setup import _household_mic_path
+
+    saved = read_household_mic(path=_household_mic_path())
+    assert saved is not None
+    assert saved.model_key == "minidsp_umik2"
+
+
 # --- status block (S1b) -----------------------------------------------------------
 
 
