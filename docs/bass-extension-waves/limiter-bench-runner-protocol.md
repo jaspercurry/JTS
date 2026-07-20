@@ -1,16 +1,17 @@
-# Bass Extension limiter bench-runner — reviewed amendment (DRAFT)
+# Bass Extension limiter bench-runner — reviewed amendment
 
-> **Status (2026-07-20): DRAFT for review.** This is the *reviewed amendment*
-> that [`limiter-evidence-protocol.md`](limiter-evidence-protocol.md) "Required
-> bench owner — no hidden authority" and the in-flight
+> **Status (2026-07-20): accepted amendment** (reviewed; gate 1 complete). This
+> is the *reviewed amendment* that
+> [`limiter-evidence-protocol.md`](limiter-evidence-protocol.md) "Required bench
+> owner — no hidden authority" and
 > [`wave-4-commissioning-backend.md`](wave-4-commissioning-backend.md) Revision 9
 > both defer to. It authorizes **building the bench runner** that executes the
 > already-frozen limiter-evidence campaign and emits the replayable bundle the
 > frozen `produce_limiter_thresholds` consumes. It authorizes **no production
 > wiring, no profile persistence, and no hardware playback** until the runner
 > implementation passes its own independent safety review and Jasper runs the
-> supervised bench session. Merging *this document* changes no code and no
-> hardware behavior — it is a contract only.
+> supervised bench session. This document is a contract only — it changed no code
+> and no hardware behavior.
 
 ## Relationship to the frozen protocol
 
@@ -176,9 +177,10 @@ edit `limiter-evidence-protocol.md`.
 
 ## Status
 
-**DRAFT — requires Jasper's review and the independent adversarial gate before
-any runner implementation begins.** No code, no hardware behavior, and no
-production wiring changes in this amendment. Once accepted, wire this document
-into the README doc atlas and the plan's wave table, and open the
-runner-implementation prompt as a separate PR that carries the exact module
-allowlist.
+**Accepted contract — gate 1 (this amendment reviewed and merged) is complete.**
+No code, no hardware behavior, and no production wiring changed. The runner
+implementation is the next, separately-gated step: gate 2 is its own independent
+adversarial safety review before any hardware playback, with Jasper running the
+supervised bench session. This doc is reachable from the waves README; when the
+runner-implementation prompt is opened, give it a plan wave-table row and the
+exact module allowlist.
