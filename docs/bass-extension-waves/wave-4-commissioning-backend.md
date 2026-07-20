@@ -145,9 +145,11 @@ builds against.
 ## File allowlist
 
 The limiter producer skeleton is already landed and frozen by the
-`limiter-evidence-protocol.md` amendment — do not modify either file, and add no
-production caller, package export, graph emitter, backend, profile, or runtime
-import of it:
+`limiter-evidence-protocol.md` amendment — do not modify either file. It gains no
+production caller and stays off every production path (no package export, graph
+emitter, backend, profile, daemon, or route); the sole permitted consumer is the
+hardware-free dry run below, which imports it function-locally for synthetic
+intake and is itself not a production path:
 - `jasper/bass_extension/limiter_evidence.py`
 - `tests/test_bass_extension_limiter_evidence.py`
 
@@ -158,10 +160,12 @@ Create:
   an in-memory `review` (the `review → accepted` edge stays blocked — it enters
   Wave 3); the pure analysis/fit/propose/rung-verdict/ceiling/sustain-result/
   anchor decisions; strict manifest validation; silent preflight; and the fully
-  injected synthetic dry run. It imports only pure Wave 1 numerics, the
-  `MarginPolicy` thresholds, `interpolate_anchors`, and — for the dry-run intake
-  only — `produce_limiter_thresholds`. It adds no production caller, opens no
-  device/socket/CamillaDSP/subprocess/coordinator, and touches no other file.
+  injected synthetic dry run. It imports pure Wave 1 numerics, the `MarginPolicy`
+  thresholds, and `interpolate_anchors` at module level, and imports
+  `produce_limiter_thresholds` function-locally inside the dry run only (never at
+  module scope, so no production path can reach it). It adds no production caller,
+  opens no device/socket/CamillaDSP/subprocess/coordinator, and touches no other
+  file.
 - `tests/test_bass_extension_ladder.py`
 
 Everything below stays **blocked** — it is real hardware, live CamillaDSP,
@@ -336,12 +340,15 @@ in `review`.
 
 This revision does **not** derive or publish
 `limiter_threshold_dbfs`; the mandatory stop above applies before any
-Wave 4 production implementation. It authorizes only the isolated pure
-producer skeleton and synthetic refusal/determinism tests. A replacement
-prompt must name an independently reviewed real bench bundle, and accepted
-sealed profiles must then contain a finite threshold for every target.
-Ported/PR remains profile-retention-only and does not imply a runtime
-threshold contract.
+Wave 4 production implementation. Beyond the isolated pure producer skeleton
+and its synthetic refusal/determinism tests, Revision 9 authorizes only the
+hardware-free commissioning slice (the pure state machine to an in-memory
+`review`, the pure decisions, manifest validation, silent preflight, and the
+fully injected synthetic dry run) — none of which derives, publishes, or
+persists a threshold. A replacement prompt must name an independently reviewed
+real bench bundle, and accepted sealed profiles must then contain a finite
+threshold for every target. Ported/PR remains profile-retention-only and does
+not imply a runtime threshold contract.
 
 ## HTTP contract (frozen — Wave 6 builds against this)
 
