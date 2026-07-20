@@ -17,6 +17,12 @@ a lowpass feedback-delay "shimmer" tail. The exponential envelope starts
 and ends at near-silence, so a rendered earcon has no onset/offset step
 — the source of the old mute click's roughness.
 
+cuelume is MIT-licensed (Copyright (c) 2026 Daniel Belyi); its full
+notice is preserved verbatim at `jasper/voice/CUELUME_LICENSE` and logged
+in the attribution inventory `LICENSE-third-party.md`. The Python in this
+module is JTS's own reimplementation (Apache-2.0) — only the sound
+*designs* (note choices, envelopes, shimmer) are cuelume's.
+
 Name → sound (the function names predate this recipe port and are kept
 to avoid a rename ripple across the daemon + ~10 test files; the
 `going_on` flag still means "the up-cue" when True, "the down-cue" when
