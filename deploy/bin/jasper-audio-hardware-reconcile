@@ -761,7 +761,17 @@ gate_role_services() {
     if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
         "$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service
         "$SYSTEMCTL" start jasper-dac-init.service || true
-        "$SYSTEMCTL" restart jasper-headphone-monitor.service || true
+        # Ensure the monitor is running idempotently — do NOT restart it. This
+        # gate runs on every udev/reconcile pass, and a deploy's core-audio
+        # bounce fires it several times inside the unit's StartLimitIntervalSec;
+        # a restart-per-pass burned StartLimitBurst and left the monitor parked
+        # 'start-limit-hit' with nothing to revive it (reset-failed only lived in
+        # the disabled branch below). reset-failed clears any such parked state
+        # (incl. a box still on the old build); start is then a no-op when it is
+        # already running. The monitor self-resolves the card in its own poll
+        # loop, so it never needs a re-exec here.
+        "$SYSTEMCTL" reset-failed jasper-headphone-monitor.service 2>/dev/null || true
+        "$SYSTEMCTL" start jasper-headphone-monitor.service || true
         log_event "apple_services" "state=enabled output_dac_id=${OUTPUT_DAC_ID}"
     else
         "$SYSTEMCTL" disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
