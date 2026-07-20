@@ -13,8 +13,9 @@ import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.bass_extension.alignment import boost_headroom_db
-from .base import CabinetInfo, CaptureRole, FitRefusal, MagnitudeCurve, TargetSpec
-from .ported import (PortedPlantFit, _curve_arrays, _filters_response_db,
+from .base import (CabinetInfo, CaptureRole, FitRefusal, MagnitudeCurve,
+                   TargetSpec, _curve_arrays)
+from .ported import (PortedPlantFit, _filters_response_db,
                      fit_ported_plant, generate_ported_family,
                      ported_predicted_response)
 

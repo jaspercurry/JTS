@@ -20,7 +20,7 @@ from jasper.bass_extension.alignment import (
     peaking_response_db,
 )
 from .base import (COMMISSION_FLOOR_HZ, CabinetInfo, CaptureRole, FitRefusal,
-                   MagnitudeCurve, TargetSpec)
+                   MagnitudeCurve, TargetSpec, _curve_arrays, _passband_normalize)
 
 if TYPE_CHECKING:
     from jasper.bass_extension.targets import MarginPolicy
@@ -101,23 +101,9 @@ class PortedPlantFit:
         return cls(fb_hz, knee_hz, slope, fit_rms_db, natural_curve, tuple(notes))
 
 
-def _curve_arrays(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
-    freqs = np.asarray(curve.freqs_hz, dtype=np.float64)
-    magnitude = np.asarray(curve.magnitude_db, dtype=np.float64)
-    if (freqs.ndim != 1 or len(freqs) != len(magnitude) or len(freqs) < 8
-            or not np.all(np.isfinite(freqs)) or not np.all(np.isfinite(magnitude))
-            or np.any(freqs <= 0.0) or np.any(np.diff(freqs) <= 0.0)):
-        raise ValueError("magnitude curve must be finite, ascending, and matched")
-    return freqs, magnitude
-
-
 def _normalized_curve(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
     freqs, magnitude = _curve_arrays(curve)
-    passband = (freqs >= 200.0) & (freqs <= 400.0)
-    if not np.any(passband):
-        passband = np.arange(len(freqs)) >= max(0, int(0.8 * len(freqs)))
-    normalized = magnitude - float(np.mean(magnitude[passband]))
-    return freqs, normalized
+    return freqs, _passband_normalize(freqs, magnitude)
 
 
 def _refine_extremum(freqs: np.ndarray, magnitude: np.ndarray, index: int) -> float:
@@ -221,8 +207,7 @@ def fit_ported_plant(
     rms = float(np.sqrt(np.mean((magnitude[fit_band] - model[fit_band]) ** 2)))
     natural_freqs, natural_db = resample_log(
         freqs, measured, f_min=10.0, f_max=500.0, n_points=96)
-    passband = (natural_freqs >= 200.0) & (natural_freqs <= 400.0)
-    natural_db -= float(np.mean(natural_db[passband]))
+    natural_db = _passband_normalize(natural_freqs, natural_db)
     natural_curve = MagnitudeCurve(tuple(float(freq) for freq in natural_freqs),
                                    tuple(float(level) for level in natural_db))
     return PortedPlantFit(fb, knee, slope, rms, natural_curve)

@@ -9,7 +9,7 @@ import math
 from dataclasses import dataclass
 
 from jasper.bass_extension.adapters.base import TargetSpec
-from jasper.volume_curve import percent_to_db
+from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB, percent_to_db
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ MARGINS: dict[str, MarginPolicy] = {
 def digital_anchor_level(
     boost_headroom_db: float,
     digital_margin_db: float,
-    floor_db: float = -50.0,
+    floor_db: float = DEFAULT_VOLUME_FLOOR_DB,
 ) -> int:
     """Return the highest listening level satisfying the digital margin."""
 
@@ -96,7 +96,7 @@ class AnchorPoint:
     evidence: str
 
 
-def _level_at_or_below(gain_db: float, floor_db: float = -50.0) -> int:
+def _level_at_or_below(gain_db: float, floor_db: float = DEFAULT_VOLUME_FLOOR_DB) -> int:
     for level in range(100, -1, -1):
         if percent_to_db(level, floor_db=floor_db) <= gain_db:
             return level
@@ -151,8 +151,8 @@ def interpolate_anchors(
             right = upper[0]
             left_boost = boosts[left.target_id]
             right_boost = boosts[right.target_id]
-            left_db = percent_to_db(left.max_listening_level, floor_db=-50.0)
-            right_db = percent_to_db(right.max_listening_level, floor_db=-50.0)
+            left_db = percent_to_db(left.max_listening_level, floor_db=DEFAULT_VOLUME_FLOOR_DB)
+            right_db = percent_to_db(right.max_listening_level, floor_db=DEFAULT_VOLUME_FLOOR_DB)
             if left_boost == right_boost:
                 derived_db = min(left_db, right_db)
             else:
@@ -164,7 +164,7 @@ def interpolate_anchors(
             reference = (lower[-1] if lower else upper[0])
             reference_db = percent_to_db(
                 reference.max_listening_level,
-                floor_db=-50.0,
+                floor_db=DEFAULT_VOLUME_FLOOR_DB,
             )
             derived_db = reference_db + (
                 boosts[reference.target_id] - target.boost_headroom_db

@@ -39,6 +39,29 @@ class CabinetInfo:
 COMMISSION_FLOOR_HZ = 20.0
 
 
+def _curve_arrays(curve: MagnitudeCurve) -> tuple[np.ndarray, np.ndarray]:
+    freqs = np.asarray(curve.freqs_hz, dtype=np.float64)
+    magnitude = np.asarray(curve.magnitude_db, dtype=np.float64)
+    if (
+        freqs.ndim != 1
+        or len(freqs) != len(magnitude)
+        or len(freqs) < 8
+        or not np.all(np.isfinite(freqs))
+        or not np.all(np.isfinite(magnitude))
+        or np.any(freqs <= 0.0)
+        or np.any(np.diff(freqs) <= 0.0)
+    ):
+        raise ValueError("magnitude curve must be finite, ascending, and matched")
+    return freqs, magnitude
+
+
+def _passband_normalize(freqs: np.ndarray, magnitude: np.ndarray) -> np.ndarray:
+    passband = (freqs >= 200.0) & (freqs <= 400.0)
+    if not np.any(passband):
+        passband = np.arange(len(freqs)) >= max(0, int(0.8 * len(freqs)))
+    return magnitude - float(np.mean(magnitude[passband]))
+
+
 @dataclass(frozen=True)
 class FitRefusal:
     refusal: str
