@@ -253,6 +253,106 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
 ```
 
+### Per-capture diagnostics — every CHECK/MEASURE/VERIFY logs its numbers
+
+Before this, `event=correction.crossover_v2_result` carried only
+`accepted`/`code` — a failed hardware run left no numbers to look at, and
+only a *glitch* MEASURE capture got a partial view via
+`event=program_analysis.glitch` (epsilon/residual/repeat-level only, WARN
+level, glitch captures only). `CrossoverV2Conductor` now emits one
+additional `log_event` per consumed capture, **on the accepted path AND
+every rejection**, carrying that phase's full numeric diagnostics (pure
+additive observability — none of these calls choose a verdict):
+
+```sh
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(check|measure|verify)_diag'
+```
+
+- `correction.crossover_v2_check_diag` — `accepted`, `code`,
+  `pilot_snr_ok`, plus per-role (`woofer_`/`tweeter_`) `snr_db`,
+  `captured_delta_db`, `programmed_delta_db`,
+  `channel_map_target_rise_db`, `channel_map_cross_rise_db`.
+- `correction.crossover_v2_measure_diag` — `accepted`, `code`,
+  `alignment_confidence`, `gate_window_ms`, `validity_floor_hz`,
+  `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
+  `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`, plus
+  per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
+  `tweeter_snr_verdict`.
+- `correction.crossover_v2_verify_diag` — `accepted`, `code`,
+  `max_db_notch_excluded` (the number the tolerance actually gates on),
+  `verify_tolerance_db`, `verify_gate_window_ms`, `measure_gate_window_ms`
+  (the comparability pair behind `verify_inconclusive`), `validity_floor_hz`,
+  `tracking_band_lo_hz`/`tracking_band_hi_hz`, `rms_db`.
+
+Source: the `_log_check_diag` / `_log_measure_diag` / `_log_verify_diag`
+methods on `CrossoverV2Conductor` in `crossover_v2_flow.py`, called from thin
+`_consume_<phase>` wrappers around the unchanged `_<phase>_verdict` logic.
+Two small threads-through landed alongside this so the numbers were actually
+on the object: `program_analysis.DriftEstimate.repeat_level_delta_db` and
+`PilotObservation.snr_db` / `.channel_map_target_rise_db` /
+`.channel_map_cross_rise_db` (previously local variables inside
+`_estimate_drift` / `_channel_map_ok`, logged transiently or not at all).
+
+### Operator capture retention — raw WAVs for offline analysis
+
+Off by default. An operator debugging a hardware failure creates the marker
+file, and every subsequent capture's raw WAV + a diagnostic sidecar lands on
+disk for offline analysis (this productizes a hot-patch that used to live
+directly in `bind_production_analyze._analyze` and kept getting silently
+wiped by every deploy — runtime Python is copied fresh from the rsync
+checkout into `/opt/jasper`, see AGENTS.md "Runtime Python lives in
+/opt/jasper").
+
+```sh
+# Enable — creates the dir + marker; next capture onward is retained:
+ssh pi@jts.local 'sudo mkdir -p /var/lib/jasper/xover-capture-dump && \
+  sudo touch /var/lib/jasper/xover-capture-dump/ENABLED'
+
+# Inspect what landed:
+ssh pi@jts.local 'ls -la /var/lib/jasper/xover-capture-dump/'
+scp 'pi@jts.local:/var/lib/jasper/xover-capture-dump/*' ./captures/
+
+# Disable — delete the marker (or the whole directory); the very next
+# capture goes back to zero retention behavior, no restart needed:
+ssh pi@jts.local 'sudo rm -f /var/lib/jasper/xover-capture-dump/ENABLED'
+```
+
+Each retained capture is two files, `<timestamp>_<phase>_<device>.wav` +
+`<timestamp>_<phase>_<device>.json`. The JSON sidecar carries `phase`,
+`device_label`, `wav_bytes`, `wav_sha256_12`, `setup_mode`,
+`setup_calibration_id`, and `diagnostic` — the same
+`program_analysis.analysis_diagnostic_summary(analysis)` numbers as the
+per-capture diag events above (keyed by each response's own role string
+rather than a hardcoded woofer/tweeter label, since this runs at the
+`analyze` seam, before the conductor's role mapping exists — so it has no
+`accepted`/`code`, only the analysis's own numbers).
+
+Ring-buffered by **both** file count (`XOVER_CAPTURE_DUMP_MAX_FILES = 90`)
+and total bytes (`XOVER_CAPTURE_DUMP_MAX_BYTES = 300 MB`), oldest-first
+deletion, so a forgotten marker cannot fill the SD card. The enable marker
+itself (`XOVER_CAPTURE_DUMP_ENABLED_MARKER`) is excluded from both caps and
+never a prune candidate — without that, the ring buffer would eventually
+delete its own on/off switch (it's typically the oldest file in the
+directory) and silently re-disable retention. Because the intended operator
+workflow is `ls`/`scp`/`rm`-ing this directory *while captures keep
+landing*, a file can legitimately vanish between one step of a prune pass
+and the next; every `.stat()`/`.unlink()` in `_prune_capture_dump` is
+individually guarded (skip a vanished file, don't fail the pass), and the
+whole prune body is additionally wrapped so any other `OSError` still
+degrades to a WARN instead of propagating — genuinely never-raise, not
+merely best-effort by convention. A write OR prune failure is caught and
+logged at `event=correction.crossover_v2_capture_retain_failed` (WARN) and
+never affects the measurement itself; a successful retain logs
+`event=correction.crossover_v2_capture_retained` (`phase`, `bytes`, `path`).
+Diagnostic-logging failures (Part 1) are guarded the same way, through
+`CrossoverV2Conductor._safe_log_diag` — a bug in a `_log_*_diag` method logs
+`event=correction.crossover_v2_diag_log_failed` (WARN) instead of crashing
+the capture or changing the verdict already decided.
+Source: `_maybe_retain_capture` / `_prune_capture_dump` in
+`jasper/web/correction_crossover_v2.py`; constants
+`XOVER_CAPTURE_DUMP_DIR` / `_MAX_FILES` / `_MAX_BYTES` at the top of that
+module.
+
 Session state on the Pi (both mode 0640, atomic writes):
 
 - **Conductor/flow state:**

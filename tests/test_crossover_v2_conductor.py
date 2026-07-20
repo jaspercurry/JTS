@@ -23,6 +23,7 @@ for the host-level auto-apply trigger + background-thread wiring.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,6 +65,7 @@ from jasper.audio_measurement.program_analysis import (
     DriftEstimate,
     DriverResponse,
     GainPlan,
+    PilotObservation,
     ProgramAnalysis,
     SegmentLocation,
 )
@@ -1099,3 +1101,323 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
         role_targets=targets, session_volume_db=sv,
     )
     assert not stale.allowed
+
+
+# --- per-capture diagnostic logging (durable observability, Part 1) -------------
+#
+# Every CHECK/MEASURE/VERIFY capture now logs its full numeric diagnostics via
+# ``log_event`` on BOTH the accepted path and every rejection — before this
+# change a failed hardware run left no numbers to look at (only a partial
+# ``program_analysis.glitch`` line existed, and only for a glitch MEASURE).
+# These tests pin the event names + key fields on accept AND reject.
+
+_DIAG_LOGGER = "jasper.active_speaker.crossover_v2_flow"
+
+
+def _pilot_obs(
+    role: str, *,
+    snr_db: float = 20.0,
+    captured_delta_db: float = 10.0,
+    programmed_delta_db: float = 10.0,
+    target_rise_db: float | None = 18.0,
+    cross_rise_db: float | None = 1.0,
+    snr_valid: bool = True,
+    linearity_ok: bool = True,
+    channel_map_ok: bool = True,
+) -> PilotObservation:
+    return PilotObservation(
+        role=role, level_lo_dbfs=-40.0, level_hi_dbfs=-30.0,
+        programmed_delta_db=programmed_delta_db, captured_delta_db=captured_delta_db,
+        linearity_ok=linearity_ok, channel_map_ok=channel_map_ok, snr_valid=snr_valid,
+        snr_db=snr_db,
+        channel_map_target_rise_db=target_rise_db,
+        channel_map_cross_rise_db=cross_rise_db,
+    )
+
+
+def _driver_response_diag(
+    role: str, *, window_ms: float = 8.0, floor_hz: float | None = None,
+    snr_db: float | None = None, snr_verdict: str | None = None,
+) -> DriverResponse:
+    freqs = np.linspace(100.0, 20000.0, 64)
+    snr = (
+        {"worst_relevant": {"estimated_snr_db": snr_db, "verdict": snr_verdict}}
+        if snr_db is not None else None
+    )
+    return DriverResponse(
+        role=role, freqs_hz=freqs, magnitude_db=np.zeros(64),
+        complex_tf=np.ones(64, dtype=complex),
+        gating={"applied": True, "window_ms": window_ms},
+        snr=snr, validity_floor_hz=floor_hz,
+    )
+
+
+def test_diag_logging_bug_cannot_crash_or_flip_the_verdict(caplog, monkeypatch):
+    """The diag-logging call is wrapped defensively (``_safe_log_diag``),
+    symmetric with the capture-retention path's own best-effort guarantee —
+    a bug in a ``_log_*_diag`` method must degrade to a WARN, never crash
+    the capture or change the verdict already decided above it. Exercises
+    all three phases through the SAME shared wrapper."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+
+    monkeypatch.setattr(
+        c, "_log_check_diag",
+        lambda analysis, verdict: (_ for _ in ()).throw(AttributeError("boom")),
+    )
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is True  # the verdict is completely unaffected
+    assert "event=correction.crossover_v2_diag_log_failed" in caplog.text
+    assert "phase=check" in caplog.text
+    caplog.clear()
+
+    monkeypatch.setattr(
+        c, "_log_measure_diag",
+        lambda analysis, verdict: (_ for _ in ()).throw(TypeError("boom")),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_diag_log_failed" in caplog.text
+    assert "phase=measure" in caplog.text
+    caplog.clear()
+
+    fakes.apply_done = True
+    monkeypatch.setattr(
+        c, "_log_verify_diag",
+        lambda analysis, verdict: (_ for _ in ()).throw(ValueError("boom")),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_diag_log_failed" in caplog.text
+    assert "phase=verify" in caplog.text
+
+
+def test_check_diag_logs_full_numbers_on_accept(caplog):
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.check = lambda program: ProgramAnalysis(
+        phase="check", program_id=program.program_id,
+        locations=(_loc("pilot_woofer_hi", "pilot"),),
+        ambient_report={"bands": [{"level_dbfs": -70.0}]},
+        pilots=(
+            _pilot_obs("woofer", snr_db=20.0, target_rise_db=18.0, cross_rise_db=1.0),
+            _pilot_obs("tweeter", snr_db=15.0, target_rise_db=22.0, cross_rise_db=2.0),
+        ),
+        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=True,
+        gain_plan=GainPlan(
+            gain_db={"woofer": -11.0, "tweeter": -13.0},
+            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+    )
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_check_diag" in caplog.text
+    assert "accepted=true" in caplog.text
+    assert "pilot_snr_ok=true" in caplog.text
+    assert "woofer_snr_db=20.0" in caplog.text
+    assert "tweeter_snr_db=15.0" in caplog.text
+    assert "woofer_captured_delta_db=10.0" in caplog.text
+    assert "woofer_programmed_delta_db=10.0" in caplog.text
+    assert "woofer_channel_map_target_rise_db=18.0" in caplog.text
+    assert "tweeter_channel_map_cross_rise_db=2.0" in caplog.text
+
+
+def test_check_diag_logs_full_numbers_on_rejection_too(caplog):
+    """The bug this fixes: a rejected CHECK used to leave no numbers behind."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.check = lambda program: ProgramAnalysis(
+        phase="check", program_id=program.program_id,
+        locations=(_loc("pilot_woofer_hi", "pilot"),),
+        pilots=(
+            _pilot_obs("woofer", snr_db=5.0, snr_valid=False),
+            _pilot_obs("tweeter", snr_db=15.0),
+        ),
+        linearity_ok=True, channel_map_ok=True, pilot_snr_ok=False,
+        gain_plan=GainPlan(
+            gain_db={"woofer": -11.0, "tweeter": -13.0},
+            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+    )
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "snr_floor"
+    assert "event=correction.crossover_v2_check_diag" in caplog.text
+    assert "accepted=false" in caplog.text
+    assert "code=snr_floor" in caplog.text
+    assert "pilot_snr_ok=false" in caplog.text
+    # Numbers still present on the rejected capture.
+    assert "woofer_snr_db=5.0" in caplog.text
+    assert "tweeter_snr_db=15.0" in caplog.text
+
+
+def test_measure_diag_logs_full_numbers_on_accept(caplog):
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: ProgramAnalysis(
+        phase="measure", program_id=program.program_id,
+        locations=(
+            _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"),
+        ),
+        drift=DriftEstimate(
+            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
+            max_residual_samples=0.2, glitch_detected=False,
+            repeat_level_delta_db=0.05,
+        ),
+        driver_responses=(
+            _driver_response_diag(
+                "woofer", window_ms=8.0, floor_hz=180.0, snr_db=25.0, snr_verdict="ok",
+            ),
+            _driver_response_diag(
+                "tweeter", window_ms=9.0, snr_db=8.0, snr_verdict="insufficient",
+            ),
+        ),
+        alignment=_alignment(confidence=0.9),
+        candidate=CrossoverCandidate(
+            trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
+            delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
+        ),
+        linearity_ok=True,
+        predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
+        glitch_detected=False,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "accepted=true" in caplog.text
+    assert "alignment_confidence=0.9" in caplog.text
+    assert "gate_window_ms=8.0" in caplog.text  # min(8.0, 9.0)
+    assert "validity_floor_hz=180.0" in caplog.text  # max(180.0) — only one floor set
+    assert "epsilon_ppm=30.0" in caplog.text
+    assert "max_residual_samples=0.2" in caplog.text
+    assert "repeat_level_delta_db=0.05" in caplog.text
+    assert "delay_role=tweeter" in caplog.text  # positive delay_us ⇒ tweeter delayed
+    # ``polarity`` here is the candidate-facing keep/invert action
+    # (``alignment_to_candidate_fields``'s third return value), not the raw
+    # AlignmentEstimate.polarity ("normal"/"inverted") — "normal" maps to
+    # POLARITY_KEEP ("keep").
+    assert "polarity=keep" in caplog.text
+    assert "predicted_ripple_db=1.23" in caplog.text
+    assert "woofer_snr_db=25.0" in caplog.text
+    assert "woofer_snr_verdict=ok" in caplog.text
+    assert "tweeter_snr_db=8.0" in caplog.text
+    assert "tweeter_snr_verdict=insufficient" in caplog.text
+
+
+def test_measure_diag_logs_full_numbers_on_glitch_rejection_too(caplog):
+    """The headline bug this fixes: today a rejected MEASURE persists none of
+    confidence/gate_window/epsilon — this proves they're all still logged."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(program, glitch=True)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "drift_baselines_disagree"
+    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "accepted=false" in caplog.text
+    assert "code=drift_baselines_disagree" in caplog.text
+    assert "gate_window_ms=8.0" in caplog.text
+    assert "epsilon_ppm=30.0" in caplog.text
+    assert "alignment_confidence=0.8" in caplog.text
+    assert "predicted_ripple_db=0.8" in caplog.text
+
+
+def test_measure_diag_logs_full_numbers_on_low_alignment_confidence_rejection(caplog):
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    assert 0.55 < ALIGNMENT_CONFIDENCE_TRUST_FLOOR  # keep the fixture below the gate
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program, alignment=_alignment(confidence=0.55),
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "low_alignment_confidence"
+    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "alignment_confidence=0.55" in caplog.text
+    # ``analysis.candidate`` is populated by program_analysis's own
+    # ``_build_candidate`` before this ever reaches the conductor (real
+    # ``_analyze_measure`` always builds it) — so its ripple number is still
+    # available for the diagnostic even though THIS rejection means the
+    # conductor's own candidate is never built or published.
+    assert "predicted_ripple_db=0.8" in caplog.text
+
+
+def test_verify_diag_logs_full_numbers_on_accept(caplog):
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.verify = lambda program: ProgramAnalysis(
+        phase="verify", program_id=program.program_id,
+        locations=(_loc("sweep_verify", "summed_sweep"),),
+        summed_response=_driver_response_diag("summed", window_ms=8.5, floor_hz=900.0),
+        summed_ripple_db=1.1,
+        verify_tracking={
+            "rms_db": 0.4, "max_db": 0.9, "max_db_notch_excluded": 0.9,
+            "tracking_band_hz": [800.0, 3200.0],
+        },
+        linearity_ok=True,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_verify_diag" in caplog.text
+    assert "accepted=true" in caplog.text
+    assert "max_db_notch_excluded=0.9" in caplog.text
+    assert "verify_tolerance_db=1.5" in caplog.text
+    assert "verify_gate_window_ms=8.5" in caplog.text
+    assert "measure_gate_window_ms=8.0" in caplog.text
+    assert "validity_floor_hz=900.0" in caplog.text
+    assert "tracking_band_lo_hz=800.0" in caplog.text
+    assert "tracking_band_hi_hz=3200.0" in caplog.text
+    assert "rms_db=0.4" in caplog.text
+
+
+def test_verify_diag_logs_full_numbers_on_out_of_tolerance_rejection_too(caplog):
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.verify = lambda program: _verify_analysis(program, max_db=5.0, gate_ms=8.5)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "verify_out_of_tolerance"
+    assert "event=correction.crossover_v2_verify_diag" in caplog.text
+    assert "accepted=false" in caplog.text
+    assert "code=verify_out_of_tolerance" in caplog.text
+    assert "max_db_notch_excluded=5.0" in caplog.text
+    assert "verify_gate_window_ms=8.5" in caplog.text
+    assert "measure_gate_window_ms=8.0" in caplog.text
+
+
+def test_verify_diag_logs_full_numbers_on_inconclusive_rejection(caplog):
+    """A too-short VERIFY gate rejects as ``verify_inconclusive`` BEFORE the
+    tracking-error branch even runs — confirms the diag log still fires and
+    still carries the two gate-window numbers that decided it."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    # measure_gate_window_ms defaults to 8.0 (the happy-path MEASURE fixture);
+    # a VERIFY gate narrower than that is inconclusive per §5.2.
+    fakes.verify = lambda program: _verify_analysis(program, gate_ms=4.0)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_done = True
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "verify_inconclusive"
+    assert "event=correction.crossover_v2_verify_diag" in caplog.text
+    assert "verify_gate_window_ms=4.0" in caplog.text
+    assert "measure_gate_window_ms=8.0" in caplog.text

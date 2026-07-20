@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import json
 import logging
 import secrets
@@ -73,6 +74,36 @@ V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 # resolution for the ±1.5 dB [Fc/2, 2Fc] comparison at 1/6-octave smoothing
 # while keeping the durable state file small.
 MAX_PERSISTED_SUM_POINTS = 512
+
+# --------------------------------------------------------------------------- #
+# operator-debug capture retention (Part 2 — off by default, bounded)
+# --------------------------------------------------------------------------- #
+#
+# Productizes a hot-patch that used to live directly in ``_analyze`` and kept
+# getting silently wiped by every deploy (runtime Python is copied fresh from
+# the rsync checkout — see AGENTS.md "Runtime Python lives in /opt/jasper").
+# An operator investigating a hardware failure creates
+# ``XOVER_CAPTURE_DUMP_DIR / "ENABLED"``; every subsequent CHECK/MEASURE/
+# VERIFY capture then persists its raw WAV + a diagnostic-summary sidecar
+# here for offline analysis. ABSENT by default → zero behavior change for
+# real households. Delete the marker (or the whole directory) to disable and
+# reclaim the disk budget below; this is deliberately removable, not a
+# permanent feature.
+XOVER_CAPTURE_DUMP_DIR = Path("/var/lib/jasper/xover-capture-dump")
+# The operator-created enable marker's filename, INSIDE XOVER_CAPTURE_DUMP_DIR.
+# Excluded from ring-buffer pruning below (see `_prune_capture_dump`) — the
+# marker is not a capture artifact, and without this exclusion the ring
+# buffer could eventually delete its own on/off switch (the marker is
+# typically the oldest file in the directory, so a naive oldest-first count/
+# byte cap would evict it first), silently re-disabling retention the
+# operator explicitly turned on.
+XOVER_CAPTURE_DUMP_ENABLED_MARKER = "ENABLED"
+# Ring-buffer caps, bounded BOTH ways so an operator who forgets to disable
+# this can't fill the 1 GB Pi's SD card. Counts every capture file in the
+# directory (a WAV and its JSON sidecar are two entries; the enable marker
+# is not counted), oldest-first deletion.
+XOVER_CAPTURE_DUMP_MAX_FILES = 90
+XOVER_CAPTURE_DUMP_MAX_BYTES = 300 * 1024 * 1024  # 300 MB
 
 _state_lock = threading.Lock()
 _state_path_override: Path | None = None
@@ -997,7 +1028,7 @@ def bind_production_analyze(
                 "applied": curve is not None,
                 "calibration_id": getattr(record, "calibration_id", None),
             }
-        return _pa.analyze_program_capture(
+        analysis = _pa.analyze_program_capture(
             program,
             samples,
             rate,
@@ -1005,8 +1036,137 @@ def bind_production_analyze(
             geometry=geometry,
             priors=priors,
         )
+        _maybe_retain_capture(program=program, result=result, wav=wav, analysis=analysis)
+        return analysis
 
     return _analyze
+
+
+def _prune_capture_dump(
+    dump_dir: Path, *, max_files: int, max_bytes: int, phase: str = "unknown",
+) -> None:
+    """Oldest-first ring-buffer prune, bounded by BOTH file count and bytes.
+
+    Genuinely never raises. An operator is expected to `ls`/`scp`/`rm` this
+    directory WHILE captures keep landing — that is the documented usage —
+    so a file can legitimately vanish between one step and the next here.
+    Every ``.stat()``/``.unlink()`` is individually guarded (a file that
+    vanished mid-prune is just skipped, not fatal), and the WHOLE body is
+    additionally wrapped so any other OSError this doesn't anticipate still
+    degrades to a WARN instead of propagating out of ``_maybe_retain_capture``
+    and crashing the measurement (the exact bug class a disappearing-file
+    review finding caught: the old version's sort/sum `.stat()` calls sat
+    outside any try/except).
+    """
+    try:
+        entries = [
+            p for p in dump_dir.iterdir()
+            if p.is_file() and p.name != XOVER_CAPTURE_DUMP_ENABLED_MARKER
+        ]
+        sized: list[tuple[Path, float, int]] = []
+        for p in entries:
+            try:
+                st = p.stat()
+            except OSError:
+                continue  # vanished between iterdir() and stat() — skip it
+            sized.append((p, st.st_mtime, st.st_size))
+        sized.sort(key=lambda entry: entry[1])
+        total_bytes = sum(size for _p, _mtime, size in sized)
+        while sized and (len(sized) > max_files or total_bytes > max_bytes):
+            victim, _mtime, victim_bytes = sized.pop(0)
+            try:
+                victim.unlink()
+                total_bytes -= victim_bytes
+            except OSError:
+                continue
+    except OSError:
+        log_event(
+            logger, "correction.crossover_v2_capture_retain_failed",
+            level=logging.WARNING, phase=phase, exc_info=True,
+        )
+
+
+def _maybe_retain_capture(
+    *, program: Any, result: Any, wav: bytes, analysis: Any,
+) -> None:
+    """Operator-debug capture retention (Part 2 — off by default, bounded).
+
+    Gated on ``XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER``
+    existing; when it does not (the default for every real household), this
+    returns after one ``Path.exists()`` check — zero behavior change. When
+    present, persists
+    the raw captured WAV plus a diagnostic-summary JSON sidecar
+    (``program_analysis.analysis_diagnostic_summary`` — the same numbers the
+    v2 conductor's per-phase diag ``log_event`` calls surface, see
+    ``jasper.active_speaker.crossover_v2_flow``) so a retained clip is
+    self-describing without replaying the analysis, then ring-buffer prunes
+    the directory.
+
+    Fully best-effort: this runs inside the real ``analyze`` seam, so ANY
+    failure here must never affect the measurement itself. Every failure
+    mode (disk full, permission, a non-``ProgramAnalysis`` double reaching
+    this from a test monkeypatch — see
+    ``test_production_analyze_threads_geometry_and_resolved_calibration``,
+    which stubs ``analyze_program_capture`` to return a bare string) is
+    caught and logged at WARN, never raised past this function.
+    """
+    if not (XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER).exists():
+        return
+    phase = getattr(program, "phase", "unknown")
+    try:
+        from jasper.audio_measurement import program_analysis as _pa
+
+        XOVER_CAPTURE_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        device = getattr(result, "device", None) or {}
+        setup = getattr(result, "setup", None) or {}
+        device_label = str(device.get("label") or "unknown")
+        # Device labels are phone-reported free text (untrusted) — keep the
+        # filename filesystem-safe and short.
+        safe_device = "".join(
+            ch if (ch.isalnum() or ch in "-_") else "_" for ch in device_label
+        )[:40] or "unknown"
+        stamp = f"{time.time():.6f}".replace(".", "")
+        basename = f"{stamp}_{phase}_{safe_device}"
+        wav_path = XOVER_CAPTURE_DUMP_DIR / f"{basename}.wav"
+        sidecar_path = XOVER_CAPTURE_DUMP_DIR / f"{basename}.json"
+        wav_path.write_bytes(wav)
+        setup_mode, setup_calibration_id = _setup_calibration_observation(setup)
+        sidecar = {
+            "phase": phase,
+            "device_label": device_label,
+            "wav_bytes": len(wav),
+            "wav_sha256_12": hashlib.sha256(wav).hexdigest()[:12],
+            "setup_mode": setup_mode,
+            "setup_calibration_id": setup_calibration_id,
+            "diagnostic": _pa.analysis_diagnostic_summary(analysis),
+        }
+        sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    except (OSError, ValueError, TypeError, AttributeError):
+        log_event(
+            logger, "correction.crossover_v2_capture_retain_failed",
+            level=logging.WARNING, phase=phase, exc_info=True,
+        )
+        return
+    log_event(
+        logger, "correction.crossover_v2_capture_retained",
+        phase=phase, bytes=len(wav), path=wav_path.name,
+    )
+    # Belt-and-suspenders: _prune_capture_dump is already internally
+    # never-raising, but this call site is guarded too so a future bug in
+    # prune (or an exception type it doesn't yet anticipate) still can't
+    # escape into the analyze seam and crash the measurement.
+    try:
+        _prune_capture_dump(
+            XOVER_CAPTURE_DUMP_DIR,
+            max_files=XOVER_CAPTURE_DUMP_MAX_FILES,
+            max_bytes=XOVER_CAPTURE_DUMP_MAX_BYTES,
+            phase=phase,
+        )
+    except (OSError, ValueError, TypeError, AttributeError):
+        log_event(
+            logger, "correction.crossover_v2_capture_retain_failed",
+            level=logging.WARNING, phase=phase, exc_info=True,
+        )
 
 
 def open_v2_evidence_store(topology: Any) -> tuple[Any, str]:
