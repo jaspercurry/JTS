@@ -109,6 +109,15 @@ MAX_DRIFT_PPM = 500.0
 # complement to the timing baselines (design §5.2). PROVISIONAL pending W6 bench
 # distributions. A failure REUSES the ``drift_baselines_disagree`` glitch
 # verdict — never a new user-facing reason code (design §5.2).
+#
+# Level is measured band-relative (in-band RMS over the woofer's own declared
+# band, via `_band_power` — see `_estimate_drift`), not full-band single-sample
+# PEAK — fixing the same 2026-07-20 bug class as `LINEARITY_TOLERANCE_DB`
+# below (#1594, #1615): a low-frequency, room-mode-excited sweep's full-band
+# peak is an unstable estimator, and two real hardware captures (Dayton
+# iMM-6C AND UMIK-2) measured two genuinely-identical woofer sweeps 0.64 dB
+# apart by full-band peak but only 0.06-0.24 dB apart by in-band RMS. In-band
+# RMS is stable, so this tolerance stays tight.
 REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
 # GCC-PHAT sub-sample refinement (design §5.6.5).
@@ -813,6 +822,7 @@ def _locate_segments(
 def _estimate_drift(
     program: ExcitationProgram,
     capture: np.ndarray,
+    sample_rate: int,
     global_offset: int,
     locations: Sequence[SegmentLocation],
 ) -> DriftEstimate:
@@ -869,13 +879,36 @@ def _estimate_drift(
 
     # Woofer-repeat LEVEL agreement (design §5.2): the two woofer sweeps are
     # bit-identical stimuli, so a clean capture reproduces the same captured
-    # peak. A larger delta is a gain-rider (AGC nudging the level mid-program)
-    # and REUSES the drift-baselines-disagree glitch verdict — never a new
-    # user-facing code.
+    # level for both. Measured band-relative — in-band RMS over the woofer's
+    # OWN declared band (`_band_power`, the same Hann+bandpass mechanism
+    # `_pilot_observations` uses), after trimming the composer's fixed edge
+    # fade (`_pilot_trim_fade`) — never full-band single-sample PEAK: a
+    # low-frequency, room-mode-excited sweep's full-band peak is an unstable
+    # estimator (the loudest sample jumps between otherwise-identical sweeps),
+    # the same bug class already fixed for the channel-map discriminator
+    # (#1594) and the pilot linearity gate (#1615). Two real hardware captures
+    # (Dayton iMM-6C AND UMIK-2, 2026-07-20) measured two genuinely-identical
+    # woofer sweeps 0.64 dB apart by full-band peak — enough to trip this gate
+    # — but only 0.06-0.24 dB apart by in-band RMS. Real AGC gain-riding (this
+    # gate's actual purpose) still shows up in-band (a uniform per-sweep gain
+    # shift survives band-limiting), so this keeps the gate's teeth while
+    # dropping the false rejection. A larger delta REUSES the
+    # drift-baselines-disagree glitch verdict — never a new user-facing code.
     repeat_level_delta_db = 0.0
     repeat_level_disagrees = False
     if w1 is not None and w2 is not None:
-        repeat_level_delta_db = abs(w1.peak_dbfs - w2.peak_dbfs)
+        level_seg_w = program.segment("sweep_w")
+        if level_seg_w.f1_hz is None or level_seg_w.f2_hz is None:
+            raise ValueError("woofer sweep segment has no declared band")
+        w1_samples = _pilot_trim_fade(
+            capture[w1.located_start:w1.located_start + level_seg_w.n_samples], sample_rate,
+        )
+        w2_samples = _pilot_trim_fade(
+            capture[w2.located_start:w2.located_start + level_seg_w.n_samples], sample_rate,
+        )
+        level_w1 = _band_rms_dbfs(w1_samples, sample_rate, level_seg_w.f1_hz, level_seg_w.f2_hz)
+        level_w2 = _band_rms_dbfs(w2_samples, sample_rate, level_seg_w.f1_hz, level_seg_w.f2_hz)
+        repeat_level_delta_db = abs(level_w1 - level_w2)
         repeat_level_disagrees = repeat_level_delta_db > REPEAT_LEVEL_TOLERANCE_DB
 
     glitch = (
@@ -1677,7 +1710,7 @@ def _analyze_measure(
     if priors.crossover_fc_hz is None:
         raise ValueError("MEASURE analysis requires priors.crossover_fc_hz")
     fc_hz = float(priors.crossover_fc_hz)
-    drift = _estimate_drift(program, capture, global_offset, locations)
+    drift = _estimate_drift(program, capture, sample_rate, global_offset, locations)
 
     seg_w = program.segment("sweep_w")
     seg_t = program.segment("sweep_t")

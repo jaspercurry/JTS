@@ -254,6 +254,42 @@ def test_repeat_level_within_tolerance_is_clean():
     assert res.glitch_detected is False
 
 
+def test_repeat_level_lf_transient_does_not_false_reject():
+    """A brief sub-band (60 Hz) room-mode-style transient spikes one sweep's
+    full-band single-sample PEAK without moving its in-band RMS — the fixed
+    estimator must not false-reject it.
+
+    Root cause (2026-07-20, real hardware): two Dayton iMM-6C and UMIK-2
+    MEASURE captures each showed two genuinely-identical woofer sweeps 0.64 dB
+    apart by full-band peak (a low-frequency room mode below the woofer's own
+    150 Hz band dominates the raw single-sample peak) but only 0.06-0.24 dB
+    apart by in-band RMS — see `REPEAT_LEVEL_TOLERANCE_DB`'s comment. This
+    fixture reproduces that shape synthetically: the transient sits at 60 Hz,
+    below the woofer's declared [150, 6000] Hz band, so `_band_power`'s
+    FFT bandpass mask filters it out of the in-band RMS estimate entirely
+    while it still dominates `_peak_dbfs`'s raw sample max.
+    """
+    prog = _measure_program()
+    cap = _synthesize(prog)
+    rep = prog.segment("sweep_w_rep")
+    start = GLOBAL_OFFSET + rep.start_sample
+    n = 480  # 10 ms at 48 kHz, a handful of cycles at 60 Hz
+    t = np.arange(n) / SR
+    transient = 0.6 * np.sin(2 * np.pi * 60.0 * t)  # dwarfs the ~0.33 sweep peak
+    mid = start + rep.n_samples // 2
+    cap[mid:mid + n] += transient
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    by_id = {loc.segment_id: loc for loc in res.locations}
+    # SegmentLocation.peak_dbfs is the untouched full-band peak (still used
+    # for clip-run reporting / the pilot gain-solve reference) — confirms the
+    # OLD estimator would have tripped the glitch on this same capture.
+    old_style_delta = abs(by_id["sweep_w"].peak_dbfs - by_id["sweep_w_rep"].peak_dbfs)
+    assert old_style_delta > REPEAT_LEVEL_TOLERANCE_DB
+    assert res.glitch_detected is False
+
+
 def test_measure_predicted_sum_travels_for_verify():
     """MEASURE now exports the predicted applied sum VERIFY compares against."""
     prog = _measure_program()

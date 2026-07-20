@@ -484,6 +484,28 @@ no retries-as-bodge). Treat these as regression fences.
     phase/active_step/template says** — because phase derivation is exactly
     the kind of thing this same race can corrupt.
 
+19. **The repeat-level drift gate is band-relative RMS, not full-band
+    peak** (2026-07-20). The THIRD sibling of the same full-band-estimator
+    class as gotcha #6/#1594 (channel-map) and #16 (linearity) — this one
+    hadn't gotten the treatment. MEASURE plays two bit-identical woofer
+    sweeps bracketing the tweeter sweep; `_estimate_drift` rejects
+    (`drift_baselines_disagree`) when their captured levels disagree past
+    `REPEAT_LEVEL_TOLERANCE_DB` (0.3 dB), the guard against browser AGC
+    riding the gain mid-program. It compared `w1.peak_dbfs` vs
+    `w2.peak_dbfs` — full-band single-sample PEAK, which is unstable for a
+    low-frequency room-mode-excited sweep: the loudest sample jumps between
+    otherwise-identical sweeps. Two real captures — a Dayton iMM-6C
+    (iPhone) AND a UMIK-2 (computer, no AGC, exonerating the mic path) —
+    both false-rejected at ~0.64 dB by peak while agreeing to ≤0.24 dB by
+    in-band RMS. `_estimate_drift` now measures each woofer sweep's level
+    as in-band RMS in the sweep's own declared band (`_band_power`, the
+    #1615 helper, with the composer's edge fade trimmed) — the failing
+    0.64 dB drops to 0.14 dB (pass). Teeth kept: a genuine uniform
+    (AGC-shaped) gain difference survives band-limiting and still trips the
+    gate (`test_repeat_level_step_is_flagged_as_glitch`); a peak-only LF
+    transient no longer does (`test_repeat_level_lf_transient_does_not_false_reject`).
+    The epsilon/residual timing sub-conditions are untouched.
+
 ## Future work — the post-W6 follow-ups issue
 
 Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
