@@ -202,7 +202,7 @@ source, no drift.
 |---|---|---|---|
 | `agc_behavioral_fail` | CHECK / MEASURE / VERIFY | 1 | phone AGC changed levels mid-capture |
 | `noisy_room_linearity` | CHECK | 1 | linearity failed *and* the ambient SNR floor failed — room, not phone |
-| `snr_floor` | CHECK / MEASURE | 1 | room too loud / phone too far |
+| `snr_floor` | CHECK / MEASURE | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16) |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
 | `clipped` | MEASURE / VERIFY | 1 | auto quieter retry (gain −3 dB) |
 | `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry |
@@ -346,6 +346,26 @@ no retries-as-bodge). Treat these as regression fences.
     state, so calibration was never applied. `main.js` now attaches
     `setup: setupWirePayload()` to every `begin_capture` post — a
     last-write-wins slot the Pi reads on each arm.
+16. **Linearity is band-relative + ambient-compensated, not full-band
+    peak** (2026-07-20). Sibling of gotcha #6/#1594's channel-map fix —
+    the linearity gate hadn't gotten the same treatment yet. Two real
+    hardware captures (Dayton iMM-6C and UMIK-2, same room/placement)
+    both failed `agc_behavioral_fail`: continuous LF room rumble ~30 dB
+    above the tweeter-band ambient inflated the quiet woofer pilot's
+    full-band PEAK enough to compress the captured 10 dB delta past the
+    0.5 dB tolerance, even though both mics agreed the driver was linear
+    once measured in its own declared band with ambient-subtracted RMS
+    (9.8-10.0 dB on both). `_pilot_observations` now measures each
+    pilot's level in its own band (`_band_power`, the same mechanism
+    `_channel_map_ok` uses) with the CHECK ambient window's in-band power
+    subtracted (power domain) before converting to dB. When the quiet
+    pilot's own in-band SNR doesn't clear `PILOT_MIN_SNR_DB` (≈12.4 dB,
+    derived from the tolerance + a bounded ambient-nonstationarity model
+    — see the constant's comment), the estimate isn't trustworthy either
+    way: `linearity_ok` is forced True (never a false FAILURE) and
+    `PilotObservation.snr_valid` / `ProgramAnalysis.pilot_snr_ok` flag it
+    so `crossover_v2_flow._consume_check` routes to `snr_floor`, never
+    `agc_behavioral_fail`.
 
 ## Future work — the post-W6 follow-ups issue
 
@@ -454,4 +474,4 @@ so waves could run in parallel.**
 The default flips to `v2` on 2026-07-19. Legacy remains reachable via
 `JASPER_CROSSOVER_FLOW=legacy` until W5b deletes it.
 
-Last verified: 2026-07-19
+Last verified: 2026-07-20

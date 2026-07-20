@@ -865,6 +865,17 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.channel_map_ok is False:
             return PhaseVerdict(False, REASON_CHANNEL_MAP_MISMATCH)
+        if analysis.pilot_snr_ok is False:
+            # Band-relative ambient-compensated linearity fix (2026-07-20):
+            # the quiet pilot's own in-band SNR was too low to trust the
+            # ambient-subtracted delta either way — ``analysis.linearity_ok``
+            # is already forced True in this case (see
+            # ``program_analysis._pilot_observations``'s docstring), so this
+            # branch is the ONLY path that can fail on it. Route to the
+            # honest room/positioning reason, never AGC — the phone's mic
+            # didn't misbehave, there just wasn't enough signal above the
+            # room to measure.
+            return PhaseVerdict(False, REASON_SNR_FLOOR)
         if analysis.linearity_ok is False:
             # W6.12: don't blame the phone's mic when the room was the actual
             # cause. The CHECK gain solve ALREADY computes an SNR-floor

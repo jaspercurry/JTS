@@ -106,7 +106,7 @@ def _driver_response(role: str, window_ms: float) -> DriverResponse:
 
 def _check_analysis(
     program, *, linearity=True, channel_map=True, snr_floor_ok=True,
-    locate_confidence=0.9,
+    locate_confidence=0.9, pilot_snr_ok=None,
 ) -> ProgramAnalysis:
     return ProgramAnalysis(
         phase="check",
@@ -117,6 +117,7 @@ def _check_analysis(
         ambient_report={"bands": [{"level_dbfs": -70.0}]},
         linearity_ok=linearity,
         channel_map_ok=channel_map,
+        pilot_snr_ok=pilot_snr_ok,
         gain_plan=GainPlan(
             gain_db={"woofer": -11.0, "tweeter": -13.0},
             predicted_peak_dbfs=-11.0,
@@ -415,6 +416,21 @@ def test_check_agc_and_snr_and_channel_map_verdicts():
     # Hard stop: budget 0 ⇒ the very next begin is refused.
     with pytest.raises(CaptureBeginRefused):
         c.authorize_begin(1, 2)
+
+
+def test_check_low_pilot_snr_routes_to_snr_floor_not_agc():
+    """Band-relative ambient-compensated linearity fix (2026-07-20): when the
+    quiet pilot's own in-band SNR is too low to trust the ambient-subtracted
+    estimate, ``program_analysis`` forces ``linearity_ok`` True (never a false
+    linearity FAILURE) and flags ``pilot_snr_ok=False`` instead. The conductor
+    must route that on its own — before ever reaching the linearity branch —
+    to the honest room/positioning reason, never blaming the phone's AGC."""
+    fakes = FakeSeams()
+    fakes.check = lambda program: _check_analysis(program, pilot_snr_ok=False)
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["code"] == "snr_floor"
+    assert verdict["template"] == "fix_and_retry"
 
 
 def test_check_linearity_fail_blames_the_room_when_ambient_is_elevated():
