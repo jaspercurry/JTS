@@ -492,6 +492,7 @@ pub struct TtsInput {
     pub metrics: TtsMetrics,
     pub max_pending_frames: u64,
     pub program_duck_db: f32,
+    pub cue_duck_db: f32,
     pub assistant_loudness: AssistantLoudnessConfig,
     pub assistant_reference: Option<HeldLoudnessReference>,
     pub assistant_reference_tx: Option<Sender<HeldLoudnessReference>>,
@@ -516,6 +517,7 @@ pub struct TtsMixer {
     active_epoch: u64,
     max_pending_frames: u64,
     program_duck_gain: f32,
+    cue_duck_gain: f32,
     program_duck_active: bool,
     program_duck_last_refresh: Option<Instant>,
     program_duck_idle_release_ttl: Duration,
@@ -552,6 +554,7 @@ impl TtsMixer {
             active_epoch: 0,
             max_pending_frames: input.max_pending_frames,
             program_duck_gain: gain_db_to_linear(input.program_duck_db),
+            cue_duck_gain: gain_db_to_linear(input.cue_duck_db),
             program_duck_active: false,
             program_duck_last_refresh: None,
             program_duck_idle_release_ttl: PROGRAM_DUCK_IDLE_RELEASE_TTL,
@@ -578,7 +581,27 @@ impl TtsMixer {
     }
 
     pub fn program_duck_gain(&self) -> f32 {
-        self.program_duck_gain
+        // The mixer ducks the program (music/renderer) lane to this gain
+        // whenever `prepare_period()` is true. Two regimes reach here:
+        //
+        //  * Explicit duck (`program_duck_active`): a voice turn or a spoken
+        //    cue called PROGRAM_DUCK_ON. Speech has to stay intelligible over
+        //    the music for seconds at a time, so duck hard (`program_duck_gain`).
+        //
+        //  * Segment-driven auto-duck (no explicit duck, but TTS frames are
+        //    pending — the other half of `prepare_period`): this is a
+        //    standalone short earcon/cue playing outside a turn (mute/unmute
+        //    sparkle, wake/end chirp). Those are quick, self-loud cues, not
+        //    speech to follow, so slamming the music by the full program duck
+        //    is jarring — use the light `cue_duck_gain`. Assistant audio, if it
+        //    ever reaches here without an explicit duck, still ducks hard.
+        if self.program_duck_active {
+            return self.program_duck_gain;
+        }
+        match self.active_segment_kind {
+            Some(SegmentKind::Assistant) => self.program_duck_gain,
+            _ => self.cue_duck_gain,
+        }
     }
 
     pub fn observe_content_period(&mut self, samples: &[i16]) {
@@ -1628,6 +1651,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -1657,6 +1681,87 @@ mod tests {
     }
 
     #[test]
+    fn segment_driven_auto_duck_is_light_for_cues_but_full_for_speech() {
+        // While prepare_period() is true the mixer ducks the program lane to
+        // program_duck_gain(). A standalone earcon/cue (TTS frames pending, no
+        // explicit PROGRAM_DUCK_ON) must only lightly duck the music; a voice
+        // turn (explicit duck) or assistant audio must still duck hard.
+        let full = gain_db_to_linear(-24.0);
+        let light = gain_db_to_linear(-6.0);
+        let approx = |a: f32, b: f32| (a - b).abs() < 1e-6;
+
+        fn new_mixer() -> (
+            SyncSender<QueuedTtsCommand>,
+            SyncSender<QueuedFlush>,
+            TtsMixer,
+        ) {
+            let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+            let mixer = TtsMixer::new(TtsInput {
+                rx,
+                flush_rx,
+                metrics,
+                max_pending_frames: 48_000,
+                program_duck_db: -24.0,
+                cue_duck_db: -6.0,
+                assistant_loudness: AssistantLoudnessConfig::default(),
+                assistant_reference: None,
+                assistant_reference_tx: None,
+            });
+            (tx, flush_tx, mixer)
+        }
+        fn queue_segment(tx: &SyncSender<QueuedTtsCommand>, kind: SegmentKind) {
+            tx.send(QueuedTtsCommand {
+                epoch: 0,
+                command: TtsCommand::SegmentStart {
+                    kind,
+                    provider_item_id: None,
+                    profile: None,
+                },
+            })
+            .unwrap();
+            tx.send(QueuedTtsCommand {
+                epoch: 0,
+                command: TtsCommand::Audio(vec![1_000, -1_000]),
+            })
+            .unwrap();
+        }
+
+        // Standalone mute/unmute sparkle (cue) → light duck.
+        let (tx, flush_tx, mut mixer) = new_mixer();
+        queue_segment(&tx, SegmentKind::Cue);
+        assert!(mixer.prepare_period());
+        assert!(approx(mixer.program_duck_gain(), light));
+        drop(flush_tx);
+
+        // Standalone wake/end chirp → light duck.
+        let (tx, flush_tx, mut mixer) = new_mixer();
+        queue_segment(&tx, SegmentKind::Chirp);
+        assert!(mixer.prepare_period());
+        assert!(approx(mixer.program_duck_gain(), light));
+        drop(flush_tx);
+
+        // Assistant audio, even absent an explicit duck → full duck.
+        let (tx, flush_tx, mut mixer) = new_mixer();
+        queue_segment(&tx, SegmentKind::Assistant);
+        assert!(mixer.prepare_period());
+        assert!(approx(mixer.program_duck_gain(), full));
+        drop(flush_tx);
+
+        // Explicit PROGRAM_DUCK_ON (a voice turn / spoken cue) → full duck,
+        // regardless of which segment kind happens to be queued.
+        let (tx, flush_tx, mut mixer) = new_mixer();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::ProgramDuckOn,
+        })
+        .unwrap();
+        queue_segment(&tx, SegmentKind::Cue);
+        assert!(mixer.prepare_period());
+        assert!(approx(mixer.program_duck_gain(), full));
+        drop(flush_tx);
+    }
+
+    #[test]
     fn tts_mixer_uses_profiled_segment_gain() {
         let (tx, rx, _flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
         let mut mixer = TtsMixer::new(TtsInput {
@@ -1665,6 +1770,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -1722,6 +1828,7 @@ mod tests {
             metrics,
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -1795,6 +1902,7 @@ mod tests {
             metrics,
             max_pending_frames: 12_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: Some(HeldLoudnessReference {
                 speaker_lufs: -41.0,
@@ -1895,6 +2003,7 @@ mod tests {
             metrics,
             max_pending_frames: 12_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: Some(reference_tx),
@@ -1983,6 +2092,7 @@ mod tests {
             metrics,
             max_pending_frames: 12_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: Some(reference_tx),
@@ -2063,6 +2173,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 12_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: Some(held),
             assistant_reference_tx: None,
@@ -2105,6 +2216,7 @@ mod tests {
             metrics,
             max_pending_frames: 12_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: Some(reference_tx),
@@ -2184,6 +2296,7 @@ mod tests {
             metrics,
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2224,6 +2337,7 @@ mod tests {
             metrics,
             max_pending_frames: 96_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2304,6 +2418,7 @@ mod tests {
             metrics,
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2358,6 +2473,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2389,6 +2505,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2436,6 +2553,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2490,6 +2608,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2524,6 +2643,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2562,6 +2682,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2588,6 +2709,7 @@ mod tests {
             metrics,
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2623,6 +2745,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2657,6 +2780,7 @@ mod tests {
             metrics: metrics.clone(),
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,
@@ -2690,6 +2814,7 @@ mod tests {
             metrics,
             max_pending_frames: 48_000,
             program_duck_db: -25.0,
+            cue_duck_db: -6.0,
             assistant_loudness: AssistantLoudnessConfig::default(),
             assistant_reference: None,
             assistant_reference_tx: None,

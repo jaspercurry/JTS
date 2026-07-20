@@ -169,6 +169,7 @@ fn main() -> Result<()> {
                     metrics: metrics.clone(),
                     max_pending_frames: config.tts_max_pending_frames,
                     program_duck_db: config.tts_program_duck_db,
+                    cue_duck_db: config.tts_cue_duck_db,
                     assistant_loudness: config.assistant_loudness,
                     assistant_reference,
                     assistant_reference_tx,
