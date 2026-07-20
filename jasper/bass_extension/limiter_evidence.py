@@ -27,7 +27,7 @@ from jasper.audio_measurement.evidence_identity import (
 
 
 LIMITER_EVIDENCE_SCHEMA_VERSION = 1
-LIMITER_EVIDENCE_PROTOCOL_REVISION = "2026-07-19"
+LIMITER_EVIDENCE_PROTOCOL_REVISION = "2026-07-19b"
 
 _EVIDENCE_KIND = "jts_bass_extension_limiter_evidence"
 _THRESHOLD_SET_KIND = "jts_bass_extension_limiter_threshold_set"
@@ -37,9 +37,12 @@ _DETECTOR_REFERENCE = (
 )
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 _TARGET_FILTERS = ("bass_ext_lt", "bass_ext_subsonic")
-# The public contract accepts arbitrary objects.  Keep the catch-all boundary
-# explicit without adding to the repository's legacy BLE001 suppression debt.
+# The public contract accepts arbitrary objects. Keep each catch-all boundary
+# confined to materializing one caller-owned root; validation bugs in _produce
+# intentionally remain visible instead of being mislabeled as input defects.
 _TOTAL_INPUT_ERRORS = (Exception,)
+_UNSUPPORTED_JSON_VALUE = object()
+_INVALID_JSON_KEY = object()
 _RETAINED_FACTS = frozenset(
     {"sweep", "sustain", "commanded_level", "stimulus_peak", "boost", "digital_clamp"}
 )
@@ -241,6 +244,31 @@ class _Defects:
             if paths:
                 return LimiterEvidenceRefusal(reason, tuple(sorted(paths)))
         return None
+
+
+def _materialize_json_input(value: object) -> object:
+    """Copy JSON-shaped input without carrying caller-defined behavior inward."""
+
+    if value is None or type(value) in {bool, int, float, str}:
+        return value
+    if type(value) is list:
+        return [_materialize_json_input(item) for item in value]
+    if isinstance(value, Mapping):
+        result: dict[object, object] = {}
+        for key, item in value.items():
+            normalized_key = key if type(key) is str else _INVALID_JSON_KEY
+            if normalized_key in result:
+                raise ValueError("duplicate object key while materializing JSON input")
+            result[normalized_key] = _materialize_json_input(item)
+        return result
+    return _UNSUPPORTED_JSON_VALUE
+
+
+def _root_input_refusal(path: str) -> LimiterEvidenceRefusal:
+    return LimiterEvidenceRefusal(
+        LimiterRefusalReason.INCONSISTENT,
+        (path,),
+    )
 
 
 def _strict_object(
@@ -856,42 +884,12 @@ def _parse_candidate(
         and sustain.get("protection_verdict") == "pass"
         and sustain.get("digital_clamp_passed") is True
     )
-    failed_measurements = (
-        (f"{path}.digital_transfer_probe.verdict", transfer_verdict),
-        (f"{path}.sweep_transparency.quality_verdict", sweep.get("quality_verdict")),
-        (
-            f"{path}.sweep_transparency.protection_verdict",
-            sweep.get("protection_verdict"),
-        ),
-        (
-            f"{path}.sweep_transparency.digital_clamp_passed",
-            sweep.get("digital_clamp_passed"),
-        ),
-        (f"{path}.sustain_stress.quality_verdict", sustain.get("quality_verdict")),
-        (
-            f"{path}.sustain_stress.protection_verdict",
-            sustain.get("protection_verdict"),
-        ),
-        (
-            f"{path}.sustain_stress.digital_clamp_passed",
-            sustain.get("digital_clamp_passed"),
-        ),
-    )
-    measurement_failed = False
-    for failure_path, verdict in failed_measurements:
-        if verdict == "fail" or verdict is False:
-            defects.out_of_envelope.add(failure_path)
-            measurement_failed = True
     expected_disposition = None
     if base_pass and sweep.get("transparency_verdict") == "pass":
         expected_disposition = "accepted"
     elif base_pass and sweep.get("transparency_verdict") == "fail":
         expected_disposition = "limiter_transparency_failed"
-    if (
-        disposition is not None
-        and not measurement_failed
-        and disposition != expected_disposition
-    ):
+    if disposition is not None and disposition != expected_disposition:
         defects.inconsistent.add(f"{path}.disposition")
 
     selected = None
@@ -1205,9 +1203,11 @@ def produce_limiter_thresholds(
     """
 
     try:
-        return _produce(evidence, required_context)
+        materialized_context = _materialize_json_input(required_context)
     except _TOTAL_INPUT_ERRORS:
-        return LimiterEvidenceRefusal(
-            LimiterRefusalReason.INCONSISTENT,
-            ("$evidence",),
-        )
+        return _root_input_refusal("$required_context")
+    try:
+        materialized_evidence = _materialize_json_input(evidence)
+    except _TOTAL_INPUT_ERRORS:
+        return _root_input_refusal("$evidence")
+    return _produce(materialized_evidence, materialized_context)

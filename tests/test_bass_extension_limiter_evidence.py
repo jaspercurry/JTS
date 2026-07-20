@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from copy import deepcopy
 import hashlib
 import json
@@ -470,7 +471,7 @@ def test_transparency_failures_without_acceptance_are_out_of_envelope(
         ("sustain_stress", "digital_clamp_passed", False),
     ],
 )
-def test_explicit_measurement_failure_is_out_of_envelope(
+def test_evaluated_measurement_failure_is_inconsistent(
     accepted: tuple[dict[str, Any], dict[str, Any]],
     record: str,
     field: str,
@@ -480,8 +481,10 @@ def test_explicit_measurement_failure_is_out_of_envelope(
     _candidate_at(bundle)[record][field] = failure
     _refresh(bundle)
 
-    refusal = _refusal(bundle, context, LimiterRefusalReason.OUT_OF_ENVELOPE)
-    assert any(path.endswith(f"{record}.{field}") for path in refusal.evidence_paths)
+    refusal = _refusal(bundle, context, LimiterRefusalReason.INCONSISTENT)
+    assert refusal.evidence_paths == (
+        "$evidence.targets[0].result.candidates_least_to_most_permissive[0].disposition",
+    )
 
 
 @pytest.mark.parametrize("threshold", [-95.0, -3.0])
@@ -585,6 +588,61 @@ def test_refusal_precedence_is_missing_then_stale_then_inconsistent_then_out(
 
     context["natural_graph_fingerprint"] = _sha("natural-graph")
     _refusal(bundle, context, LimiterRefusalReason.INCONSISTENT)
+
+
+class _ExplodingMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise RuntimeError(f"unexpected item read: {key}")
+
+    def __iter__(self):
+        raise RuntimeError("unexpected iteration")
+
+    def __len__(self) -> int:
+        raise RuntimeError("unexpected length read")
+
+
+def test_hostile_mapping_refusal_names_the_input_root(
+    accepted: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    bundle, context = accepted
+
+    evidence_refusal = _refusal(
+        _ExplodingMapping(), context, LimiterRefusalReason.INCONSISTENT
+    )
+    assert evidence_refusal.evidence_paths == ("$evidence",)
+
+    context_refusal = _refusal(
+        bundle, _ExplodingMapping(), LimiterRefusalReason.INCONSISTENT
+    )
+    assert context_refusal.evidence_paths == ("$required_context",)
+
+
+def test_cyclic_input_refusal_names_the_input_root(
+    accepted: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    bundle, context = accepted
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+
+    evidence_refusal = _refusal(cyclic, context, LimiterRefusalReason.INCONSISTENT)
+    assert evidence_refusal.evidence_paths == ("$evidence",)
+
+    context_refusal = _refusal(bundle, cyclic, LimiterRefusalReason.INCONSISTENT)
+    assert context_refusal.evidence_paths == ("$required_context",)
+
+
+def test_internal_producer_error_is_not_mislabeled_as_input_refusal(
+    accepted: tuple[dict[str, Any], dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, context = accepted
+
+    def explode(_evidence: object, _required_context: object) -> LimiterThresholdSet:
+        raise RuntimeError("synthetic internal defect")
+
+    monkeypatch.setitem(produce_limiter_thresholds.__globals__, "_produce", explode)
+    with pytest.raises(RuntimeError, match="synthetic internal defect"):
+        produce_limiter_thresholds(bundle, required_context=context)
 
 
 def test_module_is_unreachable_from_production_paths() -> None:
