@@ -6,7 +6,12 @@
 > predecessor-aware apply/bypass/recovery transaction. The transaction has
 > no production caller, and commissioning/runtime arming have not shipped.
 > Wave 4 contract revision 8 freezes the limiter-evidence protocol and
-> authorizes only a production-uncallable pure producer skeleton; no real
+> authorizes a production-uncallable pure producer skeleton; contract revision 9
+> additionally authorizes one hardware-free commissioning slice (a pure state
+> machine to an in-memory `review`, an injected synthetic dry run, and synthetic
+> evidence intake through that frozen producer). Real playback, live CamillaDSP
+> mutation, persistence, runtime arming, and production wiring stay blocked, and
+> no real
 > target-specific limiter result is established yet.
 > This document is the architecture
 > and phased implementation plan for the feature; it was produced by a
@@ -1516,7 +1521,7 @@ wave keeps out of the god-files. Every implementation PR runs
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, `0670540654a6684f8ac98fb2e70b2e643d65d82f`; contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553, `9f39c70e418cf64316c23de535f322d21f825c8e`; clean gate after 3 review findings fixed in-session) |
 | 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | **merged 2026-07-19** (#1574, `bb2919383b408d630f9d70ef24c14fe38ca98be0`; contract rev 12; sealed natural-at-rest graph emission + durable predecessor-aware apply/recovery groundwork; zero production callers; runtime arming remains blocked) |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits only a production-uncallable pure producer skeleton** — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)); a reviewed bench runner/temporary activation owner, accepted on-device bundle, and later production-wiring revision are still required |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits a production-uncallable pure producer skeleton; contract rev 9 additionally authorizes the hardware-free commissioning slice** (pure state machine to `review`, injected synthetic dry run, synthetic producer intake) — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)); a reviewed bench runner/temporary activation owner, accepted on-device bundle, and later production-wiring revision are still required |
 | 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 9** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
