@@ -443,7 +443,14 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     commands = _systemctl_log(tmp_path)
     assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "start jasper-dac-init.service" in commands
-    assert "restart jasper-headphone-monitor.service" in commands
+    # The monitor is ensured idempotently, never restarted: this gate runs on
+    # every udev/reconcile pass and a deploy fires it repeatedly inside the
+    # unit's StartLimitIntervalSec. A restart-per-pass burned StartLimitBurst
+    # and parked the monitor 'start-limit-hit'. reset-failed clears any parked
+    # state; start is a no-op when it is already running.
+    assert "reset-failed jasper-headphone-monitor.service" in commands
+    assert "start jasper-headphone-monitor.service" in commands
+    assert "restart jasper-headphone-monitor.service" not in commands
     assert "stop jasper-voice.service" in commands
     assert "reset-failed jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
