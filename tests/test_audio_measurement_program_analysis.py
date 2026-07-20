@@ -25,6 +25,7 @@ Runtime is kept low with short (≥0.5 s) sweeps and 48 kHz mono buffers.
 """
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
 import numpy as np
@@ -43,9 +44,14 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
+    AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
+    GAIN_MAX_DIGITAL_PEAK_DBFS,
     IR_POST_MS,
     IR_PRE_MS,
+    LINEARITY_SNR_BIAS_BUDGET_FRACTION,
+    LINEARITY_TOLERANCE_DB,
+    PILOT_MIN_SNR_DB,
     AlignmentEstimate,
     MeasurementGeometry,
     MeasurementPriors,
@@ -58,6 +64,7 @@ from jasper.audio_measurement.program_analysis import (
     _global_offset,
     _locate_segments,
     _n_fft_for,
+    _peak_dbfs,
     _predicted_sum,
     _ripple_db,
     _solve_trims,
@@ -568,12 +575,211 @@ def test_check_gain_plan_targets_measure_window_with_guard():
     assert plan.snr_floor_ok is True
 
 
+def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
+    """Review finding: `_solve_gain_plan` uses a pilot level ABSOLUTELY
+    (``k = level - gain_db``), not as a delta, so feeding it the
+    ambient-subtracted `level_*_dbfs` (built for the linearity verdict)
+    silently shifts the solved gain by however much ambient power was
+    subtracted — moving `MeasurementPriors.target_capture_dbfs`'s documented
+    capture-PEAK target hotter than intended. `_solve_gain_plan` must read
+    the separate, non-ambient-subtracted `peak_*_dbfs` instead.
+
+    This fixture's solved gains land comfortably away from the ≥6 dB
+    digital-guard cap (confirmed below) — unlike
+    `test_check_gain_plan_targets_measure_window_with_guard`, whose gains
+    land exactly AT the cap either way, so a same-vs-swapped-consumer bug
+    would have been invisible there (the guard clamps away the divergence).
+    """
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    cap = _check_capture(prog)
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(target_capture_dbfs=-10.5),
+    )
+    plan = res.gain_plan
+    assert plan is not None
+    for role in ("woofer", "tweeter"):
+        pilot = next(p for p in res.pilots if p.role == role)
+        lo_seg = prog.segment(f"pilot_{role}_lo")
+        hi_seg = prog.segment(f"pilot_{role}_hi")
+        expected_k = (
+            (pilot.peak_lo_dbfs - lo_seg.gain_db)
+            + (pilot.peak_hi_dbfs - hi_seg.gain_db)
+        ) / 2.0
+        expected_gain = min(-10.5 - expected_k, GAIN_MAX_DIGITAL_PEAK_DBFS)
+        # Confirm this fixture actually exercises the "away from the cap"
+        # case: the unclamped value must already be quieter than the cap by
+        # a real margin, or this assertion would pass for ANY k (correct or
+        # buggy) once both clamp to the same -6 dB ceiling.
+        assert expected_gain < GAIN_MAX_DIGITAL_PEAK_DBFS - 0.5
+        assert plan.gain_db[role] == pytest.approx(expected_gain, abs=1e-6)
+
+        # And: the solved gain must NOT match what the ambient-subtracted
+        # level would have produced (the pre-fix bug) — a >2 dB divergence
+        # confirms the two consumers are genuinely decoupled, not
+        # coincidentally equal on this fixture.
+        buggy_k = (
+            (pilot.level_lo_dbfs - lo_seg.gain_db)
+            + (pilot.level_hi_dbfs - hi_seg.gain_db)
+        ) / 2.0
+        buggy_gain = min(-10.5 - buggy_k, GAIN_MAX_DIGITAL_PEAK_DBFS)
+        assert abs(plan.gain_db[role] - buggy_gain) > 2.0
+
+
 def test_check_ambient_report_present():
     prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog)
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
     assert res.ambient_report is not None
     assert res.ambient_report["bands"]
+
+
+# --------------------------------------------------------------------------- #
+# CHECK linearity — band-relative, ambient-compensated (2026-07-20 fix)
+# --------------------------------------------------------------------------- #
+#
+# Real hardware (jts3, 2026-07-20): a Dayton iMM-6C and a UMIK-2 capture, same
+# room/placement, both failed `agc_behavioral_fail` at CHECK — the OLD
+# full-band-PEAK linearity estimate let continuous LF room rumble ~30 dB
+# above the tweeter-band ambient inflate the quiet woofer pilot's peak and
+# compress the captured 10 dB delta below the 0.5 dB tolerance, even though
+# both mics agreed the driver was linear once measured in its own band with
+# RMS (9.8-10.0 dB on both). Same bug class the channel-map discriminator was
+# fixed for in #1594 (gotcha #6); this is its un-fixed sibling.
+
+
+def _check_rumble_capture(rumble_hz: tuple[float, ...], rumble_amp: float, *, seed: int):
+    """`_check_capture`'s clean signal plus continuous rumble tones present
+    across the WHOLE capture (ambient window and every pilot window alike —
+    a real room's noise floor doesn't know when the pilot is playing)."""
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    pcm = render_program_pcm(prog)
+    woofer_ir = _band_impulse(200, 150.0, 1200.0, 1.0)
+    tweeter_ir = _band_impulse(225, 2500.0, 20000.0, 0.7)
+    mono = (
+        fftconvolve(pcm[:, 0], woofer_ir)[: pcm.shape[0]]
+        + fftconvolve(pcm[:, 1], tweeter_ir)[: pcm.shape[0]]
+    )
+    cap = np.concatenate([np.zeros(500), mono, np.zeros(5000)])
+    t = np.arange(cap.size) / SR
+    rumble = rumble_amp * sum(np.sin(2 * np.pi * f * t) for f in rumble_hz)
+    return prog, cap + rumble + np.random.default_rng(seed).normal(0.0, 3e-5, cap.size)
+
+
+def _old_peak_delta(prog, capture, role: str) -> float:
+    """The OLD (pre-fix) full-band-peak linearity delta, on the SAME located
+    windows the new estimator uses — a direct old-vs-new comparison."""
+    global_offset, _first, stimuli = _global_offset(prog, capture, SR)
+    locations = _locate_segments(prog, capture, SR, global_offset, stimuli)
+    by_id = {loc.segment_id: loc for loc in locations}
+    lo_seg = prog.segment(f"pilot_{role}_lo")
+    hi_seg = prog.segment(f"pilot_{role}_hi")
+    lo_loc = by_id[f"pilot_{role}_lo"]
+    hi_loc = by_id[f"pilot_{role}_hi"]
+    lo_samples = capture[lo_loc.located_start:lo_loc.located_start + lo_seg.n_samples]
+    hi_samples = capture[hi_loc.located_start:hi_loc.located_start + hi_seg.n_samples]
+    return _peak_dbfs(hi_samples) - _peak_dbfs(lo_samples)
+
+
+def test_check_linearity_survives_strong_in_band_room_rumble():
+    """Rumble INSIDE the woofer's own declared [150, 1200] Hz band, strong
+    enough to fail the OLD full-band-peak estimate (asserted inline) — the
+    NEW band-relative, ambient-subtracted estimate is untouched, and
+    genuinely trustworthy (``snr_valid`` True), not merely excused."""
+    prog, cap = _check_rumble_capture((300.0, 500.0, 800.0), 0.008, seed=21)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    assert res.linearity_ok is True
+    woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
+    assert woofer_pilot.snr_valid is True
+    assert woofer_pilot.captured_delta_db == pytest.approx(10.0, abs=0.5)
+    assert abs(_old_peak_delta(prog, cap, "woofer") - 10.0) > 0.5
+
+
+def test_check_linearity_survives_strong_out_of_band_room_rumble():
+    """Same shape, rumble entirely OUTSIDE any declared pilot band (below the
+    woofer's own [150, 1200] Hz — infra-bass HVAC/traffic territory). A
+    full-band PEAK estimate has no notion of "band" at all, so out-of-band
+    energy corrupts it just as badly as in-band rumble; the new band-relative
+    estimate is untouched."""
+    prog, cap = _check_rumble_capture((40.0, 70.0, 110.0), 0.05, seed=22)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    assert res.linearity_ok is True
+    for pilot in res.pilots:
+        assert pilot.snr_valid is True
+    assert abs(_old_peak_delta(prog, cap, "woofer") - 10.0) > 0.5
+
+
+def test_check_linearity_fails_under_slow_agc_gain_ride():
+    """The gate must keep its teeth: a SLOW multi-dB gain envelope ridden
+    across the WHOLE lo->hi pilot span (a realistic browser-AGC shape, not
+    just a step confined to the hi pilot) must still fail linearity, with a
+    genuinely trustworthy SNR — this is a real behavioral failure, not an
+    SNR excuse."""
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    cap = _check_capture(prog)
+    lo_seg = prog.segment("pilot_woofer_lo")
+    hi_seg = prog.segment("pilot_woofer_hi")
+    a = 500 + lo_seg.start_sample
+    b = 500 + hi_seg.start_sample + hi_seg.n_samples
+    depth_db = 6.0
+    ramp_db = np.linspace(0.0, -depth_db, b - a)
+    cap[a:b] *= 10.0 ** (ramp_db / 20.0)
+    cap[b:] *= 10.0 ** (-depth_db / 20.0)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
+    assert woofer_pilot.snr_valid is True
+    assert res.linearity_ok is False
+
+
+def test_check_linearity_fails_under_classic_agc_step_between_pilots():
+    """The classic AGC-settle shape, alongside the slow-ramp case above: a
+    STEP confined to the gap before the hi pilot (AGC settles fully before
+    hi starts, rather than still transitioning during either segment —
+    `_check_capture(compress_hi=True)`, the same fixture
+    `test_check_linearity_fails_under_simulated_agc` uses) must still fail
+    linearity, with a genuinely trustworthy SNR — not a low-SNR excuse."""
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    cap = _check_capture(prog, compress_hi=True)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
+    assert woofer_pilot.snr_valid is True
+    assert res.linearity_ok is False
+
+
+def test_pilot_min_snr_db_matches_its_own_derivation():
+    """Pins `PILOT_MIN_SNR_DB` to its documented derivation (the comment
+    above the constant in program_analysis.py) so a future edit to
+    `AMBIENT_NONSTATIONARITY_DB` / `LINEARITY_SNR_BIAS_BUDGET_FRACTION` /
+    `LINEARITY_TOLERANCE_DB` can't silently drift the derived floor without
+    this test failing — the formula is recomputed independently here, not
+    imported from the module's private intermediate variables."""
+    k = 10.0 ** (AMBIENT_NONSTATIONARITY_DB / 10.0)
+    snr_linear_min = (10.0 / math.log(10.0)) * (k - 1.0) / (
+        LINEARITY_TOLERANCE_DB * LINEARITY_SNR_BIAS_BUDGET_FRACTION
+    )
+    expected = 10.0 * math.log10(snr_linear_min)
+    assert PILOT_MIN_SNR_DB == pytest.approx(expected, abs=1e-9)
+
+
+def test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail():
+    """When the quiet (lo) pilot's own in-band SNR is too low to trust the
+    ambient-subtracted estimate, the verdict must NOT be a linearity
+    FAILURE — ``linearity_ok`` stays True — while ``snr_valid``/
+    ``pilot_snr_ok`` flags the low-confidence evidence so the conductor can
+    route to the honest room/positioning reason (``REASON_SNR_FLOOR``),
+    never blaming the phone's AGC
+    (``crossover_v2_flow._consume_check``)."""
+    # Strong in-woofer-band rumble, loud enough to bury the QUIET (-10 dB)
+    # woofer pilot's own in-band power near the ambient floor. The tweeter's
+    # disjoint band is unaffected — only the woofer's evidence is untrusted.
+    prog, cap = _check_rumble_capture((300.0, 500.0, 800.0), 0.02, seed=23)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
+    tweeter_pilot = next(p for p in res.pilots if p.role == "tweeter")
+    assert woofer_pilot.snr_valid is False
+    assert woofer_pilot.linearity_ok is True  # forced — never a false FAILURE
+    assert tweeter_pilot.snr_valid is True
+    assert res.pilot_snr_ok is False
+    assert res.linearity_ok is True
 
 
 # --------------------------------------------------------------------------- #

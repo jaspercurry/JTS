@@ -142,8 +142,57 @@ GAIN_GUARD_DB = 6.0
 GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
 
 # Behavioral linearity tolerance (design §3.4): captured delta within this of
-# the programmed delta.
+# the programmed delta. Measured band-relative + ambient-compensated (see
+# `_pilot_observations`) since the 2026-07-20 fix — a full-band PEAK estimate
+# (the pre-fix method) let LF room rumble ~30 dB above the tweeter-band
+# ambient inflate the quiet woofer pilot's peak and compress the captured
+# delta, tripping this tight a tolerance on a perfectly linear driver (the
+# same bug class the channel-map discriminator was fixed for in #1594 —
+# gotcha #6/#16 in docs/HANDOFF-crossover-measurement-v2.md).
 LINEARITY_TOLERANCE_DB = 0.5
+
+# Pilot edge-fade trim: `sweep.synchronized_swept_sine` applies a fixed 5 ms
+# fade-in/fade-out to every stimulus it generates (its own "Light fade-in/out"
+# comment) to avoid a click at a non-zero-crossing edge — a located pilot
+# segment therefore ramps up/down over that fixed span rather than playing at
+# full level throughout. Trimming exactly that span from each edge before
+# measuring level keeps the RMS estimate to the pilot's steady-state portion.
+# This is the composer's REAL fade length (read from the generator, not
+# guessed), so no separate justification for "why 5 ms" is needed here.
+PILOT_FADE_TRIM_S = 0.005
+
+# Low-SNR honest routing (design note above `_pilot_observations`): ambient
+# power subtraction only removes the room's noise-floor BIAS when the quiet
+# (lo) pilot's own in-band power clears the in-band ambient power by enough
+# margin that residual bias from ambient NONSTATIONARITY — the room's true
+# noise power during the ~0.8 s pilot window can differ from the value
+# measured over CHECK's separate, earlier ambient window — stays a small
+# fraction of `LINEARITY_TOLERANCE_DB`. Modeling that mismatch as a bounded
+# multiplicative factor ``k = 10**(AMBIENT_NONSTATIONARITY_DB/10)`` on the
+# ambient power estimate:
+#
+#   subtracted signal estimate      Ŝ = P_measured − N̂
+#   bias if the room's ACTUAL noise power during the pilot window is k·N̂
+#   instead of N̂:                   bias_power = (k − 1) · N̂
+#   bias in dB at signal level S (small-signal slope 10/ln(10)/S):
+#       bias_db ≈ (10 / ln(10)) · (k − 1) / (S / N̂)      [S/N̂ = linear SNR]
+#
+# Budgeting `LINEARITY_SNR_BIAS_BUDGET_FRACTION` of the tolerance for this
+# bias (leaving the rest for ordinary estimator/measurement jitter) and
+# solving for the linear SNR gives the minimum trustworthy in-band SNR —
+# `PILOT_MIN_SNR_DB` works out to ≈12.4 dB with the constants below. Real
+# hardware captures that tripped this bug (2026-07-20, jts3) measured ≈26-30
+# dB of in-band SNR on the quiet woofer pilot once measured in its own band
+# (comfortably above this floor — routed as VALID, not `snr_floor`); this
+# threshold exists for the genuinely marginal case (very quiet phone/room),
+# not the common one.
+AMBIENT_NONSTATIONARITY_DB = 3.0
+LINEARITY_SNR_BIAS_BUDGET_FRACTION = 0.5
+_pilot_snr_k = 10.0 ** (AMBIENT_NONSTATIONARITY_DB / 10.0)
+_pilot_snr_linear_min = (10.0 / math.log(10.0)) * (_pilot_snr_k - 1.0) / (
+    LINEARITY_TOLERANCE_DB * LINEARITY_SNR_BIAS_BUDGET_FRACTION
+)
+PILOT_MIN_SNR_DB = 10.0 * math.log10(_pilot_snr_linear_min)
 
 # Channel-map discriminator (Fix 1, W6.4 — see `_channel_map_ok`). PROVISIONAL
 # pending more W6 hardware runs. Derived from the run-5 hardware table
@@ -307,7 +356,34 @@ class CrossoverCandidate:
 
 @dataclass(frozen=True)
 class PilotObservation:
-    """One driver's CHECK pilot pair — level, linearity, channel-map sanity."""
+    """One driver's CHECK pilot pair — level, linearity, channel-map sanity.
+
+    ``level_lo_dbfs``/``level_hi_dbfs`` are band-relative, ambient-compensated
+    (when an ambient window is available) — see `_pilot_observations`. They
+    feed ONLY the linearity verdict (``captured_delta_db`` is a relative
+    delta, so the ambient-subtraction bias cancels between the two levels);
+    they must never feed an ABSOLUTE-level consumer like the MEASURE gain
+    solve (`_solve_gain_plan`) — ambient subtraction shifts the absolute
+    value by however much ambient power was removed, which silently retunes
+    a consumer that expects a true signal-peak reference (a review finding:
+    threading these into the gain solve moved its captured-peak target
+    13-17 dB hotter on the two real captures). ``peak_lo_dbfs``/
+    ``peak_hi_dbfs`` are the dedicated, NON-ambient-subtracted levels
+    `_solve_gain_plan` reads instead — the exact pre-existing full-band
+    `_peak_dbfs`, kept verbatim (see `_pilot_observations`'s docstring for
+    why an in-band variant was tried and rejected), preserving
+    ``MeasurementPriors.target_capture_dbfs``'s documented capture-PEAK
+    semantics exactly as before.
+
+    ``snr_valid`` is True when the quiet (lo) pilot's in-band SNR clears
+    `PILOT_MIN_SNR_DB`, i.e. the ambient-subtracted estimate (and therefore
+    ``linearity_ok``) is trustworthy; when False, ``linearity_ok`` is forced
+    True (an untrustworthy estimate must never register as a linearity
+    FAILURE — the caller routes on ``snr_valid`` instead, honestly attributing
+    the room/positioning cause rather than the phone's AGC). Defaults to True
+    so a caller constructing one directly (fixtures, legacy call sites)
+    without an opinion on SNR gets the pre-fix "trust the delta" behavior.
+    """
 
     role: str
     level_lo_dbfs: float
@@ -316,6 +392,9 @@ class PilotObservation:
     captured_delta_db: float
     linearity_ok: bool
     channel_map_ok: bool
+    snr_valid: bool = True
+    peak_lo_dbfs: float = DBFS_FLOOR
+    peak_hi_dbfs: float = DBFS_FLOOR
 
 
 @dataclass(frozen=True)
@@ -342,6 +421,13 @@ class ProgramAnalysis:
     pilots: tuple[PilotObservation, ...] = ()
     linearity_ok: bool | None = None
     channel_map_ok: bool | None = None
+    # Aggregate of ``PilotObservation.snr_valid`` across pilots (``all(...)``);
+    # ``None`` when there are no pilots (same "no evidence" convention as
+    # ``linearity_ok``). False means at least one pilot's quiet-side in-band
+    # SNR was too low to trust the ambient-subtracted linearity estimate —
+    # the conductor routes this to `REASON_SNR_FLOOR`, never
+    # `REASON_AGC_BEHAVIORAL_FAIL` (see `crossover_v2_flow._consume_check`).
+    pilot_snr_ok: bool | None = None
     gain_plan: GainPlan | None = None
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
@@ -1134,8 +1220,8 @@ def _ambient_from_capture(
     return samples, snr_policy.framed_ambient_band_report(samples, sample_rate, percentile=95)
 
 
-def _band_rms_dbfs(samples: np.ndarray, sample_rate: int, f1_hz: float, f2_hz: float) -> float:
-    """RMS level (dBFS) of ``samples`` restricted to ``[f1_hz, f2_hz]``.
+def _band_power(samples: np.ndarray, sample_rate: int, f1_hz: float, f2_hz: float) -> float:
+    """Mean-square (linear power) of ``samples`` restricted to ``[f1_hz, f2_hz]``.
 
     Hann-windowed before :func:`_bandlimit`'s zero-phase FFT bandpass: a raw
     slice (a pilot window, or the ambient window) almost never starts/ends at
@@ -1144,18 +1230,79 @@ def _band_rms_dbfs(samples: np.ndarray, sample_rate: int, f1_hz: float, f2_hz: f
     discontinuity into every band — including a driver's OWN declared band
     read back out of its own capture. The Hann taper (a fixed, length-
     independent mean-square ratio) suppresses that leak; the constant
-    windowing loss it introduces cancels out of the TARGET / CROSS RISE
-    comparisons (`_channel_map_ok`) since both sides of every rise go through
-    the identical treatment, so it does not need correcting for here.
+    windowing loss it introduces cancels out of every comparison that reads
+    both sides through this same function (the channel-map TARGET/CROSS rise,
+    and the pilot linearity delta), so it does not need correcting for here.
+
+    Returned as LINEAR power (not dB) so a caller can SUBTRACT an ambient
+    noise-power estimate before converting to dB — subtraction is only valid
+    in the power domain, never on dB values directly.
     """
     x = np.asarray(samples, dtype=np.float64)
     if x.size < 8:
-        return DBFS_FLOOR
+        return 0.0
     filtered = _bandlimit(x * np.hanning(x.size), sample_rate, f1_hz, f2_hz)
-    rms = float(np.sqrt(np.mean(np.square(filtered))))
-    if rms <= 0 or not math.isfinite(rms):
+    return float(np.mean(np.square(filtered)))
+
+
+def _band_rms_dbfs(samples: np.ndarray, sample_rate: int, f1_hz: float, f2_hz: float) -> float:
+    """RMS level (dBFS) of ``samples`` restricted to ``[f1_hz, f2_hz]``.
+
+    Thin dB wrapper over :func:`_band_power` (``20·log10(rms) ==
+    10·log10(power)``) — see that function's docstring for the windowing
+    rationale.
+    """
+    power = _band_power(samples, sample_rate, f1_hz, f2_hz)
+    if power <= 0 or not math.isfinite(power):
         return DBFS_FLOOR
-    return max(DBFS_FLOOR, 20.0 * math.log10(rms))
+    return max(DBFS_FLOOR, 10.0 * math.log10(power))
+
+
+def _pilot_trim_fade(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Drop the composer's fixed edge fade from a located pilot segment.
+
+    See `PILOT_FADE_TRIM_S`. Falls back to the untrimmed segment when
+    trimming would leave nothing (a pathologically short/corrupt capture) —
+    the level estimate then rides the fade too rather than raising here; the
+    SNR/linearity gates downstream still catch a genuinely bad capture.
+    """
+    trim = int(round(PILOT_FADE_TRIM_S * sample_rate))
+    if samples.size <= 2 * trim:
+        return samples
+    return samples[trim:-trim]
+
+
+def _ambient_subtracted_dbfs(power: float, ambient_power: float) -> float:
+    """dB of ``power`` after subtracting ``ambient_power`` (power domain).
+
+    ``ambient_power`` is 0.0 when there is no ambient evidence (a v2
+    MEASURE/VERIFY leading pilot pair has no ambient window of its own — see
+    `_pilot_verdicts`'s docstring); subtracting zero is a no-op, so this
+    degrades to plain in-band RMS in that case.
+    """
+    signal_power = power - ambient_power if ambient_power > 0 else power
+    if signal_power <= 0 or not math.isfinite(signal_power):
+        return DBFS_FLOOR
+    return max(DBFS_FLOOR, 10.0 * math.log10(signal_power))
+
+
+def _pilot_in_band_snr_db(power: float, ambient_power: float) -> float:
+    """SNR (dB) of the ambient-subtracted estimate: ``(P − N) / N``.
+
+    In the ``P = S + N`` model (measured power = signal + ambient noise
+    power), this is exactly ``S / N`` — the linear SNR the
+    `PILOT_MIN_SNR_DB` derivation is stated in terms of. Returns ``+inf``
+    when there is no ambient evidence to contaminate the estimate (nothing to
+    validate against, so nothing to distrust), and ``-inf`` when the pilot's
+    measured power does not even exceed the ambient (the estimate is
+    unusable).
+    """
+    if ambient_power <= 0 or not math.isfinite(ambient_power):
+        return math.inf
+    ratio = power / ambient_power - 1.0
+    if ratio <= 0 or not math.isfinite(ratio):
+        return -math.inf
+    return 10.0 * math.log10(ratio)
 
 
 def _band_exclusive_pieces(
@@ -1190,6 +1337,49 @@ def _pilot_observations(
     *,
     ambient_samples: np.ndarray | None = None,
 ) -> list[PilotObservation]:
+    """Per-role pilot level/linearity/channel-map observations (design §3.4).
+
+    Level is measured band-relative (each pilot's OWN declared band, via
+    `_band_power` — same Hann+bandpass mechanism `_channel_map_ok` uses, not a
+    second filtering idiom) and, when an ambient window is available (CHECK's
+    own leading silence), ambient-power-subtracted before converting to dB —
+    fixing the 2026-07-20 bug where a full-band PEAK estimate let LF room
+    rumble inflate the quiet pilot's level and compress the captured delta
+    (see `LINEARITY_TOLERANCE_DB`'s comment). A v2 MEASURE/VERIFY leading
+    pilot pair has no ambient window (`_pilot_verdicts`'s docstring), so
+    ``ambient_samples`` is ``None`` there — subtraction degrades to a no-op
+    (`_ambient_subtracted_dbfs`) and SNR is trusted unconditionally (nothing
+    to validate against).
+
+    The located segment's fixed composer fade (`_pilot_trim_fade`) is trimmed
+    before measuring so the RMS estimate rides the steady-state portion, not
+    the ramp.
+
+    Low-SNR honest routing: the quiet (lo) pilot is the binding constraint
+    (10 dB quieter than hi, same ambient), so its in-band SNR
+    (`_pilot_in_band_snr_db`) gates trust. Below `PILOT_MIN_SNR_DB` the
+    ambient-subtracted estimate isn't reliable either way —
+    ``linearity_ok`` is forced True (never a false FAILURE) and
+    ``snr_valid=False`` lets the caller route to the honest "room/
+    positioning" reason instead of blaming the phone's AGC (see
+    `ProgramAnalysis.pilot_snr_ok` and `crossover_v2_flow._consume_check`).
+
+    ``peak_lo_dbfs``/``peak_hi_dbfs`` are a SEPARATE, non-ambient-subtracted
+    measurement: the exact pre-fix `_peak_dbfs` (full-band peak of the
+    located, untrimmed samples) `_solve_gain_plan` used before this function
+    grew the band-relative/ambient-subtracted level. They exist because
+    `_solve_gain_plan` uses a pilot level ABSOLUTELY (``k = level -
+    gain_db``, an estimate of the whole capture chain's dB gain), not as a
+    delta — feeding it the ambient-subtracted level would silently shift
+    that absolute reference by however much ambient power was subtracted
+    (measured 13-17 dB across both real captures), retuning
+    `MeasurementPriors.target_capture_dbfs`'s documented capture-PEAK target
+    hotter than intended. An in-band (band-limited) peak was evaluated as a
+    more-robust replacement but empirically introduced its own bandlimiting-
+    leakage bias (up to ~1.3 dB on a real capture — worse than "a few
+    tenths") whether or not the slice was windowed first, so the exact
+    pre-fix computation is kept verbatim for this consumer instead.
+    """
     by_id = {loc.segment_id: loc for loc in locations}
     roles = sorted({seg.role for seg in program.segments if seg.kind == KIND_PILOT and seg.role})
     # Every role's declared band, so each role's channel-map check can ask
@@ -1202,6 +1392,12 @@ def _pilot_observations(
         if hi_seg.f1_hz is None or hi_seg.f2_hz is None:
             raise ValueError(f"pilot segment for role {role!r} has no declared band")
         role_bands[role] = (hi_seg.f1_hz, hi_seg.f2_hz)
+
+    ambient_arr = None if ambient_samples is None else np.asarray(ambient_samples)
+    if ambient_arr is not None and ambient_arr.size < 8:
+        ambient_arr = None
+    has_ambient = ambient_arr is not None
+
     out: list[PilotObservation] = []
     for role in roles:
         lo_seg = program.segment(f"pilot_{role}_lo")
@@ -1210,11 +1406,35 @@ def _pilot_observations(
         hi_loc = by_id[f"pilot_{role}_hi"]
         lo_samples = capture[lo_loc.located_start:lo_loc.located_start + lo_seg.n_samples]
         hi_samples = capture[hi_loc.located_start:hi_loc.located_start + hi_seg.n_samples]
-        level_lo = _peak_dbfs(lo_samples)
-        level_hi = _peak_dbfs(hi_samples)
+
+        own_f1, own_f2 = role_bands[role]
+        lo_interior = _pilot_trim_fade(lo_samples, sample_rate)
+        hi_interior = _pilot_trim_fade(hi_samples, sample_rate)
+        lo_power = _band_power(lo_interior, sample_rate, own_f1, own_f2)
+        hi_power = _band_power(hi_interior, sample_rate, own_f1, own_f2)
+        ambient_power = (
+            _band_power(ambient_arr, sample_rate, own_f1, own_f2)
+            if ambient_arr is not None
+            else 0.0
+        )
+
+        level_lo = _ambient_subtracted_dbfs(lo_power, ambient_power)
+        level_hi = _ambient_subtracted_dbfs(hi_power, ambient_power)
         programmed_delta = hi_seg.gain_db - lo_seg.gain_db
         captured_delta = level_hi - level_lo
-        linearity_ok = abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
+
+        lo_snr_db = _pilot_in_band_snr_db(lo_power, ambient_power) if has_ambient else math.inf
+        snr_valid = lo_snr_db >= PILOT_MIN_SNR_DB
+        linearity_ok = (
+            True if not snr_valid
+            else abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
+        )
+
+        # Gain-solve reference: exact pre-fix full-band peak (see the
+        # docstring above) — deliberately NOT the ambient-subtracted level.
+        peak_lo = _peak_dbfs(lo_samples)
+        peak_hi = _peak_dbfs(hi_samples)
+
         own_band = role_bands[role]
         other_bands = tuple(
             piece
@@ -1234,6 +1454,9 @@ def _pilot_observations(
             captured_delta_db=captured_delta,
             linearity_ok=linearity_ok,
             channel_map_ok=channel_ok,
+            snr_valid=snr_valid,
+            peak_lo_dbfs=peak_lo,
+            peak_hi_dbfs=peak_hi,
         ))
     return out
 
@@ -1243,8 +1466,8 @@ def _pilot_verdicts(
     capture: np.ndarray,
     sample_rate: int,
     locations: Sequence[SegmentLocation],
-) -> tuple[tuple[PilotObservation, ...], bool | None, bool | None]:
-    """Pilot observations + the aggregate linearity / channel-map verdicts.
+) -> tuple[tuple[PilotObservation, ...], bool | None, bool | None, bool | None]:
+    """Pilot observations + the aggregate linearity / channel-map / SNR verdicts.
 
     ``None`` verdicts when the program carries no pilots (a legacy MEASURE /
     VERIFY program), so a caller can distinguish "no pilot evidence" from
@@ -1253,12 +1476,14 @@ def _pilot_verdicts(
     evidence CHECK-only verification cannot. Unlike CHECK, a MEASURE/VERIFY
     pilot pair has no leading ambient window of its own (no silence precedes
     it), so its channel-map check falls back to `_channel_map_ok`'s
-    total-in-band-energy-fraction test (unchanged from before Fix 1).
+    total-in-band-energy-fraction test (unchanged from before Fix 1), and its
+    ``pilot_snr_ok`` is always trusted (``True``) — see `_pilot_observations`.
     """
     pilots = _pilot_observations(program, capture, sample_rate, locations)
     linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
     channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
-    return tuple(pilots), linearity_ok, channel_map_ok
+    pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
+    return tuple(pilots), linearity_ok, channel_map_ok, pilot_snr_ok
 
 
 def _channel_map_ok(
@@ -1333,8 +1558,13 @@ def _solve_gain_plan(
         lo_seg = program.segment(f"pilot_{pilot.role}_lo")
         hi_seg = program.segment(f"pilot_{pilot.role}_hi")
         # captured = digital_gain + K (unit slope). K from the two pilots.
-        k_lo = pilot.level_lo_dbfs - lo_seg.gain_db
-        k_hi = pilot.level_hi_dbfs - hi_seg.gain_db
+        # Deliberately the PEAK-referenced levels (`peak_*_dbfs`), not
+        # `level_*_dbfs` — the latter is ambient-subtracted for the
+        # linearity verdict and would shift this ABSOLUTE reference (see
+        # `PilotObservation`'s docstring); `target_capture_dbfs` is
+        # documented as a capture-PEAK target and K must match that.
+        k_lo = pilot.peak_lo_dbfs - lo_seg.gain_db
+        k_hi = pilot.peak_hi_dbfs - hi_seg.gain_db
         k = (k_lo + k_hi) / 2.0
         gain = target - k
         gain = min(gain, GAIN_MAX_DIGITAL_PEAK_DBFS)  # ≥6 dB guard
@@ -1425,6 +1655,7 @@ def _analyze_check(
     )
     linearity_ok = all(p.linearity_ok for p in pilots) if pilots else None
     channel_map_ok = all(p.channel_map_ok for p in pilots) if pilots else None
+    pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
     gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)
     return ProgramAnalysis(
         phase=program.phase,
@@ -1434,6 +1665,7 @@ def _analyze_check(
         pilots=tuple(pilots),
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
+        pilot_snr_ok=pilot_snr_ok,
         gain_plan=gain_plan,
     )
 
@@ -1491,7 +1723,7 @@ def _analyze_measure(
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a leading pilot pair; legacy programs carry none, so
     # the verdicts stay ``None`` (byte-identical to the pre-v2 analysis).
-    pilots, linearity_ok, channel_map_ok = _pilot_verdicts(
+    pilots, linearity_ok, channel_map_ok, pilot_snr_ok = _pilot_verdicts(
         program, capture, sample_rate, locations
     )
     return ProgramAnalysis(
@@ -1505,6 +1737,7 @@ def _analyze_measure(
         pilots=pilots,
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
+        pilot_snr_ok=pilot_snr_ok,
         predicted_sum=predicted_sum,
         glitch_detected=drift.glitch_detected,
     )
@@ -1629,7 +1862,7 @@ def _analyze_verify(
     # A v2 VERIFY program opens with a leading pilot pair (design §5.2) so the
     # post-apply capture carries its own behavioral-linearity evidence too;
     # legacy VERIFY programs carry none and the verdicts stay ``None``.
-    pilots, linearity_ok, channel_map_ok = _pilot_verdicts(
+    pilots, linearity_ok, channel_map_ok, pilot_snr_ok = _pilot_verdicts(
         program, capture, sample_rate, locations
     )
     return ProgramAnalysis(
@@ -1642,4 +1875,5 @@ def _analyze_verify(
         pilots=pilots,
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
+        pilot_snr_ok=pilot_snr_ok,
     )
