@@ -42,6 +42,19 @@ Jasper's bench pass and a later Wave 4 revision name its accepted bundle — is
 | 6 | `wave-6-ui.md` | Codex | Wave 4 merged (Wave 5 for live status) |
 | 7 | `wave-7-hardware-validation.md` | Operator, Codex assists | everything |
 
+**Where "what's authorized right now" lives (single source of truth).** The
+plan's **Wave status** table in
+[`HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md) is the one
+place that states what each wave is authorized or blocked to do *right now*; the
+reviewed amendments — [`limiter-evidence-protocol.md`](limiter-evidence-protocol.md)
+and [`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md) — are
+the authorization deltas layered on the wave prompts. Two conventions keep this
+from drifting: (1) **cross-reference an amendment by its file name, never by
+another wave's `Revision N`** — those revision numbers are per-wave changelog
+counters and *collide* across waves (Wave 4 and Wave 5 are independently at
+"Revision 9"); (2) when a wave banner and the plan table disagree on current
+status, **the plan table wins — fix the drift.**
+
 Every wave prompt **incorporates this README by reference**. Codex:
 read this file completely before your wave file.
 

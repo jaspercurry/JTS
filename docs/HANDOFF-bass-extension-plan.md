@@ -1822,9 +1822,11 @@ atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
    accepted evidence shape, and the deterministic producer/refusal contract.
    The retained Wave 0 sweep, sustain, commanded-level, stimulus-peak, boost,
    and digital-clamp facts do not establish arbitrary program peaks or a real
-   target-specific limiter value. No reviewed bench runner/temporary
-   activation owner, trusted commissioning-context builder, or accepted
-   on-device bundle exists. The smallest evidence that clears the remaining
+   target-specific limiter value. The reviewed bench-runner amendment
+   [`limiter-bench-runner-protocol.md`](bass-extension-waves/limiter-bench-runner-protocol.md)
+   now authorizes *building* the runner, but no reviewed bench runner/temporary
+   activation owner implementation, trusted commissioning-context builder, or
+   accepted on-device bundle exists yet. The smallest evidence that clears the remaining
    gap is those reviewed owners, Jasper's accepted bench bundle for the exact
    sealed family, and deterministic replay at zero review blockers and
    should-fixes; a later contract revision must then authorize the trusted
