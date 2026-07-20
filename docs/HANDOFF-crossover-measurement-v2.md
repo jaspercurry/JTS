@@ -366,6 +366,25 @@ no retries-as-bodge). Treat these as regression fences.
     `PilotObservation.snr_valid` / `ProgramAnalysis.pilot_snr_ok` flag it
     so `crossover_v2_flow._consume_check` routes to `snr_floor`, never
     `agc_behavioral_fail`.
+17. **A pilot level used ABSOLUTELY needs a peak reference, not the
+    ambient-subtracted linearity estimate** (2026-07-20, same PR as #16,
+    caught in review). `_solve_gain_plan` computes `k = level - gain_db` —
+    an absolute estimate of the whole capture chain's dB gain, not a
+    delta — then aims `MeasurementPriors.target_capture_dbfs` (documented
+    as a capture-PEAK target) through it. Gotcha #16's ambient-subtracted
+    `level_*_dbfs` briefly fed this too, silently shifting `k` by however
+    much ambient power was subtracted (measured 13-17 dB on the two real
+    captures once measured — worse than a synthetic-fixture reviewer
+    estimate of ~7 dB — because a real room's ambient floor is far from
+    flat across bands). `PilotObservation` now carries a SEPARATE
+    `peak_lo_dbfs`/`peak_hi_dbfs` — the exact pre-#16 full-band peak,
+    verbatim — for this one absolute-use consumer; `level_*_dbfs` stays
+    ambient-subtracted for the (delta-safe) linearity verdict only. An
+    in-band (band-limited) peak was tried as a "more robust" replacement
+    but empirically introduced its own bandlimiting-leakage bias (up to
+    ~1.3 dB on a real capture, windowed or not) — worse than a few tenths
+    — so the verbatim pre-#16 computation was kept instead of trading one
+    subtle bug for a smaller one.
 
 ## Future work — the post-W6 follow-ups issue
 

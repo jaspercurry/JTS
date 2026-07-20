@@ -25,6 +25,7 @@ Runtime is kept low with short (≥0.5 s) sweeps and 48 kHz mono buffers.
 """
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
 import numpy as np
@@ -43,9 +44,14 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
+    AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
+    GAIN_MAX_DIGITAL_PEAK_DBFS,
     IR_POST_MS,
     IR_PRE_MS,
+    LINEARITY_SNR_BIAS_BUDGET_FRACTION,
+    LINEARITY_TOLERANCE_DB,
+    PILOT_MIN_SNR_DB,
     AlignmentEstimate,
     MeasurementGeometry,
     MeasurementPriors,
@@ -569,6 +575,56 @@ def test_check_gain_plan_targets_measure_window_with_guard():
     assert plan.snr_floor_ok is True
 
 
+def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
+    """Review finding: `_solve_gain_plan` uses a pilot level ABSOLUTELY
+    (``k = level - gain_db``), not as a delta, so feeding it the
+    ambient-subtracted `level_*_dbfs` (built for the linearity verdict)
+    silently shifts the solved gain by however much ambient power was
+    subtracted — moving `MeasurementPriors.target_capture_dbfs`'s documented
+    capture-PEAK target hotter than intended. `_solve_gain_plan` must read
+    the separate, non-ambient-subtracted `peak_*_dbfs` instead.
+
+    This fixture's solved gains land comfortably away from the ≥6 dB
+    digital-guard cap (confirmed below) — unlike
+    `test_check_gain_plan_targets_measure_window_with_guard`, whose gains
+    land exactly AT the cap either way, so a same-vs-swapped-consumer bug
+    would have been invisible there (the guard clamps away the divergence).
+    """
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    cap = _check_capture(prog)
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(target_capture_dbfs=-10.5),
+    )
+    plan = res.gain_plan
+    assert plan is not None
+    for role in ("woofer", "tweeter"):
+        pilot = next(p for p in res.pilots if p.role == role)
+        lo_seg = prog.segment(f"pilot_{role}_lo")
+        hi_seg = prog.segment(f"pilot_{role}_hi")
+        expected_k = (
+            (pilot.peak_lo_dbfs - lo_seg.gain_db)
+            + (pilot.peak_hi_dbfs - hi_seg.gain_db)
+        ) / 2.0
+        expected_gain = min(-10.5 - expected_k, GAIN_MAX_DIGITAL_PEAK_DBFS)
+        # Confirm this fixture actually exercises the "away from the cap"
+        # case: the unclamped value must already be quieter than the cap by
+        # a real margin, or this assertion would pass for ANY k (correct or
+        # buggy) once both clamp to the same -6 dB ceiling.
+        assert expected_gain < GAIN_MAX_DIGITAL_PEAK_DBFS - 0.5
+        assert plan.gain_db[role] == pytest.approx(expected_gain, abs=1e-6)
+
+        # And: the solved gain must NOT match what the ambient-subtracted
+        # level would have produced (the pre-fix bug) — a >2 dB divergence
+        # confirms the two consumers are genuinely decoupled, not
+        # coincidentally equal on this fixture.
+        buggy_k = (
+            (pilot.level_lo_dbfs - lo_seg.gain_db)
+            + (pilot.level_hi_dbfs - hi_seg.gain_db)
+        ) / 2.0
+        buggy_gain = min(-10.5 - buggy_k, GAIN_MAX_DIGITAL_PEAK_DBFS)
+        assert abs(plan.gain_db[role] - buggy_gain) > 2.0
+
+
 def test_check_ambient_report_present():
     prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog)
@@ -672,6 +728,36 @@ def test_check_linearity_fails_under_slow_agc_gain_ride():
     woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
     assert woofer_pilot.snr_valid is True
     assert res.linearity_ok is False
+
+
+def test_check_linearity_fails_under_classic_agc_step_between_pilots():
+    """The classic AGC-settle shape, alongside the slow-ramp case above: a
+    STEP confined to the gap before the hi pilot (AGC settles fully before
+    hi starts, rather than still transitioning during either segment —
+    `_check_capture(compress_hi=True)`, the same fixture
+    `test_check_linearity_fails_under_simulated_agc` uses) must still fail
+    linearity, with a genuinely trustworthy SNR — not a low-SNR excuse."""
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    cap = _check_capture(prog, compress_hi=True)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
+    assert woofer_pilot.snr_valid is True
+    assert res.linearity_ok is False
+
+
+def test_pilot_min_snr_db_matches_its_own_derivation():
+    """Pins `PILOT_MIN_SNR_DB` to its documented derivation (the comment
+    above the constant in program_analysis.py) so a future edit to
+    `AMBIENT_NONSTATIONARITY_DB` / `LINEARITY_SNR_BIAS_BUDGET_FRACTION` /
+    `LINEARITY_TOLERANCE_DB` can't silently drift the derived floor without
+    this test failing — the formula is recomputed independently here, not
+    imported from the module's private intermediate variables."""
+    k = 10.0 ** (AMBIENT_NONSTATIONARITY_DB / 10.0)
+    snr_linear_min = (10.0 / math.log(10.0)) * (k - 1.0) / (
+        LINEARITY_TOLERANCE_DB * LINEARITY_SNR_BIAS_BUDGET_FRACTION
+    )
+    expected = 10.0 * math.log10(snr_linear_min)
+    assert PILOT_MIN_SNR_DB == pytest.approx(expected, abs=1e-9)
 
 
 def test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail():

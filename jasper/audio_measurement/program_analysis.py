@@ -359,7 +359,22 @@ class PilotObservation:
     """One driver's CHECK pilot pair — level, linearity, channel-map sanity.
 
     ``level_lo_dbfs``/``level_hi_dbfs`` are band-relative, ambient-compensated
-    (when an ambient window is available) — see `_pilot_observations`.
+    (when an ambient window is available) — see `_pilot_observations`. They
+    feed ONLY the linearity verdict (``captured_delta_db`` is a relative
+    delta, so the ambient-subtraction bias cancels between the two levels);
+    they must never feed an ABSOLUTE-level consumer like the MEASURE gain
+    solve (`_solve_gain_plan`) — ambient subtraction shifts the absolute
+    value by however much ambient power was removed, which silently retunes
+    a consumer that expects a true signal-peak reference (a review finding:
+    threading these into the gain solve moved its captured-peak target
+    13-17 dB hotter on the two real captures). ``peak_lo_dbfs``/
+    ``peak_hi_dbfs`` are the dedicated, NON-ambient-subtracted levels
+    `_solve_gain_plan` reads instead — the exact pre-existing full-band
+    `_peak_dbfs`, kept verbatim (see `_pilot_observations`'s docstring for
+    why an in-band variant was tried and rejected), preserving
+    ``MeasurementPriors.target_capture_dbfs``'s documented capture-PEAK
+    semantics exactly as before.
+
     ``snr_valid`` is True when the quiet (lo) pilot's in-band SNR clears
     `PILOT_MIN_SNR_DB`, i.e. the ambient-subtracted estimate (and therefore
     ``linearity_ok``) is trustworthy; when False, ``linearity_ok`` is forced
@@ -378,6 +393,8 @@ class PilotObservation:
     linearity_ok: bool
     channel_map_ok: bool
     snr_valid: bool = True
+    peak_lo_dbfs: float = DBFS_FLOOR
+    peak_hi_dbfs: float = DBFS_FLOOR
 
 
 @dataclass(frozen=True)
@@ -1346,6 +1363,22 @@ def _pilot_observations(
     ``snr_valid=False`` lets the caller route to the honest "room/
     positioning" reason instead of blaming the phone's AGC (see
     `ProgramAnalysis.pilot_snr_ok` and `crossover_v2_flow._consume_check`).
+
+    ``peak_lo_dbfs``/``peak_hi_dbfs`` are a SEPARATE, non-ambient-subtracted
+    measurement: the exact pre-fix `_peak_dbfs` (full-band peak of the
+    located, untrimmed samples) `_solve_gain_plan` used before this function
+    grew the band-relative/ambient-subtracted level. They exist because
+    `_solve_gain_plan` uses a pilot level ABSOLUTELY (``k = level -
+    gain_db``, an estimate of the whole capture chain's dB gain), not as a
+    delta — feeding it the ambient-subtracted level would silently shift
+    that absolute reference by however much ambient power was subtracted
+    (measured 13-17 dB across both real captures), retuning
+    `MeasurementPriors.target_capture_dbfs`'s documented capture-PEAK target
+    hotter than intended. An in-band (band-limited) peak was evaluated as a
+    more-robust replacement but empirically introduced its own bandlimiting-
+    leakage bias (up to ~1.3 dB on a real capture — worse than "a few
+    tenths") whether or not the slice was windowed first, so the exact
+    pre-fix computation is kept verbatim for this consumer instead.
     """
     by_id = {loc.segment_id: loc for loc in locations}
     roles = sorted({seg.role for seg in program.segments if seg.kind == KIND_PILOT and seg.role})
@@ -1392,6 +1425,11 @@ def _pilot_observations(
             else abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
         )
 
+        # Gain-solve reference: exact pre-fix full-band peak (see the
+        # docstring above) — deliberately NOT the ambient-subtracted level.
+        peak_lo = _peak_dbfs(lo_samples)
+        peak_hi = _peak_dbfs(hi_samples)
+
         own_band = role_bands[role]
         other_bands = tuple(
             piece
@@ -1412,6 +1450,8 @@ def _pilot_observations(
             linearity_ok=linearity_ok,
             channel_map_ok=channel_ok,
             snr_valid=snr_valid,
+            peak_lo_dbfs=peak_lo,
+            peak_hi_dbfs=peak_hi,
         ))
     return out
 
@@ -1513,8 +1553,13 @@ def _solve_gain_plan(
         lo_seg = program.segment(f"pilot_{pilot.role}_lo")
         hi_seg = program.segment(f"pilot_{pilot.role}_hi")
         # captured = digital_gain + K (unit slope). K from the two pilots.
-        k_lo = pilot.level_lo_dbfs - lo_seg.gain_db
-        k_hi = pilot.level_hi_dbfs - hi_seg.gain_db
+        # Deliberately the PEAK-referenced levels (`peak_*_dbfs`), not
+        # `level_*_dbfs` — the latter is ambient-subtracted for the
+        # linearity verdict and would shift this ABSOLUTE reference (see
+        # `PilotObservation`'s docstring); `target_capture_dbfs` is
+        # documented as a capture-PEAK target and K must match that.
+        k_lo = pilot.peak_lo_dbfs - lo_seg.gain_db
+        k_hi = pilot.peak_hi_dbfs - hi_seg.gain_db
         k = (k_lo + k_hi) / 2.0
         gain = target - k
         gain = min(gain, GAIN_MAX_DIGITAL_PEAK_DBFS)  # ≥6 dB guard
