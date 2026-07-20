@@ -1788,6 +1788,90 @@ def build_level_ramp_spec(
     ).validate()
 
 
+def build_bass_nearfield_spec(
+    *,
+    driver_label: str = "woofer",
+    stimulus_duration_ms: int = 12000,
+    pre_roll_ms: int = 800,
+    post_roll_ms: int = 700,
+    hard_timeout_ms: int = 30000,
+    accent: str = "sage",
+    font: str = "figtree",
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+) -> CaptureSpec:
+    """`kind="bass_nearfield"` — near-field low-frequency response for the
+    bass-extension bench runner.
+
+    Same measurement-clean acoustic shape as `crossover_sweep` (48 kHz, mono,
+    EC/AGC/NS off, WAV upload, magnitude FR so drift-insensitive with alignment
+    as a hard gate), scoped to a single near-field woofer capture.
+
+    The capture GEOMETRY is **server-derived**, never operator/browser-supplied:
+    it is fixed to ``near_field`` here — there is deliberately no geometry
+    parameter a request could set — exactly like the crossover builder's
+    near-field handling (capture geometry is speaker policy, see
+    ``jasper.active_speaker.capture_geometry``). The near-field placement copy is
+    single-sourced from ``driver_placement_instruction`` so it never drifts from
+    the crossover / level-match wording.
+
+    ``duration_ms`` is the phone's HARD recording deadline; like
+    ``crossover_sweep`` the acoustic window is **floored by ``hard_timeout_ms``**
+    so the normal stop stays the Pi's ``sweep_complete`` relay event and the
+    deadline is only the backstop. Pinned by
+    ``tests/test_capture_relay_bass_nearfield.py``.
+    """
+    if stimulus_duration_ms <= 0:
+        raise CaptureSpecError("stimulus_duration_ms must be positive")
+    if pre_roll_ms < 0 or post_roll_ms < 0:
+        raise CaptureSpecError("pre_roll_ms / post_roll_ms must be >= 0")
+    duration_ms = max(
+        pre_roll_ms + stimulus_duration_ms + post_roll_ms,
+        int(hard_timeout_ms),
+    )
+    # Capture geometry is speaker policy, never browser input. A bass near-field
+    # capture is always near_field; the placement copy is the server-owned
+    # near-field woofer instruction (single-sourced, not restated here).
+    from jasper.active_speaker.capture_geometry import driver_placement_instruction
+
+    seconds = round(stimulus_duration_ms / 1000)
+    placement_instruction = driver_placement_instruction("woofer")
+    return CaptureSpec(
+        kind="bass_nearfield",
+        duration_ms=duration_ms,
+        pre_roll_ms=pre_roll_ms,
+        post_roll_ms=post_roll_ms,
+        constraints=CaptureConstraints(),  # all false → measurement-clean
+        stimulus=CaptureStimulus(
+            played_by="pi", label=f"bass near-field sweep — {driver_label}"
+        ),
+        validity=CaptureValidity(
+            clean_capture="refuse",
+            allow_capability_fallback=True,
+            require_alignment=True,
+            clock_drift="ignore",
+        ),
+        theme=build_theme(accent=accent, font=font),
+        screen=(
+            ui_heading(f"Bass near-field — {driver_label}"),
+            ui_steps(
+                [
+                    placement_instruction,
+                    f"Tap Start, then stay quiet for about {seconds} seconds",
+                    "Keep the phone still until the sweep finishes",
+                ]
+            ),
+            ui_level_meter("mic"),
+            ui_button(
+                f"I’ve positioned the mic — measure {driver_label}",
+                action="begin_capture",
+            ),
+            ui_button("Stop", action="stop"),
+            ui_note("Keep the screen on — leaving this page stops the recording."),
+        ),
+        max_upload_bytes=max_upload_bytes,
+    ).validate()
+
+
 # The kinds JTS ships a builder for today. The relay never sees this list — it is
 # Pi-side only. Adding a kind appends one builder above; the relay and page need
 # no change.
@@ -1797,6 +1881,7 @@ SHIPPED_KINDS = (
     "sync_marker",
     "crossover_sweep",
     "level_ramp",
+    "bass_nearfield",
 )
 
 BUILDERS = {
@@ -1805,4 +1890,5 @@ BUILDERS = {
     "sync_marker": build_sync_marker_spec,
     "crossover_sweep": build_crossover_sweep_spec,
     "level_ramp": build_level_ramp_spec,
+    "bass_nearfield": build_bass_nearfield_spec,
 }
