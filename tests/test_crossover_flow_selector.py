@@ -6,7 +6,7 @@
 
 Pins the post-W6 contract from
 docs/crossover-measurement-productization-design.md §6: the selector defaults
-to ``v2`` (the hardware-validated conductor flow, schema 7); only the exact
+to ``v2`` (the hardware-validated conductor flow, schema 8); only the exact
 literal ``legacy`` dispatches to the deprecated schema-6 per-driver envelope,
 which with the selector resolving legacy stays BYTE-IDENTICAL to its pre-W5a
 self. Fail-safe: a typo resolves to the supported v2 flow — only a deliberate
@@ -134,13 +134,13 @@ def test_legacy_never_calls_the_v2_renderer(monkeypatch):
 
 
 @pytest.mark.parametrize("value", [None, "", "v2", "bogus"])
-def test_default_and_non_legacy_values_dispatch_to_schema_7(monkeypatch, value):
+def test_default_and_non_legacy_values_dispatch_to_schema_8(monkeypatch, value):
     if value is None:
         monkeypatch.delenv(CROSSOVER_FLOW_ENV, raising=False)
     else:
         monkeypatch.setenv(CROSSOVER_FLOW_ENV, value)
     for status in _statuses():
-        assert build_crossover_envelope(status)["schema_version"] == 7
+        assert build_crossover_envelope(status)["schema_version"] == 8
 
 
 def test_env_example_seeds_v2_default():

@@ -268,7 +268,7 @@ def observe_restore() -> None:
     unmeasured state — matching the reset a pre-apply terminal failure
     already gets (:func:`_persist_terminal_failure`) — so the envelope lands
     back on the pre-measurement screen rather than a half-consistent
-    review_apply pointing at the now-undone candidate."""
+    "applying" phase pointing at the now-undone candidate."""
     state = load_v2_state()
     if state is None:
         return
@@ -287,6 +287,22 @@ def _applied_gate() -> bool:
     """The conductor's ``apply_complete`` seam: reads the durable applied flag."""
     state = load_v2_state()
     return bool(state and state.get("applied") is True)
+
+
+def _apply_failure_gate() -> str:
+    """The conductor's ``apply_failed`` seam: reads a durable auto-apply
+    failure code (empty when none). Written by ``build_v2_run_and_consume``'s
+    ``_fire_auto_apply`` background thread via the SAME
+    ``persist_conductor_state`` path every other capture failure uses — see
+    ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.authorize_begin``,
+    which refuses the deferred VERIFY hold outright once this names a code
+    rather than holding it toward a dishonest relay_timeout.
+    """
+    state = load_v2_state()
+    failure = (state or {}).get("failure")
+    if isinstance(failure, Mapping):
+        return str(failure.get("code") or "")
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -608,9 +624,9 @@ def reconcile_session_volume_for_new_session(
 def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     from jasper.active_speaker.crossover_v2_flow import (
         CAPTURE_PHASES,
+        PHASE_APPLYING,
         PHASE_DONE,
         PHASE_MEASURE,
-        PHASE_REVIEW_APPLY,
         PHASE_VERIFY,
     )
 
@@ -621,7 +637,7 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     for phase in CAPTURE_PHASES:
         if phase not in accepted:
             if phase == PHASE_VERIFY and PHASE_MEASURE in accepted and not applied:
-                return PHASE_REVIEW_APPLY
+                return PHASE_APPLYING
             return phase
     return PHASE_DONE
 
@@ -682,9 +698,13 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         "program_id": candidate.program_id,
         "trims_db": dict(candidate.role_attenuations_db),
         "alignment": candidate.alignment.to_dict(),
-        # Threaded through for the review_apply low-confidence nudge (W6.7
-        # ruling 4, crossover_envelope_v2.ALIGNMENT_CONFIDENCE_NUDGE_FLOOR).
+        # Threaded through for the conductor's own trust gate
+        # (crossover_v2_flow.ALIGNMENT_CONFIDENCE_TRUST_FLOOR) and, on the
+        # RESULT screen, the collapsed expert disclosure.
         "alignment_confidence": analysis.get("alignment_confidence"),
+        # RESULT-screen expert disclosure only (crossover_envelope_v2
+        # ._candidate_review_payload's "ripple_db").
+        "predicted_ripple_db": analysis.get("predicted_ripple_db"),
     }
 
 
@@ -725,11 +745,12 @@ def persist_conductor_state(
         if prior.get("session_id") == snap.session_id:
             state["evidence"] = dict(prior["evidence"])
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
-    # handle_v2_restore) and ``apply_blocked`` (the review_apply nudge) are
-    # NOT conductor-owned fields: the conductor neither produces nor reads
-    # either one, so they are absent from the ``state`` literal above and
-    # every OTHER caller of this function only ever sets the fields it does
-    # know about. Unlike ``candidate``/``evidence``, this carry-forward is
+    # handle_v2_restore) and ``apply_blocked`` (the auto-apply-failed nudge,
+    # layered onto the "applying"-phase fix_and_retry screen — owner ruling,
+    # 2026-07-20) are NOT conductor-owned fields: the conductor neither
+    # produces nor reads either one, so they are absent from the ``state``
+    # literal above and every OTHER caller of this function only ever sets
+    # the fields it does know about. Unlike ``candidate``/``evidence``, this carry-forward is
     # unconditional (not gated on a matching session_id): the deferred
     # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
     # relay session id (``prepare_v2_verify`` mints one and "rebinds" the
@@ -1191,6 +1212,8 @@ def build_v2_run_and_consume(
     poll_interval_s: float | None = None,
     timeout_s: float | None = None,
     first_begin_timeout_s: float | None = None,
+    run_async: Any = None,
+    camilla_factory: Any = None,
 ) -> Callable[[Any, Any], Any]:
     """The async ``run_and_consume(client, pi_session)`` for one v2 session.
 
@@ -1200,19 +1223,31 @@ def build_v2_run_and_consume(
     through cancellation (Stop drains the runner before purging), and the
     relay session is purged on every exit path.
 
+    ``run_async``/``camilla_factory`` (owner ruling, 2026-07-20) are the SAME
+    dependencies :func:`handle_v2_apply` needs; when supplied, a trusted
+    MEASURE accept (the conductor's ``consume_capture`` verdict carrying
+    ``auto_apply: True``) fires the auto-apply on its OWN background thread —
+    see ``_fire_auto_apply`` below. ``prepare_v2_verify``'s verify-only
+    conductor never produces a MEASURE accept, so it passes neither.
+
     Host-owned error mapping (S1c):
 
-    * ``CaptureTimeout`` / ``CaptureAborted`` / ``RelayError`` / ``OSError`` /
-      generic ``CaptureFailed`` — relay-session death ⇒ ``relay_timeout``
-      failure state + volume ABANDON (the §5.5 walked-away guarantee). The
+    * ``CaptureTimeout`` / ``RelayError`` / ``OSError`` / generic
+      ``CaptureFailed`` — relay-session death ⇒ ``relay_timeout`` failure
+      state + volume ABANDON (the §5.5 walked-away guarantee). The
       ``OSError`` here is genuinely the relay TRANSPORT (e.g.
       ``run_capture_plan``'s poll loop reaching an unreachable host) — a
       LOCAL play/analyze seam OSError never reaches this arm: ``on_armed``/
       ``consume`` below convert it to :class:`CrossoverV2LocalSeamError`
       first (W6 hardware run 3 finding G), so it falls through to the
       catch-all arm's ``internal_error`` instead.
+    * ``CaptureAborted`` — a deliberate phone Stop (``reason == "stopped"``)
+      gets its own honest ``user_stopped`` failure state; every other abort
+      reason (backgrounded / vanished) still reads as ``relay_timeout``. Both
+      abandon the volume identically — only the persisted reason differs.
     * ``CaptureBeginRefused`` — the conductor already recorded the phase's own
-      failure code; persist it + abandon.
+      failure code (including an auto-apply failure the conductor's own
+      ``authorize_begin`` turned into a refusal); persist it + abandon.
     * ``CaptureStopped`` / cancellation — expected control flow: abandon the
       volume, no failure code.
     * ANY other ``Exception`` — the W6.1 catch-all cleanup arm: the seams
@@ -1244,10 +1279,12 @@ def build_v2_run_and_consume(
         )
         from jasper.active_speaker.crossover_v2_flow import (
             PHASE_DONE,
+            REASON_APPLY_FAILED,
             REASON_INTERNAL_ERROR,
             REASON_PROGRAM_UNPLAYABLE,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
+            REASON_USER_STOPPED,
             V2_FIRST_BEGIN_TIMEOUT_S,
             TRANSIENT_AUTO_RETRY_CODES,
             CrossoverV2FlowError,
@@ -1256,6 +1293,77 @@ def build_v2_run_and_consume(
         from jasper.active_speaker.program_playback import ProgramPlaybackError
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
         from jasper.correction.coordinator import MeasurementWindowError
+
+        def _fire_auto_apply(candidate: Any) -> None:
+            """Trigger the SAME apply transaction a household's tap used to
+            invoke (owner ruling, 2026-07-20) — now automatic, on its own
+            thread so this loop stays free to keep answering the phone's very
+            next ``begin_capture`` (VERIFY), which is what shows "Applying to
+            your speaker…" via the EXISTING CaptureBeginDeferred hold
+            (``authorize_begin``'s ``apply_complete``/``apply_failed`` seam
+            checks) until this finishes. A no-op when ``run_async``/
+            ``camilla_factory`` were not supplied (the verify-only re-arm
+            session never produces a MEASURE accept, so it never calls this).
+            """
+            if run_async is None or camilla_factory is None:
+                return
+            fingerprint = str(getattr(candidate, "fingerprint", "") or "")
+            if not fingerprint:
+                return
+
+            def _worker() -> None:
+                try:
+                    payload = handle_v2_apply(
+                        {"expected_candidate_fingerprint": fingerprint},
+                        run_async,
+                        camilla_factory,
+                    )
+                except CrossoverV2Refused:
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_auto_apply_refused",
+                        level=logging.WARNING,
+                    )
+                    persist_conductor_state(
+                        conductor, failure_code=REASON_APPLY_FAILED,
+                        evidence=evidence_refs,
+                    )
+                    return
+                except Exception:  # noqa: BLE001 — background thread has no
+                    # caller to reraise to; a silent auto-apply crash would
+                    # strand the phone on the deferred hold until it times out
+                    # dishonestly as relay_timeout. handle_v2_apply's own
+                    # "blocked" outcome already persists apply_blocked; this
+                    # arm covers everything ELSE that can escape it (a DSP
+                    # wedge, a genuinely unexpected exception).
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_auto_apply_error",
+                        level=logging.ERROR,
+                    )
+                    persist_conductor_state(
+                        conductor, failure_code=REASON_APPLY_FAILED,
+                        evidence=evidence_refs,
+                    )
+                    return
+                if payload.get("status") != "applied":
+                    # "blocked" (handle_v2_apply already called
+                    # _persist_apply_blocked with the specific issue) or any
+                    # other non-applied status — persist the generic failure
+                    # code too so authorize_begin's apply_failed seam refuses
+                    # the hold instead of waiting on it forever.
+                    persist_conductor_state(
+                        conductor, failure_code=REASON_APPLY_FAILED,
+                        evidence=evidence_refs,
+                    )
+                log_event(
+                    logger, "correction.crossover_v2_auto_apply",
+                    status=payload.get("status"),
+                )
+
+            threading.Thread(
+                target=_worker, daemon=True, name="crossover-v2-auto-apply",
+            ).start()
 
         def authorize(index: int, attempt: int, entry: Any = None) -> None:
             with stop_lock:
@@ -1319,6 +1427,17 @@ def build_v2_run_and_consume(
                 failure_code=code if not verdict.get("accepted") else None,
                 evidence=evidence_refs,
             )
+            if (
+                isinstance(verdict, Mapping)
+                and verdict.get("accepted")
+                and verdict.get("auto_apply")
+            ):
+                # The conductor's own trust gate already passed (owner
+                # ruling, 2026-07-20) — fire the auto-apply now, AFTER the
+                # verdict is persisted so the background thread's own
+                # persist_conductor_state calls always see MEASURE already
+                # recorded as accepted.
+                _fire_auto_apply(conductor.candidate)
             return verdict
 
         async def _purge_best_effort() -> None:
@@ -1488,15 +1607,24 @@ def build_v2_run_and_consume(
             await _abandon_best_effort()
             await _purge_best_effort()
             raise
-        except (CaptureTimeout, CaptureAborted, CaptureFailed, RelayError, OSError):
+        except (CaptureTimeout, CaptureAborted, CaptureFailed, RelayError, OSError) as exc:
             # Relay-session death (§5.10): relay_timeout ⇒ session restart; the
             # walked-away user's volume is always drained. Tell the phone the
             # session is over BEFORE purging (W6.10 blocker #3) — mirror the
             # catch-all arm's terminal-then-grace-then-purge so a watchdog
-            # collapse during the REVIEW hold reaches the phone's deferred-retry
+            # collapse during the apply hold reaches the phone's deferred-retry
             # loop instead of leaving it polling a still-live session forever.
+            #
+            # A deliberate phone Stop (CaptureAborted, reason == "stopped") is
+            # NOT a relay-transport death — it is the household explicitly
+            # ending the measurement. Splitting it out gives it its own honest
+            # copy instead of the dishonest "the measurement link timed out"
+            # claim every other death in this tuple gets.
+            code = REASON_RELAY_TIMEOUT
+            if isinstance(exc, CaptureAborted) and exc.reason == "stopped":
+                code = REASON_USER_STOPPED
             await _post_session_over_host_event()
-            _persist_terminal_failure(conductor, REASON_RELAY_TIMEOUT)
+            _persist_terminal_failure(conductor, code)
             await _abandon_best_effort()
             await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
@@ -1946,6 +2074,7 @@ def prepare_v2_session(
                 publish_check=publish_check,
                 publish_candidate=publish_candidate,
                 apply_complete=_applied_gate,
+                apply_failed=_apply_failure_gate,
             ),
             driver_spacing_m=context.driver_spacing_m,
         )
@@ -1956,6 +2085,8 @@ def prepare_v2_session(
             stop_event=stop_event,
             stop_lock=stop_lock,
             evidence_refs=refs,
+            run_async=run_async,
+            camilla_factory=camilla_factory,
         )
         return rc
 
@@ -2077,6 +2208,11 @@ def prepare_v2_verify(
                 publish_check=_publish_check,
                 publish_candidate=publish_candidate,
                 apply_complete=_applied_gate,
+                # Never actually consulted: this conductor is constructed with
+                # ``applied=True`` already, so authorize_begin's apply-observed
+                # short-circuit never reaches the apply_failed check. Supplied
+                # anyway — V2FlowSeams is a frozen dataclass with no defaults.
+                apply_failed=_apply_failure_gate,
             ),
             driver_spacing_m=context.driver_spacing_m,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -2257,8 +2393,10 @@ def handle_v2_apply(
     issue = None
     if payload.get("status") == "blocked":
         # Finding N: name the blocker compactly (not buried in the full
-        # composed profile) and persist it so the review_apply screen can
-        # surface it instead of looking like a dead button forever.
+        # composed profile) and persist it so the "applying"-phase
+        # fix_and_retry screen can surface it (owner ruling, 2026-07-20:
+        # this endpoint is also the auto-apply's own SSOT) instead of the
+        # household seeing a generic message with no specific cause.
         issue = _blocking_apply_issue(payload)
         if issue is not None:
             payload["issue"] = issue
@@ -2378,7 +2516,9 @@ def _blocking_apply_issue(payload: Mapping[str, Any]) -> dict[str, str] | None:
 
 
 def _persist_apply_blocked(issue: Mapping[str, str] | None) -> None:
-    """Record (or clear) the last blocked-apply issue for the review_apply nudge."""
+    """Record (or clear) the last blocked-apply issue for the fix_and_retry
+    screen's nudge (layered onto REASON_APPLY_FAILED at the "applying"
+    phase — owner ruling, 2026-07-20)."""
     state = load_v2_state()
     if state is None:
         return

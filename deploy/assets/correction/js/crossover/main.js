@@ -151,12 +151,17 @@ function renderCandidateReview(review) {
       ]),
     ]));
   }
-  // Alignment confidence + the candidate fingerprint are support/provenance
-  // detail, not primary copy a household member needs to judge the candidate —
-  // collapse them behind a disclosure so the plain-language rows stay first.
+  // Alignment confidence, predicted ripple, and the candidate fingerprint are
+  // support/provenance detail, not primary copy a household member needs to
+  // judge the candidate — collapse them behind a disclosure so the
+  // plain-language rows stay first (also reused, unchanged, on the RESULT
+  // screen's own expert disclosure).
   const details = [];
   if (typeof review.confidence === 'number') {
     details.push(`alignment confidence ${review.confidence.toFixed(2)}`);
+  }
+  if (typeof review.ripple_db === 'number') {
+    details.push(`predicted ripple ${review.ripple_db.toFixed(1)} dB`);
   }
   if (review.fingerprint) details.push(`candidate ${review.fingerprint}`);
   if (details.length) {

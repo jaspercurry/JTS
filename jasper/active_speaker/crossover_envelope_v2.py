@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The v2 conductor screen envelope (schema 7, Wave 5a).
+"""The v2 conductor screen envelope (schema 8, Wave 5a; auto-apply since 2026-07-20).
 
 ``docs/crossover-measurement-productization-design.md`` §5.9/§5.10 defines the
 v2 screen sequence — ``("speaker_setup", "microphone_check", "measure",
-"review_apply", "verify")`` — and the four failure-screen TEMPLATES the flow
+"apply", "verify")`` — and the four failure-screen TEMPLATES the flow
 renders (silent auto-retry banner / fix-and-retry / hard stop / session
 restart), plus the two special screens (``volume_recovery`` and the VERIFY-fail
 one-default screen). This module is the pure ``status → envelope`` function for
@@ -17,6 +17,14 @@ opt-out returns the deprecated schema-6 legacy envelope instead). It emits the S
 returns (``schema_version`` / ``screen`` / ``steps`` / ``verdict_text`` /
 ``nudges`` / ``relay`` / ``next_action`` / ``alternate_actions`` / ``progress``
 / ``applied``) so the generic data-driven JS renderer needs no v2-specific code.
+
+**Owner ruling (2026-07-20): no human mid-flow Apply gate.** The former
+``review_apply`` screen (a human tap over the measured candidate) is gone from
+the happy path — the conductor auto-applies a trusted candidate itself (see
+``jasper.active_speaker.crossover_v2_flow``'s module docstring). This module's
+``"applying"`` screen is the brief machine-paced in-flight state; the ``"done"``
+screen is now the RESULT screen — plain-language outcome first, numbers in a
+collapsed expert disclosure, Undo prominent.
 
 The v2-specific state the backend threads onto the status lives under
 ``status["crossover_v2"]`` (phase / failure / verify / candidate /
@@ -33,10 +41,10 @@ from typing import Any, Mapping
 
 from ..log_event import log_event
 from .crossover_v2_flow import (
+    PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_DONE,
     PHASE_MEASURE,
-    PHASE_REVIEW_APPLY,
     PHASE_VERIFY,
     REASON_REGISTRY,
     TEMPLATE_HARD_STOP,
@@ -47,30 +55,26 @@ from .crossover_v2_flow import (
 
 logger = logging.getLogger(__name__)
 
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 7
+# Bumped 7 → 8: the screen vocabulary changed (review_apply removed, the
+# "applying" in-flight screen added, the "done"/RESULT screen's shape changed
+# to plain-outcome-first + expert disclosure + prominent Undo) — owner ruling,
+# 2026-07-20.
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 8
 
-# Below this alignment-estimator confidence (see AlignmentEstimate.confidence
-# in program_analysis.py), the review_apply screen carries a warn nudge
-# suggesting a re-measure at a cleaner mic position (W6.7 ruling 4 — the
-# run-7 hardware pass applied a candidate at confidence 0.485). This is
-# informed consent, NOT a gate: Apply stays available regardless. PROVISIONAL
-# pending W6 bench distributions on confidence-vs-outcome correlation.
-ALIGNMENT_CONFIDENCE_NUDGE_FLOOR = 0.6
-
-# The v2 step tuple (§5.9). The step machinery inside each step is gone; these
-# five are the whole journey.
+# The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
+# step is gone; these five are the whole journey.
 _STEP_IDS = (
     "speaker_setup",
     "microphone_check",
     "measure",
-    "review_apply",
+    "apply",
     "verify",
 )
 _STEP_LABELS = {
     "speaker_setup": "Protected speaker setup",
     "microphone_check": "Microphone check",
     "measure": "Measure",
-    "review_apply": "Review and apply",
+    "apply": "Apply",
     "verify": "Verify",
 }
 
@@ -78,7 +82,7 @@ _STEP_LABELS = {
 _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
-    PHASE_REVIEW_APPLY: "review_apply",
+    PHASE_APPLYING: "apply",
     PHASE_VERIFY: "verify",
     PHASE_DONE: "verify",
 }
@@ -105,15 +109,18 @@ def _candidate_review_payload(
     candidate: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Map the persisted ``_candidate_summary`` (jasper.web.correction_crossover_v2)
-    into the plain-language shape the review screen renders (§5.2: trims, delay,
-    polarity, plus fingerprint provenance).
+    into the plain-language shape the "applying"/"done" screens render (§5.2:
+    trims, delay, polarity, ripple, plus confidence/fingerprint provenance).
 
     W6.10 blocker #2: the generic renderer's review body expected a candidate
     shape (``retained_crossover_regions``/``drivers``) the conductor never
     builds, so ``#crossover-review-body`` rendered empty. This is the single
     conversion point from what ``_candidate_summary`` DOES build (trims_db /
-    alignment / confidence / fingerprint) into rows the page can display; the
-    renderer is fixed to consume exactly this shape.
+    alignment / confidence / ripple / fingerprint) into rows the page can
+    display; the renderer is fixed to consume exactly this shape. Reused on the
+    RESULT (``done``) screen since the owner ruling (2026-07-20) removed the
+    dedicated human review screen — the same numbers now live behind that
+    screen's collapsed expert disclosure.
     """
     if not candidate:
         return None
@@ -140,11 +147,12 @@ def _candidate_review_payload(
         "delay": delay,
         "polarity": polarity_str,
         "confidence": _finite(candidate.get("alignment_confidence")),
+        "ripple_db": _finite(candidate.get("predicted_ripple_db")),
         "fingerprint": str(candidate.get("fingerprint") or ""),
         "program_id": str(candidate.get("program_id") or ""),
     }
-    # A candidate with nothing displayable (no trims, no alignment) stays hidden
-    # rather than rendering an empty card — the Apply action still shows.
+    # A candidate with nothing displayable (no trims, no alignment) stays
+    # hidden rather than rendering an empty card.
     if not trims and delay is None and polarity_str is None:
         return None
     return payload
@@ -382,10 +390,24 @@ def _failure_envelope(
         # the expert disclosure (§5.2).
         return _verify_fail_envelope(code, spec.message, status)
     # TEMPLATE_FIX_AND_RETRY (the default decision screen).
+    nudges = [{"code": code, "severity": "warn", "text": spec.message}]
+    if active_step == "apply":
+        # Layer the SPECIFIC blocked-apply issue
+        # (jasper.web.correction_crossover_v2._persist_apply_blocked) on top
+        # of the generic REASON_APPLY_FAILED headline — the household gets
+        # both an honest generic outcome and, when available, the concrete
+        # reason the auto-apply's own apply_baseline_profile seam gave.
+        apply_blocked = _mapping(_v2(status).get("apply_blocked"))
+        if apply_blocked:
+            nudges.append({
+                "code": str(apply_blocked.get("id") or "apply_blocked"),
+                "severity": "warn",
+                "text": str(apply_blocked.get("message") or spec.message),
+            })
     return _envelope(
         screen="fix_and_retry", active_step=active_step,
         verdict=spec.message,
-        nudges=[{"code": code, "severity": "warn", "text": spec.message}],
+        nudges=nudges,
         next_action={
             "id": "retry",
             "label": "Try again",
@@ -397,7 +419,7 @@ def _failure_envelope(
 
 
 def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
-    """The v2 conductor envelope (schema 7) for the served status."""
+    """The v2 conductor envelope (schema 8) for the served status."""
     if not bool(status.get("active")):
         return {
             "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
@@ -493,67 +515,17 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action=None,
             status=status,
         )
-    elif phase == PHASE_REVIEW_APPLY:
-        candidate = _mapping(v2.get("candidate"))
-        # Finding N: a blocked apply must not be a silent dead end — the last
-        # blocked-apply issue (persisted by the apply endpoint) surfaces here
-        # as a nudge so a repeated "nothing happened" Apply tap has an
-        # explanation, without inventing a new screen/template.
-        apply_blocked = _mapping(v2.get("apply_blocked"))
-        nudges: list[dict[str, str]] = []
-        if apply_blocked:
-            nudges.append({
-                "code": str(apply_blocked.get("id") or "apply_blocked"),
-                "severity": "warn",
-                "text": str(
-                    apply_blocked.get("message")
-                    or "Applying the reviewed crossover was blocked. Try again."
-                ),
-            })
-        # Low-confidence nudge (W6.7 ruling 4) — informed consent, not a gate:
-        # Apply below is untouched either way.
-        confidence = candidate.get("alignment_confidence")
-        if (
-            isinstance(confidence, (int, float))
-            and not isinstance(confidence, bool)
-            and confidence < ALIGNMENT_CONFIDENCE_NUDGE_FLOOR
-        ):
-            nudges.append({
-                "code": "crossover_v2_alignment_low_confidence",
-                "severity": "warn",
-                "text": (
-                    "Alignment is less certain at this mic position — for best "
-                    "results, place the mic about 1 m in front of the speaker at "
-                    "tweeter height and re-measure."
-                ),
-            })
+    elif phase == PHASE_APPLYING:
+        # Owner ruling (2026-07-20): no human control page here anymore — the
+        # conductor's own auto-apply is in flight (machine-paced seconds, not
+        # a human wait). A blocked/errored auto-apply surfaces through the
+        # generic ``failure`` branch above (REASON_APPLY_FAILED), never here;
+        # by construction this branch only renders while genuinely pending.
         env = _envelope(
-            screen="review_apply", active_step="review_apply",
-            verdict=(
-                "Review the measured crossover below. Frequency and slope stay as "
-                "you set them; the measured level, delay, and polarity are applied."
-            ),
-            nudges=nudges,
-            next_action={
-                "id": "apply_measured_candidate",
-                "label": "Apply reviewed crossover",
-                # The v2 apply endpoint: reopens the published candidate
-                # artifact (tamper-checked) and rides the existing atomic
-                # apply-with-rollback transaction via the W4
-                # measured_candidate seam; on success it arms VERIFY.
-                "endpoint": "/correction/crossover/v2/apply",
-                "body": {
-                    "expected_candidate_fingerprint": str(candidate.get("fingerprint") or ""),
-                },
-                # Apply is the review screen's PRIMARY action and must render even
-                # while the phone relay is still in flight (the phone is parked in
-                # the "waiting for apply" hold). The renderer's relay gate — which
-                # otherwise suppresses next_action beside a live phone link to
-                # prevent a second capture-start — honours this flag (W6.10 #2).
-                "show_during_relay": True,
-            },
+            screen="applying", active_step="apply",
+            verdict="Applying the measured crossover to your speaker…",
+            next_action=None,
             status=status,
-            candidate_review=_candidate_review_payload(candidate or None),
         )
     elif phase == PHASE_VERIFY:
         env = _envelope(
@@ -566,21 +538,39 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
     elif phase == PHASE_DONE:
+        # The RESULT screen (owner ruling, 2026-07-20): plain-language outcome
+        # first — no numbers, no jargon — with the measured numbers folded
+        # into the SAME collapsed "Technical details" disclosure the former
+        # review screen used (_candidate_review_payload), and Undo given the
+        # PRIMARY button so the household's safety net is the most visible
+        # thing on the screen, not an afterthought behind an "expert" toggle.
         verify = _mapping(v2.get("verify"))
+        candidate = _mapping(v2.get("candidate"))
         env = _envelope(
             screen="done", active_step="verify",
             verdict=(
-                "The measured crossover is applied and verified. Room correction "
-                "is now available."
+                "Your speaker is tuned. If it sounds worse than before, you "
+                "can undo."
             ),
             next_action={
-                "id": "room", "label": "Continue to Room correction", "href": "/correction/room/",
+                "id": "verify_undo",
+                "label": "Undo (restore previous sound)",
+                "endpoint": "/correction/crossover/v2/restore",
+                "body": {},
             },
+            alternate_actions=[
+                {
+                    "id": "room",
+                    "label": "Continue to Room correction",
+                    "href": "/correction/room/",
+                },
+            ],
             nudges=(
                 [{"code": "crossover_v2_verified", "severity": "ok", "text": "Verified."}]
                 if verify.get("outcome") == "pass" else []
             ),
             status=status,
+            candidate_review=_candidate_review_payload(candidate or None),
         )
         # Terminal: mark every step done.
         env["steps"] = _step_payload("", set(_STEP_IDS))

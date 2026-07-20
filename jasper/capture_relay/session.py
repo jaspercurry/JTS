@@ -52,19 +52,27 @@ DEFAULT_TTL_S = 900
 DEFAULT_POLL_INTERVAL_S = 0.75
 DEFAULT_TIMEOUT_S = 120.0
 
-# PROVISIONAL (W6.10 blocker #1): the deferred-by-design REVIEW-hold budget.
-# When the next plan entry's begin is gated on an external household action
-# (``auto_advance == "on_apply"`` — the "waiting for apply" hold between MEASURE
-# and VERIFY), the phone is deliberately parked and re-posts the SAME
-# ``begin_capture`` on a slow poll. The normal ``timeout_s`` phone-inactivity
-# watchdog must NOT collapse the session mid-review: a human reasonably takes
-# minutes to read the candidate and tap Apply, and the Chrome round-2 pass saw a
-# 120 s watchdog destroy accepted measurements while REVIEW was live. Rescope the
-# ``awaiting_begin`` deadline to this longer budget while gated; a deferred begin
-# retry rearms it (counts as liveness) and a vanished phone still eventually
-# collapses here (teardown intact). Matches how long a human reasonably reviews;
-# re-derive from W6 bench observation.
-REVIEW_HOLD_BUDGET_S = 900.0
+# The deferred-by-design APPLY-hold budget. When the next plan entry's begin
+# is gated on an external event (``auto_advance == "on_apply"`` — the
+# "applying" hold between MEASURE and VERIFY), the phone is deliberately
+# parked and re-posts the SAME ``begin_capture`` on a slow poll. The normal
+# ``timeout_s`` phone-inactivity watchdog must NOT collapse the session mid-
+# hold, so this rescopes the ``awaiting_begin`` deadline while gated; a
+# deferred begin retry rearms it (counts as liveness) and a vanished phone
+# still eventually collapses here (teardown intact).
+#
+# Owner ruling (2026-07-20): the human mid-flow Apply gate is gone — the
+# conductor auto-applies the candidate itself, so this hold now covers only
+# the auto-apply TRANSACTION's own latency (a CamillaDSP set-config +
+# confirm round trip, typically well under a few seconds), not a human
+# reading a candidate and deciding whether to tap Apply. The budget shrank
+# from the prior 900 s (sized for a human review) to 30 s — generous
+# multi-second margin over typical apply latency without holding the phone
+# through anything resembling a human-scale wait. A genuinely stuck apply
+# (well past 30 s) is itself an anomaly worth surfacing as a session
+# collapse rather than holding indefinitely. Re-derive from W6 bench
+# observation of real auto-apply latency if this proves too tight.
+REVIEW_HOLD_BUDGET_S = 30.0
 
 # The ``auto_advance`` policy value (mirrors
 # ``jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_ON_APPLY``) that marks a
@@ -114,7 +122,21 @@ class CaptureFailed(RuntimeError):
 
 
 class CaptureAborted(RuntimeError):
-    """The phone aborted mid-capture (e.g. backgrounded / screen locked)."""
+    """The phone aborted mid-capture (e.g. backgrounded / screen locked).
+
+    ``reason`` preserves the phone's own ``abort_reason`` (e.g. ``"stopped"``
+    for a deliberate tap of the Stop button, ``"backgrounded"`` for a
+    screen-off/background abort) as a structured attribute — not just baked
+    into the formatted message string — so a caller can classify a deliberate
+    Stop distinctly from a genuine relay/transport death (see
+    ``jasper.web.correction_crossover_v2``'s ``_run_and_consume``, which
+    splits ``reason == "stopped"`` into its own honest reason code instead of
+    the generic ``relay_timeout``/"link timed out" bucket).
+    """
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = str(reason or "")
 
 
 class CaptureStopped(RuntimeError):
@@ -366,7 +388,8 @@ class CaptureActivityProbe:
             state = classify_status(status)
             if state.aborted:
                 raise CaptureAborted(
-                    f"phone aborted the capture ({state.abort_reason or 'no reason'})"
+                    f"phone aborted the capture ({state.abort_reason or 'no reason'})",
+                    reason=state.abort_reason,
                 )
             capture_ended = (
                 state.ready
@@ -833,7 +856,8 @@ def _poll_until_capture(
 
         if state.aborted:
             raise CaptureAborted(
-                f"phone aborted the capture ({state.abort_reason or 'no reason'})"
+                f"phone aborted the capture ({state.abort_reason or 'no reason'})",
+                reason=state.abort_reason,
             )
 
         # The phone page is independently deployed. Establish this contract
@@ -1073,8 +1097,10 @@ def run_capture_plan(
 
     **Deferred admission.** ``authorize_begin`` may raise
     :class:`CaptureBeginDeferred` instead of :class:`CaptureBeginRefused` for
-    a NON-terminal "not yet" — e.g. a heterogeneous plan parked between
-    MEASURE and VERIFY awaiting the household's Apply tap. The Pi posts a
+    a NON-terminal "not yet" — e.g. the v2 crossover conductor's heterogeneous
+    plan parked between MEASURE and VERIFY while its own auto-apply is in
+    flight (jasper.active_speaker.crossover_v2_flow — no household tap
+    involved since the 2026-07-20 owner ruling). The Pi posts a
     ``capture_deferred`` host event and stays in ``awaiting_begin`` with the
     attempt budget untouched, so the phone may retry the IDENTICAL
     ``begin_capture {index, attempt}``; unlike a refusal this never ends the
@@ -1082,16 +1108,17 @@ def run_capture_plan(
     (index, code) transition — one INFO ``capture_relay.plan_deferred`` +
     one ``capture_deferred`` host event per state change, DEBUG otherwise.
 
-    **Deferred-by-design review budget (W6.10 blocker #1).** While the entry the
+    **Deferred-by-design apply budget (W6.10 blocker #1).** While the entry the
     phone is waiting to begin declares ``screen.auto_advance == "on_apply"`` (the
-    "waiting for apply" hold between MEASURE and VERIFY), the ``awaiting_begin``
+    "applying" hold between MEASURE and VERIFY), the ``awaiting_begin``
     inactivity deadline is rescoped to :data:`REVIEW_HOLD_BUDGET_S` instead of the
-    tight ``timeout_s`` — the phone is legitimately parked awaiting the
-    household's Apply tap and a deferred begin retry rearms the clock as liveness.
-    The deadline rearms to the normal ``timeout_s`` the moment the begin is
-    admitted (apply released the hold). ``first_begin_timeout_s`` (when set)
-    widens ONLY the very first ``awaiting_begin`` before any capture — reading the
-    placement instructions legitimately outlasts the general 120 s budget.
+    tight ``timeout_s`` — the phone is legitimately parked while the host's own
+    auto-apply transaction runs, and a deferred begin retry rearms the clock as
+    liveness. The deadline rearms to the normal ``timeout_s`` the moment the
+    begin is admitted (apply released the hold, or failed and refused it).
+    ``first_begin_timeout_s`` (when set) widens ONLY the very first
+    ``awaiting_begin`` before any capture — reading the placement instructions
+    legitimately outlasts the general 120 s budget.
     """
     plan = session.spec.capture_plan
     if plan is None or session.spec.capture_protocol_version < 3:
@@ -1187,8 +1214,8 @@ def _poll_capture_plan(
     def begin_budget(next_index: int) -> float:
         """The ``awaiting_begin`` inactivity budget for the entry the phone is
         waiting to begin (W6.10 blocker #1). An ``on_apply``-gated entry (the
-        "waiting for apply" REVIEW hold) gets the long review budget; every
-        other entry keeps the tight ``timeout_s`` arm/upload backstop."""
+        "applying" hold) gets the wider apply-latency budget; every other
+        entry keeps the tight ``timeout_s`` arm/upload backstop."""
         entry = plan.entry_for_index(next_index)
         screen = entry.screen if entry is not None else None
         if screen and str(screen.get("auto_advance") or "") == AUTO_ADVANCE_ON_APPLY:
@@ -1237,7 +1264,8 @@ def _poll_capture_plan(
 
         if state.aborted:
             raise CaptureAborted(
-                f"phone aborted the capture ({state.abort_reason or 'no reason'})"
+                f"phone aborted the capture ({state.abort_reason or 'no reason'})",
+                reason=state.abort_reason,
             )
 
         if not page_compatible and (
@@ -1377,7 +1405,7 @@ def _poll_capture_plan(
                         # unlike a refusal, the attempt budget is not spent
                         # and the session does not end. A deferred retry counts
                         # as liveness and rearms the inactivity clock; for an
-                        # ``on_apply``-gated entry that is the long REVIEW-hold
+                        # ``on_apply``-gated entry that is the apply-latency
                         # budget, not the tight ``timeout_s`` (W6.10 blocker #1).
                         deadline = monotonic() + begin_budget(index)
                     except CaptureBeginRefused as refusal:
@@ -1604,10 +1632,11 @@ def _poll_capture_plan(
                     return outcomes
                 phase = "awaiting_begin"
                 # Between-capture window budget: the next entry drives it. A
-                # MEASURE→VERIFY transition parks on the ``on_apply`` REVIEW hold
-                # (long budget) even before the phone posts its first deferred
-                # begin, so a slow/backgrounded phone during review does not trip
-                # the 120 s watchdog before the household applies (W6.10 #1).
+                # MEASURE→VERIFY transition parks on the ``on_apply`` apply
+                # hold (wider budget) even before the phone posts its first
+                # deferred begin, so a slow/backgrounded phone during the
+                # host's own auto-apply does not trip the 120 s watchdog
+                # before apply completes (W6.10 #1).
                 deadline = monotonic() + begin_budget(accepted_count + 1)
 
         if monotonic() >= deadline:
@@ -1619,9 +1648,9 @@ def _poll_capture_plan(
                 detail = f"phone never armed within {timeout_s:.0f}s"
             else:
                 # Report the budget actually in force — the first begin uses
-                # first_begin_timeout_s, and the deferred-by-design REVIEW hold
-                # rescopes to REVIEW_HOLD_BUDGET_S, so a collapse there is a
-                # 900 s vanish, not a 120 s one (W6.10 #1).
+                # first_begin_timeout_s, and the deferred-by-design apply hold
+                # rescopes to REVIEW_HOLD_BUDGET_S, so a collapse there names
+                # that budget, not the tight 120 s one (W6.10 #1).
                 first_begin = not processed and first_begin_timeout_s is not None
                 waited_s = (
                     first_begin_timeout_s if first_begin

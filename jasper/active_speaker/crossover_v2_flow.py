@@ -10,7 +10,18 @@ excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. This module owns the
 phase state machine that drives the three-capture relay session:
 
-    CHECK  → gain solve  → MEASURE → candidate → REVIEW/APPLY → VERIFY → done
+    CHECK → gain solve → MEASURE → candidate → APPLYING (auto) → VERIFY → done
+
+**Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
+session proved the prior REVIEW/APPLY human tap a dead end — phone-only
+users cannot bounce to a second browser tab, and "apply this?" is
+unanswerable the moment after measuring (the household has no basis to
+judge). A trusted candidate (all quality gates pass, including
+:data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, promoted here from a review-screen
+nudge to a hard gate) is applied by the conductor itself; an untrusted one is
+rejected with guidance to re-measure, never a question. See
+[docs/HANDOFF-crossover-measurement-v2.md](../../docs/HANDOFF-crossover-measurement-v2.md)
+gotcha #18.
 
 It is deliberately I/O-free: every side effect (playback, analysis, evidence
 publish, apply-gate observation) crosses an INJECTED seam
@@ -26,8 +37,10 @@ The conductor exposes the three ``run_capture_plan`` callbacks
 lifecycle hooks the flow needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
 relay session (a 3-entry heterogeneous ``CapturePlan`` — check/measure/verify)
-spans all phases; VERIFY is soft-held behind :class:`CaptureBeginDeferred` until
-the household applies (§5.2's one-tap-per-phase auto-arm).
+spans all phases; VERIFY is soft-held behind :class:`CaptureBeginDeferred`
+until the host's OWN auto-apply completes — the mechanism is unchanged from
+the pre-ruling design, only the release trigger moved from a human tap to
+:func:`jasper.web.correction_crossover_v2`'s auto-apply hook.
 
 **Failure taxonomy (§5.10).** Terminal verdicts are internal reason codes, not
 screens: :data:`REASON_REGISTRY` maps each code to one of the four screen
@@ -71,11 +84,19 @@ logger = logging.getLogger(__name__)
 
 PHASE_CHECK = "check"
 PHASE_MEASURE = "measure"
-PHASE_REVIEW_APPLY = "review_apply"
+# The owner ruling (2026-07-20) removed the human mid-flow Apply gate: a
+# trusted candidate is applied by the CONDUCTOR itself, never by a household
+# tap. This phase now names the brief machine-paced window between "MEASURE
+# accepted" and "apply observed" — the phone sees it as the existing
+# CaptureBeginDeferred hold (now captioned "Applying…", not "waiting for the
+# household"), and the wizard shows a plain in-progress screen. It is still a
+# control-page phase (no capture index) between MEASURE-accepted and
+# VERIFY-armed.
+PHASE_APPLYING = "applying"
 PHASE_VERIFY = "verify"
 PHASE_DONE = "done"
 
-# Capture-plan index → phase. REVIEW/APPLY is a control-page phase (no capture)
+# Capture-plan index → phase. APPLYING is a control-page phase (no capture)
 # that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
 _INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
 _PHASE_INDEX = {phase: index for index, phase in _INDEX_PHASE.items()}
@@ -139,6 +160,23 @@ REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
 # alignment). Renders through the same VERIFY-fail template — it is a distinct
 # reason parameterizing that screen's copy, not a fifth screen.
 REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
+# Owner ruling (2026-07-20): the alignment-estimator confidence floor that
+# used to gate ONLY a review-screen nudge (informed consent, Apply stayed
+# available regardless) is now a hard MEASURE-phase gate — see
+# ALIGNMENT_CONFIDENCE_TRUST_FLOOR below. A household has no basis to judge a
+# raw confidence number, so doubt becomes guidance ("move the mic"), never a
+# question ("apply anyway?").
+REASON_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
+# The conductor's OWN auto-apply (the same transaction a household's tap used
+# to trigger) came back blocked or raised — never silently stranding the
+# phone on a hold that can only time out dishonestly as relay_timeout.
+REASON_APPLY_FAILED = "apply_failed"
+# A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
+# relay-transport death — see the catch-all's exception classification in
+# jasper.web.correction_crossover_v2. Reuses TEMPLATE_SESSION_RESTART's
+# rendering shape (a fresh session is the only way forward either way) with
+# honest copy instead of a manufactured "timed out" claim.
+REASON_USER_STOPPED = "user_stopped"
 
 
 @dataclass(frozen=True)
@@ -236,6 +274,21 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The check was inconclusive — the room reflection cut the window "
         "short. Re-verify to try again.",
     ),
+    REASON_LOW_ALIGNMENT_CONFIDENCE: ReasonSpec(
+        REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1, "",
+        "Alignment is less certain at this mic position. Place the microphone "
+        "about 1 m in front of the speaker at tweeter height, then measure "
+        "again.",
+    ),
+    REASON_APPLY_FAILED: ReasonSpec(
+        REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1, "",
+        "JTS could not apply the measured crossover automatically. Try again.",
+    ),
+    REASON_USER_STOPPED: ReasonSpec(
+        REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
+        "You stopped the measurement. Start over from this page when you're "
+        "ready.",
+    ),
 }
 
 # The transient codes whose first retry is automatic (a banner, no decision
@@ -267,6 +320,17 @@ LOCATE_MIN_CONFIDENCE = 0.1
 VERIFY_TOLERANCE_DB = 1.5
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
+# Below this alignment-estimator confidence (see ``AlignmentEstimate.confidence``
+# in ``program_analysis.py``), the conductor refuses to auto-apply and rejects
+# MEASURE with ``REASON_LOW_ALIGNMENT_CONFIDENCE`` instead of building a
+# candidate (owner ruling, 2026-07-20). Formerly
+# ``crossover_envelope_v2.ALIGNMENT_CONFIDENCE_NUDGE_FLOOR`` — a review-screen
+# nudge that left Apply available regardless ("informed consent, not a
+# gate"). Moved here and promoted to a hard gate now that apply is automatic:
+# there is no more human screen to hand the informed-consent judgment to.
+# PROVISIONAL pending W6 bench distributions on confidence-vs-outcome
+# correlation (unchanged from the prior nudge floor's own provisional status).
+ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
 
 
 class CrossoverV2FlowError(RuntimeError):
@@ -395,6 +459,13 @@ AnalyzeCapture = Callable[
 PublishCheck = Callable[[GainPlan, Mapping[str, Any]], None]
 PublishCandidate = Callable[[Any], None]
 ApplyGate = Callable[[], bool]
+# Reads whether the conductor's own auto-apply (triggered by the host after a
+# trusted MEASURE accept, §owner ruling 2026-07-20) hit a TERMINAL failure —
+# returns the reason code (e.g. REASON_APPLY_FAILED) or "" while still
+# pending/never attempted. Distinct from ``apply_complete`` (success only) so
+# ``authorize_begin`` can REFUSE the deferred VERIFY with an honest reason
+# instead of holding forever toward a dishonest relay_timeout.
+ApplyFailureGate = Callable[[], str]
 
 
 @dataclass(frozen=True)
@@ -406,6 +477,7 @@ class V2FlowSeams:
     publish_check: PublishCheck
     publish_candidate: PublishCandidate
     apply_complete: ApplyGate
+    apply_failed: ApplyFailureGate
 
 
 @dataclass(frozen=True)
@@ -475,8 +547,12 @@ class CrossoverV2Conductor:
     the safety caps + session volume, and the injected :class:`V2FlowSeams`.
     Hand :meth:`authorize_begin`, :meth:`on_armed`, and :meth:`consume_capture`
     to :func:`jasper.capture_relay.session.run_capture_plan`; call
-    :meth:`note_apply_complete` when the household applies (the deferred VERIFY
-    then arms). :meth:`snapshot` / :meth:`hydrate` carry phase persistence.
+    :meth:`note_apply_complete` once the host's own auto-apply lands (the
+    deferred VERIFY then arms) — an optional synchronous shortcut for a caller
+    that already holds this conductor; the seam-based ``apply_complete``/
+    ``apply_failed`` checks in :meth:`authorize_begin` are the durable path and
+    work even without this call. :meth:`snapshot` / :meth:`hydrate` carry phase
+    persistence.
     """
 
     def __init__(
@@ -650,10 +726,11 @@ class CrossoverV2Conductor:
     def current_phase(self) -> str:
         for phase in CAPTURE_PHASES:
             if phase not in self._accepted:
-                # MEASURE accepted but not yet applied ⇒ the household is on the
-                # REVIEW/APPLY control page before VERIFY arms.
+                # MEASURE accepted but not yet applied ⇒ the conductor's own
+                # auto-apply is in flight (or has failed) — no human control
+                # page, just a brief machine-paced window before VERIFY arms.
                 if phase == PHASE_VERIFY and PHASE_MEASURE in self._accepted and not self._applied:
-                    return PHASE_REVIEW_APPLY
+                    return PHASE_APPLYING
                 return phase
         return PHASE_DONE
 
@@ -764,16 +841,31 @@ class CrossoverV2Conductor:
     def authorize_begin(self, index: int, attempt: int, entry: Any = None) -> None:
         """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7).
 
-        VERIFY is soft-held (:class:`CaptureBeginDeferred`) until apply is
-        observed; a phase whose retry budget is spent is refused
-        (:class:`CaptureBeginRefused`, which ends the session so the envelope's
-        terminal screen shows). Every other begin is admitted.
+        VERIFY is soft-held (:class:`CaptureBeginDeferred`) until the
+        conductor's own auto-apply is observed (never a human tap, since the
+        2026-07-20 owner ruling); a phase whose retry budget is spent is
+        refused (:class:`CaptureBeginRefused`, which ends the session so the
+        envelope's terminal screen shows). If the auto-apply hit a TERMINAL
+        failure (``seams.apply_failed()`` names a reason), the hold is refused
+        outright rather than held toward a dishonest relay_timeout — the
+        household sees the real reason, not a manufactured "link timed out."
+        Every other begin is admitted.
         """
         phase = self._phase_of_index(index)
         if phase == PHASE_VERIFY and not self._apply_observed():
+            failure_code = ""
+            try:
+                failure_code = str(self._seams.apply_failed() or "")
+            except (OSError, RuntimeError, ValueError):
+                failure_code = ""
+            if failure_code:
+                self._last_failure_code = failure_code
+                spec = REASON_REGISTRY.get(failure_code)
+                message = spec.message or spec.banner if spec else failure_code
+                raise CaptureBeginRefused(failure_code, message)
             raise CaptureBeginDeferred(
                 "awaiting_apply",
-                "waiting for the household to apply the measured crossover",
+                "Applying the measured crossover to your speaker…",
             )
         # Budget: CUMULATIVE per phase by design — the phase's total attempt
         # count is compared against the LAST failure's retry budget, so
@@ -915,6 +1007,17 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         if analysis.alignment is not None and analysis.alignment.status != ALIGNMENT_OK:
             return PhaseVerdict(False, REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
+        # Trust gate (owner ruling, 2026-07-20): below the confidence floor the
+        # candidate is never built or published — a household has no basis to
+        # judge a confidence number, so this is guidance ("move the mic"), not
+        # a question ("apply anyway?"). Skipped entirely when there is no
+        # alignment estimate at all (a trims-only candidate) — same condition
+        # the former review-screen nudge used.
+        if (
+            analysis.alignment is not None
+            and analysis.alignment.confidence < ALIGNMENT_CONFIDENCE_TRUST_FLOOR
+        ):
+            return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
         candidate = self._build_candidate(analysis)
         self._candidate = candidate
         self._measure_predicted_sum = analysis.predicted_sum
@@ -925,6 +1028,11 @@ class CrossoverV2Conductor:
             payload={
                 "measurement_phase": PHASE_MEASURE,
                 "candidate_fingerprint": candidate.fingerprint,
+                # Tells the host to trigger auto-apply immediately (§owner
+                # ruling) — every candidate that reaches this point already
+                # passed the trust gate above, so this is unconditionally True
+                # here, not a second decision.
+                "auto_apply": True,
             },
         )
 
@@ -1115,12 +1223,25 @@ def build_v2_capture_plan(
             kind_label="verify",
             duration_ms=_program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS,
             screen={
-                "title": "Waiting for apply",
+                "title": "Applying",
+                # Fallback only — the live hold shows the CaptureBeginDeferred
+                # deferral's own user_message instead (authorize_begin below),
+                # which wins whenever a hold is actually in progress.
                 "body": (
-                    "Review and apply the measured crossover on the speaker "
-                    "page — verification starts automatically after apply."
+                    "JTS is applying the measured crossover to your speaker."
                 ),
                 "auto_advance": AUTO_ADVANCE_ON_APPLY,
+                # The phone's END screen once every capture (including this
+                # VERIFY) completes (capture-page/js/main.js's
+                # renderPlanAllDone) — owner ruling, 2026-07-20: state the
+                # outcome plainly and point at the speaker page for
+                # undo/compare, rather than the shared "All measurements
+                # done" generic copy every other capture-plan flow gets.
+                "done_title": "Your speaker is tuned",
+                "done_body": (
+                    "Verified and applied. Manage or undo on the speaker "
+                    "page."
+                ),
             },
         ),
     )
@@ -1410,12 +1531,13 @@ __all__ = [
     "TRANSIENT_AUTO_RETRY_CODES",
     "PHASE_CHECK",
     "PHASE_MEASURE",
-    "PHASE_REVIEW_APPLY",
+    "PHASE_APPLYING",
     "PHASE_VERIFY",
     "PHASE_DONE",
     "CAPTURE_PHASES",
     "CAPTURE_PLAN_TARGET",
     "V2_FIRST_BEGIN_TIMEOUT_S",
+    "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
     "alignment_to_candidate_fields",
     "back_off_gain",
     "TEMPLATE_SILENT_AUTO_RETRY",
@@ -1438,4 +1560,7 @@ __all__ = [
     "REASON_INTERNAL_ERROR",
     "REASON_VERIFY_OUT_OF_TOLERANCE",
     "REASON_VERIFY_INCONCLUSIVE",
+    "REASON_LOW_ALIGNMENT_CONFIDENCE",
+    "REASON_APPLY_FAILED",
+    "REASON_USER_STOPPED",
 ]
