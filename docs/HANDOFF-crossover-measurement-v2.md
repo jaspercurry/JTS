@@ -329,11 +329,25 @@ rather than a hardcoded woofer/tweeter label, since this runs at the
 
 Ring-buffered by **both** file count (`XOVER_CAPTURE_DUMP_MAX_FILES = 90`)
 and total bytes (`XOVER_CAPTURE_DUMP_MAX_BYTES = 300 MB`), oldest-first
-deletion, so a forgotten marker cannot fill the SD card. Fully best-effort:
-a write/prune failure is caught and logged at
-`event=correction.crossover_v2_capture_retain_failed` (WARN) and never
-affects the measurement itself; a successful retain logs
+deletion, so a forgotten marker cannot fill the SD card. The enable marker
+itself (`XOVER_CAPTURE_DUMP_ENABLED_MARKER`) is excluded from both caps and
+never a prune candidate — without that, the ring buffer would eventually
+delete its own on/off switch (it's typically the oldest file in the
+directory) and silently re-disable retention. Because the intended operator
+workflow is `ls`/`scp`/`rm`-ing this directory *while captures keep
+landing*, a file can legitimately vanish between one step of a prune pass
+and the next; every `.stat()`/`.unlink()` in `_prune_capture_dump` is
+individually guarded (skip a vanished file, don't fail the pass), and the
+whole prune body is additionally wrapped so any other `OSError` still
+degrades to a WARN instead of propagating — genuinely never-raise, not
+merely best-effort by convention. A write OR prune failure is caught and
+logged at `event=correction.crossover_v2_capture_retain_failed` (WARN) and
+never affects the measurement itself; a successful retain logs
 `event=correction.crossover_v2_capture_retained` (`phase`, `bytes`, `path`).
+Diagnostic-logging failures (Part 1) are guarded the same way, through
+`CrossoverV2Conductor._safe_log_diag` — a bug in a `_log_*_diag` method logs
+`event=correction.crossover_v2_diag_log_failed` (WARN) instead of crashing
+the capture or changing the verdict already decided.
 Source: `_maybe_retain_capture` / `_prune_capture_dump` in
 `jasper/web/correction_crossover_v2.py`; constants
 `XOVER_CAPTURE_DUMP_DIR` / `_MAX_FILES` / `_MAX_BYTES` at the top of that

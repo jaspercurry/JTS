@@ -90,9 +90,18 @@ MAX_PERSISTED_SUM_POINTS = 512
 # reclaim the disk budget below; this is deliberately removable, not a
 # permanent feature.
 XOVER_CAPTURE_DUMP_DIR = Path("/var/lib/jasper/xover-capture-dump")
+# The operator-created enable marker's filename, INSIDE XOVER_CAPTURE_DUMP_DIR.
+# Excluded from ring-buffer pruning below (see `_prune_capture_dump`) — the
+# marker is not a capture artifact, and without this exclusion the ring
+# buffer could eventually delete its own on/off switch (the marker is
+# typically the oldest file in the directory, so a naive oldest-first count/
+# byte cap would evict it first), silently re-disabling retention the
+# operator explicitly turned on.
+XOVER_CAPTURE_DUMP_ENABLED_MARKER = "ENABLED"
 # Ring-buffer caps, bounded BOTH ways so an operator who forgets to disable
-# this can't fill the 1 GB Pi's SD card. Counts every file in the directory
-# (a WAV and its JSON sidecar are two entries), oldest-first deletion.
+# this can't fill the 1 GB Pi's SD card. Counts every capture file in the
+# directory (a WAV and its JSON sidecar are two entries; the enable marker
+# is not counted), oldest-first deletion.
 XOVER_CAPTURE_DUMP_MAX_FILES = 90
 XOVER_CAPTURE_DUMP_MAX_BYTES = 300 * 1024 * 1024  # 300 MB
 
@@ -1033,27 +1042,48 @@ def bind_production_analyze(
     return _analyze
 
 
-def _prune_capture_dump(dump_dir: Path, *, max_files: int, max_bytes: int) -> None:
+def _prune_capture_dump(
+    dump_dir: Path, *, max_files: int, max_bytes: int, phase: str = "unknown",
+) -> None:
     """Oldest-first ring-buffer prune, bounded by BOTH file count and bytes.
 
-    Never raises — a prune failure (a file removed concurrently, a
-    permission hiccup) is not worth treating as a retention failure since the
-    WAV/sidecar this call follows already landed on disk; each removal is
-    individually best-effort.
+    Genuinely never raises. An operator is expected to `ls`/`scp`/`rm` this
+    directory WHILE captures keep landing — that is the documented usage —
+    so a file can legitimately vanish between one step and the next here.
+    Every ``.stat()``/``.unlink()`` is individually guarded (a file that
+    vanished mid-prune is just skipped, not fatal), and the WHOLE body is
+    additionally wrapped so any other OSError this doesn't anticipate still
+    degrades to a WARN instead of propagating out of ``_maybe_retain_capture``
+    and crashing the measurement (the exact bug class a disappearing-file
+    review finding caught: the old version's sort/sum `.stat()` calls sat
+    outside any try/except).
     """
     try:
-        entries = [p for p in dump_dir.iterdir() if p.is_file()]
+        entries = [
+            p for p in dump_dir.iterdir()
+            if p.is_file() and p.name != XOVER_CAPTURE_DUMP_ENABLED_MARKER
+        ]
+        sized: list[tuple[Path, float, int]] = []
+        for p in entries:
+            try:
+                st = p.stat()
+            except OSError:
+                continue  # vanished between iterdir() and stat() — skip it
+            sized.append((p, st.st_mtime, st.st_size))
+        sized.sort(key=lambda entry: entry[1])
+        total_bytes = sum(size for _p, _mtime, size in sized)
+        while sized and (len(sized) > max_files or total_bytes > max_bytes):
+            victim, _mtime, victim_bytes = sized.pop(0)
+            try:
+                victim.unlink()
+                total_bytes -= victim_bytes
+            except OSError:
+                continue
     except OSError:
-        return
-    entries.sort(key=lambda p: p.stat().st_mtime)
-    total_bytes = sum(p.stat().st_size for p in entries)
-    while entries and (len(entries) > max_files or total_bytes > max_bytes):
-        victim = entries.pop(0)
-        try:
-            total_bytes -= victim.stat().st_size
-            victim.unlink()
-        except OSError:
-            continue
+        log_event(
+            logger, "correction.crossover_v2_capture_retain_failed",
+            level=logging.WARNING, phase=phase, exc_info=True,
+        )
 
 
 def _maybe_retain_capture(
@@ -1061,9 +1091,10 @@ def _maybe_retain_capture(
 ) -> None:
     """Operator-debug capture retention (Part 2 — off by default, bounded).
 
-    Gated on ``XOVER_CAPTURE_DUMP_DIR / "ENABLED"`` existing; when it does
-    not (the default for every real household), this returns after one
-    ``Path.exists()`` check — zero behavior change. When present, persists
+    Gated on ``XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER``
+    existing; when it does not (the default for every real household), this
+    returns after one ``Path.exists()`` check — zero behavior change. When
+    present, persists
     the raw captured WAV plus a diagnostic-summary JSON sidecar
     (``program_analysis.analysis_diagnostic_summary`` — the same numbers the
     v2 conductor's per-phase diag ``log_event`` calls surface, see
@@ -1079,7 +1110,7 @@ def _maybe_retain_capture(
     which stubs ``analyze_program_capture`` to return a bare string) is
     caught and logged at WARN, never raised past this function.
     """
-    if not (XOVER_CAPTURE_DUMP_DIR / "ENABLED").exists():
+    if not (XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER).exists():
         return
     phase = getattr(program, "phase", "unknown")
     try:
@@ -1120,11 +1151,22 @@ def _maybe_retain_capture(
         logger, "correction.crossover_v2_capture_retained",
         phase=phase, bytes=len(wav), path=wav_path.name,
     )
-    _prune_capture_dump(
-        XOVER_CAPTURE_DUMP_DIR,
-        max_files=XOVER_CAPTURE_DUMP_MAX_FILES,
-        max_bytes=XOVER_CAPTURE_DUMP_MAX_BYTES,
-    )
+    # Belt-and-suspenders: _prune_capture_dump is already internally
+    # never-raising, but this call site is guarded too so a future bug in
+    # prune (or an exception type it doesn't yet anticipate) still can't
+    # escape into the analyze seam and crash the measurement.
+    try:
+        _prune_capture_dump(
+            XOVER_CAPTURE_DUMP_DIR,
+            max_files=XOVER_CAPTURE_DUMP_MAX_FILES,
+            max_bytes=XOVER_CAPTURE_DUMP_MAX_BYTES,
+            phase=phase,
+        )
+    except (OSError, ValueError, TypeError, AttributeError):
+        log_event(
+            logger, "correction.crossover_v2_capture_retain_failed",
+            level=logging.WARNING, phase=phase, exc_info=True,
+        )
 
 
 def open_v2_evidence_store(topology: Any) -> tuple[Any, str]:

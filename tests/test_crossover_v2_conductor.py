@@ -1152,6 +1152,47 @@ def _driver_response_diag(
     )
 
 
+def test_diag_logging_bug_cannot_crash_or_flip_the_verdict(caplog, monkeypatch):
+    """The diag-logging call is wrapped defensively (``_safe_log_diag``),
+    symmetric with the capture-retention path's own best-effort guarantee —
+    a bug in a ``_log_*_diag`` method must degrade to a WARN, never crash
+    the capture or change the verdict already decided above it. Exercises
+    all three phases through the SAME shared wrapper."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+
+    monkeypatch.setattr(
+        c, "_log_check_diag",
+        lambda analysis, verdict: (_ for _ in ()).throw(AttributeError("boom")),
+    )
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is True  # the verdict is completely unaffected
+    assert "event=correction.crossover_v2_diag_log_failed" in caplog.text
+    assert "phase=check" in caplog.text
+    caplog.clear()
+
+    monkeypatch.setattr(
+        c, "_log_measure_diag",
+        lambda analysis, verdict: (_ for _ in ()).throw(TypeError("boom")),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_diag_log_failed" in caplog.text
+    assert "phase=measure" in caplog.text
+    caplog.clear()
+
+    fakes.apply_done = True
+    monkeypatch.setattr(
+        c, "_log_verify_diag",
+        lambda analysis, verdict: (_ for _ in ()).throw(ValueError("boom")),
+    )
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_diag_log_failed" in caplog.text
+    assert "phase=verify" in caplog.text
+
+
 def test_check_diag_logs_full_numbers_on_accept(caplog):
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()

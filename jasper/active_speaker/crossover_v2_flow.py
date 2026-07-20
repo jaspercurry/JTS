@@ -1029,14 +1029,16 @@ class CrossoverV2Conductor:
     #
     # Each ``_consume_<phase>`` is a thin wrapper: compute the verdict via the
     # UNCHANGED ``_<phase>_verdict`` logic, log that capture's full numeric
-    # diagnostics (Part 1 — on the accepted path AND every rejection), then
-    # return the verdict. Splitting it this way means the diagnostic log call
-    # is the ONLY new control flow here — none of the accept/reject branching
-    # below moved or changed.
+    # diagnostics (Part 1 — on the accepted path AND every rejection) through
+    # ``_safe_log_diag`` — never the raw ``_log_*_diag`` call directly, so a
+    # bug in the logging path can never crash or flip the verdict already
+    # decided above it — then return the verdict. Splitting it this way means
+    # the diagnostic log call is the ONLY new control flow here — none of the
+    # accept/reject branching below moved or changed.
 
     def _consume_check(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         verdict = self._check_verdict(analysis)
-        self._log_check_diag(analysis, verdict)
+        self._safe_log_diag(self._log_check_diag, analysis, verdict)
         return verdict
 
     def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
@@ -1081,7 +1083,7 @@ class CrossoverV2Conductor:
 
     def _consume_measure(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
-        self._log_measure_diag(analysis, verdict)
+        self._safe_log_diag(self._log_measure_diag, analysis, verdict)
         return verdict
 
     def _measure_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
@@ -1130,7 +1132,7 @@ class CrossoverV2Conductor:
 
     def _consume_verify(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         verdict = self._verify_verdict(analysis)
-        self._log_verify_diag(analysis, verdict)
+        self._safe_log_diag(self._log_verify_diag, analysis, verdict)
         return verdict
 
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
@@ -1183,6 +1185,32 @@ class CrossoverV2Conductor:
     # rejection — pure observability, read-only against ``analysis``/the
     # conductor's own state. None of these calls choose a verdict or a retry;
     # they run AFTER the verdict already exists.
+
+    def _safe_log_diag(
+        self,
+        log_fn: Callable[[ProgramAnalysis, PhaseVerdict], None],
+        analysis: ProgramAnalysis,
+        verdict: PhaseVerdict,
+    ) -> None:
+        """Best-effort wrapper around one ``_log_*_diag`` call.
+
+        Symmetric with the capture-retention path's own best-effort
+        guarantee (Part 2): a bug in diagnostic-field extraction (a malformed
+        ``analysis``, an unexpected ``None``) must never crash the capture or
+        change the verdict already decided by ``_<phase>_verdict`` above —
+        it degrades to a WARN instead. The caught set matches the realistic
+        failure modes of these read-only field-extraction calls (attribute/
+        key/index access and numeric conversion on ``analysis``'s own
+        fields) — never a bare ``except Exception``.
+        """
+        try:
+            log_fn(analysis, verdict)
+        except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+            log_event(
+                logger, "correction.crossover_v2_diag_log_failed",
+                level=logging.WARNING, session_id=self.session_id,
+                phase=analysis.phase, exc_info=True,
+            )
 
     def _log_check_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
         woofer = _pilot_diag_fields(_pilot_by_role(analysis, self._woofer.role))
