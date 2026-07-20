@@ -1336,22 +1336,31 @@ def test_capture_retention_file_vanishing_mid_prune_does_not_break_analysis(
     assert len(first_gen) == 2
 
     original_stat = Path.stat
+    stat_seen: set[Path] = set()
     vanished = {"done": False}
 
     def _flaky_stat(self, *a, **k):
-        # Simulate ONE first-generation file disappearing (an operator
-        # deleting it concurrently) exactly when prune tries to stat it —
-        # once only, and with a REALISTIC errno (ENOENT) so pathlib's own
-        # is_file()/exists() classify it exactly like a real vanished file
-        # would (a bare ``FileNotFoundError(self)`` does not set ``.errno``,
-        # which made pathlib re-raise instead of swallowing it — caught
-        # during test authoring, not a product bug). Every other stat call
-        # (the new capture's own files, the enable marker) behaves normally.
+        # Simulate ONE first-generation file disappearing (an operator deleting
+        # it concurrently) while prune is mid-pass. The subtlety this test MUST
+        # honor: prune stats each candidate TWICE — first in the entries
+        # comprehension's ``is_file()``, then in the guarded sizing loop's
+        # ``p.stat()`` (post-fix) / the UNGUARDED sort+sum ``.stat()`` (pre-fix).
+        # ``is_file()`` catches OSError internally, so raising on the FIRST stat
+        # is swallowed and never reaches the vulnerable path — a test that does
+        # that passes on broken code too (the review finding). So we let the
+        # first stat SUCCEED (the file enters ``entries``) and raise on the
+        # SECOND — the sort/sum stat the pre-fix code left outside any
+        # try/except. Realistic errno (ENOENT) so pathlib classifies it exactly
+        # like a real vanish (a bare ``FileNotFoundError(self)`` sets no
+        # ``.errno`` and pathlib re-raises it). One file only; every other stat
+        # (the new capture's files, the enable marker) behaves normally.
         if not vanished["done"] and self in first_gen:
-            vanished["done"] = True
-            raise FileNotFoundError(
-                _errno.ENOENT, "No such file or directory", str(self)
-            )
+            if self in stat_seen:
+                vanished["done"] = True
+                raise FileNotFoundError(
+                    _errno.ENOENT, "No such file or directory", str(self)
+                )
+            stat_seen.add(self)
         return original_stat(self, *a, **k)
 
     monkeypatch.setattr(Path, "stat", _flaky_stat)
