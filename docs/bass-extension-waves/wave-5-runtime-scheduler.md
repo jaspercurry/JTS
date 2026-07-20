@@ -2,10 +2,11 @@
 
 > **Revision 9 (2026-07-17) — implementation blocked.** The eventual
 > R1 scheduler remains sealed-only, but no Wave 5 implementation is
-> authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` has
-> no frozen commissioning producer, and Wave 4 revision 6 remains blocked
-> behind a focused measured-derivation prerequisite rather than
-> inventing one. This revision also freezes scheduler behavior around
+> authorized by this prompt. `TargetSpec.limiter_threshold_dbfs` still has no
+> accepted bench bundle — the pure producer contract is frozen in
+> `limiter-evidence-protocol.md`, but no real target-specific limiter result
+> exists yet — and Wave 4 remains blocked behind that frozen measured-limiter
+> prerequisite rather than inventing one. This revision also freezes scheduler behavior around
 > Wave 3's durable natural-at-rest commit/recovery boundary. Ported/PR
 > profiles remain retained and observable. Findings and rationale are
 > in the changelog. A bonded program-bake or driver-domain role is also
@@ -105,15 +106,16 @@ structural patches for their changing filter tuples.
   ordinary work while intent is pending. If recovery is implicit in
   GET, runs in a new process/task, may leave a deep graph, changes the
   boot selector, or a mutation bypasses admission, STOP.
-- Confirm a **merged, dated replacement for Wave 4 revision 6** defines a
-  deterministic evidence → `limiter_threshold_dbfs` derivation for
-  every sealed target, its units/stage in the Camilla graph, refusal on
-  missing evidence, and hardware-free tests; confirm Wave 4 implements
-  it and accepted sealed profiles carry finite thresholds. No such
-  contract exists as of this revision: Wave 4 revision 6 explicitly
-  found that its existing evidence is insufficient and blocks behind
-  the focused measured-derivation prerequisite. This check therefore
-  fails and Wave 5 must stop. Do not design the derivation in Wave 5.
+- Confirm a **merged, dated Wave 4 revision that names an accepted bench
+  bundle** defines a deterministic evidence → `limiter_threshold_dbfs`
+  derivation for every sealed target, its units/stage in the Camilla graph,
+  refusal on missing evidence, and hardware-free tests; confirm Wave 4
+  implements it and accepted sealed profiles carry finite thresholds. No such
+  bundle exists yet: the frozen `limiter-evidence-protocol.md` establishes the
+  producer and refusal contract but records that Jasper's real bench evidence —
+  and the Wave 4 revision that would name it — are still outstanding. This
+  check therefore fails and Wave 5 must stop. Do not design the derivation in
+  Wave 5.
 
 ## Future file allowlist (inactive until a replacement prompt)
 
