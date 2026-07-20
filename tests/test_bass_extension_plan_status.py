@@ -24,7 +24,7 @@ def test_bass_extension_plan_pins_merged_waves_and_remaining_gate() -> None:
 
     assert "The transaction has\n> no production caller" in text
     assert "crossover-program hardware burn-in prerequisite is **met**" in text
-    assert "contract rev 7 freezes the limiter bench protocol" in text
+    assert "contract rev 8 freezes limiter protocol revision `2026-07-19b`" in text
     assert "reviewed bench runner/temporary activation owner" in text
     assert "no real\n> target-specific limiter result is established yet" in text
     assert "No implementation is authorized by revision 6" not in text
