@@ -788,15 +788,21 @@ def resolve_relay_calibration(setup: Any, device: Any) -> Any:
     the room + legacy crossover relay flows already use to materialize the
     phone wizard's serial/upload/stored calibration choice as a stored
     ``CalibrationRecord`` (and persist it as the household default mic).
-    Returns the record or ``None`` (phone mic / no calibration chosen).
-    ``device`` is accepted for parity with the seam signature; the setup
-    payload is the authoritative choice today.
+    Returns the record or ``None`` (phone mic / no calibration chosen, OR a
+    detected mic-identity mismatch — see ``_relay_calibration_from_setup``'s
+    ``device`` parameter / ``_stored_calibration_model_mismatch``: a
+    ``mode="stored"`` re-confirm silently carrying a DIFFERENT mic's
+    calibration than this capture's reported device, the 2026-07-20
+    incident). ``device`` is this capture's phone-reported input device
+    (``CaptureResult.device``) — threaded through so that mismatch can be
+    caught at the same point the calibration is resolved for THIS capture,
+    not applied blind to whichever mic actually recorded.
     """
     from .correction_setup import _relay_calibration_from_setup
 
-    del device  # the setup payload carries the phone's calibration choice
     return _relay_calibration_from_setup(
-        dict(setup) if isinstance(setup, Mapping) else None
+        dict(setup) if isinstance(setup, Mapping) else None,
+        device=device if isinstance(device, Mapping) else None,
     )
 
 
