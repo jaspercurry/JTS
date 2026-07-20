@@ -131,8 +131,9 @@ CamillaDSP file sink and never reaches hardware.
   runner writes a bundle; that is all. `apply_bass_extension`,
   `bypass_bass_extension`, and `recover_pending_bass_extension_apply` gain no
   caller.
-- **The commissioning ladder's `review → accepted` path** (the Wave 4 Revision 9
-  hardware-free slice) stays blocked on the same accepted bundle.
+- **The commissioning ladder's `review → accepted` path** (explicitly *excluded*
+  from the Wave 4 Revision 9 hardware-free slice — it enters Wave 3) stays
+  blocked on the same accepted bundle.
 - **No mux / fan-in / voice / sound-wizard / volume / systemd / installer / cue /
   boot-recovery changes.** The runner rides the existing correction/measurement
   infrastructure; it adds no daemon, socket, HTTP route, timer, or unit.

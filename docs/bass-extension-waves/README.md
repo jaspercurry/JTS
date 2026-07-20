@@ -21,6 +21,11 @@ active-speaker driver-domain graph, but profile mutation and Wave 5
 runtime patching remain refused while bonded until multi-Camilla
 ownership is separately proved.
 
+The reviewed amendment that authorizes *building* the limiter-evidence bench
+runner — the producer's on-device evidence source, still a contract until
+Jasper's bench pass and a later Wave 4 revision name its accepted bundle — is
+[`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md).
+
 | Wave | Prompt file | Executor | Prereqs |
 |---|---|---|---|
 | 0 | `wave-0-hardware-spikes.md` | **Operator + hardware** (not Codex) | none — run early |
