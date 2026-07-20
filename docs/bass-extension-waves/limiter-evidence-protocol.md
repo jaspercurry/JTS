@@ -1,6 +1,7 @@
 # Bass Extension limiter-evidence protocol
 
-> **Status (2026-07-19): protocol frozen; bench result not established.**
+> **Status (2026-07-19): protocol revision `2026-07-19b` frozen; bench result
+> not established.**
 > This document defines the minimum campaign and pure producer contract needed
 > before Wave 4 commissioning may publish a sealed target. It authorizes no
 > production caller, hardware playback, or limiter value. Jasper executes the
@@ -384,7 +385,12 @@ passes, a transparency pass, `digital_clamp_passed` true in both hardware
 records, exact activation/source/restoration bindings, and all artifacts. A
 `limiter_transparency_failed` candidate requires transfer, quality, protection,
 and clamp passes, a transparency fail, exact restoration, and no abort/refusal.
-Any contradictory disposition is inconsistent.
+Any contradictory disposition is inconsistent. A runner that encounters a
+transfer, quality, protection, or clamp failure must end that target as
+`refused` or `aborted` and retain the stop receipt and partial artifacts; it
+must not emit an evaluated candidate for that failed pass. Encoding the target
+as `evaluated` with either candidate disposition while one of those required
+verdicts failed is `inconsistent`, not `out_of_envelope`.
 
 `ordered_owner_chain` is a non-empty list of unique non-empty filter names. It
 must contain `bass_ext_lt`, then `bass_ext_subsonic`, then the context's
@@ -419,7 +425,7 @@ the same serialized result.
 The module freezes these values and types:
 
 - `LIMITER_EVIDENCE_SCHEMA_VERSION = 1`
-- `LIMITER_EVIDENCE_PROTOCOL_REVISION = "2026-07-19"`
+- `LIMITER_EVIDENCE_PROTOCOL_REVISION = "2026-07-19b"`
 - `LimiterRefusalReason`: `missing`, `stale`, `inconsistent`,
   `out_of_envelope`
 - frozen `TargetLimiterThreshold(target_id, target_fingerprint,
@@ -465,15 +471,26 @@ and returns only that category's sorted, duplicate-free paths:
    duplicate target/source/candidate; target order mismatch; candidates not
    strictly least-to-most permissive; source peak, configured limiter, active
    target, ordered chain, graph, restoration, or disposition contradiction.
-4. `out_of_envelope`: incomplete required stimulus evidence; transfer or
-   quality/protection failure; refusal/abort; no accepted candidate; candidate
-   or source above the baseline limiter ceiling; limiter value outside the
-   trusted emitter domain; accepted evidence after the first accepted
-   candidate; or conservative family-order violation.
+4. `out_of_envelope`: target-level refusal/abort; no accepted candidate after
+   one or more valid transparency failures; candidate or source above the
+   baseline limiter ceiling; limiter value outside the trusted emitter domain;
+   accepted evidence after the first accepted candidate; or conservative
+   family-order violation.
 
 Malformed top-level inputs refuse at their virtual root. No evidence content
 causes an exception, default value, clock read, hardware query, mutation,
 interpolation, or guessed setting.
+
+## Amendment history
+
+- **`2026-07-19b`** — makes the candidate/result boundary explicit. Honest
+  transfer, quality, protection, or clamp failures stop the target and use its
+  `refused`/`aborted` result arm. An evaluated candidate carrying one of those
+  failures contradicts both allowed candidate dispositions and is
+  `inconsistent`. This resolves the former precedence wording that also listed
+  the same contradictory candidate as `out_of_envelope`.
+- **`2026-07-19`** — initial frozen bench campaign, evidence schema, pure
+  producer, and total-refusal contract.
 
 ## Pre-production fence
 

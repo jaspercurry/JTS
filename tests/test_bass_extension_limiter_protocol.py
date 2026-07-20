@@ -54,7 +54,7 @@ def test_protocol_pins_total_refusal_and_determinism_contract() -> None:
         "produce_limiter_thresholds(evidence,\n*, required_context)",
         "separate trusted boundary",
         "LIMITER_EVIDENCE_SCHEMA_VERSION = 1",
-        'LIMITER_EVIDENCE_PROTOCOL_REVISION = "2026-07-19"',
+        'LIMITER_EVIDENCE_PROTOCOL_REVISION = "2026-07-19b"',
         "frozen `TargetLimiterThreshold(target_id, target_fingerprint,",
         "frozen `LimiterThresholdSet(evidence_fingerprint,",
         "frozen `LimiterEvidenceRefusal(reason, evidence_paths)`",
@@ -70,6 +70,9 @@ def test_protocol_pins_total_refusal_and_determinism_contract() -> None:
         "non-object top-level input is `inconsistent`",
         "no import or call from `jasper.bass_extension.__init__`",
         "`limiter_threshold_dbfs` is **not established**",
+        "must end that target as\n`refused` or `aborted`",
+        "is `inconsistent`, not `out_of_envelope`",
+        "target-level refusal/abort",
     ):
         assert promise in text
 
@@ -131,16 +134,18 @@ def test_protocol_pins_total_refusal_and_determinism_contract() -> None:
     ):
         assert f"`{field}`" in text
 
+    assert "transfer or\n   quality/protection failure" not in text
+
 
 def test_revision_authorizes_only_the_isolated_skeleton() -> None:
     wave = WAVE_4.read_text(encoding="utf-8")
     plan = PLAN.read_text(encoding="utf-8")
 
-    assert "Revision 7 (2026-07-19) — production implementation blocked" in wave
+    assert "Revision 8 (2026-07-19) — production implementation blocked" in wave
     assert "reviewed bench runner/temporary\n> activation owner is not present yet" in wave
-    assert "sole prerequisite-skeleton allowlist authorized by Revision 7" in wave
+    assert "sole prerequisite-skeleton allowlist authorized by Revision 8" in wave
     assert "`jasper/bass_extension/limiter_evidence.py`" in wave
     assert "`tests/test_bass_extension_limiter_evidence.py`" in wave
     assert "must remain unimported and uncalled by all\nproduction paths" in wave
-    assert "contract rev 7 freezes the limiter bench protocol" in plan
+    assert "contract rev 8 freezes limiter protocol revision `2026-07-19b`" in plan
     assert "reviewed bench runner/temporary activation owner" in plan

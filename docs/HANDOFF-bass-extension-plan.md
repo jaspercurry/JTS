@@ -5,7 +5,7 @@
 > natural-at-rest graph emission, whole-graph proof, and the dormant
 > predecessor-aware apply/bypass/recovery transaction. The transaction has
 > no production caller, and commissioning/runtime arming have not shipped.
-> Wave 4 contract revision 7 freezes the limiter-evidence protocol and
+> Wave 4 contract revision 8 freezes the limiter-evidence protocol and
 > authorizes only a production-uncallable pure producer skeleton; no real
 > target-specific limiter result is established yet.
 > This document is the architecture
@@ -469,7 +469,7 @@ Design points:
   sealed-only; accepted ported/PR profiles retain these dicts as
   commissioned evidence but are not armed. `limiter_threshold_dbfs`
   remains optional/`None` in the already-merged schema. Wave 4 contract
-  revision 7 freezes the exact detector point, reference units, accepted
+  revision 8 freezes the exact detector point, reference units, accepted
   evidence shape, deterministic producer, and refusal contract, but Wave 4
   may not accept a sealed profile until Jasper's reviewed bench campaign
   produces a finite value for every sealed target. Wave 5 cannot consume or
@@ -898,7 +898,7 @@ accepted, current eligible profile has a live, confirmed scheduler.
 ### 8.2 The controller (scheduler)
 
 **Implementation is blocked.** Wave 0 proved R1 coefficient
-micro-steps, and Wave 4 contract revision 7 freezes a deterministic pure
+micro-steps, and Wave 4 contract revision 8 freezes a deterministic pure
 producer from an accepted limiter-evidence bundle. No such on-device bundle
 is established. The retained sweep, sustain, commanded-level, stimulus-peak,
 boost, and digital-clamp facts do not bound arbitrary program peaks at the
@@ -1067,7 +1067,7 @@ re-converging.
   it exceeds budget as a WARN, not a block (tinkerer philosophy).
 - **Target-coupled limiter threshold (deep-research delta #3).** The
   current schema reserves `limiter_threshold_dbfs`. Wave 4 contract
-  revision 7 now freezes the exact Camilla-stage detector point and units,
+  revision 8 now freezes the exact Camilla-stage detector point and units,
   the minimum new campaign, the accepted evidence shape, and a deterministic
   pure producer with typed total refusal. The retained Wave 0 evidence does
   not establish a target-specific value, and no accepted on-device campaign
@@ -1516,7 +1516,7 @@ wave keeps out of the god-files. Every implementation PR runs
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, `0670540654a6684f8ac98fb2e70b2e643d65d82f`; contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553, `9f39c70e418cf64316c23de535f322d21f825c8e`; clean gate after 3 review findings fixed in-session) |
 | 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | **merged 2026-07-19** (#1574, `bb2919383b408d630f9d70ef24c14fe38ca98be0`; contract rev 12; sealed natural-at-rest graph emission + durable predecessor-aware apply/recovery groundwork; zero production callers; runtime arming remains blocked) |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 7 freezes the limiter bench protocol and permits only a production-uncallable pure producer skeleton** — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)); a reviewed bench runner/temporary activation owner, accepted on-device bundle, and later production-wiring revision are still required |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits only a production-uncallable pure producer skeleton** — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)); a reviewed bench runner/temporary activation owner, accepted on-device bundle, and later production-wiring revision are still required |
 | 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at contract rev 9** — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
@@ -1604,7 +1604,7 @@ touching the same files; rebase before push per AGENTS.md.
 
 ### Wave 4 — Commissioning backend
 
-**Contract revision 7 authorizes only the production-uncallable pure producer
+**Contract revision 8 authorizes only the production-uncallable pure producer
 skeleton described by the limiter-evidence protocol.** It authorizes no bench
 runner, temporary target/candidate activation owner, profile publication, or
 production caller. The protocol freezes the detector point and units, the
@@ -1811,7 +1811,7 @@ atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
    no invented Q/filter parameters. Until then those profiles remain
    retained and observable with `fixed_graph_not_defined`.
 8. **Sealed target-coupled limiter protocol frozen; real evidence open,
-   blocks Wave 4 production and Wave 5.** Contract revision 7 and
+   blocks Wave 4 production and Wave 5.** Contract revision 8 and
    [`limiter-evidence-protocol.md`](bass-extension-waves/limiter-evidence-protocol.md)
    freeze the exact detector point and units, the smallest campaign, the
    accepted evidence shape, and the deterministic producer/refusal contract.

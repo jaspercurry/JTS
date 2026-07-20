@@ -1,6 +1,6 @@
 # Wave 4 — commissioning backend (Codex prompt)
 
-> **Revision 7 (2026-07-19) — production implementation blocked.** Accept hands
+> **Revision 8 (2026-07-19) — production implementation blocked.** Accept hands
 > the desired profile in memory to Wave 3's sole profile+DSP commit
 > owner; every adapter uses the same predecessor-aware boundary and
 > never persists first. The existing correction process owns
@@ -126,7 +126,7 @@ builds against.
 
 ## File allowlist
 
-The sole prerequisite-skeleton allowlist authorized by Revision 7 is:
+The sole prerequisite-skeleton allowlist authorized by Revision 8 is:
 
 Create:
 - `jasper/bass_extension/limiter_evidence.py`
@@ -397,6 +397,13 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 8 (2026-07-19)** — protocol revision `2026-07-19b` resolves the
+  candidate-disposition/refusal-precedence contradiction. Honest transfer,
+  quality, protection, or clamp failures terminate the target through the
+  `refused`/`aborted` result arm; an evaluated candidate that carries one of
+  those failures is inconsistent. The pure-skeleton allowlist and every
+  production/hardware stop remain unchanged.
 
 - **Rev 7 (2026-07-19)** — the crossover measurement substrate completed its
   JTS3 hardware burn-in, and the focused limiter-evidence protocol froze the
