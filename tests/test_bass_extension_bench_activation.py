@@ -25,10 +25,17 @@ CANDIDATE_YAML = "filters:\n  baseline_limiter_woofer:\n    type: Limiter\npipel
 
 
 class FakeController:
-    def __init__(self, config_path: Path, *, reload_yaml: str | None = None) -> None:
+    def __init__(
+        self,
+        config_path: Path,
+        *,
+        reload_yaml: str | None = None,
+        patch_raises: bool = False,
+    ) -> None:
         self.active_raw = PREDECESSOR_YAML
         self.config_path = config_path
         self._reload_yaml = reload_yaml if reload_yaml is not None else PREDECESSOR_YAML
+        self._patch_raises = patch_raises
         self.calls: list[str] = []
         self.patches: list[dict[str, Any]] = []
 
@@ -46,6 +53,8 @@ class FakeController:
     async def patch_config(self, patch: dict[str, Any]) -> bool:
         self.calls.append("patch_config")
         self.patches.append(patch)
+        if self._patch_raises:
+            raise RuntimeError("patch_config failed after set_active applied")
         return True
 
     async def reload(self) -> bool:
@@ -174,6 +183,35 @@ async def test_readback_proof_failure_refuses_before_unmute_and_restores(
 
     assert unmuted is False  # no tone can play on an unproven graph
     assert "reload" in controller.calls  # restored anyway
+    assert controller.active_raw == PREDECESSOR_YAML
+
+
+async def test_mutation_failure_between_set_active_and_patch_still_restores(
+    config_file: Path,
+) -> None:
+    # B1: set_active_config_raw applies, then patch_config raises. The finally
+    # restore must still run — the mutation awaits live inside the try.
+    controller = FakeController(config_file, patch_raises=True)
+    predecessor = await snapshot_predecessor(controller)
+    to_floor, assert_at_floor = await _floor([])
+
+    unmuted = False
+    with pytest.raises(RuntimeError, match="patch_config failed"):
+        async with temporary_bass_activation(
+            controller,
+            graph_raw_text=CANDIDATE_YAML,
+            candidate_clip_limit_dbfs=-20.0,
+            proof=_proof(-20.0),
+            predecessor=predecessor,
+            to_floor=to_floor,
+            assert_at_floor=assert_at_floor,
+        ):
+            unmuted = True
+
+    assert unmuted is False  # never reached the body
+    assert "set_active_config_raw" in controller.calls
+    assert "patch_config" in controller.calls
+    assert "reload" in controller.calls  # restored despite the mid-mutation failure
     assert controller.active_raw == PREDECESSOR_YAML
 
 

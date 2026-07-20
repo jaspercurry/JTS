@@ -1830,11 +1830,11 @@ def build_bass_nearfield_spec(
     )
     # Capture geometry is speaker policy, never browser input. A bass near-field
     # capture is always near_field; the placement copy is the server-owned
-    # near-field woofer instruction (single-sourced, not restated here).
+    # near-field instruction for this driver (single-sourced, not restated here).
     from jasper.active_speaker.capture_geometry import driver_placement_instruction
 
     seconds = round(stimulus_duration_ms / 1000)
-    placement_instruction = driver_placement_instruction("woofer")
+    placement_instruction = driver_placement_instruction(driver_label)
     return CaptureSpec(
         kind="bass_nearfield",
         duration_ms=duration_ms,

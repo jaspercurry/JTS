@@ -202,8 +202,15 @@ def _accepted_bundle() -> tuple[dict[str, Any], dict[str, Any]]:
     return emitted, context
 
 
-def test_bundle_kind_matches_the_producer_and_avoids_the_forbidden_substring() -> None:
-    assert BUNDLE_KIND == "jts_bass_extension_limiter_evidence"
+def test_bundle_kind_matches_the_producer_kind_constant() -> None:
+    # Explicit coupling to the frozen producer's kind constant. The bench module
+    # assembles this string from fragments to avoid embedding the producer's
+    # module name (the producer's unreachability guard scans jasper/*.py for it);
+    # this pins that assembly to the exact value the producer accepts, so a
+    # future cleanup to a literal cannot silently break either side.
+    from jasper.bass_extension.limiter_evidence import _EVIDENCE_KIND
+
+    assert BUNDLE_KIND == _EVIDENCE_KIND
 
 
 def test_emitted_bundle_is_accepted_by_the_frozen_producer() -> None:

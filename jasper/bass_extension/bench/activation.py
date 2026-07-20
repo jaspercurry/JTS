@@ -242,23 +242,26 @@ async def temporary_bass_activation(
     await to_floor()
     await assert_at_floor()
 
-    # Mutate the RUNNING config only — never the on-disk file.
-    await controller.set_active_config_raw(graph_raw_text)
-    if candidate_clip_limit_dbfs is not None:
-        await controller.patch_config(
-            {
-                "filters": {
-                    proof.limiter_name: {
-                        "parameters": {
-                            "clip_limit": candidate_clip_limit_dbfs,
-                            "soft_clip": True,
+    try:
+        # Mutate the RUNNING config only — never the on-disk file. BOTH mutation
+        # awaits live inside this try so the finally restore always runs, even
+        # if set_active_config_raw succeeds and patch_config then raises (or a
+        # cancel lands between them). Leaving a mutation before the try would let
+        # the graph escape __aenter__ still mutated, with no restore.
+        await controller.set_active_config_raw(graph_raw_text)
+        if candidate_clip_limit_dbfs is not None:
+            await controller.patch_config(
+                {
+                    "filters": {
+                        proof.limiter_name: {
+                            "parameters": {
+                                "clip_limit": candidate_clip_limit_dbfs,
+                                "soft_clip": True,
+                            }
                         }
                     }
                 }
-            }
-        )
-
-    try:
+            )
         raw = await controller.get_active_config_raw()
         config = _parse_running_config(raw)
         configured = _prove_active_graph(config, proof)

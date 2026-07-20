@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import signal
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -38,7 +37,6 @@ from jasper.bass_extension.bench.manifest import (
     ManifestRefusal,
     author_campaign_manifest,
 )
-from jasper.bass_extension.bench.runner import Stop
 from jasper.bass_extension.targets import MARGINS
 
 
@@ -115,7 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_live(args: argparse.Namespace, manifest, target_ids: Sequence[str]) -> int:
-    """Install the Stop control and run the on-device campaign.
+    """Run the on-device campaign (fails closed until the executor is bound).
 
     The campaign composition — the fail-closed activation seam
     (:mod:`jasper.bass_extension.bench.activation`), the pure bundle emitter, the
@@ -128,17 +126,10 @@ def _run_live(args: argparse.Namespace, manifest, target_ids: Sequence[str]) -> 
     limiter input/output) are the one piece with no in-tree helper to compose —
     they are wired and validated at the bench, on the Pi. Until that on-device
     executor is bound here, ``--dry-run`` is the operator preflight and this path
-    fails closed rather than pretend to measure.
+    fails closed rather than pretend to measure. The Ctrl-C Stop control
+    (:class:`~jasper.bass_extension.bench.runner.Stop`) is installed by the
+    on-device executor binding, not here — there is nothing to interrupt yet.
     """
-
-    stop = Stop()
-
-    def _request_stop(*_: object) -> None:
-        print("\nStop requested — fading to floor and restoring.", file=sys.stderr)
-        stop.stop()
-
-    signal.signal(signal.SIGINT, _request_stop)
-    signal.signal(signal.SIGTERM, _request_stop)
 
     raise SystemExit(
         "live bench execution requires the on-device play/capture/tap executor "

@@ -97,6 +97,7 @@ def _sweep(
         band=(20.0, 200.0),
         margin=MARGIN,
         min_snr_db=25.0,
+        max_repeat_spread_db=2.0,
     )
 
 

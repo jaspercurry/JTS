@@ -10,9 +10,15 @@ existing kernels — ``assess_capture`` (capture quality), ``thd_curve`` /
 ``snr_policy`` gate — into the pass/fail verdicts the frozen bundle records, and
 adds the three analyses the protocol names but no kernel owns: the isolated
 digital-transfer SHA match, the paired sweep-transparency comparison, and the
-sustain sag / corner-shift checks. Every threshold comes from the selected
-:class:`~jasper.bass_extension.targets.MarginPolicy`; this module invents no
-hardware-safety number.
+sustain sag / corner-shift checks.
+
+Thresholds are never invented inside this module. The driver-protection bounds
+(THD, compression, sustain sag, corner-shift) come from the selected
+:class:`~jasper.bass_extension.targets.MarginPolicy`. The measurement-quality
+bounds that ``MarginPolicy`` does not carry — the repeat-spread ceiling, the SNR
+floor, and the transparency RMS bound — are **caller-supplied** parameters whose
+provenance is the operator's measurement / transparency policy; this module
+applies them but does not choose them.
 
 Pure and deterministic: it operates on arrays and metrics, performs no I/O, and
 opens no device. Only the *live acoustic capture* upstream of it is mocked in
@@ -116,8 +122,15 @@ def assess_sweep(
     band: tuple[float, float],
     margin: MarginPolicy,
     min_snr_db: float,
+    max_repeat_spread_db: float,
 ) -> SweepVerdicts:
-    """Compose the kernels + MarginPolicy gates into sweep verdicts."""
+    """Compose the kernels + policy gates into sweep verdicts.
+
+    Driver-protection bounds (THD, compression) come from ``margin``; the
+    measurement-quality bounds ``MarginPolicy`` does not carry — ``min_snr_db``
+    and ``max_repeat_spread_db`` — are supplied by the caller's measurement
+    policy, never defaulted here.
+    """
 
     quality: CaptureQuality = assess_capture(
         np.asarray(captured, dtype=np.float64),
@@ -145,7 +158,7 @@ def assess_sweep(
     quality_ok = (
         not quality.failed
         and thd_max <= float(margin.thd_fail_ratio)
-        and repeat_spread <= 2.0
+        and repeat_spread <= float(max_repeat_spread_db)
         and snr_db >= min_snr_db
     )
     protection_ok = compression_max <= float(margin.compression_fail_db)

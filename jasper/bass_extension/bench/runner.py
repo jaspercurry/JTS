@@ -24,9 +24,12 @@ Boundaries:
 Per target: run the discovery pass (activate the proposed natural graph with the
 baseline limiter, prove the read-back, run the admitted sweep + sustain, collect
 the pre-limiter peaks as the candidate inventory, restore); then the candidate
-pass (least-to-most-permissive, stop at the first accepted candidate). Any
-operator Stop or protocol abort ends the target through the ``aborted`` arm with
-its partial artifacts preserved.
+pass. Each candidate runs two phases in one window: activate the natural graph at
+the **baseline** limiter (the paired reference — a live-graph mutation the runner
+owns), capture the reference sweep, restore; then activate the candidate
+``clip_limit``, run the transfer + candidate sweep + sustain, restore. Stop at the
+first accepted candidate. Any operator Stop or protocol abort ends the target
+through the ``aborted``/``refused`` arm with its partial artifacts preserved.
 """
 
 from __future__ import annotations
@@ -104,21 +107,39 @@ class DiscoveryProbe:
 
 
 @dataclass(frozen=True, slots=True)
-class CandidateMeasurements:
-    """The three role sub-records measured at one candidate setting.
+class ReferenceSweepCapture:
+    """The paired reference sweep captured at the BASELINE limiter (phase 1).
 
-    Each is already shaped by the bundle builders (the executor owns the
-    play/capture/analyze math). ``accepted`` is True only when transfer,
-    quality, protection, clamp, and transparency all passed.
+    The reference *activation* and its receipt are the runner's (a live-graph
+    mutation it owns); the executor only captures the acoustic reference. The
+    reference stimulus/admission must match the candidate sweep's by SHA — the
+    executor plays the same admitted request in both phases.
+    """
+
+    reference_stimulus: ArtifactIdentity
+    reference_admission: ArtifactIdentity
+    reference_acoustic_capture: ArtifactIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateMeasurements:
+    """The candidate-side records measured at one candidate setting (phase 2).
+
+    ``sweep_core`` is the candidate sweep's measurement-core kwargs; the runner
+    combines it with the runner-owned reference activation/receipt and the
+    phase-1 :class:`ReferenceSweepCapture` into the full ``sweep_transparency``
+    record. The runner classifies the disposition from the verdicts these
+    records carry — the executor never decides accept / advance / stop.
     """
 
     digital_transfer_probe: Mapping[str, object]
-    sweep_transparency: Mapping[str, object]
+    sweep_core: Mapping[str, object]
     sustain_stress: Mapping[str, object]
+    transparency_analysis: ArtifactIdentity
+    transparency_verdict: str
     active_graph_fingerprint: str
     ordered_owner_chain: Sequence[str]
     configured_clip_limit_dbfs: float
-    accepted: bool
 
 
 class RoleExecutor(Protocol):
@@ -126,8 +147,9 @@ class RoleExecutor(Protocol):
 
     The real binding rides the existing admission chain, ramp/safe_playback,
     located playback, capture relay, and the analysis kernels; the hardware-free
-    tests mock it. It records its artifacts through ``sink`` and returns shaped
-    bundle sub-records.
+    tests mock it. It records its artifacts through ``sink``. It owns the
+    acoustic capture + analysis; the runner owns every live-graph activation
+    (including the paired reference activation) and the disposition decision.
     """
 
     async def run_discovery(
@@ -139,12 +161,22 @@ class RoleExecutor(Protocol):
         stop: Stop,
     ) -> Sequence[DiscoveryProbe]: ...
 
+    async def run_reference_sweep(
+        self,
+        *,
+        target: TargetPlan,
+        reference_readback: ArtifactIdentity,
+        sink: BundleSink,
+        stop: Stop,
+    ) -> ReferenceSweepCapture: ...
+
     async def run_candidate(
         self,
         *,
         target: TargetPlan,
         candidate_setting_dbfs: float,
         candidate_readback: ArtifactIdentity,
+        reference: ReferenceSweepCapture,
         sink: BundleSink,
         stop: Stop,
     ) -> CandidateMeasurements: ...
@@ -185,6 +217,33 @@ async def _readback_receipt(
     )
 
 
+def _classify_candidate(
+    measured: CandidateMeasurements, sweep_record: Mapping[str, object]
+) -> str:
+    """Return the frozen 2026-07-19b disposition for one measured candidate.
+
+    An honest transfer / quality / protection / clamp failure stops the target
+    (``refused`` — no evaluated candidate is emitted for a failed pass); a
+    transparency-only failure advances (``limiter_transparency_failed``); an
+    all-pass candidate is ``accepted``.
+    """
+
+    base_pass = (
+        measured.digital_transfer_probe.get("verdict") == "pass"
+        and sweep_record.get("quality_verdict") == "pass"
+        and sweep_record.get("protection_verdict") == "pass"
+        and sweep_record.get("digital_clamp_passed") is True
+        and measured.sustain_stress.get("quality_verdict") == "pass"
+        and measured.sustain_stress.get("protection_verdict") == "pass"
+        and measured.sustain_stress.get("digital_clamp_passed") is True
+    )
+    if base_pass and measured.transparency_verdict == "pass":
+        return "accepted"
+    if base_pass and measured.transparency_verdict == "fail":
+        return "limiter_transparency_failed"
+    return "refused"
+
+
 async def _run_target(
     deps: BenchDeps,
     target: TargetPlan,
@@ -194,8 +253,9 @@ async def _run_target(
 ) -> dict[str, object]:
     """Run discovery + candidate passes for one target; return its result dict.
 
-    On Stop or any activation/measurement failure, returns the ``aborted`` arm
-    with a stop receipt and whatever partial artifacts were recorded.
+    On Stop or any activation/measurement failure, returns the ``aborted`` /
+    ``refused`` arm with a stop receipt and whatever partial artifacts were
+    recorded.
     """
 
     partials: list[ArtifactIdentity] = []
@@ -264,20 +324,23 @@ async def _run_target(
         if not probes:
             return _stop_result("discovery produced no candidate inventory", "refused")
 
-        # Candidate inventory: pre-limiter peaks at/below baseline, ascending.
-        eligible = [
-            probe
-            for probe in probes
-            if probe.pre_limiter_peak_dbfs <= target.baseline_clip_limit_dbfs
-        ]
-        eligible.sort(key=lambda probe: probe.pre_limiter_peak_dbfs)
-        if not eligible:
+        # Candidate inventory: the DISTINCT pre-limiter peaks at/below baseline,
+        # least-to-most permissive. sample_peak_dbfs floors near-silent captures
+        # at exactly -120 dBFS, so two quiet probes can collide — the protocol
+        # orders the *distinct* measured candidates, and duplicate settings would
+        # make the producer refuse the whole campaign as inconsistent.
+        distinct: dict[float, DiscoveryProbe] = {}
+        for probe in probes:
+            if probe.pre_limiter_peak_dbfs <= target.baseline_clip_limit_dbfs:
+                distinct.setdefault(probe.pre_limiter_peak_dbfs, probe)
+        if not distinct:
             return _stop_result("no eligible candidate at or below baseline", "refused")
+        ordered = [distinct[setting] for setting in sorted(distinct)]
 
         source_records: list[dict[str, object]] = []
         candidate_records: list[dict[str, object]] = []
-        selected_source_fp: dict[float, str] = {}
-        for probe in eligible:
+        source_fp_by_setting: dict[float, str] = {}
+        for probe in ordered:
             source = bundle.build_source_observation(
                 stimulus=probe.stimulus,
                 admission=probe.admission,
@@ -287,17 +350,46 @@ async def _run_target(
                 pre_limiter_peak_dbfs=probe.pre_limiter_peak_dbfs,
             )
             source_records.append(source)
-            selected_source_fp[probe.pre_limiter_peak_dbfs] = str(
+            source_fp_by_setting[probe.pre_limiter_peak_dbfs] = str(
                 source["source_fingerprint"]
             )
 
-        # --- Candidate pass (least-to-most permissive, stop at first accepted)
-        accepted_seen = False
-        for probe in eligible:
+        # --- Candidate pass (least-to-most permissive, stop at first accepted).
+        for probe in ordered:
             deps.stop.check()
             setting = probe.pre_limiter_peak_dbfs
             async with deps.open_window():
                 predecessor = await snapshot_predecessor(deps.controller)
+
+                # Phase 1: reference activation at the baseline limiter.
+                async with temporary_bass_activation(
+                    deps.controller,
+                    graph_raw_text=target.graph_raw_text,
+                    candidate_clip_limit_dbfs=None,
+                    proof=baseline_proof,
+                    predecessor=predecessor,
+                    to_floor=deps.floor.to_floor,
+                    assert_at_floor=deps.floor.assert_at_floor,
+                ) as ref_readback:
+                    reference_activation = await _readback_receipt(
+                        sink,
+                        role=f"reference_activation_{setting:g}",
+                        target_id=target.target_id,
+                        active_config_raw=ref_readback.active_config_raw,
+                        graph_fingerprint=ref_readback.graph_fingerprint,
+                        configured_clip_limit_dbfs=ref_readback.configured_clip_limit_dbfs,
+                    )
+                    partials.append(reference_activation)
+                    reference_graph_fingerprint = ref_readback.graph_fingerprint
+                    reference = await deps.executor.run_reference_sweep(
+                        target=target,
+                        reference_readback=reference_activation,
+                        sink=sink,
+                        stop=deps.stop,
+                    )
+                    deps.stop.check()
+
+                # Phase 2: candidate activation at the candidate clip_limit.
                 candidate_proof = ActivationProof(
                     limiter_name=target.limiter_name,
                     owner_channels=target.owner_channels,
@@ -312,24 +404,26 @@ async def _run_target(
                     predecessor=predecessor,
                     to_floor=deps.floor.to_floor,
                     assert_at_floor=deps.floor.assert_at_floor,
-                ) as readback:
-                    activation_receipt = await _readback_receipt(
+                ) as cand_readback:
+                    candidate_activation = await _readback_receipt(
                         sink,
                         role=f"candidate_activation_{setting:g}",
                         target_id=target.target_id,
-                        active_config_raw=readback.active_config_raw,
-                        graph_fingerprint=readback.graph_fingerprint,
-                        configured_clip_limit_dbfs=readback.configured_clip_limit_dbfs,
+                        active_config_raw=cand_readback.active_config_raw,
+                        graph_fingerprint=cand_readback.graph_fingerprint,
+                        configured_clip_limit_dbfs=cand_readback.configured_clip_limit_dbfs,
                     )
-                    partials.append(activation_receipt)
+                    partials.append(candidate_activation)
                     measured = await deps.executor.run_candidate(
                         target=target,
                         candidate_setting_dbfs=setting,
-                        candidate_readback=activation_receipt,
+                        candidate_readback=candidate_activation,
+                        reference=reference,
                         sink=sink,
                         stop=deps.stop,
                     )
                     deps.stop.check()
+
                 restoration_receipt = await _readback_receipt(
                     sink,
                     role=f"candidate_restoration_{setting:g}",
@@ -340,38 +434,52 @@ async def _run_target(
                 )
                 partials.append(restoration_receipt)
 
-            if not measured.accepted:
-                # A transparency-only failure advances; any honest transfer /
-                # quality / protection / clamp failure is a target stop.
-                transparency_only = _transparency_only_failure(measured)
-                if not transparency_only:
-                    return _stop_result(
-                        f"candidate {setting:g} failed a required verdict", "refused"
-                    )
+            # Assemble the full paired sweep record: candidate core + the
+            # runner-owned reference activation + the phase-1 reference capture.
+            sweep_record = bundle.build_sweep_record(
+                reference_activation_receipt=reference_activation,
+                reference_stimulus=reference.reference_stimulus,
+                reference_admission=reference.reference_admission,
+                reference_acoustic_capture=reference.reference_acoustic_capture,
+                transparency_analysis=measured.transparency_analysis,
+                reference_target_fingerprint=target.target_fingerprint,
+                reference_active_graph_fingerprint=reference_graph_fingerprint,
+                reference_configured_clip_limit_dbfs=target.baseline_clip_limit_dbfs,
+                transparency_verdict=measured.transparency_verdict,
+                **measured.sweep_core,
+            )
+
+            disposition = _classify_candidate(measured, sweep_record)
+            if disposition == "refused":
+                # An honest transfer/quality/protection/clamp failure ends the
+                # target; no evaluated candidate is emitted for a failed pass.
+                return _stop_result(
+                    f"candidate {setting:g} failed a required verdict", "refused"
+                )
 
             candidate_records.append(
                 bundle.build_candidate(
                     limiter_threshold_dbfs=setting,
-                    source_fingerprint=selected_source_fp[setting],
-                    candidate_activation_receipt=activation_receipt,
+                    source_fingerprint=source_fp_by_setting[setting],
+                    candidate_activation_receipt=candidate_activation,
                     configured_clip_limit_dbfs=measured.configured_clip_limit_dbfs,
                     active_target_fingerprint=target.target_fingerprint,
                     active_graph_fingerprint=measured.active_graph_fingerprint,
                     ordered_owner_chain=measured.ordered_owner_chain,
                     digital_transfer_probe=measured.digital_transfer_probe,
-                    sweep_transparency=measured.sweep_transparency,
+                    sweep_transparency=sweep_record,
                     sustain_stress=measured.sustain_stress,
                     candidate_restoration_receipt=restoration_receipt,
                     restored_graph_fingerprint=natural_graph_fingerprint,
-                    disposition="accepted" if measured.accepted else "limiter_transparency_failed",
+                    disposition=disposition,
                 )
             )
-            if measured.accepted:
-                accepted_seen = True
+            if disposition == "accepted":
+                # Stop at the first accepted candidate. If none accepts, the
+                # evaluated result carries the transparency-failed candidates and
+                # the producer classifies it out-of-envelope — we do not discard
+                # honestly-measured candidates behind a refused stop.
                 break
-
-        if not accepted_seen:
-            return _stop_result("no accepted candidate within envelope", "refused")
 
         assert discovery_activation is not None
         return bundle.build_evaluated_result(
@@ -382,22 +490,6 @@ async def _run_target(
         )
     except BenchAborted as exc:
         return _stop_result(str(exc), "aborted")
-
-
-def _transparency_only_failure(measured: CandidateMeasurements) -> bool:
-    """True iff only the sweep transparency verdict failed (advance, not stop)."""
-
-    sweep = measured.sweep_transparency
-    return (
-        sweep.get("transparency_verdict") == "fail"
-        and sweep.get("quality_verdict") == "pass"
-        and sweep.get("protection_verdict") == "pass"
-        and sweep.get("digital_clamp_passed") is True
-        and measured.digital_transfer_probe.get("verdict") == "pass"
-        and measured.sustain_stress.get("quality_verdict") == "pass"
-        and measured.sustain_stress.get("protection_verdict") == "pass"
-        and measured.sustain_stress.get("digital_clamp_passed") is True
-    )
 
 
 async def run_campaign(
@@ -444,7 +536,5 @@ async def run_campaign(
         retained_facts=retained_facts,
         targets=target_results,
     )
-    sink.write_json(
-        "bundle.json", emitted, kind="jts_bass_extension_bench_bundle"
-    )
+    sink.write_json("bundle.json", emitted, kind="jts_bass_extension_bench_bundle")
     return emitted
