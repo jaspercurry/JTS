@@ -414,10 +414,13 @@ def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
     apply) rendered fix_and_retry and displaced the verify_fail screen's Undo
     affordance. REASON_AGC_BEHAVIORAL_FAIL's OWN registry template is
     fix_and_retry (correct for CHECK/MEASURE, where nothing is applied yet);
-    once phase is verify, the applied graph is already live, so the same
-    code must render verify_fail instead."""
+    once the crossover is durably applied, the same code must render
+    verify_fail instead. ``applied=True`` here is the REAL state fact a
+    production status always carries whenever phase is genuinely "verify"
+    (see test_applied_true_forces_verify_fail_regardless_of_phase for the
+    adversarial-review case where phase and applied disagree)."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
+        phase="verify", applied=True, failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
     ))
     assert env["screen"] == "verify_fail"
     assert env["verdict_text"] == REASON_REGISTRY[REASON_AGC_BEHAVIORAL_FAIL].message
@@ -439,21 +442,52 @@ def test_check_phase_agc_failure_still_renders_its_normal_template():
 
 def test_verify_phase_relay_timeout_also_renders_verify_fail():
     """A non-agc code (REASON_RELAY_TIMEOUT's own template is
-    session_restart) gets the same VERIFY-phase override -- ANY failure code
-    surfacing post-apply is entitled to the Undo affordance."""
+    session_restart) gets the same applied override -- ANY failure code
+    surfacing once genuinely applied is entitled to the Undo affordance."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", failure={"code": REASON_RELAY_TIMEOUT},
+        phase="verify", applied=True, failure={"code": REASON_RELAY_TIMEOUT},
     ))
     assert env["screen"] == "verify_fail"
 
 
 def test_verify_phase_unknown_code_renders_verify_fail_too():
     env = build_crossover_envelope_v2(_status(
-        phase="verify", failure={"code": "some_future_code"},
+        phase="verify", applied=True, failure={"code": "some_future_code"},
     ))
     assert env["screen"] == "verify_fail"
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Undo (restore previous sound)" in labels
+
+
+def test_applied_true_forces_verify_fail_regardless_of_phase():
+    """Second adversarial-review pass (2026-07-20, "interleaving A"):
+    ``_persist_terminal_failure`` for a NON-apply-failed code (e.g.
+    ``user_stopped``) can land WHILE the auto-apply transaction is still
+    mid-flight — at that instant ``applied`` reads False, so the reset
+    (§5.6, scoped away from ``apply_failed`` only) clears ``accepted_phases``.
+    If the auto-apply's OWN success then lands moments later, the final
+    durable state is applied=True with accepted_phases still cleared —
+    ``_phase_from_state`` resolves that combination to PHASE_CHECK, not
+    PHASE_VERIFY. The render must not trust that phase derivation: keying
+    on the RAW ``applied`` state fact catches this even when phase says
+    "check" and active_step says "microphone_check"."""
+    env = build_crossover_envelope_v2(_status(
+        phase="check", applied=True, failure={"code": REASON_USER_STOPPED},
+    ))
+    assert env["screen"] == "verify_fail"
+    assert "already applied" in env["verdict_text"].lower()
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
+
+
+def test_applied_false_with_verify_phase_does_not_force_verify_fail():
+    """Defensive converse of the above: if ``applied`` is explicitly False,
+    the override must not fire even if some other field claims phase
+    "verify" — the state fact is authoritative, not a hint."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", applied=False, failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
+    ))
+    assert env["screen"] == "fix_and_retry"
 
 
 @pytest.mark.parametrize("code,template", [

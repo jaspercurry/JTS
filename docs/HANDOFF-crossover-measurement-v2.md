@@ -449,15 +449,40 @@ no retries-as-bodge). Treat these as regression fences.
     (b) `observe_apply_success` no longer blindly clobbers an existing
     `failure` code to `None` (the reverse race — `_persist_terminal_failure`
     already preserved `applied=True` once observed, for the same session —
-    was already correct); (c) the VERIFY-phase override (item 9 above) now
-    appends an honest "the crossover was already applied" acknowledgment to
-    any `TEMPLATE_SESSION_RESTART` code's copy (`relay_timeout`,
-    `user_stopped`) rendered there, since that copy's own "start over…"
-    framing is written for the pre-apply phases and is actively wrong once
-    something genuinely got applied. Neither check can fully close the race
-    (an in-flight DSP write can't be safely interrupted mid-transaction) —
-    the coherent-merge fix is what guarantees the FINAL state is always
-    honest regardless of which side of the race wins.
+    was already correct); (c) the envelope now appends an honest "the
+    crossover was already applied" acknowledgment to any
+    `TEMPLATE_SESSION_RESTART` code's copy (`relay_timeout`, `user_stopped`)
+    rendered once applied, since that copy's own "start over…" framing is
+    written for the pre-apply phases and is actively wrong once something
+    genuinely got applied. Neither check can fully close the race (an
+    in-flight DSP write can't be safely interrupted mid-transaction) — (b)
+    is what guarantees the FINAL DURABLE STATE is always coherent regardless
+    of which side of the race wins. (A second adversarial pass found that
+    claim did not extend to the RENDER — see immediately below.)
+
+    **Second adversarial pass, same PR: durable-state coherence did not
+    imply render honesty ("interleaving A").** (b) guarantees `applied` and
+    `failure` end up coherent together, but says nothing about
+    `accepted_phases` — and (c)'s acknowledgment originally fired on
+    `active_step == "verify"`, DERIVED from `_phase_from_state`, not from
+    `applied` directly. When a Stop's `_persist_terminal_failure` call lands
+    WHILE the auto-apply transaction is still mid-flight, `applied` reads
+    False at that instant, so the §5.6 reset (correctly scoped away from
+    `apply_failed` alone, per SF2) fires for `user_stopped` and clears
+    `accepted_phases`. The auto-apply's own success can then land moments
+    later and flip `applied` True — but `accepted_phases` stays cleared, so
+    `_phase_from_state` resolves the combination to `PHASE_CHECK`, not
+    `PHASE_VERIFY`. (c)'s acknowledgment, keyed on that derived phase, never
+    fired: the household saw "You stopped the measurement. Start over,"
+    with no Undo, over a genuinely-changed crossover. Fix:
+    `crossover_envelope_v2._failure_envelope` now takes `applied` as an
+    explicit parameter — the RAW `status["crossover_v2"]["applied"]` state
+    fact — and keys its override on that alone, never on `active_step`/phase.
+    This is the general form of the rule the PR should have shipped the
+    first time: **any failure screen rendered while `applied` is durably
+    True says the crossover was applied and offers Undo, regardless of what
+    phase/active_step/template says** — because phase derivation is exactly
+    the kind of thing this same race can corrupt.
 
 ## Future work — the post-W6 follow-ups issue
 

@@ -315,39 +315,55 @@ def _verify_fail_envelope(
 
 
 def _failure_envelope(
-    code: str, status: Mapping[str, Any], active_step: str,
+    code: str, status: Mapping[str, Any], active_step: str, *, applied: bool,
 ) -> dict[str, Any]:
     """Render one of the four §5.10 templates from a reason code.
 
-    VERIFY-phase override (W6.7 ruling 3): once ``active_step`` is
-    ``"verify"`` the candidate is already applied — ``_phase_from_state``
-    (jasper.web.correction_crossover_v2) only reports the VERIFY phase once
-    ``applied`` is True — so ANY failure code surfacing there renders through
-    the ``verify_fail`` template regardless of REASON_REGISTRY's own owning
-    template. fix_and_retry / hard_stop / session_restart / silent_auto_retry
-    all hide the Undo affordance the household is entitled to the moment
-    something is live on the speaker (the run-7 hardware bug: an
-    ``agc_behavioral_fail`` during VERIFY rendered ``fix_and_retry`` and
-    displaced the VERIFY-fail screen's Undo action). REASON_REGISTRY stays
-    the single copy source — only the template choice is overridden here,
-    EXCEPT the SF1 case just below.
+    Applied override (W6.7 ruling 3; generalized 2026-07-20 adversarial
+    review — SF1 follow-up): once the crossover is DURABLY applied
+    (``applied``, passed in as the raw ``status["crossover_v2"]["applied"]``
+    state fact), ANY failure code renders through the ``verify_fail``
+    template regardless of REASON_REGISTRY's own owning template.
+    fix_and_retry / hard_stop / session_restart / silent_auto_retry all hide
+    the Undo affordance the household is entitled to the moment something is
+    live on the speaker (the run-7 hardware bug: an ``agc_behavioral_fail``
+    during VERIFY rendered ``fix_and_retry`` and displaced the VERIFY-fail
+    screen's Undo action). REASON_REGISTRY stays the single copy source —
+    only the template choice is overridden here, EXCEPT the copy addendum
+    just below.
 
-    SF1 (adversarial review, 2026-07-20): a ``TEMPLATE_SESSION_RESTART`` code
-    (``relay_timeout``, ``user_stopped``) owns copy that assumes NOTHING was
-    ever applied ("start over…") — written for the pre-apply CHECK/MEASURE
+    THIS MUST KEY ON THE STATE FACT, NEVER ON ``active_step``/phase. An
+    earlier version of this override fired on ``active_step == "verify"``
+    (reasoning: ``_phase_from_state`` only reports VERIFY once ``applied``
+    is True, so the two were believed equivalent) — but a second
+    adversarial pass found the CONVERSE direction false: a terminal-failure
+    persist that lands WHILE the auto-apply transaction is still mid-flight
+    (``_persist_terminal_failure`` sees ``applied`` still False at that
+    instant, since the transaction hasn't committed yet) resets
+    ``accepted_phases``, which makes ``_phase_from_state`` resolve back to
+    ``PHASE_CHECK`` even once the OTHER thread's apply lands moments later
+    and durably flips ``applied=True``. Deriving "was this applied" from
+    phase would silently reproduce that exact bug in a new shape — the
+    caller passes the state fact directly instead.
+
+    Copy addendum (adversarial review, 2026-07-20): a ``TEMPLATE_SESSION_RESTART``
+    code (``relay_timeout``, ``user_stopped``) owns copy that assumes NOTHING
+    was ever applied ("start over…") — written for the pre-apply CHECK/MEASURE
     phases where that is true. Reaching this override with ``applied=True``
-    (the only way ``active_step`` resolves to ``"verify"`` at all) means the
-    auto-apply background thread's transaction genuinely landed, quite
-    possibly racing the very failure being rendered (e.g. a phone Stop
+    means the auto-apply background thread's transaction genuinely landed,
+    quite possibly racing the very failure being rendered (e.g. a phone Stop
     landing while the transaction was mid-flight — the auto-apply worker's
     own pre-apply check can't always win that race, since an in-flight DSP
-    write can't be safely interrupted). Never let the household believe
+    write can't be safely interrupted, and the durable-state coherence fix
+    only guarantees the FINAL STATE is honest, not that every intermediate
+    render along the way sees it — this is what makes the render side of
+    that guarantee actually hold too). Never let the household believe
     nothing changed when it did: this appends an honest acknowledgment
     rather than leaving a "start over" claim uncontested.
     """
     spec = REASON_REGISTRY.get(code)
     if spec is None:  # defensive — an unknown code still names a retry, never a bare code
-        if active_step == "verify":
+        if applied:
             return _verify_fail_envelope(
                 code, "Something went wrong with that measurement. Try again.", status,
             )
@@ -357,7 +373,7 @@ def _failure_envelope(
             next_action={"id": "retry", "label": "Try again"},
             status=status,
         )
-    if active_step == "verify" and spec.template != TEMPLATE_VERIFY_FAIL:
+    if applied and spec.template != TEMPLATE_VERIFY_FAIL:
         message = spec.message or spec.banner
         if spec.template == TEMPLATE_SESSION_RESTART:
             message = (
@@ -502,7 +518,12 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     failure = _mapping(v2.get("failure"))
     failure_code = str(failure.get("code") or "")
     if failure_code:
-        env = _failure_envelope(failure_code, status, active_step)
+        # Pass the RAW state fact — never derive "was this applied" from
+        # phase/active_step (see _failure_envelope's docstring for why that
+        # derivation can itself be wrong).
+        env = _failure_envelope(
+            failure_code, status, active_step, applied=bool(v2.get("applied")),
+        )
         log_event(
             logger, "correction.crossover_v2_envelope_serve",
             screen=env["screen"], phase=phase, failure=failure_code,

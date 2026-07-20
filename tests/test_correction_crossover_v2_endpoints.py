@@ -1430,6 +1430,70 @@ def test_relay_timeout_still_resets_accepted_phases_through_the_real_persist_pat
     assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
+def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
+    """SF1(b)'s load-bearing direction, and its render-side follow-up
+    ("interleaving A", adversarial review, 2026-07-20): a Stop's
+    _persist_terminal_failure(user_stopped) can land WHILE the auto-apply
+    transaction is still mid-flight — at that instant applied reads False,
+    so the §5.6 reset (correctly scoped away from apply_failed only, per
+    SF2) fires for user_stopped and clears accepted_phases. When the
+    auto-apply's OWN success then lands moments later via
+    observe_apply_success, applied flips True but accepted_phases stays
+    reset — _phase_from_state resolves that combination to PHASE_CHECK, not
+    PHASE_VERIFY. Both existing interleaving tests
+    (test_stop_before_apply_start_skips_the_dsp_mutation,
+    test_stop_after_apply_start_preserves_applied_and_surfaces_undo) force
+    the OTHER ordering (apply-first) and so never exercised this; this test
+    drives the REAL persist functions in the stop-first order and pins BOTH
+    that the durable state stays coherent (no clobbering either direction)
+    AND that the render is honest even though phase/active_step disagree
+    with the state fact — this must FAIL without the applied-keyed fix in
+    crossover_envelope_v2._failure_envelope."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    fingerprint = conductor.candidate.fingerprint
+
+    # 1. The Stop lands FIRST, while the auto-apply transaction is still
+    #    mid-flight (applied is still False at this instant).
+    v2host._persist_terminal_failure(conductor, "user_stopped")
+    state = v2host.load_v2_state()
+    assert state["accepted_phases"] == []  # confirms the reset DID fire here
+
+    # 2. The auto-apply's OWN transaction then lands (observe_apply_success
+    #    is exactly what handle_v2_apply calls on success).
+    v2host.observe_apply_success(fingerprint, pre_apply_profile={"stub": True})
+
+    state = v2host.load_v2_state()
+    # Coherent, not clobbered either direction (SF1(b), now pinned in BOTH
+    # orderings): the transaction genuinely landed AND the stop is honestly
+    # on record — even though accepted_phases never got a chance to recover.
+    assert state["applied"] is True
+    assert state["failure"] == {"code": "user_stopped"}
+    assert state["accepted_phases"] == []
+
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == PHASE_CHECK  # the corrupted derivation, on record
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    # The render must not trust that phase — applied=True is authoritative.
+    assert env["screen"] == "verify_fail"
+    assert "already applied" in env["verdict_text"].lower()
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
+
+
 # --- W6.1 Finding B: no silent playback failures --------------------------------
 
 
