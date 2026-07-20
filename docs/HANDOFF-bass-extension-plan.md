@@ -5,6 +5,9 @@
 > natural-at-rest graph emission, whole-graph proof, and the dormant
 > predecessor-aware apply/bypass/recovery transaction. The transaction has
 > no production caller, and commissioning/runtime arming have not shipped.
+> Wave 4 contract revision 7 freezes the limiter-evidence protocol and
+> authorizes only a production-uncallable pure producer skeleton; no real
+> target-specific limiter result is established yet.
 > This document is the architecture
 > and phased implementation plan for the feature; it was produced by a
 > six-agent survey of the codebase at `origin/main` `7dd803c8d`
@@ -421,7 +424,7 @@ back as a decision input.
     {"target_id": "t31", "fp_hz": 31.0, "qp": 0.65,
      "filters": [ /* exact CamillaDSP filter param dicts */ ],
      "boost_headroom_db": 11.8,          // max over freq grid vs natural
-     "limiter_threshold_dbfs": null,     // reserved; no frozen producer yet (§8.4)
+     "limiter_threshold_dbfs": null,     // reserved; no real bench result yet (§8.4)
      "subsonic": {"type": "ButterworthHighpass", "freq": 22.0, "order": 4}},
     ...
     {"target_id": "natural", "fp_hz": 61.2, "qp": 0.72,
@@ -465,13 +468,13 @@ Design points:
   selects among frozen members. The planned runtime selection is
   sealed-only; accepted ported/PR profiles retain these dicts as
   commissioned evidence but are not armed. `limiter_threshold_dbfs`
-  remains optional/`None` in the already-merged schema, but Wave 4
-  revision 6 is blocked and may not accept a sealed profile until a
-  focused measured-derivation prerequisite revises the contract and
-  produces a finite value for every sealed target. Wave 5 cannot
-  consume or fill it. Ported/PR retention does not imply a runtime
-  threshold contract. This is the "no free-form optimizer" guarantee
-  made structural.
+  remains optional/`None` in the already-merged schema. Wave 4 contract
+  revision 7 freezes the exact detector point, reference units, accepted
+  evidence shape, deterministic producer, and refusal contract, but Wave 4
+  may not accept a sealed profile until Jasper's reviewed bench campaign
+  produces a finite value for every sealed target. Wave 5 cannot consume or
+  fill it. Ported/PR retention does not imply a runtime threshold contract.
+  This is the "no free-form optimizer" guarantee made structural.
 
 ### 5.2 Staleness and authorization
 
@@ -895,16 +898,14 @@ accepted, current eligible profile has a live, confirmed scheduler.
 ### 8.2 The controller (scheduler)
 
 **Implementation is blocked.** Wave 0 proved R1 coefficient
-micro-steps, but neither Wave 4 nor another frozen contract produces
-`limiter_threshold_dbfs`. The current ladder proves acoustic linearity
-for one admitted sweep peak, the sustain test proves one admitted noise
-waveform, and the digital clamp proves arithmetic headroom; those facts
-do not bound arbitrary program peaks at the downstream limiter's
-detector or define its Camilla-stage dBFS reference. Wave 4 revision 6
-therefore blocks before implementation. A focused measured-derivation
-result must identify the stage/units, determine whether extra evidence
-is needed, freeze a deterministic per-target producer and refusal, and
-provide retained-evidence test vectors plus on-device justification.
+micro-steps, and Wave 4 contract revision 7 freezes a deterministic pure
+producer from an accepted limiter-evidence bundle. No such on-device bundle
+is established. The retained sweep, sustain, commanded-level, stimulus-peak,
+boost, and digital-clamp facts do not bound arbitrary program peaks at the
+now-frozen downstream detector point. A reviewed bench runner/temporary
+activation owner and trusted context builder must first produce Jasper's
+accepted bundle, and its replay must pass independent review before a later
+contract revision authorizes production wiring.
 `None`, the baseline −1 dB limiter, subtracting boost/digital margin,
 an assumed crest factor, or a scheduler-local formula are not
 fallbacks.
@@ -1065,16 +1066,16 @@ re-converging.
   wizard surfaces `max boost + current room-EQ low-band boost` when
   it exceeds budget as a WARN, not a block (tinkerer philosophy).
 - **Target-coupled limiter threshold (deep-research delta #3).** The
-  current schema reserves `limiter_threshold_dbfs`, but **no frozen
-  wave defines how ladder/sustain evidence becomes that Camilla-stage
-  dBFS value**. Wave 3 therefore leaves the existing −1 dB baseline
-  limiter unchanged, Wave 4 revision 6 stops before implementation,
-  and Wave 5 is blocked. The focused prerequisite must identify the
-  detector stage/units, prove whether the retained rung/sustain/digital
-  evidence is sufficient (or specify the smallest added measurement),
-  and then revise Wave 4 with a deterministic pure producer, refusal
-  on missing evidence, test vectors, and hardware justification. The
-  replacement Wave 5 contract must
+  current schema reserves `limiter_threshold_dbfs`. Wave 4 contract
+  revision 7 now freezes the exact Camilla-stage detector point and units,
+  the minimum new campaign, the accepted evidence shape, and a deterministic
+  pure producer with typed total refusal. The retained Wave 0 evidence does
+  not establish a target-specific value, and no accepted on-device campaign
+  bundle exists. Wave 3 therefore leaves the existing baseline limiter
+  unchanged; Wave 4 production commissioning and Wave 5 remain blocked. The
+  smallest evidence that clears the value gap is Jasper's reviewed bench pass
+  plus deterministic replay of its accepted bundle. The replacement Wave 5
+  contract must
   install a deeper target's more-conservative limiter **before**
   adding boost, and on retreat remove boost **before** relaxing the
   limiter. Ported/PR remains outside runtime regardless.
@@ -1603,9 +1604,15 @@ touching the same files; rebase before push per AGENTS.md.
 
 ### Wave 4 — Commissioning backend
 
-**No implementation is authorized by revision 6.** First complete the
-focused measured limiter prerequisite in §14.8 and revise the prompt
-with the deterministic producer. The intended wave then contains
+**Contract revision 7 authorizes only the production-uncallable pure producer
+skeleton described by the limiter-evidence protocol.** It authorizes no bench
+runner, temporary target/candidate activation owner, profile publication, or
+production caller. The protocol freezes the detector point and units, the
+minimum campaign, the accepted bundle shape, and total refusal; a real
+target-specific `limiter_threshold_dbfs` remains **not established** until
+Jasper completes the reviewed bench pass and its accepted bundle replays
+deterministically. After those gates and a later contract revision, the
+intended commissioning wave contains
 `ladder.py` state machine (pure) + web backend module (new file, thin
 routing seam into `/correction/`), relay `build_bass_nearfield_spec`,
 per-rung retention store, integration of ramp/admission/
@@ -1615,18 +1622,16 @@ duration/band/level + mandatory cooldown — do not push a 60 s hold
 through a sweep-shaped `ExcitationRequest`), and the
 characterize→fit→propose→verify→ladder→sustain→anchors→review HTTP
 endpoints returning JSON the Wave-6 UI consumes. Integration tests
-with mocked camilla/relay per §11. The current evidence does **not**
-derive `limiter_threshold_dbfs`; the prerequisite must first determine
-the stage/units, evidence sufficiency, producer/refusal, test vectors,
-and hardware justification. Every adapter's accept passes desired
+with mocked camilla/relay per §11. Every adapter's accept passes desired
 state in memory to Wave 3's sole predecessor-aware commit owner inside
 `measurement_window()` and never persists first. Sealed→deferred
 replacement removes the old sealed pair before publication. The
 existing correction process synchronously claims
 pending recovery before ready and before bass POSTs; GET remains
 read-only and there is no recovery route/task/service; the red Stop
-remains the only no-forward-work exception. Depends: Waves
-1–3 plus the focused prerequisite.
+remains the only no-forward-work exception. Depends: Waves 1–3, a reviewed
+bench runner/temporary activation owner, one accepted on-device bundle with
+deterministic replay, and the later production-wiring contract revision.
 
 ### Wave 5 — Runtime scheduler
 
@@ -1741,9 +1746,9 @@ atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
   "switch to a live excursion model if you add sensing" branch is
   closed — the impedance cross-check stays file-import only, and the
   intended open-loop schedule still requires the sustain test plus a
-  target-coupled limiter. The missing deterministic limiter producer
-  is a release blocker, not permission to omit protection or add
-  sensing.
+  target-coupled limiter. The missing accepted bench evidence and production
+  wiring authority are release blockers, not permission to omit protection
+  or add sensing.
 - No signal-aware (program-dependent) controller — designed-for but
   explicitly after the volume-linked product works; the scheduler
   seam (`select_target`) is where it would slot in.
@@ -1805,21 +1810,22 @@ atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
    transitions, natural-at-rest/reset behavior, limiter coupling, and
    no invented Q/filter parameters. Until then those profiles remain
    retained and observable with `fixed_graph_not_defined`.
-8. **Sealed target-coupled limiter producer — open, blocks Wave 5.**
-   The schema field exists but no frozen contract maps ladder/sustain
-   evidence to the limiter's Camilla-stage dBFS value. Review found the
-   existing records insufficient: they cover one admitted sweep peak,
-   one admitted sustain waveform, and an arithmetic digital clamp, but
-   do not map arbitrary program peaks to the downstream limiter
-   detector. Before Wave 4 implementation, a focused measured result
-   must identify the exact stage/units; determine whether those records
-   suffice or specify the smallest added measurement; freeze a
-   deterministic per-sealed-target producer with missing-evidence
-   refusal and conservative ordering; provide retained-evidence test
-   vectors and on-device justification; and revise Wave 4 accordingly.
-   Do not infer a value from the illustrative schema, reuse −1 dB,
-   subtract boost/digital margin, assume a crest factor, or derive it
-   inside Wave 5.
+8. **Sealed target-coupled limiter protocol frozen; real evidence open,
+   blocks Wave 4 production and Wave 5.** Contract revision 7 and
+   [`limiter-evidence-protocol.md`](bass-extension-waves/limiter-evidence-protocol.md)
+   freeze the exact detector point and units, the smallest campaign, the
+   accepted evidence shape, and the deterministic producer/refusal contract.
+   The retained Wave 0 sweep, sustain, commanded-level, stimulus-peak, boost,
+   and digital-clamp facts do not establish arbitrary program peaks or a real
+   target-specific limiter value. No reviewed bench runner/temporary
+   activation owner, trusted commissioning-context builder, or accepted
+   on-device bundle exists. The smallest evidence that clears the remaining
+   gap is those reviewed owners, Jasper's accepted bench bundle for the exact
+   sealed family, and deterministic replay at zero review blockers and
+   should-fixes; a later contract revision must then authorize the trusted
+   production caller. Do not infer a value from the illustrative schema,
+   reuse the baseline limiter setting, subtract boost/digital margin, assume
+   a crest factor, or derive it inside Wave 5.
 
 ## 15. External references
 
