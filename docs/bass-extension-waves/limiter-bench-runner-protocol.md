@@ -65,6 +65,13 @@ The runner produces an on-disk bundle and nothing else. It does **not** call
 
 ## Temporary graph activation — the safety contract (highest risk)
 
+> **The exact mechanism is fixed in the
+> [`limiter-bench-runner-activation.md`](limiter-bench-runner-activation.md)
+> addendum** (Wave-0-grounded: mutate the *running* config only via
+> `set_active_config_raw` / `patch_config`, restore fail-closed via `reload`,
+> prove by read-back with `view_from_camilla_dict`). Implement that addendum; the
+> prose below is the intent it makes precise.
+
 This is the only part of the whole program that mutates a **live CamillaDSP
 graph** to play test tones through a proposed alignment. It is bench-only,
 operator-supervised, and fail-closed. For every discovery/candidate activation
