@@ -478,7 +478,7 @@ def test_known_post_routes_reach_csrf_guard():
         # v2 conductor flow (Wave 5a) — registered unconditionally; each
         # handler refuses fail-closed unless JASPER_CROSSOVER_FLOW=v2.
         "/crossover/v2/session", "/crossover/v2/verify", "/crossover/v2/apply",
-        "/crossover/v2/restore",
+        "/crossover/v2/restore", "/crossover/v2/recover-transaction",
         "/crossover/driver-test",
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",
@@ -596,6 +596,27 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     assert b"200" in resp.split(b"\r\n", 1)[0]
 
 
+def test_apply_failed_status_maps_to_409(monkeypatch):
+    """A rolled-back load is not a successful update at the browser surface."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: {
+            "status": "apply_failed",
+            "issues": [{"code": "baseline_profile_apply_failed"}],
+        },
+    )
+
+    resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+
+    assert b"409" in resp.split(b"\r\n", 1)[0]
+
+
 def test_restore_refusal_maps_to_400_not_500(monkeypatch):
     """W6 run-8 Blocker Q regression pin: the v2-aware Undo endpoint must
     answer a named 400 for an ordinary refusal, never the legacy path's bare
@@ -635,9 +656,8 @@ def test_restore_blocked_status_maps_to_409(monkeypatch):
             "status": "blocked",
             "issues": [{
                 "severity": "blocker",
-                "code": "restore_target_missing",
-                "message": "the previous crossover configuration could not "
-                "be found on disk",
+                "code": "restore_live_graph_unreadable",
+                "message": "the active DSP graph could not be identified safely",
             }],
         },
     )
@@ -646,7 +666,7 @@ def test_restore_blocked_status_maps_to_409(monkeypatch):
 
     assert b"409" in resp.split(b"\r\n", 1)[0]
     body = resp.split(b"\r\n\r\n", 1)[1]
-    assert b"restore_target_missing" in body
+    assert b"restore_live_graph_unreadable" in body
 
 
 def test_restore_restored_status_maps_to_200(monkeypatch):
@@ -664,6 +684,59 @@ def test_restore_restored_status_maps_to_200(monkeypatch):
     resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
 
     assert b"200" in resp.split(b"\r\n", 1)[0]
+
+
+def test_restore_refuses_while_verify_relay_owns_speaker(monkeypatch):
+    """Undo cannot change the production graph during VERIFY playback."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_restore",
+        lambda *_args: pytest.fail("restore must not enter while relay is active"),
+    )
+    correction_setup._set_relay_capture({
+        "status": "awaiting_phone",
+        "kind": "crossover_v2:verify",
+    })
+    try:
+        resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    assert b"measurement is still using the speaker" in resp
+
+
+def test_relay_cannot_start_while_v2_restore_owns_mutation_slot(monkeypatch):
+    monkeypatch.setattr(
+        correction_setup, "_crossover_v2_restore_in_progress", True
+    )
+
+    assert correction_setup._begin_relay_capture("crossover_v2:verify") is False
+
+
+def test_transaction_recovery_route_reaches_host(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "recover_stale_v2_transaction",
+        lambda *_args: {"status": "recovered"},
+    )
+
+    resp = _drive(
+        "/crossover/v2/recover-transaction", method="POST", body=b"{}"
+    )
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert b'"status": "recovered"' in resp
 
 
 # ---------------------------------------------------------------------------

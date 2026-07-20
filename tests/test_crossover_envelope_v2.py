@@ -79,6 +79,9 @@ def test_check_phase_screen():
     env = build_crossover_envelope_v2(_status(phase="check"))
     assert env["screen"] == "microphone_check"
     assert env["next_action"]["id"] == "start_v2_session"
+    assert "0.7–1.3 m" in env["verdict_text"]
+    assert "level with the tweeter" in env["verdict_text"]
+    assert "until verification is finished" in env["verdict_text"]
     statuses = _step_statuses(env)
     assert statuses["speaker_setup"] == "done"
     assert statuses["microphone_check"] == "active"
@@ -89,6 +92,8 @@ def test_measure_phase_is_phone_driven():
     env = build_crossover_envelope_v2(_status(phase="measure"))
     assert env["screen"] == "measure"
     assert env["next_action"] is None
+    assert "recording microphone" in env["verdict_text"]
+    assert "Keep the phone still" not in env["verdict_text"]
     assert _step_statuses(env)["measure"] == "active"
 
 
@@ -196,6 +201,34 @@ def test_verify_phase_screen():
     assert env["screen"] == "verify"
     assert env["next_action"] is None
     assert _step_statuses(env)["verify"] == "active"
+    assert "starts automatically" in env["verdict_text"]
+
+
+def test_reverify_phase_copy_names_the_required_phone_tap():
+    status = _status(phase="verify")
+    status["relay"] = {
+        "kind": "crossover_v2:verify",
+        "status": "awaiting_phone",
+    }
+    env = build_crossover_envelope_v2(status)
+
+    assert "tap Verify" in env["verdict_text"]
+    assert "Keep the microphone where" in env["verdict_text"]
+    assert "starts automatically" not in env["verdict_text"]
+
+
+def test_start_over_keeps_undo_reachable_when_an_applied_predecessor_exists():
+    env = build_crossover_envelope_v2(_status(
+        phase="check", applied=True, undo_available=True,
+    ))
+
+    undo = next(
+        action
+        for action in env["alternate_actions"]
+        if action["id"] == "verify_undo"
+    )
+    assert undo["endpoint"] == "/correction/crossover/v2/restore"
+    assert undo["show_during_relay"] is True
 
 
 def test_done_marks_every_step_done():
@@ -246,6 +279,8 @@ def test_fix_and_retry_template():
     ))
     assert env["screen"] == "fix_and_retry"
     assert env["verdict_text"] == REASON_REGISTRY[REASON_SNR_FLOOR].message
+    assert "recording microphone" in env["verdict_text"]
+    assert "move the phone closer" not in env["verdict_text"]
     assert env["next_action"]["id"] == "retry"
 
 
@@ -292,7 +327,17 @@ def test_verify_fail_one_default_screen():
     """§5.2: one default ("Try again") + Undo; the explicit trio behind the
     expert disclosure."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={
+            "outcome": "fail",
+            "tracking": {
+                "rms_db": 1.496,
+                "max_db": 8.75,
+                "max_db_notch_excluded": 5.115,
+                "tracking_band_hz": [1500.0, 4000.0],
+            },
+        },
     ))
     assert env["screen"] == "verify_fail"
     assert env["next_action"]["label"] == "Try again"
@@ -315,6 +360,34 @@ def test_verify_fail_one_default_screen():
     assert undo["show_during_relay"] is True
     assert remeasure["show_during_relay"] is True
     assert "show_during_relay" not in env["next_action"]
+    assert env["verify_details"] == {
+        "rms_db": 1.496,
+        # The disclosed max is the same notch-excluded comparator that decides
+        # the verdict, not the raw deep-notch diagnostic max.
+        "max_db": 5.115,
+        "tracking_band_hz": [1500.0, 4000.0],
+    }
+
+
+def test_verify_disclosure_never_labels_raw_max_as_the_checked_maximum():
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={
+            "outcome": "fail",
+            "tracking": {
+                "rms_db": 1.0,
+                "max_db": 9.0,
+                "tracking_band_hz": [1500.0, 4000.0],
+            },
+        },
+    ))
+
+    assert env["verify_details"] == {
+        "rms_db": 1.0,
+        "max_db": None,
+        "tracking_band_hz": [1500.0, 4000.0],
+    }
 
 
 def test_unknown_failure_code_still_renders_a_retry_screen():

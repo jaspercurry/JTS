@@ -225,6 +225,27 @@ render({
 assert.equal(elements.get("crossover-review").hidden, false);
 assert.equal(elements.get("crossover-review-body").children.length, 1);
 
+render({
+  ...terminalEnvelope,
+  nudges: [{severity: "warn", text: "Verification needs another try."}],
+  verify_details: {
+    rms_db: 1.496,
+    max_db: 5.115,
+    tracking_band_hz: [1500, 4000],
+  },
+});
+const verifyDetails = elements.get("crossover-nudges").children.at(-1);
+assert.equal(verifyDetails.open, undefined, "measurement details stay collapsed");
+assert.equal(verifyDetails.children[0].textContent, "Measurement details");
+assert.deepEqual(
+  verifyDetails.children.slice(1).map((row) => row.textContent),
+  [
+    "Average difference (RMS): 1.50 dB",
+    "Largest checked difference: 5.12 dB",
+    "Frequencies checked: 1,500–4,000 Hz",
+  ],
+);
+
 nextEnvelope = {
   ...terminalEnvelope,
   verdict_text: "Restart the complete measurements.",
@@ -315,4 +336,29 @@ assert.equal(
   "Candidate apply needs durable finalization.",
 );
 
-console.log(JSON.stringify({ ok: true, passed: 18 }));
+nextEnvelope = terminalEnvelope;
+postError = Object.assign(
+  new Error("HTTP 409"),
+  {
+    status: 409,
+    body: {
+      status: "blocked",
+      issues: [{
+        severity: "blocker",
+        code: "restore_live_graph_unreadable",
+        message: "The active DSP graph could not be identified safely.",
+      }],
+    },
+  },
+);
+await runAction(
+  { endpoint: "/correction/crossover/v2/restore", body: {} },
+  element("undo-candidate"),
+);
+assert.equal(
+  elements.get("capture-status").textContent,
+  "The active DSP graph could not be identified safely.",
+  "structured blocker copy replaces a generic HTTP 409",
+);
+
+console.log(JSON.stringify({ ok: true, passed: 20 }));

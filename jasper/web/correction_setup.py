@@ -144,6 +144,7 @@ _loop_thread: threading.Thread | None = None
 # _session_lock (same single-session scope).
 _relay_capture: dict[str, Any] | None = None
 _relay_stop_request: Callable[[], None] | None = None
+_crossover_v2_restore_in_progress = False
 _RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
 _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
     "finishing",
@@ -410,6 +411,7 @@ _POST_ROUTES = frozenset({
     "/crossover/v2/verify",
     "/crossover/v2/apply",
     "/crossover/v2/restore",
+    "/crossover/v2/recover-transaction",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -500,7 +502,7 @@ def _begin_relay_capture(
     background runner setting `complete`/`failed`."""
     global _relay_capture, _relay_stop_request
     with _session_lock:
-        if (
+        if _crossover_v2_restore_in_progress or (
             _relay_capture
             and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
         ):
@@ -508,6 +510,28 @@ def _begin_relay_capture(
         _relay_capture = {"status": "starting", "kind": kind_label}
         _relay_stop_request = request_stop
         return True
+
+
+def _begin_crossover_v2_restore() -> bool:
+    """Atomically exclude Undo/recovery from the complete relay lifecycle."""
+
+    global _crossover_v2_restore_in_progress
+    with _session_lock:
+        if _crossover_v2_restore_in_progress:
+            return False
+        if (
+            _relay_capture
+            and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
+        ):
+            return False
+        _crossover_v2_restore_in_progress = True
+        return True
+
+
+def _end_crossover_v2_restore() -> None:
+    global _crossover_v2_restore_in_progress
+    with _session_lock:
+        _crossover_v2_restore_in_progress = False
 
 
 def _publish_relay_waiting(kind_label: str, tap_link: str) -> dict[str, Any]:
@@ -6526,7 +6550,34 @@ def _handle_crossover_v2_restore(handler: BaseHTTPRequestHandler) -> dict[str, A
 
     from . import correction_crossover_v2 as v2host
 
-    return v2host.handle_v2_restore(_run_async, _camilla)
+    if not _begin_crossover_v2_restore():
+        raise ValueError(
+            "a measurement is still using the speaker — stop it and wait for "
+            "cleanup to finish before undoing"
+        )
+    try:
+        return v2host.handle_v2_restore(_run_async, _camilla)
+    finally:
+        _end_crossover_v2_restore()
+
+
+def _handle_crossover_v2_recover_transaction(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /crossover/v2/recover-transaction: repair a crash-mixed graph."""
+
+    _read_json_body(handler)
+    from . import correction_crossover_v2 as v2host
+
+    if not _begin_crossover_v2_restore():
+        raise ValueError(
+            "a measurement is still using the speaker — stop it and wait for "
+            "cleanup to finish before recovering the saved sound"
+        )
+    try:
+        return v2host.recover_stale_v2_transaction(_run_async, _camilla)
+    finally:
+        _end_crossover_v2_restore()
 
 
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
@@ -7519,9 +7570,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(
                         payload,
                         status=(
-                            HTTPStatus.CONFLICT
-                            if payload.get("status") == "blocked"
-                            else HTTPStatus.OK
+                            HTTPStatus.OK
+                            if payload.get("status") == "applied"
+                            else HTTPStatus.CONFLICT
                         ),
                     )
                 except ValueError as e:
@@ -7551,6 +7602,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(
                         {"ok": False, "error": str(e)},
                         status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/recover-transaction":
+                try:
+                    payload = _handle_crossover_v2_recover_transaction(self)
+                    self._send_json(payload, status=HTTPStatus.OK)
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.CONFLICT,
                     )
                 except (OSError, RuntimeError, TypeError) as e:
                     logger.exception("%s failed", path)
@@ -7870,6 +7935,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         relay=_get_relay_capture_for(
                             "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
+                        v2_recovery_run_async=_run_async,
+                        v2_recovery_camilla_factory=_camilla,
                     )
                     self._send_json(payload, status=int(status))
                 except (OSError, RuntimeError, TypeError, ValueError) as e:
@@ -7891,6 +7958,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         relay=_get_relay_capture_for(
                             "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
+                        v2_recovery_run_async=_run_async,
+                        v2_recovery_camilla_factory=_camilla,
                     )
                     self._send_json(payload, status=int(status))
                 except (OSError, RuntimeError, TypeError, ValueError) as e:

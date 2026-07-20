@@ -296,7 +296,52 @@
 > CamillaDSP. If a baseline is already applied, the new candidate is written to
 > a content-addressed sibling instead of overwriting the running/statefile-owned
 > config; the state retains one small `applied_recomposition_profile` anchor
-> until the explicit apply succeeds. The emitter
+> until the explicit apply succeeds. Every terminal v2 measured-Apply attempt
+> protects the applied, live, and Undo-stash config paths, then retains five
+> additional recent candidate siblings; unresolved live references skip
+> pruning rather than risk an in-use config. Retention re-enters the shared DSP
+> writer lock after the Apply transaction reaches a terminal result while the
+> topology lock remains held. Immediately before v2 Apply's first load,
+> the host snapshots the exact live predecessor into an immutable, SHA-correct
+> candidate sibling; this keeps Undo valid when Bass Extension has rewritten the
+> selected baseline file in place without changing Layer A's older saved SHA.
+> v2 Undo records the exact applied
+> Layer-A identity and normalized live Camilla graph it would replace,
+> rechecks both identities inside the DSP writer lock, and holds the output
+> topology's shared publication lock from topology-fingerprint validation
+> through restore; Apply holds that same lock across its final topology read,
+> recompose, DSP transaction, and durable commit. Topology-lock admission is
+> bounded and reports an actionable busy failure rather than waiting forever.
+> A state reservation spans that proof, restore, and the
+> applied-state clear; a later same-topology graph or concurrent topology save
+> therefore fails/awaits safely instead of being overwritten. Apply and Undo
+> upgrade that reservation, under the DSP writer lock and before first load,
+> into a journal of the exact source/target Layer-A and normalized live-graph
+> identities (plus Apply's exact retained predecessor). The owner identity is
+> the Linux boot ID plus process start time, not a reusable PID. Recovery uses
+> a strict Layer-A read that distinguishes missing, explicit no-anchor, and
+> malformed/unreadable state, and reconciles both disk and live identities
+> before further mutation; those Layer-A and Camilla reads happen together under
+> the shared DSP writer lock. Committed and untouched outcomes finalize safely;
+> a coherent graph installed by another admitted writer supersedes the stale v2
+> journey only when its Layer-A topology fingerprint also matches the journaled
+> current topology; wrong-topology, mixed, missing, or unreadable outcomes stay
+> fenced. A live request that publishes this recovery fence relinquishes its
+> request owner so the explicit action works without a daemon restart. The crossover UI's
+> explicit recovery action holds the topology-publication lock, rejects a saved
+> Layer-A profile for different wiring, reloads its sha-pinned config under one
+> writer-lock admission, then re-enters that writer lock to reconcile while the
+> topology lock remains continuous. VERIFY likewise
+> proves the saved Layer-A and normalized live graph under the writer boundary
+> while topology remains locked through relay mint, then holds both topology and
+> DSP-writer boundaries across VERIFY playback and result acceptance. VERIFY
+> timeout/cancellation drains the blocking worker before those locks release.
+> Source/target transaction matches also require the SHA-pinned Layer-A config
+> to reproduce the matching live graph; only first Apply has an explicit
+> no-profile source exception. Mutation journals, Layer-A applied commits,
+> and matching v2 terminal commits are durable fsync publications so reboot
+> ordering cannot persist an audio mutation without its recovery evidence.
+> The emitter
 > (`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`)
 > requires an explicit active playback device, keeps `devices.volume_limit`
 > non-positive, emits `active_baseline_headroom` at `0.0 dB` by default,
@@ -2246,7 +2291,11 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-07-16 (calibration-level statefile scoped to the current
+Last verified: 2026-07-19 (W5b v2 topology/graph-bound Undo, transaction
+recovery, cancellation-drained VERIFY authority, and bounded candidate/Undo
+retention checked against `jasper.web.correction_crossover_v2`,
+`jasper.active_speaker.baseline_profile`, and the focused endpoint tests; prior
+2026-07-16 pass covered the calibration-level statefile scoped to the current
 commissioning run's `safe_playback` session id, checked against
 `jasper.active_speaker.calibration_level` and `jasper.web.sound_setup`; prior
 2026-07-15 pass covered Wave 1 target-bound research, visible confirmed

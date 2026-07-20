@@ -28,20 +28,27 @@ flow-selector refusals the dispatch relies on.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
+import hashlib
 import json
+import os
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pytest
+import yaml as yaml_lib
 
 from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
 from jasper.active_speaker.crossover_v2_flow import (
     PHASE_CHECK,
     PHASE_DONE,
     PHASE_MEASURE,
+    PHASE_REVIEW_APPLY,
     PHASE_VERIFY,
     CrossoverV2Conductor,
     V2FlowSeams,
@@ -75,6 +82,9 @@ _BINDING = "placement_abcdefghijklmnopqrstuv"
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
+    )
     monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     v2host.reset_session_measurement_pause_for_tests()
     yield
@@ -88,6 +98,50 @@ def _bg_run_async(coro, *, timeout=None):
     coroutine to completion and return its result (each on a fresh loop — the
     session-volume drains are self-contained, no cross-loop context manager)."""
     return asyncio.run(coro)
+
+
+def _stub_verify_authority(
+    monkeypatch,
+    tmp_path: Path,
+    topology: Any,
+) -> tuple[dict[str, Any], str]:
+    """Give verify admission a coherent Layer-A/live/topology authority."""
+
+    from jasper.active_speaker import baseline_profile
+    from jasper import output_topology
+
+    graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+    path = tmp_path / "verify-applied.yml"
+    path.write_text(graph, encoding="utf-8")
+    profile = {
+        "status": "applied",
+        "recomposition_snapshot": {"topology_fingerprint": "topology-fp"},
+        "config": {
+            "path": str(path),
+            "sha256": hashlib.sha256(graph.encode("utf-8")).hexdigest(),
+        },
+    }
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, profile),
+    )
+    monkeypatch.setattr(
+        baseline_profile, "topology_config_fingerprint", lambda _topology: "topology-fp"
+    )
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(
+        output_topology,
+        "output_topology_mutation_lock",
+        lambda: contextlib.nullcontext(),
+    )
+    graph_fingerprint = baseline_profile.normalized_camilla_graph_fingerprint(graph)
+
+    async def current_graph(_cam):
+        return graph_fingerprint
+
+    monkeypatch.setattr(v2host, "_current_camilla_graph_fingerprint", current_graph)
+    return profile, graph_fingerprint
 
 
 class _FakeVolCam:
@@ -266,11 +320,34 @@ def test_happy_path_three_phases_with_deferred_verify_release():
         backend, session, phone, published=published, phases_seen=phases_seen
     )
     volume = VolumeRecorder()
-    _run(_build_runner(conductor, volume), client, session)
+    authority_events: list[tuple[str, str]] = []
+
+    def verify_authority(action):
+        authority_events.append(("enter", conductor.current_phase))
+        try:
+            return action()
+        finally:
+            authority_events.append(("exit", conductor.current_phase))
+
+    _run(
+        _build_runner(
+            conductor,
+            volume,
+            verify_authority=verify_authority,
+        ),
+        client,
+        session,
+    )
 
     # All three phases accepted through ONE relay session.
     assert conductor.current_phase == PHASE_DONE
     assert conductor.verify_outcome == "pass"
+    assert authority_events == [
+        ("enter", PHASE_VERIFY),
+        ("exit", PHASE_VERIFY),
+        ("enter", PHASE_VERIFY),
+        ("exit", PHASE_DONE),
+    ]
     assert phone.deferrals_seen >= 1  # VERIFY was soft-held until apply
     assert [kind for kind, _ in published] == ["check", "candidate"]
     # The relay observed the deferral then the released capture.
@@ -308,7 +385,14 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     state = v2host.load_v2_state()
     assert set(state["accepted_phases"]) == {PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY}
     assert state["applied"] is True
-    assert state["verify"] == {"outcome": "pass"}
+    assert state["verify"] == {
+        "outcome": "pass",
+        "tracking": {
+            "rms_db": 0.4,
+            "max_db": 0.9,
+            "max_db_notch_excluded": 0.9,
+        },
+    }
     assert state["failure"] is None
     assert state["candidate"]["fingerprint"]
 
@@ -512,6 +596,417 @@ def test_prepare_refuses_when_volume_needs_recovery():
     assert "recover" in str(excinfo.value)
 
 
+@pytest.mark.parametrize("kind", ["session", "verify"])
+def test_post_mint_open_failure_purges_relay_session(
+    monkeypatch,
+    tmp_path,
+    kind,
+):
+    from jasper.capture_relay import correction_adapter
+
+    class _NoRecovery:
+        needs_recovery = False
+
+    context = SimpleNamespace(
+        preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        role_targets={"woofer": "w", "tweeter": "t"},
+        safety_profile={},
+        session_volume_db=SESSION_VOLUME_DB,
+        driver_spacing_m=0.15,
+        topology=SimpleNamespace(),
+        playback_device="hw:test",
+        role_channels={"woofer": 0, "tweeter": 1},
+        declared_sensitivities={},
+    )
+    v2host.set_volume_plan_for_tests(_NoRecovery())
+    monkeypatch.setattr(v2host, "reconcile_stale_v2_transaction", lambda *a, **k: False)
+    monkeypatch.setattr(v2host, "reconcile_session_volume_for_new_session", lambda *a, **k: None)
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+    monkeypatch.setattr(v2host, "open_v2_evidence_store", lambda _topology: (object(), "bundle"))
+    monkeypatch.setattr(
+        v2host,
+        "bind_evidence_publishers",
+        lambda *_args: (lambda *_a: None, lambda *_a: None, {}),
+    )
+    monkeypatch.setattr(v2host, "bind_production_play", lambda **_kwargs: lambda *_a: None)
+    real_bind_authority = v2host._v2_verify_authority_runner
+    authority_bindings: list[str] = []
+
+    def observed_bind_authority(**kwargs):
+        authority_bindings.append(kind)
+        return real_bind_authority(**kwargs)
+
+    monkeypatch.setattr(
+        v2host, "_v2_verify_authority_runner", observed_bind_authority
+    )
+    monkeypatch.setattr(v2host, "default_setup_calibration_for_v2", lambda: None)
+    minted = SimpleNamespace(
+        pi_session=SimpleNamespace(session_id="minted", pull_token="pull"),
+        tap_link="https://capture.test/tap",
+    )
+    monkeypatch.setattr(correction_adapter, "open_capture", lambda *_a, **_k: minted)
+    purged: list[str] = []
+    monkeypatch.setattr(
+        v2host,
+        "_purge_opened_relay_capture",
+        lambda _client, rc: purged.append(rc.pi_session.session_id),
+    )
+    monkeypatch.setattr(
+        v2host,
+        "persist_conductor_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("state filesystem is read-only")
+        ),
+    )
+    if kind == "verify":
+        from jasper.active_speaker.baseline_profile import (
+            baseline_candidate_fingerprint,
+        )
+
+        profile, graph_fingerprint = _stub_verify_authority(
+            monkeypatch, tmp_path, context.topology
+        )
+        v2host.save_v2_state({
+            "session_id": "applied-session",
+            "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+            "applied": True,
+            "candidate": {"fingerprint": "candidate"},
+            "applied_profile_fingerprint": baseline_candidate_fingerprint(profile),
+            "applied_live_graph_fingerprint": graph_fingerprint,
+            "verify_priors": None,
+        })
+        prepared = v2host.prepare_v2_verify(
+            {}, status={}, run_async=_bg_run_async, camilla_factory=lambda: None
+        )
+    else:
+        prepared = v2host.prepare_v2_session(
+            {}, status={}, run_async=_bg_run_async, camilla_factory=lambda: None
+        )
+
+    with pytest.raises(OSError, match="read-only"):
+        prepared.open(
+            object(),
+            "https://relay",
+            "capture.test",
+            "https://jts.test/correction/",
+        )
+
+    assert purged == ["minted"]
+    assert authority_bindings == [kind]
+
+
+def test_verify_open_revalidates_applied_state_before_mint(monkeypatch):
+    """A prepared stale VERIFY cannot mint after Undo/reset changed authority."""
+    from jasper.capture_relay import correction_adapter
+
+    class _NoRecovery:
+        needs_recovery = False
+
+    context = SimpleNamespace(
+        preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        role_targets={"woofer": "w", "tweeter": "t"},
+        safety_profile={},
+        session_volume_db=SESSION_VOLUME_DB,
+        driver_spacing_m=0.15,
+        topology=SimpleNamespace(),
+        playback_device="hw:test",
+        role_channels={"woofer": 0, "tweeter": 1},
+        declared_sensitivities={},
+    )
+    v2host.set_volume_plan_for_tests(_NoRecovery())
+    monkeypatch.setattr(
+        v2host, "reconcile_stale_v2_transaction", lambda *a, **k: False
+    )
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store", lambda _topology: (object(), "bundle")
+    )
+    monkeypatch.setattr(v2host, "default_setup_calibration_for_v2", lambda: None)
+    v2host.save_v2_state({
+        "session_id": "applied-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": True,
+        "candidate": {"fingerprint": "candidate"},
+        "applied_profile_fingerprint": "profile-fp",
+        "applied_live_graph_fingerprint": "graph-fp",
+        "pre_apply_profile": {"identity": "prior"},
+    })
+    prepared = v2host.prepare_v2_verify(
+        {}, status={}, run_async=_bg_run_async, camilla_factory=lambda: None
+    )
+    changed = v2host.load_v2_state()
+    changed["applied"] = False
+    v2host.save_v2_state(changed)
+    monkeypatch.setattr(
+        correction_adapter,
+        "open_capture",
+        lambda *_args, **_kwargs: pytest.fail("stale verify must not mint"),
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="changed before verification"):
+        prepared.open(
+            object(),
+            "https://relay",
+            "capture.test",
+            "https://jts.test/correction/",
+        )
+
+
+def test_verify_open_revalidates_layer_a_and_live_graph_before_mint(
+    monkeypatch,
+    tmp_path,
+):
+    """An admitted DSP writer cannot leave a stale VERIFY certifying its graph."""
+
+    from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
+    from jasper.capture_relay import correction_adapter
+
+    class _NoRecovery:
+        needs_recovery = False
+
+    context = SimpleNamespace(
+        preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        role_targets={"woofer": "w", "tweeter": "t"},
+        safety_profile={},
+        session_volume_db=SESSION_VOLUME_DB,
+        driver_spacing_m=0.15,
+        topology=SimpleNamespace(),
+        playback_device="hw:test",
+        role_channels={"woofer": 0, "tweeter": 1},
+        declared_sensitivities={},
+    )
+    v2host.set_volume_plan_for_tests(_NoRecovery())
+    monkeypatch.setattr(
+        v2host, "reconcile_stale_v2_transaction", lambda *a, **k: False
+    )
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store", lambda _topology: (object(), "bundle")
+    )
+    monkeypatch.setattr(v2host, "default_setup_calibration_for_v2", lambda: None)
+    profile, graph_fingerprint = _stub_verify_authority(
+        monkeypatch, tmp_path, context.topology
+    )
+    v2host.save_v2_state({
+        "session_id": "applied-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": True,
+        "candidate": {"fingerprint": "candidate"},
+        "applied_profile_fingerprint": baseline_candidate_fingerprint(profile),
+        "applied_live_graph_fingerprint": graph_fingerprint,
+        "pre_apply_profile": {"identity": "prior"},
+    })
+    prepared = v2host.prepare_v2_verify(
+        {}, status={}, run_async=_bg_run_async, camilla_factory=lambda: None
+    )
+
+    async def changed_live_graph(_cam):
+        return "changed-live-graph"
+
+    monkeypatch.setattr(
+        v2host, "_current_camilla_graph_fingerprint", changed_live_graph
+    )
+    monkeypatch.setattr(
+        correction_adapter,
+        "open_capture",
+        lambda *_args, **_kwargs: pytest.fail("stale verify must not mint"),
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="speaker graph changed"):
+        prepared.open(
+            object(),
+            "https://relay",
+            "capture.test",
+            "https://jts.test/correction/",
+        )
+
+
+def test_verify_authority_holds_topology_and_writer_locks_through_action(
+    monkeypatch,
+    tmp_path,
+):
+    """A transient graph swap cannot fit between VERIFY checks and its work."""
+
+    from contextlib import asynccontextmanager
+
+    from jasper.active_speaker import baseline_profile
+    from jasper import dsp_apply, output_topology
+
+    topology = SimpleNamespace()
+    profile, graph_fingerprint = _stub_verify_authority(
+        monkeypatch, tmp_path, topology
+    )
+    v2host.save_v2_state({
+        "session_id": "verify-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": True,
+        "applied_session_id": "verify-session",
+        "candidate": {"fingerprint": "candidate"},
+        "applied_profile_fingerprint": (
+            baseline_profile.baseline_candidate_fingerprint(profile)
+        ),
+        "applied_live_graph_fingerprint": graph_fingerprint,
+    })
+    topology_lock_held = False
+    writer_lock_held = False
+    checks = 0
+
+    @contextlib.contextmanager
+    def observed_topology_lock():
+        nonlocal topology_lock_held
+        topology_lock_held = True
+        try:
+            yield
+        finally:
+            topology_lock_held = False
+
+    @asynccontextmanager
+    async def observed_writer_lock(*_args, **_kwargs):
+        nonlocal writer_lock_held
+        assert topology_lock_held
+        writer_lock_held = True
+        try:
+            yield
+        finally:
+            writer_lock_held = False
+
+    async def observed_live_graph(_cam):
+        nonlocal checks
+        assert topology_lock_held
+        assert writer_lock_held
+        checks += 1
+        return graph_fingerprint
+
+    monkeypatch.setattr(
+        output_topology, "output_topology_mutation_lock", observed_topology_lock
+    )
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", observed_writer_lock)
+    monkeypatch.setattr(
+        v2host, "_current_camilla_graph_fingerprint", observed_live_graph
+    )
+
+    def action():
+        assert topology_lock_held
+        assert writer_lock_held
+        return "accepted"
+
+    authority = v2host._v2_verify_authority_runner(
+        run_async=_bg_run_async,
+        camilla_factory=lambda: object(),
+        session_id="verify-session",
+        expected_topology=topology,
+    )
+    assert authority(action) == "accepted"
+    assert checks == 2
+    assert not topology_lock_held
+    assert not writer_lock_held
+
+
+def test_verify_authority_drains_worker_before_production_timeout_releases_locks(
+    monkeypatch,
+    tmp_path,
+):
+    """The real 60 s bridge shape cannot abandon an uncancellable worker."""
+
+    from contextlib import asynccontextmanager
+
+    from jasper.active_speaker import baseline_profile
+    from jasper import dsp_apply, output_topology
+    from jasper.web import correction_setup
+
+    topology = SimpleNamespace()
+    profile, graph_fingerprint = _stub_verify_authority(
+        monkeypatch, tmp_path, topology
+    )
+    v2host.save_v2_state({
+        "session_id": "timeout-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": True,
+        "applied_session_id": "timeout-session",
+        "candidate": {"fingerprint": "candidate"},
+        "applied_profile_fingerprint": (
+            baseline_profile.baseline_candidate_fingerprint(profile)
+        ),
+        "applied_live_graph_fingerprint": graph_fingerprint,
+    })
+    topology_lock_held = False
+    writer_lock_held = False
+
+    @contextlib.contextmanager
+    def observed_topology_lock():
+        nonlocal topology_lock_held
+        topology_lock_held = True
+        try:
+            yield
+        finally:
+            topology_lock_held = False
+
+    @asynccontextmanager
+    async def observed_writer_lock(*_args, **_kwargs):
+        nonlocal writer_lock_held
+        assert topology_lock_held
+        writer_lock_held = True
+        try:
+            yield
+        finally:
+            writer_lock_held = False
+
+    async def observed_live_graph(_cam):
+        assert topology_lock_held
+        assert writer_lock_held
+        return graph_fingerprint
+
+    monkeypatch.setattr(
+        output_topology, "output_topology_mutation_lock", observed_topology_lock
+    )
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", observed_writer_lock)
+    monkeypatch.setattr(
+        v2host, "_current_camilla_graph_fingerprint", observed_live_graph
+    )
+    action_started = threading.Event()
+    release_action = threading.Event()
+    locks_seen_after_timeout: list[tuple[bool, bool]] = []
+
+    def slow_action() -> None:
+        assert topology_lock_held
+        assert writer_lock_held
+        action_started.set()
+        assert release_action.wait(timeout=1.0)
+        assert topology_lock_held
+        assert writer_lock_held
+
+    def release_after_bridge_timeout() -> None:
+        assert action_started.wait(timeout=1.0)
+        time.sleep(0.05)
+        locks_seen_after_timeout.append((topology_lock_held, writer_lock_held))
+        release_action.set()
+
+    releaser = threading.Thread(target=release_after_bridge_timeout)
+    releaser.start()
+    authority = v2host._v2_verify_authority_runner(
+        run_async=lambda coro: correction_setup._run_async(coro, timeout=0.01),
+        camilla_factory=lambda: object(),
+        session_id="timeout-session",
+        expected_topology=topology,
+    )
+    with pytest.raises(concurrent.futures.TimeoutError):
+        authority(slow_action)
+    releaser.join(timeout=1.0)
+
+    assert locks_seen_after_timeout == [(True, True)]
+    assert not topology_lock_held
+    assert not writer_lock_held
+
+
 def test_apply_endpoint_requires_current_candidate():
     with pytest.raises(v2host.CrossoverV2Refused):
         v2host.handle_v2_apply(
@@ -623,16 +1118,115 @@ def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
         v2host.handle_v2_restore(None, None)
 
 
+def test_restore_refuses_after_output_topology_changes(monkeypatch):
+    """Undo never loads a config compiled for a different output map; the
+    refusal names both the cause and the recovery action."""
+    from jasper.active_speaker import baseline_profile
+    from jasper import output_topology
+
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(v2host._state_path().with_name("topology.json"))
+    )
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": {
+            "recomposition_snapshot": {"topology_fingerprint": "topology-old"},
+        },
+    })
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", object)
+    monkeypatch.setattr(
+        baseline_profile,
+        "topology_config_fingerprint",
+        lambda _topology: "topology-new",
+    )
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_restore(None, lambda: pytest.fail("must not load DSP"))
+    message = str(excinfo.value)
+    assert "output topology changed" in message
+    assert "re-measure" in message
+
+
+def test_restore_refuses_when_old_stash_has_no_topology_fingerprint(monkeypatch):
+    """An old stash without an identity proof is not described as a change,
+    but still fails closed and names the recovery action."""
+    from jasper import output_topology
+
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": {"recomposition_snapshot": {}},
+    })
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", object)
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.handle_v2_restore(None, lambda: pytest.fail("must not load DSP"))
+    message = str(excinfo.value)
+    assert "does not record which output topology" in message
+    assert "re-measure" in message
+
+
 def test_status_block_surfaces_apply_blocked():
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": False,
-        "apply_blocked": {"id": "measured_candidate_preset_mismatch", "message": "x"},
+        "apply_blocked": {
+            "id": "measured_candidate_preset_mismatch",
+            "message": "x",
+            "session_id": "cap_x",
+        },
     })
     assert v2host.crossover_v2_status_block()["apply_blocked"] == {
         "id": "measured_candidate_preset_mismatch", "message": "x",
     }
+
+
+def test_apply_blocked_is_not_visible_or_carried_into_a_new_session():
+    v2host.save_v2_state({
+        "session_id": "cap_old",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": False,
+        "apply_blocked": {
+            "id": "measured_candidate_preset_mismatch",
+            "message": "old session only",
+            "session_id": "cap_old",
+        },
+    })
+    conductor = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            session_id="cap_new",
+            accepted_phases=(),
+            applied=False,
+            gain_plan_db=None,
+        ),
+        verify_outcome=None,
+        verify_tracking=None,
+        candidate=None,
+        measure_predicted_sum=None,
+        measure_gate_window_ms=None,
+    )
+    v2host.persist_conductor_state(
+        conductor, failure_code=None, allow_session_rebind=True
+    )
+    state = v2host.load_v2_state()
+    assert state["session_id"] == "cap_new"
+    assert state["apply_blocked"] is None
+    assert v2host.crossover_v2_status_block()["apply_blocked"] is None
+
+
+def test_unscoped_pre_w5b_apply_blocked_record_is_ignored():
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "applied": False,
+        "apply_blocked": {"id": "old", "message": "global legacy record"},
+    })
+    assert v2host.crossover_v2_status_block()["apply_blocked"] is None
 
 
 def test_blocking_apply_issue_prefers_a_blocker_over_earlier_non_blocker_issues():
@@ -651,6 +1245,1548 @@ def test_blocking_apply_issue_prefers_a_blocker_over_earlier_non_blocker_issues(
 def test_blocking_apply_issue_none_when_no_issues():
     assert v2host._blocking_apply_issue({"issues": []}) is None
     assert v2host._blocking_apply_issue({}) is None
+
+
+def test_candidate_config_retention_keeps_protected_plus_five_recent(tmp_path):
+    from jasper.active_speaker.baseline_profile import (
+        prune_baseline_candidate_configs,
+    )
+
+    candidates = []
+    for index in range(10):
+        path = tmp_path / f"active_speaker_baseline_candidate_{index:02d}.yml"
+        path.write_text(f"candidate: {index}\n", encoding="utf-8")
+        os.utime(path, ns=(index + 1, index + 1))
+        candidates.append(path)
+    applied = candidates[0]
+    undo_stash = candidates[1]
+
+    removed = prune_baseline_candidate_configs(
+        tmp_path / "active_speaker_baseline.yml",
+        protected_paths=[applied, undo_stash],
+        keep_recent=5,
+    )
+
+    expected_kept = {applied, undo_stash, *candidates[5:]}
+    assert {path for path in candidates if path.exists()} == expected_kept
+    assert set(removed) == set(candidates[2:5])
+
+
+def test_candidate_config_retention_uses_custom_basename_and_extension(tmp_path):
+    from jasper.active_speaker.baseline_profile import (
+        prune_baseline_candidate_configs,
+    )
+
+    baseline = tmp_path / "house_sound.yaml"
+    candidates = []
+    for index in range(5):
+        path = tmp_path / f"house_sound_candidate_{index:02d}.yaml"
+        path.write_text(f"candidate: {index}\n", encoding="utf-8")
+        os.utime(path, ns=(index + 1, index + 1))
+        candidates.append(path)
+    undo = tmp_path / "house_sound_candidate_undo_deadbeef.yaml"
+    undo.write_text("undo: true\n", encoding="utf-8")
+    os.utime(undo, ns=(1, 1))
+    unrelated = tmp_path / "active_speaker_baseline_candidate_old.yml"
+    unrelated.write_text("unrelated: true\n", encoding="utf-8")
+
+    removed = prune_baseline_candidate_configs(
+        baseline,
+        protected_paths=[undo],
+        keep_recent=2,
+    )
+
+    assert set(removed) == set(candidates[:3])
+    assert undo.exists()
+    assert unrelated.exists()
+
+
+@pytest.mark.parametrize(
+    ("baseline_name", "unrelated_name"),
+    [
+        ("house[west].yaml", "housew_candidate_unrelated.yaml"),
+        ("house_sound", "house_sound_candidate_unrelated.yml"),
+    ],
+)
+def test_candidate_config_family_is_literal_and_extensionless_safe(
+    tmp_path,
+    baseline_name,
+    unrelated_name,
+):
+    from jasper.active_speaker.baseline_profile import (
+        baseline_candidate_config_path,
+        prune_baseline_candidate_configs,
+    )
+
+    baseline = tmp_path / baseline_name
+    candidates = []
+    for index in range(3):
+        path = baseline_candidate_config_path(baseline, f"candidate_{index}")
+        path.write_text(f"candidate: {index}\n", encoding="utf-8")
+        os.utime(path, ns=(index + 1, index + 1))
+        candidates.append(path)
+    unrelated = tmp_path / unrelated_name
+    unrelated.write_text("unrelated: true\n", encoding="utf-8")
+
+    removed = prune_baseline_candidate_configs(
+        baseline,
+        protected_paths=[],
+        keep_recent=1,
+    )
+
+    assert set(removed) == set(candidates[:2])
+    assert candidates[2].exists()
+    assert unrelated.exists()
+
+
+def test_undo_snapshot_uses_custom_candidate_family(monkeypatch, tmp_path):
+    from jasper.active_speaker.baseline_profile import CONFIG_PATH_ENV
+
+    configured = tmp_path / "house_sound.yaml"
+    source = tmp_path / "currently-selected.yml"
+    source.write_text("old: graph\n", encoding="utf-8")
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(configured))
+    profile = {
+        "config": {
+            "path": str(source),
+            "sha256": hashlib.sha256(b"old: graph\n").hexdigest(),
+        },
+    }
+
+    retained = v2host._snapshot_pre_apply_profile(
+        profile,
+        "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n",
+    )
+
+    assert retained is not None
+    retained_path = Path(retained["config"]["path"])
+    assert retained_path.parent == tmp_path
+    assert retained_path.name.startswith("house_sound_candidate_undo_")
+    assert retained_path.suffix == ".yaml"
+    assert retained_path.exists()
+
+
+def test_undo_snapshot_preserves_an_extensionless_candidate_family(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker.baseline_profile import CONFIG_PATH_ENV
+
+    configured = tmp_path / "house_sound"
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(configured))
+    source = tmp_path / "currently-selected.yml"
+    source.write_text("old: graph\n", encoding="utf-8")
+
+    retained = v2host._snapshot_pre_apply_profile(
+        {
+            "config": {
+                "path": str(source),
+                "sha256": hashlib.sha256(b"old: graph\n").hexdigest(),
+            },
+        },
+        "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n",
+    )
+
+    retained_path = Path(retained["config"]["path"])
+    assert retained_path.name.startswith("house_sound_candidate_undo_")
+    assert retained_path.suffix == ""
+
+
+@pytest.mark.parametrize("missing", ["applied", "live", "undo"])
+def test_v2_candidate_prune_skips_when_any_live_reference_is_unknown(
+    monkeypatch,
+    tmp_path,
+    missing,
+):
+    """Retention leaks safely rather than guessing at a live authority."""
+    from jasper.active_speaker import baseline_profile
+
+    paths = {
+        name: tmp_path / f"active_speaker_baseline_candidate_{name}.yml"
+        for name in ("applied", "live", "undo")
+    }
+    for path in paths.values():
+        path.write_text("filters: {}\n", encoding="utf-8")
+    applied = {"config": {"path": str(paths["applied"])}}
+    pre_apply = {"config": {"path": str(paths["undo"])}}
+    live_path = str(paths["live"])
+    if missing == "applied":
+        applied["config"]["path"] = ""
+    elif missing == "live":
+        live_path = ""
+    else:
+        pre_apply["config"]["path"] = ""
+    v2host.save_v2_state({"pre_apply_profile": pre_apply})
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, applied),
+    )
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "prune_baseline_candidate_configs",
+        lambda *args, **kwargs: pytest.fail("must not prune with an unknown ref"),
+    )
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return live_path
+
+    assert v2host._prune_v2_candidate_configs_after_attempt(
+        _bg_run_async,
+        Cam(),
+    ) == ()
+
+
+def test_apply_blocker_is_dropped_when_its_producing_session_changed():
+    v2host.save_v2_state({
+        "session_id": "new-session",
+        "accepted_phases": [PHASE_CHECK],
+        "candidate": None,
+        "applied": False,
+    })
+
+    v2host._persist_apply_blocked(
+        {"id": "old-blocker", "message": "old"},
+        session_id="old-session",
+        candidate_fingerprint="old-fingerprint",
+    )
+
+    assert v2host.load_v2_state().get("apply_blocked") is None
+
+
+def test_terminal_pre_apply_session_death_invalidates_review_candidate():
+    candidate = SimpleNamespace(
+        fingerprint="candidate-fp",
+        program_id="program",
+        role_attenuations_db={},
+        analysis={},
+        alignment=SimpleNamespace(to_dict=lambda: {}),
+    )
+    conductor = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            session_id="dead-session",
+            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+            applied=False,
+            gain_plan_db={"woofer": -2.0},
+        ),
+        verify_outcome=None,
+        verify_tracking=None,
+        candidate=candidate,
+        measure_predicted_sum=None,
+        measure_gate_window_ms=None,
+    )
+
+    v2host._persist_terminal_failure(conductor, "relay_timeout")
+
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] is None
+    assert state["accepted_phases"] == []
+
+
+def test_terminal_failure_does_not_interrupt_cleanup_during_apply_reservation():
+    reservation = v2host._reservation_payload("reserved")
+    v2host.save_v2_state({
+        "session_id": "applying-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "candidate-fp"},
+        "applied": False,
+        "apply_reservation": reservation,
+    })
+    conductor = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            session_id="applying-session",
+            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+            applied=False,
+            gain_plan_db={"woofer": -2.0},
+        ),
+        verify_outcome=None,
+        verify_tracking=None,
+        candidate=None,
+        measure_predicted_sum=None,
+        measure_gate_window_ms=None,
+    )
+
+    # Persistence is deferred rather than raising through the caller's
+    # volume-abandon and relay-purge cleanup arms.
+    v2host._persist_terminal_failure(conductor, "relay_timeout")
+
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] == reservation
+    assert state.get("failure") is None
+    assert state["pending_terminal_failure"] == {
+        "code": "relay_timeout",
+        "session_id": "applying-session",
+    }
+
+    # A transaction that exits without applying consumes the pending death and
+    # invalidates the dead pre-apply frontier before another POST can reuse it.
+    v2host._release_v2_apply_reservation("reserved")
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] is None
+    assert state["pending_terminal_failure"] is None
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] is None
+    assert state["accepted_phases"] == []
+
+
+def test_apply_commit_preserves_a_terminal_failure_that_arrived_after_admission():
+    reservation = v2host._reservation_payload("reserved")
+    v2host.save_v2_state({
+        "session_id": "applying-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "candidate-fp"},
+        "applied": False,
+        "pending_terminal_failure": {
+            "code": "relay_timeout",
+            "session_id": "applying-session",
+        },
+        "apply_reservation": reservation,
+    })
+
+    v2host.observe_apply_success(
+        "candidate-fp",
+        session_id="applying-session",
+        applied_live_graph_fingerprint="live-graph-fingerprint",
+        reservation_token="reserved",
+    )
+
+    state = v2host.load_v2_state()
+    assert state["applied"] is True
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] == {"fingerprint": "candidate-fp"}
+    assert state["pending_terminal_failure"] is None
+    assert state["apply_reservation"] is None
+
+
+def test_undo_commit_preserves_terminal_failure_that_arrived_after_admission():
+    reservation = v2host._reservation_payload(
+        "restore-reserved", operation="restore", phase="mutation_started"
+    )
+    v2host.save_v2_state({
+        "session_id": "undoing-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "candidate-fp"},
+        "applied": True,
+        "pre_apply_profile": {"recomposition_snapshot": {"old": True}},
+        "applied_profile_fingerprint": "current-profile",
+        "applied_live_graph_fingerprint": "current-graph",
+        "pending_terminal_failure": {
+            "code": "relay_timeout",
+            "session_id": "undoing-session",
+        },
+        "apply_reservation": reservation,
+    })
+
+    v2host.observe_restore(reservation_token="restore-reserved")
+
+    state = v2host.load_v2_state()
+    assert state["applied"] is False
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] is None
+    assert state["pending_terminal_failure"] is None
+    assert state["apply_reservation"] is None
+
+
+def _stale_conductor_snapshot(session_id: str, *, applied: bool = False):
+    return SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            session_id=session_id,
+            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+            applied=applied,
+            gain_plan_db={"woofer": -2.0},
+        ),
+        verify_outcome=None,
+        verify_tracking=None,
+        candidate=None,
+        measure_predicted_sum=None,
+        measure_gate_window_ms=None,
+    )
+
+
+def test_stale_conductor_write_after_apply_cannot_erase_host_commit():
+    predecessor = {
+        "status": "applied",
+        "recomposition_snapshot": {"identity": "predecessor"},
+    }
+    applied_profile = {
+        "status": "applied",
+        "recomposition_snapshot": {"identity": "applied"},
+    }
+    reservation = v2host._reservation_payload("reserved", operation="apply")
+    v2host.save_v2_state({
+        "session_id": "applying-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "candidate-fp"},
+        "applied": False,
+        "apply_reservation": reservation,
+    })
+    v2host.observe_apply_success(
+        "candidate-fp",
+        pre_apply_profile=predecessor,
+        applied_profile=applied_profile,
+        applied_live_graph_fingerprint="live-graph",
+        session_id="applying-session",
+        reservation_token="reserved",
+    )
+
+    v2host.persist_conductor_state(
+        _stale_conductor_snapshot("applying-session"), failure_code=None
+    )
+
+    state = v2host.load_v2_state()
+    assert state["applied"] is True
+    assert state["pre_apply_profile"] == predecessor
+    assert state["applied_profile_fingerprint"]
+    assert state["applied_live_graph_fingerprint"] == "live-graph"
+
+
+def test_stale_conductor_write_after_undo_cannot_rearm_applied_state():
+    reservation = v2host._reservation_payload(
+        "restore-reserved", operation="restore"
+    )
+    v2host.save_v2_state({
+        "session_id": "undoing-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "candidate-fp"},
+        "applied": True,
+        "pre_apply_profile": {
+            "status": "applied",
+            "recomposition_snapshot": {"identity": "old"},
+        },
+        "applied_profile_fingerprint": "current-profile",
+        "applied_live_graph_fingerprint": "current-graph",
+        "apply_reservation": reservation,
+    })
+    v2host.observe_restore(reservation_token="restore-reserved")
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="session changed"):
+        v2host.persist_conductor_state(
+            _stale_conductor_snapshot("undoing-session", applied=True),
+            failure_code=None,
+        )
+
+    state = v2host.load_v2_state()
+    assert state["session_id"] is None
+    assert state["applied"] is False
+    assert state["candidate"] is None
+    assert state["pre_apply_profile"] is None
+
+
+def test_process_restart_recovers_a_dead_reservation_and_pending_failure(monkeypatch):
+    def dead_process(_pid, _signal):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(v2host.os, "kill", dead_process)
+    v2host.save_v2_state({
+        "session_id": "crashed-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "candidate-fp"},
+        "applied": False,
+        "pending_terminal_failure": {
+            "code": "relay_timeout",
+            "session_id": "crashed-session",
+        },
+        "apply_reservation": {
+            "token": "orphaned",
+            "owner_pid": 424242,
+            "owner_instance": "dead-process-instance",
+        },
+    })
+
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] is None
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] is None
+    assert state["accepted_phases"] == []
+
+    # The recovered view can be persisted; Start over/new-session writes are
+    # not permanently fenced by a process that no longer exists.
+    v2host.save_v2_state(state)
+    assert v2host.load_v2_state()["apply_reservation"] is None
+
+
+def test_stale_reservation_cleanup_cannot_erase_new_reservation(
+    monkeypatch,
+):
+    """The stale-read cleanup and replacement publish are one state critical section."""
+
+    monkeypatch.setattr(
+        v2host.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    v2host.save_v2_state({
+        "session_id": "stale",
+        "apply_reservation": {
+            "token": "stale-token",
+            "owner_pid": 424242,
+            "owner_instance": "dead-instance",
+            "phase": "reserved",
+        },
+    })
+    real_write = v2host.atomic_write_text
+    cleanup_started = threading.Event()
+    allow_cleanup = threading.Event()
+
+    def paused_write(path, text, **kwargs):
+        payload = json.loads(text)
+        if (
+            payload.get("session_id") == "stale"
+            and payload.get("apply_reservation") is None
+        ):
+            cleanup_started.set()
+            assert allow_cleanup.wait(timeout=2)
+        return real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(v2host, "atomic_write_text", paused_write)
+    reader = threading.Thread(target=v2host.load_v2_state)
+    reader.start()
+    assert cleanup_started.wait(timeout=1)
+
+    replacement_done = threading.Event()
+
+    def publish_replacement():
+        v2host.save_v2_state({
+            "session_id": "new",
+            "apply_reservation": v2host._reservation_payload("new-token"),
+        })
+        replacement_done.set()
+
+    writer = threading.Thread(target=publish_replacement)
+    writer.start()
+    assert not replacement_done.wait(timeout=0.05)
+    allow_cleanup.set()
+    reader.join(timeout=2)
+    writer.join(timeout=2)
+
+    assert replacement_done.is_set()
+    assert v2host.load_v2_state()["apply_reservation"]["token"] == "new-token"
+
+
+def test_v2_transaction_state_writes_are_durable(monkeypatch):
+    calls: list[bool] = []
+    real_write = v2host.atomic_write_text
+
+    def recording_write(path, text, **kwargs):
+        calls.append(bool(kwargs.get("durable")))
+        return real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(v2host, "atomic_write_text", recording_write)
+    v2host.save_v2_state({"session_id": "durable"})
+
+    assert calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("code", "screen", "endpoint"),
+    [
+        (
+            v2host.TRANSACTION_RECOVERY_REQUIRED_CODE,
+            "hard_stop",
+            "/correction/crossover/v2/recover-transaction",
+        ),
+        (
+            v2host.TRANSACTION_INTERRUPTED_CODE,
+            "session_restart",
+            "/correction/crossover/v2/session",
+        ),
+    ],
+)
+def test_transaction_failures_render_named_executable_actions(
+    code,
+    screen,
+    endpoint,
+):
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    envelope = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": PHASE_CHECK,
+            "failure": {"code": code},
+            "needs_recovery": False,
+            "applied": False,
+        },
+    })
+
+    assert envelope["screen"] == screen
+    assert envelope["next_action"]["endpoint"] == endpoint
+    assert code not in envelope["verdict_text"]
+    if code == v2host.TRANSACTION_RECOVERY_REQUIRED_CODE:
+        assert "restarted" not in envelope["verdict_text"].lower()
+
+
+class _RecoveryCam:
+    def __init__(self, graph_text: str) -> None:
+        self.graph_text = graph_text
+
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
+        return self.graph_text
+
+
+def _recovery_profile(
+    tmp_path: Path,
+    *,
+    identity: str,
+    graph: str,
+) -> dict[str, Any]:
+    path = tmp_path / f"recovery-{identity}.yml"
+    path.write_text(graph, encoding="utf-8")
+    return {
+        "status": "applied",
+        "recomposition_snapshot": {"identity": identity},
+        "config": {
+            "path": str(path),
+            "sha256": hashlib.sha256(graph.encode("utf-8")).hexdigest(),
+        },
+    }
+
+
+def _dead_transaction_reservation(
+    *, operation: str, journal: Mapping[str, Any]
+) -> dict[str, Any]:
+    from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+    from jasper.output_topology import load_output_topology_strict
+
+    journal_payload = dict(journal)
+    journal_payload.setdefault(
+        "topology_fingerprint",
+        topology_config_fingerprint(load_output_topology_strict()),
+    )
+    journal_payload.setdefault("source_state_file_present", True)
+    journal_payload.setdefault(
+        "source_profile_present",
+        bool(journal_payload.get("source_profile_fingerprint")),
+    )
+    return {
+        "token": "orphaned-mutation",
+        "owner_pid": 424242,
+        "owner_instance": "dead-process-instance",
+        "owner_birth_id": "old-boot:old-start",
+        "operation": operation,
+        "phase": "mutation_started",
+        "journal": journal_payload,
+    }
+
+
+def test_process_restart_reconciles_apply_committed_before_state_callback(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker import baseline_profile
+
+    target_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+    target_profile = _recovery_profile(
+        tmp_path, identity="target", graph=target_graph
+    )
+    target_profile_fp = baseline_profile.baseline_candidate_fingerprint(
+        target_profile
+    )
+    target_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        target_graph
+    )
+    predecessor = {
+        "status": "applied",
+        "recomposition_snapshot": {"identity": "source"},
+    }
+    journal = {
+        "source_profile_fingerprint": baseline_profile.baseline_candidate_fingerprint(
+            predecessor
+        ),
+        "source_live_graph_fingerprint": "source-live",
+        "target_profile_fingerprint": target_profile_fp,
+        "target_live_graph_fingerprint": target_graph_fp,
+        "pre_apply_profile": predecessor,
+    }
+    v2host.save_v2_state({
+        "session_id": "crashed-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": _dead_transaction_reservation(
+            operation="apply", journal=journal
+        ),
+    })
+    # The old PID is live but belongs to a different process birth: PID reuse
+    # must not keep a committed transaction fenced forever.
+    monkeypatch.setattr(v2host.os, "kill", lambda *_args: None)
+    monkeypatch.setattr(
+        v2host, "_read_process_birth_id", lambda _pid: "new-boot:new-start"
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, target_profile),
+    )
+    from contextlib import asynccontextmanager
+    from jasper import dsp_apply, output_topology
+
+    writer_lock_held = False
+    topology_lock_held = False
+
+    @contextlib.contextmanager
+    def observed_topology_lock():
+        nonlocal topology_lock_held
+        topology_lock_held = True
+        try:
+            yield
+        finally:
+            topology_lock_held = False
+
+    @asynccontextmanager
+    async def observed_writer_lock(*_args, **_kwargs):
+        nonlocal writer_lock_held
+        assert topology_lock_held
+        writer_lock_held = True
+        try:
+            yield
+        finally:
+            writer_lock_held = False
+
+    class LockedRecoveryCam(_RecoveryCam):
+        async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
+            assert writer_lock_held
+            return await super().get_active_config_raw(best_effort=best_effort)
+
+    def locked_layer_a_read():
+        assert writer_lock_held
+        return True, target_profile
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        locked_layer_a_read,
+    )
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", observed_writer_lock)
+    monkeypatch.setattr(
+        output_topology, "output_topology_mutation_lock", observed_topology_lock
+    )
+    real_save = v2host.save_v2_state
+
+    def observed_state_save(state, **kwargs):
+        if state.get("apply_reservation") is None:
+            assert topology_lock_held
+            assert writer_lock_held
+        return real_save(state, **kwargs)
+
+    monkeypatch.setattr(v2host, "save_v2_state", observed_state_save)
+
+    assert v2host.reconcile_stale_v2_transaction(
+        _bg_run_async, lambda: LockedRecoveryCam(target_graph)
+    ) is True
+
+    state = v2host.load_v2_state()
+    assert state["applied"] is True
+    assert state["pre_apply_profile"] == predecessor
+    assert state["applied_profile_fingerprint"] == target_profile_fp
+    assert state["applied_live_graph_fingerprint"] == target_graph_fp
+    assert state["apply_reservation"] is None
+
+
+def test_process_restart_invalidates_uncommitted_apply_without_pending_death(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker import baseline_profile
+
+    source_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+    source_profile = _recovery_profile(
+        tmp_path, identity="source", graph=source_graph
+    )
+    source_profile_fp = baseline_profile.baseline_candidate_fingerprint(
+        source_profile
+    )
+    source_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        source_graph
+    )
+    journal = {
+        "source_profile_fingerprint": source_profile_fp,
+        "source_live_graph_fingerprint": source_graph_fp,
+        "target_profile_fingerprint": "target-profile",
+        "target_live_graph_fingerprint": "target-live",
+        "pre_apply_profile": source_profile,
+    }
+    v2host.save_v2_state({
+        "session_id": "crashed-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": _dead_transaction_reservation(
+            operation="apply", journal=journal
+        ),
+    })
+    monkeypatch.setattr(v2host.os, "kill", lambda *_args: (_ for _ in ()).throw(
+        ProcessLookupError()
+    ))
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, source_profile),
+    )
+
+    assert v2host.reconcile_stale_v2_transaction(
+        _bg_run_async, lambda: _RecoveryCam(source_graph)
+    ) is True
+
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": v2host.TRANSACTION_INTERRUPTED_CODE}
+    assert state["candidate"] is None
+    assert state["accepted_phases"] == []
+    assert state["apply_reservation"] is None
+
+
+def test_live_process_rollback_keeps_review_state_without_restart_reason(
+    monkeypatch,
+    tmp_path,
+):
+    """An ordinary failed Apply rollback is not mislabeled as a crash."""
+
+    from jasper.active_speaker import baseline_profile
+    from jasper.output_topology import load_output_topology_strict
+
+    source_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+    source_path = tmp_path / "source.yml"
+    source_path.write_text(source_graph, encoding="utf-8")
+    source_profile = {
+        "status": "applied",
+        "recomposition_snapshot": {"identity": "source"},
+        "config": {
+            "path": str(source_path),
+            "sha256": hashlib.sha256(source_graph.encode("utf-8")).hexdigest(),
+        },
+    }
+    source_profile_fp = baseline_profile.baseline_candidate_fingerprint(
+        source_profile
+    )
+    source_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        source_graph
+    )
+    token = "live-rollback"
+    journal = {
+        "source_state_file_present": True,
+        "source_profile_present": True,
+        "source_profile_fingerprint": source_profile_fp,
+        "source_live_graph_fingerprint": source_graph_fp,
+        "target_profile_fingerprint": "target-profile",
+        "target_live_graph_fingerprint": "target-live",
+        "topology_fingerprint": baseline_profile.topology_config_fingerprint(
+            load_output_topology_strict()
+        ),
+        "pre_apply_profile": source_profile,
+    }
+    v2host.save_v2_state({
+        "session_id": "still-reviewable",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "failure": None,
+        "apply_reservation": v2host._reservation_payload(
+            token,
+            operation="apply",
+            phase="mutation_started",
+            session_id="still-reviewable",
+            journal=journal,
+        ),
+    })
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, source_profile),
+    )
+
+    assert v2host.reconcile_stale_v2_transaction(
+        _bg_run_async,
+        lambda: _RecoveryCam(source_graph),
+        reservation_token=token,
+    ) is True
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] is None
+    assert state["failure"] is None
+    assert state["candidate"] == {"fingerprint": "measured-target"}
+    assert state["accepted_phases"] == [PHASE_CHECK, PHASE_MEASURE]
+
+
+def test_process_restart_reconciles_committed_undo_and_keeps_terminal_death(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker import baseline_profile
+
+    restored_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+    restored_profile = _recovery_profile(
+        tmp_path, identity="restored", graph=restored_graph
+    )
+    restored_profile_fp = baseline_profile.baseline_candidate_fingerprint(
+        restored_profile
+    )
+    restored_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        restored_graph
+    )
+    journal = {
+        "source_profile_fingerprint": "applied-profile",
+        "source_live_graph_fingerprint": "applied-live",
+        "target_profile_fingerprint": restored_profile_fp,
+        "target_live_graph_fingerprint": restored_graph_fp,
+    }
+    v2host.save_v2_state({
+        "session_id": "crashed-undo",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": True,
+        "pre_apply_profile": restored_profile,
+        "applied_profile_fingerprint": "applied-profile",
+        "applied_live_graph_fingerprint": "applied-live",
+        "pending_terminal_failure": {
+            "code": "relay_timeout",
+            "session_id": "crashed-undo",
+        },
+        "apply_reservation": _dead_transaction_reservation(
+            operation="restore", journal=journal
+        ),
+    })
+    monkeypatch.setattr(v2host.os, "kill", lambda *_args: None)
+    monkeypatch.setattr(
+        v2host, "_read_process_birth_id", lambda _pid: "new-boot:new-start"
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, restored_profile),
+    )
+
+    assert v2host.reconcile_stale_v2_transaction(
+        _bg_run_async, lambda: _RecoveryCam(restored_graph)
+    ) is True
+
+    state = v2host.load_v2_state()
+    assert state["applied"] is False
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] is None
+    assert state["pre_apply_profile"] is None
+    assert state["apply_reservation"] is None
+
+
+def test_process_restart_keeps_a_mixed_apply_state_durably_fenced(monkeypatch):
+    from jasper.active_speaker import baseline_profile
+
+    target_profile = {
+        "status": "applied",
+        "recomposition_snapshot": {"identity": "target"},
+    }
+    target_profile_fp = baseline_profile.baseline_candidate_fingerprint(
+        target_profile
+    )
+    journal = {
+        "source_profile_fingerprint": "source-profile",
+        "source_live_graph_fingerprint": "source-live",
+        "target_profile_fingerprint": target_profile_fp,
+        "target_live_graph_fingerprint": "target-live",
+        "pre_apply_profile": {
+            "status": "applied",
+            "recomposition_snapshot": {"identity": "source"},
+        },
+    }
+    v2host.save_v2_state({
+        "session_id": "mixed-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": _dead_transaction_reservation(
+            operation="apply", journal=journal
+        ),
+    })
+    monkeypatch.setattr(v2host.os, "kill", lambda *_args: (_ for _ in ()).throw(
+        ProcessLookupError()
+    ))
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, target_profile),
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="cannot be proved safely"):
+        v2host.reconcile_stale_v2_transaction(
+            _bg_run_async,
+            lambda: _RecoveryCam(
+                "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+            ),
+        )
+
+    state = v2host.load_v2_state()
+    assert state["failure"] == {
+        "code": v2host.TRANSACTION_RECOVERY_REQUIRED_CODE
+    }
+    assert state["apply_reservation"]["phase"] == "recovery_required"
+    with pytest.raises(v2host.CrossoverV2Refused, match="Apply is still finishing"):
+        v2host.save_v2_state({"session_id": "must-not-overwrite"})
+
+
+def test_in_process_mixed_apply_relinquishes_owner_for_immediate_recovery(
+    monkeypatch,
+    tmp_path,
+):
+    """The recovery action must not require restarting jasper-web first."""
+
+    from jasper.active_speaker import baseline_profile
+    from jasper import dsp_apply, output_topology
+
+    topology_fingerprint = "topology-fp"
+    source_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: [source]\n"
+    source_path = tmp_path / "immutable-source.yml"
+    source_path.write_text(source_graph, encoding="utf-8")
+    predecessor = {
+        "status": "applied",
+        "recomposition_snapshot": {
+            "identity": "source",
+            "topology_fingerprint": topology_fingerprint,
+        },
+        "config": {
+            "path": str(source_path),
+            "sha256": hashlib.sha256(source_graph.encode("utf-8")).hexdigest(),
+        },
+    }
+    source_profile_fingerprint = baseline_profile.baseline_candidate_fingerprint(
+        predecessor
+    )
+    source_graph_fingerprint = baseline_profile.normalized_camilla_graph_fingerprint(
+        source_graph
+    )
+    token = "live-mixed-apply"
+    journal = {
+        "source_state_file_present": True,
+        "source_profile_present": True,
+        "source_profile_fingerprint": source_profile_fingerprint,
+        "source_live_graph_fingerprint": source_graph_fingerprint,
+        "target_profile_fingerprint": "target-profile",
+        "target_live_graph_fingerprint": "target-live",
+        "topology_fingerprint": topology_fingerprint,
+        "pre_apply_profile": predecessor,
+    }
+    v2host.save_v2_state({
+        "session_id": "live-mixed",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": v2host._reservation_payload(
+            token,
+            operation="apply",
+            phase="mutation_started",
+            session_id="live-mixed",
+            journal=journal,
+        ),
+    })
+    durable_profile = {"value": predecessor}
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, durable_profile["value"]),
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "topology_config_fingerprint",
+        lambda _topology: topology_fingerprint,
+    )
+    monkeypatch.setattr(
+        output_topology, "load_output_topology_strict", lambda: SimpleNamespace()
+    )
+
+    class RepairCam(_RecoveryCam):
+        current_path = "/var/lib/camilladsp/current.yml"
+
+        async def set_config_file_path(
+            self, path: str, *, best_effort: bool = False
+        ) -> bool:
+            self.graph_text = Path(path).read_text(encoding="utf-8")
+            self.current_path = path
+            return True
+
+        async def get_config_file_path(
+            self, *, best_effort: bool = False
+        ) -> str:
+            return self.current_path
+
+    cam = RepairCam(
+        "devices: {}\nfilters: {}\nmixers: {}\npipeline: [mixed]\n"
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="cannot be proved safely"):
+        v2host.reconcile_stale_v2_transaction(
+            _bg_run_async,
+            lambda: cam,
+            reservation_token=token,
+            _current_topology_fingerprint=topology_fingerprint,
+        )
+
+    fenced = v2host.load_v2_state()["apply_reservation"]
+    assert fenced["phase"] == "recovery_required"
+    assert v2host._reservation_owner_alive(fenced) is False
+
+    async def fake_apply_dsp_config(**kwargs):
+        assert kwargs["acquire_lock"] is False
+        assert await kwargs["load_config"](kwargs["candidate_path"]) is True
+        return SimpleNamespace(to_dict=lambda: {"result": "success"})
+
+    monkeypatch.setattr(dsp_apply, "apply_dsp_config", fake_apply_dsp_config)
+    monkeypatch.setattr(
+        baseline_profile,
+        "persist_applied_baseline_profile",
+        lambda profile, **_kwargs: durable_profile.update(value=dict(profile)),
+    )
+
+    assert v2host.recover_stale_v2_transaction(
+        _bg_run_async, lambda: cam
+    ) == {"status": "recovered"}
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] is None
+    assert state["failure"] == {"code": v2host.TRANSACTION_INTERRUPTED_CODE}
+
+
+def test_process_restart_does_not_accept_wrong_topology_as_superseding(
+    monkeypatch,
+):
+    """A coherent graph for different wiring must keep the recovery fence."""
+
+    from jasper.active_speaker import baseline_profile
+
+    graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: [other]\n"
+    graph_fingerprint = baseline_profile.normalized_camilla_graph_fingerprint(
+        graph
+    )
+    other_profile = {
+        "status": "applied",
+        "recomposition_snapshot": {
+            "identity": "other-writer",
+            "topology_fingerprint": "other-topology",
+        },
+    }
+    journal = {
+        "source_profile_fingerprint": "source-profile",
+        "source_live_graph_fingerprint": "source-live",
+        "target_profile_fingerprint": "target-profile",
+        "target_live_graph_fingerprint": "target-live",
+        "pre_apply_profile": {
+            "status": "applied",
+            "recomposition_snapshot": {"identity": "source"},
+        },
+    }
+    v2host.save_v2_state({
+        "session_id": "wrong-topology-superseder",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": _dead_transaction_reservation(
+            operation="apply", journal=journal
+        ),
+    })
+    monkeypatch.setattr(
+        v2host.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, other_profile),
+    )
+    monkeypatch.setattr(
+        v2host,
+        "_profile_graph_fingerprint",
+        lambda _profile: graph_fingerprint,
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="cannot be proved safely"):
+        v2host.reconcile_stale_v2_transaction(
+            _bg_run_async, lambda: _RecoveryCam(graph)
+        )
+
+    state = v2host.load_v2_state()
+    assert state["failure"] == {
+        "code": v2host.TRANSACTION_RECOVERY_REQUIRED_CODE
+    }
+    assert state["apply_reservation"]["phase"] == "recovery_required"
+
+
+@pytest.mark.parametrize("match_kind", ["source", "target"])
+@pytest.mark.parametrize("config_case", ["missing", "changed"])
+def test_process_restart_fences_source_or_target_with_unreproducible_config(
+    monkeypatch,
+    tmp_path,
+    match_kind,
+    config_case,
+):
+    """A matching live graph cannot clear recovery without reproducible Layer A."""
+
+    from jasper.active_speaker import baseline_profile
+    from jasper.output_topology import load_output_topology_strict
+
+    graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: [matched]\n"
+    graph_fingerprint = baseline_profile.normalized_camilla_graph_fingerprint(
+        graph
+    )
+    config_path = tmp_path / f"{match_kind}-{config_case}.yml"
+    if config_case == "changed":
+        config_path.write_text(graph, encoding="utf-8")
+    profile = {
+        "status": "applied",
+        "recomposition_snapshot": {
+            "identity": f"{match_kind}-profile",
+            "topology_fingerprint": baseline_profile.topology_config_fingerprint(
+                load_output_topology_strict()
+            ),
+        },
+        "config": {
+            "path": str(config_path),
+            "sha256": hashlib.sha256(b"different-config").hexdigest(),
+        },
+    }
+    profile_fingerprint = baseline_profile.baseline_candidate_fingerprint(profile)
+    journal = {
+        "source_profile_fingerprint": (
+            profile_fingerprint if match_kind == "source" else "other-source"
+        ),
+        "source_live_graph_fingerprint": (
+            graph_fingerprint if match_kind == "source" else "other-source-live"
+        ),
+        "target_profile_fingerprint": (
+            profile_fingerprint if match_kind == "target" else "other-target"
+        ),
+        "target_live_graph_fingerprint": (
+            graph_fingerprint if match_kind == "target" else "other-target-live"
+        ),
+        "pre_apply_profile": profile,
+    }
+    v2host.save_v2_state({
+        "session_id": f"unreproducible-{match_kind}",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": _dead_transaction_reservation(
+            operation="apply", journal=journal
+        ),
+    })
+    monkeypatch.setattr(
+        v2host.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, profile),
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="cannot be proved safely"):
+        v2host.reconcile_stale_v2_transaction(
+            _bg_run_async, lambda: _RecoveryCam(graph)
+        )
+
+    state = v2host.load_v2_state()
+    assert state["failure"] == {
+        "code": v2host.TRANSACTION_RECOVERY_REQUIRED_CODE
+    }
+    assert state["apply_reservation"]["phase"] == "recovery_required"
+
+
+def test_explicit_transaction_recovery_reloads_saved_layer_a_then_commits(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker import baseline_profile
+    from jasper import dsp_apply
+
+    target_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: [target]\n"
+    config_path = tmp_path / "interrupted-target.yml"
+    config_path.write_text(target_graph, encoding="utf-8")
+    target_profile = {
+        "status": "applied",
+        "recomposition_snapshot": {
+            "identity": "target",
+            "topology_fingerprint": "topology-fp",
+        },
+        "config": {
+            "path": str(config_path),
+            "sha256": hashlib.sha256(target_graph.encode("utf-8")).hexdigest(),
+        },
+    }
+    target_profile_fp = baseline_profile.baseline_candidate_fingerprint(
+        target_profile
+    )
+    target_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        target_graph
+    )
+    source_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: [source]\n"
+    source_path = tmp_path / "immutable-source.yml"
+    source_path.write_text(source_graph, encoding="utf-8")
+    source_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        source_graph
+    )
+    predecessor = {
+        "status": "applied",
+        "recomposition_snapshot": {
+            "identity": "source",
+            "topology_fingerprint": "topology-fp",
+        },
+        "config": {
+            "path": str(source_path),
+            "sha256": hashlib.sha256(source_graph.encode("utf-8")).hexdigest(),
+        },
+    }
+    journal = {
+        "source_profile_fingerprint": baseline_profile.baseline_candidate_fingerprint(
+            predecessor
+        ),
+        "source_live_graph_fingerprint": source_graph_fp,
+        "target_profile_fingerprint": target_profile_fp,
+        "target_live_graph_fingerprint": target_graph_fp,
+        "topology_fingerprint": "topology-fp",
+        "pre_apply_profile": predecessor,
+    }
+    reservation = _dead_transaction_reservation(
+        operation="apply", journal=journal
+    )
+    reservation["phase"] = "recovery_required"
+    v2host.save_v2_state({
+        "session_id": "mixed-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "failure": {"code": v2host.TRANSACTION_RECOVERY_REQUIRED_CODE},
+        "apply_reservation": reservation,
+    })
+    monkeypatch.setattr(
+        v2host.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    durable_profile = {"value": target_profile}
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, durable_profile["value"]),
+    )
+    from jasper import output_topology
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "topology_config_fingerprint",
+        lambda _topology: "topology-fp",
+    )
+    monkeypatch.setattr(
+        output_topology, "load_output_topology_strict", lambda: SimpleNamespace()
+    )
+    mutation_lock_held = False
+
+    @contextlib.contextmanager
+    def topology_lock():
+        nonlocal mutation_lock_held
+        mutation_lock_held = True
+        try:
+            yield
+        finally:
+            mutation_lock_held = False
+
+    monkeypatch.setattr(output_topology, "output_topology_mutation_lock", topology_lock)
+
+    class RepairCam(_RecoveryCam):
+        current_path = "/var/lib/camilladsp/current.yml"
+
+        async def set_config_file_path(
+            self, path: str, *, best_effort: bool = False
+        ) -> bool:
+            self.graph_text = Path(path).read_text(encoding="utf-8")
+            self.current_path = path
+            return True
+
+        async def get_config_file_path(
+            self, *, best_effort: bool = False
+        ) -> str:
+            return self.current_path
+
+    cam = RepairCam("devices: {}\nfilters: {}\nmixers: {}\npipeline: [mismatch]\n")
+
+    async def fake_apply_dsp_config(**kwargs):
+        assert mutation_lock_held is True
+        assert kwargs["acquire_lock"] is False
+        assert kwargs["expected_candidate_sha256"] == predecessor["config"]["sha256"]
+        assert kwargs["candidate_path"] == str(source_path)
+        assert await kwargs["load_config"](kwargs["candidate_path"]) is True
+        return SimpleNamespace(to_dict=lambda: {"result": "success"})
+
+    monkeypatch.setattr(dsp_apply, "apply_dsp_config", fake_apply_dsp_config)
+    monkeypatch.setattr(
+        baseline_profile,
+        "persist_applied_baseline_profile",
+        lambda profile, **_kwargs: durable_profile.update(value=dict(profile)),
+    )
+
+    assert v2host.recover_stale_v2_transaction(
+        _bg_run_async, lambda: cam
+    ) == {"status": "recovered"}
+    state = v2host.load_v2_state()
+    assert state["applied"] is False
+    assert state["apply_reservation"] is None
+    assert state["failure"] == {"code": v2host.TRANSACTION_INTERRUPTED_CODE}
+    assert durable_profile["value"] == predecessor
+
+
+def test_explicit_transaction_recovery_refuses_a_changed_output_topology(
+    monkeypatch,
+):
+    from jasper.active_speaker import baseline_profile
+    from jasper import output_topology
+
+    reservation = _dead_transaction_reservation(
+        operation="apply",
+        journal={"target_profile_fingerprint": "target"},
+    )
+    reservation["phase"] = "recovery_required"
+    v2host.save_v2_state({
+        "session_id": "mixed-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "failure": {"code": v2host.TRANSACTION_RECOVERY_REQUIRED_CODE},
+        "apply_reservation": reservation,
+    })
+    monkeypatch.setattr(
+        v2host.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (
+            True,
+            {
+                "status": "applied",
+                "recomposition_snapshot": {
+                    "topology_fingerprint": "old-topology"
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        baseline_profile,
+        "topology_config_fingerprint",
+        lambda _topology: "new-topology",
+    )
+    monkeypatch.setattr(
+        output_topology, "load_output_topology_strict", lambda: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        output_topology,
+        "output_topology_mutation_lock",
+        lambda: contextlib.nullcontext(),
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="different output topology"):
+        v2host.recover_stale_v2_transaction(_bg_run_async, lambda: object())
+
+
+def _first_apply_source_journal(source_graph_fp: str) -> dict[str, Any]:
+    return {
+        "source_state_file_present": True,
+        "source_profile_present": False,
+        "source_profile_fingerprint": "",
+        "source_live_graph_fingerprint": source_graph_fp,
+        "target_profile_fingerprint": "target-profile",
+        "target_live_graph_fingerprint": "target-live",
+        "pre_apply_profile": None,
+    }
+
+
+def test_first_apply_recovery_accepts_valid_staging_without_applied_anchor(
+    monkeypatch,
+):
+    from jasper.active_speaker import baseline_profile
+
+    source_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+    source_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        source_graph
+    )
+    v2host.save_v2_state({
+        "session_id": "first-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": _dead_transaction_reservation(
+            operation="apply",
+            journal=_first_apply_source_journal(source_graph_fp),
+        ),
+    })
+    monkeypatch.setattr(v2host.os, "kill", lambda *_args: (_ for _ in ()).throw(
+        ProcessLookupError()
+    ))
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        lambda: (True, None),
+    )
+
+    assert v2host.reconcile_stale_v2_transaction(
+        _bg_run_async, lambda: _RecoveryCam(source_graph)
+    ) is True
+    assert v2host.load_v2_state()["failure"] == {
+        "code": v2host.TRANSACTION_INTERRUPTED_CODE
+    }
+
+
+@pytest.mark.parametrize(
+    "read_error",
+    [None, ValueError("malformed"), OSError("EIO")],
+    ids=["missing", "malformed", "oserror"],
+)
+def test_first_apply_recovery_fences_unreadable_layer_a(
+    monkeypatch,
+    read_error,
+):
+    from jasper.active_speaker import baseline_profile
+
+    source_graph = "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+    source_graph_fp = baseline_profile.normalized_camilla_graph_fingerprint(
+        source_graph
+    )
+    v2host.save_v2_state({
+        "session_id": "first-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "measured-target"},
+        "applied": False,
+        "apply_reservation": _dead_transaction_reservation(
+            operation="apply",
+            journal=_first_apply_source_journal(source_graph_fp),
+        ),
+    })
+    monkeypatch.setattr(v2host.os, "kill", lambda *_args: (_ for _ in ()).throw(
+        ProcessLookupError()
+    ))
+
+    def unreadable_state():
+        if read_error is None:
+            return False, None
+        raise read_error
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state_strict",
+        unreadable_state,
+    )
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="cannot be proved safely"):
+        v2host.reconcile_stale_v2_transaction(
+            _bg_run_async, lambda: _RecoveryCam(source_graph)
+        )
+    state = v2host.load_v2_state()
+    assert state["failure"] == {
+        "code": v2host.TRANSACTION_RECOVERY_REQUIRED_CODE
+    }
+    assert state["apply_reservation"]["phase"] == "recovery_required"
 
 
 # --- production analyze binding (geometry + calibration) --------------------------
@@ -1422,6 +3558,120 @@ def test_analyze_seam_raise_full_cleanup(monkeypatch):
     _assert_full_cleanup(plan, cam, log, backend, session, code="internal_error")
 
 
+def test_state_write_failure_cannot_interrupt_terminal_hardware_cleanup(
+    monkeypatch,
+):
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+
+    def broken_analyze(program: Any) -> Any:
+        raise ValueError("analysis kernel fault")
+
+    conductor = _conductor(
+        backend,
+        session,
+        phone,
+        published=[],
+        analyses={"check": broken_analyze},
+    )
+    hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
+    monkeypatch.setattr(
+        v2host,
+        "_persist_terminal_failure",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("state filesystem is read-only")
+        ),
+    )
+    runner = v2host.build_v2_run_and_consume(
+        conductor,
+        volume=hooks,
+        stop_event=threading.Event(),
+        stop_lock=threading.Lock(),
+        poll_interval_s=0.01,
+        timeout_s=20.0,
+    )
+
+    with pytest.raises(ValueError, match="analysis kernel fault"):
+        _run(runner, client, session)
+
+    assert plan.measurement_volume_db is None
+    assert cam.vol == -15.0
+    assert not v2host.session_measurement_pause_held()
+    assert log == ["enter", "exit"]
+    assert session.session_id not in backend.sessions
+    assert backend.host_events[session.session_id][-1]["code"] == "internal_error"
+
+
+def test_capture_result_state_write_failure_is_local_and_cleans_up(
+    monkeypatch,
+):
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    conductor = _conductor(backend, session, phone, published=[])
+    hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
+    monkeypatch.setattr(
+        v2host,
+        "persist_conductor_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("state filesystem is read-only")
+        ),
+    )
+    runner = v2host.build_v2_run_and_consume(
+        conductor,
+        volume=hooks,
+        stop_event=threading.Event(),
+        stop_lock=threading.Lock(),
+        poll_interval_s=0.01,
+        timeout_s=20.0,
+    )
+
+    with pytest.raises(v2host.CrossoverV2LocalSeamError):
+        _run(runner, client, session)
+
+    assert plan.measurement_volume_db is None
+    assert cam.vol == -15.0
+    assert log == ["enter", "exit"]
+    assert session.session_id not in backend.sessions
+    terminal = backend.host_events[session.session_id][-1]
+    assert terminal["code"] == "internal_error"
+    assert terminal["phase"] == "capture_result"
+
+
+def test_final_state_write_failure_still_closes_volume_and_purges(monkeypatch):
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+
+    def on_deferred(_driver):
+        state = v2host.load_v2_state()
+        v2host.observe_apply_success(state["candidate"]["fingerprint"])
+
+    client, session, phone = _mint_v2_session(
+        backend, spec, on_deferred=on_deferred
+    )
+    conductor = _conductor(backend, session, phone, published=[])
+    volume = VolumeRecorder()
+    real_persist = v2host.persist_conductor_state
+    calls = 0
+
+    def fail_final_persist(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 4:  # CHECK, MEASURE, VERIFY, then final completion write.
+            raise OSError("state filesystem is read-only")
+        return real_persist(*args, **kwargs)
+
+    monkeypatch.setattr(v2host, "persist_conductor_state", fail_final_persist)
+
+    with pytest.raises(OSError, match="read-only"):
+        _run(_build_runner(conductor, volume), client, session)
+
+    assert calls == 4
+    assert volume.events == ["open", "close"]
+    assert session.session_id not in backend.sessions
+
+
 def test_playback_refusal_keeps_its_distinct_code_through_the_catch_all(monkeypatch):
     """The program-side classes keep program_unplayable through the catch-all's
     dispatch — the distinct code is not collapsed into internal_error."""
@@ -1761,6 +4011,53 @@ def test_watchdog_collapse_posts_session_over_then_grace_then_purge(monkeypatch)
     assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
 
 
+def test_review_hold_timeout_tells_the_phone_what_timed_out(monkeypatch):
+    """The long deferred Apply hold has distinct terminal copy; a household
+    must not see a generic expired-link explanation for a review timeout."""
+    from jasper.capture_relay import session as session_mod
+
+    _skip_purge_grace(monkeypatch)
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, _phone = _mint_v2_session(backend, spec, driver_cls=None)
+
+    def timeout_plan(*_args, **_kwargs):
+        raise CaptureTimeout("review hold expired")
+
+    monkeypatch.setattr(session_mod, "run_capture_plan", timeout_plan)
+    conductor = SimpleNamespace(
+        current_phase="review_apply",
+        armed_capture=None,
+        last_failure_code=None,
+        snapshot=lambda: SimpleNamespace(
+            session_id=session.session_id,
+            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+            applied=False,
+            gain_plan_db={"woofer": -3.0, "tweeter": -20.0},
+        ),
+        verify_outcome=None,
+        verify_tracking=None,
+        candidate=None,
+        measure_predicted_sum=None,
+        measure_gate_window_ms=None,
+    )
+    runner = v2host.build_v2_run_and_consume(
+        conductor,
+        volume=VolumeRecorder().hooks(),
+        stop_event=threading.Event(),
+        stop_lock=threading.Lock(),
+    )
+    with pytest.raises(CaptureTimeout):
+        _run(runner, client, session)
+
+    event = backend.host_events[session.session_id][-1]
+    assert event == {
+        "phase": "capture_set_exhausted",
+        "code": v2host.REVIEW_HOLD_TIMED_OUT_CODE,
+        "reason": v2host.REVIEW_HOLD_TIMED_OUT_MESSAGE,
+    }
+
+
 # --- W6 run-6 Blocker M + Finding N: apply's real fingerprint-vocabulary seam ---
 #
 # Every prior test in this file that reaches "applied" fakes the apply gate
@@ -1780,16 +4077,41 @@ class _FakeApplyCam:
     """A CamillaController stand-in for handle_v2_apply's ``camilla_factory``."""
 
     def __init__(self) -> None:
-        self.path: str | None = None
+        # Production's controller observes the already-running path across
+        # endpoint calls. Rehydrate that path from the applied Layer-A SSOT so
+        # a fresh fake instance models the same continuity for Undo.
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state,
+        )
+
+        applied = load_applied_baseline_profile_state()
+        config = applied.get("config") if isinstance(applied, dict) else None
+        self.path: str | None = (
+            str(config.get("path") or "")
+            if isinstance(config, dict) and config.get("path")
+            else None
+        )
+        self.loads: list[str] = []
+        self.active_raw_override: str | None = None
 
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False,
     ) -> bool:
+        self.loads.append(path)
         self.path = path
         return True
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str | None:
         return self.path
+
+    async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
+        if self.active_raw_override is not None:
+            return self.active_raw_override
+        return (
+            Path(self.path).read_text(encoding="utf-8")
+            if self.path
+            else "devices: {}\nfilters: {}\nmixers: {}\npipeline: []\n"
+        )
 
 
 def _seed_baseline_apply_environment(monkeypatch, tmp_path):
@@ -1879,10 +4201,31 @@ def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
     apply_baseline_profile guard end to end (no faked apply gate) with a
     run-6-shaped measured candidate, and asserts the guard passes and the
     emitted config carries the measured delay + inversion."""
+    from jasper.active_speaker import baseline_profile
     from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
 
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
+    prune_call = {}
+    real_prune = baseline_profile.prune_baseline_candidate_configs
+
+    def record_prune(config_dir, *, protected_paths, keep_recent):
+        prune_call.update(
+            config_dir=Path(config_dir),
+            protected_paths=tuple(str(path) for path in protected_paths if str(path)),
+            keep_recent=keep_recent,
+        )
+        return real_prune(
+            config_dir,
+            protected_paths=protected_paths,
+            keep_recent=keep_recent,
+        )
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "prune_baseline_candidate_configs",
+        record_prune,
+    )
 
     v2host.save_v2_state({
         "session_id": "cap_run6",
@@ -1891,13 +4234,17 @@ def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
         "applied": False,
     })
 
+    prior_live = tmp_path / "active_speaker_baseline_candidate_prior.yml"
+    prior_live.write_text("prior: true\n", encoding="utf-8")
+    cam = _FakeApplyCam()
+    cam.path = str(prior_live)
     payload = v2host.handle_v2_apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
             "candidate": candidate.to_dict(),
         },
         _bg_run_async,
-        _FakeApplyCam,
+        lambda: cam,
     )
 
     assert payload["status"] == "applied", payload.get("issues")
@@ -1926,6 +4273,133 @@ def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
     assert v2host._applied_gate() is True
     saved_state = v2host.load_v2_state()
     assert saved_state["apply_blocked"] is None
+    assert prune_call["keep_recent"] == v2host.V2_CANDIDATE_CONFIG_KEEP_RECENT == 5
+    assert payload["apply"]["active_config_path"] in prune_call["protected_paths"]
+    assert payload["profile"]["config"]["path"] in prune_call["protected_paths"]
+
+
+def test_real_apply_rollback_reconciles_without_reentering_topology_lock(
+    monkeypatch,
+    tmp_path,
+):
+    """A failed real DSP load rolls back and clears its journal in-request."""
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "real-rollback",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    prior_live = tmp_path / "active_speaker_baseline_candidate_prior.yml"
+    prior_live.write_text("prior: true\n", encoding="utf-8")
+
+    class RollbackCam(_FakeApplyCam):
+        async def set_config_file_path(
+            self,
+            path: str,
+            *,
+            best_effort: bool = False,
+        ) -> bool:
+            self.loads.append(path)
+            if Path(path) == prior_live:
+                self.path = path
+                return True
+            return False
+
+    cam = RollbackCam()
+    cam.path = str(prior_live)
+    real_reconcile = v2host.reconcile_stale_v2_transaction
+    in_process_reconciliations = []
+
+    def require_owned_topology_identity(*args, **kwargs):
+        if kwargs.get("reservation_token") is not None:
+            fingerprint = kwargs.get("_current_topology_fingerprint")
+            assert fingerprint
+            in_process_reconciliations.append(fingerprint)
+        return real_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(
+        v2host,
+        "reconcile_stale_v2_transaction",
+        require_owned_topology_identity,
+    )
+
+    payload = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": candidate.fingerprint,
+            "candidate": candidate.to_dict(),
+        },
+        _bg_run_async,
+        lambda: cam,
+    )
+
+    assert payload["status"] == "apply_failed"
+    assert cam.loads[-1] == str(prior_live)
+    assert len(in_process_reconciliations) == 1
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] is None
+    assert state.get("failure") is None
+    assert state["candidate"] == {"fingerprint": candidate.fingerprint}
+
+
+def test_terminal_failure_during_predecessor_read_refuses_before_dsp_load(
+    monkeypatch,
+    tmp_path,
+):
+    """The journal publication closes the freshness-to-first-load race."""
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    session_id = "terminal-during-predecessor-read"
+    v2host.save_v2_state({
+        "session_id": session_id,
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    prior_live = tmp_path / "active_speaker_baseline_candidate_prior.yml"
+    prior_live.write_text("prior: true\n", encoding="utf-8")
+
+    class TerminalDuringSnapshotCam(_FakeApplyCam):
+        async def get_active_config_raw(
+            self,
+            *,
+            best_effort: bool = False,
+        ) -> str | None:
+            state = v2host.load_v2_state()
+            token = v2host._apply_reservation_token(state)
+            assert state is not None and token
+            state["pending_terminal_failure"] = {
+                "code": "relay_timeout",
+                "session_id": session_id,
+            }
+            v2host.save_v2_state(state, reservation_token=token)
+            return await super().get_active_config_raw(best_effort=best_effort)
+
+    cam = TerminalDuringSnapshotCam()
+    cam.path = str(prior_live)
+    with pytest.raises(
+        v2host.CrossoverV2Refused,
+        match="measurement session ended before the speaker update started",
+    ):
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            lambda: cam,
+        )
+
+    assert cam.loads == []
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] is None
+    assert state["pending_terminal_failure"] is None
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] is None
+    assert state["accepted_phases"] == []
 
 
 def test_apply_refuses_when_composition_is_no_longer_bound_to_reviewed_candidate(
@@ -1970,7 +4444,189 @@ def test_apply_refuses_when_composition_is_no_longer_bound_to_reviewed_candidate
             _bg_run_async,
             _FakeApplyCam,
         )
+
+
+def test_apply_rechecks_the_producing_session_at_the_dsp_mutation_boundary(
+    monkeypatch, tmp_path,
+):
+    """A reset/new session that wins during composition prevents DSP loading."""
+    from jasper.active_speaker import baseline_profile
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "reviewed-session",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    real_apply = baseline_profile.apply_baseline_profile
+
+    async def session_changes_before_writer_check(*args, **kwargs):
+        v2host.save_v2_state({
+            "session_id": "new-session",
+            "accepted_phases": [PHASE_CHECK],
+            "candidate": None,
+            "applied": False,
+        })
+        return await real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "apply_baseline_profile",
+        session_changes_before_writer_check,
+    )
+    cam = _FakeApplyCam()
+    predecessor = tmp_path / "predecessor.yml"
+    predecessor.write_text("filters: {}\n", encoding="utf-8")
+    cam.path = str(predecessor)
+
+    with pytest.raises(v2host.CrossoverV2Refused, match="Apply is still finishing"):
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            lambda: cam,
+        )
+
+    assert cam.path == str(predecessor)
+    assert cam.loads == []
     assert v2host._applied_gate() is False
+
+
+def test_apply_holds_topology_publication_lock_through_dsp_transaction(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker import baseline_profile
+    from jasper.output_topology import save_output_topology
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "topology-locked-apply",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    apply_entered = threading.Event()
+    release_apply = threading.Event()
+    topology_saved = threading.Event()
+
+    async def held_apply(*args, **kwargs):
+        apply_entered.set()
+        assert release_apply.wait(timeout=2)
+        return {
+            "status": "blocked",
+            "issues": [{
+                "severity": "blocker",
+                "code": "synthetic_block",
+                "message": "synthetic",
+            }],
+        }
+
+    monkeypatch.setattr(baseline_profile, "apply_baseline_profile", held_apply)
+
+    def apply_request() -> None:
+        v2host.handle_v2_apply(
+            {
+                "expected_candidate_fingerprint": candidate.fingerprint,
+                "candidate": candidate.to_dict(),
+            },
+            _bg_run_async,
+            _FakeApplyCam,
+        )
+
+    def topology_writer() -> None:
+        save_output_topology(topology)
+        topology_saved.set()
+
+    apply_thread = threading.Thread(target=apply_request)
+    apply_thread.start()
+    assert apply_entered.wait(timeout=2)
+    writer_thread = threading.Thread(target=topology_writer)
+    writer_thread.start()
+    assert not topology_saved.wait(timeout=0.05)
+
+    release_apply.set()
+    apply_thread.join(timeout=2)
+    writer_thread.join(timeout=2)
+
+    assert not apply_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert topology_saved.is_set()
+
+
+@pytest.mark.parametrize("outcome", ["blocked", "apply_failed", "exception"])
+def test_terminal_relay_death_invalidates_a_failed_apply_reservation(
+    monkeypatch, tmp_path, outcome,
+):
+    """A relay death serialized behind Apply is never lost when that Apply
+    exits without committing a graph."""
+    from jasper.active_speaker import baseline_profile
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    session_id = "terminal-during-apply"
+    v2host.save_v2_state({
+        "session_id": session_id,
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    conductor = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            session_id=session_id,
+            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+            applied=False,
+            gain_plan_db={"woofer": -2.0},
+        ),
+        verify_outcome=None,
+        verify_tracking=None,
+        candidate=None,
+        measure_predicted_sum=None,
+        measure_gate_window_ms=None,
+    )
+
+    async def terminal_then_exit(*args, **kwargs):
+        v2host._persist_terminal_failure(conductor, "relay_timeout")
+        if outcome == "exception":
+            raise RuntimeError("apply transport collapsed")
+        return {
+            "status": outcome,
+            "issues": [{
+                "severity": "blocker",
+                "code": "synthetic_apply_exit",
+                "message": "Apply did not commit",
+            }],
+        }
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "apply_baseline_profile",
+        terminal_then_exit,
+    )
+    request = {
+        "expected_candidate_fingerprint": candidate.fingerprint,
+        "candidate": candidate.to_dict(),
+    }
+    if outcome == "exception":
+        with pytest.raises(RuntimeError, match="transport collapsed"):
+            v2host.handle_v2_apply(request, _bg_run_async, _FakeApplyCam)
+    else:
+        payload = v2host.handle_v2_apply(request, _bg_run_async, _FakeApplyCam)
+        assert payload["status"] == outcome
+
+    state = v2host.load_v2_state()
+    assert state["apply_reservation"] is None
+    assert state["pending_terminal_failure"] is None
+    assert state["failure"] == {"code": "relay_timeout"}
+    assert state["candidate"] is None
+    assert state["accepted_phases"] == []
+    with pytest.raises(v2host.CrossoverV2Refused):
+        v2host._reserve_v2_apply(session_id, candidate.fingerprint)
 
 
 def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
@@ -2026,7 +4682,240 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
     assert v2host._applied_gate() is False
 
     saved_state = v2host.load_v2_state()
-    assert saved_state["apply_blocked"] == payload["issue"]
+    assert saved_state["apply_blocked"] == {
+        **payload["issue"],
+        "session_id": "cap_run6",
+    }
+    assert v2host.crossover_v2_status_block()["apply_blocked"] == payload["issue"]
+
+
+@pytest.mark.parametrize("retry_outcome", ["apply_failed", "exception"])
+def test_nonblocked_apply_retry_clears_the_previous_blocker(
+    monkeypatch,
+    tmp_path,
+    retry_outcome,
+):
+    """A retry never leaves the review page explaining the prior attempt."""
+
+    from jasper.active_speaker import baseline_profile
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    session_id = "blocked-then-retried"
+    v2host.save_v2_state({
+        "session_id": session_id,
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    attempts = 0
+
+    async def blocked_then_retry(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {
+                "status": "blocked",
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "first_attempt_blocked",
+                    "message": "The first attempt was blocked.",
+                }],
+            }
+        if retry_outcome == "exception":
+            raise RuntimeError("second Apply failed unexpectedly")
+        return {"status": "apply_failed", "issues": []}
+
+    monkeypatch.setattr(
+        baseline_profile, "apply_baseline_profile", blocked_then_retry
+    )
+    request = {
+        "expected_candidate_fingerprint": candidate.fingerprint,
+        "candidate": candidate.to_dict(),
+    }
+    first = v2host.handle_v2_apply(request, _bg_run_async, _FakeApplyCam)
+    assert first["status"] == "blocked"
+    assert v2host.load_v2_state()["apply_blocked"]["id"] == (
+        "first_attempt_blocked"
+    )
+
+    if retry_outcome == "exception":
+        with pytest.raises(RuntimeError, match="failed unexpectedly"):
+            v2host.handle_v2_apply(request, _bg_run_async, _FakeApplyCam)
+    else:
+        second = v2host.handle_v2_apply(request, _bg_run_async, _FakeApplyCam)
+        assert second["status"] == "apply_failed"
+
+    assert v2host.load_v2_state()["apply_blocked"] is None
+    assert v2host.crossover_v2_status_block()["apply_blocked"] is None
+
+
+def test_concurrent_retry_cannot_resurrect_an_older_apply_blocker(
+    monkeypatch,
+    tmp_path,
+):
+    """The blocked nudge commits before this attempt releases admission."""
+
+    from jasper.active_speaker import baseline_profile
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    session_id = "concurrent-blocked-retry"
+    v2host.save_v2_state({
+        "session_id": session_id,
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    attempts = 0
+
+    async def blocked_then_failed(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return {
+                "status": "blocked",
+                "issues": [{
+                    "severity": "blocker",
+                    "code": "older_blocker",
+                    "message": "The older attempt was blocked.",
+                }],
+            }
+        return {"status": "apply_failed", "issues": []}
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "apply_baseline_profile",
+        blocked_then_failed,
+    )
+    persist_entered = threading.Event()
+    release_persist = threading.Event()
+    real_persist = v2host._persist_apply_blocked
+
+    def hold_first_blocker(*args, **kwargs):
+        persist_entered.set()
+        assert release_persist.wait(timeout=2)
+        return real_persist(*args, **kwargs)
+
+    monkeypatch.setattr(v2host, "_persist_apply_blocked", hold_first_blocker)
+    request = {
+        "expected_candidate_fingerprint": candidate.fingerprint,
+        "candidate": candidate.to_dict(),
+    }
+    results = {}
+    errors = []
+
+    def apply(label):
+        try:
+            results[label] = v2host.handle_v2_apply(
+                request,
+                _bg_run_async,
+                _FakeApplyCam,
+            )
+        except BaseException as exc:  # noqa: BLE001 - thread assertion relay
+            errors.append(exc)
+
+    older = threading.Thread(target=apply, args=("older",))
+    newer = threading.Thread(target=apply, args=("newer",))
+    older.start()
+    assert persist_entered.wait(timeout=2)
+    newer.start()
+    newer.join(timeout=0.05)
+    assert newer.is_alive(), "new retry entered before old nudge commit"
+
+    release_persist.set()
+    older.join(timeout=3)
+    newer.join(timeout=3)
+
+    assert not older.is_alive()
+    assert not newer.is_alive()
+    assert errors == []
+    assert results["older"]["status"] == "blocked"
+    assert results["newer"]["status"] == "apply_failed"
+    assert v2host.load_v2_state()["apply_blocked"] is None
+    assert v2host.crossover_v2_status_block()["apply_blocked"] is None
+
+
+@pytest.mark.parametrize("outcome", ["blocked", "apply_failed", "exception"])
+def test_repeated_failed_apply_attempts_still_bound_candidate_retention(
+    monkeypatch,
+    tmp_path,
+    outcome,
+):
+    from jasper.active_speaker import baseline_profile
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "repeated-failures",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": candidate.fingerprint},
+        "applied": False,
+    })
+    baseline = baseline_profile.baseline_config_path()
+    live = tmp_path / "live.yml"
+    live.write_text("live: true\n", encoding="utf-8")
+    cam = _FakeApplyCam()
+    cam.path = str(live)
+    attempts = 0
+    prune_calls = []
+    real_prune = baseline_profile.prune_baseline_candidate_configs
+
+    def recording_prune(baseline_path, **kwargs):
+        removed = real_prune(baseline_path, **kwargs)
+        prune_calls.append((Path(baseline_path), removed))
+        return removed
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "prune_baseline_candidate_configs",
+        recording_prune,
+    )
+
+    async def emit_then_fail(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        path = baseline_profile.baseline_candidate_config_path(
+            baseline,
+            f"failed_{attempts:02d}",
+        )
+        path.write_text(f"attempt: {attempts}\n", encoding="utf-8")
+        os.utime(path, ns=(attempts, attempts))
+        if outcome == "exception":
+            raise RuntimeError("synthetic failed Apply")
+        return {
+            "status": outcome,
+            "issues": ([{
+                "severity": "blocker",
+                "code": "synthetic_block",
+                "message": "Synthetic block.",
+            }] if outcome == "blocked" else []),
+        }
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "apply_baseline_profile",
+        emit_then_fail,
+    )
+    request = {
+        "expected_candidate_fingerprint": candidate.fingerprint,
+        "candidate": candidate.to_dict(),
+    }
+    for _index in range(8):
+        if outcome == "exception":
+            with pytest.raises(RuntimeError, match="synthetic failed Apply"):
+                v2host.handle_v2_apply(request, _bg_run_async, lambda: cam)
+        else:
+            payload = v2host.handle_v2_apply(request, _bg_run_async, lambda: cam)
+            assert payload["status"] == outcome
+
+    family = sorted(
+        path
+        for path in tmp_path.iterdir()
+        if path.name.startswith("active_speaker_baseline_candidate_failed_")
+    )
+    assert len(prune_calls) == 8
+    assert len(family) == v2host.V2_CANDIDATE_CONFIG_KEEP_RECENT == 5
 
 
 # --- W6 run-8 Blocker Q: the v2-aware Undo, through the REAL apply/restore seams --
@@ -2124,6 +5013,10 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
 
     state_after_apply = v2host.load_v2_state()
     assert state_after_apply["applied"] is True
+    assert state_after_apply["applied_profile_fingerprint"] == apply_payload[
+        "profile"
+    ]["candidate_fingerprint"]
+    assert len(state_after_apply["applied_live_graph_fingerprint"]) == 64
     pre_apply_profile = state_after_apply.get("pre_apply_profile")
     assert isinstance(pre_apply_profile, dict)
     assert (
@@ -2131,7 +5024,39 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
         == prior_payload["profile"]["candidate_fingerprint"]
     )
 
-    restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+    # Additive schema-1 migration: simulate an upgrade from the already-
+    # deployed state shape. The status read derives both identities only
+    # because the current Layer-A profile still binds to this measured
+    # candidate; Undo stays visible and the migration is persisted.
+    legacy_state = dict(state_after_apply)
+    legacy_state.pop("applied_profile_fingerprint", None)
+    legacy_state.pop("applied_live_graph_fingerprint", None)
+    v2host.save_v2_state(legacy_state)
+    assert v2host.crossover_v2_status_block()["undo_available"] is True
+    migrated = v2host.load_v2_state()
+    assert migrated["applied_profile_fingerprint"] == apply_payload["profile"][
+        "candidate_fingerprint"
+    ]
+    assert len(migrated["applied_live_graph_fingerprint"]) == 64
+
+    # Production Camilla ``active_raw`` adds explicit null defaults that the
+    # generated file omits. Undo normalizes those representation-only fields
+    # while keeping every non-null graph value identity-bearing.
+    readback = yaml_lib.safe_load(run8_config_path.read_text(encoding="utf-8"))
+    readback["devices"].update({
+        "adjust_period": None,
+        "multithreaded": None,
+        "volume_ramp_time": None,
+    })
+    for step in readback["pipeline"]:
+        step.update({"bypassed": None, "description": None})
+    restore_cam = _FakeApplyCam()
+    restore_cam.active_raw_override = yaml_lib.safe_dump(readback)
+
+    restore_payload = v2host.handle_v2_restore(
+        _bg_run_async,
+        lambda: restore_cam,
+    )
 
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
     assert config_path.read_text(encoding="utf-8") == prior_config_text
@@ -2215,7 +5140,9 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
             applied=True,
             index_phase_map={1: PHASE_VERIFY},
         )
-        v2host.persist_conductor_state(conductor, failure_code=None)
+        v2host.persist_conductor_state(
+            conductor, failure_code=None, allow_session_rebind=True
+        )
 
     # --- run 1: a v2-written apply, no pre-existing profile to restore to ---
     run1_candidate = _prior_measured_candidate(preset)
@@ -2245,12 +5172,21 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
 
     # --- run 2 over run 1: also v2-written, through the SAME production seam ---
     run2_candidate = _run6_measured_candidate(preset)
+    run1_state = v2host.load_v2_state()
     v2host.save_v2_state({
-        **v2host.load_v2_state(),
+        **run1_state,
         "session_id": "cap_run2",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": run2_candidate.fingerprint},
     })
+    # The speaker still physically has run 1 applied, but run 2's candidate is
+    # not applied. W5b keeps those facts separate: the fresh session must land
+    # on Review/Apply, VERIFY must remain held, and Apply must be admitted.
+    fresh_state = v2host.load_v2_state()
+    assert fresh_state["applied"] is True
+    assert fresh_state["applied_session_id"] == "verify_of_run1"
+    assert v2host._applied_gate_for_session("cap_run2") is False
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_REVIEW_APPLY
     run2_payload = v2host.handle_v2_apply(
         {
             "expected_candidate_fingerprint": run2_candidate.fingerprint,
@@ -2294,6 +5230,84 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     state_after_restore = v2host.load_v2_state()
     assert state_after_restore["applied"] is False
     assert state_after_restore["pre_apply_profile"] is None
+
+
+def test_apply_undo_freezes_an_in_place_bass_extension_predecessor(
+    monkeypatch,
+    tmp_path,
+):
+    """Bass Extension's in-place Layer-A rewrite cannot poison the Undo SHA."""
+
+    from jasper.active_speaker.baseline_profile import (
+        apply_baseline_profile,
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+    from tests.test_active_speaker_baseline_profile import _draft
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-19T11:00:00Z")
+    prior_candidate = _prior_measured_candidate(preset)
+    prior_cam = _FakeApplyCam()
+    prior_payload = _bg_run_async(
+        apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=prior_cam.set_config_file_path,
+            get_current_config_path=prior_cam.get_config_file_path,
+            tuning_owner="automatic",
+            measured_candidate=prior_candidate,
+        )
+    )
+    assert prior_payload["status"] == "applied", prior_payload.get("issues")
+    prior_profile = load_applied_baseline_profile_state()
+    assert prior_profile is not None
+    selected = Path(prior_profile["config"]["path"])
+    original_sha = prior_profile["config"]["sha256"]
+
+    # This is the exact persistence shape of an accepted Bass Extension update:
+    # the selected YAML changes in place while Layer A retains its original SHA.
+    bass_enabled_graph = selected.read_text(encoding="utf-8") + (
+        "\n# accepted bass-extension graph\n"
+    )
+    selected.write_text(bass_enabled_graph, encoding="utf-8")
+    assert hashlib.sha256(selected.read_bytes()).hexdigest() != original_sha
+
+    measured = _run6_measured_candidate(preset)
+    v2host.save_v2_state({
+        "session_id": "after-bass",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": measured.fingerprint},
+        "applied": False,
+    })
+    applied = v2host.handle_v2_apply(
+        {
+            "expected_candidate_fingerprint": measured.fingerprint,
+            "candidate": measured.to_dict(),
+        },
+        _bg_run_async,
+        _FakeApplyCam,
+    )
+    assert applied["status"] == "applied", applied.get("issues")
+    retained = v2host.load_v2_state()["pre_apply_profile"]
+    retained_path = Path(retained["config"]["path"])
+    assert retained_path != selected
+    assert retained_path.read_text(encoding="utf-8") == bass_enabled_graph
+    assert retained["config"]["sha256"] == hashlib.sha256(
+        bass_enabled_graph.encode("utf-8")
+    ).hexdigest()
+
+    restored = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
+    assert restored["status"] == "restored", restored.get("issues")
+    active = load_applied_baseline_profile_state()
+    assert active is not None
+    assert Path(active["config"]["path"]).read_text(encoding="utf-8") == (
+        bass_enabled_graph
+    )
 
 
 def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
@@ -2363,7 +5377,23 @@ def test_start_over_while_applied_keeps_undo_reachable_through_real_seams(
     assert state["accepted_phases"] == []
     assert state["candidate"] is None
     # The envelope serves the clean start screen…
-    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+    status_block = v2host.crossover_v2_status_block()
+    assert status_block["phase"] == PHASE_CHECK
+    assert status_block["undo_available"] is True
+
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    envelope = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": status_block,
+    })
+    assert any(
+        action["endpoint"] == "/correction/crossover/v2/restore"
+        for action in envelope["alternate_actions"]
+    )
 
     # …AND Undo still works, through the real restore seam.
     restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)

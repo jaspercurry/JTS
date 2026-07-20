@@ -41,6 +41,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     back_off_gain,
     build_v2_capture_plan,
     build_v2_session_spec,
+    build_v2_verify_capture_plan,
     open_measurement_volume,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -461,19 +462,54 @@ def test_verify_out_of_tolerance_and_inconclusive():
     assert verdict["code"] == "verify_out_of_tolerance"
     assert verdict["template"] == "verify_fail"
     assert c.verify_outcome == "fail"
+    assert c.verify_tracking == {
+        "rms_db": 0.4,
+        "max_db": 2.4,
+        "max_db_notch_excluded": 2.4,
+    }
 
     # Gate-comparability: VERIFY's own gate shorter than MEASURE's ⇒
     # "inconclusive — re-verify", not fail (§5.2).
     fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
-    verdict = _run_phase(c, 3, 4)
+    c.authorize_begin(3, 4)
+    assert c.verify_tracking is None  # cleared before playback/transport can fail
+    assert c.verify_outcome is None
+    c.on_armed()
+    verdict = c.consume_capture(3, 4, _capture())
     assert verdict["code"] == "verify_inconclusive"
     assert c.verify_outcome == "inconclusive"
+    assert c.verify_tracking is None
 
     # A comparable-gate clean re-verify passes (budget 2 admits it).
     fakes.verify = _verify_analysis
     verdict = _run_phase(c, 3, 5)
     assert verdict["accepted"] is True
     assert c.verify_outcome == "pass"
+
+
+@pytest.mark.parametrize(
+    "analysis_kwargs, expected_code",
+    [
+        ({"locate_confidence": 0.01}, "locate_failed"),
+        ({"linearity": False}, "agc_behavioral_fail"),
+    ],
+)
+def test_non_comparator_verify_failures_do_not_publish_tracking(
+    analysis_kwargs, expected_code,
+):
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    c._verify_outcome = "pass"  # prior attempt's persisted comparator verdict
+    fakes.verify = lambda program: _verify_analysis(program, **analysis_kwargs)
+
+    verdict = _run_phase(c, 3, 3)
+
+    assert verdict["code"] == expected_code
+    assert c.verify_tracking is None
+    assert c.verify_outcome is None
 
 
 # --- alignment sign contract -----------------------------------------------------
@@ -630,13 +666,22 @@ def test_capture_plan_entries_carry_auto_advance_policy():
     # One tap per session: CHECK is the tap; MEASURE auto-advances behind a
     # visible cancelable countdown; VERIFY arms on apply.
     assert check.screen["auto_advance"] == AUTO_ADVANCE_TAP
+    assert "0.7–1.3 m" in check.screen["body"]
+    assert "level with the tweeter" in check.screen["body"]
+    assert "until verification is finished" in check.screen["body"]
     assert measure.screen["auto_advance"] == AUTO_ADVANCE_COUNTDOWN
     assert measure.screen["cancelable"] == "1"
+    assert "recording microphone" in measure.screen["body"]
+    assert "Keep the phone still" not in measure.screen["body"]
     assert int(measure.screen["countdown_s"]) > 0
     assert verify.screen["auto_advance"] == AUTO_ADVANCE_ON_APPLY
     # Durations are per-entry (heterogeneous) and positive.
     assert all(entry.duration_ms > 0 for entry in plan.entries)
     assert len({entry.duration_ms for entry in plan.entries}) > 1
+
+    reverify = build_v2_verify_capture_plan(FC_HZ)
+    assert "recording microphone" in reverify.entries[0].screen["body"]
+    assert "Keep the phone where" not in reverify.entries[0].screen["body"]
 
 
 def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):

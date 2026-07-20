@@ -33,6 +33,8 @@ from jasper.active_speaker.baseline_profile import (
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
+    load_applied_baseline_profile_state_strict,
+    normalized_camilla_graph_fingerprint,
     recompose_applied_baseline_yaml,
     restore_applied_baseline_profile,
 )
@@ -449,6 +451,72 @@ def test_baseline_profile_state_keeps_shared_parent_group(
     assert state_writes
     assert all(call["mode"] == 0o640 for call in state_writes)
     assert all(call["group_from_parent"] is True for call in state_writes)
+
+
+def test_applied_layer_a_commit_is_durable(monkeypatch, tmp_path: Path) -> None:
+    candidate = {
+        "kind": baseline_profile_mod.BASELINE_PROFILE_KIND,
+        "status": "ready_to_apply",
+        "recomposition_snapshot": {"identity": "durable-commit"},
+        "permissions": {"may_apply": True},
+    }
+    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
+    calls: list[bool] = []
+    real_write = baseline_profile_mod.atomic_write_text
+
+    def recording_write(path, text, **kwargs):
+        calls.append(bool(kwargs.get("durable")))
+        return real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(baseline_profile_mod, "atomic_write_text", recording_write)
+
+    baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "baseline_profile.json",
+    )
+
+    assert calls == [True]
+
+
+def test_recovery_can_repoint_an_identity_equivalent_applied_config(
+    tmp_path: Path,
+) -> None:
+    """Bass-style stale config pointers do not defeat journal recovery."""
+
+    state_path = tmp_path / "baseline_profile.json"
+    candidate = {
+        "artifact_schema_version": baseline_profile_mod.SCHEMA_VERSION,
+        "kind": baseline_profile_mod.BASELINE_PROFILE_KIND,
+        "status": "ready_to_apply",
+        "recomposition_snapshot": {"identity": "same-profile"},
+        "config": {"path": str(tmp_path / "mutable.yml"), "sha256": "old"},
+        "permissions": {"may_apply": True},
+    }
+    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
+    baseline_profile_mod.persist_applied_baseline_profile(
+        candidate,
+        apply_state={"result": "success"},
+        state_path=state_path,
+    )
+
+    recovered = {
+        **candidate,
+        "config": {
+            "path": str(tmp_path / "immutable-recovery.yml"),
+            "sha256": "new",
+        },
+    }
+    baseline_profile_mod.persist_applied_baseline_profile(
+        recovered,
+        apply_state={"result": "success"},
+        state_path=state_path,
+        replace_equivalent=True,
+    )
+
+    saved = baseline_profile_mod.load_applied_baseline_profile_state(state_path)
+    assert saved is not None
+    assert saved["config"] == recovered["config"]
 
 
 def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:
@@ -2597,6 +2665,79 @@ def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
     )
 
 
+def test_full_graph_fingerprint_ignores_camilla_readback_null_defaults(
+    tmp_path: Path,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    readback = yaml_lib.safe_load(baseline_yaml)
+    readback["devices"].update({
+        "adjust_period": None,
+        "multithreaded": None,
+        "volume_ramp_time": None,
+    })
+    for step in readback["pipeline"]:
+        step.update({"bypassed": None, "description": None})
+
+    assert normalized_camilla_graph_fingerprint(
+        yaml_lib.safe_dump(readback)
+    ) == normalized_camilla_graph_fingerprint(baseline_yaml)
+
+
+def test_full_graph_fingerprint_binds_every_non_null_graph_value(
+    tmp_path: Path,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    baseline = yaml_lib.safe_load(baseline_yaml)
+    expected = normalized_camilla_graph_fingerprint(baseline_yaml)
+
+    changed_device = deepcopy(baseline)
+    changed_device["devices"]["playback"]["device"] = "changed-playback"
+
+    changed_mixer = deepcopy(baseline)
+    mixer = next(iter(changed_mixer["mixers"].values()))
+    mixer["mapping"][0]["dest"] = 99
+
+    changed_filter = deepcopy(baseline)
+    filter_def = next(iter(changed_filter["filters"].values()))
+    filter_def["parameters"]["identity_probe"] = 1.0
+
+    changed_pipeline = deepcopy(baseline)
+    changed_pipeline["pipeline"][0]["description"] = "identity-bearing"
+
+    changed_list_null = deepcopy(baseline)
+    changed_list_null["pipeline"].append(None)
+
+    fingerprints = {
+        normalized_camilla_graph_fingerprint(yaml_lib.safe_dump(changed))
+        for changed in (
+            changed_device,
+            changed_mixer,
+            changed_filter,
+            changed_pipeline,
+            changed_list_null,
+        )
+    }
+    assert expected not in fingerprints
+    assert len(fingerprints) == 5
+
+
+def test_strict_layer_a_read_distinguishes_missing_malformed_and_oserror(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing.json"
+    assert load_applied_baseline_profile_state_strict(missing) == (False, None)
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid JSON"):
+        load_applied_baseline_profile_state_strict(malformed)
+
+    unreadable = tmp_path / "directory-not-file"
+    unreadable.mkdir()
+    with pytest.raises(OSError):
+        load_applied_baseline_profile_state_strict(unreadable)
+
+
 def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
     # When the saved evidence can no longer produce a baseline, recompose returns
     # (None, issues) so the carrier refuses instead of emitting a partial graph.
@@ -4565,6 +4706,14 @@ async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
         == prior_payload["profile"]["candidate_fingerprint"]
     )
 
+    locked_success: dict[str, object] = {}
+
+    async def observe_locked_success(payload, candidate) -> None:
+        locked_success["payload"] = payload
+        locked_success["predecessor"] = candidate.get(
+            "applied_recomposition_profile"
+        )
+
     run8_payload = await apply_baseline_profile(
         topology,
         design_draft=draft,
@@ -4577,11 +4726,14 @@ async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
         validate=_valid_config,
         tuning_owner="automatic",
         measured_candidate=run8_candidate,
+        on_apply_success=observe_locked_success,
     )
     assert run8_payload["status"] == "applied"
     run8_config_path = Path(run8_payload["profile"]["config"]["path"])
     assert run8_config_path != config_path, "run-8 must land on a content-addressed sibling"
     assert "applied_recomposition_profile" not in run8_payload["profile"]
+    assert locked_success["payload"] is run8_payload
+    assert locked_success["predecessor"] == retained
 
     return (
         state_path, config_path, load_config, current_config_path,
@@ -4629,6 +4781,116 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
     )
     assert active["candidate_fingerprint"] != run8_payload["profile"]["candidate_fingerprint"]
     assert active["config"]["path"] == str(config_path)
+
+
+async def test_restore_refuses_when_a_later_profile_is_current(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Undo is bound to the graph it replaces, not topology identity alone."""
+    (
+        state_path, config_path, _load_config, current_config_path,
+        prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    loads: list[str] = []
+
+    async def record_load(path: str) -> bool:
+        loads.append(path)
+        return True
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=record_load,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        expected_current_candidate_fingerprint=(
+            prior_payload["profile"]["candidate_fingerprint"]
+        ),
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {
+        "restore_live_profile_changed"
+    }
+    assert loads == []
+
+
+async def test_restore_refuses_when_live_dsp_graph_changed_without_layer_a_change(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Room/preference/live-draft changes bind Undo even when Layer A is stable."""
+    (
+        state_path, config_path, _load_config, current_config_path,
+        _prior_payload, run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    loads: list[str] = []
+
+    async def record_load(path: str) -> bool:
+        loads.append(path)
+        return True
+
+    async def changed_live_graph() -> str:
+        return "changed-live-graph"
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=record_load,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        expected_current_candidate_fingerprint=(
+            run8_payload["profile"]["candidate_fingerprint"]
+        ),
+        expected_current_graph_fingerprint="v2-applied-live-graph",
+        get_current_graph_fingerprint=changed_live_graph,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {
+        "restore_live_graph_changed"
+    }
+    assert loads == []
+
+
+async def test_restore_maps_camilla_unavailable_to_a_structured_blocker(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from jasper.camilla import CamillaUnavailable
+
+    (
+        state_path, config_path, _load_config, current_config_path,
+        _prior_payload, run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    loads: list[str] = []
+
+    async def record_load(path: str) -> bool:
+        loads.append(path)
+        return True
+
+    async def unavailable_live_graph() -> str:
+        raise CamillaUnavailable("restarting")
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=record_load,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        expected_current_candidate_fingerprint=(
+            run8_payload["profile"]["candidate_fingerprint"]
+        ),
+        expected_current_graph_fingerprint="v2-applied-live-graph",
+        get_current_graph_fingerprint=unavailable_live_graph,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {
+        "restore_live_graph_unreadable"
+    }
+    assert loads == []
 
 
 async def test_restore_applied_baseline_profile_blocked_when_config_missing(

@@ -2704,7 +2704,11 @@ async def capture_next_commissioning_verification(
     )
 
 
-def status_payload() -> dict[str, Any]:
+def status_payload(
+    *,
+    v2_recovery_run_async: Any | None = None,
+    v2_recovery_camilla_factory: Any | None = None,
+) -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 
     payload = web_measurement.status_payload()
@@ -2816,7 +2820,10 @@ def status_payload() -> dict[str, Any]:
     try:
         from .correction_crossover_v2 import crossover_v2_status_block
 
-        v2_block = crossover_v2_status_block()
+        v2_block = crossover_v2_status_block(
+            run_async=v2_recovery_run_async,
+            camilla_factory=v2_recovery_camilla_factory,
+        )
     except (OSError, RuntimeError, TypeError, ValueError):
         logger.warning("crossover v2 status block unavailable", exc_info=True)
         v2_block = None

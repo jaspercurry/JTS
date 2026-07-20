@@ -1054,7 +1054,7 @@ async function testCountdownNextEntryShowsVisibleCancelableCountdown() {
 // expired" terminal), not leave it polling a dead session forever. Round 2:
 // "the phone saw nothing" during a collapse in the hold.
 // ============================================================================
-function makeSessionOverOnBeginClient() {
+function makeSessionOverOnBeginClient(terminal = {}) {
   let last = {};
   const posted = [];
   return {
@@ -1062,7 +1062,12 @@ function makeSessionOverOnBeginClient() {
     async postEvent(event) {
       posted.push(event);
       if (event.begin_capture && !event.armed) {
-        last = { phase: "capture_set_exhausted", accepted: 0, capture_target: 1 };
+        last = {
+          phase: "capture_set_exhausted",
+          accepted: 0,
+          capture_target: 1,
+          ...terminal,
+        };
       }
       return { ok: true };
     },
@@ -1090,6 +1095,30 @@ async function testSessionTerminalDuringWaitEndsTheSession() {
 
   // Terminal "Link expired" — not a stuck waiting screen, and no stale retry.
   assert.equal(headingText(ctx.screenEl), "Link expired");
+  ok();
+}
+
+async function testReviewHoldTimeoutNamesTheTimeoutOnThePhone() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const client = makeSessionOverOnBeginClient({
+    code: "review_hold_timed_out",
+    reason: "The review wait timed out. Return to the speaker page and start the measurement again.",
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(headingText(ctx.screenEl), "Review timed out");
+  const note = ctx.screenEl.children.find((child) => child.className === "cap-note");
+  assert.match(note.textContent, /review wait timed out/i);
+  assert.match(note.textContent, /start the measurement again/i);
+  assert.notEqual(headingText(ctx.screenEl), "Link expired");
   ok();
 }
 
@@ -1213,6 +1242,7 @@ const tests = [
   testAdvanceDeferredHoldHeadingIsANoOpWhenNothingHeld,
   testCountdownNextEntryShowsVisibleCancelableCountdown,
   testSessionTerminalDuringWaitEndsTheSession,
+  testReviewHoldTimeoutNamesTheTimeoutOnThePhone,
   testEveryBeginCarriesTheAppliedCalibrationAndNeverClobbersAnExplicitChoice,
 ];
 

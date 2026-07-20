@@ -43,8 +43,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
+import hashlib
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -53,6 +56,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from jasper.atomic_io import atomic_write_text
+from jasper.active_speaker.crossover_v2_flow import (
+    REASON_STATE_TRANSACTION_INTERRUPTED,
+    REASON_STATE_TRANSACTION_RECOVERY_REQUIRED,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -74,8 +81,44 @@ V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 # while keeping the durable state file small.
 MAX_PERSISTED_SUM_POINTS = 512
 
-_state_lock = threading.Lock()
+# Keep five recent, non-live candidate configs after every terminal v2 Apply
+# attempt. This covers a short debugging/recovery history while bounding files
+# emitted by success, block, transactional failure, or raised error; the applied
+# config, CamillaDSP's reported live path, and the pre-apply Undo stash are
+# additional protected files and never consume this allowance.
+V2_CANDIDATE_CONFIG_KEEP_RECENT = 5
+
+REVIEW_HOLD_TIMED_OUT_CODE = "review_hold_timed_out"
+REVIEW_HOLD_TIMED_OUT_MESSAGE = (
+    "The review wait timed out. Return to the speaker page and start the "
+    "measurement again."
+)
+TRANSACTION_INTERRUPTED_CODE = REASON_STATE_TRANSACTION_INTERRUPTED
+TRANSACTION_RECOVERY_REQUIRED_CODE = REASON_STATE_TRANSACTION_RECOVERY_REQUIRED
+
+_state_lock = threading.RLock()
 _state_path_override: Path | None = None
+_PROCESS_INSTANCE_ID = secrets.token_hex(16)
+
+
+def _read_process_birth_id(pid: int) -> str:
+    """Return Linux boot-id + proc start ticks, or empty when unprovable."""
+
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="ascii"
+        ).strip()
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        # ``comm`` may contain spaces and parentheses; fields after its last
+        # ')' begin at proc field 3 (state), and starttime is field 22.
+        fields = stat.rsplit(")", 1)[1].strip().split()
+        start_ticks = fields[19]
+    except (IndexError, OSError, UnicodeError):
+        return ""
+    return f"{boot_id}:{start_ticks}" if boot_id and start_ticks else ""
+
+
+_PROCESS_BIRTH_ID = _read_process_birth_id(os.getpid())
 
 _volume_plan_lock = threading.Lock()
 _volume_plan: Any = None
@@ -142,16 +185,153 @@ def load_v2_state() -> dict[str, Any] | None:
                 level=logging.WARNING,
             )
             return None
-    if (
-        not isinstance(raw, Mapping)
-        or raw.get("kind") != STATE_KIND
-        or raw.get("schema_version") != STATE_SCHEMA_VERSION
+        if (
+            not isinstance(raw, Mapping)
+            or raw.get("kind") != STATE_KIND
+            or raw.get("schema_version") != STATE_SCHEMA_VERSION
+        ):
+            return None
+        state = dict(raw)
+        reservation = _reservation_mapping(state)
+        if reservation is not None and not _reservation_owner_alive(reservation):
+            # A killed web process cannot release its durable reservation. Recover
+            # a pre-mutation admission on the next read. Once mutation started the
+            # reservation is a transaction journal: keep it fenced until a request
+            # can compare durable Layer-A AND live Camilla identities.
+            phase = str(reservation.get("phase") or "reserved")
+            if phase in {"mutation_started", "recovery_required"}:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_stale_transaction_detected",
+                    level=logging.WARNING,
+                    operation=str(reservation.get("operation") or "apply"),
+                    phase=phase,
+                )
+                return state
+
+            # Detection and publication stay in the same state critical section.
+            # Compare the token from the bytes just read before clearing it so a
+            # newer reservation can never be erased by stale cleanup.
+            stale_token = str(reservation.get("token") or "")
+            try:
+                current = json.loads(_state_path().read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                return state
+            if _reservation_token_value(current) != stale_token:
+                return dict(current) if isinstance(current, Mapping) else None
+            _apply_pending_terminal_failure(state)
+            state["apply_reservation"] = None
+            state["updated_at"] = time.time()
+            try:
+                atomic_write_text(
+                    _state_path(),
+                    json.dumps(state, indent=2, sort_keys=True) + "\n",
+                    mode=0o640,
+                    group_from_parent=True,
+                    durable=True,
+                )
+            except OSError:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_stale_reservation_persist_failed",
+                    level=logging.WARNING,
+                )
+            log_event(
+                logger,
+                "correction.crossover_v2_stale_reservation_recovered",
+                operation=str(reservation.get("operation") or "apply"),
+            )
+        return state
+
+
+def _reservation_mapping(
+    state: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    reservation = (
+        state.get("apply_reservation") if isinstance(state, Mapping) else None
+    )
+    return reservation if isinstance(reservation, Mapping) else None
+
+
+def _reservation_token_value(state: Mapping[str, Any] | None) -> str:
+    reservation = _reservation_mapping(state)
+    return str(reservation.get("token") or "") if reservation is not None else ""
+
+
+def _reservation_owner_alive(reservation: Mapping[str, Any]) -> bool:
+    owner_instance = str(reservation.get("owner_instance") or "")
+    if owner_instance == _PROCESS_INSTANCE_ID:
+        return True
+    try:
+        owner_pid = int(reservation.get("owner_pid"))
+        if owner_pid <= 0:
+            return False
+        os.kill(owner_pid, 0)
+    except (ProcessLookupError, TypeError, ValueError):
+        return False
+    except PermissionError:
+        pass  # Another live uid-owned process is still authoritative.
+    expected_birth = str(reservation.get("owner_birth_id") or "")
+    actual_birth = _read_process_birth_id(owner_pid)
+    # PID existence alone is not ownership: after reboot/reuse it may name an
+    # unrelated process. If birth identity cannot be proved, fail closed toward
+    # transaction reconciliation rather than trusting the reused PID.
+    return bool(expected_birth and actual_birth == expected_birth)
+
+
+def _apply_reservation_token(state: Mapping[str, Any] | None) -> str:
+    reservation = _reservation_mapping(state)
+    if reservation is None:
+        return ""
+    token = str(reservation.get("token") or "")
+    if not token or not str(reservation.get("owner_instance") or ""):
+        return ""
+    return token if _reservation_owner_alive(reservation) else ""
+
+
+def _reservation_payload(token: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "token": token,
+        "owner_pid": os.getpid(),
+        "owner_instance": _PROCESS_INSTANCE_ID,
+        "owner_birth_id": _PROCESS_BIRTH_ID,
+        **fields,
+    }
+
+
+def _pending_terminal_failure_code(state: Mapping[str, Any] | None) -> str:
+    pending = (
+        state.get("pending_terminal_failure")
+        if isinstance(state, Mapping)
+        else None
+    )
+    return str(pending.get("code") or "") if isinstance(pending, Mapping) else ""
+
+
+def _apply_pending_terminal_failure(state: dict[str, Any]) -> None:
+    """Reconcile a relay death serialized behind an Apply/Undo reservation."""
+
+    code = _pending_terminal_failure_code(state)
+    state["pending_terminal_failure"] = None
+    if not code:
+        return
+    state["failure"] = {"code": code}
+    state["apply_blocked"] = None
+    if _candidate_applied_for_session(
+        state, str(state.get("session_id") or "")
     ):
-        return None
-    return dict(raw)
+        return
+    state["accepted_phases"] = []
+    state["gain_plan_db"] = None
+    state["candidate"] = None
+    state["verify"] = None
+    state["verify_priors"] = None
+    state["evidence"] = None
 
 
-def save_v2_state(state: Mapping[str, Any]) -> None:
+def save_v2_state(
+    state: Mapping[str, Any], *, reservation_token: str | None = None
+) -> None:
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
         "kind": STATE_KIND,
@@ -159,16 +339,30 @@ def save_v2_state(state: Mapping[str, Any]) -> None:
         **{k: v for k, v in state.items() if k not in {"schema_version", "kind"}},
     }
     with _state_lock:
+        current = load_v2_state()
+        current_token = _reservation_token_value(current)
+        if current_token and current_token != str(reservation_token or ""):
+            raise CrossoverV2Refused(
+                "Apply is still finishing; wait for it to complete before "
+                "starting over or beginning another measurement"
+            )
         atomic_write_text(
             _state_path(),
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             group_from_parent=True,
+            durable=True,
         )
 
 
-def clear_v2_state() -> None:
+def clear_v2_state(*, reservation_token: str | None = None) -> None:
     with _state_lock:
+        current_token = _reservation_token_value(load_v2_state())
+        if current_token and current_token != str(reservation_token or ""):
+            raise CrossoverV2Refused(
+                "Apply is still finishing; wait for it to complete before "
+                "starting over or beginning another measurement"
+            )
         try:
             _state_path().unlink()
         except FileNotFoundError:
@@ -179,6 +373,1143 @@ def clear_v2_state() -> None:
                 "correction.crossover_v2_state_clear_failed",
                 level=logging.WARNING,
             )
+
+
+def _profile_graph_fingerprint(profile: Mapping[str, Any]) -> str:
+    """Normalize one sha-pinned compiled profile into Camilla active-raw identity."""
+
+    from jasper.active_speaker.baseline_profile import (
+        normalized_camilla_graph_fingerprint,
+    )
+
+    config = profile.get("config")
+    if not isinstance(config, Mapping):
+        raise ValueError("profile config identity is missing")
+    path = Path(str(config.get("path") or ""))
+    expected_sha = str(config.get("sha256") or "")
+    raw = path.read_bytes()
+    if not expected_sha or hashlib.sha256(raw).hexdigest() != expected_sha:
+        raise ValueError("profile config sha256 does not match")
+    return normalized_camilla_graph_fingerprint(raw.decode("utf-8"))
+
+
+def _candidate_applied_session_id(state: Mapping[str, Any] | None) -> str:
+    """Return the session whose measured candidate owns the applied graph.
+
+    ``applied`` is a physical speaker fact and intentionally survives Start over
+    so Undo remains reachable. It is not proof that a newly minted Re-measure
+    session's candidate was applied. Pre-W5b records had no explicit binding;
+    their current session is the only safe additive migration when they still
+    carry a candidate.
+    """
+
+    if not isinstance(state, Mapping) or state.get("applied") is not True:
+        return ""
+    explicit = state.get("applied_session_id")
+    if explicit is not None:
+        return str(explicit or "")
+    if isinstance(state.get("candidate"), Mapping):
+        return str(state.get("session_id") or "")
+    return ""
+
+
+def _candidate_applied_for_session(
+    state: Mapping[str, Any] | None,
+    session_id: str,
+) -> bool:
+    return bool(
+        session_id
+        and isinstance(state, Mapping)
+        and state.get("applied") is True
+        and _candidate_applied_session_id(state) == session_id
+    )
+
+
+def _profile_topology_fingerprint(profile: Mapping[str, Any]) -> str:
+    snapshot = profile.get("recomposition_snapshot")
+    return (
+        str(snapshot.get("topology_fingerprint") or "")
+        if isinstance(snapshot, Mapping)
+        else ""
+    )
+
+
+def _snapshot_pre_apply_profile(
+    profile: Mapping[str, Any] | None,
+    active_raw: str,
+) -> dict[str, Any] | None:
+    """Freeze the exact predecessor graph into an immutable Undo target.
+
+    Bass Extension is allowed to rewrite the selected Layer-A YAML in place.
+    Its applied profile still describes the same recomposition inputs but may
+    therefore carry the pre-rewrite config SHA. Apply calls this helper under
+    the DSP writer lock, before its first load, so Undo retains the exact live
+    predecessor bytes rather than that stale mutable path.
+    """
+
+    if not isinstance(profile, Mapping):
+        return None
+    config = profile.get("config")
+    if not isinstance(config, Mapping):
+        raise CrossoverV2Refused(
+            "the current speaker profile has no config identity to retain for Undo"
+        )
+    raw = active_raw.encode("utf-8")
+    sha256 = hashlib.sha256(raw).hexdigest()
+    source_path = Path(str(config.get("path") or ""))
+    if not source_path.name:
+        raise CrossoverV2Refused(
+            "the current speaker profile has no config path to retain for Undo"
+        )
+    from jasper.active_speaker.baseline_profile import (
+        baseline_candidate_config_path,
+        baseline_config_path,
+    )
+
+    configured_baseline = baseline_config_path()
+    snapshot_path = baseline_candidate_config_path(
+        configured_baseline,
+        f"undo_{sha256}",
+    )
+    atomic_write_text(
+        snapshot_path,
+        active_raw,
+        mode=0o640,
+        group_from_parent=True,
+        durable=True,
+    )
+    if snapshot_path.read_bytes() != raw:
+        raise CrossoverV2Refused(
+            "the current speaker graph could not be retained safely for Undo"
+        )
+    retained = copy.deepcopy(dict(profile))
+    retained_config = dict(config)
+    retained_config.update({
+        "path": str(snapshot_path),
+        "basename": snapshot_path.name,
+        "exists": True,
+        "sha256": sha256,
+    })
+    retained["config"] = retained_config
+    return retained
+
+
+async def _current_camilla_graph_fingerprint(cam: Any) -> str:
+    from jasper.active_speaker.baseline_profile import (
+        normalized_camilla_graph_fingerprint,
+    )
+
+    getter = getattr(cam, "get_active_config_raw", None)
+    if not callable(getter):
+        raise RuntimeError("CamillaDSP active graph readback is unavailable")
+    raw = await getter(best_effort=False)
+    return normalized_camilla_graph_fingerprint(raw)
+
+
+async def _run_thread_action_to_completion(action: Callable[[], Any]) -> Any:
+    """Drain blocking authority work before cancellation may release locks.
+
+    ``asyncio.to_thread`` cannot stop its worker when the awaiting task is
+    cancelled. VERIFY holds hardware authority around that worker, so its
+    cancellation path must wait for the worker before surrounding lock
+    contexts can exit.
+    """
+
+    task = asyncio.create_task(asyncio.to_thread(action))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        if not task.cancelled():
+            task.exception()  # retrieve a worker failure before propagating cancel
+        raise
+
+
+def _run_with_v2_verify_authority(
+    *,
+    run_async: Any,
+    camilla_factory: Any,
+    session_id: str,
+    expected_topology: Any,
+    action: Callable[[], Any],
+) -> Any:
+    """Run one VERIFY boundary while its complete authority stays locked.
+
+    VERIFY is acoustically meaningful only while the durable v2 binding,
+    Layer-A profile, live Camilla graph, and output topology all identify the
+    same applied candidate.  The topology and DSP-writer locks remain held
+    across ``action`` itself, not merely across checks on either side: a writer
+    therefore cannot install a different graph during the sweep and restore it
+    before the post-check.  The result-consumption action includes the
+    conductor verdict and durable publication, so acceptance is inside the
+    same authority boundary too.
+    """
+
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state_strict,
+        topology_config_fingerprint,
+    )
+    from jasper.dsp_apply import dsp_writer_lock
+    from jasper.output_topology import (
+        load_output_topology_strict,
+        output_topology_mutation_lock,
+    )
+
+    expected_topology_fingerprint = topology_config_fingerprint(expected_topology)
+
+    async def _check_and_run(current_topology_fingerprint: str) -> Any:
+        async with dsp_writer_lock(
+            _v2_dsp_lock_dir(), source="crossover_v2_verify_authority"
+        ):
+            async def _validate() -> None:
+                with _state_lock:
+                    current = load_v2_state()
+                    if (
+                        not current
+                        or not _candidate_applied_for_session(current, session_id)
+                        or _reservation_mapping(current) is not None
+                    ):
+                        raise CrossoverV2Refused(
+                            "the applied crossover changed during verification; "
+                            "refresh the page and review the current sound"
+                        )
+                    expected_profile_fingerprint = str(
+                        current.get("applied_profile_fingerprint") or ""
+                    )
+                    expected_graph_fingerprint = str(
+                        current.get("applied_live_graph_fingerprint") or ""
+                    )
+                try:
+                    state_file_present, applied_profile = (
+                        load_applied_baseline_profile_state_strict()
+                    )
+                    profile_fingerprint = _profile_candidate_identity(
+                        applied_profile
+                    )
+                    profile_graph_fingerprint = (
+                        _profile_graph_fingerprint(applied_profile)
+                        if isinstance(applied_profile, Mapping)
+                        else ""
+                    )
+                    profile_topology_fingerprint = (
+                        _profile_topology_fingerprint(applied_profile)
+                        if isinstance(applied_profile, Mapping)
+                        else ""
+                    )
+                    live_graph_fingerprint = (
+                        await _current_camilla_graph_fingerprint(camilla_factory())
+                    )
+                except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
+                    raise CrossoverV2Refused(
+                        "the applied speaker graph could not be proved during "
+                        "verification; refresh the page and review Speaker setup"
+                    ) from exc
+                if (
+                    not state_file_present
+                    or profile_fingerprint
+                    != expected_profile_fingerprint
+                    or profile_graph_fingerprint
+                    != expected_graph_fingerprint
+                    or live_graph_fingerprint != profile_graph_fingerprint
+                    or not profile_topology_fingerprint
+                    or profile_topology_fingerprint
+                    != current_topology_fingerprint
+                ):
+                    raise CrossoverV2Refused(
+                        "the applied speaker graph or output topology changed during "
+                        "verification; refresh the page and measure again"
+                    )
+
+            await _validate()
+            result = await _run_thread_action_to_completion(action)
+            await _validate()
+            return result
+
+    with output_topology_mutation_lock():
+        current_topology = load_output_topology_strict()
+        current_topology_fingerprint = topology_config_fingerprint(current_topology)
+        if current_topology_fingerprint != expected_topology_fingerprint:
+            raise CrossoverV2Refused(
+                "the output topology changed during verification; refresh the "
+                "page and measure again"
+            )
+        return run_async(_check_and_run(current_topology_fingerprint))
+
+
+def _v2_verify_authority_runner(
+    *,
+    run_async: Any,
+    camilla_factory: Any,
+    session_id: str,
+    expected_topology: Any,
+) -> Callable[[Callable[[], Any]], Any]:
+    """Bind the shared automatic/manual VERIFY authority executor."""
+
+    return lambda action: _run_with_v2_verify_authority(
+        run_async=run_async,
+        camilla_factory=camilla_factory,
+        session_id=session_id,
+        expected_topology=expected_topology,
+        action=action,
+    )
+
+
+def _upgrade_legacy_undo_identity(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive additive W5b Undo identities only from matching Layer-A authority.
+
+    Pre-W5b schema-1 state has the measured-candidate binding and retained
+    predecessor but not the applied Layer-A/live-graph identities.  Migration
+    is allowed only when the current applied profile still names that exact
+    measured candidate and its config bytes still match the persisted sha.
+    The live Camilla graph is checked against the derived graph identity later,
+    inside Undo's DSP-writer boundary.
+    """
+
+    upgraded = dict(state)
+    if (
+        not upgraded.get("applied")
+        or not isinstance(upgraded.get("pre_apply_profile"), Mapping)
+    ):
+        return upgraded
+    if (
+        upgraded.get("applied_profile_fingerprint")
+        and upgraded.get("applied_live_graph_fingerprint")
+    ):
+        return upgraded
+    candidate = upgraded.get("candidate")
+    measured_fingerprint = (
+        str(candidate.get("fingerprint") or "")
+        if isinstance(candidate, Mapping)
+        else ""
+    )
+    if not measured_fingerprint:
+        return upgraded
+
+    from jasper.active_speaker.baseline_profile import (
+        baseline_candidate_fingerprint,
+        load_applied_baseline_profile_state,
+    )
+    current = load_applied_baseline_profile_state()
+    source = current.get("source") if isinstance(current, Mapping) else None
+    if (
+        not isinstance(current, Mapping)
+        or not isinstance(source, Mapping)
+        or str(source.get("measured_candidate_fingerprint") or "")
+        != measured_fingerprint
+        or not isinstance(current.get("recomposition_snapshot"), Mapping)
+    ):
+        return upgraded
+    try:
+        graph_fingerprint = _profile_graph_fingerprint(current)
+    except (OSError, UnicodeError, RuntimeError, ValueError):
+        return upgraded
+    upgraded["applied_profile_fingerprint"] = baseline_candidate_fingerprint(current)
+    upgraded["applied_live_graph_fingerprint"] = graph_fingerprint
+    return upgraded
+
+
+def _reserve_v2_apply(session_id: str, candidate_fingerprint: str) -> str:
+    """Atomically reserve one reviewed state frontier through DSP + state commit."""
+
+    from jasper.active_speaker.crossover_v2_flow import PHASE_CHECK, PHASE_MEASURE
+
+    with _state_lock:
+        state = load_v2_state()
+        candidate = (state or {}).get("candidate")
+        accepted = set((state or {}).get("accepted_phases") or ())
+        if (
+            state is None
+            or _reservation_mapping(state) is not None
+            or str(state.get("session_id") or "") != session_id
+            or not isinstance(candidate, Mapping)
+            or str(candidate.get("fingerprint") or "") != candidate_fingerprint
+            or not {PHASE_CHECK, PHASE_MEASURE}.issubset(accepted)
+            or state.get("failure")
+            or _candidate_applied_for_session(state, session_id)
+        ):
+            raise CrossoverV2Refused(
+                "this measurement session changed before Apply reached the "
+                "speaker; start the measurement again"
+            )
+        token = secrets.token_hex(16)
+        state["apply_reservation"] = _reservation_payload(
+            token,
+            operation="apply",
+            phase="reserved",
+            session_id=session_id,
+            candidate_fingerprint=candidate_fingerprint,
+        )
+        # A fresh admitted attempt supersedes the explanation from an earlier
+        # blocked Apply in this same review session.  Clear it at admission so
+        # every later exit (apply_failed, exception, or mixed-state recovery)
+        # cannot leave the page describing a failure that is no longer current.
+        state["apply_blocked"] = None
+        save_v2_state(state)
+        return token
+
+
+def _release_v2_apply_reservation(token: str) -> None:
+    with _state_lock:
+        state = load_v2_state()
+        if state is None or _apply_reservation_token(state) != token:
+            return
+        _apply_pending_terminal_failure(state)
+        state["apply_reservation"] = None
+        save_v2_state(state, reservation_token=token)
+
+
+def _reserve_v2_restore(state: Mapping[str, Any]) -> str:
+    """Reserve the exact applied/Undo identities through DSP + state commit."""
+
+    with _state_lock:
+        current = load_v2_state()
+        if (
+            current is None
+            or _reservation_mapping(current) is not None
+            or not current.get("applied")
+            or current.get("pre_apply_profile") != state.get("pre_apply_profile")
+            or current.get("applied_profile_fingerprint")
+            != state.get("applied_profile_fingerprint")
+            or current.get("applied_live_graph_fingerprint")
+            != state.get("applied_live_graph_fingerprint")
+        ):
+            raise CrossoverV2Refused(
+                "the active crossover changed before Undo could start; review "
+                "the current sound before restoring anything"
+            )
+        token = secrets.token_hex(16)
+        current["apply_reservation"] = _reservation_payload(
+            token,
+            operation="restore",
+            phase="reserved",
+            applied_profile_fingerprint=current.get(
+                "applied_profile_fingerprint"
+            ),
+        )
+        save_v2_state(current)
+        return token
+
+
+def _profile_candidate_identity(profile: Mapping[str, Any] | None) -> str:
+    if not isinstance(profile, Mapping) or not isinstance(
+        profile.get("recomposition_snapshot"), Mapping
+    ):
+        return ""
+    from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
+
+    return baseline_candidate_fingerprint(profile)
+
+
+def _durable_applied_profile_identity(
+    profile: Mapping[str, Any] | None,
+) -> str:
+    if not isinstance(profile, Mapping) or profile.get("status") != "applied":
+        return ""
+    return _profile_candidate_identity(profile)
+
+
+def _mark_apply_mutation_started(
+    token: str,
+    locked_candidate: Mapping[str, Any],
+    *,
+    source_live_graph_fingerprint: str,
+    retained_pre_apply_profile: Mapping[str, Any] | None = None,
+) -> None:
+    """Journal exact Apply source/target identities before the first DSP load."""
+
+    pre_apply_profile = retained_pre_apply_profile
+    if pre_apply_profile is None:
+        pre_apply_profile = locked_candidate.get("applied_recomposition_profile")
+    if not isinstance(pre_apply_profile, Mapping):
+        pre_apply_profile = None
+    target_profile_fingerprint = _profile_candidate_identity(locked_candidate)
+    target_live_graph_fingerprint = _profile_graph_fingerprint(locked_candidate)
+    topology_fingerprint = _profile_topology_fingerprint(locked_candidate)
+    if (
+        not target_profile_fingerprint
+        or not target_live_graph_fingerprint
+        or not source_live_graph_fingerprint
+        or not topology_fingerprint
+    ):
+        raise CrossoverV2Refused(
+            "the Apply transaction identities could not be recorded safely"
+        )
+    with _state_lock:
+        state = load_v2_state()
+        reservation = _reservation_mapping(state)
+        if (
+            state is None
+            or reservation is None
+            or _apply_reservation_token(state) != token
+        ):
+            raise CrossoverV2Refused(
+                "the Apply reservation changed before the speaker update started"
+            )
+        if _pending_terminal_failure_code(state):
+            # A relay can die while _journal_apply_started is awaiting the
+            # live predecessor graph, after the earlier freshness check. The
+            # state lock makes journal publication the last pre-mutation
+            # linearization point: a death that already won must refuse load.
+            raise CrossoverV2Refused(
+                "the measurement session ended before the speaker update "
+                "started; start the measurement again"
+            )
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state_strict,
+        )
+
+        # Candidate composition has already written a valid staging record.
+        # Derive the source from the exact locked predecessor, then use the
+        # strict read only to prove the on-disk Layer-A view agrees. Missing,
+        # malformed, and unreadable bytes are distinct from genuine no-anchor.
+        source_profile_fingerprint = _profile_candidate_identity(
+            pre_apply_profile
+        )
+        source_profile_present = isinstance(pre_apply_profile, Mapping)
+        try:
+            state_file_present, disk_source = (
+                load_applied_baseline_profile_state_strict()
+            )
+        except (OSError, ValueError) as exc:
+            raise CrossoverV2Refused(
+                "the current Layer-A state could not be journaled safely"
+            ) from exc
+        if (
+            not state_file_present
+            or isinstance(disk_source, Mapping) != source_profile_present
+            or _profile_candidate_identity(disk_source)
+            != source_profile_fingerprint
+        ):
+            raise CrossoverV2Refused(
+                "the current Layer-A state changed before Apply could start"
+            )
+        journal = {
+            "source_state_file_present": True,
+            "source_profile_present": source_profile_present,
+            "source_profile_fingerprint": source_profile_fingerprint,
+            "source_live_graph_fingerprint": source_live_graph_fingerprint,
+            "target_profile_fingerprint": target_profile_fingerprint,
+            "target_live_graph_fingerprint": target_live_graph_fingerprint,
+            "topology_fingerprint": topology_fingerprint,
+            "pre_apply_profile": (
+                dict(pre_apply_profile)
+                if isinstance(pre_apply_profile, Mapping)
+                else None
+            ),
+        }
+        state["apply_reservation"] = {
+            **dict(reservation),
+            "phase": "mutation_started",
+            "journal": journal,
+        }
+        save_v2_state(state, reservation_token=token)
+
+
+def _mark_restore_mutation_started(
+    token: str,
+    retained_profile: Mapping[str, Any],
+) -> None:
+    """Journal exact Undo source/target identities before the first DSP load."""
+
+    target_profile_fingerprint = _profile_candidate_identity(retained_profile)
+    target_live_graph_fingerprint = _profile_graph_fingerprint(retained_profile)
+    topology_fingerprint = _profile_topology_fingerprint(retained_profile)
+    with _state_lock:
+        state = load_v2_state()
+        reservation = _reservation_mapping(state)
+        if (
+            state is None
+            or reservation is None
+            or _apply_reservation_token(state) != token
+            or not target_profile_fingerprint
+            or not target_live_graph_fingerprint
+            or not topology_fingerprint
+        ):
+            raise CrossoverV2Refused(
+                "the Undo transaction identities could not be recorded safely"
+            )
+        state["apply_reservation"] = {
+            **dict(reservation),
+            "phase": "mutation_started",
+            "journal": {
+                "source_state_file_present": True,
+                "source_profile_present": True,
+                "source_profile_fingerprint": str(
+                    state.get("applied_profile_fingerprint") or ""
+                ),
+                "source_live_graph_fingerprint": str(
+                    state.get("applied_live_graph_fingerprint") or ""
+                ),
+                "target_profile_fingerprint": target_profile_fingerprint,
+                "target_live_graph_fingerprint": target_live_graph_fingerprint,
+                "topology_fingerprint": topology_fingerprint,
+            },
+        }
+        save_v2_state(state, reservation_token=token)
+
+
+def _finish_recovered_apply(
+    state: dict[str, Any], journal: Mapping[str, Any]
+) -> None:
+    reservation = _reservation_mapping(state)
+    pending_code = _pending_terminal_failure_code(state)
+    state["applied"] = True
+    state["applied_session_id"] = (
+        str(reservation.get("session_id") or "")
+        if reservation is not None
+        else ""
+    ) or None
+    state["failure"] = {"code": pending_code} if pending_code else None
+    state["apply_blocked"] = None
+    predecessor = journal.get("pre_apply_profile")
+    state["pre_apply_profile"] = (
+        dict(predecessor) if isinstance(predecessor, Mapping) else None
+    )
+    state["applied_profile_fingerprint"] = str(
+        journal.get("target_profile_fingerprint") or ""
+    ) or None
+    state["applied_live_graph_fingerprint"] = str(
+        journal.get("target_live_graph_fingerprint") or ""
+    ) or None
+    state["pending_terminal_failure"] = None
+    state["apply_reservation"] = None
+
+
+def _finish_recovered_restore(state: dict[str, Any]) -> None:
+    pending_code = _pending_terminal_failure_code(state)
+    state.update({
+        "session_id": None,
+        "applied": False,
+        "applied_session_id": None,
+        "candidate": None,
+        "verify": None,
+        "failure": {"code": pending_code} if pending_code else None,
+        "apply_blocked": None,
+        "pre_apply_profile": None,
+        "applied_profile_fingerprint": None,
+        "applied_live_graph_fingerprint": None,
+        "pending_terminal_failure": None,
+        "accepted_phases": [],
+        "gain_plan_db": None,
+        "verify_priors": None,
+        "evidence": None,
+        "apply_reservation": None,
+    })
+
+
+def _finish_recovered_superseded(state: dict[str, Any]) -> None:
+    """Drop stale v2 authority when another coherent Layer-A graph won."""
+
+    state.update({
+        "session_id": None,
+        "accepted_phases": [],
+        "applied": False,
+        "applied_session_id": None,
+        "gain_plan_db": None,
+        "candidate": None,
+        "verify": None,
+        "failure": {"code": TRANSACTION_INTERRUPTED_CODE},
+        "apply_blocked": None,
+        "verify_priors": None,
+        "evidence": None,
+        "pre_apply_profile": None,
+        "applied_profile_fingerprint": None,
+        "applied_live_graph_fingerprint": None,
+        "pending_terminal_failure": None,
+        "apply_reservation": None,
+    })
+
+
+def _v2_dsp_lock_dir() -> Path:
+    """Canonical DSP lock directory, with the existing temp-state test seam."""
+
+    if _state_path_override is not None:
+        return _state_path().parent
+    from jasper.active_speaker.baseline_profile import baseline_config_path
+
+    return baseline_config_path().parent
+
+
+async def _read_transaction_authority(
+    cam: Any,
+) -> tuple[bool, bool, Mapping[str, Any] | None, str, str]:
+    """Read Layer A and live Camilla while the caller owns the DSP frontier."""
+
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state_strict,
+    )
+    layer_a_readable = True
+    try:
+        current_state_file_present, current_profile = (
+            load_applied_baseline_profile_state_strict()
+        )
+    except (OSError, ValueError) as exc:
+        layer_a_readable = False
+        current_state_file_present = False
+        current_profile = None
+        log_event(
+            logger,
+            "correction.crossover_v2_transaction_recovery_layer_a_unreadable",
+            level=logging.ERROR,
+            reason=type(exc).__name__,
+        )
+    try:
+        current_live_graph_fingerprint = await _current_camilla_graph_fingerprint(cam)
+    except Exception as exc:  # noqa: BLE001 — recovery hardware boundary
+        current_live_graph_fingerprint = ""
+        log_event(
+            logger,
+            "correction.crossover_v2_transaction_recovery_read_failed",
+            level=logging.ERROR,
+            reason=type(exc).__name__,
+        )
+
+    authoritative_graph_fingerprint = ""
+    if isinstance(current_profile, Mapping):
+        try:
+            authoritative_graph_fingerprint = _profile_graph_fingerprint(
+                current_profile
+            )
+        except (OSError, UnicodeError, RuntimeError, ValueError):
+            pass
+    return (
+        layer_a_readable,
+        current_state_file_present,
+        current_profile,
+        current_live_graph_fingerprint,
+        authoritative_graph_fingerprint,
+    )
+
+
+async def _reconcile_transaction_under_writer_lock(
+    cam: Any,
+    *,
+    token: str,
+    operation: str,
+    journal: Mapping[str, Any],
+    topology_matches: bool,
+    in_process: bool,
+) -> bool:
+    """Classify and publish one journal without releasing the DSP frontier."""
+
+    from jasper.dsp_apply import dsp_writer_lock
+
+    async with dsp_writer_lock(
+        _v2_dsp_lock_dir(), source="crossover_v2_transaction_recovery"
+    ):
+        if topology_matches:
+            (
+                layer_a_readable,
+                current_state_file_present,
+                current_profile,
+                current_live_graph_fingerprint,
+                authoritative_graph_fingerprint,
+            ) = await _read_transaction_authority(cam)
+        else:
+            layer_a_readable = False
+            current_state_file_present = False
+            current_profile = None
+            current_live_graph_fingerprint = ""
+            authoritative_graph_fingerprint = ""
+
+        current_profile_present = isinstance(current_profile, Mapping)
+        current_profile_fingerprint = _profile_candidate_identity(current_profile)
+        current_profile_topology_fingerprint = (
+            _profile_topology_fingerprint(current_profile)
+            if current_profile_present
+            else ""
+        )
+        source_matches = layer_a_readable and bool(journal) and (
+            current_state_file_present
+            == bool(journal.get("source_state_file_present"))
+            and current_profile_present
+            == bool(journal.get("source_profile_present"))
+            and current_profile_fingerprint
+            == str(journal.get("source_profile_fingerprint") or "")
+            and current_live_graph_fingerprint
+            == str(journal.get("source_live_graph_fingerprint") or "")
+            and (
+                not current_profile_present
+                or (
+                    bool(authoritative_graph_fingerprint)
+                    and current_live_graph_fingerprint
+                    == authoritative_graph_fingerprint
+                )
+            )
+        )
+        target_matches = layer_a_readable and bool(journal) and (
+            current_state_file_present
+            and current_profile_present
+            and current_profile_fingerprint
+            == str(journal.get("target_profile_fingerprint") or "")
+            and current_live_graph_fingerprint
+            == str(journal.get("target_live_graph_fingerprint") or "")
+            and bool(authoritative_graph_fingerprint)
+            and current_live_graph_fingerprint == authoritative_graph_fingerprint
+        )
+        authoritative_profile_matches_live = (
+            layer_a_readable
+            and current_state_file_present
+            and current_profile_present
+            and bool(authoritative_graph_fingerprint)
+            and current_live_graph_fingerprint == authoritative_graph_fingerprint
+            and bool(journal.get("topology_fingerprint"))
+            and current_profile_topology_fingerprint
+            == str(journal.get("topology_fingerprint") or "")
+        )
+
+        # Lock order is topology -> DSP -> state. Keep all three through the
+        # token recheck and durable publication so neither authority can change
+        # between classification and clearing the fence.
+        with _state_lock:
+            current = load_v2_state()
+            current_reservation = _reservation_mapping(current)
+            if (
+                current is None
+                or current_reservation is None
+                or str(current_reservation.get("token") or "") != token
+            ):
+                return False
+            if target_matches:
+                if operation == "restore":
+                    _finish_recovered_restore(current)
+                else:
+                    _finish_recovered_apply(current, journal)
+                save_v2_state(current, reservation_token=token)
+                log_event(
+                    logger,
+                    "correction.crossover_v2_transaction_recovered",
+                    operation=operation,
+                    outcome="committed",
+                )
+                return True
+            if source_matches:
+                if in_process:
+                    # An ordinary failed mutation rolled itself back. Preserve
+                    # the review/Undo frontier and its actual endpoint outcome;
+                    # only a dead owner earns the crash-specific restart copy.
+                    _apply_pending_terminal_failure(current)
+                    current["apply_reservation"] = None
+                    save_v2_state(current, reservation_token=token)
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_transaction_recovered",
+                        level=logging.WARNING,
+                        operation=operation,
+                        outcome="rolled_back",
+                    )
+                    return True
+                code = _pending_terminal_failure_code(current) or (
+                    TRANSACTION_INTERRUPTED_CODE
+                )
+                current["pending_terminal_failure"] = None
+                current["failure"] = {"code": code}
+                current["apply_blocked"] = None
+                current["apply_reservation"] = None
+                if operation != "restore":
+                    current["accepted_phases"] = []
+                    current["gain_plan_db"] = None
+                    current["candidate"] = None
+                    current["verify"] = None
+                    current["verify_priors"] = None
+                    current["evidence"] = None
+                save_v2_state(current, reservation_token=token)
+                log_event(
+                    logger,
+                    "correction.crossover_v2_transaction_recovered",
+                    level=logging.WARNING,
+                    operation=operation,
+                    outcome="not_committed",
+                )
+                return True
+            if authoritative_profile_matches_live:
+                _finish_recovered_superseded(current)
+                save_v2_state(current, reservation_token=token)
+                log_event(
+                    logger,
+                    "correction.crossover_v2_transaction_recovered",
+                    level=logging.WARNING,
+                    operation=operation,
+                    outcome="superseded",
+                )
+                return True
+            current["failure"] = {"code": TRANSACTION_RECOVERY_REQUIRED_CODE}
+            current["apply_reservation"] = {
+                **dict(current_reservation),
+                "phase": "recovery_required",
+                # The endpoint request has finished all automatic
+                # reconciliation it can do. Relinquish its live-process owner
+                # while retaining the transaction token/fence so the explicit
+                # recovery action can enter immediately, without requiring a
+                # jasper-web restart. save_v2_state still refuses unrelated
+                # writers whenever any reservation token remains.
+                "owner_pid": None,
+                "owner_instance": "",
+                "owner_birth_id": "",
+            }
+            save_v2_state(current, reservation_token=token)
+            log_event(
+                logger,
+                "correction.crossover_v2_transaction_recovery_required",
+                level=logging.CRITICAL,
+                operation=operation,
+                topology_matches=topology_matches,
+            )
+    raise CrossoverV2Refused(
+        "the last speaker update was interrupted and its live DSP state cannot "
+        "be proved safely; recover the speaker before applying or undoing"
+    )
+
+
+def reconcile_stale_v2_transaction(
+    run_async: Any,
+    camilla_factory: Any,
+    *,
+    reservation_token: str | None = None,
+    _current_topology_fingerprint: str | None = None,
+) -> bool:
+    """Reconcile a dead mutation journal before admitting another operation.
+
+    Returns ``True`` when a stale journal was resolved. A mixed or unreadable
+    Layer-A/live result stays durably fenced and raises an explicit refusal;
+    guessing in that state could overwrite Apply's exact Undo predecessor.
+    """
+
+    with _state_lock:
+        state = load_v2_state()
+        reservation = _reservation_mapping(state)
+        if reservation is None:
+            return False
+        owner_alive = _reservation_owner_alive(reservation)
+        if owner_alive and str(reservation.get("token") or "") != str(
+            reservation_token or ""
+        ):
+            return False
+        phase = str(reservation.get("phase") or "reserved")
+        if phase not in {"mutation_started", "recovery_required"}:
+            return False  # load_v2_state already clears safe admissions.
+        token = str(reservation.get("token") or "")
+        operation = str(reservation.get("operation") or "apply")
+        journal = reservation.get("journal")
+        if not token or not isinstance(journal, Mapping):
+            journal = {}
+    if _current_topology_fingerprint is None:
+        from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+        from jasper.output_topology import (
+            load_output_topology_strict,
+            output_topology_mutation_lock,
+        )
+
+        with output_topology_mutation_lock():
+            current_topology = load_output_topology_strict()
+            return reconcile_stale_v2_transaction(
+                run_async,
+                camilla_factory,
+                reservation_token=reservation_token,
+                _current_topology_fingerprint=topology_config_fingerprint(
+                    current_topology
+                ),
+            )
+
+    journal_topology_fingerprint = str(
+        journal.get("topology_fingerprint") or ""
+    )
+    return run_async(
+        _reconcile_transaction_under_writer_lock(
+            camilla_factory(),
+            token=token,
+            operation=operation,
+            journal=journal,
+            topology_matches=bool(
+                journal_topology_fingerprint
+                and journal_topology_fingerprint == _current_topology_fingerprint
+            ),
+            in_process=bool(reservation_token and owner_alive),
+        )
+    )
+
+
+def recover_stale_v2_transaction(
+    run_async: Any,
+    camilla_factory: Any,
+) -> dict[str, Any]:
+    """Realign live Camilla to durable Layer A, then finish stale v2 recovery.
+
+    This is the explicit household recovery action for a genuinely mixed
+    post-crash state. Layer A remains the authority: the endpoint never chooses
+    source vs target from the incomplete journal. It validates and reloads the
+    exact sha-pinned config named by the durable applied profile under the
+    shared DSP-writer lock, then lets :func:`reconcile_stale_v2_transaction`
+    classify the now-coherent source, target, or superseding graph.
+    """
+
+    try:
+        if reconcile_stale_v2_transaction(run_async, camilla_factory):
+            return {"status": "recovered"}
+    except CrossoverV2Refused:
+        pass  # The mixed-state case is the one this action repairs.
+
+    with _state_lock:
+        state = load_v2_state()
+        reservation = _reservation_mapping(state)
+        if (
+            reservation is None
+            or _reservation_owner_alive(reservation)
+            or str(reservation.get("phase") or "") != "recovery_required"
+        ):
+            raise CrossoverV2Refused(
+                "there is no interrupted speaker update that needs recovery"
+            )
+        journal = reservation.get("journal")
+        if not isinstance(journal, Mapping):
+            raise CrossoverV2Refused(
+                "the interrupted speaker update has no recoverable journal; open "
+                "Speaker setup before measuring again"
+            )
+        operation = str(reservation.get("operation") or "apply")
+
+    async def _reload_layer_a(expected_topology_fingerprint: str) -> None:
+        from jasper.active_speaker.baseline_profile import (
+            load_applied_baseline_profile_state_strict,
+            persist_applied_baseline_profile,
+        )
+        from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+
+        cam = camilla_factory()
+        async with dsp_writer_lock(
+            _v2_dsp_lock_dir(), source="crossover_v2_explicit_recovery"
+        ):
+            profile = None
+            predecessor = journal.get("pre_apply_profile")
+            if operation == "apply" and isinstance(predecessor, Mapping):
+                # The journal predecessor is an immutable snapshot of the exact
+                # live source bytes. It remains SHA-correct even when Bass
+                # Extension had rewritten the selected Layer-A YAML in place.
+                if _profile_candidate_identity(predecessor) != str(
+                    journal.get("source_profile_fingerprint") or ""
+                ):
+                    raise CrossoverV2Refused(
+                        "the saved pre-update speaker profile does not match the "
+                        "interrupted transaction; open Speaker setup"
+                    )
+                profile = predecessor
+            else:
+                try:
+                    state_file_present, durable_profile = (
+                        load_applied_baseline_profile_state_strict()
+                    )
+                except (OSError, ValueError) as exc:
+                    raise CrossoverV2Refused(
+                        "the saved speaker profile is unreadable; open Speaker setup "
+                        "to rebuild it before measuring again"
+                    ) from exc
+                if state_file_present and isinstance(durable_profile, Mapping):
+                    profile = durable_profile
+            if not isinstance(profile, Mapping):
+                raise CrossoverV2Refused(
+                    "there is no saved speaker profile to recover; open Speaker "
+                    "setup to rebuild it before measuring again"
+                )
+            profile_topology_fingerprint = _profile_topology_fingerprint(profile)
+            if (
+                not profile_topology_fingerprint
+                or profile_topology_fingerprint != expected_topology_fingerprint
+                or str(journal.get("topology_fingerprint") or "")
+                != expected_topology_fingerprint
+            ):
+                raise CrossoverV2Refused(
+                    "the saved speaker profile belongs to a different output "
+                    "topology; open Speaker setup before recovering it"
+                )
+            config = profile.get("config")
+            path = str(config.get("path") or "") if isinstance(config, Mapping) else ""
+            sha256 = (
+                str(config.get("sha256") or "")
+                if isinstance(config, Mapping)
+                else ""
+            )
+            try:
+                expected_graph = _profile_graph_fingerprint(profile)
+            except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
+                raise CrossoverV2Refused(
+                    "the saved speaker profile config is missing or changed; open "
+                    "Speaker setup to rebuild it before measuring again"
+                ) from exc
+            if not path or not sha256 or not expected_graph:
+                raise CrossoverV2Refused(
+                    "the saved speaker profile has no recoverable DSP config; open "
+                    "Speaker setup to rebuild it before measuring again"
+                )
+            apply_state = await apply_dsp_config(
+                source="crossover_v2_explicit_recovery",
+                candidate_path=path,
+                load_config=lambda candidate: cam.set_config_file_path(
+                    candidate, best_effort=False
+                ),
+                get_current_config_path=lambda: cam.get_config_file_path(
+                    best_effort=False
+                ),
+                acquire_lock=False,
+                expected_candidate_sha256=sha256,
+            )
+            persist_applied_baseline_profile(
+                profile,
+                apply_state=apply_state.to_dict(),
+                replace_equivalent=True,
+            )
+
+    from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+    from jasper.output_topology import (
+        load_output_topology_strict,
+        output_topology_mutation_lock,
+    )
+
+    with output_topology_mutation_lock():
+        current_topology = load_output_topology_strict()
+        current_topology_fingerprint = topology_config_fingerprint(current_topology)
+        run_async(_reload_layer_a(current_topology_fingerprint))
+        if not reconcile_stale_v2_transaction(
+            run_async,
+            camilla_factory,
+            _current_topology_fingerprint=current_topology_fingerprint,
+        ):
+            raise CrossoverV2Refused(
+                "the saved speaker sound was restored, but the interrupted update "
+                "could not be finalized; open Speaker setup before measuring again"
+            )
+    log_event(logger, "correction.crossover_v2_transaction_explicitly_recovered")
+    return {"status": "recovered"}
+
+
+def _finish_v2_reservation(
+    token: str,
+    run_async: Any,
+    camilla_factory: Any,
+    *,
+    current_topology_fingerprint: str | None = None,
+) -> None:
+    """Release a safe admission or reconcile an in-process mutation exit."""
+
+    state = load_v2_state()
+    reservation = _reservation_mapping(state)
+    if reservation is None or str(reservation.get("token") or "") != token:
+        return
+    if str(reservation.get("phase") or "reserved") in {
+        "mutation_started",
+        "recovery_required",
+    }:
+        reconcile_stale_v2_transaction(
+            run_async,
+            camilla_factory,
+            reservation_token=token,
+            _current_topology_fingerprint=current_topology_fingerprint,
+        )
+        return
+    _release_v2_apply_reservation(token)
 
 
 def reset_v2_journey_state() -> None:
@@ -193,30 +1524,40 @@ def reset_v2_journey_state() -> None:
     pre-candidate snapshot, leaving the applied graph playing with Undo
     permanently unreachable. Not applied ⇒ full clear, as before.
     """
-    state = load_v2_state()
-    if state is None:
-        return
-    if not state.get("applied"):
-        clear_v2_state()
-        return
-    pre_apply_profile = state.get("pre_apply_profile")
-    save_v2_state({
-        "session_id": None,
-        "accepted_phases": [],
-        "applied": True,
-        "gain_plan_db": None,
-        "candidate": None,
-        "verify": None,
-        "failure": None,
-        "apply_blocked": None,
-        "verify_priors": None,
-        "evidence": None,
-        "pre_apply_profile": (
-            dict(pre_apply_profile)
-            if isinstance(pre_apply_profile, Mapping)
-            else None
-        ),
-    })
+    with _state_lock:
+        state = load_v2_state()
+        if state is None:
+            return
+        if not state.get("applied"):
+            clear_v2_state()
+            return
+        state = _upgrade_legacy_undo_identity(state)
+        pre_apply_profile = state.get("pre_apply_profile")
+        applied_session_id = _candidate_applied_session_id(state)
+        applied_profile_fingerprint = state.get("applied_profile_fingerprint")
+        applied_live_graph_fingerprint = state.get(
+            "applied_live_graph_fingerprint"
+        )
+        save_v2_state({
+            "session_id": None,
+            "accepted_phases": [],
+            "applied": True,
+            "applied_session_id": applied_session_id or None,
+            "gain_plan_db": None,
+            "candidate": None,
+            "verify": None,
+            "failure": None,
+            "apply_blocked": None,
+            "verify_priors": None,
+            "evidence": None,
+            "pre_apply_profile": (
+                dict(pre_apply_profile)
+                if isinstance(pre_apply_profile, Mapping)
+                else None
+            ),
+            "applied_profile_fingerprint": applied_profile_fingerprint,
+            "applied_live_graph_fingerprint": applied_live_graph_fingerprint,
+        })
     log_event(logger, "correction.crossover_v2_journey_reset_kept_applied")
 
 
@@ -224,6 +1565,10 @@ def observe_apply_success(
     candidate_fingerprint: str,
     *,
     pre_apply_profile: Mapping[str, Any] | None = None,
+    applied_profile: Mapping[str, Any] | None = None,
+    applied_live_graph_fingerprint: str | None = None,
+    session_id: str | None = None,
+    reservation_token: str | None = None,
 ) -> None:
     """Mark the v2 candidate applied — the apply-complete event that arms the
     soft-held VERIFY (§5.2). Called by the v2 apply endpoint on success.
@@ -236,57 +1581,108 @@ def observe_apply_success(
     path (``handle_v2_restore``) restores to; ``None`` when this was the
     speaker's first-ever applied crossover (nothing to undo back to).
     """
-    state = load_v2_state()
-    if state is None:
-        return
-    candidate = state.get("candidate")
-    stored = (
-        str(candidate.get("fingerprint") or "")
-        if isinstance(candidate, Mapping)
-        else ""
-    )
-    if stored and candidate_fingerprint and stored != candidate_fingerprint:
-        log_event(
-            logger,
-            "correction.crossover_v2_apply_fingerprint_mismatch",
-            level=logging.WARNING,
+    from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
+
+    with _state_lock:
+        state = load_v2_state()
+        if state is None:
+            raise CrossoverV2Refused(
+                "the measurement state disappeared before Apply could commit"
+            )
+        if _apply_reservation_token(state) != str(reservation_token or ""):
+            raise CrossoverV2Refused(
+                "the Apply reservation changed before the speaker update committed"
+            )
+        if session_id is not None and str(state.get("session_id") or "") != session_id:
+            log_event(
+                logger,
+                "correction.crossover_v2_apply_state_changed",
+                level=logging.WARNING,
+                reason="session_changed_before_commit",
+            )
+            if reservation_token is not None:
+                raise CrossoverV2Refused(
+                    "the Apply session changed before the speaker update committed"
+                )
+            return
+        candidate = state.get("candidate")
+        stored = (
+            str(candidate.get("fingerprint") or "")
+            if isinstance(candidate, Mapping)
+            else ""
         )
-        return
-    state["applied"] = True
-    state["failure"] = None
-    state["apply_blocked"] = None
-    state["pre_apply_profile"] = (
-        dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
-    )
-    save_v2_state(state)
+        if stored and candidate_fingerprint and stored != candidate_fingerprint:
+            log_event(
+                logger,
+                "correction.crossover_v2_apply_fingerprint_mismatch",
+                level=logging.WARNING,
+            )
+            if reservation_token is not None:
+                raise CrossoverV2Refused(
+                    "the Apply candidate changed before the speaker update committed"
+                )
+            return
+        state["applied"] = True
+        state["applied_session_id"] = str(state.get("session_id") or "") or None
+        pending_failure_code = _pending_terminal_failure_code(state)
+        state["failure"] = (
+            {"code": pending_failure_code} if pending_failure_code else None
+        )
+        state["apply_blocked"] = None
+        state["pre_apply_profile"] = (
+            dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
+        )
+        state["applied_profile_fingerprint"] = (
+            baseline_candidate_fingerprint(applied_profile)
+            if isinstance(applied_profile, Mapping)
+            and isinstance(applied_profile.get("recomposition_snapshot"), Mapping)
+            else None
+        )
+        state["applied_live_graph_fingerprint"] = (
+            str(applied_live_graph_fingerprint or "") or None
+        )
+        state["pending_terminal_failure"] = None
+        state["apply_reservation"] = None
+        save_v2_state(state, reservation_token=reservation_token)
     log_event(logger, "correction.crossover_v2_applied")
 
 
-def observe_restore() -> None:
+def observe_restore(*, reservation_token: str | None = None) -> None:
     """Clear the durable v2 state after a successful Undo (mirrors
     :func:`observe_apply_success`). Resets the whole flow to a clean
     unmeasured state — matching the reset a pre-apply terminal failure
     already gets (:func:`_persist_terminal_failure`) — so the envelope lands
     back on the pre-measurement screen rather than a half-consistent
     review_apply pointing at the now-undone candidate."""
+    with _state_lock:
+        state = load_v2_state()
+        if state is None:
+            return
+        current_token = _apply_reservation_token(state)
+        if current_token and current_token != str(reservation_token or ""):
+            raise CrossoverV2Refused(
+                "the Undo reservation changed before restore could commit"
+            )
+        # A relay death serialized behind Undo remains observable even when
+        # the DSP restore itself committed.  Dropping it here made a terminal
+        # phone session disappear precisely on the successful-Undo exit.
+        _finish_recovered_restore(state)
+        save_v2_state(state, reservation_token=reservation_token)
+
+
+def _applied_gate_for_session(session_id: str) -> bool:
+    """The conductor apply seam, bound to its measured-candidate session."""
     state = load_v2_state()
-    if state is None:
-        return
-    state["applied"] = False
-    state["candidate"] = None
-    state["verify"] = None
-    state["failure"] = None
-    state["apply_blocked"] = None
-    state["pre_apply_profile"] = None
-    state["accepted_phases"] = []
-    state["gain_plan_db"] = None
-    save_v2_state(state)
+    return _candidate_applied_for_session(state, session_id)
 
 
 def _applied_gate() -> bool:
-    """The conductor's ``apply_complete`` seam: reads the durable applied flag."""
+    """Current-session probe retained for focused host tests and diagnostics."""
+
     state = load_v2_state()
-    return bool(state and state.get("applied") is True)
+    return _candidate_applied_for_session(
+        state, str((state or {}).get("session_id") or "")
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -617,7 +2013,8 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     accepted = set(
         state.get("accepted_phases") or () if isinstance(state, Mapping) else ()
     )
-    applied = bool(state and state.get("applied"))
+    session_id = str(state.get("session_id") or "") if state else ""
+    applied = _candidate_applied_for_session(state, session_id)
     for phase in CAPTURE_PHASES:
         if phase not in accepted:
             if phase == PHASE_VERIFY and PHASE_MEASURE in accepted and not applied:
@@ -626,7 +2023,34 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
     return PHASE_DONE
 
 
-def crossover_v2_status_block() -> dict[str, Any] | None:
+def _session_apply_blocked_issue(
+    state: Mapping[str, Any] | None,
+) -> dict[str, str] | None:
+    """Return the blocked-apply nudge only for the session that produced it.
+
+    Pre-W5b records had no session binding and are intentionally ignored: a
+    global stale blocker is less truthful than no blocker on a fresh journey.
+    """
+    if not isinstance(state, Mapping):
+        return None
+    blocked = state.get("apply_blocked")
+    if not isinstance(blocked, Mapping):
+        return None
+    session_id = str(state.get("session_id") or "")
+    blocked_session_id = str(blocked.get("session_id") or "")
+    if not session_id or blocked_session_id != session_id:
+        return None
+    return {
+        "id": str(blocked.get("id") or ""),
+        "message": str(blocked.get("message") or ""),
+    }
+
+
+def crossover_v2_status_block(
+    *,
+    run_async: Any | None = None,
+    camilla_factory: Any | None = None,
+) -> dict[str, Any] | None:
     """The ``status["crossover_v2"]`` block, or ``None`` when the flow is legacy.
 
     ``needs_recovery`` comes from the SessionVolumePlan (the W2 gate ruling:
@@ -636,19 +2060,61 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
     """
     if not v2_flow_active():
         return None
-    state = load_v2_state()
+    if run_async is not None and camilla_factory is not None:
+        try:
+            reconcile_stale_v2_transaction(run_async, camilla_factory)
+        except CrossoverV2Refused:
+            # A coherent source/target is repaired automatically. A genuinely
+            # mixed state remains fenced and is rendered below with the explicit
+            # recovery action rather than taking down the whole status surface.
+            pass
+    with _state_lock:
+        state = load_v2_state()
+        if state is not None:
+            upgraded = _upgrade_legacy_undo_identity(state)
+            if upgraded != state:
+                try:
+                    save_v2_state(upgraded)
+                except CrossoverV2Refused:
+                    # An admitted Apply owns the state frontier. Its success
+                    # callback writes stronger fresh identities before release.
+                    pass
+                else:
+                    state = upgraded
     try:
         needs_recovery = bool(session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
         needs_recovery = True  # unreadable volume state fails closed
+    reservation = _reservation_mapping(state)
+    unresolved_transaction = bool(
+        reservation
+        and not _reservation_owner_alive(reservation)
+        and str(reservation.get("phase") or "")
+        in {"mutation_started", "recovery_required"}
+    )
     block: dict[str, Any] = {
         "phase": _phase_from_state(state),
         "candidate": (state or {}).get("candidate"),
         "verify": (state or {}).get("verify"),
-        "failure": (state or {}).get("failure"),
-        "apply_blocked": (state or {}).get("apply_blocked"),
+        "failure": (
+            {"code": TRANSACTION_RECOVERY_REQUIRED_CODE}
+            if unresolved_transaction
+            else (state or {}).get("failure")
+        ),
+        "apply_blocked": _session_apply_blocked_issue(state),
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
+        "candidate_applied": _candidate_applied_for_session(
+            state,
+            str((state or {}).get("session_id") or ""),
+        ),
+        "undo_available": bool(
+            state
+            and state.get("applied")
+            and isinstance(state.get("pre_apply_profile"), Mapping)
+            and state.get("applied_profile_fingerprint")
+            and state.get("applied_live_graph_fingerprint")
+        ),
         "session_id": (state or {}).get("session_id"),
     }
     return block
@@ -693,19 +2159,25 @@ def persist_conductor_state(
     *,
     failure_code: str | None,
     evidence: Mapping[str, Any] | None = None,
+    allow_session_rebind: bool = False,
 ) -> None:
     """Write the conductor's durable snapshot + host-observed failure state."""
     snap = conductor.snapshot()
     verify_outcome = conductor.verify_outcome
+    verify_tracking = conductor.verify_tracking
+    verify_payload: dict[str, Any] = {}
+    if verify_outcome is not None:
+        verify_payload["outcome"] = verify_outcome
+    if isinstance(verify_tracking, Mapping):
+        verify_payload["tracking"] = dict(verify_tracking)
     state: dict[str, Any] = {
         "session_id": snap.session_id,
         "accepted_phases": list(snap.accepted_phases),
         "applied": snap.applied,
+        "applied_session_id": snap.session_id if snap.applied else None,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "candidate": _candidate_summary(conductor.candidate),
-        "verify": (
-            {"outcome": verify_outcome} if verify_outcome is not None else None
-        ),
+        "verify": verify_payload or None,
         "failure": {"code": failure_code} if failure_code else None,
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
@@ -713,50 +2185,162 @@ def persist_conductor_state(
         },
         "evidence": dict(evidence) if evidence else None,
     }
-    prior = load_v2_state() or {}
-    # The applied flag is host-durable (set by the apply endpoint) — never
-    # regressed by a conductor snapshot that predates it.
-    if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
-        state["applied"] = True
-    if state["candidate"] is None and isinstance(prior.get("candidate"), Mapping):
-        if prior.get("session_id") == snap.session_id:
+    with _state_lock:
+        prior_raw = load_v2_state()
+        prior = prior_raw or {}
+        if (
+            prior_raw is not None
+            and str(prior.get("session_id") or "") != snap.session_id
+            and not allow_session_rebind
+        ):
+            raise CrossoverV2Refused(
+                "the measurement session changed before its state could be saved"
+            )
+        # ``applied`` and Undo identity are host-owned. Once a state exists, a
+        # conductor snapshot may never regress them (especially after a stale
+        # callback wakes after Apply/Undo released its reservation).
+        if prior_raw is not None:
+            state["applied"] = bool(prior.get("applied"))
+            state["applied_session_id"] = (
+                snap.session_id
+                if snap.applied
+                else _candidate_applied_session_id(prior)
+            ) or None
+        same_session = str(prior.get("session_id") or "") == snap.session_id
+        if (
+            state["candidate"] is None
+            and isinstance(prior.get("candidate"), Mapping)
+            and (same_session or snap.applied)
+        ):
             state["candidate"] = dict(prior["candidate"])
-    if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
-        if prior.get("session_id") == snap.session_id:
-            state["evidence"] = dict(prior["evidence"])
-    # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
-    # handle_v2_restore) and ``apply_blocked`` (the review_apply nudge) are
-    # NOT conductor-owned fields: the conductor neither produces nor reads
-    # either one, so they are absent from the ``state`` literal above and
-    # every OTHER caller of this function only ever sets the fields it does
-    # know about. Unlike ``candidate``/``evidence``, this carry-forward is
-    # unconditional (not gated on a matching session_id): the deferred
-    # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
-    # relay session id (``prepare_v2_verify`` mints one and "rebinds" the
-    # conductor's session_id before its own ``persist_conductor_state``
-    # call), so a session-id-gated carry-forward would still lose the stash
-    # on that very first post-apply snapshot. W6.12 P0: without this, the
-    # verify phase that always immediately follows an apply wiped the
-    # just-stashed ``pre_apply_profile`` before a household could ever reach
-    # the verify_fail Undo screen — ``/crossover/v2/restore`` 400'd with "no
-    # previous crossover to restore to" after literally every apply.
-    state["pre_apply_profile"] = prior.get("pre_apply_profile")
-    state["apply_blocked"] = prior.get("apply_blocked")
-    save_v2_state(state)
+        if state["evidence"] is None and isinstance(
+            prior.get("evidence"), Mapping
+        ):
+            if same_session:
+                state["evidence"] = dict(prior["evidence"])
+        # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
+        # handle_v2_restore) is not conductor-owned. Its carry-forward MUST
+        # remain unconditional across the deliberate VERIFY session rebind.
+        state["pre_apply_profile"] = prior.get("pre_apply_profile")
+        state["applied_profile_fingerprint"] = prior.get(
+            "applied_profile_fingerprint"
+        )
+        state["applied_live_graph_fingerprint"] = prior.get(
+            "applied_live_graph_fingerprint"
+        )
+        blocked = prior.get("apply_blocked")
+        state["apply_blocked"] = (
+            dict(blocked)
+            if isinstance(blocked, Mapping)
+            and str(blocked.get("session_id") or "") == snap.session_id
+            else None
+        )
+        save_v2_state(state)
+
+
+def _defer_terminal_failure_during_reservation(conductor: Any, code: str) -> bool:
+    """Record a relay death without replacing an admitted state frontier."""
+
+    snap = conductor.snapshot()
+    with _state_lock:
+        state = load_v2_state()
+        token = _apply_reservation_token(state)
+        if (
+            state is None
+            or not token
+            or str(state.get("session_id") or "") != snap.session_id
+        ):
+            return False
+        state["pending_terminal_failure"] = {
+            "code": code,
+            "session_id": snap.session_id,
+        }
+        save_v2_state(state, reservation_token=token)
+        return True
 
 
 def _persist_terminal_failure(conductor: Any, code: str) -> None:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
     with the session (restart at CHECK); post-apply, the applied candidate +
-    verify priors survive so ``/v2/verify`` can re-arm."""
-    persist_conductor_state(conductor, failure_code=code)
-    state = load_v2_state()
-    if state is None:
+    verify priors survive so ``/v2/verify`` can re-arm.
+
+    An Apply/Undo reservation deliberately prevents another callback from
+    replacing the reviewed frontier while the DSP transaction is in flight.
+    A terminal callback records a narrow pending marker instead. The
+    transaction consumes it at its linearization point: a pre-load Apply
+    refuses, a failed transaction invalidates the dead session on release,
+    and an already-applied graph retains the failure + Undo route. This caller
+    can therefore continue volume/session cleanup without losing the death.
+    """
+    if _defer_terminal_failure_during_reservation(conductor, code):
+        log_event(
+            logger,
+            "correction.crossover_v2_terminal_failure_deferred",
+            level=logging.WARNING,
+            failure_code=code,
+            reason="state_transaction_reserved",
+        )
         return
-    if not state.get("applied"):
-        state["accepted_phases"] = []
-        state["gain_plan_db"] = None
-    save_v2_state(state)
+    try:
+        persist_conductor_state(conductor, failure_code=code)
+    except CrossoverV2Refused:
+        # The reservation may have been admitted between the first probe and
+        # the generic snapshot write. Serialize behind it on that race too.
+        if _defer_terminal_failure_during_reservation(conductor, code):
+            log_event(
+                logger,
+                "correction.crossover_v2_terminal_failure_deferred",
+                level=logging.WARNING,
+                failure_code=code,
+                reason="state_transaction_reserved",
+            )
+            return
+        log_event(
+            logger,
+            "correction.crossover_v2_terminal_failure_deferred",
+            level=logging.WARNING,
+            failure_code=code,
+            reason="state_frontier_changed",
+        )
+        return
+    with _state_lock:
+        state = load_v2_state()
+        if state is None:
+            return
+        if not _candidate_applied_for_session(
+            state, conductor.snapshot().session_id
+        ):
+            state["accepted_phases"] = []
+            state["gain_plan_db"] = None
+            state["candidate"] = None
+            state["verify"] = None
+            state["verify_priors"] = None
+            state["evidence"] = None
+            state["apply_blocked"] = None
+        try:
+            save_v2_state(state)
+        except CrossoverV2Refused:
+            # Same admission race after the conductor snapshot but before the
+            # pre-apply invalidation write.
+            _defer_terminal_failure_during_reservation(conductor, code)
+
+
+def _persist_terminal_failure_best_effort(conductor: Any, code: str) -> None:
+    """Persist a terminal result without ever pre-empting safety cleanup."""
+
+    try:
+        _persist_terminal_failure(conductor, code)
+    except OSError as exc:
+        # Disk-full/read-only failures are important, but volume restore,
+        # measurement-pause release, and relay purge are hardware-safety
+        # obligations and must still run independently.
+        log_event(
+            logger,
+            "correction.crossover_v2_terminal_failure_persist_failed",
+            level=logging.ERROR,
+            failure_code=code,
+            reason=type(exc).__name__,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1181,6 +2765,7 @@ def build_v2_run_and_consume(
     volume: V2VolumeHooks,
     stop_event: threading.Event,
     stop_lock: Any,
+    verify_authority: Callable[[Callable[[], Any]], Any] | None = None,
     evidence_refs: Mapping[str, Any] | None = None,
     poll_interval_s: float | None = None,
     timeout_s: float | None = None,
@@ -1238,6 +2823,8 @@ def build_v2_run_and_consume(
         )
         from jasper.active_speaker.crossover_v2_flow import (
             PHASE_DONE,
+            PHASE_REVIEW_APPLY,
+            PHASE_VERIFY,
             REASON_INTERNAL_ERROR,
             REASON_PROGRAM_UNPLAYABLE,
             REASON_REGISTRY,
@@ -1295,25 +2882,46 @@ def build_v2_run_and_consume(
             # death and must not be caught by the relay-death arm below.
             _post_sweep_phase_best_effort("sweep_started")
             try:
-                conductor.on_armed(state)
+                play_action = lambda: conductor.on_armed(state)
+                if (
+                    conductor.current_phase == PHASE_VERIFY
+                    and verify_authority is not None
+                ):
+                    verify_authority(play_action)
+                else:
+                    play_action()
             except OSError as exc:
                 raise CrossoverV2LocalSeamError(str(exc)) from exc
             _post_sweep_phase_best_effort("sweep_complete")
 
         def consume(index: int, attempt: int, result: Any, entry: Any = None):
             # Same local-seam boundary as on_armed, for consume_capture's
-            # analyze seam.
-            try:
+            # analyze and durable-state seams.
+            def _consume_and_persist() -> Any:
                 verdict = conductor.consume_capture(index, attempt, result, entry)
+                code = (
+                    verdict.get("code")
+                    if isinstance(verdict, Mapping)
+                    else None
+                )
+                persist_conductor_state(
+                    conductor,
+                    failure_code=(
+                        code if not verdict.get("accepted") else None
+                    ),
+                    evidence=evidence_refs,
+                )
+                return verdict
+
+            try:
+                if (
+                    conductor.current_phase == PHASE_VERIFY
+                    and verify_authority is not None
+                ):
+                    return verify_authority(_consume_and_persist)
+                return _consume_and_persist()
             except OSError as exc:
                 raise CrossoverV2LocalSeamError(str(exc)) from exc
-            code = verdict.get("code") if isinstance(verdict, Mapping) else None
-            persist_conductor_state(
-                conductor,
-                failure_code=code if not verdict.get("accepted") else None,
-                evidence=evidence_refs,
-            )
-            return verdict
 
         async def _purge_best_effort() -> None:
             try:
@@ -1372,7 +2980,9 @@ def build_v2_run_and_consume(
                     "v2 terminal host-event post failed", exc_info=True
                 )
 
-        async def _post_session_over_host_event() -> None:
+        async def _post_session_over_host_event(
+            *, review_hold_timed_out: bool,
+        ) -> None:
             """Tell the phone the whole SESSION ended so its deferred-retry loop
             stops waiting (W6.10 blocker #3).
 
@@ -1388,12 +2998,20 @@ def build_v2_run_and_consume(
             reads as ``deadSession`` is the backstop, and this post fails
             harmlessly when the failure was the relay transport itself.
             """
+            event: dict[str, Any] = {
+                "phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED,
+            }
+            if review_hold_timed_out:
+                event.update({
+                    "code": REVIEW_HOLD_TIMED_OUT_CODE,
+                    "reason": REVIEW_HOLD_TIMED_OUT_MESSAGE,
+                })
             try:
                 await asyncio.to_thread(
                     client.post_host_event,
                     pi_session.session_id,
                     pi_session.pull_token,
-                    {"phase": HOST_PHASE_CAPTURE_SET_EXHAUSTED},
+                    event,
                 )
             except (OSError, RuntimeError, ValueError):
                 logger.warning(
@@ -1478,22 +3096,39 @@ def build_v2_run_and_consume(
             # The conductor's own budget refusal — its failure code is already
             # in _last_reason; persist the terminal state.
             code = conductor.last_failure_code or REASON_RELAY_TIMEOUT
-            _persist_terminal_failure(conductor, code)
-            await _abandon_best_effort()
-            await _purge_best_effort()
+            try:
+                _persist_terminal_failure_best_effort(conductor, code)
+            finally:
+                await _abandon_best_effort()
+                await _purge_best_effort()
             raise
-        except (CaptureTimeout, CaptureAborted, CaptureFailed, RelayError, OSError):
+        except (
+            CaptureTimeout,
+            CaptureAborted,
+            CaptureFailed,
+            RelayError,
+            OSError,
+        ) as exc:
             # Relay-session death (§5.10): relay_timeout ⇒ session restart; the
             # walked-away user's volume is always drained. Tell the phone the
             # session is over BEFORE purging (W6.10 blocker #3) — mirror the
             # catch-all arm's terminal-then-grace-then-purge so a watchdog
             # collapse during the REVIEW hold reaches the phone's deferred-retry
             # loop instead of leaving it polling a still-live session forever.
-            await _post_session_over_host_event()
-            _persist_terminal_failure(conductor, REASON_RELAY_TIMEOUT)
-            await _abandon_best_effort()
-            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
-            await _purge_best_effort()
+            await _post_session_over_host_event(
+                review_hold_timed_out=(
+                    isinstance(exc, CaptureTimeout)
+                    and conductor.current_phase == PHASE_REVIEW_APPLY
+                ),
+            )
+            try:
+                _persist_terminal_failure_best_effort(
+                    conductor, REASON_RELAY_TIMEOUT
+                )
+            finally:
+                await _abandon_best_effort()
+                await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
+                await _purge_best_effort()
             raise
         except Exception as exc:  # noqa: BLE001 — cleanup-and-reraise, see below
             # CATCH-ALL cleanup arm (W6.1 gate ruling). The seams raise
@@ -1522,34 +3157,38 @@ def build_v2_run_and_consume(
                 else REASON_INTERNAL_ERROR
             )
             await _post_terminal_failure_host_event(code)
-            _persist_terminal_failure(conductor, code)
-            await _abandon_best_effort()
-            # Finding H: give the just-posted terminal host event a bounded
-            # grace window to reach the phone before the session is purged
-            # out from under its next poll. Volume restore above stays
-            # immediate — only the purge waits.
-            await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
-            await _purge_best_effort()
+            try:
+                _persist_terminal_failure_best_effort(conductor, code)
+            finally:
+                await _abandon_best_effort()
+                # Finding H: give the just-posted terminal host event a bounded
+                # grace window to reach the phone before the session is purged
+                # out from under its next poll. Volume restore above stays
+                # immediate — only the purge waits.
+                await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
+                await _purge_best_effort()
             raise
         # Plan finished without a transport failure.
         done = conductor.current_phase == PHASE_DONE
-        persist_conductor_state(
-            conductor,
-            failure_code=None if done else conductor.last_failure_code,
-            evidence=evidence_refs,
-        )
-        if done:
-            try:
-                await volume.close()
-            except (OSError, RuntimeError, ValueError):
-                log_event(
-                    logger,
-                    "correction.crossover_v2_volume_close_failed",
-                    level=logging.CRITICAL,
-                )
-        else:
-            await _abandon_best_effort()
-        await _purge_best_effort()
+        try:
+            persist_conductor_state(
+                conductor,
+                failure_code=None if done else conductor.last_failure_code,
+                evidence=evidence_refs,
+            )
+        finally:
+            if done:
+                try:
+                    await volume.close()
+                except (OSError, RuntimeError, ValueError):
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_volume_close_failed",
+                        level=logging.CRITICAL,
+                    )
+            else:
+                await _abandon_best_effort()
+            await _purge_best_effort()
 
     return _run_and_consume
 
@@ -1789,6 +3428,21 @@ class V2PreparedSession:
     request_stop: Callable[[], None]
 
 
+def _purge_opened_relay_capture(client: Any, rc: Any) -> None:
+    """Best-effort rollback for a relay session minted before host open failed."""
+
+    from jasper.capture_relay.session import purge
+
+    try:
+        purge(client, rc.pi_session)
+    except (OSError, RuntimeError, ValueError):
+        log_event(
+            logger,
+            "correction.crossover_v2_open_failure_purge_failed",
+            level=logging.ERROR,
+        )
+
+
 def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
     plan = session_volume_plan()
     # The shared IO pair converts CamillaUnavailable (a bare Exception) into
@@ -1856,6 +3510,7 @@ def prepare_v2_session(
         raise CrossoverV2Refused(
             "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
         )
+    reconcile_stale_v2_transaction(run_async, camilla_factory)
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
@@ -1884,7 +3539,9 @@ def prepare_v2_session(
         V2ConductorSnapshot(
             session_id=str(prior_raw.get("session_id") or ""),
             accepted_phases=tuple(prior_raw.get("accepted_phases") or ()),
-            applied=bool(prior_raw.get("applied")),
+            applied=_candidate_applied_for_session(
+                prior_raw, str(prior_raw.get("session_id") or "")
+            ),
             gain_plan_db=prior_raw.get("gain_plan_db"),
         )
         if isinstance(prior_raw, Mapping)
@@ -1907,50 +3564,69 @@ def prepare_v2_session(
             capture_origin=capture_origin,
             return_url=return_url,
         )
-        # The conductor + publishers bind to the MINTED relay session id.
-        relay_session_id = rc.pi_session.session_id
-        publish_check, publish_candidate, refs = bind_evidence_publishers(
-            evidence_store, relay_session_id
-        )
-        play = bind_production_play(
-            run_async=run_async,
-            camilla_factory=camilla_factory,
-            evidence_store=evidence_store,
-            relay_session_id=relay_session_id,
-            topology=context.topology,
-            preset=context.preset,
-            role_channels=context.role_channels,
-            playback_device=context.playback_device,
-            safety_profile=context.safety_profile,
-            role_targets=context.role_targets,
-            session_volume_db=context.session_volume_db,
-            declared_sensitivities=context.declared_sensitivities,
-        )
-        conductor = CrossoverV2Conductor.hydrate(
-            prior_snapshot,
-            session_id=relay_session_id,
-            source_preset=context.preset,
-            roles_bands=context.roles_bands,
-            fc_hz=context.fc_hz,
-            driver_caps_dbfs=context.driver_caps_dbfs,
-            session_volume_db=context.session_volume_db,
-            seams=V2FlowSeams(
-                play=play,
-                analyze=bind_production_analyze(meta=refs),
-                publish_check=publish_check,
-                publish_candidate=publish_candidate,
-                apply_complete=_applied_gate,
-            ),
-            driver_spacing_m=context.driver_spacing_m,
-        )
-        persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        holder["run"] = build_v2_run_and_consume(
-            conductor,
-            volume=_volume_hooks(camilla_factory, context),
-            stop_event=stop_event,
-            stop_lock=stop_lock,
-            evidence_refs=refs,
-        )
+        try:
+            # The conductor + publishers bind to the MINTED relay session id.
+            relay_session_id = rc.pi_session.session_id
+            publish_check, publish_candidate, refs = bind_evidence_publishers(
+                evidence_store, relay_session_id
+            )
+            play = bind_production_play(
+                run_async=run_async,
+                camilla_factory=camilla_factory,
+                evidence_store=evidence_store,
+                relay_session_id=relay_session_id,
+                topology=context.topology,
+                preset=context.preset,
+                role_channels=context.role_channels,
+                playback_device=context.playback_device,
+                safety_profile=context.safety_profile,
+                role_targets=context.role_targets,
+                session_volume_db=context.session_volume_db,
+                declared_sensitivities=context.declared_sensitivities,
+            )
+            analyze = bind_production_analyze(meta=refs)
+            verify_authority = _v2_verify_authority_runner(
+                run_async=run_async,
+                camilla_factory=camilla_factory,
+                session_id=relay_session_id,
+                expected_topology=context.topology,
+            )
+            conductor = CrossoverV2Conductor.hydrate(
+                prior_snapshot,
+                session_id=relay_session_id,
+                source_preset=context.preset,
+                roles_bands=context.roles_bands,
+                fc_hz=context.fc_hz,
+                driver_caps_dbfs=context.driver_caps_dbfs,
+                session_volume_db=context.session_volume_db,
+                seams=V2FlowSeams(
+                    play=play,
+                    analyze=analyze,
+                    publish_check=publish_check,
+                    publish_candidate=publish_candidate,
+                    apply_complete=lambda: _applied_gate_for_session(
+                        relay_session_id
+                    ),
+                ),
+                driver_spacing_m=context.driver_spacing_m,
+            )
+            persist_conductor_state(
+                conductor,
+                failure_code=None,
+                evidence=refs,
+                allow_session_rebind=True,
+            )
+            holder["run"] = build_v2_run_and_consume(
+                conductor,
+                volume=_volume_hooks(camilla_factory, context),
+                stop_event=stop_event,
+                stop_lock=stop_lock,
+                verify_authority=verify_authority,
+                evidence_refs=refs,
+            )
+        except Exception:
+            _purge_opened_relay_capture(client, rc)
+            raise
         return rc
 
     async def _run(client: Any, pi_session: Any) -> None:
@@ -1999,16 +3675,30 @@ def prepare_v2_verify(
         raise CrossoverV2Refused(
             "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
         )
+    reconcile_stale_v2_transaction(run_async, camilla_factory)
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before verifying"
         )
     state = load_v2_state()
-    if not state or not state.get("applied"):
+    if not state or not _candidate_applied_for_session(
+        state, str(state.get("session_id") or "")
+    ):
         raise CrossoverV2Refused(
             "verification needs an applied measured crossover; measure and "
             "apply first"
         )
+    expected_applied_state = {
+        "session_id": state.get("session_id"),
+        "applied_session_id": _candidate_applied_session_id(state),
+        "applied_profile_fingerprint": state.get(
+            "applied_profile_fingerprint"
+        ),
+        "applied_live_graph_fingerprint": state.get(
+            "applied_live_graph_fingerprint"
+        ),
+        "pre_apply_profile": state.get("pre_apply_profile"),
+    }
     context = resolve_conductor_context(status)
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     priors_raw = state.get("verify_priors") or {}
@@ -2028,69 +3718,202 @@ def prepare_v2_verify(
     holder: dict[str, Any] = {}
 
     def _open(client: Any, base: str, capture_origin: str, return_url: str) -> Any:
+        current = load_v2_state()
+        current_binding = (
+            _candidate_applied_session_id(current)
+            if isinstance(current, Mapping)
+            else ""
+        )
+        if (
+            not current
+            or not _candidate_applied_for_session(
+                current, str(current.get("session_id") or "")
+            )
+            or _reservation_mapping(current) is not None
+            or any(
+                (current_binding if key == "applied_session_id" else current.get(key))
+                != value
+                for key, value in expected_applied_state.items()
+            )
+        ):
+            raise CrossoverV2Refused(
+                "the applied crossover changed before verification could start; "
+                "refresh the page and review the current sound"
+            )
         spec = build_v2_verify_session_spec(
             context.fc_hz,
             acknowledgement_binding=acknowledgement_binding,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
-        rc = correction_adapter.open_capture(
-            client,
-            spec,
-            relay_base=base,
-            capture_origin=capture_origin,
-            return_url=return_url,
+
+        async def _validate_and_open() -> Any:
+            from jasper.active_speaker.baseline_profile import (
+                load_applied_baseline_profile_state_strict,
+            )
+            from jasper.dsp_apply import dsp_writer_lock
+
+            async with dsp_writer_lock(
+                _v2_dsp_lock_dir(), source="crossover_v2_verify_admission"
+            ):
+                current = load_v2_state()
+                current_binding = (
+                    _candidate_applied_session_id(current)
+                    if isinstance(current, Mapping)
+                    else ""
+                )
+                if (
+                    not current
+                    or not _candidate_applied_for_session(
+                        current, str(current.get("session_id") or "")
+                    )
+                    or _reservation_mapping(current) is not None
+                    or any(
+                        (
+                            current_binding
+                            if key == "applied_session_id"
+                            else current.get(key)
+                        )
+                        != value
+                        for key, value in expected_applied_state.items()
+                    )
+                ):
+                    raise CrossoverV2Refused(
+                        "the applied crossover changed before verification could "
+                        "start; refresh the page and review the current sound"
+                    )
+                try:
+                    state_file_present, applied_profile = (
+                        load_applied_baseline_profile_state_strict()
+                    )
+                    profile_fingerprint = _profile_candidate_identity(applied_profile)
+                    profile_graph_fingerprint = (
+                        _profile_graph_fingerprint(applied_profile)
+                        if isinstance(applied_profile, Mapping)
+                        else ""
+                    )
+                    profile_topology_fingerprint = (
+                        _profile_topology_fingerprint(applied_profile)
+                        if isinstance(applied_profile, Mapping)
+                        else ""
+                    )
+                    live_graph_fingerprint = (
+                        await _current_camilla_graph_fingerprint(camilla_factory())
+                    )
+                except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
+                    raise CrossoverV2Refused(
+                        "the applied speaker graph could not be proved before "
+                        "verification; refresh the page and review Speaker setup"
+                    ) from exc
+                if (
+                    not state_file_present
+                    or profile_fingerprint
+                    != str(current.get("applied_profile_fingerprint") or "")
+                    or profile_graph_fingerprint
+                    != str(current.get("applied_live_graph_fingerprint") or "")
+                    or live_graph_fingerprint != profile_graph_fingerprint
+                    or profile_topology_fingerprint
+                    != topology_config_fingerprint(context.topology)
+                ):
+                    raise CrossoverV2Refused(
+                        "the applied speaker graph changed before verification could "
+                        "start; refresh the page and review the current sound"
+                    )
+                return correction_adapter.open_capture(
+                    client,
+                    spec,
+                    relay_base=base,
+                    capture_origin=capture_origin,
+                    return_url=return_url,
+                )
+
+        from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+        from jasper.output_topology import (
+            load_output_topology_strict,
+            output_topology_mutation_lock,
         )
-        relay_session_id = rc.pi_session.session_id
-        _publish_check, publish_candidate, refs = bind_evidence_publishers(
-            evidence_store, relay_session_id
-        )
-        play = bind_production_play(
-            run_async=run_async,
-            camilla_factory=camilla_factory,
-            evidence_store=evidence_store,
-            relay_session_id=relay_session_id,
-            topology=context.topology,
-            preset=context.preset,
-            role_channels=context.role_channels,
-            playback_device=context.playback_device,
-            safety_profile=context.safety_profile,
-            role_targets=context.role_targets,
-            session_volume_db=context.session_volume_db,
-            declared_sensitivities=context.declared_sensitivities,
-        )
-        conductor = CrossoverV2Conductor(
-            session_id=relay_session_id,
-            source_preset=context.preset,
-            roles_bands=context.roles_bands,
-            fc_hz=context.fc_hz,
-            driver_caps_dbfs=context.driver_caps_dbfs,
-            session_volume_db=context.session_volume_db,
-            seams=V2FlowSeams(
-                play=play,
-                analyze=bind_production_analyze(meta=refs),
-                publish_check=_publish_check,
-                publish_candidate=publish_candidate,
-                apply_complete=_applied_gate,
-            ),
-            driver_spacing_m=context.driver_spacing_m,
-            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-            applied=True,
-            gain_plan_db=state.get("gain_plan_db"),
-            index_phase_map={1: PHASE_VERIFY},
-            measure_predicted_sum=predicted_sum,
-            measure_gate_window_ms=(
-                float(gate_ms) if isinstance(gate_ms, (int, float)) else None
-            ),
-        )
-        # Keep the durable candidate/applied facts; rebind the session id.
-        persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        holder["run"] = build_v2_run_and_consume(
-            conductor,
-            volume=_volume_hooks(camilla_factory, context),
-            stop_event=stop_event,
-            stop_lock=stop_lock,
-            evidence_refs=refs,
-        )
+
+        with output_topology_mutation_lock():
+            current_topology = load_output_topology_strict()
+            if topology_config_fingerprint(
+                current_topology
+            ) != topology_config_fingerprint(context.topology):
+                raise CrossoverV2Refused(
+                    "the output topology changed before verification could start; "
+                    "refresh the page and measure again"
+                )
+            rc = run_async(_validate_and_open())
+        try:
+            relay_session_id = rc.pi_session.session_id
+            _publish_check, publish_candidate, refs = bind_evidence_publishers(
+                evidence_store, relay_session_id
+            )
+            play = bind_production_play(
+                run_async=run_async,
+                camilla_factory=camilla_factory,
+                evidence_store=evidence_store,
+                relay_session_id=relay_session_id,
+                topology=context.topology,
+                preset=context.preset,
+                role_channels=context.role_channels,
+                playback_device=context.playback_device,
+                safety_profile=context.safety_profile,
+                role_targets=context.role_targets,
+                session_volume_db=context.session_volume_db,
+                declared_sensitivities=context.declared_sensitivities,
+            )
+            analyze = bind_production_analyze(meta=refs)
+            verify_authority = _v2_verify_authority_runner(
+                run_async=run_async,
+                camilla_factory=camilla_factory,
+                session_id=relay_session_id,
+                expected_topology=context.topology,
+            )
+            conductor = CrossoverV2Conductor(
+                session_id=relay_session_id,
+                source_preset=context.preset,
+                roles_bands=context.roles_bands,
+                fc_hz=context.fc_hz,
+                driver_caps_dbfs=context.driver_caps_dbfs,
+                session_volume_db=context.session_volume_db,
+                seams=V2FlowSeams(
+                    play=play,
+                    analyze=analyze,
+                    publish_check=_publish_check,
+                    publish_candidate=publish_candidate,
+                    apply_complete=lambda: _applied_gate_for_session(
+                        relay_session_id
+                    ),
+                ),
+                driver_spacing_m=context.driver_spacing_m,
+                accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+                applied=True,
+                gain_plan_db=state.get("gain_plan_db"),
+                index_phase_map={1: PHASE_VERIFY},
+                measure_predicted_sum=predicted_sum,
+                measure_gate_window_ms=(
+                    float(gate_ms)
+                    if isinstance(gate_ms, (int, float))
+                    else None
+                ),
+            )
+            # Keep the durable candidate/applied facts; rebind the session id.
+            persist_conductor_state(
+                conductor,
+                failure_code=None,
+                evidence=refs,
+                allow_session_rebind=True,
+            )
+            holder["run"] = build_v2_run_and_consume(
+                conductor,
+                volume=_volume_hooks(camilla_factory, context),
+                stop_event=stop_event,
+                stop_lock=stop_lock,
+                verify_authority=verify_authority,
+                evidence_refs=refs,
+            )
+        except Exception:
+            _purge_opened_relay_capture(client, rc)
+            raise
         return rc
 
     async def _run(client: Any, pi_session: Any) -> None:
@@ -2111,6 +3934,109 @@ def prepare_v2_verify(
 # --------------------------------------------------------------------------- #
 # apply (the existing baseline transaction, W4 seam)
 # --------------------------------------------------------------------------- #
+
+
+def _profile_config_path(profile: Mapping[str, Any] | None) -> str:
+    config = profile.get("config") if isinstance(profile, Mapping) else None
+    return str(config.get("path") or "") if isinstance(config, Mapping) else ""
+
+
+def _prune_v2_candidate_configs_after_attempt(
+    run_async: Any,
+    cam: Any,
+) -> tuple[Path, ...]:
+    """Bound candidates after every terminal Apply attempt under DSP authority.
+
+    Success, policy blocks, transactional failures, and raised endpoint errors
+    can all leave a newly emitted content-addressed sibling. Re-read the
+    authoritative applied/Undo/live paths while holding the shared writer lock;
+    any unresolved reference or recovery fence leaks safely instead of guessing.
+    """
+
+    async def _prune() -> tuple[Path, ...]:
+        from jasper.active_speaker.baseline_profile import (
+            baseline_config_path,
+            load_applied_baseline_profile_state_strict,
+            prune_baseline_candidate_configs,
+        )
+        from jasper.dsp_apply import dsp_writer_lock
+
+        async with dsp_writer_lock(
+            _v2_dsp_lock_dir(), source="crossover_v2_candidate_retention"
+        ):
+            state = load_v2_state()
+            if _reservation_mapping(state) is not None:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_candidate_prune_skipped",
+                    level=logging.WARNING,
+                    reason="transaction_recovery_fenced",
+                )
+                return ()
+            try:
+                _state_file_present, applied_profile = (
+                    load_applied_baseline_profile_state_strict()
+                )
+            except (OSError, ValueError):
+                log_event(
+                    logger,
+                    "correction.crossover_v2_candidate_prune_skipped",
+                    level=logging.WARNING,
+                    reason="applied_profile_unreadable",
+                )
+                return ()
+            # CamillaClient exposes the authoritative loaded path through the
+            # same API used by apply_baseline_profile. Keep retention on that
+            # established boundary so it works for the real client as well as
+            # every apply-path test double.
+            getter = getattr(cam, "get_config_file_path", None)
+            if not callable(getter):
+                return ()
+            live_path = str(await getter(best_effort=False) or "")
+            applied_path = _profile_config_path(applied_profile)
+            undo_profile = (state or {}).get("pre_apply_profile")
+            undo_path = _profile_config_path(
+                undo_profile if isinstance(undo_profile, Mapping) else None
+            )
+            if not live_path:
+                reason = "live_config_path_unresolved"
+            elif isinstance(applied_profile, Mapping) and not applied_path:
+                reason = "applied_config_path_unresolved"
+            elif isinstance(undo_profile, Mapping) and not undo_path:
+                reason = "undo_config_path_unresolved"
+            else:
+                reason = ""
+            if reason:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_candidate_prune_skipped",
+                    level=logging.WARNING,
+                    reason=reason,
+                )
+                return ()
+            removed = prune_baseline_candidate_configs(
+                baseline_config_path(),
+                protected_paths=[applied_path, live_path, undo_path],
+                keep_recent=V2_CANDIDATE_CONFIG_KEEP_RECENT,
+            )
+            if removed:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_candidates_pruned",
+                    removed_count=len(removed),
+                )
+            return removed
+
+    try:
+        return run_async(_prune())
+    except Exception as exc:  # noqa: BLE001 — cleanup must not mask Apply outcome
+        log_event(
+            logger,
+            "correction.crossover_v2_candidate_prune_failed",
+            level=logging.WARNING,
+            err=repr(exc),
+        )
+        return ()
 
 
 def handle_v2_apply(
@@ -2145,6 +4071,7 @@ def handle_v2_apply(
     from jasper.active_speaker.baseline_profile import (
         apply_baseline_profile,
         build_baseline_profile_candidate,
+        topology_config_fingerprint,
     )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
@@ -2153,12 +4080,17 @@ def handle_v2_apply(
         MeasuredCrossoverCandidateError,
     )
     from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.output_topology import load_output_topology
+    from jasper.output_topology import (
+        load_output_topology,
+        load_output_topology_strict,
+        output_topology_mutation_lock,
+    )
 
     if not v2_flow_active():
         raise CrossoverV2Refused(
             "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
         )
+    reconcile_stale_v2_transaction(run_async, camilla_factory)
     expected = str(raw.get("expected_candidate_fingerprint") or "")
     if not expected:
         raise CrossoverV2Refused("expected_candidate_fingerprint is required")
@@ -2168,6 +4100,20 @@ def handle_v2_apply(
     if not isinstance(candidate_ref, Mapping) or not candidate_ref.get("fingerprint"):
         raise CrossoverV2Refused(
             "no measured crossover candidate is ready to apply; measure first"
+        )
+    producer_session_id = str((state or {}).get("session_id") or "")
+    accepted_phases = set((state or {}).get("accepted_phases") or ())
+    from jasper.active_speaker.crossover_v2_flow import PHASE_CHECK, PHASE_MEASURE
+
+    if (
+        not producer_session_id
+        or not {PHASE_CHECK, PHASE_MEASURE}.issubset(accepted_phases)
+        or (state or {}).get("failure")
+        or _candidate_applied_for_session(state, producer_session_id)
+    ):
+        raise CrossoverV2Refused(
+            "this measurement session is no longer ready to apply; start the "
+            "measurement again"
         )
     if str(candidate_ref["fingerprint"]) != expected:
         raise CrossoverV2Refused(
@@ -2218,45 +4164,157 @@ def handle_v2_apply(
     baseline_expected_fingerprint = str(
         reviewed_baseline.get("candidate_fingerprint") or ""
     )
-    # The pre-candidate applied profile, if any (``None`` on the speaker's
-    # first-ever apply). ``build_baseline_profile_candidate`` freezes it here
-    # as ``applied_recomposition_profile`` before the actual apply below
-    # commits and pops that field off the new applied SSOT — this is the
-    # ONLY place it survives to stash for the v2 Undo path
-    # (``handle_v2_restore``).
-    pre_apply_profile = reviewed_baseline.get("applied_recomposition_profile")
-    if not isinstance(pre_apply_profile, Mapping):
-        pre_apply_profile = None
+
+    def _refresh_apply_inputs() -> tuple[Any, Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
+        current_topology = load_output_topology_strict()
+        current_draft = load_design_draft(topology=current_topology)
+        current_preview = load_crossover_preview(current_design_draft=current_draft)
+        current_measurements = load_measurement_state(current_topology)
+        return (
+            current_topology,
+            current_draft,
+            current_preview,
+            current_measurements,
+        )
+
+    async def _assert_review_still_current() -> None:
+        current = load_v2_state()
+        reservation = (
+            current.get("apply_reservation")
+            if isinstance(current, Mapping)
+            else None
+        )
+        if not isinstance(reservation, Mapping) or str(
+            reservation.get("token") or ""
+        ) != reservation_token or _pending_terminal_failure_code(current):
+            raise CrossoverV2Refused(
+                "this measurement session changed before Apply reached the "
+                "speaker; start the measurement again"
+            )
+
+    retained_predecessor: dict[str, Mapping[str, Any] | None] = {"profile": None}
+
+    async def _commit_after_apply(
+        payload: Mapping[str, Any], locked_candidate: Mapping[str, Any]
+    ) -> None:
+        # Runs before apply_baseline_profile releases the shared DSP writer
+        # lock. The predecessor comes from THIS in-lock candidate, never the
+        # speculative pre-admission composition above.
+        pre_apply_profile = retained_predecessor["profile"]
+        applied_profile = payload.get("profile")
+        live_graph_fingerprint = (
+            _profile_graph_fingerprint(applied_profile)
+            if isinstance(applied_profile, Mapping)
+            else None
+        )
+        observe_apply_success(
+            expected,
+            pre_apply_profile=pre_apply_profile,
+            applied_profile=(
+                applied_profile if isinstance(applied_profile, Mapping) else None
+            ),
+            applied_live_graph_fingerprint=live_graph_fingerprint,
+            session_id=producer_session_id,
+            reservation_token=reservation_token,
+        )
+
+    async def _journal_apply_started(
+        locked_candidate: Mapping[str, Any],
+    ) -> None:
+        getter = getattr(cam, "get_active_config_raw", None)
+        if not callable(getter):
+            raise CrossoverV2Refused(
+                "the current speaker graph cannot be retained safely for Undo"
+            )
+        active_raw = await getter(best_effort=False)
+        from jasper.active_speaker.baseline_profile import (
+            normalized_camilla_graph_fingerprint,
+        )
+
+        source_live_graph_fingerprint = normalized_camilla_graph_fingerprint(
+            active_raw
+        )
+        source_profile = locked_candidate.get("applied_recomposition_profile")
+        retained_predecessor["profile"] = _snapshot_pre_apply_profile(
+            source_profile if isinstance(source_profile, Mapping) else None,
+            active_raw,
+        )
+        _mark_apply_mutation_started(
+            reservation_token,
+            locked_candidate,
+            source_live_graph_fingerprint=source_live_graph_fingerprint,
+            retained_pre_apply_profile=retained_predecessor["profile"],
+        )
 
     cam = camilla_factory()
-    payload = run_async(
-        apply_baseline_profile(
-            topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            load_config=lambda path: cam.set_config_file_path(
-                path, best_effort=False
-            ),
-            get_current_config_path=lambda: cam.get_config_file_path(
-                best_effort=False
-            ),
-            tuning_owner="automatic",
-            expected_candidate_fingerprint=baseline_expected_fingerprint,
-            measured_candidate=candidate,
-        )
-    )
-    if payload.get("status") == "applied":
-        observe_apply_success(expected, pre_apply_profile=pre_apply_profile)
     issue = None
+    with output_topology_mutation_lock():
+        # Reconciliation in this request must reuse the topology identity
+        # proved under the lock it already owns. Re-entering the file lock in
+        # _finish_v2_reservation would self-deadlock on a rolled-back Apply.
+        locked_topology_fingerprint = topology_config_fingerprint(
+            load_output_topology_strict()
+        )
+        reservation_token = _reserve_v2_apply(producer_session_id, expected)
+        try:
+            try:
+                payload = run_async(
+                    apply_baseline_profile(
+                        topology,
+                        design_draft=draft,
+                        crossover_preview=preview,
+                        measurements=measurements,
+                        load_config=lambda path: cam.set_config_file_path(
+                            path, best_effort=False
+                        ),
+                        get_current_config_path=lambda: cam.get_config_file_path(
+                            best_effort=False
+                        ),
+                        tuning_owner="automatic",
+                        expected_candidate_fingerprint=(
+                            baseline_expected_fingerprint
+                        ),
+                        # This runs after all candidate proof but BEFORE
+                        # apply_dsp_config's load/rollback arm. A stale refusal
+                        # never rolls back a candidate that was not loaded.
+                        on_candidate_verified=_assert_review_still_current,
+                        on_apply_started=_journal_apply_started,
+                        on_apply_success=_commit_after_apply,
+                        measured_candidate=candidate,
+                        refresh_inputs=_refresh_apply_inputs,
+                    )
+                )
+                if payload.get("status") == "blocked":
+                    # Publish the nudge while this exact attempt still owns
+                    # the reservation. An older blocked response must never
+                    # race a newer same-session retry and resurrect stale copy.
+                    issue = _blocking_apply_issue(payload)
+                    if issue is not None:
+                        payload["issue"] = issue
+                    _persist_apply_blocked(
+                        issue,
+                        session_id=producer_session_id,
+                        candidate_fingerprint=expected,
+                        reservation_token=reservation_token,
+                    )
+            finally:
+                # Success clears this inside the in-lock state commit;
+                # blocked/failed admissions release directly. Once mutation
+                # started, reconcile before the frontier can be reused.
+                _finish_v2_reservation(
+                    reservation_token,
+                    run_async,
+                    camilla_factory,
+                    current_topology_fingerprint=locked_topology_fingerprint,
+                )
+        finally:
+            # The compiler can emit a sibling before any terminal outcome,
+            # including a block or raised failure. Re-enter the writer boundary
+            # and bound that family without masking the Apply result.
+            _prune_v2_candidate_configs_after_attempt(run_async, cam)
     if payload.get("status") == "blocked":
-        # Finding N: name the blocker compactly (not buried in the full
-        # composed profile) and persist it so the review_apply screen can
-        # surface it instead of looking like a dead button forever.
-        issue = _blocking_apply_issue(payload)
-        if issue is not None:
-            payload["issue"] = issue
-        _persist_apply_blocked(issue)
+        # The compact blocker was persisted under this attempt's reservation;
+        # emit the terminal event only after all cleanup has completed.
         log_event(
             logger,
             "correction.crossover_v2_apply_blocked",
@@ -2300,17 +4358,28 @@ def handle_v2_restore(
     """
     from jasper.active_speaker.baseline_profile import (
         restore_applied_baseline_profile,
+        topology_config_fingerprint,
+    )
+    from jasper.output_topology import (
+        load_output_topology_strict,
+        output_topology_mutation_lock,
     )
 
     if not v2_flow_active():
         raise CrossoverV2Refused(
             "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
         )
-    state = load_v2_state()
-    if not state or not state.get("applied"):
-        raise CrossoverV2Refused(
-            "nothing is applied to undo; measure and apply a crossover first"
-        )
+    reconcile_stale_v2_transaction(run_async, camilla_factory)
+    with _state_lock:
+        state = load_v2_state()
+        if not state or not state.get("applied"):
+            raise CrossoverV2Refused(
+                "nothing is applied to undo; measure and apply a crossover first"
+            )
+        upgraded = _upgrade_legacy_undo_identity(state)
+        if upgraded != state:
+            save_v2_state(upgraded)
+            state = upgraded
     pre_apply_profile = state.get("pre_apply_profile")
     if not isinstance(pre_apply_profile, Mapping):
         # Now that persist_conductor_state carries pre_apply_profile forward
@@ -2322,20 +4391,78 @@ def handle_v2_restore(
             "this is the first measured crossover on this speaker — there's "
             "no earlier one to restore; use Speaker setup to remove it instead"
         )
-    cam = camilla_factory()
-    payload = run_async(
-        restore_applied_baseline_profile(
-            pre_apply_profile,
-            load_config=lambda path: cam.set_config_file_path(
-                path, best_effort=False
-            ),
-            get_current_config_path=lambda: cam.get_config_file_path(
-                best_effort=False
-            ),
-        )
+    snapshot = pre_apply_profile.get("recomposition_snapshot")
+    stashed_topology_fingerprint = (
+        str(snapshot.get("topology_fingerprint") or "")
+        if isinstance(snapshot, Mapping)
+        else ""
     )
-    if payload.get("status") == "restored":
-        observe_restore()
+    if not stashed_topology_fingerprint:
+        raise CrossoverV2Refused(
+            "the previous crossover does not record which output topology it "
+            "was built for; re-measure the crossover before trying to restore it"
+        )
+    reservation_token: str | None = None
+    try:
+        with output_topology_mutation_lock():
+            current_topology = load_output_topology_strict()
+            if (
+                stashed_topology_fingerprint
+                != topology_config_fingerprint(current_topology)
+            ):
+                raise CrossoverV2Refused(
+                    "the output topology changed since the previous crossover was "
+                    "saved; re-measure the crossover before trying to restore it"
+                )
+            applied_profile_fingerprint = str(
+                state.get("applied_profile_fingerprint") or ""
+            )
+            applied_live_graph_fingerprint = str(
+                state.get("applied_live_graph_fingerprint") or ""
+            )
+            if not applied_profile_fingerprint or not applied_live_graph_fingerprint:
+                raise CrossoverV2Refused(
+                    "this Undo cannot prove which active speaker graph it would "
+                    "replace; re-measure before restoring anything"
+                )
+            reservation_token = _reserve_v2_restore(state)
+
+            async def _commit_restore(_restored: Mapping[str, Any]) -> None:
+                observe_restore(reservation_token=reservation_token)
+
+            async def _journal_restore_started(
+                retained: Mapping[str, Any],
+            ) -> None:
+                _mark_restore_mutation_started(reservation_token, retained)
+
+            cam = camilla_factory()
+            payload = run_async(
+                restore_applied_baseline_profile(
+                    pre_apply_profile,
+                    load_config=lambda path: cam.set_config_file_path(
+                        path, best_effort=False
+                    ),
+                    get_current_config_path=lambda: cam.get_config_file_path(
+                        best_effort=False
+                    ),
+                    expected_current_candidate_fingerprint=(
+                        applied_profile_fingerprint
+                    ),
+                    expected_current_graph_fingerprint=(
+                        applied_live_graph_fingerprint
+                    ),
+                    get_current_graph_fingerprint=lambda: (
+                        _current_camilla_graph_fingerprint(cam)
+                    ),
+                    on_restore_started=_journal_restore_started,
+                    on_restore_success=_commit_restore,
+                )
+            )
+    finally:
+        if reservation_token is not None:
+            _finish_v2_reservation(
+                reservation_token, run_async, camilla_factory
+            )
     log_event(
         logger,
         "correction.crossover_v2_restored",
@@ -2371,13 +4498,35 @@ def _blocking_apply_issue(payload: Mapping[str, Any]) -> dict[str, str] | None:
     return None
 
 
-def _persist_apply_blocked(issue: Mapping[str, str] | None) -> None:
-    """Record (or clear) the last blocked-apply issue for the review_apply nudge."""
-    state = load_v2_state()
-    if state is None:
-        return
-    state["apply_blocked"] = dict(issue) if issue else None
-    save_v2_state(state)
+def _persist_apply_blocked(
+    issue: Mapping[str, str] | None,
+    *,
+    session_id: str,
+    candidate_fingerprint: str,
+    reservation_token: str | None = None,
+) -> None:
+    """Record this attempt's blocked-apply nudge under its reservation."""
+    with _state_lock:
+        state = load_v2_state()
+        candidate = (state or {}).get("candidate")
+        if (
+            state is None
+            or str(state.get("session_id") or "") != session_id
+            or not isinstance(candidate, Mapping)
+            or str(candidate.get("fingerprint") or "") != candidate_fingerprint
+            or _apply_reservation_token(state) != str(reservation_token or "")
+        ):
+            log_event(
+                logger,
+                "correction.crossover_v2_apply_blocked_dropped",
+                level=logging.INFO,
+                reason="producing_attempt_changed",
+            )
+            return
+        state["apply_blocked"] = (
+            {**dict(issue), "session_id": session_id} if issue else None
+        )
+        save_v2_state(state, reservation_token=reservation_token)
 
 
 def _reopen_candidate_artifact(

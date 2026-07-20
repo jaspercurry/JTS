@@ -1824,7 +1824,9 @@ POST /crossover/v2/session   v2 conductor flow (JASPER_CROSSOVER_FLOW=v2, W5a):
                              open ONE relay session spanning CHECK→MEASURE→VERIFY
                              (3-entry capture plan); refuses under the legacy flow
 POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session after
-                             apply (§5.2 re-verify); refuses under the legacy flow
+                             apply (§5.2 re-verify); before mint, holds topology
+                             authority and proves the saved Layer-A plus normalized
+                             live Camilla graph under the DSP writer lock
 POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
                              through the existing atomic apply transaction (W4
                              measured_candidate seam); arms the deferred VERIFY
@@ -1835,6 +1837,11 @@ POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
                              Blocker Q: the legacy /crossover/restore expects a
                              pending commissioning-run apply a v2 apply never
                              creates, and 500s)
+POST /crossover/v2/recover-transaction
+                             v2 conductor: after a process crash leaves Layer A
+                             and live Camilla mixed, reload the sha-pinned saved
+                             Layer-A config and reconcile the durable journal under
+                             one topology lock; mismatched wiring fails closed
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

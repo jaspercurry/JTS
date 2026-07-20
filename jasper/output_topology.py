@@ -19,6 +19,7 @@ import math
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -36,6 +37,7 @@ from .audio_hardware.dac import (
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
 )
+from .atomic_io import advisory_file_lock
 from .camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from .camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_HI,
@@ -57,6 +59,7 @@ CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 OUTPUT_LAYOUT_KIND = "jts_output_layout"
 OUTPUT_TRANSPORT_PLAN_KIND = "jts_output_transport_plan"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
+OUTPUT_TOPOLOGY_MUTATION_LOCK_TIMEOUT_S = 15.0
 
 # Active-output route resolution (the playback PCM + DAC-agnostic transport plan
 # the active-crossover path rides). Owned here, not on the IO-free DAC registry,
@@ -139,6 +142,10 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
 class OutputTopologyError(ValueError):
     """Raised when output topology JSON has an unsupported shape."""
+
+
+class OutputTopologyMutationBusy(RuntimeError):
+    """The bounded shared topology/DSP mutation boundary is occupied."""
 
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
@@ -1963,6 +1970,46 @@ def topology_path(path: str | Path | None = None) -> Path:
     )
 
 
+def topology_mutation_lock_path(path: str | Path | None = None) -> Path:
+    """Shared advisory lock for topology publication and topology-bound DSP work."""
+
+    target = topology_path(path)
+    return target.with_name(f".{target.name}.lock")
+
+
+@contextmanager
+def output_topology_mutation_lock(
+    path: str | Path | None = None,
+    *,
+    timeout_sec: float = OUTPUT_TOPOLOGY_MUTATION_LOCK_TIMEOUT_S,
+):
+    """Serialize topology publication with work bound to one topology snapshot.
+
+    The topology file itself is atomically replaced, but a reader that validates
+    a topology and then mutates DSP needs the identity to remain stable across
+    both operations. All topology writers take this cross-process lock; the v2
+    Undo path holds it from its fingerprint check through the DSP transaction.
+    """
+
+    admitted = False
+    try:
+        with advisory_file_lock(
+            topology_mutation_lock_path(path),
+            mode=0o660,
+            group_from_parent=True,
+            timeout_sec=timeout_sec,
+        ):
+            admitted = True
+            yield
+    except TimeoutError as exc:
+        if admitted:
+            raise
+        raise OutputTopologyMutationBusy(
+            "the output topology is busy with another speaker update; wait for "
+            "that update to finish, then try again"
+        ) from exc
+
+
 def load_output_topology_strict(path: str | Path | None = None) -> OutputTopology:
     """Load persisted topology for safety-authorizing paths.
 
@@ -2014,44 +2061,47 @@ def save_output_topology(
     """Persist a topology atomically. This still does not authorize playback."""
 
     target = topology_path(path)
+    # The advisory lock is a sibling of the target, so bootstrap/custom paths
+    # need their parent before either lock or atomic data file can be created.
     target.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(topology.to_dict(), indent=2, sort_keys=True) + "\n"
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            dir=target.parent,
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_name = handle.name
-            handle.write(data)
-        # Publish under the state directory's group (jasper) before the rename,
-        # mirroring atomic_io's group_from_parent. /var/lib/jasper is group
-        # jasper but NOT setgid, so a root-run write (the
-        # jasper-output-topology-reset recovery CLI runs as root) would
-        # otherwise land root:root 0640 — unreadable by the non-root
-        # jasper-group management daemons that read this file, leaving
-        # jasper-control/-web silently falling back to a detected draft.
-        # Best-effort: a chgrp failure must never lose the topology write.
+    with output_topology_mutation_lock(target):
+        data = json.dumps(topology.to_dict(), indent=2, sort_keys=True) + "\n"
+        tmp_name: str | None = None
         try:
-            os.chown(tmp_name, -1, target.parent.stat().st_gid)
-        except OSError as exc:
-            logger.warning(
-                "event=output_topology.group_publish_failed path=%s error=%s",
-                tmp_name,
-                exc,
-            )
-        os.chmod(tmp_name, 0o640)
-        os.replace(tmp_name, target)
-    except Exception:  # noqa: BLE001
-        if tmp_name:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                tmp_name = handle.name
+                handle.write(data)
+            # Publish under the state directory's group (jasper) before the rename,
+            # mirroring atomic_io's group_from_parent. /var/lib/jasper is group
+            # jasper but NOT setgid, so a root-run write (the
+            # jasper-output-topology-reset recovery CLI runs as root) would
+            # otherwise land root:root 0640 — unreadable by the non-root
+            # jasper-group management daemons that read this file, leaving
+            # jasper-control/-web silently falling back to a detected draft.
+            # Best-effort: a chgrp failure must never lose the topology write.
             try:
-                Path(tmp_name).unlink(missing_ok=True)
-            except OSError:
+                os.chown(tmp_name, -1, target.parent.stat().st_gid)
+            except OSError as exc:
                 logger.warning(
-                    "event=output_topology.temp_cleanup_failed path=%s",
+                    "event=output_topology.group_publish_failed path=%s error=%s",
                     tmp_name,
+                    exc,
                 )
-        raise
+            os.chmod(tmp_name, 0o640)
+            os.replace(tmp_name, target)
+        except Exception:  # noqa: BLE001
+            if tmp_name:
+                try:
+                    Path(tmp_name).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(
+                        "event=output_topology.temp_cleanup_failed path=%s",
+                        tmp_name,
+                    )
+            raise

@@ -143,11 +143,17 @@ def _request_payload(handler: Any) -> dict[str, Any]:
 
 
 def handle_status(
-    *, relay: dict[str, Any] | None = None,
+    *,
+    relay: dict[str, Any] | None = None,
+    v2_recovery_run_async: Any | None = None,
+    v2_recovery_camilla_factory: Any | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
     from . import correction_crossover_backend as backend
 
-    payload = backend.status_payload()
+    payload = backend.status_payload(
+        v2_recovery_run_async=v2_recovery_run_async,
+        v2_recovery_camilla_factory=v2_recovery_camilla_factory,
+    )
     payload["relay"] = dict(relay) if relay else None
     return payload, HTTPStatus.OK
 
@@ -181,7 +187,10 @@ def _active_group_member() -> bool:
 
 
 def handle_envelope(
-    *, relay: dict[str, Any] | None = None,
+    *,
+    relay: dict[str, Any] | None = None,
+    v2_recovery_run_async: Any | None = None,
+    v2_recovery_camilla_factory: Any | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """GET /crossover/envelope: the server-computed commissioning screen envelope
     the dumb frontend renders each step from (revision plan §3.2), aligned with
@@ -191,7 +200,11 @@ def handle_envelope(
         build_crossover_envelope_logged,
     )
 
-    status, _ = handle_status(relay=relay)
+    status, _ = handle_status(
+        relay=relay,
+        v2_recovery_run_async=v2_recovery_run_async,
+        v2_recovery_camilla_factory=v2_recovery_camilla_factory,
+    )
     envelope = build_crossover_envelope_logged(status)
     # The "Start over" confirm copy is grouping-aware; carry the (cheap,
     # fail-open) member flag on every polled envelope so the button that is

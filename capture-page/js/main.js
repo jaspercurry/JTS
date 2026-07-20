@@ -378,13 +378,21 @@ function renderStoppedScreen(ctx) {
 // isDeadSessionError(). A "Tap Start to try again" retry against a dead
 // session is a guaranteed second failure, so this renders a terminal screen
 // with no retry affordance instead (run-19 defect).
-function renderSessionExpired(ctx) {
+function renderSessionExpired(ctx, terminal = {}) {
   const returnUrl = safeReturnUrl(ctx.spec);
+  const reviewHoldTimedOut = terminal.code === "review_hold_timed_out";
+  const heading = reviewHoldTimedOut ? "Review timed out" : "Link expired";
+  const message = reviewHoldTimedOut
+    ? String(
+      terminal.reason
+        || "The review wait timed out. Return to the speaker page and start again.",
+    )
+    : "This measurement link expired — return to the speaker page to start again.";
   const children = [
-    el("h1", { class: "cap-heading", text: "Link expired" }),
+    el("h1", { class: "cap-heading", text: heading }),
     el("p", {
       class: "cap-note",
-      text: "This measurement link expired — return to the speaker page to start again.",
+      text: message,
     }),
   ];
   if (returnUrl) {
@@ -393,10 +401,7 @@ function renderSessionExpired(ctx) {
     children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
   }
   setScreen(ctx.screenEl, children);
-  setStatus(
-    "This measurement link expired — return to the speaker page to start again.",
-    "error",
-  );
+  setStatus(message, "error");
 }
 
 // The Stop button's one job: call whichever capture leg's own `abort(reason)`
@@ -1772,6 +1777,7 @@ async function waitForCaptureAuthorized(client, spec, index, attempt, isAborted)
       // 404 (deadSession) a few seconds later.
       return {
         sessionOver: true,
+        code: String(event.code || ""),
         reason: String(event.reason || event.error || "The measurement ended."),
       };
     }
@@ -1974,7 +1980,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
       // The session collapsed while we were holding/awaiting (blocker #3) —
       // terminal, exactly like a dead session; the speaker page shows the
       // specific reason and how to start over.
-      renderSessionExpired(ctx);
+      renderSessionExpired(ctx, admission);
       endPlanSession(ctx);
       return;
     }

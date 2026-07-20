@@ -158,6 +158,90 @@ def baseline_config_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
 
 
+def baseline_candidate_config_path(
+    baseline_path: str | Path,
+    identity: str,
+) -> Path:
+    """Return one literal member of a baseline's candidate-file family."""
+
+    if not identity or any(
+        not (character.isalnum() or character in {"-", "_"})
+        for character in identity
+    ):
+        raise ValueError("candidate identity must be a non-empty safe filename token")
+    baseline = Path(baseline_path)
+    return baseline.with_name(
+        f"{baseline.stem}_candidate_{identity}{baseline.suffix}"
+    )
+
+
+def prune_baseline_candidate_configs(
+    baseline_path: str | Path,
+    *,
+    protected_paths: Sequence[str | Path],
+    keep_recent: int,
+) -> tuple[Path, ...]:
+    """Delete old content-addressed baseline candidates with explicit fences.
+
+    ``baseline_path`` defines the candidate filename family, including custom
+    basenames and ``.yaml`` overrides. ``protected_paths`` is the caller-owned
+    safety boundary: it must include
+    the config the live CamillaDSP process reports, the applied profile's
+    config, and any retained pre-apply/Undo profile. Protected files never
+    consume the ``keep_recent`` allowance, so the policy is exactly "all live
+    references plus N recent diagnostic candidates". A caller that cannot
+    resolve every live reference must skip this function rather than guess.
+    """
+    if (
+        isinstance(keep_recent, bool)
+        or not isinstance(keep_recent, int)
+        or keep_recent < 0
+    ):
+        raise ValueError("keep_recent must be a non-negative integer")
+    baseline = Path(baseline_path)
+    root = baseline.parent
+    prefix = f"{baseline.stem}_candidate_"
+    suffix = baseline.suffix
+    protected = {
+        Path(path).resolve(strict=False)
+        for path in protected_paths
+        if str(path)
+    }
+    candidates: list[tuple[int, str, Path]] = []
+    try:
+        entries = tuple(root.iterdir())
+    except OSError:
+        return ()
+    for path in entries:
+        name = path.name
+        if not name.startswith(prefix):
+            continue
+        identity = name[len(prefix):]
+        if suffix:
+            if not identity.endswith(suffix):
+                continue
+            identity = identity[:-len(suffix)]
+        elif Path(name).suffix:
+            # The compiler preserves an extensionless configured path; do not
+            # sweep similarly-prefixed .yml/.yaml files from another family.
+            continue
+        if not identity:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if not path.is_file() or path.resolve(strict=False) in protected:
+            continue
+        candidates.append((stat.st_mtime_ns, path.name, path))
+    candidates.sort(reverse=True)
+    removed: list[Path] = []
+    for _mtime_ns, _name, path in candidates[keep_recent:]:
+        path.unlink()
+        removed.append(path)
+    return tuple(removed)
+
+
 def _safe_id(value: str) -> str:
     out = "".join(ch if ch.isalnum() or ch in "_.:-" else "_" for ch in value)
     return out.strip("_")[:80] or "active_speaker"
@@ -213,6 +297,26 @@ def _canonicalize_camilla_defaults(value: Any) -> Any:
     if isinstance(value, list):
         return [_canonicalize_camilla_defaults(item) for item in value]
     return value
+
+
+def normalized_camilla_graph_fingerprint(config_text: str) -> str:
+    """Fingerprint a full Camilla graph across file/readback representation.
+
+    Camilla's ``active_raw`` adds explicit null-valued defaults that generated
+    YAML normally omits.  Strip only those representation defaults, using the
+    same canonicalization as :func:`active_layer_a_fingerprint`; every non-null
+    graph value and list position remains identity-bearing.
+    """
+
+    try:
+        raw = yaml_parser.safe_load(config_text)
+    except yaml_parser.YAMLError as exc:
+        raise ActiveSpeakerConfigError(
+            "active Camilla graph must be parseable YAML"
+        ) from exc
+    if not isinstance(raw, Mapping) or not raw:
+        raise ActiveSpeakerConfigError("active Camilla graph must be an object")
+    return _fingerprint(_canonicalize_camilla_defaults(raw))
 
 
 def active_layer_a_fingerprint(config_text: str) -> str:
@@ -1045,6 +1149,35 @@ def load_applied_baseline_profile_state(
     return _frozen_applied_profile(load_baseline_profile_state(path))
 
 
+def load_applied_baseline_profile_state_strict(
+    path: str | Path | None = None,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Read Layer-A identity without collapsing absence and unreadability.
+
+    Returns ``(file_present, applied_anchor)``. A valid candidate record may
+    have no applied anchor (the first-Apply staging state); malformed,
+    unreadable, or schema-invalid bytes raise so transaction recovery can
+    remain fenced instead of treating corruption as genuine absence.
+    """
+
+    target = baseline_profile_state_path(path)
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        raise
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"baseline profile state {target} is invalid JSON") from exc
+    if (
+        not isinstance(raw, dict)
+        or raw.get("artifact_schema_version") != SCHEMA_VERSION
+        or raw.get("kind") != BASELINE_PROFILE_KIND
+    ):
+        raise ValueError(f"baseline profile state {target} has invalid identity")
+    return True, _frozen_applied_profile(raw)
+
+
 def _revalidation_payload(
     saved: Mapping[str, Any] | None,
     current_source: Mapping[str, Any],
@@ -1298,9 +1431,9 @@ def build_baseline_profile_candidate(
         # Never overwrite the file the running/statefile-applied graph may still
         # read. A candidate gets a content-addressed sibling and becomes durable
         # only when the explicit apply repoints CamillaDSP to it.
-        config_target = config_target.with_name(
-            f"{config_target.stem}_candidate_{source['fingerprint'][:12]}"
-            f"{config_target.suffix}"
+        config_target = baseline_candidate_config_path(
+            config_target,
+            str(source["fingerprint"])[:12],
         )
     retained_applied = _frozen_applied_profile(applied_anchor)
 
@@ -2174,8 +2307,14 @@ def persist_applied_baseline_profile(
     apply_state: Mapping[str, Any],
     state_path: str | Path | None = None,
     applied_at: str | None = None,
+    replace_equivalent: bool = False,
 ) -> dict[str, Any]:
-    """Persist one already-read-back compiler candidate as the Layer-A SSOT."""
+    """Persist one already-read-back compiler candidate as the Layer-A SSOT.
+
+    ``replace_equivalent`` republishes an identity-equivalent candidate whose
+    config pointer was repaired (transaction recovery's immutable predecessor).
+    Ordinary applies keep the idempotent fast path.
+    """
 
     if (
         candidate.get("kind") != BASELINE_PROFILE_KIND
@@ -2195,6 +2334,7 @@ def persist_applied_baseline_profile(
         isinstance(existing, Mapping)
         and existing.get("status") == "applied"
         and baseline_candidate_fingerprint(existing) == candidate_identity
+        and not replace_equivalent
     ):
         return dict(existing)
     now = applied_at or _utc_now()
@@ -2214,6 +2354,7 @@ def persist_applied_baseline_profile(
         json.dumps(applied, indent=2, sort_keys=True) + "\n",
         mode=0o640,
         group_from_parent=True,
+        durable=True,
     )
     return applied
 
@@ -2237,6 +2378,10 @@ async def apply_baseline_profile(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+    on_apply_started: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
+    on_apply_success: Callable[
+        [Mapping[str, Any], Mapping[str, Any]], Awaitable[None]
+    ] | None = None,
     measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
         None
     ),
@@ -2287,6 +2432,8 @@ async def apply_baseline_profile(
             preserved_applied_profile=preserved_applied_profile,
             expected_candidate_fingerprint=expected_candidate_fingerprint,
             on_candidate_verified=on_candidate_verified,
+            on_apply_started=on_apply_started,
+            on_apply_success=on_apply_success,
             measured_candidate=measured_candidate,
             validate=validate,
         )
@@ -2311,6 +2458,10 @@ async def _apply_baseline_profile_locked(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+    on_apply_started: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
+    on_apply_success: Callable[
+        [Mapping[str, Any], Mapping[str, Any]], Awaitable[None]
+    ] | None = None,
     measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
         None
     ),
@@ -2512,6 +2663,12 @@ async def _apply_baseline_profile_locked(
 
     if on_candidate_verified is not None:
         await on_candidate_verified()
+    if on_apply_started is not None:
+        # This is the last callback before ``apply_dsp_config`` may load the
+        # candidate.  It runs under the shared DSP-writer lock and receives
+        # the exact candidate (including its frozen predecessor), so a host
+        # can durably journal both sides of the transaction before mutation.
+        await on_apply_started(candidate)
 
     graph_fingerprint = (candidate.get("source") or {}).get("fingerprint")
     candidate_identity = candidate.get("candidate_fingerprint")
@@ -2619,12 +2776,19 @@ async def _apply_baseline_profile_locked(
             else None
         ),
     )
-    return {
+    payload = {
         "status": "applied",
         "profile": applied,
         "apply": apply_state.to_dict(),
         "issues": applied.get("issues", []),
     }
+    if on_apply_success is not None:
+        # ``candidate`` still carries the frozen predecessor that ``applied``
+        # intentionally drops.  Supplying the exact in-lock candidate lets a
+        # caller arm Undo for the graph this transaction really replaced,
+        # never for a speculative candidate sampled before writer admission.
+        await on_apply_success(payload, candidate)
+    return payload
 
 
 async def restore_applied_baseline_profile(
@@ -2634,6 +2798,11 @@ async def restore_applied_baseline_profile(
     get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
     state_path: str | Path | None = None,
     config_path: str | Path | None = None,
+    expected_current_candidate_fingerprint: str | None = None,
+    expected_current_graph_fingerprint: str | None = None,
+    get_current_graph_fingerprint: Callable[[], Awaitable[str]] | None = None,
+    on_restore_started: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
+    on_restore_success: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -2694,6 +2863,63 @@ async def restore_applied_baseline_profile(
         baseline_config_path(config_path).parent,
         source="active_speaker_baseline_restore",
     ):
+        if expected_current_candidate_fingerprint is not None:
+            current = load_applied_baseline_profile_state(state_path)
+            current_fingerprint = (
+                baseline_candidate_fingerprint(current)
+                if isinstance(current, Mapping)
+                and isinstance(current.get("recomposition_snapshot"), Mapping)
+                else ""
+            )
+            if current_fingerprint != expected_current_candidate_fingerprint:
+                return {
+                    "status": "blocked",
+                    "issues": [_issue(
+                        "blocker",
+                        "restore_live_profile_changed",
+                        "the active speaker profile changed after this Undo was armed; "
+                        "review the current speaker setup before restoring anything",
+                    )],
+                }
+        if (expected_current_graph_fingerprint is None) != (
+            get_current_graph_fingerprint is None
+        ):
+            return {
+                "status": "blocked",
+                "issues": [_issue(
+                    "blocker",
+                    "restore_live_graph_identity_missing",
+                    "the active DSP graph identity required by Undo is incomplete; "
+                    "re-measure before restoring anything",
+                )],
+            }
+        if get_current_graph_fingerprint is not None:
+            try:
+                current_graph_fingerprint = await get_current_graph_fingerprint()
+            except Exception as exc:  # noqa: BLE001 — injected hardware read boundary
+                return {
+                    "status": "blocked",
+                    "issues": [_issue(
+                        "blocker",
+                        "restore_live_graph_unreadable",
+                        "the active DSP graph could not be identified safely; "
+                        f"re-measure before restoring anything ({type(exc).__name__})",
+                    )],
+                }
+            if current_graph_fingerprint != expected_current_graph_fingerprint:
+                return {
+                    "status": "blocked",
+                    "issues": [_issue(
+                        "blocker",
+                        "restore_live_graph_changed",
+                        "the speaker sound changed after this Undo was armed; "
+                        "review the current sound before restoring anything",
+                    )],
+                }
+        if on_restore_started is not None:
+            # Last pre-mutation point, still under the DSP-writer lock and
+            # after both current identities were proved.
+            await on_restore_started(retained_profile)
         try:
             apply_state = await apply_dsp_config(
                 source="active_speaker_baseline_restore",
@@ -2714,5 +2940,7 @@ async def restore_applied_baseline_profile(
             apply_state=apply_state.to_dict(),
             state_path=state_path,
         )
+        if on_restore_success is not None:
+            await on_restore_success(restored)
 
     return {"status": "restored", "profile": restored, "apply": apply_state.to_dict()}

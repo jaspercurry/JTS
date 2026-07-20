@@ -139,6 +139,13 @@ REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
 # alignment). Renders through the same VERIFY-fail template — it is a distinct
 # reason parameterizing that screen's copy, not a fifth screen.
 REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
+# Durable Apply/Undo recovery outcomes. These live in the shared reason
+# registry so the browser can never fall back to an endpoint-less generic
+# retry when a process exits around a DSP mutation.
+REASON_STATE_TRANSACTION_INTERRUPTED = "state_transaction_interrupted"
+REASON_STATE_TRANSACTION_RECOVERY_REQUIRED = (
+    "state_transaction_recovery_required"
+)
 
 
 @dataclass(frozen=True)
@@ -170,8 +177,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_SNR_FLOOR: ReasonSpec(
         REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1, "",
-        "The room is too loud right now, or the phone is too far away. Quiet "
-        "the room or move the phone closer, then try again.",
+        "The room is too loud right now, or the recording microphone is too "
+        "far away. Quiet the room or move the recording microphone closer, "
+        "then try again.",
     ),
     REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
         REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
@@ -235,6 +243,16 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2, "",
         "The check was inconclusive — the room reflection cut the window "
         "short. Re-verify to try again.",
+    ),
+    REASON_STATE_TRANSACTION_INTERRUPTED: ReasonSpec(
+        REASON_STATE_TRANSACTION_INTERRUPTED, TEMPLATE_SESSION_RESTART, 0, "",
+        "The speaker restarted before that sound update finished. The previous "
+        "sound is still active; start the measurement again.",
+    ),
+    REASON_STATE_TRANSACTION_RECOVERY_REQUIRED: ReasonSpec(
+        REASON_STATE_TRANSACTION_RECOVERY_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
+        "A sound update was interrupted before the speaker could confirm its "
+        "current state. Recover the saved speaker sound before measuring again.",
     ),
 }
 
@@ -547,6 +565,11 @@ class CrossoverV2Conductor:
         self._measure_gate_window_ms: float | None = measure_gate_window_ms
         self._candidate: Any = None
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
+        # The exact comparator evidence from the most recent VERIFY analysis.
+        # The web host persists this beside ``verify_outcome`` so the
+        # verify-fail screen can disclose the checked RMS / max / band without
+        # re-running analysis or changing the verdict.
+        self._verify_tracking: dict[str, Any] | None = None
         self._last_failure_code: str | None = None
 
     # --- program composition -------------------------------------------------
@@ -666,6 +689,10 @@ class CrossoverV2Conductor:
         return self._verify_outcome
 
     @property
+    def verify_tracking(self) -> Mapping[str, Any] | None:
+        return self._verify_tracking
+
+    @property
     def applied(self) -> bool:
         return self._applied
 
@@ -770,6 +797,12 @@ class CrossoverV2Conductor:
         terminal screen shows). Every other begin is admitted.
         """
         phase = self._phase_of_index(index)
+        if phase == PHASE_VERIFY:
+            # A newly armed retry owns a new verdict.  Clear the previous
+            # comparator evidence before playback/transport begins so a death
+            # before analysis cannot relabel old numbers as the new failure.
+            self._verify_tracking = None
+            self._verify_outcome = None
         if phase == PHASE_VERIFY and not self._apply_observed():
             raise CaptureBeginDeferred(
                 "awaiting_apply",
@@ -918,6 +951,11 @@ class CrossoverV2Conductor:
         )
 
     def _consume_verify(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        # Only the comparator verdict may publish disclosure metrics. A new
+        # attempt clears any prior attempt's values before locate, linearity,
+        # and gate-comparability can refuse for unrelated reasons.
+        self._verify_tracking = None
+        self._verify_outcome = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.linearity_ok is False:
@@ -933,6 +971,9 @@ class CrossoverV2Conductor:
             self._verify_outcome = "inconclusive"
             return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
         tracking = analysis.verify_tracking or {}
+        self._verify_tracking = (
+            dict(tracking) if isinstance(tracking, Mapping) else None
+        )
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
         # max — and both are now computed over `tracking["tracking_band_hz"]`,
@@ -1080,9 +1121,10 @@ def build_v2_capture_plan(
             screen={
                 "title": "Microphone check",
                 "body": (
-                    "Place the phone about 1 m in front of the speaker at "
-                    "tweeter height, then tap Start. Stay quiet — JTS listens "
-                    "to the room first."
+                    "Place the recording microphone 0.7–1.3 m directly in "
+                    "front of the speaker, level with the tweeter and facing "
+                    "it. Keep it there until verification is finished, then "
+                    "tap Start and stay quiet."
                 ),
                 "auto_advance": AUTO_ADVANCE_TAP,
             },
@@ -1093,7 +1135,10 @@ def build_v2_capture_plan(
             duration_ms=_program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS,
             screen={
                 "title": "Measuring",
-                "body": "Keep the phone still — measuring both drivers.",
+                "body": (
+                    "Keep the recording microphone still — measuring both "
+                    "drivers."
+                ),
                 "auto_advance": AUTO_ADVANCE_COUNTDOWN,
                 "countdown_s": str(AUTO_ADVANCE_COUNTDOWN_S),
                 "cancelable": "1",
@@ -1148,8 +1193,8 @@ def build_v2_verify_capture_plan(fc_hz: float) -> Any:
         screen={
             "title": "Verify",
             "body": (
-                "Keep the phone where it was for the measurement, then tap "
-                "Verify."
+                "Keep the recording microphone where it was for the "
+                "measurement, then tap Verify."
             ),
             "auto_advance": AUTO_ADVANCE_TAP,
         },

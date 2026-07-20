@@ -16,8 +16,10 @@ this doc is the current operational truth.
 
 - **Household surface:** `http://jts.local/correction/` → the crossover
   step. The screens are `speaker_setup → microphone_check → measure →
-  review_apply → verify`. The one-liner: place the mic ~1 m in front of
-  the speaker at tweeter height, tap Start, then follow the phone.
+  review_apply → verify`. The one-liner: place the recording mic
+  0.7–1.3 m directly in front of the speaker, level with and facing the
+  tweeter, leave it there through verification, tap Start, then follow
+  the phone.
 - **Flow selector — `JASPER_CROSSOVER_FLOW`.** Resolved by
   `active_crossover_flow()` in
   [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py).
@@ -41,9 +43,11 @@ this doc is the current operational truth.
 ## Current status (2026-07-19)
 
 Waves W1–W6 complete (PRs #1578–#1604). Hardware-validated on JTS3 +
-UMIK-2: first fully-calibrated run 2026-07-19. **Legacy is deprecated**
-and scheduled for deletion in W5b (see Future work). The v2 acoustic
-playback binding
+UMIK-2: first fully-calibrated run 2026-07-19. W5b Phase A hardens the
+v2-only seams (session-scoped apply blockers, topology-bound Undo,
+bounded candidate retention, honest review-timeout copy, and verification
+diagnostics). **Legacy is deprecated** and scheduled for deletion in W5b
+Phase B (see Future work). The v2 acoustic playback binding
 (`bind_program_playback_seams`) is exercised on real CamillaDSP
 hardware; every orchestration test injects fakes.
 
@@ -101,7 +105,9 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    summed sweep through the **applied production graph** + a pilot pair.
    Pass = notch-excluded, validity-floor-clamped tracking error ≤ ±1.5 dB.
    On fail the applied graph **stays in force** (proof-checked safe) and
-   the household is offered Try again / Undo.
+   the household is offered Try again / Undo. A collapsed Measurement
+   details fold exposes the RMS difference, verdict-driving maximum
+   difference, and frequencies checked without changing the verdict.
 
 **One mic position for the whole session: ~1 m on the listening axis,
 tweeter height, facing the speaker.** The placement screen encodes a
@@ -172,11 +178,96 @@ auto-arms VERIFY.
    `candidate_fingerprint` at the host boundary (asserting the
    composition is still bound to the reviewed measured candidate), then
    rides the existing `apply_baseline_profile` transaction with rollback.
+   The producing relay session, accepted CHECK/MEASURE frontier, failure
+   state, and measured fingerprint are atomically reserved before entering
+   the shared topology-publication and DSP writer transactions. That
+   reservation prevents Start over,
+   a replacement capture, or another Apply from replacing the reviewed
+   frontier until DSP apply and the durable applied-state commit both finish.
+   The reservation is proved again after the in-lock recompose and before
+   `apply_dsp_config` arms load/rollback, so refusing a stale Apply cannot
+   reload or roll back audio that this request never loaded. The retained
+   predecessor comes from that exact in-lock candidate, not the speculative
+   pre-admission composition. Immediately before the first possible DSP load,
+   the same writer-locked callback freezes the exact live predecessor bytes to
+   an immutable, SHA-correct candidate sibling (required because Bass Extension
+   may have rewritten the selected Layer-A file in place), then upgrades the
+   reservation to a mutation journal containing that predecessor plus the
+   source/target Layer-A identities, normalized live-graph identities, and
+   output-topology fingerprint. The journal owner is identified by the
+   Linux boot ID plus process start time, not PID alone, so reboot and PID
+   reuse cannot make a dead mutation appear live. A new web process strictly
+   distinguishes a missing Layer-A file from an explicit no-anchor state and
+   from an unreadable/malformed state, then reconciles both disk and live
+   identities before another Apply or Undo. The topology-publication lock and
+   DSP-writer lock remain held through the state-token recheck and durable
+   classification, so neither authority can change between observation and
+   publication: a fully committed mutation is
+   finalized, an unchanged source is invalidated safely, and a mixed, missing,
+   or unreadable result remains durably fenced. The status poll first retries
+   that reconciliation under topology → DSP → state lock order. If the
+   identities are still mixed, the page offers
+   **Recover saved speaker sound** (`POST
+   /correction/crossover/v2/recover-transaction`), which validates, reloads,
+   and republishes the journal's immutable SHA-pinned predecessor under the
+   writer lock before reconciling again. An in-process request that reaches this
+   fence relinquishes its request ownership, so the recovery action is usable
+   immediately without restarting `jasper-web`. This remains valid when Bass Extension
+   had rewritten the old selected Layer-A path in place.
+   The output-topology publication lock spans the current-topology check, reload,
+   and reconciliation, and a saved profile for different wiring fails closed;
+   Speaker setup is the fallback when no valid saved profile exists. A terminal
+   pre-apply session death clears its
+   review candidate, so a timed-out or superseded journey cannot mutate audio
+   through a stale Apply POST.
 8. **Undo survives everything.** `handle_v2_apply` stashes the
    `pre_apply_profile` and `persist_conductor_state` carries it
    *unconditionally* forward across every snapshot, so
    `handle_v2_restore` can sha-pin a restore to the prior compiled
-   config even after a VERIFY re-arm.
+   config even after a VERIFY re-arm or Start over; the clean start screen
+   keeps Undo visible whenever that retained predecessor exists. Restore is
+   bound to both the exact applied Layer-A profile and the normalized live
+   Camilla graph it would replace, and requires the stash's output-topology
+   fingerprint to equal the current topology. The topology check and DSP
+   restore run under the same bounded cross-process topology-publication lock,
+   while
+   both live identities are rechecked inside the DSP writer lock. An Undo
+   reservation spans those checks, restore, and the atomic applied-state
+   clear, with the same pre-mutation journal and two-identity crash
+   reconciliation as Apply. A relay death deferred behind a committed Undo
+   remains visible after restore instead of being discarded. Full-graph
+   identity removes only Camilla `active_raw`'s
+   representation-only null defaults, so an unchanged file/readback pair
+   compares equal while every non-null graph value remains bound. Older
+   schema-1 journeys gain the two additive Undo identities only
+   when the current Layer-A source still names the same measured candidate
+   and its compiled config still matches its saved sha; live readback remains
+   mandatory at restore time. Missing or changed identity fails closed and
+   asks the household to re-measure. Undo and explicit transaction recovery also
+   claim the web process's relay-mutation slot: they cannot enter while CHECK,
+   MEASURE, or VERIFY owns the speaker, and a relay cannot start until the
+   mutation exits. Both automatic post-Apply VERIFY and explicit Re-verify
+   run playback and result acceptance inside the same topology-publication and
+   DSP-writer boundaries, revalidating the exact applied Layer-A profile,
+   normalized live Camilla graph, and current topology on both sides of each
+   action. A writer therefore cannot swap in a different graph during the sweep
+   and restore it before the result check. Cancellation or the web bridge's
+   timeout drains the uncancellable worker action before either lock is
+   released. The topology-publication lock also
+   remains held through Re-verify relay mint. This closes the
+   prepare-to-registration stale-tab gap, the phone-wait graph-drift gap, and
+   the capture-time authority gap. Physical `applied` state is separate from
+   `applied_session_id`, so a new
+   Re-measure session cannot inherit the prior candidate's Apply gate or skip
+   directly into VERIFY.
+   After every terminal Apply attempt (success, block, failed transaction, or
+   raised error), candidate retention protects the applied, Camilla-reported
+   live, and Undo-stash configs, then keeps five additional recent candidates.
+   The candidate family follows the configured
+   baseline basename and exact extension (including no extension), using
+   literal filename matching, so custom names and their Undo snapshots are
+   bounded too. If any required live
+   reference cannot be resolved, pruning is skipped rather than guessed.
 9. **The walked-away guarantee.** The `SessionVolumePlan` holds one
    measurement window with an abort target, a ~1800 s wall-clock
    ceiling, and a restore-once latch drained by close / session-death /
@@ -202,7 +293,7 @@ source, no drift.
 |---|---|---|---|
 | `agc_behavioral_fail` | CHECK / MEASURE / VERIFY | 1 | phone AGC changed levels mid-capture |
 | `noisy_room_linearity` | CHECK | 1 | linearity failed *and* the ambient SNR floor failed — room, not phone |
-| `snr_floor` | CHECK / MEASURE | 1 | room too loud / phone too far |
+| `snr_floor` | CHECK / MEASURE | 1 | room too loud / recording microphone too far |
 | `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room) |
 | `clipped` | MEASURE / VERIFY | 1 | auto quieter retry (gain −3 dB) |
 | `drift_baselines_disagree` | MEASURE | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry |
@@ -213,6 +304,8 @@ source, no drift.
 | `relay_timeout` | any | new session | link/session died — Start over mints a fresh one |
 | `volume_unresolved` | session | — | the `volume_recovery` screen |
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
+| `state_transaction_interrupted` | Apply / Undo recovery | new session | source graph remained active; start the measurement again |
+| `state_transaction_recovery_required` | Apply / Undo recovery | — | reload and reconcile the saved Layer-A sound, or open Speaker setup |
 
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
@@ -229,13 +322,42 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
 ```
 
-Session state on the Pi (both mode 0640, atomic writes):
+Session state on the Pi (both mode 0640, atomic writes; Apply/Undo journal and
+terminal commits use file + parent-directory fsync before publication):
 
 - **Conductor/flow state:**
   `/var/lib/jasper/active_speaker_crossover_v2_state.json` — phase,
   candidate, verify, failure, `apply_blocked`, `pre_apply_profile`,
-  `applied`, evidence refs, `session_id`. Threaded into the envelope as
-  `status["crossover_v2"]`.
+  `applied`, `applied_session_id`, `applied_profile_fingerprint`,
+  `applied_live_graph_fingerprint`, evidence refs, `session_id`, and the
+  temporary Apply/Undo mutation journal.
+  Threaded into the envelope as `status["crossover_v2"]`; only the derived
+  `undo_available` boolean crosses that boundary, never the retained profile.
+  State read/modify/write operations are serialized across the process; stale
+  pre-mutation reservation cleanup holds that lock from token comparison through
+  publication, so it cannot erase a replacement reservation;
+  conductor snapshots may rebind `session_id` only at the explicit session or
+  verify-open boundary, never from a late callback. Host-owned applied and Undo
+  fields are merged from the current durable state, while
+  `applied_session_id` binds the deferred VERIFY gate to the session whose
+  measured candidate was actually applied. A stale relay writer
+  cannot roll back Apply or resurrect state after Undo. `apply_blocked` carries the producing
+  `session_id` and is ignored/dropped outside that session. VERIFY retains
+  the exact RMS / notch-excluded maximum / tracking-band evidence used by the
+  collapsed verify-fail disclosure only after locate, linearity, and
+  gate-comparability reach the actual comparator. During the narrow
+  Apply/Undo reservation window, a relay death is serialized as
+  `pending_terminal_failure`: pre-load Apply refuses it, unsuccessful release
+  invalidates the dead pre-apply frontier, and a graph already committed keeps
+  the failure plus its Undo route. An ordinary in-process Apply/Undo rollback
+  simply releases the reservation and preserves the real endpoint outcome; the
+  source/target recovery also requires the saved Layer-A config bytes to
+  reproduce the matching live graph; a missing or changed config stays fenced.
+  `state_transaction_interrupted` restart copy is reserved for dead-owner
+  recovery. State-write failures at capture consumption,
+  final plan persistence, or session binding cannot pre-empt volume
+  abandonment, measurement-pause release, or relay purge; a relay capture
+  minted but not durably bound is purged before the error is returned.
 - **Session volume state:**
   `/var/lib/jasper/active_speaker_crossover_session_volume.json` —
   `status`, `opened_at`, `measurement_volume_db`,
@@ -244,6 +366,7 @@ Session state on the Pi (both mode 0640, atomic writes):
 
 Endpoints (POST, dispatched from `correction_setup`):
 `/correction/crossover/v2/session`, `/apply`, `/verify`, `/restore`,
+`/recover-transaction`,
 and the shared `/correction/crossover/recover-volume`.
 
 ## Hardware benchmarks (campaign results, 2026-07-18/19, JTS3 + UMIK-2)
@@ -332,8 +455,9 @@ no retries-as-bodge). Treat these as regression fences.
 12. **The deferred REVIEW hold has its own watchdog budget** (#1601). A
     stale deployed capture page (pre-v3 contract) deadlocked Chrome and
     the watchdog killed the review hold; the deferred hold rescopes to
-    `REVIEW_HOLD_BUDGET_S` (900 s) and the page gained hold/countdown
-    states.
+    `REVIEW_HOLD_BUDGET_S` (900 s), the page gained hold/countdown states,
+    and a hold timeout now reaches the phone as `review_hold_timed_out`
+    instead of generic expired-link copy.
 13. **Ensure the crossover preview at session start** (#1602). A missing
     preview baked the generic bundled preset into the candidate and
     blocked apply forever; `ensure_crossover_preview_ready` (one
@@ -355,10 +479,7 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   legacy body, the `correction_crossover_flow` legacy handlers, the
   selector, and the legacy test suite. This is the big deletion, gated
   on W6's green hardware run (now met).
-- Smaller nits: the `apply_blocked` session-gating detail; a
-  topology-fingerprint guard on restore; a candidate-config retention
-  story; Stop-control "timed out" copy; a hub HTTP-routing nit; placement
-  copy improvements; the verify-fail expert disclosure.
+- Remaining smaller nit: the hub HTTP-routing cleanup tracked in #1605.
 - **Constants tuning pass** once real ~1 m runs accumulate (VERIFY pilot
   band, gate-comparability margin, confidence floor, and the PROVISIONAL
   constants above).
@@ -367,9 +488,12 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   so the §3.2 parallax correction is inert. It is self-cancelling at the
   mic position (baked into both MEASURE and VERIFY) but the *listening
   position* carries the full geometric error.
-- **Decide whether legacy `sound_current.yml` should update on v2
-  apply.** Today it diverges cosmetically; the v2 SSOT is
-  `active_speaker_baseline_profile.json`.
+- **`sound_current.yml` ownership decision is pending.** The W5b A6
+  reader audit is recorded on #1605. Its recommendation is to document
+  the divergence, not mirror v2 applies: this file is the last durable
+  `/sound` preference render, Camilla's reported active path is runtime
+  truth, and `active_speaker_baseline_profile.json` is Layer-A truth.
+  Any doctor fallback/naming cleanup waits for the owner's decision.
 
 ## Boundaries / non-goals
 
@@ -447,9 +571,12 @@ so waves could run in parallel.**
   start→applied in 75 s; the first fully-calibrated run (2026-07-19)
   applied a −16.41 dB tweeter trim with calibration resolved on all
   three phases.
-- **W5b — deletions + polish.** Gated on W6's first green run (now met);
-  see Future work. Deleting the only working flow before the replacement
-  touched hardware was the one sequencing risk the plan refused.
+- **W5b — deletions + polish.** Phase A hardens v2's state, Undo,
+  retention, timeout, placement, and verification-disclosure seams.
+  Phase B deletes legacy only after Phase A lands. The whole wave was
+  gated on W6's first green run; deleting the only working flow before
+  the replacement touched hardware was the one sequencing risk the plan
+  refused.
 
 The default flips to `v2` on 2026-07-19. Legacy remains reachable via
 `JASPER_CROSSOVER_FLOW=legacy` until W5b deletes it.

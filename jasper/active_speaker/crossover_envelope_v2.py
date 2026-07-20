@@ -39,6 +39,8 @@ from .crossover_v2_flow import (
     PHASE_REVIEW_APPLY,
     PHASE_VERIFY,
     REASON_REGISTRY,
+    REASON_STATE_TRANSACTION_RECOVERY_REQUIRED,
+    REASON_VERIFY_OUT_OF_TOLERANCE,
     TEMPLATE_HARD_STOP,
     TEMPLATE_SESSION_RESTART,
     TEMPLATE_SILENT_AUTO_RETRY,
@@ -154,6 +156,28 @@ def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(status.get("crossover_v2"))
 
 
+def _verify_details(status: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Plain numeric VERIFY diagnostics for the collapsed expert disclosure."""
+    verify = _mapping(_v2(status).get("verify"))
+    tracking = _mapping(verify.get("tracking"))
+    rms_db = _finite(tracking.get("rms_db"))
+    max_db = _finite(tracking.get("max_db_notch_excluded"))
+    raw_band = tracking.get("tracking_band_hz")
+    band: list[float] | None = None
+    if isinstance(raw_band, (list, tuple)) and len(raw_band) == 2:
+        lo = _finite(raw_band[0])
+        hi = _finite(raw_band[1])
+        if lo is not None and hi is not None and 0 < lo < hi:
+            band = [lo, hi]
+    if rms_db is None and max_db is None and band is None:
+        return None
+    return {
+        "rms_db": rms_db,
+        "max_db": max_db,
+        "tracking_band_hz": band,
+    }
+
+
 def _step_payload(active_step: str, done_steps: set[str]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for step_id in _STEP_IDS:
@@ -214,6 +238,7 @@ def _envelope(
     alternate_actions: list[dict[str, Any]] | None = None,
     status: Mapping[str, Any],
     candidate_review: Mapping[str, Any] | None = None,
+    verify_details: Mapping[str, Any] | None = None,
     advertise_relay: bool = True,
 ) -> dict[str, Any]:
     return {
@@ -232,6 +257,7 @@ def _envelope(
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         "candidate_review": dict(candidate_review) if candidate_review else None,
+        "verify_details": dict(verify_details) if verify_details else None,
     }
 
 
@@ -283,12 +309,6 @@ def _verify_fail_envelope(
                 # legacy ``/crossover/restore`` expects a PENDING
                 # commissioning-run candidate apply that a v2 apply never
                 # creates, and 500s here instead.
-                # OPEN CHECKLIST ITEM (W6.7 gate N2): a session reset that
-                # clears the durable v2 state while the applied graph is
-                # still live loses this Undo affordance (no verify-phase
-                # state remains to render verify_fail from) — a future fix
-                # should keep an Undo path reachable whenever an applied
-                # candidate is in force, independent of a reset elsewhere.
                 "endpoint": "/correction/crossover/v2/restore",
                 "body": {},
                 "show_during_relay": True,
@@ -303,6 +323,11 @@ def _verify_fail_envelope(
             },
         ],
         status=status,
+        verify_details=(
+            _verify_details(status)
+            if code == REASON_VERIFY_OUT_OF_TOLERANCE
+            else None
+        ),
     )
 
 
@@ -417,6 +442,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "progress": {"position": 0, "total": len(_STEP_IDS)},
             "applied": _applied_chip(status),
             "candidate_review": None,
+            "verify_details": None,
         }
 
     v2 = _v2(status)
@@ -445,6 +471,34 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
 
+    failure = _mapping(v2.get("failure"))
+    failure_code = str(failure.get("code") or "")
+    if failure_code == REASON_STATE_TRANSACTION_RECOVERY_REQUIRED:
+        spec = REASON_REGISTRY[failure_code]
+        return _envelope(
+            screen="hard_stop",
+            active_step=active_step,
+            verdict=spec.message,
+            nudges=[{
+                "code": failure_code,
+                "severity": "warn",
+                "text": spec.message,
+            }],
+            next_action={
+                "id": "recover_speaker_sound",
+                "label": "Recover saved speaker sound",
+                "endpoint": "/correction/crossover/v2/recover-transaction",
+                "body": {},
+            },
+            alternate_actions=[{
+                "id": "speaker_setup",
+                "label": "Open Speaker setup",
+                "href": "/sound/",
+                "expert": True,
+            }],
+            status=status,
+        )
+
     # Speaker setup must be proven before any measurement plays.
     if not _setup_ready(status):
         return _envelope(
@@ -457,8 +511,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
 
-    failure = _mapping(v2.get("failure"))
-    failure_code = str(failure.get("code") or "")
     if failure_code:
         env = _failure_envelope(failure_code, status, active_step)
         log_event(
@@ -468,12 +520,21 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         return env
 
     if phase == PHASE_CHECK:
+        alternate_actions = []
+        if bool(v2.get("undo_available")):
+            alternate_actions.append({
+                "id": "verify_undo",
+                "label": "Undo (restore previous sound)",
+                "endpoint": "/correction/crossover/v2/restore",
+                "body": {},
+                "show_during_relay": True,
+            })
         env = _envelope(
             screen="microphone_check", active_step="microphone_check",
             verdict=(
-                "Place the microphone about 1 m in front of the speaker at tweeter "
-                "height (see the picture), then tap Start on your phone. JTS runs a "
-                "quick microphone check first."
+                "Place the recording microphone 0.7–1.3 m directly in front of "
+                "the speaker, level with the tweeter and facing it. Keep it there "
+                "until verification is finished, then start the microphone check."
             ),
             next_action={
                 "id": "start_v2_session",
@@ -481,14 +542,16 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "endpoint": "/correction/crossover/v2/session",
                 "body": {},
             },
+            alternate_actions=alternate_actions,
             status=status,
         )
     elif phase == PHASE_MEASURE:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                "Keep the phone still — JTS is measuring both drivers. Follow the "
-                "phone; the measurement continues automatically."
+                "Keep the recording microphone still — JTS is measuring both "
+                "drivers. Follow the phone; the measurement continues "
+                "automatically."
             ),
             next_action=None,
             status=status,
@@ -556,11 +619,17 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             candidate_review=_candidate_review_payload(candidate or None),
         )
     elif phase == PHASE_VERIFY:
+        relay = _mapping(status.get("relay"))
+        reverify_requires_tap = relay.get("kind") == "crossover_v2:verify"
         env = _envelope(
             screen="verify", active_step="verify",
             verdict=(
                 "The crossover is applied. Keep the microphone where it was and "
-                "tap Verify on your phone to confirm the result."
+                + (
+                    "tap Verify on your phone to check it again."
+                    if reverify_requires_tap
+                    else "keep the phone open — verification starts automatically."
+                )
             ),
             next_action=None,
             status=status,

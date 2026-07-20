@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,12 +27,15 @@ from jasper.output_topology import (
     PAIRING_INTENTS,
     OutputTopology,
     OutputTopologyError,
+    OutputTopologyMutationBusy,
     channel_identity_report,
     clock_domain_report,
     hardware_from_env,
     load_output_topology,
     load_output_topology_strict,
     new_topology_draft,
+    output_topology_mutation_lock,
+    topology_mutation_lock_path,
     save_output_topology,
     set_channel_identity_verified,
     set_channel_protection_status,
@@ -768,6 +772,57 @@ def test_save_and_load_output_topology_round_trips(tmp_path: Path) -> None:
     assert loaded.to_dict()["speaker_groups"][0]["channels"][0][
         "human_output_label"
     ] == "DAC output 3"
+
+
+def test_save_output_topology_creates_nested_parent_before_lock(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "new" / "nested" / "output_topology.json"
+
+    save_output_topology(new_topology_draft(), path)
+
+    assert path.is_file()
+    assert topology_mutation_lock_path(path).is_file()
+
+
+def test_topology_save_waits_for_topology_bound_mutation(tmp_path: Path) -> None:
+    """Undo can hold one topology identity stable through its DSP transaction."""
+    path = tmp_path / "output_topology.json"
+    started = threading.Event()
+    finished = threading.Event()
+
+    def save() -> None:
+        started.set()
+        save_output_topology(new_topology_draft(), path)
+        finished.set()
+
+    with output_topology_mutation_lock(path):
+        thread = threading.Thread(target=save)
+        thread.start()
+        assert started.wait(timeout=1)
+        assert not finished.wait(timeout=0.05)
+
+    thread.join(timeout=1)
+    assert finished.is_set()
+
+
+def test_topology_mutation_lock_has_bounded_actionable_admission(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "output_topology.json"
+
+    with output_topology_mutation_lock(path):
+        with pytest.raises(OutputTopologyMutationBusy, match="topology is busy"):
+            with output_topology_mutation_lock(path, timeout_sec=0.02):
+                pytest.fail("contended topology lock must not admit")
+
+
+def test_topology_mutation_lock_does_not_relabel_body_timeout(tmp_path: Path) -> None:
+    path = tmp_path / "output_topology.json"
+
+    with pytest.raises(TimeoutError, match="DSP body timed out"):
+        with output_topology_mutation_lock(path):
+            raise TimeoutError("DSP body timed out")
 
 
 # --- gap 1: pure-data pairing intent (docs/HANDOFF-distributed-active.md) -----

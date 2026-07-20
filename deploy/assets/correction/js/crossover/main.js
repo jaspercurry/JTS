@@ -89,13 +89,43 @@ function renderApplied(applied) {
   els.applied.dataset.state = state;
 }
 
-function renderNudges(nudges) {
+function verifyDetailsEl(details) {
+  if (!details) return null;
+  const rows = [];
+  if (Number.isFinite(details.rms_db)) {
+    rows.push(`Average difference (RMS): ${Number(details.rms_db).toFixed(2)} dB`);
+  }
+  if (Number.isFinite(details.max_db)) {
+    rows.push(`Largest checked difference: ${Number(details.max_db).toFixed(2)} dB`);
+  }
+  const band = Array.isArray(details.tracking_band_hz)
+    ? details.tracking_band_hz : [];
+  if (
+    band.length === 2
+    && Number.isFinite(band[0])
+    && Number.isFinite(band[1])
+  ) {
+    rows.push(
+      `Frequencies checked: ${Math.round(Number(band[0])).toLocaleString()}–` +
+      `${Math.round(Number(band[1])).toLocaleString()} Hz`,
+    );
+  }
+  if (!rows.length) return null;
+  return el('details', {class: 'candidate-provenance verify-details'}, [
+    el('summary', {text: 'Measurement details'}),
+    ...rows.map((text) => el('p', {class: 'measurement-row__meta', text})),
+  ]);
+}
+
+function renderNudges(nudges, verifyDetails = null) {
   const rows = (Array.isArray(nudges) ? nudges : []).map((nudge) =>
     el('p', {
       class: `wizard-nudge ${nudge.severity === 'warn' ? 'warn' : 'info'}`,
       text: nudge.text || '',
     }),
   );
+  const details = verifyDetailsEl(verifyDetails);
+  if (details) rows.push(details);
   els.nudges.replaceChildren(...rows);
 }
 
@@ -360,7 +390,7 @@ function render(env) {
   els.verdict.textContent = env.verdict_text || '';
   renderApplied(env.applied);
   renderSteps(env.steps);
-  renderNudges(env.nudges);
+  renderNudges(env.nudges, env.verify_details);
   renderCandidateReview(env.candidate_review);
   // On the review screen the show_during_relay primary (Apply) owns the phone —
   // keep the relay live for polling/Stop but hide its connect link/QR.
@@ -470,9 +500,14 @@ async function runAction(action, button) {
     setStatus(response && response.relay ? 'Phone capture is ready.' : 'Updated.', 'ok');
     await refresh();
   } catch (error) {
-    const failureMessage = error && error.message ? error.message : String(error);
     const issues = error && error.body && Array.isArray(error.body.issues)
       ? error.body.issues : [];
+    const actionableIssue = issues.find(
+      (issue) => issue && issue.severity === 'blocker' && issue.message,
+    ) || issues.find((issue) => issue && issue.message);
+    const failureMessage = actionableIssue
+      ? String(actionableIssue.message)
+      : (error && error.message ? error.message : String(error));
     const candidateChanged = error && error.status === 409 && issues.some(
       (issue) => issue && issue.code === 'baseline_candidate_fingerprint_mismatch'
     );

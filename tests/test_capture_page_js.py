@@ -745,7 +745,8 @@ def test_capture_page_dead_relay_session_never_offers_a_doomed_retry():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 
     assert "function isDeadSessionError(err) {" in main_js
-    assert "function renderSessionExpired(ctx) {" in main_js
+    assert "function renderSessionExpired(ctx, terminal = {}) {" in main_js
+    assert 'terminal.code === "review_hold_timed_out"' in main_js
     assert (
         "This measurement link expired — return to the speaker page to start again."
         in main_js
