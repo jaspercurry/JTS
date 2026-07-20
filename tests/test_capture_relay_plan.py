@@ -937,14 +937,15 @@ def test_on_apply_literal_matches_the_v2_flow_vocabulary():
 
 def _review_plan_entries():
     """A 2-entry heterogeneous plan: a normal capture, then an on_apply-gated
-    one (the "waiting for apply" REVIEW hold between MEASURE and VERIFY)."""
+    one (the "applying" hold between MEASURE and VERIFY — owner ruling,
+    2026-07-20: machine-paced auto-apply, never a human review wait)."""
     return (
         CapturePlanEntry(index=0, kind_label="measure", duration_ms=4000),
         CapturePlanEntry(
             index=1,
             kind_label="verify",
             duration_ms=4000,
-            screen={"title": "Waiting for apply", "auto_advance": "on_apply"},
+            screen={"title": "Applying", "auto_advance": "on_apply"},
         ),
     )
 
@@ -964,10 +965,12 @@ def _steady_clock():
 
 def test_on_apply_hold_survives_past_the_120s_budget_then_apply_proceeds():
     # MEASURE accepted, then the on_apply VERIFY entry is deferred while the
-    # household reviews. The phone re-posts the SAME begin as liveness; the hold
-    # must outlast the OLD 120s inactivity budget and then complete once apply
-    # releases it — the Chrome round-2 blocker was a 120s watchdog destroying
-    # the accepted MEASURE mid-review.
+    # host's own auto-apply runs (owner ruling, 2026-07-20 — never a human
+    # review). The phone re-posts the SAME begin as liveness (a deferred
+    # retry rearms the deadline every poll, independent of the budget's exact
+    # size); the hold must outlast the tight 120s inactivity budget and then
+    # complete once apply releases it — the Chrome round-2 blocker was a 120s
+    # watchdog destroying the accepted MEASURE mid-hold.
     backend = FakePlanRelayBackend()
     client, session, phone = _mint_plan_session(
         backend, capture_target=2, max_attempts=4, entries=_review_plan_entries()
@@ -1019,11 +1022,16 @@ def test_on_apply_hold_survives_past_the_120s_budget_then_apply_proceeds():
     assert applied["at"] is not None and applied["at"] >= 150.0
 
 
-def test_on_apply_hold_collapses_at_review_budget_when_phone_vanishes():
-    # The phone vanishes during the review hold (never posts the VERIFY begin).
-    # The session must NOT collapse at 120s — it holds to the long REVIEW budget
-    # (~900s) and only then times out, phase awaiting_begin, so the caller can
-    # tear down. Proves the rescope is in force even before a first deferral.
+def test_on_apply_hold_collapses_at_its_own_budget_when_phone_vanishes():
+    # The phone vanishes during the apply hold (never posts the VERIFY begin).
+    # Owner ruling (2026-07-20): the hold now covers a machine-paced auto-apply
+    # transaction, not a human review, so its OWN budget (REVIEW_HOLD_BUDGET_S,
+    # 30s) is actually SHORTER than the generic tight timeout_s used here
+    # (120s) — this proves the rescope applies its OWN budget rather than
+    # falling back to the (now longer) generic one, phase awaiting_begin, so
+    # the caller can tear down promptly instead of waiting out the full 120s
+    # for a hold that was never going to resolve on its own. Proves the
+    # rescope is in force even before a first deferral.
     backend = FakePlanRelayBackend()
     client, session, phone = _mint_plan_session(
         backend, capture_target=2, max_attempts=4, entries=_review_plan_entries()
@@ -1071,9 +1079,11 @@ def test_on_apply_hold_collapses_at_review_budget_when_phone_vanishes():
             monotonic=monotonic,
         )
     assert ei.value.phase == "awaiting_begin"
-    # Held to the REVIEW budget, not the tight 120s one.
-    assert "within 900s" in str(ei.value)
-    assert clock["t"] >= 900.0
+    # Held to the apply hold's OWN (now shorter) budget, not the generic 120s
+    # timeout_s passed above.
+    assert "within 30s" in str(ei.value)
+    assert clock["t"] >= 30.0
+    assert clock["t"] < 120.0
 
 
 def test_first_begin_timeout_widens_only_the_first_window():

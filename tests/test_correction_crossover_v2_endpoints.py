@@ -16,7 +16,7 @@ the faithful in-memory relay backend + scripted phone driver from
 * phone session death (abort) → abandon + pre-apply evidence invalidation;
 * the verify-only re-arm session (resume skips accepted phases AT THE RELAY:
   one entry, one capture, index 1 → VERIFY);
-* ``status_payload``-shape threading: the schema-7 envelope advances through
+* ``status_payload``-shape threading: the schema-8 envelope advances through
   the phase screens end-to-end from the durable state the host persists.
 
 Route registration + CSRF ordering ride the existing exact-surface contract
@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -39,10 +40,12 @@ import pytest
 
 from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
 from jasper.active_speaker.crossover_v2_flow import (
+    PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_DONE,
     PHASE_MEASURE,
     PHASE_VERIFY,
+    REASON_APPLY_FAILED,
     CrossoverV2Conductor,
     V2FlowSeams,
     build_v2_session_spec,
@@ -51,6 +54,8 @@ from jasper.active_speaker.crossover_v2_flow import (
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
     CaptureAborted,
+    CaptureResult,
+    CaptureStopped,
     CaptureTimeout,
     mint_session,
     register_session,
@@ -218,6 +223,7 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
             publish_check=lambda plan, ambient: published.append(("check", plan)),
             publish_candidate=lambda cand: published.append(("candidate", cand)),
             apply_complete=v2host._applied_gate,
+            apply_failed=v2host._apply_failure_gate,
         ),
         driver_spacing_m=0.15,
     )
@@ -235,11 +241,14 @@ def _build_runner(conductor, volume, **kwargs):
     # first-begin timeout test still fires fast. Tests that specifically exercise
     # the 300s widening live in test_capture_relay_plan.py.
     kwargs.setdefault("first_begin_timeout_s", kwargs["timeout_s"])
+    # A caller that needs to observe/drive the stop signal directly (SF1's
+    # interleaving tests) passes its own; every other test gets a fresh one,
+    # unchanged from before.
+    kwargs.setdefault("stop_event", threading.Event())
+    kwargs.setdefault("stop_lock", threading.Lock())
     return v2host.build_v2_run_and_consume(
         conductor,
         volume=volume.hooks(),
-        stop_event=threading.Event(),
-        stop_lock=threading.Lock(),
         **kwargs,
     )
 
@@ -252,8 +261,14 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
 
     def on_deferred(_driver):
-        # The wizard Apply lands while the phone is parked on "waiting for
-        # apply": mark the durable state applied — the deferred VERIFY arms.
+        # Owner ruling (2026-07-20): simulates the HOST's own auto-apply
+        # landing while the phone is parked on the "applying" hold — never a
+        # human tap. This test isolates the conductor+runner phase walk from
+        # the real handle_v2_apply transaction (exercised through real seams
+        # further down this file, and the dedicated auto-apply-wiring test
+        # right below); it marks the durable state applied directly, exactly
+        # as observe_apply_success would once handle_v2_apply succeeds — the
+        # deferred VERIFY arms the same way either way.
         state = v2host.load_v2_state()
         v2host.observe_apply_success(state["candidate"]["fingerprint"])
 
@@ -271,7 +286,7 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     # All three phases accepted through ONE relay session.
     assert conductor.current_phase == PHASE_DONE
     assert conductor.verify_outcome == "pass"
-    assert phone.deferrals_seen >= 1  # VERIFY was soft-held until apply
+    assert phone.deferrals_seen >= 1  # VERIFY was soft-held until auto-apply
     assert [kind for kind, _ in published] == ["check", "candidate"]
     # The relay observed the deferral then the released capture.
     phases = backend.phases(session.session_id)
@@ -312,7 +327,7 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     assert state["failure"] is None
     assert state["candidate"]["fingerprint"]
 
-    # The schema-7 envelope advanced through the phase screens end-to-end,
+    # The schema-8 envelope advanced through the phase screens end-to-end,
     # rendered purely from the host-persisted status blocks (S1b).
     from jasper.active_speaker.crossover_envelope import build_crossover_envelope
 
@@ -335,6 +350,231 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     final_block = v2host.crossover_v2_status_block()
     assert final_block["phase"] == "done"
     assert _envelope_for(final_block["phase"])["screen"] == "done"
+
+
+def test_auto_apply_fires_exactly_once_on_trusted_measure_and_arms_verify(monkeypatch):
+    """Owner ruling (2026-07-20): a trusted MEASURE accept must trigger the
+    SAME apply transaction a household's tap used to invoke — automatically,
+    on its own background thread, with no human review step in between.
+    Monkeypatches ``v2host.handle_v2_apply`` itself (the real
+    ``apply_baseline_profile`` transaction through real seams is covered
+    separately by ``test_apply_translates_measured_fingerprint_to_baseline_fingerprint``
+    and its neighbors further down this file) so this test isolates exactly
+    one thing: ``build_v2_run_and_consume``'s auto-apply hook calls it, with
+    the right fingerprint, EXACTLY once, and the deferred VERIFY hold
+    releases once it succeeds — with no ``on_deferred`` hook wired at all,
+    unlike the happy-path test above (the phone's own deferred-retry loop is
+    what carries this to completion, exactly as on real hardware)."""
+    calls: list[dict] = []
+
+    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
+        calls.append(dict(raw))
+        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
+        return {"status": "applied"}
+
+    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    volume = VolumeRecorder()
+    runner = _build_runner(
+        conductor, volume,
+        run_async=lambda coro, **kw: None,
+        camilla_factory=lambda: None,
+    )
+    _run(runner, client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    assert conductor.verify_outcome == "pass"
+    candidate = next(cand for kind, cand in published if kind == "candidate")
+    assert len(calls) == 1
+    assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
+    assert v2host.load_v2_state()["applied"] is True
+
+
+def test_no_run_async_or_camilla_factory_means_no_auto_apply_attempt(monkeypatch):
+    """``prepare_v2_verify``'s verify-only re-arm session never supplies
+    ``run_async``/``camilla_factory`` to ``build_v2_run_and_consume`` (its
+    conductor never produces a MEASURE accept anyway) — but if it somehow
+    did, the auto-apply hook must no-op rather than crash on a missing
+    dependency."""
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        v2host, "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: calls.append(raw) or {"status": "applied"},
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+
+    def on_deferred(_driver):
+        state = v2host.load_v2_state()
+        v2host.observe_apply_success(state["candidate"]["fingerprint"])
+
+    client, session, phone = _mint_v2_session(
+        backend, spec, on_deferred=on_deferred
+    )
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    volume = VolumeRecorder()
+    # No run_async / camilla_factory passed — _build_runner leaves them at
+    # build_v2_run_and_consume's own None defaults.
+    _run(_build_runner(conductor, volume), client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    assert not calls  # the auto-apply hook never fired handle_v2_apply
+
+
+class _SyncThread:
+    """Runs the auto-apply worker in-line instead of on a real OS thread —
+    makes the two interleaving tests below deterministic (no polling for a
+    background thread to finish) while still exercising the REAL
+    _fire_auto_apply / observe_apply_success / _persist_terminal_failure
+    code paths, unchanged from production."""
+
+    def __init__(self, target, daemon=None, name=None) -> None:
+        self._target = target
+
+    def start(self) -> None:
+        self._target()
+
+
+class _ThreadingModuleWithSyncThread:
+    """A thin ``threading``-module stand-in that only overrides ``Thread``.
+
+    ``build_v2_run_and_consume``'s ``_fire_auto_apply`` is the ONLY thing in
+    ``jasper.web.correction_crossover_v2`` that constructs a fresh
+    ``threading.Thread`` at test time (the module's own locks/events are
+    already-constructed objects by the time a test runs, and this file's own
+    tests build their own ``threading.Event()``/``Lock()`` directly, not via
+    ``v2host.threading``) — but ``asyncio`` itself uses the REAL
+    ``threading.Thread`` internally (executor shutdown), so swapping the
+    global class outright breaks the event loop. Patching ``v2host.threading``
+    to THIS proxy instead scopes the swap to exactly the one call site that
+    needs it.
+    """
+
+    Thread = _SyncThread
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(threading, name)
+
+
+def test_stop_before_apply_start_skips_the_dsp_mutation(monkeypatch):
+    """SF1(a) interleaving 1/2 (adversarial review, 2026-07-20): a Stop that
+    lands BEFORE the auto-apply worker's cooperative pre-apply check must
+    prevent the DSP mutation entirely — handle_v2_apply (the actual
+    apply_baseline_profile transaction) must never be called. Drives the
+    REAL run_capture_plan + conductor + _fire_auto_apply wiring; only
+    threading.Thread is swapped for a synchronous stand-in so the ordering
+    is deterministic, and handle_v2_apply is replaced with a spy so a call
+    is directly observable."""
+    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        v2host, "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: calls.append(raw) or {"status": "applied"},
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    stop_event = threading.Event()
+    real_play = conductor._seams.play
+
+    def play_then_stop(phase: str, program: Any) -> None:
+        real_play(phase, program)
+        if phase == "measure":
+            # A host-driven Stop (the wizard's Stop button) — or a
+            # phone-driven Stop a concurrent poll cycle already turned into
+            # a persisted terminal failure, see the "after" test below for
+            # that ordering — landing BEFORE the auto-apply worker's
+            # pre-apply check gets a chance to run (§ the check's own
+            # docstring: this is a best-effort race-narrowing check, not a
+            # cancellation of an in-flight transaction).
+            stop_event.set()
+
+    conductor._seams = replace(conductor._seams, play=play_then_stop)
+    volume = VolumeRecorder()
+    runner = _build_runner(
+        conductor, volume,
+        run_async=lambda coro, **kw: None,
+        camilla_factory=lambda: None,
+        stop_event=stop_event,
+    )
+    with pytest.raises(CaptureStopped):
+        _run(runner, client, session)
+
+    assert not calls  # handle_v2_apply (the DSP mutation) was never invoked
+    state = v2host.load_v2_state()
+    assert state.get("applied") is not True
+
+
+def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch):
+    """SF1(b)/(c) interleaving 2/2: the auto-apply transaction lands BEFORE
+    the phone's Stop is processed (a deliberate Stop tap right after MEASURE
+    was accepted — realistic timing, since the auto-apply's own transaction
+    is synchronous-fast in this test and the phone's Stop needs a further
+    relay round trip to be discovered). The final durable state must be
+    COHERENT: applied=True preserved alongside the honest user_stopped
+    record (never clobbered either direction — SF1(b)), and the wizard
+    envelope must say the crossover WAS applied and surface Undo, never a
+    dishonest "nothing happened, start over" (SF1(c))."""
+    _skip_purge_grace(monkeypatch)
+    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
+
+    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
+        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
+        return {"status": "applied"}
+
+    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    phone.abort_after_results = 2  # abort right after MEASURE's OWN result
+
+    def _abort_stopped(reason="stopped"):
+        PhonePlanDriver.abort(phone, "stopped")
+
+    phone.abort = _abort_stopped
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    volume = VolumeRecorder()
+    runner = _build_runner(
+        conductor, volume,
+        run_async=lambda coro, **kw: None,
+        camilla_factory=lambda: None,
+    )
+    with pytest.raises(CaptureAborted) as excinfo:
+        _run(runner, client, session)
+
+    assert excinfo.value.reason == "stopped"
+    state = v2host.load_v2_state()
+    # Coherent, not clobbered either direction: the transaction genuinely
+    # landed AND the stop is honestly on record.
+    assert state["applied"] is True
+    assert state["failure"] == {"code": "user_stopped"}
+    assert PHASE_MEASURE in state["accepted_phases"]
+
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == PHASE_VERIFY  # applied=True routes here (W6.7 ruling 3)
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "verify_fail"
+    assert "already applied" in env["verdict_text"].lower()
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
 
 
 # --- relay-session death: timeout + abort (S1c) ---------------------------------
@@ -437,6 +677,37 @@ def test_phone_abort_is_session_death_abandon_and_invalidation(monkeypatch):
     state = v2host.load_v2_state()
     assert state["failure"] == {"code": "relay_timeout"}
     assert state["accepted_phases"] == []  # CHECK evidence died with the session
+
+
+def test_deliberate_phone_stop_gets_its_own_honest_reason_not_relay_timeout(monkeypatch):
+    """Gotcha #18 (2026-07-20): a deliberate phone Stop (abort_reason ==
+    "stopped") is not a relay-transport death and must not get the "the
+    measurement link timed out" copy every OTHER abort reason
+    (backgrounded/vanished) gets — see
+    test_phone_abort_is_session_death_abandon_and_invalidation above, whose
+    default-reason ("backgrounded") abort is UNCHANGED and still classifies
+    as relay_timeout."""
+    _skip_purge_grace(monkeypatch)
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    phone.abort_after_results = 1  # abort right after CHECK's result
+
+    def _abort_stopped(reason="stopped"):
+        PhonePlanDriver.abort(phone, "stopped")
+
+    phone.abort = _abort_stopped
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    volume = VolumeRecorder()
+    with pytest.raises(CaptureAborted) as excinfo:
+        _run(_build_runner(conductor, volume), client, session)
+
+    assert excinfo.value.reason == "stopped"
+    assert volume.events == ["open", "abandon"]
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": "user_stopped"}
+    assert state["accepted_phases"] == []
 
 
 # --- verify-only re-arm (S1d: resume skips accepted phases at the relay) --------
@@ -1073,13 +1344,154 @@ def test_status_block_reports_needs_recovery_and_phase():
     block = v2host.crossover_v2_status_block()
     assert block["needs_recovery"] is True
     assert block["phase"] == PHASE_MEASURE
-    # And the review_apply projection: measure accepted, not yet applied.
+    # And the "applying" projection: measure accepted, not yet applied — the
+    # conductor's own auto-apply is in flight (owner ruling, 2026-07-20).
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": False,
     })
-    assert v2host.crossover_v2_status_block()["phase"] == "review_apply"
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_APPLYING
+
+
+def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
+    """SF2 (adversarial review, 2026-07-20): ``_persist_terminal_failure``
+    used to reset ``accepted_phases`` for EVERY terminal code, including
+    ``apply_failed`` — which made ``_phase_from_state`` land back on
+    ``PHASE_CHECK`` instead of ``PHASE_APPLYING``, so the apply-step's
+    specific blocked-issue nudge (``_failure_envelope``'s
+    ``active_step == "apply"`` merge) could never actually render in
+    production; the bug only looked fixed because an envelope-level test
+    injected ``phase="applying"`` directly rather than driving the real
+    conductor + persistence path. This test drives CHECK and MEASURE through
+    the REAL ``conductor.consume_capture`` (exactly as ``build_v2_run_and_
+    consume``'s ``consume()`` wrapper does), then calls the REAL
+    ``_persist_terminal_failure`` — an apply failure does NOT invalidate the
+    mic position (the §5.6 evidence-reset rationale is for a dead session),
+    so MEASURE must stay accepted."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+
+    # Mirrors build_v2_run_and_consume's consume() wrapper: every
+    # consume_capture is immediately followed by a persist, exactly as the
+    # real relay-driven flow does — the durable file does not exist at all
+    # until the first one runs.
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert conductor.current_phase == PHASE_APPLYING
+
+    v2host._persist_apply_blocked({
+        "id": "measured_candidate_preset_mismatch",
+        "message": "the measured candidate no longer matches the saved crossover",
+    })
+    v2host._persist_terminal_failure(conductor, REASON_APPLY_FAILED)
+
+    state = v2host.load_v2_state()
+    assert PHASE_CHECK in state["accepted_phases"]
+    assert PHASE_MEASURE in state["accepted_phases"]
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == PHASE_APPLYING  # NOT PHASE_CHECK
+
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    assert env["screen"] == "fix_and_retry"
+    codes = [n["code"] for n in env["nudges"]]
+    assert REASON_APPLY_FAILED in codes
+    assert "measured_candidate_preset_mismatch" in codes
+
+
+def test_relay_timeout_still_resets_accepted_phases_through_the_real_persist_path():
+    """The SF2 carve-out is SCOPED to apply_failed only — an ordinary
+    session death (relay_timeout) still invalidates the mic position and
+    resets to CHECK, exactly as before."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    v2host._persist_terminal_failure(conductor, "relay_timeout")
+
+    state = v2host.load_v2_state()
+    assert state["accepted_phases"] == []
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
+
+
+def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
+    """SF1(b)'s load-bearing direction, and its render-side follow-up
+    ("interleaving A", adversarial review, 2026-07-20): a Stop's
+    _persist_terminal_failure(user_stopped) can land WHILE the auto-apply
+    transaction is still mid-flight — at that instant applied reads False,
+    so the §5.6 reset (correctly scoped away from apply_failed only, per
+    SF2) fires for user_stopped and clears accepted_phases. When the
+    auto-apply's OWN success then lands moments later via
+    observe_apply_success, applied flips True but accepted_phases stays
+    reset — _phase_from_state resolves that combination to PHASE_CHECK, not
+    PHASE_VERIFY. Both existing interleaving tests
+    (test_stop_before_apply_start_skips_the_dsp_mutation,
+    test_stop_after_apply_start_preserves_applied_and_surfaces_undo) force
+    the OTHER ordering (apply-first) and so never exercised this; this test
+    drives the REAL persist functions in the stop-first order and pins BOTH
+    that the durable state stays coherent (no clobbering either direction)
+    AND that the render is honest even though phase/active_step disagree
+    with the state fact — this must FAIL without the applied-keyed fix in
+    crossover_envelope_v2._failure_envelope."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    fingerprint = conductor.candidate.fingerprint
+
+    # 1. The Stop lands FIRST, while the auto-apply transaction is still
+    #    mid-flight (applied is still False at this instant).
+    v2host._persist_terminal_failure(conductor, "user_stopped")
+    state = v2host.load_v2_state()
+    assert state["accepted_phases"] == []  # confirms the reset DID fire here
+
+    # 2. The auto-apply's OWN transaction then lands (observe_apply_success
+    #    is exactly what handle_v2_apply calls on success).
+    v2host.observe_apply_success(fingerprint, pre_apply_profile={"stub": True})
+
+    state = v2host.load_v2_state()
+    # Coherent, not clobbered either direction (SF1(b), now pinned in BOTH
+    # orderings): the transaction genuinely landed AND the stop is honestly
+    # on record — even though accepted_phases never got a chance to recover.
+    assert state["applied"] is True
+    assert state["failure"] == {"code": "user_stopped"}
+    assert state["accepted_phases"] == []
+
+    from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+
+    block = v2host.crossover_v2_status_block()
+    assert block["phase"] == PHASE_CHECK  # the corrupted derivation, on record
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": block,
+    })
+    # The render must not trust that phase — applied=True is authoritative.
+    assert env["screen"] == "verify_fail"
+    assert "already applied" in env["verdict_text"].lower()
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
 
 
 # --- W6.1 Finding B: no silent playback failures --------------------------------
@@ -1111,6 +1523,7 @@ def _refusing_seams(base_conductor):
         publish_check=base_conductor._seams.publish_check,
         publish_candidate=base_conductor._seams.publish_candidate,
         apply_complete=base_conductor._seams.apply_complete,
+        apply_failed=base_conductor._seams.apply_failed,
     )
 
 
@@ -1450,6 +1863,7 @@ def test_camilla_unavailable_from_play_seam_full_cleanup(monkeypatch):
         publish_check=conductor._seams.publish_check,
         publish_candidate=conductor._seams.publish_candidate,
         apply_complete=conductor._seams.apply_complete,
+        apply_failed=conductor._seams.apply_failed,
     )
     hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
     runner = v2host.build_v2_run_and_consume(
@@ -1674,6 +2088,7 @@ def test_local_seam_oserror_from_play_maps_to_internal_error(monkeypatch):
         publish_check=conductor._seams.publish_check,
         publish_candidate=conductor._seams.publish_candidate,
         apply_complete=conductor._seams.apply_complete,
+        apply_failed=conductor._seams.apply_failed,
     )
     hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
     runner = v2host.build_v2_run_and_consume(
@@ -1744,6 +2159,7 @@ def test_terminal_failure_purge_waits_for_grace_but_volume_restore_is_immediate(
         publish_check=conductor._seams.publish_check,
         publish_candidate=conductor._seams.publish_candidate,
         apply_complete=conductor._seams.apply_complete,
+        apply_failed=conductor._seams.apply_failed,
     )
     hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
 
@@ -2272,6 +2688,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
                 publish_check=lambda *a, **k: None,
                 publish_candidate=lambda *a, **k: None,
                 apply_complete=v2host._applied_gate,
+                apply_failed=v2host._apply_failure_gate,
             ),
             driver_spacing_m=0.15,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),

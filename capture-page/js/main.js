@@ -1656,14 +1656,27 @@ function advanceAfterAccepted(ctx, { index, attempt, target }) {
   renderPlanNext(ctx, { index, attempt, target });
 }
 
-function renderPlanAllDone(ctx) {
+// `index` (the just-completed FINAL wire index, 1-based) is optional — most
+// callers of this shared plan-completion screen (room sweep, sync, balance)
+// have no per-flow completion copy and get the generic text below. Owner
+// ruling (2026-07-20): the crossover-v2 flow's own auto-apply means the
+// household never sees a browser-tab Apply step, so its own end screen must
+// say the outcome plainly and point at the speaker page for undo/compare —
+// carried as `done_title`/`done_body` on the LAST plan entry (the VERIFY
+// entry in jasper.active_speaker.crossover_v2_flow.build_v2_capture_plan) so
+// this shared screen needs no flow-specific branch.
+function renderPlanAllDone(ctx, { index } = {}) {
   const returnUrl = safeReturnUrl(ctx.spec);
+  const entry = typeof index === "number" ? entryForIndex(ctx.spec, index) : null;
+  const screenCopy = (entry && entry.screen) || {};
+  const heading = String(screenCopy.done_title || "All measurements done");
+  const body = String(
+    screenCopy.done_body ||
+      "All measurements done — the speaker continues automatically.",
+  );
   const children = [
-    el("h1", { class: "cap-heading", text: "All measurements done" }),
-    el("p", {
-      class: "cap-note",
-      text: "All measurements done — the speaker continues automatically.",
-    }),
+    el("h1", { class: "cap-heading", text: heading }),
+    el("p", { class: "cap-note", text: body }),
   ];
   if (returnUrl) {
     children.push(linkButton("Back to speaker", returnUrl));
@@ -1671,7 +1684,7 @@ function renderPlanAllDone(ctx) {
     children.push(el("p", { class: "cap-note", text: "You can close this tab." }));
   }
   setScreen(ctx.screenEl, children);
-  setStatus("All measurements done — the speaker continues automatically.", "done");
+  setStatus(body, "done");
 }
 
 function renderPlanRefused(ctx, admission) {
@@ -2083,7 +2096,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
       return;
     }
     if (verdict.setComplete || (verdict.accepted && index >= target)) {
-      renderPlanAllDone(ctx);
+      renderPlanAllDone(ctx, { index });
       endPlanSession(ctx);
       return;
     }

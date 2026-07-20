@@ -138,8 +138,15 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # only: terminal host event + persisted failure + volume drain + purge, then
 # the original exception propagates to the outer relay net unchanged. Never a
 # silent path. Ceilings 620 -> 621 / 813 -> 814.
-MAX_NOQA_MARKERS = 814
-MAX_BLE001_MARKERS = 621
+#
+# 2026-07-20: +1 BLE001 for the crossover auto-apply background worker's
+# last-resort arm (correction_crossover_v2): a thread with no caller to
+# reraise to, where an escaped exception would strand the phone on the
+# deferred hold and dishonestly time out as relay_timeout. Logs
+# event=correction.crossover_v2_auto_apply_error + persists the failure —
+# never a silent path. Ceilings 621 -> 622 / 814 -> 815.
+MAX_NOQA_MARKERS = 815
+MAX_BLE001_MARKERS = 622
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 

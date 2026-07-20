@@ -2,13 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""W5a envelope schema 7: the v2 conductor screen payloads.
+"""W5a envelope schema 8: the v2 conductor screen payloads.
 
 Pins docs/crossover-measurement-productization-design.md §5.9 (the five-step
 sequence), §5.10 (the four failure-screen templates, parameterized by reason
 copy), the §5.2 VERIFY-fail one-default screen, and the volume_recovery screen
 keyed on ``needs_recovery`` (the W2 gate ruling — never
 ``unresolved_volume_safety`` alone).
+
+Owner ruling (2026-07-20): the human ``review_apply`` screen is gone from the
+happy path. MEASURE accepted + not yet applied now renders the ``applying``
+screen (no candidate review, no action — the conductor's own auto-apply is in
+flight); the low-confidence trust gate rejects MEASURE itself
+(``low_alignment_confidence``, rendered through the ordinary fix_and_retry
+template at the ``measure`` step) instead of nudging a still-available Apply
+button; and ``done`` is now the RESULT screen — plain outcome first, the
+measured numbers in ``candidate_review`` for the wizard's collapsed expert
+disclosure, Undo as the primary action.
 """
 from __future__ import annotations
 
@@ -21,15 +31,18 @@ from jasper.active_speaker.crossover_envelope_v2 import (
 from jasper.active_speaker.crossover_v2_flow import (
     REASON_REGISTRY,
     REASON_AGC_BEHAVIORAL_FAIL,
+    REASON_APPLY_FAILED,
     REASON_CLIPPED,
     REASON_CHANNEL_MAP_MISMATCH,
+    REASON_LOW_ALIGNMENT_CONFIDENCE,
     REASON_NOISY_ROOM_LINEARITY,
     REASON_RELAY_TIMEOUT,
     REASON_SNR_FLOOR,
+    REASON_USER_STOPPED,
     REASON_VERIFY_OUT_OF_TOLERANCE,
 )
 
-V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "review_apply", "verify")
+V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "apply", "verify")
 
 
 def _status(**v2) -> dict:
@@ -47,9 +60,9 @@ def _step_statuses(env: dict) -> dict[str, str]:
 # --- shape --------------------------------------------------------------------
 
 
-def test_schema_7_and_v2_step_tuple():
+def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 7
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 8
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -94,7 +107,8 @@ def test_measure_phase_is_phone_driven():
 
 # A realistic persisted candidate summary (jasper.web.correction_crossover_v2's
 # _candidate_summary shape): trims_db + alignment (delay_us/delay_role/polarity)
-# + alignment_confidence + fingerprint. The renderer reads exactly this.
+# + alignment_confidence + predicted_ripple_db + fingerprint. The renderer reads
+# exactly this.
 def _candidate_summary(**overrides) -> dict:
     base = {
         "fingerprint": "fp-123",
@@ -102,93 +116,109 @@ def _candidate_summary(**overrides) -> dict:
         "trims_db": {"woofer": -3.1, "tweeter": 0.0},
         "alignment": {"delay_us": 250.0, "delay_role": "woofer", "polarity": "invert"},
         "alignment_confidence": 0.82,
+        "predicted_ripple_db": 1.4,
     }
     base.update(overrides)
     return base
 
 
-def test_review_apply_carries_candidate_fingerprint():
+# --- APPLYING (owner ruling, 2026-07-20: no human control page) -----------------
+
+
+def test_applying_phase_has_no_action_and_no_candidate_review():
+    """The conductor's own auto-apply is in flight — a brief machine-paced
+    wait, not a human decision screen. No Apply button, no candidate detail
+    (that lives on the RESULT screen once applied)."""
     env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
+        phase="applying",
         candidate=_candidate_summary(),
     ))
-    assert env["screen"] == "review_apply"
-    action = env["next_action"]
-    assert action["endpoint"] == "/correction/crossover/v2/apply"
-    assert action["body"]["expected_candidate_fingerprint"] == "fp-123"
-    # Apply is the primary action and must render even while the phone relay is
-    # still in flight (the "waiting for apply" hold) — W6.10 blocker #2.
-    assert action["show_during_relay"] is True
-    assert env["candidate_review"]["fingerprint"] == "fp-123"
-    assert _step_statuses(env)["review_apply"] == "active"
+    assert env["screen"] == "applying"
+    assert env["next_action"] is None
+    assert env["candidate_review"] is None
+    assert _step_statuses(env)["apply"] == "active"
+    assert "apply" in env["verdict_text"].lower()
 
 
-def test_review_apply_candidate_review_is_display_shape():
-    """W6.10 blocker #2: candidate_review carries the plain-language rows the
-    renderer displays (trims / delay / polarity), derived from _candidate_summary
-    — NOT the raw summary the generic renderer could not read."""
+def test_low_alignment_confidence_rejects_at_the_measure_step():
+    """Owner ruling (2026-07-20): the former review-screen nudge is now a hard
+    MEASURE-phase gate. The household never sees a candidate to judge — just
+    guidance to re-measure, rendered through the ordinary fix_and_retry
+    template at the ``measure`` step (never ``applying``, since no candidate
+    was ever built)."""
     env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
-        candidate=_candidate_summary(),
+        phase="measure", failure={"code": REASON_LOW_ALIGNMENT_CONFIDENCE},
     ))
-    review = env["candidate_review"]
-    assert review["trims"] == [
-        {"role": "woofer", "attenuation_db": -3.1},
-        {"role": "tweeter", "attenuation_db": 0.0},
-    ]
-    assert review["delay"] == {"role": "woofer", "delay_ms": 0.25}
-    assert review["polarity"] == "invert"
-    assert review["confidence"] == 0.82
-    assert review["fingerprint"] == "fp-123"
+    assert env["screen"] == "fix_and_retry"
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_LOW_ALIGNMENT_CONFIDENCE].message
+    assert "mic" in env["verdict_text"].lower() or "microphone" in env["verdict_text"].lower()
+    assert env["next_action"]["id"] == "retry"
+    assert _step_statuses(env)["measure"] == "active"
 
 
-def test_review_apply_candidate_review_trims_only_candidate():
-    """A trims-only candidate (no measured delay/polarity) still renders its
-    trim rows; delay/polarity are absent, not zero-valued noise."""
+def test_apply_failed_renders_fix_and_retry_at_the_apply_step():
+    """A TERMINAL auto-apply failure surfaces through the ordinary generic
+    failure branch (phase stays "applying" — MEASURE accepted, never
+    applied), rendering at the "apply" step with the honest generic message.
+
+    This is a pure RENDERING test (given phase="applying" as an input, not
+    derived from real persistence) — reachability of exactly this input in
+    production is separately pinned by
+    test_correction_crossover_v2_endpoints.py::test_apply_failure_keeps_measure_accepted_through_the_real_persist_path
+    (an adversarial review, 2026-07-20, found the prior version of this
+    module untested that _persist_terminal_failure actually produces this
+    phase for an apply failure rather than resetting to "check")."""
     env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
-        candidate=_candidate_summary(
-            alignment={"delay_us": None, "delay_role": None, "polarity": None},
-            alignment_confidence=None,
-        ),
+        phase="applying", failure={"code": REASON_APPLY_FAILED},
     ))
-    review = env["candidate_review"]
-    assert [row["role"] for row in review["trims"]] == ["woofer", "tweeter"]
-    assert review["delay"] is None
-    assert review["polarity"] is None
-    assert review["confidence"] is None
+    assert env["screen"] == "fix_and_retry"
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_APPLY_FAILED].message
+    assert _step_statuses(env)["apply"] == "active"
+    assert env["next_action"]["id"] == "retry"
 
 
-def test_review_apply_surfaces_last_blocked_apply_as_a_nudge():
-    """Finding N (b): a blocked apply must not be a silent dead end. The
-    endpoint persists the last blocked-apply issue into the durable v2
-    state; the envelope surfaces it as a nudge on the SAME review_apply
-    screen (no new template — the household stays where the Apply button
-    already is, with an explanation instead of nothing happening)."""
+def test_apply_failed_layers_the_specific_blocked_issue_as_an_extra_nudge():
+    """The generic apply_failed headline is joined by the SPECIFIC blocked-
+    apply issue (handle_v2_apply's own persisted apply_blocked) when one is
+    available — the household gets both the honest generic outcome and,
+    when known, the concrete cause. Pure rendering test — see the module
+    note above test_apply_failed_renders_fix_and_retry_at_the_apply_step for
+    where reachability through real persistence is pinned."""
     env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
-        candidate={"fingerprint": "fp-123", "trims": {"woofer": -3.1}},
+        phase="applying",
+        failure={"code": REASON_APPLY_FAILED},
         apply_blocked={
             "id": "measured_candidate_preset_mismatch",
-            "message": "the reviewed measured candidate no longer equals the saved crossover",
+            "message": "the measured candidate no longer matches the saved crossover",
         },
     ))
-    assert env["screen"] == "review_apply"
-    assert env["nudges"] == [{
-        "code": "measured_candidate_preset_mismatch",
-        "severity": "warn",
-        "text": "the reviewed measured candidate no longer equals the saved crossover",
-    }]
-    # The Apply action itself is untouched — the household can still retry.
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/apply"
+    assert env["screen"] == "fix_and_retry"
+    codes = [n["code"] for n in env["nudges"]]
+    assert REASON_APPLY_FAILED in codes
+    assert "measured_candidate_preset_mismatch" in codes
+    texts = [n["text"] for n in env["nudges"]]
+    assert "the measured candidate no longer matches the saved crossover" in texts
 
 
-def test_review_apply_has_no_nudge_when_nothing_is_blocked():
+def test_apply_failed_has_no_extra_nudge_when_nothing_is_blocked():
     env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
-        candidate={"fingerprint": "fp-123", "trims": {"woofer": -3.1}},
+        phase="applying", failure={"code": REASON_APPLY_FAILED},
     ))
-    assert env["nudges"] == []
+    assert len(env["nudges"]) == 1
+    assert env["nudges"][0]["code"] == REASON_APPLY_FAILED
+
+
+def test_apply_blocked_at_a_non_apply_step_gets_no_extra_nudge():
+    """The apply_blocked merge is scoped to the "apply" step only — an
+    unrelated stale apply_blocked value sitting in durable state must not
+    bleed into a totally different failure screen."""
+    env = build_crossover_envelope_v2(_status(
+        phase="check",
+        failure={"code": REASON_SNR_FLOOR},
+        apply_blocked={"id": "stale", "message": "stale detail"},
+    ))
+    assert len(env["nudges"]) == 1
+    assert env["nudges"][0]["code"] == REASON_SNR_FLOOR
 
 
 def test_verify_phase_screen():
@@ -198,15 +228,53 @@ def test_verify_phase_screen():
     assert _step_statuses(env)["verify"] == "active"
 
 
-def test_done_marks_every_step_done():
+# --- done / RESULT screen (owner ruling, 2026-07-20) ----------------------------
+
+
+def test_done_is_the_result_screen_plain_outcome_first():
     env = build_crossover_envelope_v2(_status(
-        phase="done", verify={"outcome": "pass"},
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
     assert env["screen"] == "done"
     assert set(_step_statuses(env).values()) == {"done"}
     assert env["progress"] == {"position": 5, "total": 5}
-    assert env["next_action"]["href"] == "/correction/room/"
+    assert "tuned" in env["verdict_text"].lower()
+    assert "undo" in env["verdict_text"].lower()
     assert any(n["code"] == "crossover_v2_verified" for n in env["nudges"])
+
+
+def test_done_gives_undo_the_primary_action_and_continue_as_alternate():
+    """Undo prominent (owner ruling): the PRIMARY button is Undo, not
+    Continue — the household's safety net is the most visible thing on the
+    screen, not an afterthought."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    action = env["next_action"]
+    assert action["id"] == "verify_undo"
+    assert action["endpoint"] == "/correction/crossover/v2/restore"
+    alternates = {a["id"]: a for a in env["alternate_actions"]}
+    assert alternates["room"]["href"] == "/correction/room/"
+
+
+def test_done_candidate_review_carries_the_measured_numbers():
+    """The former review screen's candidate display shape is reused, unchanged,
+    for the RESULT screen's collapsed expert disclosure — trims, delay,
+    polarity, confidence, AND ripple (new: threaded through for the expert
+    disclosure, not previously exposed on any screen)."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    review = env["candidate_review"]
+    assert review["trims"] == [
+        {"role": "woofer", "attenuation_db": -3.1},
+        {"role": "tweeter", "attenuation_db": 0.0},
+    ]
+    assert review["delay"] == {"role": "woofer", "delay_ms": 0.25}
+    assert review["polarity"] == "invert"
+    assert review["confidence"] == 0.82
+    assert review["ripple_db"] == 1.4
+    assert review["fingerprint"] == "fp-123"
 
 
 # --- volume recovery (W2 gate ruling) ----------------------------------------------
@@ -288,6 +356,19 @@ def test_session_restart_template():
     assert _step_statuses(env)["microphone_check"] == "active"
 
 
+def test_user_stopped_renders_session_restart_with_honest_copy():
+    """A deliberate phone Stop is not a relay-transport death (gotcha #18) —
+    same session_restart template/action shape, but the copy must not claim
+    a timeout that never happened."""
+    env = build_crossover_envelope_v2(_status(
+        phase="measure", failure={"code": REASON_USER_STOPPED},
+    ))
+    assert env["screen"] == "session_restart"
+    assert env["next_action"]["id"] == "restart_session"
+    assert "stopped" in env["verdict_text"].lower()
+    assert "timed out" not in env["verdict_text"].lower()
+
+
 def test_verify_fail_one_default_screen():
     """§5.2: one default ("Try again") + Undo; the explicit trio behind the
     expert disclosure."""
@@ -333,10 +414,13 @@ def test_verify_phase_agc_failure_renders_verify_fail_not_fix_and_retry():
     apply) rendered fix_and_retry and displaced the verify_fail screen's Undo
     affordance. REASON_AGC_BEHAVIORAL_FAIL's OWN registry template is
     fix_and_retry (correct for CHECK/MEASURE, where nothing is applied yet);
-    once phase is verify, the applied graph is already live, so the same
-    code must render verify_fail instead."""
+    once the crossover is durably applied, the same code must render
+    verify_fail instead. ``applied=True`` here is the REAL state fact a
+    production status always carries whenever phase is genuinely "verify"
+    (see test_applied_true_forces_verify_fail_regardless_of_phase for the
+    adversarial-review case where phase and applied disagree)."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
+        phase="verify", applied=True, failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
     ))
     assert env["screen"] == "verify_fail"
     assert env["verdict_text"] == REASON_REGISTRY[REASON_AGC_BEHAVIORAL_FAIL].message
@@ -358,54 +442,52 @@ def test_check_phase_agc_failure_still_renders_its_normal_template():
 
 def test_verify_phase_relay_timeout_also_renders_verify_fail():
     """A non-agc code (REASON_RELAY_TIMEOUT's own template is
-    session_restart) gets the same VERIFY-phase override -- ANY failure code
-    surfacing post-apply is entitled to the Undo affordance."""
+    session_restart) gets the same applied override -- ANY failure code
+    surfacing once genuinely applied is entitled to the Undo affordance."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", failure={"code": REASON_RELAY_TIMEOUT},
+        phase="verify", applied=True, failure={"code": REASON_RELAY_TIMEOUT},
     ))
     assert env["screen"] == "verify_fail"
 
 
 def test_verify_phase_unknown_code_renders_verify_fail_too():
     env = build_crossover_envelope_v2(_status(
-        phase="verify", failure={"code": "some_future_code"},
+        phase="verify", applied=True, failure={"code": "some_future_code"},
     ))
     assert env["screen"] == "verify_fail"
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Undo (restore previous sound)" in labels
 
 
-# --- W6.7 ruling 4: low-confidence nudge on review_apply -------------------------
-
-
-def test_review_apply_nudges_on_low_alignment_confidence():
+def test_applied_true_forces_verify_fail_regardless_of_phase():
+    """Second adversarial-review pass (2026-07-20, "interleaving A"):
+    ``_persist_terminal_failure`` for a NON-apply-failed code (e.g.
+    ``user_stopped``) can land WHILE the auto-apply transaction is still
+    mid-flight — at that instant ``applied`` reads False, so the reset
+    (§5.6, scoped away from ``apply_failed`` only) clears ``accepted_phases``.
+    If the auto-apply's OWN success then lands moments later, the final
+    durable state is applied=True with accepted_phases still cleared —
+    ``_phase_from_state`` resolves that combination to PHASE_CHECK, not
+    PHASE_VERIFY. The render must not trust that phase derivation: keying
+    on the RAW ``applied`` state fact catches this even when phase says
+    "check" and active_step says "microphone_check"."""
     env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
-        candidate={"fingerprint": "fp-123", "alignment_confidence": 0.3},
+        phase="check", applied=True, failure={"code": REASON_USER_STOPPED},
     ))
-    assert env["screen"] == "review_apply"
-    codes = [n["code"] for n in env["nudges"]]
-    assert "crossover_v2_alignment_low_confidence" in codes
-    # Apply is NOT blocked -- informed consent, not a gate.
-    assert env["next_action"]["endpoint"] == "/correction/crossover/v2/apply"
+    assert env["screen"] == "verify_fail"
+    assert "already applied" in env["verdict_text"].lower()
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
 
 
-def test_review_apply_no_nudge_when_confidence_is_high():
+def test_applied_false_with_verify_phase_does_not_force_verify_fail():
+    """Defensive converse of the above: if ``applied`` is explicitly False,
+    the override must not fire even if some other field claims phase
+    "verify" — the state fact is authoritative, not a hint."""
     env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
-        candidate={"fingerprint": "fp-123", "alignment_confidence": 0.9},
+        phase="verify", applied=False, failure={"code": REASON_AGC_BEHAVIORAL_FAIL},
     ))
-    assert env["nudges"] == []
-
-
-def test_review_apply_no_nudge_when_confidence_is_absent():
-    """A legacy/trims-only candidate with no alignment estimate at all must
-    not nudge -- only a KNOWN low confidence value nudges."""
-    env = build_crossover_envelope_v2(_status(
-        phase="review_apply",
-        candidate={"fingerprint": "fp-123"},
-    ))
-    assert env["nudges"] == []
+    assert env["screen"] == "fix_and_retry"
 
 
 @pytest.mark.parametrize("code,template", [
@@ -413,7 +495,7 @@ def test_review_apply_no_nudge_when_confidence_is_absent():
 ])
 def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
-    assert env["schema_version"] == 7
+    assert env["schema_version"] == 8
     assert env["screen"]
     assert env["verdict_text"]
 

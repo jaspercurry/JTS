@@ -2,14 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""W5a conductor orchestration: the CHECK→MEASURE→REVIEW/APPLY→VERIFY walk.
+"""W5a conductor orchestration: the CHECK→MEASURE→APPLYING(auto)→VERIFY walk.
 
 Fake-seam state walk per docs/crossover-measurement-productization-design.md
 §5/§6 W5a: the happy path, each §5.10 failure template, the deferred-VERIFY
 release on apply, session-death volume abandon, the needs_recovery gate (W2
 ruling), resume-skips-accepted-phases, and new-session-invalidates-evidence.
-All seams (playback, analysis, publish, apply gate) are injected fakes — no
-relay, no DSP, no audio.
+All seams (playback, analysis, publish, apply gate/failure) are injected
+fakes — no relay, no DSP, no audio.
+
+Owner ruling (2026-07-20): the conductor no longer waits for a human tap to
+observe apply — ``fakes.apply_done = True`` / ``fakes.apply_failed_code``
+simulate the HOST's own auto-apply (fired from a trusted MEASURE accept)
+completing or failing, read through the ``apply_complete``/``apply_failed``
+seams exactly as the real host wires them
+(jasper.web.correction_crossover_v2.build_v2_run_and_consume). The conductor
+itself never performs the apply — see test_correction_crossover_v2_endpoints.py
+for the host-level auto-apply trigger + background-thread wiring.
 """
 from __future__ import annotations
 
@@ -21,15 +30,16 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
+    ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
     CAPTURE_PLAN_TARGET,
     GAIN_CAP_BACKOFF_DB,
+    PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_DONE,
     PHASE_MEASURE,
-    PHASE_REVIEW_APPLY,
     PHASE_VERIFY,
     PILOT_LEVEL_DELTA_DB,
     REASON_REGISTRY,
@@ -126,11 +136,13 @@ def _check_analysis(
     )
 
 
-def _alignment(*, delay_us=150.0, status=ALIGNMENT_OK, polarity="normal") -> AlignmentEstimate:
+def _alignment(
+    *, delay_us=150.0, status=ALIGNMENT_OK, polarity="normal", confidence=0.8,
+) -> AlignmentEstimate:
     return AlignmentEstimate(
         delay_us=delay_us, raw_delay_us=delay_us, parallax_us=11.0,
         polarity=polarity, polarity_sign=1 if polarity == "normal" else -1,
-        polarity_agrees_with_sum=True, confidence=0.8, status=status,
+        polarity_agrees_with_sum=True, confidence=confidence, status=status,
     )
 
 
@@ -199,6 +211,10 @@ class FakeSeams:
     published_checks: list = field(default_factory=list)
     published_candidates: list = field(default_factory=list)
     apply_done: bool = False
+    # Simulates the host's auto-apply background thread hitting a TERMINAL
+    # failure (owner ruling, 2026-07-20) — empty string while pending/never
+    # attempted, a REASON_REGISTRY code once the auto-apply gives up.
+    apply_failed_code: str = ""
 
     def seams(self) -> V2FlowSeams:
         def analyze(program, result, priors, geometry):
@@ -214,6 +230,7 @@ class FakeSeams:
             publish_check=lambda plan, ambient: self.published_checks.append(plan),
             publish_candidate=self.published_candidates.append,
             apply_complete=lambda: self.apply_done,
+            apply_failed=lambda: self.apply_failed_code,
         )
 
 
@@ -258,6 +275,9 @@ def test_happy_path_walks_check_measure_apply_verify():
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert verdict["candidate_fingerprint"]
+    # Owner ruling (2026-07-20): a trusted candidate tells the HOST to fire
+    # the auto-apply immediately — no human review step in between.
+    assert verdict["auto_apply"] is True
     assert fakes.played[1][0] == PHASE_MEASURE
     assert len(fakes.published_candidates) == 1
     candidate = fakes.published_candidates[0]
@@ -265,18 +285,27 @@ def test_happy_path_walks_check_measure_apply_verify():
     # positive delay_us ⇒ tweeter earlier ⇒ tweeter delayed (W4 sign contract).
     assert candidate.alignment.delay_role == "tweeter"
     assert candidate.alignment.delay_us == pytest.approx(150.0)
-    # MEASURE accepted but not applied ⇒ the household is on REVIEW/APPLY.
-    assert c.current_phase == PHASE_REVIEW_APPLY
+    # MEASURE accepted but not applied ⇒ the host's own auto-apply is in
+    # flight (machine-paced seconds, never a human control page).
+    assert c.current_phase == PHASE_APPLYING
 
-    # VERIFY is soft-held until apply (§5.2 auto-arm).
+    # VERIFY is soft-held until the auto-apply completes (§5.2 auto-arm) —
+    # the mechanism is unchanged; only the release trigger moved from a
+    # human tap to the host's own auto-apply.
     with pytest.raises(CaptureBeginDeferred) as excinfo:
         c.authorize_begin(3, 3)
     assert excinfo.value.code == "awaiting_apply"
 
-    c.note_apply_complete()
-    assert c.current_phase == PHASE_VERIFY
+    # The host's auto-apply background thread finished successfully — this
+    # is what jasper.web.correction_crossover_v2.handle_v2_apply's
+    # observe_apply_success ultimately flips, read here through the seam.
+    # (current_phase reads the conductor's own in-memory ``applied`` flag,
+    # which only updates once authorize_begin actually re-checks the seam —
+    # so it stays "applying" here until the VERIFY begin below observes it.)
+    fakes.apply_done = True
     verdict = _run_phase(c, 3, 3)
     assert verdict["accepted"] is True
+    assert c.applied is True
     assert fakes.played[2][0] == PHASE_VERIFY
     assert c.verify_outcome == "pass"
     assert c.current_phase == PHASE_DONE
@@ -289,10 +318,91 @@ def test_apply_gate_seam_releases_deferred_verify():
     _run_phase(c, 2, 2)
     with pytest.raises(CaptureBeginDeferred):
         c.authorize_begin(3, 3)
-    # The apply-complete observation arrives through the seam (host event).
+    # The apply-complete observation arrives through the seam (the host's
+    # own auto-apply thread finishing — never a human tap).
     fakes.apply_done = True
     c.authorize_begin(3, 3)  # no longer deferred
     assert c.applied is True
+
+
+def test_apply_failed_seam_refuses_the_deferred_verify_hold():
+    """Owner ruling (2026-07-20): a TERMINAL auto-apply failure must not
+    strand the phone on the deferred hold toward a dishonest relay_timeout —
+    authorize_begin refuses outright with the real reason."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    fakes.apply_failed_code = "apply_failed"
+    with pytest.raises(CaptureBeginRefused) as excinfo:
+        c.authorize_begin(3, 3)
+    assert excinfo.value.code == "apply_failed"
+    assert c.last_failure_code == "apply_failed"
+    assert c.applied is False
+
+
+def test_low_alignment_confidence_rejects_measure_before_building_candidate():
+    """Owner ruling (2026-07-20): the former review-screen nudge
+    (< ALIGNMENT_CONFIDENCE_TRUST_FLOOR) is now a hard MEASURE-phase gate —
+    no candidate is built or published, and the household gets guidance to
+    re-measure, never an "apply anyway?" question."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        alignment=_alignment(confidence=ALIGNMENT_CONFIDENCE_TRUST_FLOOR - 0.1),
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict == {
+        "accepted": False,
+        "code": "low_alignment_confidence",
+        "template": "fix_and_retry",
+        "reason": REASON_REGISTRY["low_alignment_confidence"].message,
+        "banner": "",
+        "auto_retry": False,
+    }
+    assert not fakes.published_candidates
+    assert c.candidate is None
+    assert c.current_phase == PHASE_MEASURE
+
+
+def test_alignment_confidence_at_the_trust_floor_is_trusted():
+    """The floor is an exclusive lower bound (`<`, not `<=`) — exactly-at-floor
+    is trusted, matching the former nudge's own comparator."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        alignment=_alignment(confidence=ALIGNMENT_CONFIDENCE_TRUST_FLOOR),
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert verdict["auto_apply"] is True
+
+
+def test_no_alignment_estimate_skips_the_confidence_gate():
+    """A trims-only candidate (no alignment estimate at all) is never
+    confidence-gated — same condition the former nudge used."""
+    from dataclasses import replace
+
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverAlignment,
+    )
+
+    fakes = FakeSeams()
+
+    def _measure_no_alignment(program):
+        return replace(_measure_analysis(program), alignment=None)
+
+    fakes.measure = _measure_no_alignment
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert verdict["auto_apply"] is True
+    assert fakes.published_candidates[0].alignment == MeasuredCrossoverAlignment()
 
 
 def test_measure_program_gains_back_off_from_caps():

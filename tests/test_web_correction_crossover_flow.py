@@ -2030,8 +2030,12 @@ def test_action_row_has_a_single_render_authority():
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout.strip().splitlines()[-1])
-    # 15 original cases + 3 W6.10 review-during-hold cases (Apply renders as
-    # the single primary while the phone holds; connect link/QR suppressed)
+    # 15 original cases + 3 W6.10 show_during_relay-primary-during-hold cases
+    # (a next_action marked show_during_relay renders as the single primary
+    # while the phone holds; connect link/QR suppressed — historically the
+    # v2 crossover review_apply screen's Apply action, removed by the
+    # 2026-07-20 owner ruling; the mechanism itself is exercised directly
+    # today since verify_fail's Undo/Re-measure still use it, scenario (f))
     # + 5 W6.12 verify_fail-during-a-live-relay cases (Undo/Re-measure render
     # via show_during_relay; Try again stays gated behind Stop) + 4 W6.12
     # click-swallowing cases (a click dispatched between two identical-

@@ -288,25 +288,32 @@ check(
 check(!relayLinkVisible(), "stopRelay finally: relay link is hidden once terminal");
 assertSinglePrimary("stopRelay finally");
 
-// --- (e) review screen: Apply shows during the hold; connect link suppressed -
-// W6.10 blocker #2: on review_apply the phone is parked in the "waiting for
-// apply" hold (relay in flight), but the Apply action is the PRIMARY. The
-// envelope marks it show_during_relay, so it renders as the SINGLE primary
-// while the misleading "Open phone capture" link/QR is suppressed and the
-// candidate card is shown.
-const applyAction = {
-  id: "apply_measured_candidate",
-  label: "Apply reviewed crossover",
-  endpoint: "/correction/crossover/v2/apply",
-  body: { expected_candidate_fingerprint: "fp-1" },
+// --- (e) a show_during_relay PRIMARY renders alone during a live relay -----
+// W6.10 blocker #2's general mechanism: a next_action marked show_during_relay
+// renders as the SINGLE primary even while the phone relay is in flight (the
+// gate that otherwise suppresses next_action beside a live phone link, so a
+// second capture can't be started, has an explicit escape hatch for the one
+// action that legitimately needs to stay reachable throughout a hold) — the
+// misleading "Open phone capture" link/QR is suppressed, and any populated
+// candidate_review still renders. Historically exercised by the v2 crossover
+// review_apply screen's Apply action (removed by the 2026-07-20 owner
+// ruling — apply is now automatic); the mechanism itself is still live today
+// via verify_fail's Undo/Re-measure alternates (scenario (f) below), so this
+// scenario keeps exercising it directly with a generic fixture rather than a
+// dead endpoint.
+const holdPrimaryAction = {
+  id: "hold_primary_action",
+  label: "Primary action during hold",
+  endpoint: "/correction/crossover/v2/some-primary-action",
+  body: { fingerprint: "fp-1" },
   show_during_relay: true,
 };
 render({
-  verdict_text: "Review the measured crossover",
+  verdict_text: "Something to review while the phone holds",
   steps: [],
   nudges: [],
   relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=e" },
-  next_action: applyAction,
+  next_action: holdPrimaryAction,
   alternate_actions: [],
   candidate_review: {
     trims: [{ role: "woofer", attenuation_db: -2.5 }],
@@ -319,15 +326,15 @@ render({
 check(
   actionRowChildren().length === 1
     && String(actionRowChildren()[0].className).includes("btn--primary")
-    && actionRowChildren()[0].textContent === "Apply reviewed crossover",
-  "(e) review: Apply renders as the primary during the hold",
+    && actionRowChildren()[0].textContent === "Primary action during hold",
+  "(e) show_during_relay: the primary renders during the hold",
 );
-check(!relayLinkVisible(), "(e) review: the connect link/QR is suppressed");
+check(!relayLinkVisible(), "(e) show_during_relay: the connect link/QR is suppressed");
 check(
   !elements.get("crossover-review").hidden,
-  "(e) review: the candidate card is shown",
+  "(e) show_during_relay: the candidate card is shown",
 );
-assertSinglePrimary("(e) review during hold");
+assertSinglePrimary("(e) show_during_relay primary during hold");
 
 // --- (f) verify_fail during a live relay: Undo + Re-measure show, Try again gated -
 // W6.12 P0-adjacent fix: right after a failed VERIFY capture the relay object

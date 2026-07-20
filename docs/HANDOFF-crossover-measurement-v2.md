@@ -16,8 +16,10 @@ this doc is the current operational truth.
 
 - **Household surface:** `http://jts.local/correction/` → the crossover
   step. The screens are `speaker_setup → microphone_check → measure →
-  review_apply → verify`. The one-liner: place the mic ~1 m in front of
-  the speaker at tweeter height, tap Start, then follow the phone.
+  apply → verify`. The one-liner: place the mic ~1 m in front of the
+  speaker at tweeter height, tap Start, then follow the phone — apply is
+  automatic (owner ruling, 2026-07-20; gotcha #18), no browser-tab step
+  in between.
 - **Flow selector — `JASPER_CROSSOVER_FLOW`.** Resolved by
   `active_crossover_flow()` in
   [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py).
@@ -71,9 +73,11 @@ Three parties, one direction of authority (the Pi):
 
 The conductor is I/O-free: all side effects cross an injected
 `V2FlowSeams` boundary (`play`, `analyze`, `publish_check`,
-`publish_candidate`, `apply_complete`). The web host
+`publish_candidate`, `apply_complete`, `apply_failed`). The web host
 ([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py))
-binds the real seams; tests inject fakes.
+binds the real seams — including firing the auto-apply itself on a
+background thread once a trusted MEASURE accept lands (gotcha #18) — and
+tests inject fakes.
 
 ### The capture flow
 
@@ -93,10 +97,20 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    Yields per-driver gated complex responses (cal applied), relative
    delay (drift/parallax-corrected), polarity, trims, per-band SNR —
    folded into a `MeasuredCrossoverCandidate`.
-3. **REVIEW / APPLY** (control page, no capture). One Apply action over
-   the candidate (trims, polarity, delay, predicted-vs-target sum).
-   Fc/slope stay preset-owned. VERIFY is soft-held (`CaptureBeginDeferred`,
-   screen `awaiting_apply`) until apply lands.
+3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
+   conductor itself evaluates the candidate: alignment confidence
+   `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
+   `low_alignment_confidence` (guidance to re-measure at a cleaner mic
+   position — never a question); otherwise it fires the SAME apply
+   transaction a household's tap used to trigger
+   (`jasper.web.correction_crossover_v2.handle_v2_apply`) on its own
+   background thread. VERIFY is soft-held (`CaptureBeginDeferred`, screen
+   `awaiting_apply`) exactly as before — the phone now sees "Applying to
+   your speaker…" instead of "waiting for the household to apply", and the
+   release is the auto-apply completing, never a human. An auto-apply
+   failure (blocked or errored) persists `apply_failed` and the deferred
+   hold is refused with the honest reason instead of holding toward a
+   dishonest `relay_timeout`. See gotcha #18 for the full rationale.
 4. **VERIFY** (~15 s, auto-arms on the apply-complete host event). A mono
    summed sweep through the **applied production graph** + a pilot pair.
    Pass = notch-excluded, validity-floor-clamped tracking error ≤ ±1.5 dB.
@@ -106,8 +120,15 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
 **One mic position for the whole session: ~1 m on the listening axis,
 tweeter height, facing the speaker.** The placement screen encodes a
 tolerance window (~±0.3 m distance, ±10 cm height). Only the first
-capture needs a tap; CHECK auto-advances into MEASURE, and apply
-auto-arms VERIFY.
+capture needs a tap; CHECK auto-advances into MEASURE, and a trusted
+candidate auto-arms VERIFY with no household action in between.
+
+The RESULT screen (phone end screen + wizard `done` screen) states the
+outcome plainly first ("Your speaker is tuned. If it sounds worse than
+before, you can undo.") with the measured numbers (trims/delay/polarity/
+confidence/ripple) folded into a collapsed "Technical details" disclosure,
+and Undo given the PRIMARY button on the wizard so the safety net is the
+most visible thing on the screen.
 
 ## File map
 
@@ -119,7 +140,7 @@ auto-arms VERIFY.
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT alignment, prediction, VERIFY tracking. All the analysis tuning constants. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
-| [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 7): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
+| [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
 | [`jasper/active_speaker/measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact (trims + `MeasuredCrossoverAlignment`), folded through `emit_active_speaker_baseline_config` (`camilla_yaml.py`) and the delay/graph-safety proofs. |
 | [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Relay protocol v3: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. |
 | [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the v3 session loop; `version.json` carries the supported protocol versions. |
@@ -211,8 +232,11 @@ source, no drift.
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile) |
 | `internal_error` | any host fault | 0 | catch-all cleanup arm caught a seam raise |
 | `relay_timeout` | any | new session | link/session died — Start over mints a fresh one |
+| `user_stopped` | any | new session | the household tapped Stop on the phone — honest copy, not a manufactured "timed out" (gotcha #18) |
 | `volume_unresolved` | session | — | the `volume_recovery` screen |
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
+| `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor — re-measure at a cleaner mic position (gotcha #18) |
+| `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
@@ -385,6 +409,80 @@ no retries-as-bodge). Treat these as regression fences.
     ~1.3 dB on a real capture, windowed or not) — worse than a few tenths
     — so the verbatim pre-#16 computation was kept instead of trading one
     subtle bug for a smaller one.
+18. **The human mid-flow Apply gate was a dead end — removed** (owner
+    ruling, 2026-07-20). A hardware session proved it out: phone-only
+    users cannot bounce to a second browser tab to tap Apply, and "apply
+    this?" is unanswerable the moment after measuring — the household has
+    no basis to judge a raw candidate. Prior art (Sonos Trueplay, Genelec
+    GLM, Anthem ARC) all measure → apply → verify automatically, with the
+    human judgment happening AFTER, by ear, with undo available. Fixed by
+    promoting the review-screen's confidence nudge
+    (`ALIGNMENT_CONFIDENCE_NUDGE_FLOOR`, informed consent) into a hard
+    MEASURE-phase gate (`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, now owned by
+    `crossover_v2_flow.py` — the decision-maker, not the renderer) and
+    having the conductor fire the SAME apply transaction a household's tap
+    used to trigger (`handle_v2_apply`, unchanged, now called from a
+    background thread right after a trusted MEASURE accept instead of from
+    an HTTP handler alone). The `CaptureBeginDeferred` soft-hold mechanism
+    between MEASURE and VERIFY is UNCHANGED — only the release trigger
+    moved from a human tap to the auto-apply completing, and its copy
+    changed from "waiting for the household to apply" to "Applying to
+    your speaker…". `REVIEW_HOLD_BUDGET_S` shrank from 900 s (sized for a
+    human review) to 30 s (sized for the apply transaction's own latency).
+    A separate, unrelated fix landed in the same PR: a deliberate phone
+    Stop (`CaptureAborted`, `reason == "stopped"`) was bucketed into the
+    same `relay_timeout` ("link timed out") catch-all as a genuine
+    transport death — `CaptureAborted` now carries a structured `reason`
+    attribute so the two can be told apart, and Stop gets its own honest
+    `user_stopped` code.
+
+    **Adversarial review (SF1, same PR): the auto-apply worker didn't
+    coordinate with session death.** The background thread had no idea a
+    Stop (host-driven `stop_event`, or a phone Stop the relay loop's own
+    poll already turned into a persisted terminal failure) had landed, so
+    the interleaving could produce incoherent durable state — `applied=True`
+    silently clobbered back to a "nothing happened" story, or a `failure`
+    code silently clobbering a genuine `applied=True`. Three-part fix: (a)
+    a best-effort cooperative pre-apply check (`stop_event.is_set()` OR an
+    already-persisted failure code) skips the transaction entirely before
+    it starts — logged `event=correction.crossover_v2_auto_apply_skipped_stopped`;
+    (b) `observe_apply_success` no longer blindly clobbers an existing
+    `failure` code to `None` (the reverse race — `_persist_terminal_failure`
+    already preserved `applied=True` once observed, for the same session —
+    was already correct); (c) the envelope now appends an honest "the
+    crossover was already applied" acknowledgment to any
+    `TEMPLATE_SESSION_RESTART` code's copy (`relay_timeout`, `user_stopped`)
+    rendered once applied, since that copy's own "start over…" framing is
+    written for the pre-apply phases and is actively wrong once something
+    genuinely got applied. Neither check can fully close the race (an
+    in-flight DSP write can't be safely interrupted mid-transaction) — (b)
+    is what guarantees the FINAL DURABLE STATE is always coherent regardless
+    of which side of the race wins. (A second adversarial pass found that
+    claim did not extend to the RENDER — see immediately below.)
+
+    **Second adversarial pass, same PR: durable-state coherence did not
+    imply render honesty ("interleaving A").** (b) guarantees `applied` and
+    `failure` end up coherent together, but says nothing about
+    `accepted_phases` — and (c)'s acknowledgment originally fired on
+    `active_step == "verify"`, DERIVED from `_phase_from_state`, not from
+    `applied` directly. When a Stop's `_persist_terminal_failure` call lands
+    WHILE the auto-apply transaction is still mid-flight, `applied` reads
+    False at that instant, so the §5.6 reset (correctly scoped away from
+    `apply_failed` alone, per SF2) fires for `user_stopped` and clears
+    `accepted_phases`. The auto-apply's own success can then land moments
+    later and flip `applied` True — but `accepted_phases` stays cleared, so
+    `_phase_from_state` resolves the combination to `PHASE_CHECK`, not
+    `PHASE_VERIFY`. (c)'s acknowledgment, keyed on that derived phase, never
+    fired: the household saw "You stopped the measurement. Start over,"
+    with no Undo, over a genuinely-changed crossover. Fix:
+    `crossover_envelope_v2._failure_envelope` now takes `applied` as an
+    explicit parameter — the RAW `status["crossover_v2"]["applied"]` state
+    fact — and keys its override on that alone, never on `active_step`/phase.
+    This is the general form of the rule the PR should have shipped the
+    first time: **any failure screen rendered while `applied` is durably
+    True says the crossover was applied and offers Undo, regardless of what
+    phase/active_step/template says** — because phase derivation is exactly
+    the kind of thing this same race can corrupt.
 
 ## Future work — the post-W6 follow-ups issue
 
@@ -396,8 +494,9 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   on W6's green hardware run (now met).
 - Smaller nits: the `apply_blocked` session-gating detail; a
   topology-fingerprint guard on restore; a candidate-config retention
-  story; Stop-control "timed out" copy; a hub HTTP-routing nit; placement
-  copy improvements; the verify-fail expert disclosure.
+  story; a hub HTTP-routing nit; placement copy improvements; the
+  verify-fail expert disclosure. (Stop-control "timed out" copy — fixed,
+  gotcha #18.)
 - **Constants tuning pass** once real ~1 m runs accumulate (VERIFY pilot
   band, gate-comparability margin, confidence floor, and the PROVISIONAL
   constants above).

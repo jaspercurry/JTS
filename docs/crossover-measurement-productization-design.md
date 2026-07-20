@@ -161,6 +161,30 @@ adds phase — the high-credibility view for a crossover product).
 
 ### 5.2 The three phases
 
+> **Amendment (owner ruling, 2026-07-20): the REVIEW + APPLY human gate
+> below is superseded.** A hardware session proved it a dead end — a
+> phone-only user cannot bounce to a second browser tab to tap Apply, and
+> "apply this?" is unanswerable the instant after measuring (the household
+> has no basis to judge a raw candidate). The system already gates
+> candidate quality before MEASURE accepts and proof-checks VERIFY after;
+> prior art (Sonos Trueplay, Genelec GLM, Anthem ARC) all measure → apply →
+> verify automatically, with the human judgment happening AFTER, by ear,
+> with undo available. The REVIEW+APPLY bullet's confidence nudge
+> (`< 0.6`, "informed consent, not a gate") is now a hard MEASURE-phase
+> gate instead: below the floor, MEASURE is rejected with guidance to
+> re-measure at a cleaner mic position — never a question. A trusted
+> candidate is applied automatically by the conductor, on its own
+> background thread, immediately after MEASURE accepts. The soft-held
+> deferred-VERIFY mechanism described below is UNCHANGED; only the release
+> trigger moved from a human tap to the auto-apply completing. Current
+> operational truth (screen names, reason codes, the RESULT screen shape)
+> lives in
+> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+> gotcha #18. The rest of this section is preserved for design-rationale
+> archaeology — read it for the "why," not for the current screen
+> sequence.
+
+
 One mic position for the whole session: **~1 m on the listening axis**
 (tweeter height, facing the speaker; picture on the placement screen). The
 parallax budget in §3.2 assumes this placement within a tolerance window of
@@ -498,9 +522,10 @@ delay source (superseded by the single-capture estimator + VERIFY; the
 physical walk remains available as an expert diagnostic until proven
 redundant on hardware). The envelope's step *tuple* stays five entries —
 `("speaker_setup", "microphone_check", "measure", "review_apply", "verify")`
-(schema 6 → 7) — the real deletion is the sub-state machinery inside the
-steps (ramp/level-lock/near-field/comparison-set logic); each retired
-screen's state machinery goes with it.
+(schema 6 → 7; the fourth step is renamed `"apply"`, schema 8, per the 2026-07-20
+owner ruling in §5.2's amendment) — the real deletion is the sub-state
+machinery inside the steps (ramp/level-lock/near-field/comparison-set
+logic); each retired screen's state machinery goes with it.
 
 ### 5.10 Failure taxonomy (the W5 screen contract)
 
