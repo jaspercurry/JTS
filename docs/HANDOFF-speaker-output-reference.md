@@ -490,6 +490,14 @@ What exists:
   `PROGRAM_DUCK_ON/OFF` to `jasper-fanin`, which attenuates
   renderer/program lanes before mixing TTS/cues. TTS therefore remains
   audible and still flows through CamillaDSP crossover/protection.
+  The mixer also ducks the program lane whenever TTS frames are merely
+  *pending* (no explicit `PROGRAM_DUCK_ON`) so an out-of-turn cue is never
+  buried. That segment-driven auto-duck is depth-aware by segment kind:
+  assistant audio and explicitly-ducked turns use the full
+  `JASPER_DUCK_DB` (default -25 dB), but a standalone short earcon/cue —
+  the mute/unmute sparkle and wake/end chirps — ducks only by
+  `JASPER_FANIN_TTS_CUE_DUCK_DB` (default -6 dB; set 0 to not duck for
+  cues), since a ~0.3 s tone shouldn't slam the music like a conversation.
 - Runtime `JASPER_TTS_TRANSPORT=sounddevice` is intentionally rejected
   in this outputd-loudness tree. That older PortAudio path no longer has
   the dynamic content/profile matching policy; rollback means deploying a

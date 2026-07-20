@@ -163,6 +163,7 @@ pub struct Config {
     /// mixed by fan-in. This ducks renderer lanes only; TTS remains
     /// unattenuated before CamillaDSP crossover/protection.
     pub tts_program_duck_db: f32,
+    pub tts_cue_duck_db: f32,
 
     /// How long the program-lane duck takes to engage (attack) and to
     /// release back to full level, in milliseconds. The mixer glides the
@@ -818,6 +819,21 @@ impl Config {
                 tts_program_duck_db
             );
         }
+        // Shallower duck used only for the segment-driven auto-duck that
+        // fires while a standalone short earcon/cue is queued (mute/unmute
+        // sparkle, wake chirp) — see TtsMixer::program_duck_gain. These are
+        // quick, self-loud cues, not speech to follow, so the full program
+        // duck slams the music for no reason. Deliberately NOT falling back
+        // to JASPER_DUCK_DB: the whole point is that a cue ducks less than a
+        // conversation.
+        let tts_cue_duck_db = env_f32("JASPER_FANIN_TTS_CUE_DUCK_DB", -6.0)?;
+        if tts_cue_duck_db > 0.0 {
+            anyhow::bail!(
+                "JASPER_FANIN_TTS_CUE_DUCK_DB={} must be <= 0 (a duck \
+                 attenuates; positive gain on the program is never allowed)",
+                tts_cue_duck_db
+            );
+        }
         let held_content_ttl_sec = env_f32(
             "JASPER_FANIN_HELD_CONTENT_TTL_SEC",
             AssistantLoudnessConfig::default().held_content_ttl_sec,
@@ -877,6 +893,7 @@ impl Config {
                 crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             )?,
             tts_program_duck_db,
+            tts_cue_duck_db,
             tts_duck_attack_ms,
             tts_duck_release_ms,
             assistant_loudness: AssistantLoudnessConfig {
@@ -1131,6 +1148,7 @@ mod tests {
                 ("JASPER_FANIN_TTS_SOCKET", None),
                 ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
                 ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
+                ("JASPER_FANIN_TTS_CUE_DUCK_DB", None),
                 ("JASPER_OUTPUTD_ASSISTANT_OFFSET_LU", None),
                 ("JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
@@ -1160,6 +1178,7 @@ mod tests {
                 );
                 assert_eq!(cfg.tts_max_pending_frames, 96_000);
                 assert_eq!(cfg.tts_program_duck_db, -25.0);
+                assert_eq!(cfg.tts_cue_duck_db, -6.0);
                 assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
                 assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
                 assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -41.0);
