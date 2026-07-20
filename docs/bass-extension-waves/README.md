@@ -29,7 +29,10 @@ ownership is separately proved.
 The reviewed amendment that authorizes *building* the limiter-evidence bench
 runner — the producer's on-device evidence source, still a contract until
 Jasper's bench pass and a later Wave 4 revision name its accepted bundle — is
-[`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md).
+[`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md); its
+fresh-session implementation prompt (read prior art → build; safety review + a
+supervised on-device pass gate any hardware playback) is
+[`limiter-bench-runner-implementation.md`](limiter-bench-runner-implementation.md).
 
 | Wave | Prompt file | Executor | Prereqs |
 |---|---|---|---|
