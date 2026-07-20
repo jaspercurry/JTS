@@ -130,7 +130,15 @@ those, or adding a systemd unit / HTTP route / background daemon / env knob, is 
 
 ## The safety contract (implement the amendment's exactly)
 
-The temporary graph activation is the highest-risk code in this program.
+The temporary graph activation is the highest-risk code in this program. Its
+**exact mechanism is fixed** in
+[`limiter-bench-runner-activation.md`](limiter-bench-runner-activation.md) — read
+it and implement that addendum (mutate the *running* config only via
+`set_active_config_raw` / `patch_config`; never write the on-disk file; restore
+fail-closed via `reload`; prove by read-back with `view_from_camilla_dict` +
+`bass_extension_block_valid` + `filter_param_matches`; build the reusable
+activation helper it specifies). The prose here is the intent that addendum makes
+precise:
 Implement `limiter-bench-runner-protocol.md`'s "Temporary graph activation"
 section exactly: enter `measurement_window()`; snapshot the **exact** predecessor
 graph + profile; fade to the safe floor via the existing ramp / `safe_playback`;
