@@ -1393,7 +1393,10 @@ def _pilot_observations(
             raise ValueError(f"pilot segment for role {role!r} has no declared band")
         role_bands[role] = (hi_seg.f1_hz, hi_seg.f2_hz)
 
-    has_ambient = ambient_samples is not None and np.asarray(ambient_samples).size >= 8
+    ambient_arr = None if ambient_samples is None else np.asarray(ambient_samples)
+    if ambient_arr is not None and ambient_arr.size < 8:
+        ambient_arr = None
+    has_ambient = ambient_arr is not None
 
     out: list[PilotObservation] = []
     for role in roles:
@@ -1410,7 +1413,9 @@ def _pilot_observations(
         lo_power = _band_power(lo_interior, sample_rate, own_f1, own_f2)
         hi_power = _band_power(hi_interior, sample_rate, own_f1, own_f2)
         ambient_power = (
-            _band_power(ambient_samples, sample_rate, own_f1, own_f2) if has_ambient else 0.0
+            _band_power(ambient_arr, sample_rate, own_f1, own_f2)
+            if ambient_arr is not None
+            else 0.0
         )
 
         level_lo = _ambient_subtracted_dbfs(lo_power, ambient_power)
