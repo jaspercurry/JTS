@@ -1208,6 +1208,202 @@ def ensure_sine_wav(
     return wav_path
 
 
+def _noise_cache_filename(
+    *,
+    f_lo: float,
+    f_hi: float,
+    duration: float,
+    level_dbfs: float,
+    sample_rate: int,
+    seed: int,
+) -> str:
+    f_lo_key = _legacy_filename_key(f_lo, units_per_step=1.0)
+    f_hi_key = _legacy_filename_key(f_hi, units_per_step=1.0)
+    duration_ms_key = _legacy_filename_key(duration, units_per_step=1000.0)
+    level_tenths_key = _legacy_filename_key(abs(level_dbfs), units_per_step=10.0)
+    if (
+        f_lo_key is not None
+        and f_hi_key is not None
+        and duration_ms_key is not None
+        and level_tenths_key is not None
+    ):
+        return (
+            f"noise_{f_lo_key}-{f_hi_key}Hz_{duration_ms_key}ms_"
+            f"{level_tenths_key}dbm_{sample_rate}Hz_s{seed}.wav"
+        )
+    exact_key = "_".join(
+        struct.pack("!d", value).hex()
+        for value in (f_lo, f_hi, duration, level_dbfs)
+    )
+    return f"noise_exact_{exact_key}_{sample_rate}Hz_s{seed}.wav"
+
+
+def _validated_noise_shape(
+    *,
+    f_lo_hz: float,
+    f_hi_hz: float,
+    duration_s: float,
+    dbfs: float,
+    sample_rate: int,
+) -> tuple[float, float, float, float, int, int]:
+    f_lo = _finite_number(f_lo_hz, field="f_lo_hz")
+    f_hi = _finite_number(f_hi_hz, field="f_hi_hz")
+    duration = _finite_number(duration_s, field="duration_s")
+    level_dbfs = _finite_number(dbfs, field="dbfs")
+    if f_lo <= 0:
+        raise ValueError("f_lo_hz must be positive")
+    if f_hi <= f_lo:
+        raise ValueError("f_hi_hz must be greater than f_lo_hz")
+    if not 0 < duration <= MAX_TONE_DURATION_S:
+        raise ValueError(
+            f"duration_s must be positive and at most {MAX_TONE_DURATION_S:g}"
+        )
+    if level_dbfs > 0:
+        raise ValueError("dbfs must not exceed full scale (0 dBFS)")
+    if type(sample_rate) is not int or not 1 <= sample_rate <= MAX_TONE_SAMPLE_RATE:
+        raise ValueError(
+            f"sample_rate must be an integer between 1 and {MAX_TONE_SAMPLE_RATE}"
+        )
+    if f_hi >= sample_rate / 2:
+        raise ValueError("f_hi_hz must be below the sample-rate Nyquist frequency")
+
+    sample_count = int(round(duration * sample_rate))
+    if not 1 <= sample_count <= MAX_TONE_SAMPLES:
+        raise ValueError(
+            f"noise sample count must be between 1 and {MAX_TONE_SAMPLES}"
+        )
+    return f_lo, f_hi, duration, level_dbfs, sample_rate, sample_count
+
+
+def ensure_bandlimited_noise_wav(
+    *,
+    f_lo_hz: float,
+    f_hi_hz: float,
+    duration_s: float,
+    dbfs: float,
+    sample_rate: int,
+    cache_dir: Path,
+    seed: int = 0,
+) -> Path:
+    """Generate one deterministic mono band-limited-noise WAV.
+
+    Same args (including ``seed``) produce a byte-identical file: white noise is
+    drawn from ``np.random.default_rng(seed)`` (PCG64, platform-stable), then a
+    fixed 4th-order Butterworth bandpass keeps only ``[f_lo_hz, f_hi_hz]``. The
+    filtered noise is peak-normalized so its sample peak equals
+    ``10**(dbfs/20)``, then a 5 ms quadratic fade-in/out is applied (mirroring
+    :func:`ensure_sine_wav`), and it is written as clipped int16.
+
+    Band-limiting uses ``scipy.signal`` (Butterworth) rather than a hand-rolled
+    FFT brick-wall mask: scipy is already a project dependency (pyproject
+    ``scipy>=1.13``, e.g. ``scipy.signal.iirpeak`` in the correction path), so
+    this adds NO new dependency.
+    """
+
+    if type(seed) is not int:
+        raise ValueError("seed must be an integer")
+    if seed < 0:
+        raise ValueError("seed must be non-negative")
+    (
+        f_lo,
+        f_hi,
+        duration,
+        level_dbfs,
+        rate,
+        sample_count,
+    ) = _validated_noise_shape(
+        f_lo_hz=f_lo_hz,
+        f_hi_hz=f_hi_hz,
+        duration_s=duration_s,
+        dbfs=dbfs,
+        sample_rate=sample_rate,
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = cache_dir / _noise_cache_filename(
+        f_lo=f_lo,
+        f_hi=f_hi,
+        duration=duration,
+        level_dbfs=level_dbfs,
+        sample_rate=rate,
+        seed=seed,
+    )
+    if wav_path.exists():
+        try:
+            with wave.open(str(wav_path), "rb") as existing:
+                valid_header = (
+                    existing.getnchannels() == 1
+                    and existing.getsampwidth() == 2
+                    and existing.getframerate() == rate
+                    and existing.getnframes() == sample_count
+                )
+            if valid_header and wav_path.stat().st_size == 44 + sample_count * 2:
+                return wav_path
+        except (OSError, EOFError, wave.Error):
+            pass
+
+    # scipy.signal is already a repo dependency (pyproject scipy>=1.13), so we
+    # band-limit with a Butterworth bandpass rather than a hand-rolled FFT
+    # brick-wall mask + a new dependency. Zero-phase (sosfiltfilt) so the
+    # measurement stimulus has no filter group delay.
+    from scipy.signal import butter, sosfiltfilt
+
+    rng = np.random.default_rng(seed)
+    noise = rng.standard_normal(sample_count)
+    nyquist = rate / 2.0
+    sos = butter(
+        4,
+        (f_lo / nyquist, f_hi / nyquist),
+        btype="bandpass",
+        output="sos",
+    )
+    filtered = sosfiltfilt(sos, noise)
+
+    target_amp = 10 ** (level_dbfs / 20.0)
+    fade = max(8, int(0.005 * rate))
+    apply_fade = fade * 2 < sample_count
+    # Peak-normalize the filtered noise across the steady-state span the fade
+    # preserves. Zero-phase filtering leaves a short edge transient in the first
+    # few samples; without excluding it the fade (which tapers those samples to
+    # zero) would leave the played interior peak below target. The output's true
+    # sample peak still lands on target because the interior is unattenuated.
+    core = filtered[fade : sample_count - fade] if apply_fade else filtered
+    peak = float(np.max(np.abs(core))) if core.size else 0.0
+    if peak > 0.0:
+        filtered = filtered * (target_amp / peak)
+    if apply_fade:
+        fade_in = np.linspace(0.0, 1.0, fade) ** 2
+        fade_out = np.linspace(1.0, 0.0, fade) ** 2
+        filtered[:fade] *= fade_in
+        filtered[-fade:] *= fade_out
+
+    int16 = (np.clip(filtered, -1.0, 1.0) * 32767.0).astype("<i2")
+    tmp_path = cache_dir / f".{wav_path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with tmp_path.open("xb") as raw_stream:
+            with wave.open(raw_stream, "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(rate)
+                writer.writeframesraw(int16.tobytes())
+        tmp_path.replace(wav_path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+    log_event(
+        logger,
+        "audio_measurement.noise_cached",
+        f_lo_hz=f_lo,
+        f_hi_hz=f_hi,
+        duration_s=duration,
+        level_dbfs=level_dbfs,
+        sample_rate=rate,
+        seed=seed,
+    )
+    return wav_path
+
+
 class TonePlayer:
     """Cancellable continuous tone process for a caller-admitted WAV."""
 
