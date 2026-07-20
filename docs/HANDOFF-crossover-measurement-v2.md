@@ -236,7 +236,7 @@ source, no drift.
 | `volume_unresolved` | session | — | the `volume_recovery` screen |
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
 | `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor — re-measure at a cleaner mic position (gotcha #18) |
-| `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18) |
+| `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 
 **Budgets are cumulative per phase** (compared against the *last*
 failure's budget) so alternating codes can't restart the meter; the
@@ -435,6 +435,29 @@ no retries-as-bodge). Treat these as regression fences.
     transport death — `CaptureAborted` now carries a structured `reason`
     attribute so the two can be told apart, and Stop gets its own honest
     `user_stopped` code.
+
+    **Adversarial review (SF1, same PR): the auto-apply worker didn't
+    coordinate with session death.** The background thread had no idea a
+    Stop (host-driven `stop_event`, or a phone Stop the relay loop's own
+    poll already turned into a persisted terminal failure) had landed, so
+    the interleaving could produce incoherent durable state — `applied=True`
+    silently clobbered back to a "nothing happened" story, or a `failure`
+    code silently clobbering a genuine `applied=True`. Three-part fix: (a)
+    a best-effort cooperative pre-apply check (`stop_event.is_set()` OR an
+    already-persisted failure code) skips the transaction entirely before
+    it starts — logged `event=correction.crossover_v2_auto_apply_skipped_stopped`;
+    (b) `observe_apply_success` no longer blindly clobbers an existing
+    `failure` code to `None` (the reverse race — `_persist_terminal_failure`
+    already preserved `applied=True` once observed, for the same session —
+    was already correct); (c) the VERIFY-phase override (item 9 above) now
+    appends an honest "the crossover was already applied" acknowledgment to
+    any `TEMPLATE_SESSION_RESTART` code's copy (`relay_timeout`,
+    `user_stopped`) rendered there, since that copy's own "start over…"
+    framing is written for the pre-apply phases and is actively wrong once
+    something genuinely got applied. Neither check can fully close the race
+    (an in-flight DSP write can't be safely interrupted mid-transaction) —
+    the coherent-merge fix is what guarantees the FINAL state is always
+    honest regardless of which side of the race wins.
 
 ## Future work — the post-W6 follow-ups issue
 

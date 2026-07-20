@@ -159,7 +159,15 @@ def test_low_alignment_confidence_rejects_at_the_measure_step():
 def test_apply_failed_renders_fix_and_retry_at_the_apply_step():
     """A TERMINAL auto-apply failure surfaces through the ordinary generic
     failure branch (phase stays "applying" — MEASURE accepted, never
-    applied), rendering at the "apply" step with the honest generic message."""
+    applied), rendering at the "apply" step with the honest generic message.
+
+    This is a pure RENDERING test (given phase="applying" as an input, not
+    derived from real persistence) — reachability of exactly this input in
+    production is separately pinned by
+    test_correction_crossover_v2_endpoints.py::test_apply_failure_keeps_measure_accepted_through_the_real_persist_path
+    (an adversarial review, 2026-07-20, found the prior version of this
+    module untested that _persist_terminal_failure actually produces this
+    phase for an apply failure rather than resetting to "check")."""
     env = build_crossover_envelope_v2(_status(
         phase="applying", failure={"code": REASON_APPLY_FAILED},
     ))
@@ -173,7 +181,9 @@ def test_apply_failed_layers_the_specific_blocked_issue_as_an_extra_nudge():
     """The generic apply_failed headline is joined by the SPECIFIC blocked-
     apply issue (handle_v2_apply's own persisted apply_blocked) when one is
     available — the household gets both the honest generic outcome and,
-    when known, the concrete cause."""
+    when known, the concrete cause. Pure rendering test — see the module
+    note above test_apply_failed_renders_fix_and_retry_at_the_apply_step for
+    where reachability through real persistence is pinned."""
     env = build_crossover_envelope_v2(_status(
         phase="applying",
         failure={"code": REASON_APPLY_FAILED},

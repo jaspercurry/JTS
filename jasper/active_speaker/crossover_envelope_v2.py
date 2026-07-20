@@ -329,7 +329,21 @@ def _failure_envelope(
     something is live on the speaker (the run-7 hardware bug: an
     ``agc_behavioral_fail`` during VERIFY rendered ``fix_and_retry`` and
     displaced the VERIFY-fail screen's Undo action). REASON_REGISTRY stays
-    the single copy source — only the template choice is overridden here.
+    the single copy source — only the template choice is overridden here,
+    EXCEPT the SF1 case just below.
+
+    SF1 (adversarial review, 2026-07-20): a ``TEMPLATE_SESSION_RESTART`` code
+    (``relay_timeout``, ``user_stopped``) owns copy that assumes NOTHING was
+    ever applied ("start over…") — written for the pre-apply CHECK/MEASURE
+    phases where that is true. Reaching this override with ``applied=True``
+    (the only way ``active_step`` resolves to ``"verify"`` at all) means the
+    auto-apply background thread's transaction genuinely landed, quite
+    possibly racing the very failure being rendered (e.g. a phone Stop
+    landing while the transaction was mid-flight — the auto-apply worker's
+    own pre-apply check can't always win that race, since an in-flight DSP
+    write can't be safely interrupted). Never let the household believe
+    nothing changed when it did: this appends an honest acknowledgment
+    rather than leaving a "start over" claim uncontested.
     """
     spec = REASON_REGISTRY.get(code)
     if spec is None:  # defensive — an unknown code still names a retry, never a bare code
@@ -344,7 +358,13 @@ def _failure_envelope(
             status=status,
         )
     if active_step == "verify" and spec.template != TEMPLATE_VERIFY_FAIL:
-        return _verify_fail_envelope(code, spec.message or spec.banner, status)
+        message = spec.message or spec.banner
+        if spec.template == TEMPLATE_SESSION_RESTART:
+            message = (
+                f"{message} The crossover was already applied — if it sounds "
+                "worse than before, you can undo."
+            )
+        return _verify_fail_envelope(code, message, status)
     template = spec.template
     if template == TEMPLATE_SILENT_AUTO_RETRY:
         # No decision screen: stay on the phase screen with a banner; the phone

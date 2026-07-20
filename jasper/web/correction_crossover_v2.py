@@ -253,7 +253,20 @@ def observe_apply_success(
         )
         return
     state["applied"] = True
-    state["failure"] = None
+    # SF1 (adversarial review, 2026-07-20): do NOT blindly clear an existing
+    # failure code. In the ordinary happy path it is already None (MEASURE's
+    # own accept clears it before the conductor ever triggers auto-apply) —
+    # but a terminal session-death code (a phone Stop, a relay timeout) can
+    # land WHILE the auto-apply background thread's apply_baseline_profile
+    # transaction is still in flight. If that race lands the stop FIRST,
+    # clobbering it here would erase the evidence that the household
+    # stopped even though the crossover genuinely got applied (this call
+    # proves it) — the envelope needs BOTH facts to render an honest
+    # "applied, but you stopped it — undo if you want" screen instead of a
+    # false "nothing happened" or a false "start over, nothing changed."
+    # The reverse race (a stop landing AFTER this call persists) is already
+    # handled: persist_conductor_state preserves ``applied`` once it
+    # observes it, for the same session.
     state["apply_blocked"] = None
     state["pre_apply_profile"] = (
         dict(pre_apply_profile) if isinstance(pre_apply_profile, Mapping) else None
@@ -297,11 +310,22 @@ def _apply_failure_gate() -> str:
     ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.authorize_begin``,
     which refuses the deferred VERIFY hold outright once this names a code
     rather than holding it toward a dishonest relay_timeout.
+
+    N1 (adversarial review, 2026-07-20): the contract is LITERAL — this seam
+    answers "did the auto-apply itself fail?", never "is SOME failure code
+    sitting in durable state for any reason." Any other code that happens to
+    be persisted (e.g. a stale value from an unrelated path) must not be
+    misread by authorize_begin as an apply failure; only
+    ``REASON_APPLY_FAILED`` qualifies.
     """
+    from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
+
     state = load_v2_state()
     failure = (state or {}).get("failure")
     if isinstance(failure, Mapping):
-        return str(failure.get("code") or "")
+        code = str(failure.get("code") or "")
+        if code == REASON_APPLY_FAILED:
+            return code
     return ""
 
 
@@ -769,12 +793,27 @@ def persist_conductor_state(
 def _persist_terminal_failure(conductor: Any, code: str) -> None:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
     with the session (restart at CHECK); post-apply, the applied candidate +
-    verify priors survive so ``/v2/verify`` can re-arm."""
+    verify priors survive so ``/v2/verify`` can re-arm.
+
+    SF2 (adversarial review, 2026-07-20): ``REASON_APPLY_FAILED`` is exempted
+    from the pre-apply evidence reset. The §5.6 rationale for wiping
+    ``accepted_phases``/``gain_plan_db`` is that a DEAD session makes the mic
+    position unverifiable — but an auto-apply that came back blocked or
+    errored says nothing about the mic position; MEASURE's own evidence is
+    still exactly as good as it was. Keeping MEASURE accepted here is what
+    lets ``_phase_from_state`` resolve to ``PHASE_APPLYING`` (not
+    ``PHASE_CHECK``) so the envelope's apply-step failure screen — and the
+    specific blocked-issue nudge layered onto it — can actually render;
+    before this fix the reset always won, so that nudge was unreachable in
+    production (only reachable by injecting the phase directly in a test).
+    """
+    from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
+
     persist_conductor_state(conductor, failure_code=code)
     state = load_v2_state()
     if state is None:
         return
-    if not state.get("applied"):
+    if not state.get("applied") and code != REASON_APPLY_FAILED:
         state["accepted_phases"] = []
         state["gain_plan_db"] = None
     save_v2_state(state)
@@ -1311,7 +1350,33 @@ def build_v2_run_and_consume(
             if not fingerprint:
                 return
 
+            def _session_already_ending() -> bool:
+                """SF1(a) (adversarial review, 2026-07-20): best-effort
+                cooperative check for a Stop that has ALREADY landed by the
+                time this thread gets scheduled — a host-driven Stop
+                (``stop_event``, e.g. the wizard's Stop button) or a
+                phone-driven Stop the run_capture_plan loop's own poll
+                already turned into a persisted terminal failure. Not a full
+                guarantee (the apply transaction itself cannot be safely
+                interrupted mid-flight once started — see the post-apply
+                coherent-merge fix in ``observe_apply_success`` for the race
+                that slips past this check), but it closes the common case
+                where the household stopped before this thread ever got a
+                chance to run.
+                """
+                if stop_event.is_set():
+                    return True
+                state = load_v2_state()
+                failure = (state or {}).get("failure")
+                return isinstance(failure, Mapping) and bool(failure.get("code"))
+
             def _worker() -> None:
+                if _session_already_ending():
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_auto_apply_skipped_stopped",
+                    )
+                    return
                 try:
                     payload = handle_v2_apply(
                         {"expected_candidate_fingerprint": fingerprint},
