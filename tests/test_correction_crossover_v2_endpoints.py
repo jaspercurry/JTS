@@ -1031,6 +1031,181 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
     assert "setup_mode=absent" in caplog.text
 
 
+# --- operator capture retention (durable observability, Part 2) ----------------
+#
+# Off by default, gated on XOVER_CAPTURE_DUMP_DIR / "ENABLED" existing.
+# Productizes a hot-patch that used to live directly in bind_production_
+# analyze._analyze and kept getting wiped by every deploy.
+
+
+def test_capture_retention_marker_absent_writes_nothing(tmp_path, monkeypatch):
+    """ABSENT marker — the default for every real household — is zero
+    behavior change: analyze still runs and returns normally, and nothing
+    is ever written to disk (not even the directory)."""
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    dump_dir = tmp_path / "xover-capture-dump"
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={}
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    out = analyze(
+        program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(),
+    )
+    assert out == "analysis"
+    assert not dump_dir.exists()
+
+
+def test_capture_retention_marker_present_writes_wav_and_diagnostic_sidecar(
+    tmp_path, monkeypatch,
+):
+    """PRESENT marker persists the raw WAV plus a JSON sidecar carrying the
+    device/setup/hash metadata AND the analysis's own diagnostic summary —
+    the same numbers the v2 conductor's per-capture diag log events surface,
+    so a retained clip is self-describing."""
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        AlignmentEstimate,
+        MeasurementGeometry,
+        MeasurementPriors,
+        ProgramAnalysis,
+    )
+
+    dump_dir = tmp_path / "xover-capture-dump"
+    dump_dir.mkdir()
+    (dump_dir / "ENABLED").touch()
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
+
+    fake_analysis = ProgramAnalysis(
+        phase="verify", program_id="prog-1", locations=(),
+        alignment=AlignmentEstimate(
+            delay_us=12.0, raw_delay_us=12.0, parallax_us=0.0,
+            polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+            confidence=0.9,
+        ),
+    )
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: fake_analysis)
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={}
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    result = _FakeResult(
+        setup={"calibration": {"mode": "none"}}, device={"label": "UMIK-2"},
+    )
+    out = analyze(
+        program, result, MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(),
+    )
+    assert out is fake_analysis
+
+    wavs = sorted(dump_dir.glob("*.wav"))
+    jsons = sorted(dump_dir.glob("*.json"))
+    assert len(wavs) == 1
+    assert len(jsons) == 1
+    assert wavs[0].stem == jsons[0].stem
+    assert wavs[0].read_bytes() == result.wav
+
+    sidecar = json.loads(jsons[0].read_text())
+    assert sidecar["phase"] == program.phase
+    assert sidecar["device_label"] == "UMIK-2"
+    assert sidecar["wav_bytes"] == len(result.wav)
+    assert len(sidecar["wav_sha256_12"]) == 12
+    assert sidecar["setup_mode"] == "none"
+    # The diagnostic summary is the analysis's OWN numbers (no accepted/code
+    # — the analyze seam runs before the conductor's phase gate).
+    assert sidecar["diagnostic"]["alignment_confidence"] == 0.9
+    assert sidecar["diagnostic"]["delay_us"] == 12.0
+
+
+def test_capture_retention_prunes_oldest_past_the_file_count_cap(tmp_path, monkeypatch):
+    import time as _time
+
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    dump_dir = tmp_path / "xover-capture-dump"
+    dump_dir.mkdir()
+    (dump_dir / "ENABLED").touch()
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
+    # 2 captures' worth (wav+json each) — a huge byte cap so only the file
+    # count constraint is exercised.
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_MAX_FILES", 4)
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_MAX_BYTES", 10 * 1024 * 1024)
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={}
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    for _ in range(3):
+        analyze(
+            program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(),
+        )
+        _time.sleep(0.02)  # distinct filenames/mtimes for oldest-first pruning
+
+    entries = list(dump_dir.iterdir())
+    # 3 captures write 6 files (wav+json each); the cap keeps only 4 — the
+    # newest 2 captures survive, the oldest is pruned.
+    assert len(entries) == 4
+    stems = {p.stem for p in entries}
+    assert len(stems) == 2
+
+
+def test_capture_retention_write_failure_does_not_break_analysis(
+    tmp_path, monkeypatch, caplog,
+):
+    """Retention is best-effort: a failure inside the write path is caught
+    and logged at WARN, and never affects the measurement's own analysis."""
+    import logging as _logging
+
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    dump_dir = tmp_path / "xover-capture-dump"
+    dump_dir.mkdir()
+    (dump_dir / "ENABLED").touch()
+    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
+
+    def _boom(self, *a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "mkdir", _boom)
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={}
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    with caplog.at_level(_logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+        out = analyze(
+            program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(),
+        )
+    assert out == "analysis"
+    assert "correction.crossover_v2_capture_retain_failed" in caplog.text
+    assert not list(dump_dir.glob("*.wav"))
+
+
 def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
     monkeypatch, caplog,
 ):

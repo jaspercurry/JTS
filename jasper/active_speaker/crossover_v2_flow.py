@@ -53,6 +53,7 @@ renders the template. A woofer-repeat level disagreement REUSES
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
@@ -436,6 +437,80 @@ def _gate_window_ms(response: Any) -> float | None:
         return None
     window = response.gating.get("window_ms") if response.gating else None
     return float(window) if isinstance(window, (int, float)) else None
+
+
+# --------------------------------------------------------------------------- #
+# diagnostic-logging helpers (Part 1 — additive; feed no verdict)
+# --------------------------------------------------------------------------- #
+#
+# Every CHECK/MEASURE/VERIFY capture logs its full numeric diagnostics on
+# PASS *and* FAIL via ``log_event`` — previously only ``program_analysis.
+# glitch`` carried a partial view (epsilon/residual/repeat-level, WARN-only,
+# glitch captures only) and the ``crossover_v2_result`` line carried just the
+# reason code, so a failed hardware run left no numbers to look at. These
+# helpers read what ``ProgramAnalysis`` already computed; none of them derive
+# a NEW number or influence any verdict.
+
+
+def _driver_response_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
+    for resp in analysis.driver_responses:
+        if resp.role == role:
+            return resp
+    return None
+
+
+def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
+    for pilot in analysis.pilots:
+        if pilot.role == role:
+            return pilot
+    return None
+
+
+def _driver_snr_fields(resp: Any | None) -> tuple[float | None, str | None]:
+    """``(estimated_snr_db, verdict)`` from a driver's worst-relevant SNR band."""
+    if resp is None or resp.snr is None:
+        return None, None
+    worst = resp.snr.get("worst_relevant") or {}
+    return worst.get("estimated_snr_db"), worst.get("verdict")
+
+
+def _measure_validity_floor_hz(analysis: ProgramAnalysis) -> float | None:
+    """The worse (higher) of the two driver responses' own reflection-gate floor.
+
+    Mirrors ``_build_candidate``'s ``branch_floor_hz`` clamp — diagnostic
+    only here, does not feed any verdict in this module.
+    """
+    floors = [
+        r.validity_floor_hz for r in analysis.driver_responses
+        if r.validity_floor_hz is not None
+    ]
+    return max(floors) if floors else None
+
+
+def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
+    """One pilot's linearity/SNR/channel-map diagnostics, ``None``-safe."""
+    if pilot is None:
+        return {
+            "snr_db": None,
+            "captured_delta_db": None,
+            "programmed_delta_db": None,
+            "channel_map_target_rise_db": None,
+            "channel_map_cross_rise_db": None,
+        }
+    snr_db = pilot.snr_db
+    target_rise = pilot.channel_map_target_rise_db
+    cross_rise = pilot.channel_map_cross_rise_db
+    return {
+        "snr_db": round(snr_db, 2) if math.isfinite(snr_db) else None,
+        "captured_delta_db": round(float(pilot.captured_delta_db), 3),
+        "programmed_delta_db": round(float(pilot.programmed_delta_db), 3),
+        "channel_map_target_rise_db": (
+            round(target_rise, 3) if target_rise is not None else None
+        ),
+        "channel_map_cross_rise_db": (
+            round(cross_rise, 3) if cross_rise is not None else None
+        ),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -951,8 +1026,20 @@ class CrossoverV2Conductor:
         return verdict.to_relay_dict()
 
     # --- per-phase verdicts --------------------------------------------------
+    #
+    # Each ``_consume_<phase>`` is a thin wrapper: compute the verdict via the
+    # UNCHANGED ``_<phase>_verdict`` logic, log that capture's full numeric
+    # diagnostics (Part 1 — on the accepted path AND every rejection), then
+    # return the verdict. Splitting it this way means the diagnostic log call
+    # is the ONLY new control flow here — none of the accept/reject branching
+    # below moved or changed.
 
     def _consume_check(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        verdict = self._check_verdict(analysis)
+        self._log_check_diag(analysis, verdict)
+        return verdict
+
+    def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.channel_map_ok is False:
@@ -993,6 +1080,11 @@ class CrossoverV2Conductor:
         return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
 
     def _consume_measure(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        verdict = self._measure_verdict(analysis)
+        self._log_measure_diag(analysis, verdict)
+        return verdict
+
+    def _measure_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.glitch_detected:
@@ -1037,6 +1129,11 @@ class CrossoverV2Conductor:
         )
 
     def _consume_verify(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        verdict = self._verify_verdict(analysis)
+        self._log_verify_diag(analysis, verdict)
+        return verdict
+
+    def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.linearity_ok is False:
@@ -1078,6 +1175,92 @@ class CrossoverV2Conductor:
         self._verify_outcome = "pass"
         return PhaseVerdict(
             True, payload={"measurement_phase": PHASE_VERIFY, "tracking": dict(tracking)}
+        )
+
+    # --- diagnostic logging (Part 1) ------------------------------------------
+    #
+    # One ``log_event`` per consumed capture, on the accepted path AND every
+    # rejection — pure observability, read-only against ``analysis``/the
+    # conductor's own state. None of these calls choose a verdict or a retry;
+    # they run AFTER the verdict already exists.
+
+    def _log_check_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
+        woofer = _pilot_diag_fields(_pilot_by_role(analysis, self._woofer.role))
+        tweeter = _pilot_diag_fields(_pilot_by_role(analysis, self._tweeter.role))
+        log_event(
+            logger, "correction.crossover_v2_check_diag",
+            session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
+            pilot_snr_ok=analysis.pilot_snr_ok,
+            woofer_snr_db=woofer["snr_db"],
+            woofer_captured_delta_db=woofer["captured_delta_db"],
+            woofer_programmed_delta_db=woofer["programmed_delta_db"],
+            woofer_channel_map_target_rise_db=woofer["channel_map_target_rise_db"],
+            woofer_channel_map_cross_rise_db=woofer["channel_map_cross_rise_db"],
+            tweeter_snr_db=tweeter["snr_db"],
+            tweeter_captured_delta_db=tweeter["captured_delta_db"],
+            tweeter_programmed_delta_db=tweeter["programmed_delta_db"],
+            tweeter_channel_map_target_rise_db=tweeter["channel_map_target_rise_db"],
+            tweeter_channel_map_cross_rise_db=tweeter["channel_map_cross_rise_db"],
+        )
+
+    def _log_measure_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
+        drift = analysis.drift
+        align = analysis.alignment
+        cand = analysis.candidate
+        delay_us, delay_role, polarity = alignment_to_candidate_fields(
+            analysis, woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
+        )
+        woofer_snr_db, woofer_snr_verdict = _driver_snr_fields(
+            _driver_response_by_role(analysis, self._woofer.role)
+        )
+        tweeter_snr_db, tweeter_snr_verdict = _driver_snr_fields(
+            _driver_response_by_role(analysis, self._tweeter.role)
+        )
+        log_event(
+            logger, "correction.crossover_v2_measure_diag",
+            session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
+            alignment_confidence=round(float(align.confidence), 4) if align else None,
+            gate_window_ms=self._measure_gate(analysis),
+            validity_floor_hz=_measure_validity_floor_hz(analysis),
+            epsilon_ppm=round(float(drift.epsilon_ppm), 3) if drift else None,
+            max_residual_samples=round(float(drift.max_residual_samples), 3) if drift else None,
+            repeat_level_delta_db=(
+                round(float(drift.repeat_level_delta_db), 3) if drift else None
+            ),
+            delay_us=round(delay_us, 3) if delay_us is not None else None,
+            delay_role=delay_role,
+            polarity=polarity,
+            predicted_ripple_db=(
+                round(float(cand.predicted_ripple_db), 4) if cand else None
+            ),
+            woofer_snr_db=woofer_snr_db,
+            woofer_snr_verdict=woofer_snr_verdict,
+            tweeter_snr_db=tweeter_snr_db,
+            tweeter_snr_verdict=tweeter_snr_verdict,
+        )
+
+    def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
+        tracking = analysis.verify_tracking or {}
+        band = tracking.get("tracking_band_hz")
+        tracking_band_lo_hz: float | None = None
+        tracking_band_hi_hz: float | None = None
+        if isinstance(band, (list, tuple)) and len(band) == 2:
+            tracking_band_lo_hz, tracking_band_hi_hz = band[0], band[1]
+        validity_floor_hz = (
+            analysis.summed_response.validity_floor_hz
+            if analysis.summed_response is not None else None
+        )
+        log_event(
+            logger, "correction.crossover_v2_verify_diag",
+            session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
+            max_db_notch_excluded=tracking.get("max_db_notch_excluded"),
+            verify_tolerance_db=VERIFY_TOLERANCE_DB,
+            verify_gate_window_ms=_gate_window_ms(analysis.summed_response),
+            measure_gate_window_ms=self._measure_gate_window_ms,
+            validity_floor_hz=validity_floor_hz,
+            tracking_band_lo_hz=tracking_band_lo_hz,
+            tracking_band_hi_hz=tracking_band_hi_hz,
+            rms_db=tracking.get("rms_db"),
         )
 
     # --- helpers -------------------------------------------------------------

@@ -304,12 +304,23 @@ class SegmentLocation:
 
 @dataclass(frozen=True)
 class DriftEstimate:
-    """In-capture clock-drift estimate + the glitch verdict (design §5.6.3)."""
+    """In-capture clock-drift estimate + the glitch verdict (design §5.6.3).
+
+    ``repeat_level_delta_db`` is the woofer-repeat in-band-RMS level
+    disagreement (see ``_estimate_drift``'s docstring) — one of the three
+    glitch inputs, threaded through here (not just logged transiently at
+    ``program_analysis.glitch``) so a caller building a durable diagnostic
+    record (e.g. the crossover v2 conductor's per-capture diag event) has it
+    on BOTH a passing and a failing capture, not only the WARN-level line a
+    glitch fires. Defaults to ``0.0`` for legacy construction sites that
+    predate this field.
+    """
 
     epsilon_ppm: float
     baselines_ppm: Mapping[str, float]
     max_residual_samples: float
     glitch_detected: bool
+    repeat_level_delta_db: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -392,6 +403,21 @@ class PilotObservation:
     the room/positioning cause rather than the phone's AGC). Defaults to True
     so a caller constructing one directly (fixtures, legacy call sites)
     without an opinion on SNR gets the pre-fix "trust the delta" behavior.
+
+    ``snr_db`` is the actual quiet-pilot in-band SNR estimate ``snr_valid``
+    is thresholded from (`_pilot_in_band_snr_db`) — kept as a number, not
+    just the pass/fail bool, so a diagnostic consumer (the CHECK diag log
+    event) can see how close a borderline capture ran. ``+inf`` when there
+    is no ambient window to validate against (nothing to distrust — see
+    `_pilot_in_band_snr_db`), matching ``snr_valid``'s default-True stance.
+
+    ``channel_map_target_rise_db``/``channel_map_cross_rise_db`` are the two
+    rise numbers `_channel_map_ok` computed on the way to ``channel_map_ok``
+    (this driver's own band above ambient, and the worst/failing other
+    band's rise above ITS ambient) — diagnostic only, ``None`` when there is
+    no ambient window (the fallback total-energy-fraction test has no rise
+    concept) or, for the cross figure, when there are no other roles to
+    compare against.
     """
 
     role: str
@@ -404,6 +430,9 @@ class PilotObservation:
     snr_valid: bool = True
     peak_lo_dbfs: float = DBFS_FLOOR
     peak_hi_dbfs: float = DBFS_FLOOR
+    snr_db: float = math.inf
+    channel_map_target_rise_db: float | None = None
+    channel_map_cross_rise_db: float | None = None
 
 
 @dataclass(frozen=True)
@@ -932,6 +961,7 @@ def _estimate_drift(
         baselines_ppm=baselines,
         max_residual_samples=max_residual,
         glitch_detected=glitch,
+        repeat_level_delta_db=repeat_level_delta_db,
     )
 
 
@@ -1475,7 +1505,7 @@ def _pilot_observations(
             if other_role != role
             for piece in _band_exclusive_pieces(other_band, own_band)
         )
-        channel_ok = _channel_map_ok(
+        channel_ok, channel_target_rise_db, channel_cross_rise_db = _channel_map_ok(
             hi_samples, sample_rate, hi_seg,
             ambient_samples=ambient_samples, other_bands=other_bands,
         )
@@ -1490,6 +1520,9 @@ def _pilot_observations(
             snr_valid=snr_valid,
             peak_lo_dbfs=peak_lo,
             peak_hi_dbfs=peak_hi,
+            snr_db=lo_snr_db,
+            channel_map_target_rise_db=channel_target_rise_db,
+            channel_map_cross_rise_db=channel_cross_rise_db,
         ))
     return out
 
@@ -1526,7 +1559,7 @@ def _channel_map_ok(
     *,
     ambient_samples: np.ndarray | None = None,
     other_bands: Sequence[tuple[float, float]] = (),
-) -> bool:
+) -> tuple[bool, float | None, float | None]:
     """Band-relative channel-map sanity (design note above `CHANNEL_MAP_*`).
 
     Given a leading ambient (room-noise) window — CHECK's own 12 s ambient
@@ -1547,10 +1580,20 @@ def _channel_map_ok(
     — see `_pilot_verdicts`), falls back to the original test: energy inside
     the declared band must exceed half of the pilot window's TOTAL spectral
     energy.
+
+    Returns ``(ok, target_rise_db, cross_rise_db)`` — the two rise numbers are
+    ADDITIVE diagnostic evidence for operator logging (surfaced on
+    ``PilotObservation``); the pass/fail decision below is byte-identical to
+    before this return shape grew. ``cross_rise_db`` is the rise that failed
+    the CROSS test when ``ok`` is False, or the worst (highest) rise observed
+    across every other band when ``ok`` is True. Both rises are ``None`` in
+    the no-ambient-window fallback path (no rise concept there);
+    ``cross_rise_db`` is also ``None`` when ``other_bands`` is empty or the
+    TARGET test alone already failed.
     """
     x = np.asarray(samples, dtype=np.float64)
     if x.size < 8 or seg.f1_hz is None or seg.f2_hz is None:
-        return False
+        return False, None, None
 
     if ambient_samples is None or np.asarray(ambient_samples).size < 8:
         window = np.hanning(x.size)
@@ -1559,23 +1602,26 @@ def _channel_map_ok(
         in_band = (freqs >= seg.f1_hz) & (freqs <= seg.f2_hz)
         total = float(np.sum(spectrum))
         if total <= 0:
-            return False
-        return float(np.sum(spectrum[in_band])) / total > 0.5
+            return False, None, None
+        return float(np.sum(spectrum[in_band])) / total > 0.5, None, None
 
     target_rise = (
         _band_rms_dbfs(x, sample_rate, seg.f1_hz, seg.f2_hz)
         - _band_rms_dbfs(ambient_samples, sample_rate, seg.f1_hz, seg.f2_hz)
     )
     if target_rise < CHANNEL_MAP_TARGET_RISE_DB:
-        return False
+        return False, target_rise, None
+    worst_cross_rise: float | None = None
     for other_f1, other_f2 in other_bands:
         cross_rise = (
             _band_rms_dbfs(x, sample_rate, other_f1, other_f2)
             - _band_rms_dbfs(ambient_samples, sample_rate, other_f1, other_f2)
         )
+        if worst_cross_rise is None or cross_rise > worst_cross_rise:
+            worst_cross_rise = cross_rise
         if cross_rise >= CHANNEL_MAP_CROSS_RISE_DB:
-            return False
-    return True
+            return False, target_rise, cross_rise
+    return True, target_rise, worst_cross_rise
 
 
 def _solve_gain_plan(
@@ -1910,3 +1956,106 @@ def _analyze_verify(
         channel_map_ok=channel_map_ok,
         pilot_snr_ok=pilot_snr_ok,
     )
+
+
+# --------------------------------------------------------------------------- #
+# diagnostic summary (operator capture retention — jasper.web.correction_crossover_v2)
+# --------------------------------------------------------------------------- #
+
+
+def _gate_window_ms_of(response: "DriverResponse | None") -> float | None:
+    if response is None:
+        return None
+    window = response.gating.get("window_ms") if response.gating else None
+    return float(window) if isinstance(window, (int, float)) else None
+
+
+def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
+    """Flat, JSON-safe numeric diagnostics from one :class:`ProgramAnalysis`.
+
+    The operator capture-retention sidecar (``jasper.web.correction_crossover_v2``
+    ``_maybe_retain_capture``) attaches this to every retained WAV so the clip
+    is self-describing without replaying the analysis. Reads only fields
+    ``ProgramAnalysis``/its nested dataclasses already carry — nothing here is
+    recomputed. Per-driver/per-pilot fields key off each entry's OWN ``role``
+    string (whatever the program declared — "woofer"/"tweeter" in production)
+    rather than a hardcoded label, since this runs at the analyze seam, before
+    the v2 conductor's role mapping exists.
+
+    Deliberately duck-typed (``analysis: Any``) and defensive throughout: this
+    is called from a best-effort retention path that must never raise even if
+    a test double stands in for a real ``ProgramAnalysis`` (see
+    ``bind_production_analyze``'s own tests, which monkeypatch
+    ``analyze_program_capture`` to return a bare string) — every field access
+    goes through ``getattr(..., None)`` so a malformed/foreign ``analysis``
+    degrades to an emptier summary rather than raising past the caller's
+    guard.
+    """
+    out: dict[str, Any] = {"phase": getattr(analysis, "phase", None)}
+
+    drift = getattr(analysis, "drift", None)
+    if drift is not None:
+        out["epsilon_ppm"] = round(float(drift.epsilon_ppm), 3)
+        out["max_residual_samples"] = round(float(drift.max_residual_samples), 3)
+        out["repeat_level_delta_db"] = round(
+            float(getattr(drift, "repeat_level_delta_db", 0.0)), 3
+        )
+        out["glitch_detected"] = bool(drift.glitch_detected)
+
+    alignment = getattr(analysis, "alignment", None)
+    if alignment is not None:
+        out["alignment_confidence"] = round(float(alignment.confidence), 4)
+        out["alignment_status"] = alignment.status
+        out["delay_us"] = round(float(alignment.delay_us), 3)
+        out["polarity"] = alignment.polarity
+
+    candidate = getattr(analysis, "candidate", None)
+    if candidate is not None:
+        out["predicted_ripple_db"] = round(float(candidate.predicted_ripple_db), 4)
+
+    for resp in getattr(analysis, "driver_responses", None) or ():
+        role = resp.role
+        out[f"{role}_gate_window_ms"] = _gate_window_ms_of(resp)
+        out[f"{role}_validity_floor_hz"] = resp.validity_floor_hz
+        if resp.snr is not None:
+            worst = resp.snr.get("worst_relevant") or {}
+            out[f"{role}_snr_db"] = worst.get("estimated_snr_db")
+            out[f"{role}_snr_verdict"] = worst.get("verdict")
+
+    for pilot in getattr(analysis, "pilots", None) or ():
+        role = pilot.role
+        snr_db = getattr(pilot, "snr_db", math.inf)
+        out[f"{role}_pilot_snr_db"] = round(snr_db, 2) if math.isfinite(snr_db) else None
+        out[f"{role}_captured_delta_db"] = round(float(pilot.captured_delta_db), 3)
+        out[f"{role}_programmed_delta_db"] = round(float(pilot.programmed_delta_db), 3)
+        out[f"{role}_channel_map_target_rise_db"] = pilot.channel_map_target_rise_db
+        out[f"{role}_channel_map_cross_rise_db"] = pilot.channel_map_cross_rise_db
+
+    gain_plan = getattr(analysis, "gain_plan", None)
+    if gain_plan is not None:
+        out["gain_plan_snr_floor_ok"] = gain_plan.snr_floor_ok
+        out["gain_plan_predicted_peak_dbfs"] = round(
+            float(gain_plan.predicted_peak_dbfs), 3
+        )
+
+    for flag in ("pilot_snr_ok", "linearity_ok", "channel_map_ok"):
+        value = getattr(analysis, flag, None)
+        if value is not None:
+            out[flag] = value
+
+    summed_response = getattr(analysis, "summed_response", None)
+    if summed_response is not None:
+        out["verify_gate_window_ms"] = _gate_window_ms_of(summed_response)
+        out["verify_validity_floor_hz"] = summed_response.validity_floor_hz
+
+    tracking = getattr(analysis, "verify_tracking", None)
+    if tracking:
+        for key in ("rms_db", "max_db", "rms_db_notch_excluded", "max_db_notch_excluded"):
+            if key in tracking:
+                out[key] = tracking[key]
+        band = tracking.get("tracking_band_hz")
+        if isinstance(band, (list, tuple)) and len(band) == 2:
+            out["tracking_band_lo_hz"] = band[0]
+            out["tracking_band_hi_hz"] = band[1]
+
+    return out
