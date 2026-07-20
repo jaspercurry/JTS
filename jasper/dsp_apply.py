@@ -564,21 +564,16 @@ async def _maybe_dsp_apply_lock(
     acquire: bool = True,
     timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     source: str = "unspecified",
-    allow_pending_bass_extension_recovery: bool = False,
-    bass_extension_intent_path: str | Path | None = None,
 ):
     # ``acquire`` is the historical nested-call hint.  The private admission
     # boundary is now authoritative: it reuses same-task ownership and acquires
     # otherwise, so a stale/incorrect ``False`` can never bypass the lock or
-    # pending-intent check.
+    # pending-intent check. The pending-intent guard uses ``_dsp_apply_lock``'s
+    # own defaults (recovery off, canonical intent path).
     async with _dsp_apply_lock(
         path,
         timeout_s=timeout_s,
         source=source,
-        allow_pending_bass_extension_recovery=(
-            allow_pending_bass_extension_recovery
-        ),
-        bass_extension_intent_path=bass_extension_intent_path,
     ):
         yield
 
