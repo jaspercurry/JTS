@@ -1,19 +1,26 @@
 # Wave 4 — commissioning backend (Codex prompt)
 
-> **Revision 8 (2026-07-19) — production implementation blocked.** Accept hands
-> the desired profile in memory to Wave 3's sole profile+DSP commit
-> owner; every adapter uses the same predecessor-aware boundary and
-> never persists first. The existing correction process owns
-> synchronous recovery before readiness and mutating bass routes. The
-> crossover measurement substrate's hardware burn-in is complete. The
-> limiter evidence campaign and pure producer/refusal contract are now frozen
-> in `limiter-evidence-protocol.md`; only that isolated, production-uncallable
-> producer skeleton and its synthetic tests may land before Jasper's bench
-> evidence. The protocol also records that a reviewed bench runner/temporary
-> activation owner is not present yet. Commissioning, persistence, graph,
-> backend, hardware playback, and production wiring remain blocked. Accept
-> also refuses without mutation while a bonded program-bake or driver-domain
-> carrier is active.
+> **Revision 9 (2026-07-20) — hardware-free commissioning slice authorized;
+> production and hardware still blocked.** Revision 8 blocked every
+> commissioning file behind Jasper's limiter bench evidence. Revision 9
+> unblocks exactly one hardware-free slice: the pure commissioning state
+> machine advancing through an in-memory `review` result; the pure analysis,
+> fit, proposal, ladder, sustain-result, and anchor-derivation decisions
+> already specified by plan §7; strict manifest validation and silent
+> preflight; and a fully injected synthetic dry run that opens no device,
+> socket, CamillaDSP connection, subprocess, or real measurement coordinator.
+> That dry run may pass synthetic `(evidence, required_context)` through the
+> frozen `produce_limiter_thresholds` producer and consume its typed result in
+> memory; the producer and its refusal taxonomy in `limiter-evidence-protocol.md`
+> are unchanged. Everything else stays blocked: real audio playback, live
+> CamillaDSP mutation, production-mounted state-advancing routes, the real bench
+> campaign runner, profile persistence, runtime eligibility, the
+> `review → accepted` commit (it enters Wave 3), and any caller of
+> `apply_bass_extension`, `bypass_bass_extension`, or
+> `recover_pending_bass_extension_apply`. No real limiter result is established,
+> and a reviewed bench runner/temporary
+> activation owner is not present yet; production wiring still requires Jasper's
+> accepted bench bundle and a separate reviewed amendment.
 
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Waves 1–3 merged, AND the
@@ -22,10 +29,16 @@ has had its on-device burn-in. That prerequisite is met by the JTS3 campaign
 recorded in `docs/HANDOFF-crossover-measurement-v2.md`.
 
 > ⚠ **Mandatory stop — limiter bench-evidence prerequisite.** Do not
-> create or modify commissioning, backend, persistence, playback, graph, or
-> other production implementation files from this revision. The sole code
-> exception is the pure, production-uncallable producer skeleton and synthetic
-> tests specified by `limiter-evidence-protocol.md`.
+> create or modify backend, persistence, playback, graph, or other production
+> or hardware implementation files from this revision. The code exceptions are
+> the pure, production-uncallable producer skeleton and synthetic tests
+> specified by `limiter-evidence-protocol.md`, and the hardware-free
+> commissioning slice authorized by Revision 9 below — the pure state machine to
+> an in-memory `review`, the pure decisions, manifest validation, silent
+> preflight, and the fully injected synthetic dry run. That slice opens no
+> device, socket, CamillaDSP connection, subprocess, or real coordinator; it
+> never persists a profile; and it never derives or publishes
+> `limiter_threshold_dbfs`.
 > The frozen ladder proves acoustic linearity at one admitted sweep
 > peak and the sustain test proves one admitted noise waveform; the
 > digital clamp proves arithmetic headroom for the alignment. None
@@ -66,6 +79,11 @@ point is
 it returns a typed `LimiterThresholdSet` or a total
 `LimiterEvidenceRefusal`. It must remain unimported and uncalled by all
 production paths until a later Wave 4 revision explicitly authorizes wiring.
+Revision 9's hardware-free dry run is not a production path: it imports the
+producer only from the pure `ladder.py` slice, feeds it synthetic
+`(evidence, required_context)`, consumes the typed result in memory, and never
+reaches an apply, graph, backend, daemon, playback, or persistence surface. The
+producer, its refusal taxonomy, and its own pre-production fence are unchanged.
 
 ## Intended mission after the prerequisite is resolved
 
@@ -126,27 +144,43 @@ builds against.
 
 ## File allowlist
 
-The sole prerequisite-skeleton allowlist authorized by Revision 8 is:
-
-Create:
+The limiter producer skeleton is already landed and frozen by the
+`limiter-evidence-protocol.md` amendment — do not modify either file. It gains no
+production caller and stays off every production path (no package export, graph
+emitter, backend, profile, daemon, or route); the sole permitted consumer is the
+hardware-free dry run below, which imports it function-locally for synthetic
+intake and is itself not a production path:
 - `jasper/bass_extension/limiter_evidence.py`
 - `tests/test_bass_extension_limiter_evidence.py`
 
-Do not modify any production caller, package export, graph emitter, backend,
-profile, or runtime file for that skeleton. The Wave 4 implementation allowlist
-below remains blocked until a later revision names accepted bench evidence.
-
+**Revision 9 authorizes exactly one additional slice, and it is hardware-free.**
 Create:
-- `jasper/bass_extension/ladder.py` — pure state machine (~350 lines)
+- `jasper/bass_extension/ladder.py` — the pure commissioning module
+  (~≤350 lines): the frozen session snapshot + `transition()` table advancing to
+  an in-memory `review` (the `review → accepted` edge stays blocked — it enters
+  Wave 3); the pure analysis/fit/propose/rung-verdict/ceiling/sustain-result/
+  anchor decisions; strict manifest validation; silent preflight; and the fully
+  injected synthetic dry run. It imports pure Wave 1 numerics, the `MarginPolicy`
+  thresholds, and `interpolate_anchors` at module level, and imports
+  `produce_limiter_thresholds` function-locally inside the dry run only (never at
+  module scope, so no production path can reach it). It adds no production caller,
+  opens no device/socket/CamillaDSP/subprocess/coordinator, and touches no other
+  file.
+- `tests/test_bass_extension_ladder.py`
+
+Everything below stays **blocked** — it is real hardware, live CamillaDSP,
+persistence, or production routing, and it does not land until Jasper's accepted
+bench bundle survives independent review and a later reviewed revision names it.
+
+Create (blocked):
 - `jasper/bass_extension/limits.py` — bass-owner excitation-limits +
   ProtectionEvidence derivation, mirroring `excitation_safety_plan.py`
   (~150 lines)
 - `jasper/web/bassext_backend.py` — HTTP host adapter (~450 lines)
-- `tests/test_bass_extension_ladder.py`
 - `tests/test_bass_extension_limits.py`
 - `tests/test_web_bassext_backend.py`
 
-Modify (additive):
+Modify (blocked; additive when unblocked):
 - `jasper/capture_relay/spec.py` — `build_bass_nearfield_spec(...)` +
   registry entry (one builder, mirror `build_crossover_sweep_spec`,
   including its parameter name `driver_capture_geometry="near_field"`
@@ -172,6 +206,34 @@ Do not modify a systemd unit or socket: the flow rides the existing
 correction server and the recovery owner already has the required
 paths and lifecycle hook. If current main no longer matches those
 facts, stop and revise the contract rather than adding a host seam.
+
+## Revision 9 implementation series (hardware-free scope only)
+
+Land these as separate small, budgeted PRs, in order, all inside
+`ladder.py` + its test. Each step is pure and reaches at most `review`; none
+opens a device, socket, CamillaDSP connection, subprocess, or real
+coordinator, persists a profile, or adds a Wave 3 caller.
+
+1. **Pure state machine** — the frozen session snapshot + `transition()` table
+   for `idle → characterize → fit → propose → verify_deepest → ladder →
+   sustain_test → derive_anchors → review`, plus `aborted` from any state. The
+   `review → accepted` edge is intentionally absent (it enters Wave 3).
+2. **Pure decisions** — analysis, plant fit, family proposal, per-rung
+   stop-conditions/verdicts, ceiling, sustain result, and anchor derivation,
+   all pure over Wave 1 numerics and the `MarginPolicy` thresholds.
+3. **Strict manifest validation + silent preflight** — validate injected
+   commissioning inputs and preconditions with no side effects; refuse malformed
+   inputs; the preflight is silent (no logging, no I/O).
+4. **Fully injected synthetic dry run** — walk the state machine to `review`
+   with injected fakes for every collaborator; opens nothing real.
+5. **Synthetic evidence intake** — pass injected `(evidence, required_context)`
+   through the frozen `produce_limiter_thresholds` and consume its typed
+   `LimiterThresholdSet` / `LimiterEvidenceRefusal` in memory. The producer and
+   its refusal taxonomy are unchanged; this establishes no real limiter value.
+
+Do not design later phases here. The real bench campaign runner, its temporary
+graph activation, playback, persistence, backend routing, and the
+`review → accepted` commit each require a separate reviewed amendment.
 
 ## The ladder state machine (`ladder.py`, pure)
 
@@ -278,12 +340,15 @@ in `review`.
 
 This revision does **not** derive or publish
 `limiter_threshold_dbfs`; the mandatory stop above applies before any
-Wave 4 production implementation. It authorizes only the isolated pure
-producer skeleton and synthetic refusal/determinism tests. A replacement
-prompt must name an independently reviewed real bench bundle, and accepted
-sealed profiles must then contain a finite threshold for every target.
-Ported/PR remains profile-retention-only and does not imply a runtime
-threshold contract.
+Wave 4 production implementation. Beyond the isolated pure producer skeleton
+and its synthetic refusal/determinism tests, Revision 9 authorizes only the
+hardware-free commissioning slice (the pure state machine to an in-memory
+`review`, the pure decisions, manifest validation, silent preflight, and the
+fully injected synthetic dry run) — none of which derives, publishes, or
+persists a threshold. A replacement prompt must name an independently reviewed
+real bench bundle, and accepted sealed profiles must then contain a finite
+threshold for every target. Ported/PR remains profile-retention-only and does
+not imply a runtime threshold contract.
 
 ## HTTP contract (frozen — Wave 6 builds against this)
 
@@ -335,6 +400,13 @@ is a **correct refusal** — surface it; do not split the hold into
 sneaky segments.
 
 ## Tests (pinned coverage)
+
+Revision 9's hardware-free slice pins only the ladder transition table, rung
+verdicts, sustain results, anchor derivation, strict manifest validation, silent
+preflight, the fully injected synthetic dry run to `review`, and synthetic
+evidence intake through `produce_limiter_thresholds`. The backend, spec-builder,
+persistence, and playback coverage below stays blocked with its production
+allowlist.
 
 - Ladder transition table: every legal transition, every illegal one
   rejected; abort from each state; restart retirement (`interrupted`).
@@ -397,6 +469,20 @@ scripts/test-fast
 ```
 
 ## Changelog
+
+- **Rev 9 (2026-07-20)** — authorizes exactly one hardware-free commissioning
+  slice: the pure state machine to an in-memory `review`, the pure
+  analysis/fit/propose/ladder/sustain-result/anchor decisions, strict manifest
+  validation, silent preflight, a fully injected synthetic dry run (no device,
+  socket, CamillaDSP, subprocess, or real coordinator), and synthetic evidence
+  intake through the frozen `produce_limiter_thresholds`. Real playback, live
+  CamillaDSP mutation, production-mounted state-advancing routes, the real bench
+  runner, persistence, runtime eligibility, the `review → accepted` commit, and
+  every Wave 3 caller remain blocked; the frozen producer and its refusal
+  taxonomy are unchanged. Production wiring still requires Jasper's accepted
+  bench bundle and a separate reviewed amendment. Rejected alternative: keeping
+  the whole commissioning backend blocked as one unit, which needlessly delays
+  the pure, reviewable state-machine work that has no hardware dependency.
 
 - **Rev 8 (2026-07-19)** — protocol revision `2026-07-19b` resolves the
   candidate-disposition/refusal-precedence contradiction. Honest transfer,
