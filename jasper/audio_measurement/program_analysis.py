@@ -278,6 +278,14 @@ class MeasurementPriors:
     ``target_capture_dbfs`` is the MEASURE capture-peak target the CHECK gain
     solve aims for. ``predicted_sum`` is the MEASURE-predicted summed magnitude
     ``(freqs_hz, magnitude_db)`` VERIFY compares against.
+
+    ``measure_tweeter_sweep_lo_hz``/``measure_woofer_sweep_hi_hz`` carry the
+    MEASURE program's actual per-driver sweep bounds forward to VERIFY (§5.6
+    fix) — ``predicted_sum`` was itself built only inside that true overlap
+    (see ``_overlap_band_hz``), so VERIFY's tracking comparison must trust the
+    SAME band; a wider nominal Fc±1-octave band would compare real VERIFY
+    capture data against sub-floor noise inherited from an unexcited MEASURE
+    branch. ``None`` (legacy callers) falls back to the unclamped nominal band.
     """
 
     crossover_fc_hz: float | None = None
@@ -285,6 +293,8 @@ class MeasurementPriors:
     target_capture_dbfs: float = DEFAULT_TARGET_CAPTURE_DBFS
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     ambient_report: Mapping[str, Any] | None = None
+    measure_tweeter_sweep_lo_hz: float | None = None
+    measure_woofer_sweep_hi_hz: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1120,6 +1130,40 @@ def _aligned_branch_tf(
     return freqs, H, fragment
 
 
+def _overlap_band_hz(
+    fc_hz: float,
+    *,
+    tweeter_sweep_lo_hz: float | None = None,
+    woofer_sweep_hi_hz: float | None = None,
+) -> tuple[float, float]:
+    """SSOT overlap band for the GCC alignment, trim solve, ripple, and
+    VERIFY-tracking comparisons: the nominal ``Fc ± 1 octave`` band, clamped to
+    the TRUE driver-sweep overlap.
+
+    The nominal ``[Fc/OVERLAP_OCTAVE_RATIO, Fc*OVERLAP_OCTAVE_RATIO]`` band
+    silently assumes both drivers were excited across the whole span, but each
+    driver's MEASURE sweep only covers its own declared band (design §5.4) —
+    e.g. a tweeter sweep starting AT Fc means ``[Fc/2, Fc)`` is pure
+    deconvolution noise for that branch (the driver was never excited there).
+    That noise corrupted the GCC delay/confidence, the trim solve, the
+    predicted ripple, and (via the MEASURE-predicted sum) VERIFY's tracking
+    comparison — a real hardware run never cleared the alignment confidence
+    floor because of it. Clamping ``lo`` UP to the tweeter's actual sweep
+    floor and ``hi`` DOWN to the woofer's actual sweep ceiling keeps every one
+    of those consumers inside frequencies BOTH branches actually have real
+    excited energy. ``None`` bounds (legacy callers with no sweep-segment
+    evidence) leave that side at the nominal Fc/octave edge — byte-identical
+    to the pre-fix band.
+    """
+    lo = fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    if tweeter_sweep_lo_hz is not None:
+        lo = max(lo, float(tweeter_sweep_lo_hz))
+    if woofer_sweep_hi_hz is not None:
+        hi = min(hi, float(woofer_sweep_hi_hz))
+    return lo, hi
+
+
 def _estimate_alignment(
     capture: np.ndarray,
     program: ExcitationProgram,
@@ -1136,8 +1180,9 @@ def _estimate_alignment(
 ) -> AlignmentEstimate:
     seg_w = program.segment("sweep_w")
     seg_t = program.segment("sweep_t")
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    lo, hi = _overlap_band_hz(
+        fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
+    )
 
     max_lag = priors.align_search_ms * 1e-3 * sample_rate
     # Both IRs were deconvolved from windows sharing the pre-guard + global
@@ -1798,6 +1843,7 @@ def _analyze_measure(
     candidate, predicted_sum = _build_candidate(
         woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
         seg_w.role, seg_t.role, alignment, calibration,
+        tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
     )
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a leading pilot pair; legacy programs carry none, so
@@ -1825,11 +1871,15 @@ def _analyze_measure(
 def _build_candidate(
     woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
     woofer_role, tweeter_role, alignment, calibration,
+    *,
+    tweeter_sweep_lo_hz: float | None = None,
+    woofer_sweep_hi_hz: float | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    lo, hi = _overlap_band_hz(
+        fc_hz, tweeter_sweep_lo_hz=tweeter_sweep_lo_hz, woofer_sweep_hi_hz=woofer_sweep_hi_hz,
+    )
     # Gating-consistent prediction (W6.9 forensics): ``_aligned_branch_tf`` now
     # reflection-gates each branch the same way ``_driver_response`` does, so a
     # branch near a reflective mic position can be valid only above a floor
@@ -1885,8 +1935,11 @@ def _analyze_verify(
     ripple = None
     tracking = None
     if fc_hz is not None:
-        lo = fc_hz / OVERLAP_OCTAVE_RATIO
-        hi = fc_hz * OVERLAP_OCTAVE_RATIO
+        lo, hi = _overlap_band_hz(
+            fc_hz,
+            tweeter_sweep_lo_hz=priors.measure_tweeter_sweep_lo_hz,
+            woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
+        )
         ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
         if priors.predicted_sum is not None:
             pred_freqs, pred_db = priors.predicted_sum

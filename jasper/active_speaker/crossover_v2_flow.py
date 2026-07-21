@@ -780,9 +780,23 @@ class CrossoverV2Conductor:
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
     def _verify_priors(self) -> MeasurementPriors:
+        # Carry MEASURE's actual per-driver sweep bounds forward (§5.6 fix) so
+        # VERIFY's tracking comparison trusts the SAME true driver-sweep
+        # overlap `_build_candidate` used to build `predicted_sum` — never a
+        # hardcoded frequency, always read off the composed MEASURE program.
+        tweeter_sweep_lo_hz: float | None = None
+        woofer_sweep_hi_hz: float | None = None
+        if self._measure_program is not None:
+            try:
+                tweeter_sweep_lo_hz = self._measure_program.segment("sweep_t").f1_hz
+                woofer_sweep_hi_hz = self._measure_program.segment("sweep_w").f2_hz
+            except KeyError:
+                pass
         return MeasurementPriors(
             crossover_fc_hz=self._fc_hz,
             predicted_sum=self._measure_predicted_sum,
+            measure_tweeter_sweep_lo_hz=tweeter_sweep_lo_hz,
+            measure_woofer_sweep_hi_hz=woofer_sweep_hi_hz,
         )
 
     # --- read surfaces -------------------------------------------------------
