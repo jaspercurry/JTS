@@ -332,6 +332,19 @@ MEASUREMENT_DISTANCE_M = 1.0
 # PROVISIONAL pending W6 bench distributions on confidence-vs-outcome
 # correlation (unchanged from the prior nudge floor's own provisional status).
 ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
+# Physical-plausibility backstop (Fix 3, 2026-07-21): the GCC estimator can
+# return a CONFIDENTLY WRONG delay (a hardware run reported a confident
+# −631 us against this preset's declared [50, 300] us delay_range_ms search
+# bound) that still clears ALIGNMENT_CONFIDENCE_TRUST_FLOOR above — high GCC
+# correlation confidence at the wrong lag is a real failure mode, not a
+# hypothetical one. This margin is added on BOTH sides of the crossover
+# region's declared ``delay_range_ms`` (a SEARCH bound per
+# ``jasper.active_speaker.profile.CrossoverRegion``'s own docstring, not a
+# hard physical limit) before a measured delay outside it is rejected, so a
+# delay a little past the declared bound isn't treated the same as one
+# wildly outside it. PROVISIONAL pending W6 bench validation, same status as
+# the confidence floor above.
+ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 
 
 class CrossoverV2FlowError(RuntimeError):
@@ -386,6 +399,39 @@ def alignment_to_candidate_fields(
         role, magnitude = woofer_role, -delay_us
     polarity = POLARITY_INVERT if est.polarity == "inverted" else POLARITY_KEEP
     return magnitude, role, polarity
+
+
+def alignment_delay_plausible(
+    delay_us: float | None,
+    source_preset: Any,
+    *,
+    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
+) -> bool:
+    """True when ``|delay_us|`` falls inside the preset's declared crossover
+    region ``delay_range_ms`` search bound (± ``margin_ms``), or when there is
+    no declared bound / no delay to judge (nothing to gate on).
+
+    Physical-plausibility backstop (Fix 3): see
+    :data:`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`. Declaration-driven —
+    reads the SAME ``delay_range_ms`` the crossover region already carries as
+    a search bound (:class:`jasper.active_speaker.profile.CrossoverRegion`),
+    never a hardcoded delay literal. The v2 conductor is scoped to a single
+    2-way crossover region (``crossover_regions[0]``), matching every other
+    single-region read in this module (e.g. ``resolve_conductor_context``).
+    """
+    if delay_us is None:
+        return True
+    regions = getattr(source_preset, "crossover_regions", None)
+    if not regions:
+        return True
+    delay_range_ms = getattr(regions[0], "delay_range_ms", None)
+    if not (isinstance(delay_range_ms, (tuple, list)) and len(delay_range_ms) == 2):
+        return True
+    lo_ms, hi_ms = float(delay_range_ms[0]), float(delay_range_ms[1])
+    if not (math.isfinite(lo_ms) and math.isfinite(hi_ms)) or lo_ms > hi_ms:
+        return True
+    delay_ms = abs(float(delay_us)) / 1000.0
+    return (lo_ms - margin_ms) <= delay_ms <= (hi_ms + margin_ms)
 
 
 def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
@@ -1124,6 +1170,18 @@ class CrossoverV2Conductor:
         if (
             analysis.alignment is not None
             and analysis.alignment.confidence < ALIGNMENT_CONFIDENCE_TRUST_FLOOR
+        ):
+            return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
+        # Physical-plausibility backstop (Fix 3): a confidently-WRONG delay
+        # (high GCC correlation confidence at the wrong lag) clears the trust
+        # gate above but is still physically implausible against the
+        # preset's declared search bound — reuses the SAME re-measure
+        # guidance rather than a new reason code, since the household action
+        # is identical ("move the mic, measure again").
+        if (
+            analysis.alignment is not None
+            and analysis.alignment.status == ALIGNMENT_OK
+            and not alignment_delay_plausible(analysis.alignment.delay_us, self._preset)
         ):
             return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
         candidate = self._build_candidate(analysis)
