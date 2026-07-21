@@ -1302,8 +1302,14 @@ def _flatter_sum_polarity(
     freqs, W, _gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=None)
     _f2, T, _gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=None)
     trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
-    lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    # SSOT overlap band (fix 1) — clamps the nominal Fc±1-oct span to the real
+    # driver-sweep overlap so this ripple check can't drift out of sync with
+    # the alignment/trim/VERIFY bands that already use this helper.
+    lo, hi = _overlap_band_hz(
+        fc_hz,
+        tweeter_sweep_lo_hz=program.segment("sweep_t").f1_hz,
+        woofer_sweep_hi_hz=program.segment("sweep_w").f2_hz,
+    )
     ripple_pos = _ripple_db(freqs, _predicted_sum(W, T, trim_w, trim_t, +1), lo, hi)
     ripple_neg = _ripple_db(freqs, _predicted_sum(W, T, trim_w, trim_t, -1), lo, hi)
     return 1 if ripple_pos <= ripple_neg else -1
