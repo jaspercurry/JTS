@@ -626,6 +626,7 @@ def build_measure_program(
     leading_pilot_role: str | None = None,
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
+    tweeter_sweep_floor_hz: float | None = None,
 ) -> ExcitationProgram:
     """Compose the MEASURE program (design §5.2/§5.4): woofer, tweeter, woofer-repeat.
 
@@ -649,6 +650,22 @@ def build_measure_program(
     behavioral-linearity evidence. ``None`` (the default) is byte-identical to
     the pre-v2 composer — the legacy analysis fixtures and any caller that does
     not opt in see the exact original segment layout.
+
+    ``tweeter_sweep_floor_hz`` (Fix 4, 2026-07-21) OPT-IN extends the tweeter
+    sweep's lower edge DOWN toward the driver's declared do-not-test-below
+    safe-low (e.g. ``jasper.active_speaker.design_draft``'s
+    ``do_not_test_below_hz``) — a real analysis overlap with the woofer sweep
+    needs the tweeter excited well below Fc, not just from Fc up. Declaration-
+    driven: the caller supplies the value; this composer never hardcodes one.
+    Safety is two-layered and this parameter only ever narrows the gap toward
+    the SAFE side: (1) the result can only move DOWN from the tweeter's
+    already-admitted band (``roles_bands[1].band``, itself the excitation-
+    safety-plan-derived floor) — it is never RAISED, and never taken below
+    ``tweeter_sweep_floor_hz`` itself; (2) this composer does not touch or
+    bypass excitation admission (``jasper.active_speaker.program_admission``)
+    — a composed program whose tweeter content falls outside the driver's
+    admitted band is still refused there, unchanged. ``None`` (the default)
+    is byte-identical to the pre-fix composer.
     """
     roles = _validate_roles(roles_bands)
     if len(roles) != 2:
@@ -670,6 +687,11 @@ def build_measure_program(
 
     w_f1, w_f2 = _band(woofer)
     t_f1, t_f2 = _band(tweeter)
+    if tweeter_sweep_floor_hz is not None:
+        # Only ever moves t_f1 DOWN (toward the declared safe-low), never up,
+        # and never below the declared floor itself — see the safety
+        # invariants in this function's docstring.
+        t_f1 = min(t_f1, max(MEASURE_SWEEP_F_LO_HZ, float(tweeter_sweep_floor_hz)))
     w_meta = _sweep_meta(w_f1, w_f2, durations[woofer.role], gain_plan[woofer.role])
     t_meta = _sweep_meta(t_f1, t_f2, durations[tweeter.role], gain_plan[tweeter.role])
 

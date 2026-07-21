@@ -31,6 +31,7 @@ from jasper.audio_measurement.program import (
     KIND_SILENCE,
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
+    MEASURE_SWEEP_F_LO_HZ,
     MESM_GAP_FLOOR_S,
     PHASE_CHECK,
     PHASE_MEASURE,
@@ -149,6 +150,44 @@ def test_measure_requires_two_drivers_and_all_gains():
         build_measure_program(_gain_plan(), _roles()[:1])
     with pytest.raises(ValueError):
         build_measure_program({"woofer": -11.0}, _roles())
+
+
+def test_measure_tweeter_sweep_extends_to_declared_safe_low():
+    """Fix 4 (root cause): when the tweeter's OWN declared band starts AT Fc
+    (the real bug scenario — a conservative measurement_band_hz declaration),
+    ``tweeter_sweep_floor_hz`` extends the sweep DOWN toward the driver's
+    declared do-not-test-below safe-low. It never goes below that declared
+    floor, never RAISES the sweep past the driver's own already-admitted
+    band, and never touches the woofer sweep."""
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(2000.0, 20000.0)),  # starts AT Fc
+    ]
+    gain_plan = _gain_plan()
+
+    baseline = build_measure_program(gain_plan, roles)
+    assert baseline.segment("sweep_t").f1_hz == pytest.approx(2000.0)
+
+    extended = build_measure_program(gain_plan, roles, tweeter_sweep_floor_hz=1200.0)
+    assert extended.segment("sweep_t").f1_hz == pytest.approx(1200.0)
+    assert extended.segment("sweep_t").f2_hz == pytest.approx(20000.0)
+    # Woofer sweep is byte-identical — this parameter never touches it.
+    assert extended.segment("sweep_w").f1_hz == baseline.segment("sweep_w").f1_hz
+    assert extended.segment("sweep_w").f2_hz == baseline.segment("sweep_w").f2_hz
+    # A different sweep schedule ⇒ a different program_id (design contract).
+    assert extended.program_id != baseline.program_id
+
+    # Never below the declared floor, even past the shared global measurement
+    # floor (a caller passing something below MEASURE_SWEEP_F_LO_HZ).
+    below_global_floor = build_measure_program(
+        gain_plan, roles, tweeter_sweep_floor_hz=50.0,
+    )
+    assert below_global_floor.segment("sweep_t").f1_hz == pytest.approx(MEASURE_SWEEP_F_LO_HZ)
+
+    # Never RAISED past the driver's own already-admitted band — a declared
+    # floor ABOVE the current band is a no-op, not a narrowing.
+    no_op = build_measure_program(gain_plan, roles, tweeter_sweep_floor_hz=5000.0)
+    assert no_op.segment("sweep_t").f1_hz == pytest.approx(2000.0)
 
 
 # --------------------------------------------------------------------------- #

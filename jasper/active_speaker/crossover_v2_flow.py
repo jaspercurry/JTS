@@ -693,6 +693,7 @@ class CrossoverV2Conductor:
         index_phase_map: Mapping[int, str] | None = None,
         measure_predicted_sum: Any = None,
         measure_gate_window_ms: float | None = None,
+        tweeter_sweep_floor_hz: float | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -701,6 +702,14 @@ class CrossoverV2Conductor:
         self._preset = source_preset
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
+        # Fix 4 (2026-07-21): the tweeter's declared do-not-test-below
+        # safe-low (e.g. design_draft's `do_not_test_below_hz`), read-only —
+        # this conductor does not resolve it itself, callers opt in. ``None``
+        # (every caller today) is byte-identical to the pre-fix composer;
+        # wiring the live declared value into a caller is a follow-up.
+        self._tweeter_sweep_floor_hz = (
+            float(tweeter_sweep_floor_hz) if tweeter_sweep_floor_hz is not None else None
+        )
         self._fc_hz = float(fc_hz)
         self._caps = dict(driver_caps_dbfs)
         self._session_volume_db = float(session_volume_db)
@@ -792,6 +801,7 @@ class CrossoverV2Conductor:
             downstream_gain_db=self._session_volume_db,
             leading_pilot_gains_db=self._pilot_gains(gains[self._woofer.role]),
             leading_pilot_role=self._woofer.role,
+            tweeter_sweep_floor_hz=self._tweeter_sweep_floor_hz,
         )
 
     def _compose_verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
