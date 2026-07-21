@@ -1255,30 +1255,10 @@ def _predicted_sum(
     trim_w_db: float,
     trim_t_db: float,
     sign: int,
-    *,
-    freqs_hz: np.ndarray | None = None,
-    tweeter_delay_us: float = 0.0,
 ) -> np.ndarray:
-    """``W_xo·g_w + sign·T_xo·g_t·e^(−jωτ)`` (design §5.6.6).
-
-    ``W``/``T`` are each independently peak-referenced (``_aligned_branch_tf``)
-    so their RELATIVE delay, as represented here, is zero — ``tweeter_delay_us``
-    (default 0.0, byte-identical to the pre-Fix-2 caller) is the EXPLICIT ``τ``
-    the design formula calls for: the delay a real single delay-line crossover
-    will actually apply to the tweeter path. Applying it to only one of the two
-    summed terms sets their RELATIVE phase (a delay applied to the woofer
-    branch instead, by the equivalent negative magnitude, produces the exact
-    same |sum| — a shared phase factor cancels in magnitude — so a uniform
-    "always phase T" convention is sufficient regardless of which physical
-    driver actually carries the delay-line).
-    """
     g_w = 10.0 ** (trim_w_db / 20.0)
     g_t = 10.0 ** (trim_t_db / 20.0)
-    t_term = T * g_t
-    if freqs_hz is not None and tweeter_delay_us != 0.0:
-        tau_s = tweeter_delay_us * 1e-6
-        t_term = t_term * np.exp(-1j * 2.0 * np.pi * np.asarray(freqs_hz) * tau_s)
-    return W * g_w + sign * t_term
+    return W * g_w + sign * T * g_t
 
 
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
@@ -1888,24 +1868,6 @@ def _analyze_measure(
     )
 
 
-def _applied_delay_us(alignment: AlignmentEstimate) -> float:
-    """The delay value that will actually reach the DSP for this estimate.
-
-    Quantized to the SAME 4-decimal-millisecond precision
-    ``jasper.camilla_emit.fmt`` applies to every delay that reaches a
-    CamillaDSP YAML config, so the prediction and the applied value are
-    literally the same number, not merely close in float precision.
-    (``jasper.camilla_emit`` is deliberately not imported here — this module
-    stays DSP/config agnostic — so the equivalent rounding is inlined.)
-    Returns ``0.0`` (no delay term) when the estimate is not trustworthy
-    (edge-clamped), matching the trims-only fallback the conductor's own
-    ``alignment_to_candidate_fields`` uses for the same status.
-    """
-    if alignment.status != ALIGNMENT_OK:
-        return 0.0
-    return round(alignment.delay_us / 1000.0, 4) * 1000.0
-
-
 def _build_candidate(
     woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
     woofer_role, tweeter_role, alignment, calibration,
@@ -1939,22 +1901,11 @@ def _build_candidate(
         else lo
     )
     trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
-    # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6),
-    # with τ the delay the DSP will actually apply (Fix 2, 2026-07-21):
-    # ``_aligned_branch_tf`` references each branch to its OWN independent
-    # direct peak, which zeroes their RELATIVE delay regardless of what the
-    # true acoustic delay was — that is NOT the same thing as "the proposed
-    # delay is already applied". The proposal is `alignment.delay_us`, a
-    # band-limited/GCC-refined/parallax-corrected estimate that generally
-    # differs from the raw peak-to-peak gap the windowing silently encoded.
-    # Explicitly phasing the tweeter term by the exact (DSP-quantized) applied
-    # τ makes this prediction and the value that later reaches VERIFY's real
-    # measurement the SAME number, instead of an unrealizable "both branches
-    # perfectly self-aligned" best case.
-    predicted = _predicted_sum(
-        W, T, trim_w, trim_t, alignment.polarity_sign,
-        freqs_hz=freqs, tweeter_delay_us=_applied_delay_us(alignment),
-    )
+    # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
+    # ``_aligned_branch_tf`` references each branch to its own direct peak, i.e.
+    # the proposed delay is already applied (τ_residual → 0, e^{−jωτ} → 1), so
+    # this is the flattest-achievable aligned sum for the candidate.
+    predicted = _predicted_sum(W, T, trim_w, trim_t, alignment.polarity_sign)
     ripple = _ripple_db(freqs, predicted, lo_clamped, hi)
     predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12))
     candidate = CrossoverCandidate(

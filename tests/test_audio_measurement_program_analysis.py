@@ -56,7 +56,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
     _aligned_branch_tf,
-    _applied_delay_us,
     _band_exclusive_pieces,
     _build_candidate,
     _complex_tf,
@@ -1281,68 +1280,6 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     assert seen_lo_hi == [(expected_lo, expected_hi)]
     assert expected_lo == pytest.approx(fc_hz)  # lo clamped UP from the nominal Fc/2=1000
     assert expected_hi == pytest.approx(3000.0)  # hi clamped DOWN from the nominal 2*Fc=4000
-
-
-def test_applied_delay_us_quantizes_to_dsp_precision_and_gates_on_status():
-    """Fix 2: the applied-tau helper matches CamillaDSP's own 4-decimal-ms
-    rounding (jasper.camilla_emit.fmt), and returns 0.0 (no delay term) for
-    an untrustworthy (edge-clamped) estimate rather than a garbage delay."""
-    ok = AlignmentEstimate(
-        delay_us=123.45678, raw_delay_us=123.45678, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
-        confidence=0.9, status=ALIGNMENT_OK,
-    )
-    # 123.45678 us = 0.12345678 ms -> rounds to 0.1235 ms = 123.5 us, the
-    # SAME rounding `commissioning_runtime.py` applies before writing YAML.
-    assert _applied_delay_us(ok) == pytest.approx(123.5)
-
-    edge = AlignmentEstimate(
-        delay_us=999.0, raw_delay_us=999.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
-        confidence=0.0, status=ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
-    )
-    assert _applied_delay_us(edge) == 0.0
-
-
-def test_build_candidate_predicts_at_the_applied_delay_not_peak_aligned():
-    """Fix 2 (root cause): `_build_candidate`'s predicted sum must phase the
-    tweeter term by the delay that will ACTUALLY reach the DSP
-    (`alignment.delay_us`), not silently assume zero residual just because
-    `_aligned_branch_tf` peak-aligned both branches independently. Rebuilds
-    the expected prediction by hand from the same public primitives and
-    checks `_build_candidate`'s output matches exactly — and that it differs
-    from the old (implicit zero-delay) baseline, proving the term is not a
-    no-op."""
-    fc_hz = 2000.0
-    woofer_ir = _band_impulse(300, 500.0, 6000.0, 1.0)
-    tweeter_ir = _band_impulse(300, 300.0, 20000.0, 0.7)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
-    alignment = AlignmentEstimate(
-        delay_us=180.0, raw_delay_us=180.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
-        confidence=0.9, status=ALIGNMENT_OK,
-    )
-    candidate, (_pred_freqs, pred_db) = _build_candidate(
-        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
-    )
-
-    freqs, W, _gate_w = _aligned_branch_tf(woofer_ir, SR, n_fft, calibration=None)
-    _f2, T, _gate_t = _aligned_branch_tf(tweeter_ir, SR, n_fft, calibration=None)
-    trim_w, trim_t = candidate.trim_db["woofer"], candidate.trim_db["tweeter"]
-
-    # 180.0 us round-trips exactly through the 4-decimal-ms quantization.
-    expected = _predicted_sum(
-        W, T, trim_w, trim_t, alignment.polarity_sign,
-        freqs_hz=freqs, tweeter_delay_us=180.0,
-    )
-    expected_db = 20.0 * np.log10(np.maximum(np.abs(expected), 1e-12))
-    np.testing.assert_allclose(pred_db, expected_db, atol=1e-9)
-
-    # The old peak-aligned baseline (no delay term) is a genuinely different
-    # number — the fix is not a no-op.
-    baseline = _predicted_sum(W, T, trim_w, trim_t, alignment.polarity_sign)
-    baseline_db = 20.0 * np.log10(np.maximum(np.abs(baseline), 1e-12))
-    assert not np.allclose(pred_db, baseline_db, atol=1e-6)
 
 
 # --------------------------------------------------------------------------- #
