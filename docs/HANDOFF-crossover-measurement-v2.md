@@ -235,7 +235,7 @@ source, no drift.
 | `user_stopped` | any | new session | the household tapped Stop on the phone — honest copy, not a manufactured "timed out" (gotcha #18) |
 | `volume_unresolved` | session | — | the `volume_recovery` screen |
 | `verify_out_of_tolerance` / `verify_inconclusive` | VERIFY | 2 | Try again / Undo / Re-measure |
-| `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor — re-measure at a cleaner mic position (gotcha #18) |
+| `low_alignment_confidence` | MEASURE | 1 | alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18) |
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
 
 **Budgets are cumulative per phase** (compared against the *last*
@@ -399,6 +399,16 @@ alignment `DEFAULT_ALIGN_SEARCH_MS`/`GCC_UPSAMPLE`, VERIFY
 `VERIFY_NOTCH_EXCLUSION_DB`) and `crossover_v2_flow.py`
 (`VERIFY_TOLERANCE_DB`, `MEASUREMENT_DISTANCE_M`). All are **PROVISIONAL**
 pending broader ~1 m runs — a constants-tuning pass is owed (Future work).
+
+The GCC alignment band, trim solve, predicted ripple, and VERIFY-tracking
+band are all clamped to the true driver-sweep overlap —
+`[max(Fc/2, tweeter_sweep_lo), min(2·Fc, woofer_sweep_hi)]` — rather than
+trusting the nominal `Fc ± 1 octave` span, since a driver's MEASURE sweep
+only ever excites its own declared band (e.g. a tweeter sweep starting AT
+Fc leaves `[Fc/2, Fc)` as pure deconvolution noise for that branch). One
+SSOT helper, `_overlap_band_hz` in `program_analysis.py`, computes the
+clamp; every consumer reads the real sweep bounds off the program's own
+segments rather than re-deriving the nominal edges.
 
 ## Gotchas — the W6 bug-class catalog (do not reintroduce)
 
