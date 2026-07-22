@@ -317,20 +317,7 @@ impl StateServer {
         while !shutdown.load(Ordering::Relaxed) {
             match wait_for_listener(&listener, ACCEPT_POLL_INTERVAL) {
                 Ok(false) => continue,
-                Ok(true) => loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            if let Err(e) = self.handle_connection(stream) {
-                                warn!("event=fanin.state_server.handle_failed detail={:#}", e);
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(e) => {
-                            warn!("event=fanin.state_server.accept_failed detail={}", e);
-                            break;
-                        }
-                    }
-                },
+                Ok(true) => self.drain_ready_connections(&listener, shutdown),
                 Err(e) => {
                     warn!("event=fanin.state_server.poll_failed detail={}", e);
                 }
@@ -340,6 +327,27 @@ impl StateServer {
         let _ = std::fs::remove_file(&self.socket_path);
         info!("event=fanin.state_server.stopped");
         Ok(())
+    }
+
+    fn drain_ready_connections(&self, listener: &UnixListener, shutdown: &AtomicBool) {
+        // Re-check shutdown between clients. A continuously replenished local
+        // accept queue must not trap the audio daemon here until systemd's
+        // SIGKILL deadline; one in-flight client remains bounded by the socket
+        // read timeout.
+        while !shutdown.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if let Err(e) = self.handle_connection(stream) {
+                        warn!("event=fanin.state_server.handle_failed detail={:#}", e);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    warn!("event=fanin.state_server.accept_failed detail={}", e);
+                    break;
+                }
+            }
+        }
     }
 
     fn handle_connection(&self, mut stream: UnixStream) -> Result<()> {
@@ -1449,6 +1457,30 @@ mod tests {
             "socket readiness must wake poll rather than pay the 500 ms timeout",
         );
         let _stream = connector.join().unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn listener_backlog_drain_honors_shutdown_before_next_client() {
+        let unique = format!(
+            "jasper-fanin-shutdown-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        );
+        let path = std::env::temp_dir().join(unique);
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let _pending_client = UnixStream::connect(&path).unwrap();
+        let shutdown = AtomicBool::new(true);
+
+        make_test_server().drain_ready_connections(&listener, &shutdown);
+
+        // The pending connection remains untouched: shutdown won over draining
+        // the ready backlog, so the outer run loop can exit promptly.
+        assert!(listener.accept().is_ok());
         let _ = std::fs::remove_file(path);
     }
 

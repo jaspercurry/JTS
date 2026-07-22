@@ -47,16 +47,34 @@ logger = logging.getLogger(__name__)
 # so a search-fail is the phantom signal.
 _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 
-# The RMS level (dBFS) at or below which the USB lane is treated as NOT playing —
-# so a host streaming digital silence (a muted Zoom, an idle tab) does not seize
-# the speaker. Applied against fan-in's reported per-lane rms_dbfs for the
-# DIRECT-capture lane (the live USB path). This is the single definition of the
-# gate: fan-in is the sole live USB ingress owner. The retired
-# jasper-usbsink-audio daemon's former `PLAYING_RMS_DBFS` anchor constant
-# (and the cross-language drift guard that pinned it to this value) were deleted
-# 2026-07-11. tests/test_usbsink_playing_rms_contract.py now pins that
-# `jasper.mux` imports this constant rather than re-declaring its own copy.
+# Display/renderer-status threshold for fan-in's USB DIRECT lane. Mux source
+# arbitration is deliberately level-independent: it uses frame-flow liveness so
+# faint audio and quiet passages cannot drop the source. This value survives for
+# ``usbsink_direct_audible`` consumers such as the aggregate ``/state`` surface.
+# ``tests/test_usbsink_playing_rms_contract.py`` pins both that ownership and the
+# invariant that mux does not import this constant.
 USBSINK_PLAYING_RMS_DBFS = -60.0
+
+_DBUS_NAME_ABSENT_ERRORS = (
+    b"was not provided by any .service files",
+    b"name has no owner",
+    b"is not activatable",
+)
+
+
+def _airplay_nonzero_observation(stderr: bytes) -> bool | None:
+    """Classify a failed AirPlay property call without inventing a stop.
+
+    A missing shairport MPRIS bus name is definite inactivity. Other nonzero
+    exits (system-bus loss, denied access, malformed replies) are transport
+    failures, so the mux's bounded unknown-state grace must decide continuity.
+    ``busctl`` writes the D-Bus error to stderr; its service-absent wording is
+    stable under the system image's C locale.
+    """
+    detail = stderr.lower()
+    if any(marker in detail for marker in _DBUS_NAME_ABSENT_ERRORS):
+        return False
+    return None
 
 
 async def spotify_playing(
@@ -133,14 +151,14 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
             "org.freedesktop.DBus.Properties", "Get", "ss",
             "org.mpris.MediaPlayer2.Player", "Metadata",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
     except (FileNotFoundError, asyncio.TimeoutError) as e:
         logger.debug("busctl Metadata probe failed: %s", e)
         return None
     if proc.returncode != 0:
-        return False
+        return _airplay_nonzero_observation(stderr)
     return _AIRPLAY_TITLE_RE.search(stdout) is not None
 
 
@@ -180,14 +198,14 @@ async def airplay_playing_observed() -> bool | None:
             "org.freedesktop.DBus.Properties", "Get", "ss",
             "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
     except (FileNotFoundError, asyncio.TimeoutError) as e:
         logger.debug("busctl PlaybackStatus probe failed: %s", e)
         return None
     if proc.returncode != 0:
-        return False
+        return _airplay_nonzero_observation(stderr)
     # busctl emits a single line like:  v s "Playing"
     # (variant-of-string-of-value). Substring match is robust to
     # leading/trailing whitespace busctl may add.
@@ -316,9 +334,9 @@ def usbsink_direct_audible(
     ``True`` / ``False`` from the direct lane's most-recent-period ``rms_dbfs``
     vs the shared :data:`USBSINK_PLAYING_RMS_DBFS` threshold. ``None`` when
     there is no direct lane or no numeric level to compare (older fan-in) —
-    callers pick the fail-soft direction. This is the instantaneous *level*
-    half of combo liveness; mux pairs it with the frames-advanced *liveness*
-    half (see ``jasper.mux.step_combo_liveness``)."""
+    callers pick the fail-soft direction. This is display/renderer-status
+    telemetry only; mux arbitration uses frame-flow liveness and never gates a
+    source on instantaneous audio level."""
     rms = usbsink_direct_rms_dbfs(fanin_status)
     if rms is None:
         return None

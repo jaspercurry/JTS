@@ -43,6 +43,8 @@ _OBJECT_MANAGER_IFACE = "org.freedesktop.DBus.ObjectManager"
 _AIRPLAY_PATH = "/org/mpris/MediaPlayer2"
 _AIRPLAY_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 _BT_INTERFACES = frozenset({"org.bluez.MediaTransport1", "org.bluealsa.PCM1"})
+_RETRY_INITIAL_SEC = 1.0
+_RETRY_MAX_SEC = 30.0
 
 
 def classify_source_signal(
@@ -111,12 +113,12 @@ def inotify_changed_names(data: bytes) -> tuple[str, ...]:
 
 async def watch_spotify_state(path: str, notify: Notify) -> None:
     """Watch librespot's atomic state-file replacement with Linux inotify."""
-    delay = 1.0
+    delay = _RETRY_INITIAL_SEC
     warned = False
     while True:
         try:
             await _watch_spotify_state_once(Path(path), notify)
-            delay = 1.0
+            delay = _RETRY_INITIAL_SEC
             warned = False
         except asyncio.CancelledError:
             raise
@@ -137,7 +139,7 @@ async def watch_spotify_state(path: str, notify: Notify) -> None:
                 detail=exc,
             )
             await asyncio.sleep(delay)
-            delay = min(delay * 2.0, 30.0)
+            delay = min(delay * 2.0, _RETRY_MAX_SEC)
 
 
 async def _watch_spotify_state_once(path: Path, notify: Notify) -> None:
@@ -196,7 +198,7 @@ async def _watch_spotify_state_once(path: Path, notify: Notify) -> None:
 
 async def watch_dbus_sources(notify: Notify) -> None:
     """Subscribe to AirPlay and Bluetooth state-change signals on system D-Bus."""
-    delay = 1.0
+    delay = _RETRY_INITIAL_SEC
     warned = False
     while True:
         bus = None
@@ -216,7 +218,7 @@ async def watch_dbus_sources(notify: Notify) -> None:
             )
             warned = True
             await asyncio.sleep(delay)
-            delay = min(delay * 2.0, 30.0)
+            delay = min(delay * 2.0, _RETRY_MAX_SEC)
             continue
 
         try:
@@ -255,7 +257,7 @@ async def watch_dbus_sources(notify: Notify) -> None:
 
             bus.add_message_handler(_message)
             log_event(logger, "source_event.adapter_ready", adapter="dbus")
-            delay = 1.0
+            delay = _RETRY_INITIAL_SEC
             warned = False
             await bus.wait_for_disconnect()
             raise ConnectionError("system D-Bus disconnected")
@@ -273,7 +275,7 @@ async def watch_dbus_sources(notify: Notify) -> None:
             )
             warned = True
             await asyncio.sleep(delay)
-            delay = min(delay * 2.0, 30.0)
+            delay = min(delay * 2.0, _RETRY_MAX_SEC)
         finally:
             if bus is not None:
                 with contextlib.suppress(Exception):
@@ -285,8 +287,14 @@ def start_source_event_tasks(
     *,
     spotify_state_path: str,
 ) -> list[asyncio.Task[None]]:
-    """Start optional wake adapters; callers own cancellation and awaiting."""
-    return [
+    """Start optional wake adapters; callers own cancellation and awaiting.
+
+    Expected resource failures retry inside each adapter. An unexpected task
+    exit cannot break mux policy (the patrol remains authoritative), but it is
+    surfaced as one stable ERROR event instead of becoming an unobserved task
+    exception.
+    """
+    tasks = [
         asyncio.create_task(
             watch_spotify_state(spotify_state_path, notify),
             name="mux-spotify-events",
@@ -296,3 +304,28 @@ def start_source_event_tasks(
             name="mux-dbus-events",
         ),
     ]
+    for task in tasks:
+        task.add_done_callback(_report_adapter_task_exit)
+    return tasks
+
+
+def _report_adapter_task_exit(task: asyncio.Task[None]) -> None:
+    if task.cancelled():
+        return
+    exception = task.exception()
+    if exception is None:
+        log_event(
+            logger,
+            "source_event.adapter_stopped",
+            level=logging.ERROR,
+            adapter=task.get_name(),
+            detail="unexpected clean exit",
+        )
+        return
+    log_event(
+        logger,
+        "source_event.adapter_stopped",
+        level=logging.ERROR,
+        adapter=task.get_name(),
+        detail=exception,
+    )

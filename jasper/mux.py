@@ -363,11 +363,22 @@ class Mux:
             spotify_state_path=self._librespot_state_path,
         )
         try:
-            await self._reconcile(trigger="startup", dirty_sources=set())
             loop = asyncio.get_running_loop()
             next_patrol = loop.time() + self.POLL_INTERVAL_SEC
+            startup_pending = True
             while True:
                 try:
+                    # Startup uses the same protected reconciliation path as
+                    # every later patrol. A transient first probe must not exit
+                    # into Restart=always while fan-in remains held at NONE.
+                    if startup_pending:
+                        startup_pending = False
+                        await self._reconcile(
+                            trigger="startup",
+                            dirty_sources=set(),
+                        )
+                        continue
+
                     timeout = max(0.0, next_patrol - loop.time())
                     woke = False
                     try:
@@ -471,7 +482,8 @@ class Mux:
         if dirty_sources or (patrol and changed):
             log_event(
                 logger,
-                "source.reconcile",
+                "mux.source_reconcile",
+                level=logging.INFO if changed else logging.DEBUG,
                 trigger=trigger,
                 dirty=",".join(sorted(s.value for s in dirty_sources)) or "none",
                 changed=changed,

@@ -78,31 +78,35 @@ pub fn run(signals: SourceNotifySignals, mux_socket: &Path, shutdown: Arc<Atomic
     while !shutdown.load(Ordering::Relaxed) {
         let frames = signals.input_frames.load(Ordering::Relaxed);
         if let Some(streaming) = detector.observe(frames) {
-            signals.streaming.store(streaming, Ordering::Relaxed);
-            if streaming {
-                signals.stream_starts.fetch_add(1, Ordering::Relaxed);
-            } else {
-                signals.stream_stops.fetch_add(1, Ordering::Relaxed);
-            }
-            signals.notify_attempts.fetch_add(1, Ordering::Relaxed);
-            let delivered = notify_mux(mux_socket);
-            if !delivered {
-                signals.notify_failures.fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    "event=fanin.source_notify.edge source=usbsink streaming={} delivered=false socket={}",
-                    streaming,
-                    mux_socket.display(),
-                );
-            } else {
-                info!(
-                    "event=fanin.source_notify.edge source=usbsink streaming={} delivered=true",
-                    streaming,
-                );
-            }
+            publish_edge(&signals, streaming, mux_socket);
         }
         std::thread::sleep(SAMPLE_INTERVAL);
     }
     info!("event=fanin.source_notify.stopped");
+}
+
+fn publish_edge(signals: &SourceNotifySignals, streaming: bool, mux_socket: &Path) {
+    signals.streaming.store(streaming, Ordering::Relaxed);
+    if streaming {
+        signals.stream_starts.fetch_add(1, Ordering::Relaxed);
+    } else {
+        signals.stream_stops.fetch_add(1, Ordering::Relaxed);
+    }
+    signals.notify_attempts.fetch_add(1, Ordering::Relaxed);
+    let delivered = notify_mux(mux_socket);
+    if !delivered {
+        signals.notify_failures.fetch_add(1, Ordering::Relaxed);
+        warn!(
+            "event=fanin.source_notify.edge source=usbsink streaming={} delivered=false socket={}",
+            streaming,
+            mux_socket.display(),
+        );
+    } else {
+        info!(
+            "event=fanin.source_notify.edge source=usbsink streaming={} delivered=true",
+            streaming,
+        );
+    }
 }
 
 fn notify_mux(socket: &Path) -> bool {
@@ -132,6 +136,44 @@ fn notify_mux(socket: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
+
+    fn test_signals() -> SourceNotifySignals {
+        SourceNotifySignals {
+            input_frames: Arc::new(AtomicU64::new(0)),
+            streaming: Arc::new(AtomicBool::new(false)),
+            stream_starts: Arc::new(AtomicU64::new(0)),
+            stream_stops: Arc::new(AtomicU64::new(0)),
+            notify_attempts: Arc::new(AtomicU64::new(0)),
+            notify_failures: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn unique_socket(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "jasper-fanin-notify-{}-{}-{}.sock",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ))
+    }
+
+    fn ack_server(path: &Path, accepted: bool) -> std::thread::JoinHandle<String> {
+        let listener = UnixListener::bind(path).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let response = format!("{{\"accepted\":{accepted}}}\n");
+            stream.write_all(response.as_bytes()).unwrap();
+            request
+        })
+    }
 
     #[test]
     fn flow_detector_starts_on_first_advance() {
@@ -165,5 +207,46 @@ mod tests {
             assert_eq!(detector.observe(12), None);
         }
         assert_eq!(detector.observe(12), Some(false));
+    }
+
+    #[test]
+    fn publish_edge_sends_mux_contract_and_updates_success_counters() {
+        let path = unique_socket("accepted");
+        let server = ack_server(&path, true);
+        let signals = test_signals();
+
+        publish_edge(&signals, true, &path);
+
+        assert_eq!(server.join().unwrap(), "NOTIFY usbsink\n");
+        assert!(signals.streaming.load(Ordering::Relaxed));
+        assert_eq!(signals.stream_starts.load(Ordering::Relaxed), 1);
+        assert_eq!(signals.stream_stops.load(Ordering::Relaxed), 0);
+        assert_eq!(signals.notify_attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(signals.notify_failures.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn notify_mux_rejects_negative_acknowledgement() {
+        let path = unique_socket("rejected");
+        let server = ack_server(&path, false);
+
+        assert!(!notify_mux(&path));
+
+        assert_eq!(server.join().unwrap(), "NOTIFY usbsink\n");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn publish_edge_counts_delivery_failure_without_losing_state() {
+        let path = unique_socket("missing");
+        let signals = test_signals();
+
+        publish_edge(&signals, true, &path);
+
+        assert!(signals.streaming.load(Ordering::Relaxed));
+        assert_eq!(signals.stream_starts.load(Ordering::Relaxed), 1);
+        assert_eq!(signals.notify_attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(signals.notify_failures.load(Ordering::Relaxed), 1);
     }
 }

@@ -210,6 +210,75 @@ async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
 
 
 @pytest.mark.asyncio
+async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
+    mux, monkeypatch,
+):
+    import jasper.source_events as source_events
+
+    mux.POLL_INTERVAL_SEC = 0.01
+    mux._fanin_none_best_effort = AsyncMock()
+    control_started = asyncio.Event()
+    adapter_started = asyncio.Event()
+    recovered = asyncio.Event()
+
+    async def control_forever():
+        control_started.set()
+        await asyncio.Future()
+
+    async def adapter_forever():
+        adapter_started.set()
+        await asyncio.Future()
+
+    mux._run_control_server = control_forever
+    monkeypatch.setattr(
+        source_events,
+        "start_source_event_tasks",
+        lambda *args, **kwargs: [asyncio.create_task(adapter_forever())],
+    )
+    calls = []
+
+    async def reconcile(*, trigger, dirty_sources):
+        calls.append((trigger, set(dirty_sources)))
+        if trigger == "startup":
+            raise RuntimeError("transient startup probe failure")
+        recovered.set()
+
+    mux._reconcile = reconcile
+    task = asyncio.create_task(mux.run())
+    try:
+        await asyncio.wait_for(control_started.wait(), timeout=0.2)
+        await asyncio.wait_for(adapter_started.wait(), timeout=0.2)
+        await asyncio.wait_for(recovered.wait(), timeout=0.2)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert calls[:2] == [("startup", set()), ("patrol", set())]
+
+
+@pytest.mark.asyncio
+async def test_noop_alert_reconcile_uses_mux_event_at_debug(
+    mux, patched_probes, caplog,
+):
+    _stub_probes(patched_probes)
+
+    with caplog.at_level(logging.DEBUG, logger="jasper.mux"):
+        await mux._reconcile(
+            trigger="alert",
+            dirty_sources={Source.SPOTIFY},
+        )
+
+    records = [
+        record for record in caplog.records
+        if "event=mux.source_reconcile" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    assert "event=source.reconcile" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_alert_storm_does_not_postpone_fixed_patrol(
     mux, monkeypatch,
 ):
