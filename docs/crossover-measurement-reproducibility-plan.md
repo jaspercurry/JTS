@@ -255,18 +255,23 @@ quality target (owner call, 2026-07-21), not a build/no-build gamble; it's built
 in two layers with a clear 80/20 line so effort tracks benefit. Rationale and
 benefits: §5.
 
-### T2-core — one consistent τ + a predictive confidence (causes b, c)
+### T2-core — one consistent τ + honest quality evidence (causes b, c)
 - **What:** coarse latency-immune cross-correlation (period disambiguation,
-  geometry-bounded) → **bounded (±½-period, single-cycle-safe) reverse-null /
-  summed-flatness refine** over the single capture's complex branch responses,
-  reusing `_predicted_sum` / `_ripple_db` and evaluating reuse of `null_walk`'s
-  selection logic. **One τ\*** flows to *both* prediction and apply. **Confidence
-  = the sharpness of the ripple-minimum / null-depth vs τ** (a metric that *is*
-  what VERIFY measures).
-- **Benefits:** B1 (confidence predicts VERIFY) + B2 (prediction = apply). See §5.
-- **Quality bar:** **SoC** (delay is one pure function; confidence falls out of
-  it) + **observability** (the confidence + the objective curve into the diag
-  events).
+  polarity, capture-confidence seed) → **declaration-bounded summed-flatness
+  refine** over the single capture's complex branch responses, reusing
+  `_predicted_sum` / `_ripple_db`. The active region's signed
+  `delay_target_driver` + `delay_range_ms` lobe constrains the comb. **One τ\***
+  flows to *both* prediction and apply. The implemented T2-core scope deliberately
+  keeps confidence as the labelled GCC seed/capture confidence (fix 1 already
+  made that gate reliable); seed ripple, objective improvement, selection
+  delta, and boundary state are separate diagnostics. A predictive sharpness
+  or σ_τ confidence remains T2-robust work rather than being implied by the
+  GCC number.
+- **Benefits:** B2 (prediction = apply) plus the evidence needed to evaluate
+  B1; T2-core does not claim that its GCC seed-confidence predicts VERIFY.
+- **Quality bar:** **SoC** (one declaration-bounded delay selector) +
+  **observability** (seed, selected delay, ripple improvement, and bound state
+  in the diagnostic evidence/events).
 - **Size:** medium; reuses existing machinery. **Builder:** Opus-high (tricky SP).
 
 ### T2-robust — coherence-weighted phase-slope + CRB σ_τ (best practice, IN SCOPE)
@@ -280,7 +285,7 @@ benefits: §5.
   ship-to-real-people bar). See §5.
 - **Status (owner call, 2026-07-21): IN SCOPE, not data-gated.** Coherence
   weighting is documented best practice, and the σ_τ it produces *is* the
-  principled confidence (it supersedes T2-core's sharpness heuristic), so we
+  principled confidence (it supersedes any future T2-core sharpness heuristic), so we
   build it as the target estimator. The corpus (U3) *validates* it delivers the
   expected robustness — it does not decide whether to build it.
 - **Size:** medium-large. **Builder:** Opus-high.
@@ -299,17 +304,21 @@ This is the decision Tier 2 hinges on. Tier 1 makes the *measurement*
 reproducible **at a good placement**; Tier 2 makes the *decision* trustworthy
 and the measurement robust **everywhere else**. Three benefits, ranked:
 
-- **B1 — a confidence that predicts VERIFY.** *Biggest quality benefit, and
+- **B1 — a confidence that predicts VERIFY.** *Biggest remaining quality
+  benefit, and
   largely independent of placement.* Today the auto-apply gate uses the GCC peak
   margin, which doesn't predict whether applying the candidate will flatten the
   sum. That forces a lose-lose: set the floor loose → auto-apply things that
   then fail VERIFY (the current complaint); set it tight → reject good
   measurements and frustrate re-measures. A confidence that **is** the
-  sum-flatness objective (T2-core's sharpness, or T2-robust's σ_τ) turns
+  sum-flatness objective (a future sharpness metric, or T2-robust's σ_τ) turns
   auto-apply into "apply when it will verify, guide when it won't" — which is
   exactly what every shipping calibrator does and what the product needs. This
   benefit stands **even if Tier 1 makes good-placement measurements
   reproducible**, because it's about decision quality, not delay accuracy.
+  T2-core intentionally does not claim this benefit yet: it labels the
+  existing number `gcc_phat_seed` and retains flatness-quality evidence
+  separately.
 - **B2 — one consistent τ (prediction = apply).** *Correctness fix that bites
   even at good placements.* Cause (c) is structural: the prediction assumes
   perfect argmax-peak alignment while a slightly different GCC-PHAT value is
@@ -402,6 +411,18 @@ Captured so they're off the table for the landing work:
 ---
 
 ## 10. Decision log (append; newest first)
+
+- *2026-07-21 (T2 Gate 1, hardware-free)* — Implemented the
+  declaration-bounded summed-flatness delay selection on
+  `claude/xover-t2-flatness`. The selected delay now feeds both prediction and
+  apply in the correct argmax/parallax reference frame; GCC remains the
+  labelled seed/polarity/capture-confidence source. A physical known-sum test
+  recovers the flattening delay, and production-path coverage pins nonzero
+  parallax on both signed lobes. Replaying the two retained M1 captures reduced
+  max-minus-min ripple from **37.524→5.040 dB** and **30.253→5.118 dB**
+  (standard deviation **7.729→1.064 dB** and **6.881→1.082 dB**), selecting
+  **−230 µs** instead of GCC's −353.5/−348.2 µs. This is an offline proof,
+  not hardware validation; independent re-review and JTS3 VERIFY remain gates.
 
 - *2026-07-21 (hardware validation, fix 1+3)* — **The reviewed increment
   (fix 1 band-clamp + fix 3 plausibility bound; fix 2 reverted, fix 4
@@ -497,21 +518,15 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status:** fix 1 (band-clamp) is hardware-validated — MEASURE confidence
-  and predicted ripple both moved as feasibility predicted, and the flow
-  completed CHECK→MEASURE→apply→VERIFY end to end for the first time. The
-  remaining gap is delay *accuracy*, not confidence: VERIFY reproducibly
-  fails at ~4.29 dB (gate 1.5 dB) because the confident GCC delay is still
-  off the delay that actually flattens the sum (the 1-octave comb
-  ambiguity). See "2026-07-21 (hardware validation, fix 1+3)" in §10 for the
-  full readout and the T2/fix-4 recommendation.
-- **Next action:** build T2 (the flatness estimator) — offline-provable on
-  the retained corpus, and feasibility already shows it should clear the
-  1.5 dB gate — then run a *controlled* hardware VERIFY (fixed mic
-  placement, unlike the uncontrolled fix-1 run), then add fix 4 (widen the
+- **Status:** T2's hardware-free Gate 1 is complete on
+  `claude/xover-t2-flatness`: physics and production-frame tests pass, and
+  retained-capture replay materially beats the GCC seed on both M1 captures.
+  The result has not yet been validated by a live VERIFY and is not merged.
+- **Next action:** clear the independent adversarial re-review, deploy T2 to
+  JTS3, and run an initial headless VERIFY; then run the definitive
+  *controlled* hardware VERIFY (fixed mic placement, unlike the uncontrolled
+  fix-1 run). Add fix 4 (widen the
   tweeter sweep) as reliability hardening only if T2 alone is marginal.
-  Merge-now-vs-hold for the reviewed fix1+fix3 increment on
-  `claude/xover-measure-fix` is an owner decision.
 - **Room caveat carried forward:** JTS3's room is a ~10 ft cube, capping
   any reflection-free analysis window at ~7 ms regardless of mic
   placement (confirmed directly in E0's data — see §10). Any future

@@ -434,14 +434,21 @@ ProgramAnalysis`:
 4. **Per-driver response:** deconvolve → `direct_arrival_window` + first-
    reflection gate → complex TF, mic cal applied; band SNR verdicts via the
    existing split policy; validity floor from the gate width.
-5. **Alignment (MEASURE):** relative delay = tweeter-vs-woofer IR offset,
-   ε-corrected, then **band-limited GCC-PHAT (≈Fc/2…2Fc) with sub-sample
-   refinement on the upsampled correlation** (not raw parabolic); geometry
-   prior (declared driver spacing) bounds the search (±2 ms) and the
-   deterministic parallax term (√(r²+d²)−r at the prescribed ~1 m) is
-   subtracted. Polarity from the correlation sign, cross-checked against the
-   flatter predicted sum. Confidence gates reuse
-   `cross_correlation_alignment`'s shape.
+5. **Alignment (MEASURE):** band-limited GCC-PHAT over the true branch-sweep
+   overlap supplies a sub-sample, ε-corrected seed (not raw parabolic),
+   polarity, and capture-quality confidence. The applied delay is then chosen
+   by minimizing summed ripple over that same overlap inside the active
+   crossover region's declared signed `delay_range_ms` lobe, plus the shared
+   plausibility margin. The deterministic parallax term
+   (√(r²+d²)−r at the prescribed ~1 m) is included in the conversion between
+   the full-IR peak-gap frame and the independently argmax-referenced branch
+   TFs for selection; prediction uses that same selected delay back in the
+   measurement-mic frame so VERIFY remains comparable. Polarity comes from
+   the correlation sign, cross-checked against the
+   flatter predicted sum. The confidence gate remains explicitly GCC-seed
+   capture confidence; flatness seed/objective improvement and boundary state
+   are stored separately rather than mislabelling it as confidence in the
+   selected minimum.
 6. **Prediction/validation:** because MEASURE captures as-crossed branches
    (§5.4), the predicted applied sum is directly
    `W_xo·10^(trim_w/20) + s·T_xo·10^(trim_t/20)·e^(−jωτ)`; trims level-match

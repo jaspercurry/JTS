@@ -70,6 +70,7 @@ from jasper.audio_measurement.program_analysis import (
     _predicted_sum,
     _ripple_db,
     _solve_trims,
+    analysis_diagnostic_summary,
     analyze_program_capture,
 )
 
@@ -491,7 +492,7 @@ def test_flatness_delay_recovers_and_flattens_known_physical_sum():
     peak_gap_us = 170.0  # D_t - D_w: tweeter arrives later
     gcc_seed_us = -350.0
 
-    refined_us = _flatness_delay_us(
+    refined_us, refined_objective, seed_objective, at_bound = _flatness_delay_us(
         freqs,
         woofer_peak,
         tweeter_peak,
@@ -500,11 +501,13 @@ def test_flatness_delay_recovers_and_flattens_known_physical_sum():
         +1,
         lo_hz=2000.0,
         hi_hz=4000.0,
-        peak_gap_us=peak_gap_us,
+        reference_gap_us=peak_gap_us,
         search_bounds_us=(-400.0, 0.0),
         seed_delay_us=gcc_seed_us,
     )
     assert refined_us == pytest.approx(-peak_gap_us, abs=2.0)
+    assert refined_objective < seed_objective
+    assert not at_bound
 
     d_w_us = 500.0
     d_t_us = d_w_us + peak_gap_us
@@ -527,6 +530,109 @@ def test_flatness_delay_recovers_and_flattens_known_physical_sum():
     )
     assert refined_ripple < 0.05
     assert gcc_ripple > 5.0
+
+
+@pytest.mark.parametrize(
+    ("d_w", "d_t", "bounds_us"),
+    [
+        (230, 200, (0.0, 1000.0)),
+        (200, 230, (-1000.0, 0.0)),
+    ],
+)
+def test_flatness_refinement_production_path_preserves_parallax_contract(
+    d_w, d_t, bounds_us,
+):
+    """T2's full MEASURE path keeps raw/corrected frames honest on both lobes."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0},
+        _roles(),
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    woofer_ir = _band_impulse(d_w, 150.0, 6000.0, 1.0)
+    tweeter_ir = _band_impulse(d_t, 300.0, 20000.0, 0.9)
+    cap = _synthesize(
+        prog,
+        woofer_ir=woofer_ir,
+        tweeter_ir=tweeter_ir,
+        epsilon=0.0,
+        noise=0.0,
+    )
+    geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
+    result = analyze_program_capture(
+        prog,
+        cap,
+        SR,
+        geometry=geometry,
+        priors=MeasurementPriors(
+            crossover_fc_hz=FC_HZ,
+            alignment_delay_bounds_us=bounds_us,
+        ),
+    )
+
+    expected_raw_us = (d_w - d_t) / SR * 1e6
+    expected_delay_us = expected_raw_us - geometry.parallax_us()
+    assert result.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
+    # The band-limited synthetic IR's spectral truncation shifts its argmax by
+    # a fraction of a sample relative to the impulse placement. The production
+    # objective operates in that measured argmax frame, so allow that expected
+    # analysis granularity in addition to the 2 us search grid.
+    assert result.alignment.delay_us == pytest.approx(expected_delay_us, abs=8.0)
+    assert result.alignment.raw_delay_us == pytest.approx(
+        result.alignment.delay_us + result.alignment.parallax_us, abs=1e-9,
+    )
+    assert result.alignment.confidence_source == "gcc_phat_seed"
+    assert result.candidate.delay_us == result.alignment.delay_us
+    assert result.candidate.alignment_seed_ripple_db is not None
+    assert result.candidate.flatness_improvement_db >= 0.0
+    responses = {response.role: response for response in result.driver_responses}
+    lo_hz, hi_hz = _overlap_band_hz(
+        FC_HZ,
+        tweeter_sweep_lo_hz=prog.segment("sweep_t").f1_hz,
+        woofer_sweep_hi_hz=prog.segment("sweep_w").f2_hz,
+    )
+    floors = [
+        response.validity_floor_hz
+        for response in responses.values()
+        if response.validity_floor_hz is not None
+    ]
+    lo_hz = max([lo_hz, *floors])
+    peak_gap_us = (
+        int(np.argmax(np.abs(tweeter_ir))) - int(np.argmax(np.abs(woofer_ir)))
+    ) / SR * 1e6
+    predicted_at_mic = _predicted_sum(
+        responses["woofer"].complex_tf,
+        responses["tweeter"].complex_tf,
+        result.candidate.trim_db["woofer"],
+        result.candidate.trim_db["tweeter"],
+        result.alignment.polarity_sign,
+        freqs_hz=responses["woofer"].freqs_hz,
+        residual_delay_us=peak_gap_us + result.candidate.delay_us,
+    )
+    assert result.candidate.predicted_ripple_db == pytest.approx(
+        _ripple_db(
+            responses["woofer"].freqs_hz,
+            predicted_at_mic,
+            lo_hz,
+            hi_hz,
+        ),
+        abs=1e-9,
+    )
+    diagnostic = analysis_diagnostic_summary(result)
+    assert diagnostic["alignment_confidence_source"] == "gcc_phat_seed"
+    assert diagnostic["alignment_seed_delay_us"] == pytest.approx(
+        result.alignment.seed_delay_us,
+        abs=0.001,
+    )
+    assert diagnostic["alignment_refinement_delta_us"] == pytest.approx(
+        result.alignment.delay_us - result.alignment.seed_delay_us,
+        abs=0.001,
+    )
+    assert diagnostic["flatness_improvement_db"] == pytest.approx(
+        result.candidate.flatness_improvement_db,
+        abs=0.0001,
+    )
+    assert diagnostic["flatness_at_bound"] is False
+    assert not result.candidate.flatness_at_bound
 
 
 def test_parallax_is_subtracted():

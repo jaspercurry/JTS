@@ -95,8 +95,12 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    tweeter sweep → woofer sweep repeat** (the repeat is bit-identical —
    the two form the in-capture drift estimator + glitch detector).
    Yields per-driver gated complex responses (cal applied), relative
-   delay (drift/parallax-corrected), polarity, trims, per-band SNR —
-   folded into a `MeasuredCrossoverCandidate`.
+   delay, polarity, trims, per-band SNR — folded into a
+   `MeasuredCrossoverCandidate`. GCC-PHAT supplies a drift/parallax-corrected
+   seed, polarity, and capture confidence. The delay actually selected for
+   prediction and apply is the minimum-ripple sum within the crossover
+   region's declared signed `delay_range_ms` lobe (plus the same plausibility
+   margin used by the conductor).
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
@@ -137,7 +141,7 @@ most visible thing on the screen.
 | [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py) | The `JASPER_CROSSOVER_FLOW` selector — `active_crossover_flow()` / `resolve_crossover_flow()`. No product policy. |
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
-| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT alignment, prediction, VERIFY tracking. All the analysis tuning constants. |
+| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT alignment seed + declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
@@ -273,7 +277,10 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `captured_delta_db`, `programmed_delta_db`,
   `channel_map_target_rise_db`, `channel_map_cross_rise_db`.
 - `correction.crossover_v2_measure_diag` — `accepted`, `code`,
-  `alignment_confidence`, `gate_window_ms`, `validity_floor_hz`,
+  `alignment_confidence`, `alignment_confidence_source`,
+  `alignment_seed_delay_us`, `alignment_refinement_delta_us`,
+  `alignment_seed_ripple_db`, `flatness_improvement_db`,
+  `flatness_at_bound`, `gate_window_ms`, `validity_floor_hz`,
   `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
   `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`, plus
   per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
@@ -400,8 +407,9 @@ alignment `DEFAULT_ALIGN_SEARCH_MS`/`GCC_UPSAMPLE`, VERIFY
 (`VERIFY_TOLERANCE_DB`, `MEASUREMENT_DISTANCE_M`). All are **PROVISIONAL**
 pending broader ~1 m runs — a constants-tuning pass is owed (Future work).
 
-The GCC alignment band, trim solve, predicted ripple, and VERIFY-tracking
-band are all clamped to the true driver-sweep overlap —
+The GCC alignment band, flatness-delay objective, trim solve, predicted
+ripple, and VERIFY-tracking band are all clamped to the true driver-sweep
+overlap —
 `[max(Fc/2, tweeter_sweep_lo), min(2·Fc, woofer_sweep_hi)]` — rather than
 trusting the nominal `Fc ± 1 octave` span, since a driver's MEASURE sweep
 only ever excites its own declared band (e.g. a tweeter sweep starting AT
@@ -409,6 +417,34 @@ Fc leaves `[Fc/2, Fc)` as pure deconvolution noise for that branch). One
 SSOT helper, `_overlap_band_hz` in `program_analysis.py`, computes the
 clamp; every consumer reads the real sweep bounds off the program's own
 segments rather than re-deriving the nominal edges.
+
+### Delay selection — GCC seed, declaration-bounded flatness result
+
+`_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source
+for polarity and capture-quality confidence. `_build_candidate` then searches
+only the signed delay lobe declared by the active crossover region
+(`delay_target_driver` + `delay_range_ms`, expanded by
+`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`) and minimizes `_ripple_db` across
+the `_overlap_band_hz` band. The selected delay is used by both the predicted
+sum and the applied candidate.
+
+The complex branch TFs are independently argmax-peak-referenced. Therefore
+the objective phases the tweeter by the residual
+`(D_t − D_w) + parallax + selected_signed_delay`; applying the full delay to
+an already referenced TF would double-count the peak gap and recreate the
+reverted ~52 dB comb bug. After selection, the alignment record preserves
+`delay_us == raw_delay_us - parallax_us`; `seed_delay_us` retains the corrected
+GCC seed. `alignment_confidence` remains GCC seed/capture confidence and is
+labelled `gcc_phat_seed`—it is not a confidence score for the flatness
+minimum. Seed ripple, improvement, refinement delta, and boundary status are
+separate retained evidence.
+
+The selection objective uses the listening-plane reference
+`peak_gap + parallax + selected_delay`. The predicted sum is compared with
+VERIFY back at the measurement mic, so it uses that same selected delay in
+the measured frame, `peak_gap + selected_delay`. Keeping this coordinate
+transform explicit preserves both the parallax correction and prediction ↔
+VERIFY comparability.
 
 ## Gotchas — the W6 bug-class catalog (do not reintroduce)
 
@@ -634,7 +670,10 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   constants above).
 - **Driver-spacing input for parallax correction.** `driver_spacing_m`
   is threaded but stays `0.0` today (topology/preset carry no spacing),
-  so the §3.2 parallax correction is inert. It is self-cancelling at the
+  so the §3.2 parallax correction is inert in production. The flatness
+  refinement preserves the nonzero-geometry raw/corrected-frame contract,
+  pinned on both signed delay lobes by a production-path test. Parallax is
+  self-cancelling at the
   mic position (baked into both MEASURE and VERIFY) but the *listening
   position* carries the full geometric error.
 - **Decide whether legacy `sound_current.yml` should update on v2

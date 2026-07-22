@@ -23,10 +23,9 @@ Pipeline (per phase):
    |ε|>500 ppm ⇒ ``glitch_detected`` (callers must reject the capture).
 4. **Per-driver response** — deconvolve → direct-arrival window + first-reflection
    gate → complex TF + magnitude (mic cal applied if given); band-SNR verdicts.
-5. **Alignment (MEASURE)** — tweeter-vs-woofer relative delay: band-limited
-   (≈Fc/2…2·Fc) GCC-PHAT, ×16-upsampled peak with parabolic sub-sample
-   refinement, ε-corrected, geometry-bounded, parallax-subtracted; polarity from
-   the correlation sign cross-checked against the flatter predicted sum.
+5. **Alignment (MEASURE)** — band-limited GCC-PHAT supplies an ×16-upsampled,
+   ε/parallax-corrected seed, polarity, and capture confidence; a
+   declaration-bounded summed-flatness search selects the applied delay.
 6. **Candidate + prediction** — as-crossed branches (design §5.4) ⇒ trims level-
    match the branches through the crossover, then the predicted applied sum is
    ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` and its Fc±1-octave ripple is reported.
@@ -366,6 +365,16 @@ class AlignmentEstimate:
     the tweeter's acoustic arrival is EARLIER and the tweeter branch must be
     delayed by that amount** to time-align the crossover.
 
+    T2 keeps GCC as the capture-quality seed: ``seed_delay_us`` records that
+    corrected delay, while ``delay_us`` becomes the declaration-bounded
+    sum-flatness selection. ``confidence`` therefore remains explicitly
+    ``confidence_source='gcc_phat_seed'``; the flatness objective's own
+    quality evidence is stored separately on :class:`CrossoverCandidate`.
+    After refinement, ``raw_delay_us`` is the selected delay in the
+    pre-parallax coordinate, preserving
+    ``delay_us == raw_delay_us - parallax_us``; it is not the discarded GCC
+    raw peak, whose corrected form remains available as ``seed_delay_us``.
+
     ``status`` is :data:`ALIGNMENT_OK` for a trustworthy estimate. When the
     correlation peak lands at (or within one sample of) the ±search-window
     edge, the true delay likely exceeds the geometry prior and the windowed
@@ -382,6 +391,8 @@ class AlignmentEstimate:
     polarity_agrees_with_sum: bool
     confidence: float
     status: str = ALIGNMENT_OK
+    seed_delay_us: float | None = None
+    confidence_source: str = "gcc_phat"
 
 
 @dataclass(frozen=True)
@@ -393,6 +404,9 @@ class CrossoverCandidate:
     delay_us: float
     predicted_ripple_db: float
     confidence: float
+    alignment_seed_ripple_db: float | None = None
+    flatness_improvement_db: float | None = None
+    flatness_at_bound: bool = False
 
 
 @dataclass(frozen=True)
@@ -1298,17 +1312,21 @@ def _flatness_delay_us(
     *,
     lo_hz: float,
     hi_hz: float,
-    peak_gap_us: float,
+    reference_gap_us: float,
     search_bounds_us: tuple[float, float],
     seed_delay_us: float,
-) -> float:
+) -> tuple[float, float, float, bool]:
     """Refine an applied delay by minimizing summed ripple in one delay lobe.
 
-    ``peak_gap_us`` is ``D_t - D_w`` from the two full-IR argmaxes. Candidate
-    applied delays use :class:`AlignmentEstimate`'s signed convention, so the
-    residual evaluated in the independently peak-referenced transfer
-    functions is ``peak_gap_us + candidate_delay_us``. The caller supplies a
+    ``reference_gap_us`` is the full-IR ``D_t - D_w`` argmax gap plus the
+    declared mic-parallax correction. Candidate applied delays use
+    :class:`AlignmentEstimate`'s signed convention, so the residual evaluated
+    in the independently peak-referenced transfer functions is
+    ``reference_gap_us + candidate_delay_us``. The caller supplies a
     declaration-derived signed search lobe; GCC remains the seed/fallback.
+
+    Returns ``(selected_delay, selected_ripple, seed_ripple, at_bound)`` so
+    the refinement is durable evidence rather than an unobservable overwrite.
     """
     lower_us, upper_us = (float(value) for value in search_bounds_us)
     if not (
@@ -1316,11 +1334,11 @@ def _flatness_delay_us(
         and math.isfinite(upper_us)
         and lower_us <= upper_us
     ):
-        return float(seed_delay_us)
+        return float(seed_delay_us), float("inf"), float("inf"), False
 
     band = (freqs_hz >= lo_hz) & (freqs_hz <= hi_hz)
     if not np.any(band):
-        return float(seed_delay_us)
+        return float(seed_delay_us), float("inf"), float("inf"), False
     freqs = freqs_hz[band]
     W_band = W[band]
     T_band = T[band]
@@ -1331,10 +1349,8 @@ def _flatness_delay_us(
     if lower_us <= seed_delay_us <= upper_us:
         candidates = np.append(candidates, float(seed_delay_us))
 
-    best_delay_us = float(seed_delay_us)
-    best_ripple_db = float("inf")
-    for candidate_delay_us in candidates:
-        residual_delay_us = peak_gap_us + float(candidate_delay_us)
+    def _score(candidate_delay_us: float) -> float:
+        residual_delay_us = reference_gap_us + float(candidate_delay_us)
         summed = _predicted_sum(
             W_band,
             T_band,
@@ -1344,11 +1360,20 @@ def _flatness_delay_us(
             freqs_hz=freqs,
             residual_delay_us=residual_delay_us,
         )
-        ripple_db = _ripple_db(freqs, summed, lo_hz, hi_hz)
+        return _ripple_db(freqs, summed, lo_hz, hi_hz)
+
+    seed_ripple_db = _score(float(seed_delay_us))
+    best_delay_us = float(seed_delay_us)
+    best_ripple_db = float("inf")
+    for candidate_delay_us in candidates:
+        ripple_db = _score(float(candidate_delay_us))
         if ripple_db < best_ripple_db:
             best_delay_us = float(candidate_delay_us)
             best_ripple_db = ripple_db
-    return best_delay_us
+    at_bound = math.isclose(best_delay_us, lower_us) or math.isclose(
+        best_delay_us, upper_us,
+    )
+    return best_delay_us, best_ripple_db, seed_ripple_db, at_bound
 
 
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
@@ -1942,8 +1967,14 @@ def _analyze_measure(
         tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
     )
-    if candidate.delay_us != alignment.delay_us:
-        alignment = replace(alignment, delay_us=candidate.delay_us)
+    if candidate.alignment_seed_ripple_db is not None:
+        alignment = replace(
+            alignment,
+            delay_us=candidate.delay_us,
+            raw_delay_us=candidate.delay_us + alignment.parallax_us,
+            seed_delay_us=alignment.delay_us,
+            confidence_source="gcc_phat_seed",
+        )
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a leading pilot pair; legacy programs carry none, so
     # the verdicts stay ``None`` (byte-identical to the pre-v2 analysis).
@@ -2003,25 +2034,44 @@ def _build_candidate(
     trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
     delay_us = alignment.delay_us
     residual_delay_us = 0.0
+    seed_ripple_db = None
+    flatness_improvement_db = None
+    flatness_at_bound = False
     if alignment.status == ALIGNMENT_OK and alignment_delay_bounds_us is not None:
         peak_gap_us = (
             int(np.argmax(np.abs(tweeter_full_ir)))
             - int(np.argmax(np.abs(woofer_full_ir)))
         ) / sample_rate * 1e6
-        delay_us = _flatness_delay_us(
-            freqs,
-            W,
-            T,
-            trim_w,
-            trim_t,
-            alignment.polarity_sign,
-            lo_hz=lo_clamped,
-            hi_hz=hi,
-            peak_gap_us=peak_gap_us,
-            search_bounds_us=alignment_delay_bounds_us,
-            seed_delay_us=alignment.delay_us,
+        objective_reference_gap_us = peak_gap_us + alignment.parallax_us
+        selected_delay_us, selected_ripple_db, selected_seed_ripple_db, at_bound = (
+            _flatness_delay_us(
+                freqs,
+                W,
+                T,
+                trim_w,
+                trim_t,
+                alignment.polarity_sign,
+                lo_hz=lo_clamped,
+                hi_hz=hi,
+                reference_gap_us=objective_reference_gap_us,
+                search_bounds_us=alignment_delay_bounds_us,
+                seed_delay_us=alignment.delay_us,
+            )
         )
-        residual_delay_us = peak_gap_us + delay_us
+        if math.isfinite(selected_ripple_db) and math.isfinite(
+            selected_seed_ripple_db
+        ):
+            delay_us = selected_delay_us
+            seed_ripple_db = selected_seed_ripple_db
+            flatness_improvement_db = seed_ripple_db - selected_ripple_db
+            flatness_at_bound = at_bound
+            # VERIFY is captured back at the measurement microphone. The
+            # applied delay therefore appears there against the measured peak
+            # gap, without the listening-plane parallax transform used by the
+            # selection objective above. It is the same selected delay in two
+            # explicit coordinate frames, not two independently derived
+            # delays.
+            residual_delay_us = peak_gap_us + delay_us
     # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
     # The legacy/GCC path retains its zero-residual prediction. T2's bounded
     # flatness path explicitly predicts at the selected ARGMAX-FRAME residual,
@@ -2043,6 +2093,9 @@ def _build_candidate(
         delay_us=delay_us,
         predicted_ripple_db=ripple,
         confidence=alignment.confidence,
+        alignment_seed_ripple_db=seed_ripple_db,
+        flatness_improvement_db=flatness_improvement_db,
+        flatness_at_bound=flatness_at_bound,
     )
     return candidate, (freqs, predicted_db)
 
@@ -2187,13 +2240,30 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     alignment = getattr(analysis, "alignment", None)
     if alignment is not None:
         out["alignment_confidence"] = round(float(alignment.confidence), 4)
+        out["alignment_confidence_source"] = getattr(
+            alignment, "confidence_source", "gcc_phat",
+        )
         out["alignment_status"] = alignment.status
         out["delay_us"] = round(float(alignment.delay_us), 3)
+        seed_delay_us = getattr(alignment, "seed_delay_us", None)
+        if seed_delay_us is not None:
+            out["alignment_seed_delay_us"] = round(float(seed_delay_us), 3)
+            out["alignment_refinement_delta_us"] = round(
+                float(alignment.delay_us) - float(seed_delay_us), 3,
+            )
         out["polarity"] = alignment.polarity
 
     candidate = getattr(analysis, "candidate", None)
     if candidate is not None:
         out["predicted_ripple_db"] = round(float(candidate.predicted_ripple_db), 4)
+        if candidate.alignment_seed_ripple_db is not None:
+            out["alignment_seed_ripple_db"] = round(
+                float(candidate.alignment_seed_ripple_db), 4,
+            )
+            out["flatness_improvement_db"] = round(
+                float(candidate.flatness_improvement_db), 4,
+            )
+            out["flatness_at_bound"] = bool(candidate.flatness_at_bound)
 
     for resp in getattr(analysis, "driver_responses", None) or ():
         role = resp.role

@@ -321,8 +321,9 @@ LOCATE_MIN_CONFIDENCE = 0.1
 VERIFY_TOLERANCE_DB = 1.5
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
-# Below this alignment-estimator confidence (see ``AlignmentEstimate.confidence``
-# in ``program_analysis.py``), the conductor refuses to auto-apply and rejects
+# Below this GCC-seed/capture confidence (see ``AlignmentEstimate.confidence``
+# and ``confidence_source`` in ``program_analysis.py``), the conductor refuses
+# to auto-apply and rejects
 # MEASURE with ``REASON_LOW_ALIGNMENT_CONFIDENCE`` instead of building a
 # candidate (owner ruling, 2026-07-20). Formerly
 # ``crossover_envelope_v2.ALIGNMENT_CONFIDENCE_NUDGE_FLOOR`` — a review-screen
@@ -490,14 +491,28 @@ def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
         "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
         "glitch_detected": bool(analysis.glitch_detected),
         "delay_us": round(float(align.delay_us), 3) if align else None,
+        "alignment_seed_delay_us": (
+            round(float(align.seed_delay_us), 3)
+            if align and align.seed_delay_us is not None else None
+        ),
         "polarity": align.polarity if align else None,
         "alignment_confidence": round(float(align.confidence), 4) if align else None,
+        "alignment_confidence_source": align.confidence_source if align else None,
         "trim_db": (
             {k: round(float(v), 4) for k, v in cand.trim_db.items()} if cand else None
         ),
         "predicted_ripple_db": (
             round(float(cand.predicted_ripple_db), 4) if cand else None
         ),
+        "alignment_seed_ripple_db": (
+            round(float(cand.alignment_seed_ripple_db), 4)
+            if cand and cand.alignment_seed_ripple_db is not None else None
+        ),
+        "flatness_improvement_db": (
+            round(float(cand.flatness_improvement_db), 4)
+            if cand and cand.flatness_improvement_db is not None else None
+        ),
+        "flatness_at_bound": bool(cand.flatness_at_bound) if cand else None,
     }
 
 
@@ -1203,7 +1218,9 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         if analysis.alignment is not None and analysis.alignment.status != ALIGNMENT_OK:
             return PhaseVerdict(False, REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
-        # Trust gate (owner ruling, 2026-07-20): below the confidence floor the
+        # Trust gate (owner ruling, 2026-07-20): this is GCC's capture/seed
+        # confidence, not confidence in T2's refined delay (the alignment and
+        # candidate retain both facts separately). Below the floor the
         # candidate is never built or published — a household has no basis to
         # judge a confidence number, so this is guidance ("move the mic"), not
         # a question ("apply anyway?"). Skipped entirely when there is no
@@ -1362,6 +1379,15 @@ class CrossoverV2Conductor:
             logger, "correction.crossover_v2_measure_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
             alignment_confidence=round(float(align.confidence), 4) if align else None,
+            alignment_confidence_source=(align.confidence_source if align else None),
+            alignment_seed_delay_us=(
+                round(float(align.seed_delay_us), 3)
+                if align and align.seed_delay_us is not None else None
+            ),
+            alignment_refinement_delta_us=(
+                round(float(align.delay_us - align.seed_delay_us), 3)
+                if align and align.seed_delay_us is not None else None
+            ),
             gate_window_ms=self._measure_gate(analysis),
             validity_floor_hz=_measure_validity_floor_hz(analysis),
             epsilon_ppm=round(float(drift.epsilon_ppm), 3) if drift else None,
@@ -1375,6 +1401,15 @@ class CrossoverV2Conductor:
             predicted_ripple_db=(
                 round(float(cand.predicted_ripple_db), 4) if cand else None
             ),
+            alignment_seed_ripple_db=(
+                round(float(cand.alignment_seed_ripple_db), 4)
+                if cand and cand.alignment_seed_ripple_db is not None else None
+            ),
+            flatness_improvement_db=(
+                round(float(cand.flatness_improvement_db), 4)
+                if cand and cand.flatness_improvement_db is not None else None
+            ),
+            flatness_at_bound=(bool(cand.flatness_at_bound) if cand else None),
             woofer_snr_db=woofer_snr_db,
             woofer_snr_verdict=woofer_snr_verdict,
             tweeter_snr_db=tweeter_snr_db,
