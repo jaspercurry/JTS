@@ -83,7 +83,7 @@ phone-mic-era cluster spread or `snap_found=false`), T2-robust retired (its
 phase-slope core rails systematically on as-crossed branches, +388 ± 38 µs
 16/16; its predictive-confidence goal lives on in #1652). The
 reproducibility working plan is archived as decision archaeology. See
-[`crossover-measurement-reproducibility-plan.md`](crossover-measurement-reproducibility-plan.md)
+[`crossover-measurement-reproducibility-plan.md`](historical/crossover-measurement-reproducibility-plan.md)
 §10–§11 for the exact evidence and gate state.
 
 ---
@@ -463,7 +463,7 @@ segments rather than re-deriving the nominal edges.
 
 **Selection is anchor-primary; summed-magnitude flatness is evidence, never a
 selector.** Methodology decision:
-[crossover-measurement-reproducibility-plan.md](crossover-measurement-reproducibility-plan.md)
+[crossover-measurement-reproducibility-plan.md](historical/crossover-measurement-reproducibility-plan.md)
 §10, 2026-07-22 (bake-off verdict + methodology entries). The narrowband
 flatness objective's basin ordering is capture-noise dependent and preferred
 the wrong comb lobe on a hardware repeat, so it no longer chooses the delay.
