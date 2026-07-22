@@ -1738,6 +1738,40 @@ async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
 
 
 @pytest.mark.asyncio
+async def test_airplay_session_drop_happens_after_successful_fanin_handoff(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes, airplay=True)
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY
+
+    coord = mux._volume_coordinator
+    coord.events.clear()
+
+    async def select_with_order(source):
+        coord.events.append(f"select:{source.value}")
+        return {}
+
+    async def drop_with_order():
+        coord.events.append("drop:airplay")
+
+    mux._fanin_select = AsyncMock(side_effect=select_with_order)
+    mux._airplay_drop_session_for_preempt = drop_with_order
+    _stub_probes(patched_probes, airplay=True, usbsink=True)
+
+    await mux._tick()
+
+    assert coord.events == [
+        "prepare:usbsink",
+        "select:usbsink",
+        "finalize:usbsink",
+        "publish_volume_context",
+        "drop:airplay",
+    ]
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
 async def test_winner_stopping_holds_fanin_none(
     mux, patched_probes,
 ):
@@ -1754,7 +1788,8 @@ async def test_winner_stopping_holds_fanin_none(
 
 
 @pytest.mark.asyncio
-async def test_airplay_preempt_uses_stop_not_pause(mux, monkeypatch):
+async def test_airplay_preempt_drops_receiver_session(mux, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     calls: list[tuple[str, ...]] = []
 
     async def fake_busctl(*args):
@@ -1767,28 +1802,58 @@ async def test_airplay_preempt_uses_stop_not_pause(mux, monkeypatch):
 
     assert calls == [(
         "call",
-        "org.mpris.MediaPlayer2.ShairportSync",
-        "/org/mpris/MediaPlayer2",
-        "org.mpris.MediaPlayer2.Player",
-        "Stop",
+        "org.gnome.ShairportSync",
+        "/org/gnome/ShairportSync",
+        "org.gnome.ShairportSync",
+        "DropSession",
     )]
+    assert "event=airplay.preempt_drop_session" in caplog.records[-1].message
+    assert "result=ok" in caplog.records[-1].message
 
 
 @pytest.mark.asyncio
-async def test_airplay_preempt_falls_back_to_pause_when_stop_fails(
-    mux, monkeypatch,
+async def test_airplay_preempt_falls_back_to_stop_when_drop_session_fails(
+    mux, monkeypatch, caplog,
 ):
+    caplog.set_level(logging.INFO)
     calls: list[tuple[str, ...]] = []
 
     async def fake_busctl(*args):
         calls.append(args)
-        return None if args[-1] == "Stop" else ""
+        return None if args[-1] == "DropSession" else ""
 
     monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
 
     await mux._pause(Source.AIRPLAY)
 
-    assert [call[-1] for call in calls] == ["Stop", "Pause"]
+    assert [call[-1] for call in calls] == ["DropSession", "Stop"]
+    messages = [record.message for record in caplog.records]
+    assert any("event=airplay.preempt_drop_session_failed" in m for m in messages)
+    assert any(
+        "event=airplay.preempt_stop" in m and "result=fallback_ok" in m
+        for m in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_airplay_preempt_failure_keeps_new_source_authoritative(
+    mux, monkeypatch, caplog,
+):
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_busctl(*args):
+        calls.append(args)
+        return None
+
+    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+
+    # Receiver cleanup is best-effort: an unavailable D-Bus control surface
+    # must not raise into the already-completed fan-in handoff.
+    await mux._pause(Source.AIRPLAY)
+
+    assert [call[-1] for call in calls] == ["DropSession", "Stop"]
+    assert "event=airplay.preempt_stop_failed" in caplog.records[-1].message
+    assert "action=new_source_remains_authoritative" in caplog.records[-1].message
 
 
 @pytest.mark.asyncio

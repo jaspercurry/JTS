@@ -156,12 +156,14 @@ level/source-volume knob.
 `jasper-mux` arbitrates between the renderers. In auto mode, every confirmed
 source start is equal, including USB: a new inactive→active transition preempts
 the older winner so the user gets one consistent "latest source wins" rule. For
-AirPlay, preempt means MPRIS `Stop` so shairport-sync drops the current playback
-session instead of leaving an invisible paused sender behind. The landing page
-also exposes a lightweight Source selector: manual mode persistently pins one
-renderer lane through `jasper-fanin` without turning any source on/off. The
-`/sources/` page can disable a source entirely; pinning or disabling USB are the
-explicit opt-outs when computer audio should not interrupt another source.
+AirPlay, mux first completes the guarded fan-in handoff, then asks shairport-sync
+to end the receiver session with its native `DropSession` method. MPRIS `Stop`
+is retained only as a compatibility fallback because an AirPlay 2 sender may
+ignore remote transport requests. The landing page also exposes a lightweight
+Source selector: manual mode persistently pins one renderer lane through
+`jasper-fanin` without turning any source on/off. The `/sources/` page can
+disable a source entirely; pinning or disabling USB are the explicit opt-outs
+when computer audio should not interrupt another source.
 Before mux moves the fan-in gate, it asks `VolumeCoordinator` to make the
 target source's volume carrier safe, so switching between push-volume
 sources (Spotify/Bluetooth) and Camilla-master sources (AirPlay/USB)

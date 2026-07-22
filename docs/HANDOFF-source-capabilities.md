@@ -29,7 +29,10 @@ JTS already has the right system ownership:
   not product policy.
 - `jasper-mux` owns audible source policy: source-neutral latest-start-wins,
   persistent manual selection, preemption, and guarded source handoff before
-  opening a fan-in lane. No source adapter owns priority.
+  opening a fan-in lane. Source-specific cleanup runs only after the guarded
+  handoff succeeds; for AirPlay that means receiver-owned `DropSession` with an
+  observable MPRIS `Stop` compatibility fallback. No source adapter owns
+  priority.
 - `VolumeCoordinator` owns the single user-facing `listening_level`,
   source handoff safety, degraded push guards, duck-aware Camilla
   writes, and persistence.
@@ -478,4 +481,7 @@ capability unsupported and return a clear user-facing result.
   source-addition checklist changes, `HANDOFF-volume.md` for volume
   behavior, and `HANDOFF-voice-music-control.md` for transport behavior.
 
-Last verified: 2026-06-25
+Last verified: 2026-07-22 (mux policy ownership, post-handoff AirPlay
+receiver cleanup, fallback observability, and source-adapter boundaries
+rechecked against `jasper/mux.py` and mux contract tests. Broader capability
+extraction plan last fully rechecked 2026-06-25.)

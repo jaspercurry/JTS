@@ -225,11 +225,14 @@ mixer, a second output device, or a new volume model.
    second persistence path or infer intent from process state.
 7. **Define preemption.** Add the source-specific stop/pause/silence
    path to `jasper/mux.py`. Prefer a real renderer-owned API: AirPlay
-   uses shairport-sync MPRIS `Stop` when it loses the lane, Spotify uses
-   Web API pause with a restart fallback, and USB uses fan-in's lane-level
-   MUTE/UNMUTE command. If the source cannot be controlled from the Pi,
-   document the intentional fallback ("may briefly mix") and expose an
-   operator escape hatch only when the failure mode justifies one.
+   uses shairport-sync's native `DropSession` after a successful fan-in
+   handoff, with MPRIS `Stop` only as a compatibility fallback. Spotify
+   uses Web API pause with a restart fallback, and USB uses fan-in's
+   lane-level MUTE/UNMUTE command. Cleanup failure must be observable and
+   must not undo an already-completed handoff. If the source cannot be
+   controlled from the Pi, document the intentional fallback ("may briefly
+   mix") and expose an operator escape hatch only when the failure mode
+   justifies one.
 8. **Wire manual source selection.** The mux/control allow-lists derive
    from `jasper/music_sources.py`; add the landing-page button in
    `deploy/index.html` and keep `/sources/` as the on/off surface.
@@ -708,7 +711,10 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-16 (pre-DSP loudness ownership, stamped FIFO volume state, gentle-envelope offset learning, music-reference expiry, drained-before-end commit, and passive outputd scope checked against PR #1542; prior pass covered assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
+Last verified: 2026-07-22 (source-preemption ownership, AirPlay
+receiver-session cleanup ordering, compatibility fallback, and failure
+semantics rechecked against `jasper/mux.py` and mux contract tests. Prior
+2026-07-16: pre-DSP loudness ownership, stamped FIFO volume state, gentle-envelope offset learning, music-reference expiry, drained-before-end commit, and passive outputd scope checked against PR #1542; prior pass covered assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
 launch gate rechecked; source-lifecycle ownership and add-a-source
 integration points rechecked against `jasper.source_intent` and
 `jasper.local_sources`; prior 2026-07-07 ring/default path text rechecked against

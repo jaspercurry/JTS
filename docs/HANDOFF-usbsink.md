@@ -696,9 +696,10 @@ are the understandable escape hatches; Auto itself has one rule.
   Bluetooth/USB on the landing page persistently pins that source and blocks
   automatic switching. Turning USB Audio Input off on `/sources/` removes it
   from arbitration entirely. Because normal preemption stops/pauses the losing
-  renderer, USB taking over can stop an AirPlay session; AirPlay may need to be
-  started again after USB ends. That is an intentional consequence of the
-  uniform Auto contract, not an undetected session.
+  renderer, USB taking over disconnects the AirPlay receiver session through
+  shairport-sync's native `DropSession`; AirPlay must be started again after
+  USB ends. That is an intentional consequence of the uniform Auto contract,
+  not an undetected session.
 
 The `−60 dBFS` threshold (`USBSINK_PLAYING_RMS_DBFS`) survives **display-only**
 — the `/state` dashboard's "is there audible content" readout — and no longer
@@ -2271,8 +2272,9 @@ source of truth per the documentation paradigm.)
 
 Last verified: 2026-07-22 (source-neutral latest-start-wins arbitration,
 process-local activation order, persistent-pin/disable opt-outs, alert/patrol
-single-policy ownership, and UI guidance rechecked against `jasper/mux.py`, mux
-contract tests, and both source controls. Prior 2026-07-16: hardware-resolved
+single-policy ownership, AirPlay receiver-session cleanup after USB wins, and
+UI guidance rechecked against `jasper/mux.py`, mux contract tests, and both
+source controls. Prior 2026-07-16: hardware-resolved
 USB role and Zero/USB-DAC unavailability contract rechecked against the shared
 output-hardware artifact; the optional reverse USB-mic path is explicitly
 separated from the one host-to-speaker fan-in data plane and links to its

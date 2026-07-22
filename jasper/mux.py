@@ -35,10 +35,11 @@ Renderer support:
             metadata corroboration stops mux flapping on macOS's ~30 s
             AirPlay keepalive cycles, which report Playing with no
             audio actually reaching the speakers.
-    preempt: MPRIS Stop method, falling back to Pause if Stop is not
-            available. Stop asks shairport-sync to tear down playback
-            instead of leaving a hidden paused AirPlay session behind
-            while another renderer owns the fan-in gate.
+    preempt: native DropSession method, falling back to MPRIS Stop on
+            older/unavailable native interfaces. DropSession tears down
+            the receiver-owned AirPlay session instead of relying on the
+            sender to honor a remote transport request, avoiding a hidden
+            AirPlay session while another renderer owns the fan-in gate.
   Bluetooth (bluez-alsa):
     detect: presence of an a2dpsnk source PCM (best-effort —
             doesn't distinguish "phone connected, not playing"
@@ -61,9 +62,9 @@ Automatic source policy:
   Every source is an equal candidate. A confirmed inactive→active transition
   becomes the winner, including USB, so Auto has one explainable rule: the
   latest source to start wins. The losing sources keep their existing
-  source-specific preemption behavior (AirPlay Stop, Spotify/BT pause, USB lane
-  mute). Alerts only accelerate the authoritative re-read; alert arrival order
-  never chooses the winner.
+  source-specific preemption behavior (AirPlay DropSession, Spotify/BT pause,
+  USB lane mute). Alerts only accelerate the authoritative re-read; alert
+  arrival order never chooses the winner.
 
   Mux records a process-local activation sequence for every confirmed start,
   including starts observed while a manual pin owns the gate. That sequence
@@ -141,6 +142,9 @@ FANIN_TEST_LEASE_SEC = 60.0
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
 MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+SHAIRPORT_NATIVE_BUS = "org.gnome.ShairportSync"
+SHAIRPORT_NATIVE_PATH = "/org/gnome/ShairportSync"
+SHAIRPORT_NATIVE_IFACE = "org.gnome.ShairportSync"
 
 
 def _spotify_preempt_restart_disabled() -> bool:
@@ -1668,8 +1672,8 @@ class Mux:
                 pass
 
     # ------------------------------------------------------------------
-    # Pause actions — Spotify, AirPlay, and Bluetooth have receiver-side
-    # APIs when their upstream sender exposes the needed control surface.
+    # Losing-source cleanup. Handoff policy lives above; these helpers only
+    # perform each renderer's source-specific I/O after the gate has moved.
     # ------------------------------------------------------------------
 
     async def _pause(self, source: Source) -> None:
@@ -1700,7 +1704,7 @@ class Mux:
             )
             await self._spotify_force_restart_librespot()
         elif source == Source.AIRPLAY:
-            await self._airplay_stop_for_preempt()
+            await self._airplay_drop_session_for_preempt()
         elif source == Source.BLUETOOTH:
             try:
                 await bluetooth_avrcp_call("Pause")
@@ -1720,49 +1724,67 @@ class Mux:
         elif source == Source.USBSINK:
             await self._usbsink_set_preempt(True, reason="preempted_by_winner")
 
-    async def _airplay_stop_for_preempt(self) -> None:
-        """Drop AirPlay playback when another source wins the speaker.
+    async def _airplay_drop_session_for_preempt(self) -> None:
+        """Drop the AirPlay receiver session after another source wins.
 
         Voice transport still exposes "pause" semantics through
         RendererClient.pause_airplay(). Mux preemption is different:
-        once Spotify/Bluetooth/USB has the audible lane, keeping a
-        paused AP2 session alive makes status ambiguous and lets sender
-        resumes race with the next source switch. shairport-sync exposes
-        MPRIS Stop, which is the narrowest renderer-owned way to end the
-        current playback session without restarting the whole service.
+        once Spotify/Bluetooth/USB has the audible lane, keeping an AP2
+        session alive leaves the sender routed to an inaudible receiver.
+
+        ``DropSession`` is receiver-owned and forcibly terminates that
+        connection. MPRIS ``Stop`` is only a remote request to the sender and
+        AirPlay 2 senders may ignore it, so it is retained solely as a
+        compatibility fallback when the native method is unavailable. This
+        cleanup runs after fan-in has moved; failure never rolls back or weakens
+        the authoritative audible-lane handoff.
         """
-        ok = await _busctl(
+        dropped = await _busctl(
+            "call",
+            SHAIRPORT_NATIVE_BUS,
+            SHAIRPORT_NATIVE_PATH,
+            SHAIRPORT_NATIVE_IFACE,
+            "DropSession",
+        )
+        if dropped is not None:
+            log_event(
+                logger,
+                "airplay.preempt_drop_session",
+                method="DropSession",
+                result="ok",
+            )
+            return
+
+        log_event(
+            logger,
+            "airplay.preempt_drop_session_failed",
+            method="DropSession",
+            action="mpris_stop_fallback",
+            level=logging.WARNING,
+        )
+        stopped = await _busctl(
             "call",
             SHAIRPORT_MPRIS_BUS,
             SHAIRPORT_MPRIS_PATH,
             MPRIS_PLAYER_IFACE,
             "Stop",
         )
-        if ok is not None:
-            log_event(logger, "airplay.preempt_stop", method="Stop", result="ok")
+        if stopped is not None:
+            log_event(
+                logger,
+                "airplay.preempt_stop",
+                method="Stop",
+                result="fallback_ok",
+            )
             return
 
         log_event(
             logger,
             "airplay.preempt_stop_failed",
             method="Stop",
-            action="pause_fallback",
+            action="new_source_remains_authoritative",
             level=logging.WARNING,
         )
-        pause_ok = await _busctl(
-            "call",
-            SHAIRPORT_MPRIS_BUS,
-            SHAIRPORT_MPRIS_PATH,
-            MPRIS_PLAYER_IFACE,
-            "Pause",
-        )
-        if pause_ok is None:
-            log_event(
-                logger,
-                "airplay.preempt_pause_failed",
-                method="Pause",
-                level=logging.WARNING,
-            )
 
     # ------------------------------------------------------------------
     # USB sink preempt protocol — MUTE/UNMUTE the fan-in usbsink lane.
@@ -2039,8 +2061,7 @@ class Mux:
 
 async def _busctl(*args: str) -> Optional[str]:
     """Run busctl on the system bus, return stdout on success or
-    None on any error. Used for both PlaybackStatus polling and
-    Pause method invocation."""
+    None on any error. Used by the bounded AirPlay preemption adapter."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "busctl", "--system", *args,
@@ -2048,7 +2069,7 @@ async def _busctl(*args: str) -> Optional[str]:
             stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError):
+    except (FileNotFoundError, asyncio.TimeoutError, OSError):
         return None
     if proc.returncode != 0:
         return None
