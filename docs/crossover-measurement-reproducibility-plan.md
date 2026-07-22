@@ -1,13 +1,20 @@
 # Crossover measurement — reproducibility working plan
 
-> **Status: ACTIVE — T2-core merged; controlled repeat failed.** This is the
-> execution and decision reference for the "MEASURE is not reproducible →
-> VERIFY fails" blocker on the v2 conductor flow. T2-core merged via PR #1647
-> on 2026-07-22, but the required post-merge UMIK-2 repeat selected a bound-
-> pinned 299.948 µs woofer delay and failed three VERIFY captures at
-> 5.264–6.454 dB max. T2-robust and Fix 4 remain paused while the upstream
-> offline-objective/hardware-VERIFY mismatch is diagnosed. This is a *targeted
-> refactor of the measurement core*, not a rewrite of the conductor
+> **Status: ACTIVE — selector implemented, adversarial-reviewed 0/0/0, and
+> confirmed on JTS3 (2026-07-22); pending merge + the owner's definitive
+> 5-run controlled repeat (§2 stop rule).**
+> This is the execution and decision reference for the "MEASURE is not
+> reproducible → VERIFY fails" blocker on the v2 conductor flow. T2-core
+> merged via PR #1647, its post-merge UMIK-2 repeat failed (bound-pinned
+> 299.948 µs, VERIFY 5.264–6.454 dB max), and the follow-up overlay
+> diagnosis + prior-art work located the architecture-level cause: the
+> narrowband flatness objective was allowed to *select* the delay, and its
+> basin ordering is capture-noise-dependent. Decision (see §10, 2026-07-22
+> methodology entry): the drift-corrected physical peak-gap anchor owns lobe
+> selection and the primary value; any fine refinement is bounded within the
+> anchor's lobe and chosen by offline bake-off; flatness is demoted to
+> evidence; railed/disagreeing selections route to guidance. This is a
+> *targeted refactor of the measurement core*, not a rewrite of the conductor
 > architecture.
 >
 > Canonical operational truth: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
@@ -436,6 +443,191 @@ Captured so they're off the table for the landing work:
 
 ## 10. Decision log (append; newest first)
 
+- *2026-07-22 (on-device confirmation: anchor+snap selector reproducible and
+  VERIFY-green on JTS3)* — After the implementation cleared its independent
+  adversarial review at **0 blockers / 0 should-fixes / 0 nits** (first round
+  0/1/3; the S1 anchor-SSOT refactor was verified behavior-preserving by
+  bit-identical replay), the branch was deployed to JTS3
+  (`04fab56d8`, manifest verified) and three fresh headless
+  CHECK → MEASURE → auto-APPLY → VERIFY flows ran through the real relay +
+  UMIK-2 at the controlled tweeter-axis placement:
+  - **Run 1: PASS.** Selected **32.411 µs** woofer delay (anchor −29.7, snap
+    −2.7, GCC seed −353.6 ignored); VERIFY **1.233 dB max / 0.620 RMS**
+    (1.5 gate). One VERIFY capture was first honestly rejected
+    `verify_inconclusive` when a transient collapsed its reflection gate to
+    1.5 ms — the gate-comparability rule working as designed.
+  - **Run 2: VERIFY failed 3× at 1.74/2.12/1.88 dB — diagnosed as a room-noise
+    event, not a selector error.** CHECK woofer-band SNR dropped 23.3 →
+    **17.4 dB** for this run only; the selector still chose an in-cluster
+    **31.013 µs** (anchor −47.3 healed by a +16.3 snap). A noisy MEASURE
+    inflates VERIFY's own aligned target, so the failure mode under noise is
+    now "applies a good value, grades conservatively" (safe, honest retry)
+    rather than the old "applies a wrong lobe."
+  - **Run 3: PASS with the best margin ever recorded on this rig.** SNR
+    recovered (23.24 dB); selected **33.783 µs**; VERIFY **0.597 dB max /
+    0.343 RMS** — 2× inside even the stop rule's stricter 1.2 dB bar.
+
+  **Reproducibility read: five independent captures — the two replayed
+  hardware-anchored captures plus three fresh runs — select within a
+  2.77 µs total spread** (33.745, 31.385, 32.411, 31.013, 33.783 µs),
+  spanning two days, two code states, and a 6 dB ambient swing; every value
+  sits in the hardware pass valley measured by the protected delay sweep.
+  Anchors alone ranged −28.3…−49.9 (integer-argmax jitter); the snap
+  collapsed them all. The applied polarity (`invert`) is consistent across
+  every run of this rig. This is the initial on-device read the plan owed;
+  the definitive §2 stop rule (5 consecutive controlled runs) remains the
+  owner's hands.
+
+- *2026-07-22 (fine-stage bake-off result: anchor + gated-GCC local-peak snap
+  wins; phase-slope and broadband-xcorr ruled out with recorded negative
+  results)* — The offline bake-off (artifacts:
+  `captures/xover-e0-2026-07-21/bakeoff-20260722/`, 16 validated captures ×
+  5 candidates, harness reproduced every production/sidecar reference value
+  to ≤0.04 µs before scoring) evaluated fine-stage candidates on the two
+  hardware-anchored captures plus every repeat pair in the retained corpus.
+
+  **Winner: anchor + nearest-GCC-local-peak snap.** Compute the
+  drift-corrected physical peak-gap anchor as today; then snap to the
+  nearest *local maximum* of the existing upsampled GCC-PHAT correlation
+  within a radius of the anchor; fall back to the bare anchor when no local
+  maximum exists inside the radius. Evidence: on the hardware pair it lands
+  in the pass valley both runs (applied woofer delay 33.5 / 31.7 µs,
+  interpolated aligned-VERIFY ≈ 2.17/2.22 dB raw-metric — comparable to the
+  anchor's own accuracy) with **1.77 µs** run-to-run spread; across all 8
+  repeat pairs its spread is **median 3.5 / max 7.2 µs — 0/8 pairs exceed
+  the ±20.8 µs stop-rule budget**, vs 4/8 for the integer anchor (max
+  44.7 µs — a genuine tweeter-argmax ±1–2-sample instability on
+  back-to-back mic-untouched attempts, confirmed in the raw data) and 3/8
+  for sub-sample envelope refinement (refining an unstable peak stays
+  unstable). The snap *heals* anchor jitter: the 44.7 µs anchor-jump pair
+  converged to 6.9 µs; max observed snap distance anywhere in the corpus is
+  39.1 µs. **Snap radius: period/6 at Fc (≈83 µs at 2 kHz)** — the same λ/6
+  as the GPS lobe-selection budget, 2× the max observed legitimate snap,
+  and structurally below the +166 µs stable-but-wrong correlation feature
+  (see below). Polarity/confidence machinery unchanged (existing GCC
+  capture confidence still gates at the 0.6 floor). With the snap bounded
+  closed-form and an anchor fallback, nothing can rail — the
+  railed-value-auto-applied hole closes structurally, with no new conductor
+  gate needed.
+
+  **Recorded negative results (do not re-litigate):**
+  - *Gated-GCC "window max" reading:* the tallest correlation peak within
+    ±half-period of the anchor is a stable wrong answer on this hardware —
+    applied 193/192 µs (1.5 µs "precision"), 7.4 dB on the hardware curve.
+    Within-window *maximum* ≠ nearest local peak; only the latter is safe.
+  - *Broadband IR cross-correlation (b2):* cross-correlating two
+    different-band drivers' IRs is NOT a broadband arrival comparator — the
+    correlation is dominated by the shared overlap band and degenerates to
+    the same comb (selected ~285–319 µs, 4.4–5.0 dB on hardware). The REW
+    "cross-corr align" analogy only holds for same-source measurements.
+  - *Anchor + coherence-weighted phase-slope (d):* railed on **16/16**
+    captures with a tightly clustered systematic residual (+388 ± 38 µs,
+    same sign, placement-independent; synthetic self-test recovers known
+    residuals to 0.07 µs, window tapers move the real-data result <0.3 µs).
+    The as-crossed branches' relative phase over the overlap band is
+    dominated by the drivers'/filters' differential dispersion, not by
+    arrival misalignment — a cross-spectrum phase slope cannot recover the
+    VERIFY-optimal delay here. This further re-scopes T2-robust: its
+    phase-slope core is not viable on as-crossed branches; any future σ_τ
+    confidence layer needs a different base quantity.
+  - *Corpus caveat:* under the current (fix-1) correlation band, the E0
+    captures score 0.62–0.78 GCC confidence — above the 0.6 floor — so the
+    confidence gate would NOT have filtered the captures whose anchor
+    jumped; the snap is what carries the reproducibility clause.
+
+- *2026-07-22 (methodology decision: physical anchor primary; flatness demoted
+  from selector to evidence)* — The owner-directed diagnosis of the failed
+  controlled repeat is complete, and it changes the estimator's architecture,
+  not its tuning. Three independent evidence streams converged:
+
+  **(1) The offline overlay** (artifacts:
+  `captures/xover-e0-2026-07-21/overlay-20260722/`) replayed both same-morning
+  captures through the exact production objective across ±700 µs, validated
+  against production's own numbers (every diag value reproduced exactly,
+  program reconstruction byte-validated). Findings: the failing capture's
+  flatness landscape **genuinely prefers the wrong comb basin** (ripple
+  7.15–7.29 dB around −300…−318 µs vs 7.96–8.99 dB at the hardware-correct
+  −40…−50 µs) — an objective problem, not a search bug. A 2×2 code-delta
+  matrix (pre-merge `81f06e1b5` vs merged `bdc893d22a`, both captures) shows
+  **the capture picks the basin, never the code** — capture-dependent
+  bistability, no regression from the post-review commits. The two captures'
+  landscapes differ only in second-order structure (same notch, same
+  SNR-safe regime); the drift-corrected physical peak gap moved 21.7 µs
+  (28.281 → 49.948 µs ≈ one argmax sample) between runs. Critically, a
+  windowed counterfactual on the failing capture shows **no window size saves
+  the flatness metric**: at ±80 µs it picks −6 µs (the far shoulder of the
+  hardware valley, 44 µs from the anchor) because the metric's fine structure
+  disagrees with hardware *inside* the correct basin too; at ±250 µs it rails
+  to the wrong basin (what production did). Meanwhile the bare physical
+  anchor pointed at woofer delay 28.3 µs (run A) and 49.9 µs (run B) — both
+  inside the measured hardware pass valley (20–70 µs; optimum 40–50 at
+  1.94–1.99 dB on the honest aligned metric).
+
+  **(2) Prior art** (two reports:
+  `captures/xover-e0-2026-07-21/prior-art-20260722/REPORT.md` and
+  `DEEP-RESEARCH-REPORT.md`, the latter owner-run deep research). The field
+  is unanimous: every shipping/respected tool (REW, Acourate, Audiolense,
+  Trinnov, Smaart practice, miniDSP, HouseCurve, van Veen/McCarthy live-sound
+  method) anchors driver delay on a **broadband, non-periodic quantity**
+  (per-driver IR arrival / leading edge / geometry) and uses narrowband
+  phase/correlation/flatness only as a **bounded, anchored, validated fine
+  step**. No tool ships an unconstrained narrowband search as the decider.
+  REW's own history added an allowed-delay-range bound + cursor-frequency
+  weighting to its alignment tool after wrong-lobe problems. Ianniello 1982
+  formalizes it: gated (window-constrained) correlators tolerate lower SNR
+  than ungated before anomalous (wrong-lobe) estimates explode.
+
+  **(3) The sizing math** (GPS integer-ambiguity resolution, Teunissen; see
+  DEEP-RESEARCH-REPORT §Q4): with comb period λ ≈ 500 µs at Fc=2 kHz, a
+  coarse anchor with error σ selects the correct lobe with ≥99.7% probability
+  when σ ≤ λ/6 ≈ 83 µs. Our anchor's observed run-to-run delta is 21.7 µs
+  (≈1 argmax sample; σ ≈ 15 µs, n=2) — inside the budget with ~5× margin,
+  even against the bias-tightened λ/8 variant. The anchor is strong enough to
+  own lobe selection outright; no narrowband objective is needed for that
+  role, and per the overlay none can be trusted with it.
+
+  **Decision (architect, Fable): hybrid (c), restructured so each stage does
+  the one job it is provably good at.**
+  - **Lobe selection + primary value = the drift-corrected physical peak-gap
+    anchor** (+ declared parallax), as today, upgraded from integer-sample
+    argmax to a **sub-sample arrival estimate** (the argmax quantum of
+    20.8 µs is currently the anchor's dominant noise term; pyfar-style
+    sub-sample IR-delay estimation is the standard cheap fix, plan §12).
+  - **Fine stage: a bounded refinement within the anchor's lobe, chosen by
+    offline bake-off** on the retained corpus among: (i) no refine
+    (sub-sample anchor alone), (ii) gated GCC — the correlation peak nearest
+    the anchor (Ianniello's gated mode; GCC's within-lobe precision measured
+    at σ ≈ 3.8 µs on the E0 corpus), (iii) coherence-weighted phase-slope
+    regression within the lobe (the T2-robust core, re-scoped to this role).
+    Selection criteria: distance from the hardware optimum on the two
+    hardware-anchored captures, within-placement reproducibility ≤ ±1 sample
+    across the corpus's repeat pairs, and honest failure behavior. The
+    ±1-sample stop-rule clause is why a fine stage exists at all: the
+    integer-argmax anchor alone has σ ≈ 15 µs and would brush against it.
+  - **Summed-magnitude flatness is demoted from selector to evidence** — it
+    remains as diagnostics and (optionally) a cross-lobe validator, but it
+    never chooses the applied delay. Both hardware runs are explained by
+    this role assignment: run A passed because flatness happened to agree
+    with the anchor; run B failed because flatness was allowed to overrule
+    it.
+  - **Gating: a railed fine stage or an anchor↔fine disagreement beyond the
+    window budget routes to `low_alignment_confidence` guidance (re-measure),
+    never auto-apply.** `flatness_at_bound` was diagnostics-only when run B
+    railed — a decision-honesty hole this closes at the conductor.
+  - **VERIFY is unchanged** (fixed independently-aligned target, identical
+    smoothing) — it caught the failure honestly and is the safety net for
+    the residual risk.
+  - **Fix 4 (widen tweeter sweep) is no longer load-bearing for lobe
+    safety** — re-evaluate later purely as SNR/robustness hardening, only if
+    the corpus shows the fine stage needs bandwidth. **T2-robust** is
+    reshaped, not resurrected wholesale: its phase-slope core is fine-stage
+    candidate (iii) above; its σ_τ predictive-confidence layer stays paused
+    until the base selector passes the stop rule.
+  - Noted for later, not this increment: the active preset resolved on JTS3
+    is `preview-default-2way` with a generic `delay_range_ms=[0,1]`, not a
+    speaker-specific declaration — the declared-range rail is doing less
+    work than intended on this bench.
+
 - *2026-07-22 (post-merge controlled repeat failed; prior sound restored)* —
   On merged T2-core plus the review-only status/contract-text corrections, a
   fresh headless CHECK → MEASURE → automatic APPLY → VERIFY run used the
@@ -651,18 +843,35 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status:** T2-core merged via PR #1647 and its pre-merge physics/replay/CI
-  gates remain green, but its required post-merge hardware repeat failed. The
-  fresh run selected and applied 299.948 µs at the objective bound, then failed
-  three honest VERIFY captures at 5.264–6.454 dB max. T2-core is not complete.
-- **Next action:** use a fresh protected hardware delay curve as labeled ground
-  truth for the same capture and overlay the selector's physical-lobe,
-  flatness, GCC, and drift terms. The immediate question is why the objective
-  moved from the previously hardware-green 40–53.7 µs basin to the 299.948 µs
-  bound despite clean drift residuals. Do not tune coherence weighting or
-  widen overlap until the base objective follows hardware VERIFY. PR #1647's
-  CI and 0/0 review remain valid code-quality evidence, not hardware-
-  reproducibility evidence.
+- **Status: implementation built, independently adversarial-reviewed clean
+  (0 blockers / 0 should-fixes / 0 nits after the S1 anchor-SSOT
+  remediation), deployed to JTS3, and confirmed on hardware — 2 of 3 fresh
+  headless flows VERIFY-passed (best 0.597 dB max / 0.343 RMS) and the one
+  failure was a measured room-noise event with the selector still in-cluster
+  (§10, on-device confirmation entry). Five captures select within 2.77 µs
+  total spread.** Remaining: merge via PR (green CI), then the owner's
+  definitive §2 5-run controlled repeat at a verified-good placement.
+  Diagnosis of the failed repeat is complete (overlay artifacts
+  in `captures/xover-e0-2026-07-21/overlay-20260722/`; prior-art reports in
+  `captures/xover-e0-2026-07-21/prior-art-20260722/`), the offline fine-stage
+  bake-off ran (`captures/xover-e0-2026-07-21/bakeoff-20260722/`) and picked
+  **anchor + gated-GCC local-peak snap** (§10, 2026-07-22), and that selector is
+  now implemented in `jasper/audio_measurement/program_analysis.py`
+  (`_gcc_local_peak_snap` + the `GCC_SNAP_RADIUS_PERIODS` = period/6 radius; the
+  `_flatness_search_lobe_us` / `_flatness_delay_us` *selection* path is deleted,
+  flatness demoted to `alignment_seed_ripple_db` / `flatness_improvement_db`
+  evidence; `flatness_at_bound` retired for `anchor_delay_us` / `snap_delta_us`
+  / `snap_found`). Hardware-free physics/regression tests land in the same
+  change; canonical operational truth is
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  "Delay selection". Local replay on the two hardware-anchored captures matches
+  the bake-off within <1 µs (run A applied 33.7 µs, run B 31.4 µs; anchors
+  28.281 / 49.948 exact; A–B spread 2.4 µs, inside the ±20.8 µs stop-rule).
+- **Next action:** independent adversarial review (0/0) of the implemented
+  selector, then an on-device JTS3 CHECK→MEASURE→APPLY→VERIFY confirmation —
+  the decisive hardware-reproducibility test the offline work cannot settle.
+  PR #1647's CI and 0/0 review remain code-quality evidence only. Do not resume
+  T2-robust / Fix 4 until the base selector clears that hardware gate.
 - **Room caveat carried forward:** JTS3's room is a ~10 ft cube, capping
   any reflection-free analysis window at ~7 ms regardless of mic
   placement (confirmed directly in E0's data — see §10). Any future

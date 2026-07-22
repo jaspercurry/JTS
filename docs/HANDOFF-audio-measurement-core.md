@@ -425,8 +425,9 @@ create a second retention system.
   conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/
   VERIFY composers, and the pure `(program, capture) → ProgramAnalysis`
   locator / clock-drift ε / GCC-PHAT polarity-and-confidence seed +
-  declaration-bounded summed-flatness candidate pipeline whose comb lobe is
-  anchored by the drift-corrected physical peak gap) — all
+  anchor-primary delay pipeline: the comb lobe is the drift-corrected physical
+  peak gap, snapped to the nearest local GCC-PHAT peak within ±(period/6) at Fc,
+  with summed flatness demoted to evidence) — all
   under `jasper/audio_measurement/`; plus,
   staying in `jasper/correction/`: `confidence.py`, `coordinator.py`
   (`measurement_window`: pauses renderers + voice, serializes), `session.py`

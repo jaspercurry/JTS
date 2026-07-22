@@ -436,32 +436,37 @@ ProgramAnalysis`:
    existing split policy; validity floor from the gate width.
 5. **Alignment (MEASURE):** band-limited GCC-PHAT over the true branch-sweep
    overlap supplies a sub-sample, ε-corrected seed (not raw parabolic),
-   polarity, and capture-quality confidence. The applied delay is then chosen
-   by minimizing summed ripple over that same overlap inside the active
-   crossover region's declared `delay_range_ms` magnitude range, plus the
-   shared plausibility margin. The drift-corrected physical peak gap plus
-   declared parallax supplies the signed lobe center; GCC remains the polarity
-   and capture-confidence seed but does not choose the periodic comb basin.
-   Search stays inside one ±half-period lobe; a fresh preset need not have an applied
+   polarity, and capture-quality confidence. The applied delay is
+   **anchor-primary with a gated local-peak snap** (methodology: reproducibility
+   plan §10, 2026-07-22 — the narrowband summed-flatness objective's basin
+   ordering is capture-noise dependent and preferred the wrong comb lobe on a
+   hardware repeat, so it no longer selects). The drift-corrected physical peak
+   gap plus declared parallax is the **anchor** — non-periodic, it owns comb-lobe
+   selection; GCC's periodic global peak stays the polarity and capture-quality
+   seed but is not the applied delay. The fine step snaps the anchor to the
+   nearest local maximum of the SAME upsampled GCC-PHAT correlation within
+   ±(period/6) at Fc (the λ/6 lobe-selection budget), falling back to the bare
+   anchor when the radius holds no local maximum; being bounded closed-form it
+   can never rail onto a neighbouring lobe. The active crossover region's
+   declared `delay_range_ms` (plus the shared plausibility margin) is the outer
+   rail on the final value; a fresh preset need not have an applied
    `delay_target_driver` yet. Because the branch TFs are independently
    argmax-referenced, the raw IR peak gap is corrected by removing only its
-   inter-sweep clock-drift contribution. The remaining physical peak gap plus
-   the deterministic parallax term (√(r²+d²)−r at the prescribed ~1 m)
-   defines the listening-plane objective. VERIFY's reference is the
-   independently aligned zero-residual target sum, not a candidate-specific
-   model that could explain away a wrong-lobe apply.
-   Polarity comes from
-   the correlation sign, cross-checked against the
+   inter-sweep clock-drift contribution — the remaining physical peak gap plus
+   the deterministic parallax term (√(r²+d²)−r at the prescribed ~1 m) is that
+   anchor. VERIFY's reference is the independently aligned zero-residual target
+   sum, not a candidate-specific model that could explain away a wrong-lobe
+   apply. Polarity comes from the correlation sign, cross-checked against the
    flatter predicted sum. The confidence gate remains explicitly GCC-seed
-   capture confidence; flatness seed/objective improvement and boundary state
-   are stored separately rather than mislabelling it as confidence in the
-   selected minimum.
+   capture confidence; summed-magnitude flatness is retained as evidence only
+   (anchor ripple + anchor→snap improvement + the snap delta/found flags),
+   never as the selector or a confidence score.
 6. **Prediction/validation:** because MEASURE captures as-crossed branches
    (§5.4), trims level-match the branches through the crossover region. The
-   selection objective trials
-   `W_xo·g_w + s·T_xo·g_t·e^(−jω(physical_gap + parallax + τ))`;
-   the selected τ is the applied correction that should drive that residual
-   to zero. VERIFY therefore compares the applied response with the fixed
+   prediction/evidence evaluates
+   `W_xo·g_w + s·T_xo·g_t·e^(−jω(physical_gap + parallax + τ))` at the anchor and
+   the snapped selection; the selected τ is the applied correction that drives
+   the argmax-referenced residual toward the aligned target. VERIFY therefore compares the applied response with the fixed
    independently aligned target `W_xo·g_w + s·T_xo·g_t`, not with a
    candidate-specific response. Measured and predicted magnitude receive the
    same 1/6-octave smoothing; the raw prediction is retained only as the
@@ -737,10 +742,15 @@ the ask) is archived at `deep-research-crossover-measurement-prompt.md`
 
 ---
 
-_Last updated: 2026-07-22 (v2.4 — T2-core's declaration-bounded comb lobe is
-now anchored by the drift-corrected physical peak gap while GCC supplies
-polarity/capture confidence; VERIFY uses the fixed aligned target and symmetric
-1/6-octave smoothing with the raw prediction retained only for notch identity;
+_Last updated: 2026-07-22 (v2.5 — delay selection is anchor-primary with a
+gated ±(period/6) local-peak snap of the drift-corrected physical peak gap;
+the narrowband summed-flatness *selection* path is deleted (flatness demoted to
+evidence) after a hardware repeat showed its basin ordering preferred the wrong
+comb lobe — reproducibility plan §10, 2026-07-22. v2.4 — T2-core's
+declaration-bounded comb lobe was anchored by the drift-corrected physical peak
+gap while GCC supplies polarity/capture confidence; VERIFY uses the fixed
+aligned target and symmetric 1/6-octave smoothing with the raw prediction
+retained only for notch identity;
 v2.3's W6.9 forensics fixes folded: the VERIFY
 tracking comparator (RMS and MAX, and the notch-exclusion bin set) now clamps
 to this capture's own gate-derived validity floor, and the MEASURE-side
