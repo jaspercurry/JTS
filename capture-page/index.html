@@ -193,17 +193,29 @@
         color: oklch(0.3 0.1 150);
         font-weight: 600;
       }
+      /* Screen Wake Lock fallback hint (#1658) — empty (the common case, a
+         supported wake lock) collapses to nothing rather than leaving a
+         mystery gap below the status line. */
+      #wakelock-hint {
+        color: var(--cap-muted);
+        font-size: 0.9rem;
+        margin: 0.6rem 0 0;
+      }
+      #wakelock-hint:empty {
+        display: none;
+      }
     </style>
   </head>
   <body>
     <main>
       <div id="screen"></div>
       <p id="status" role="status" aria-live="polite">Loading measurement…</p>
+      <p id="wakelock-hint" aria-live="polite"></p>
       <noscript>
         This page needs JavaScript to record a measurement. Enable it and reopen
         the link from your speaker.
       </noscript>
     </main>
-    <script type="module" src="./js/main.js?v=20260720-1"></script>
+    <script type="module" src="./js/main.js?v=20260722-1"></script>
   </body>
 </html>

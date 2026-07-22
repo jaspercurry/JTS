@@ -16,6 +16,7 @@ import {
   acquireWakeLock,
   shouldAbortOnHidden,
   watchVisibilityAbort,
+  watchVisibilityReacquire,
 } from "../../capture-page/js/wakelock.js";
 
 let passed = 0;
@@ -111,6 +112,59 @@ function testWatchDegradesWithoutDocument() {
   ok();
 }
 
+// #1658: the v3 plan loop holds one wake lock across a whole multi-capture
+// session; the browser auto-releases it on every hide, so this is the piece
+// that notices the page coming BACK and re-requests it — but only while the
+// session is still active.
+function testReacquireFiresOnVisibleWhileActive() {
+  let handler = null;
+  const doc = {
+    visibilityState: "hidden",
+    addEventListener: (ev, fn) => {
+      if (ev === "visibilitychange") handler = fn;
+    },
+    removeEventListener: () => {
+      handler = null;
+    },
+  };
+  let calls = 0;
+  let active = true;
+  const dispose = watchVisibilityReacquire(doc, () => { calls += 1; }, () => active);
+
+  // Hidden -> never fires.
+  handler();
+  assert.equal(calls, 0);
+
+  // Visible while active -> fires.
+  doc.visibilityState = "visible";
+  handler();
+  assert.equal(calls, 1);
+
+  // Visible again while active -> fires again (unlike watchVisibilityAbort,
+  // this is not a one-shot — the page can hide/show repeatedly across a
+  // multi-minute session).
+  handler();
+  assert.equal(calls, 2);
+
+  // Visible but the session has since ended -> no re-acquire for a dead
+  // session.
+  active = false;
+  handler();
+  assert.equal(calls, 2);
+
+  dispose();
+  assert.equal(handler, null);
+  ok();
+}
+
+function testReacquireDegradesWithoutDocument() {
+  const dispose = watchVisibilityReacquire(null, () => {
+    throw new Error("should not fire");
+  }, () => true);
+  dispose(); // safe no-op
+  ok();
+}
+
 const tests = [
   testAcquireAndRelease,
   testDegradesWhenUnsupported,
@@ -118,6 +172,8 @@ const tests = [
   testShouldAbortOnHidden,
   testWatchAbortsOnceWhenHidden,
   testWatchDegradesWithoutDocument,
+  testReacquireFiresOnVisibleWhileActive,
+  testReacquireDegradesWithoutDocument,
 ];
 
 let failure = null;

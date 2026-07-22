@@ -14,6 +14,14 @@
 // Pure where it can be: `acquireWakeLock` degrades gracefully when the API is
 // absent (older iOS), and `shouldAbortOnHidden` is a trivial pure predicate.
 // Unit-tested in tests/js/capture_wakelock_test.mjs.
+//
+// A session that spans more than one capture (the v3 plan loop, #1658) holds
+// the lock across the WHOLE session rather than re-acquiring it per capture;
+// `watchVisibilityReacquire` is the piece that re-requests it once the phone
+// returns from a brief hide (a Control Center swipe, a notification banner)
+// without tearing the session down — that class of hide is not the same as
+// the capture-time "the mic track just died" case `watchVisibilityAbort`
+// guards. See capture-page/js/main.js's onPlanStart/runPlanCapture.
 
 // Acquire a screen wake lock. Returns a handle whose release() is always safe to
 // call (idempotent, never throws), and `supported` says whether a real lock was
@@ -69,6 +77,26 @@ export function watchVisibilityAbort(doc, onAbort) {
       fired = true;
       onAbort("backgrounded");
     }
+  };
+  document_.addEventListener("visibilitychange", handler);
+  return () => document_.removeEventListener("visibilitychange", handler);
+}
+
+// The symmetric case (#1658): a wake lock is auto-released by the browser the
+// moment the document goes hidden — documented Wake Lock API behavior, not a
+// failure — so a session that spans more than one capture (the v3 plan loop's
+// idle gaps between rounds) needs to notice when the page comes BACK to
+// visible and re-request the lock. Calls `onVisible()` each time the page
+// returns to visible while `isActive()` still reports the session as live
+// (never after the session has ended — there is nothing left to re-acquire
+// for). Returns a disposer, mirroring `watchVisibilityAbort`.
+export function watchVisibilityReacquire(doc, onVisible, isActive) {
+  const document_ = doc || (typeof document !== "undefined" ? document : null);
+  if (!document_ || typeof document_.addEventListener !== "function") {
+    return () => {};
+  }
+  const handler = () => {
+    if (document_.visibilityState === "visible" && isActive()) onVisible();
   };
   document_.addEventListener("visibilitychange", handler);
   return () => document_.removeEventListener("visibilitychange", handler);

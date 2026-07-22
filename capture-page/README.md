@@ -135,3 +135,15 @@ exercised on a real iPhone (Safari) and Android phone (Chrome)** — the
 pure modules above are unit-tested, but the live `getUserMedia` path is not.
 Screen Wake Lock + `visibilitychange` abort and the realized-constraints
 verify/degrade gates land in build steps 6–7.
+
+**#1658 follow-up (session wake lock + one mic stream per session).** The v3
+capture-plan loop (`onPlanStart`/`runPlanCapture`) now holds a SINGLE screen
+wake lock and a SINGLE mic stream/`AudioContext` graph for the whole session
+instead of re-acquiring per capture — the plan-loop harness
+(`capture_plan_loop_test.mjs`) pins the call-count contract (one
+`createMonoRecorder`, one wake-lock acquire, one close/release per session)
+against stubbed browser APIs, but the real iOS behaviors it cannot exercise —
+whether the actual level step between captures is gone, whether
+`navigator.wakeLock` genuinely keeps an iPhone screen on for a multi-minute
+session, and the real `visibilitychange`/re-acquire timing — need a real
+iPhone pass before this is trusted end-to-end.

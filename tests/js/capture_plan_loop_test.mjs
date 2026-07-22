@@ -130,31 +130,46 @@ function makeStatusEl() {
   return el;
 }
 
+// `track` is created ONCE and always returned by the SAME reference from
+// getAudioTracks() — unlike a fresh object-literal-per-call stub, this lets a
+// test grab the exact track wireTrackEndedRecovery() attached `.onended` to
+// and invoke it later to simulate the mic disconnecting (#1658).
 function makeRecorder() {
-  return {
+  const track = {
+    label: "Test microphone",
+    onended: null,
+    getSettings() {
+      return {
+        autoGainControl: false,
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        sampleRate: 48000,
+      };
+    },
+  };
+  const recorder = {
     capturedChannelCount: 1,
+    starts: 0,
+    stops: 0,
+    closes: 0,
     stream: {
       getAudioTracks() {
-        return [{
-          label: "Test microphone",
-          getSettings() {
-            return {
-              autoGainControl: false,
-              channelCount: 1,
-              echoCancellation: false,
-              noiseSuppression: false,
-              sampleRate: 48000,
-            };
-          },
-        }];
+        return [track];
       },
     },
-    start() {},
+    start() {
+      recorder.starts += 1;
+    },
     async stop() {
+      recorder.stops += 1;
       return new Float32Array(4800); // 100ms of silence @ 48kHz
     },
-    async close() {},
+    async close() {
+      recorder.closes += 1;
+    },
   };
+  return recorder;
 }
 
 const injected = `
@@ -164,6 +179,7 @@ const acceptedAcknowledgement = (spec, refs) => (
     : null
 );
 const createMonoRecorder = async () => {
+  globalThis.__recorderCalls = (globalThis.__recorderCalls || 0) + 1;
   if (globalThis.__recorderError) throw globalThis.__recorderError;
   return globalThis.__recorder;
 };
@@ -189,8 +205,21 @@ const verifyRealizedConstraints = (settings, spec, capturedChannelCount) => ({
   clean: true,
 });
 const constraintDecision = () => ({ action: "proceed", degraded: false, reason: "" });
-const acquireWakeLock = async () => ({ release: async () => {} });
+// #1658: supported defaults true (so the fallback hint stays silent for every
+// test that does not opt in via globalThis.__wakeLockUnsupported), and every
+// acquire/release is counted so the plan-loop tests can pin "once per
+// session, not once per round".
+const acquireWakeLock = async () => {
+  globalThis.__wakeAcquireCalls = (globalThis.__wakeAcquireCalls || 0) + 1;
+  return {
+    supported: globalThis.__wakeLockUnsupported !== true,
+    release: async () => {
+      globalThis.__wakeReleaseCalls = (globalThis.__wakeReleaseCalls || 0) + 1;
+    },
+  };
+};
 const watchVisibilityAbort = () => () => {};
+const watchVisibilityReacquire = () => () => {};
 const buildAmbientStatsEvent = (samples, sampleRate, runToken, durationS) => ({
   ambient_stats: { schema: 1, run_token: String(runToken || ""), duration_s: durationS, clipped: false, bands: [] },
 });
@@ -1196,6 +1225,254 @@ async function testEveryBeginCarriesTheAppliedCalibrationAndNeverClobbersAnExpli
   ok();
 }
 
+// ============================================================================
+// 15 (#1658 Fix 1 + Fix 2). Session-wide resources: the mic stream/graph and
+// the screen wake lock are each acquired ONCE across a whole multi-round
+// plan — never once per capture — and released/closed exactly once, at the
+// terminal screen. Regression pin for the iOS getUserMedia-renegotiation
+// level-step bug (Fix 2) and the "phones sleep mid-session" wake-lock bug
+// (Fix 1).
+// ============================================================================
+async function testSessionWideResourcesAcquiredOnceReleasedOnce() {
+  statusHistory.length = 0;
+  globalThis.__recorderCalls = 0;
+  globalThis.__wakeAcquireCalls = 0;
+  globalThis.__wakeReleaseCalls = 0;
+  const { onPlanStart } = await loadModule();
+  const recorder = makeRecorder();
+  globalThis.__recorder = recorder;
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 3, maxAttempts: 4 });
+  const { client } = makeFakePlanClient({ target: 3, maxAttempts: 4 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  let next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+  next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.equal(globalThis.__recorderCalls, 1, "one getUserMedia call covers all 3 captures");
+  assert.equal(recorder.starts, 6, "ambient + sweep start once per round across 3 rounds");
+  assert.equal(recorder.stops, 6, "ambient + sweep stop once per round across 3 rounds");
+  assert.equal(recorder.closes, 1, "the mic stream closes exactly once, at session end");
+  assert.equal(globalThis.__wakeAcquireCalls, 1, "one wake-lock request for the whole session");
+  assert.equal(globalThis.__wakeReleaseCalls, 1, "the wake lock releases exactly once, at session end");
+  ok();
+}
+
+// ============================================================================
+// 16 (#1658 Fix 1). When the Wake Lock API is unsupported (or the request is
+// rejected), a one-line hint appears on the session screen instead of doing
+// nothing silently — and it clears once the session reaches its terminal
+// screen.
+// ============================================================================
+async function testWakeLockHintShowsWhenUnsupportedAndClearsAtTerminal() {
+  statusHistory.length = 0;
+  globalThis.__wakeLockUnsupported = true;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  const hintHistory = [];
+  const hintEl = {};
+  let hintText = "";
+  Object.defineProperty(hintEl, "textContent", {
+    get() { return hintText; },
+    set(v) { hintText = String(v); hintHistory.push(hintText); },
+  });
+  globalThis.document = {
+    createElement: (tag) => makeNode(tag),
+    getElementById: (id) => (id === "wakelock-hint" ? hintEl : statusEl),
+  };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const { client } = makeFakePlanClient({ target: 1, maxAttempts: 1 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.ok(
+    hintHistory.includes("Keep your screen on — this takes about 4 minutes."),
+    `expected the fallback hint to have shown at some point, got: ${JSON.stringify(hintHistory)}`,
+  );
+  assert.equal(hintEl.textContent, "", "the hint clears once the session reaches its terminal screen");
+  globalThis.__wakeLockUnsupported = false;
+  ok();
+}
+
+// ============================================================================
+// 17 (#1658 Fix 2, track-ended recovery). A mic track that ends BETWEEN
+// rounds (a USB mic unplugged, the OS revoking the track) triggers exactly
+// one reacquire attempt. When it succeeds, the NEXT round transparently
+// reuses the replacement stream — no fresh createMonoRecorder call of its
+// own, and no error surfaced to the household.
+// ============================================================================
+async function testTrackEndedMidSessionReacquiresTransparently() {
+  statusHistory.length = 0;
+  globalThis.__recorderCalls = 0;
+  const { onPlanStart } = await loadModule();
+  const recorderA = makeRecorder();
+  globalThis.__recorder = recorderA;
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 2 });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+  assert.equal(ctx.recorder, recorderA);
+  assert.equal(globalThis.__recorderCalls, 1);
+
+  // The mic disconnects while the phone is idling on the "Next measurement"
+  // screen — wireTrackEndedRecovery's onended handler tries one reacquire.
+  const recorderB = makeRecorder();
+  globalThis.__recorder = recorderB;
+  const track = recorderA.stream.getAudioTracks()[0];
+  assert.equal(typeof track.onended, "function", "wireTrackEndedRecovery attaches onended");
+  await track.onended();
+
+  assert.equal(recorderA.closes, 1, "the dead stream's own graph is closed during recovery");
+  assert.equal(ctx.recorder, recorderB, "the reacquire replaced the dead stream");
+  assert.equal(globalThis.__recorderCalls, 2, "exactly one reacquire attempt");
+
+  const next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.equal(globalThis.__recorderCalls, 2, "round 2 transparently reused the reacquired stream");
+  assert.equal(recorderB.starts, 2, "round 2 recorded normally on the replacement (ambient + sweep)");
+  ok();
+}
+
+// ============================================================================
+// 18 (#1658 Fix 2, track-ended recovery failure). When the track dies AND the
+// one reacquire attempt also fails, the failure rides the SAME existing
+// pre-arm error surface a mic-permission failure already uses (mirrors
+// testPreArmFailureKeepsRetryLiveAndStopWired) — the round never reached
+// `armed`, so the household can plug in a working mic and retry rather than
+// facing a dead terminal screen.
+// ============================================================================
+async function testTrackEndedReacquireFailureSurfacesOnNextRound() {
+  statusHistory.length = 0;
+  const { onPlanStart, stopCapture } = await loadModule();
+  const recorderA = makeRecorder();
+  globalThis.__recorder = recorderA;
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 2 });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+
+  globalThis.__recorderError = new Error("mic reacquire failed");
+  const track = recorderA.stream.getAudioTracks()[0];
+  await track.onended();
+  assert.equal(ctx.recorder, null, "the dead stream is discarded, not reused");
+  assert.ok(ctx.recorderFailure, "the failed reacquire is recorded for the next round to surface");
+  globalThis.__recorderError = null;
+
+  const next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+
+  const lastStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    lastStatus.includes("mic reacquire failed"),
+    `expected the recorded reacquire failure to surface, got: ${lastStatus}`,
+  );
+  assert.equal(
+    headingText(ctx.screenEl),
+    "Measurement 1 of 2 ✓",
+    "the round stays retriable — no terminal screen for a pre-arm failure",
+  );
+  const stopped = stopCapture();
+  assert.ok(stopped, "Stop stays live after the surfaced pre-arm failure");
+  await stopped;
+  ok();
+}
+
+// ============================================================================
+// 19 (#1658 Fix 2, "never silently record dead air"). A track that ends
+// WHILE a round is actively recording (not between rounds) must fail that
+// round via the terminal failure surface rather than trust the (silently
+// zeroed) samples a dead track produces. Uses a bespoke recorder fixture
+// whose stop() flags __trackEnded, matching what wireTrackEndedRecovery's
+// onended handler would have already set on the real recorder object by the
+// time stop() resolves.
+// ============================================================================
+function makeRecorderThatDiesDuringRecording() {
+  const track = {
+    label: "Test microphone",
+    onended: null,
+    getSettings() {
+      return {
+        autoGainControl: false,
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        sampleRate: 48000,
+      };
+    },
+  };
+  const recorder = {
+    capturedChannelCount: 1,
+    stream: { getAudioTracks() { return [track]; } },
+    start() {},
+    async stop() {
+      recorder.__trackEnded = true;
+      return new Float32Array(4800);
+    },
+    async close() {},
+  };
+  return recorder;
+}
+
+async function testTrackEndedDuringActiveRoundFailsRatherThanUploadingDeadAir() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorderThatDiesDuringRecording();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const client = {
+    _last: {},
+    async postEvent(event) {
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        client._last = { phase: "capture_authorized", index, attempt };
+      } else if (event.armed) {
+        client._last = { phase: "sweep_complete" };
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: client._last };
+    },
+    async putBlob() {
+      throw new Error("must never upload a dead-air capture");
+    },
+  };
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(headingText(ctx.screenEl), "Measurement failed");
+  assert.ok(
+    noteText(ctx.screenEl).includes("microphone disconnected"),
+    `expected the disconnected-mic failure, got: ${noteText(ctx.screenEl)}`,
+  );
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -1214,6 +1491,11 @@ const tests = [
   testCountdownNextEntryShowsVisibleCancelableCountdown,
   testSessionTerminalDuringWaitEndsTheSession,
   testEveryBeginCarriesTheAppliedCalibrationAndNeverClobbersAnExplicitChoice,
+  testSessionWideResourcesAcquiredOnceReleasedOnce,
+  testWakeLockHintShowsWhenUnsupportedAndClearsAtTerminal,
+  testTrackEndedMidSessionReacquiresTransparently,
+  testTrackEndedReacquireFailureSurfacesOnNextRound,
+  testTrackEndedDuringActiveRoundFailsRatherThanUploadingDeadAir,
 ];
 
 let failure = null;
