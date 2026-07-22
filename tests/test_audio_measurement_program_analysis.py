@@ -32,6 +32,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve, resample_poly
 
+from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import deconv, program_analysis
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
@@ -59,7 +60,10 @@ from jasper.audio_measurement.program_analysis import (
     _band_exclusive_pieces,
     _build_candidate,
     _complex_tf,
+    _deconvolve_window,
     _gate_floor_hz,
+    _flatness_delay_us,
+    _flatness_search_lobe_us,
     _gcc_phat,
     _global_offset,
     _locate_segments,
@@ -69,6 +73,7 @@ from jasper.audio_measurement.program_analysis import (
     _predicted_sum,
     _ripple_db,
     _solve_trims,
+    analysis_diagnostic_summary,
     analyze_program_capture,
 )
 
@@ -473,6 +478,306 @@ def test_delay_sign_convention_tweeter_earlier_is_positive():
     # D_w − D_t = 60 samples ⇒ positive delay_us.
     assert res.alignment.delay_us > 0
     assert res.alignment.delay_us == pytest.approx((d_w - d_t) / SR * 1e6, abs=5.0)
+
+
+def test_flatness_delay_recovers_and_flattens_known_physical_sum():
+    """T2 physics gate: remove clock drift but retain physical peak gap.
+
+    A physical 170 us inter-driver delay and a 170 us inter-sweep clock-drift
+    offset produce a measured 340 us IR argmax gap. The refiner must recover
+    the physical -170 us correction from the drift-corrected gap, and that
+    correction must flatten the actual common-time-origin branch sum.
+    """
+    freqs = np.linspace(2000.0, 4000.0, 1001)
+    omega = 2.0 * np.pi * freqs
+    woofer_peak = np.ones(freqs.size, dtype=complex)
+    tweeter_peak = np.full(freqs.size, 0.85 + 0.0j)
+    physical_peak_gap_us = 170.0
+    inter_sweep_drift_us = 170.0
+    measured_peak_gap_us = physical_peak_gap_us + inter_sweep_drift_us
+    drift_corrected_peak_gap_us = measured_peak_gap_us - inter_sweep_drift_us
+    gcc_seed_us = -350.0
+
+    refined_us, refined_objective, seed_objective, at_bound = _flatness_delay_us(
+        freqs,
+        woofer_peak,
+        tweeter_peak,
+        0.0,
+        0.0,
+        +1,
+        lo_hz=2000.0,
+        hi_hz=4000.0,
+        reference_gap_us=drift_corrected_peak_gap_us,
+        search_bounds_us=(-400.0, 0.0),
+        seed_delay_us=gcc_seed_us,
+    )
+    assert refined_us == pytest.approx(-physical_peak_gap_us, abs=2.0)
+    assert refined_objective < seed_objective
+    assert not at_bound
+
+    d_w_us = 500.0
+    d_t_us = d_w_us + physical_peak_gap_us
+    W_physical = woofer_peak * np.exp(-1j * omega * d_w_us * 1e-6)
+    T_physical = tweeter_peak * np.exp(-1j * omega * d_t_us * 1e-6)
+
+    def actual_sum(applied_delay_us: float) -> np.ndarray:
+        # Negative signed delay means delay the woofer by its magnitude.
+        return W_physical * np.exp(
+            -1j * omega * max(0.0, -applied_delay_us) * 1e-6
+        ) + T_physical * np.exp(
+            -1j * omega * max(0.0, applied_delay_us) * 1e-6
+        )
+
+    refined_ripple = _ripple_db(
+        freqs, actual_sum(refined_us), 2000.0, 4000.0,
+    )
+    gcc_ripple = _ripple_db(
+        freqs, actual_sum(gcc_seed_us), 2000.0, 4000.0,
+    )
+    uncorrected_gap_ripple = _ripple_db(
+        freqs,
+        actual_sum(-measured_peak_gap_us),
+        2000.0,
+        4000.0,
+    )
+    discarded_gap_ripple = _ripple_db(
+        freqs, actual_sum(0.0), 2000.0, 4000.0,
+    )
+    assert refined_ripple < 0.05
+    assert gcc_ripple > 5.0
+    assert uncorrected_gap_ripple > 5.0
+    assert discarded_gap_ripple > 5.0
+
+
+def test_flatness_search_lobe_intersects_physical_seed_window_or_falls_back():
+    half_period_us = 0.5e6 / 1600.0
+    assert _flatness_search_lobe_us((0.0, 400.0), -631.0, 1600.0) == pytest.approx(
+        (-400.0, -631.0 + half_period_us),
+    )
+    assert _flatness_search_lobe_us((0.0, 400.0), -800.0, 1600.0) is None
+
+
+def test_flatness_production_path_uses_physical_lobe_not_periodic_gcc_lobe():
+    """A confident GCC peak on a neighboring comb lobe must not steer T2.
+
+    The measured argmax gap contains 3 samples of physical branch delay plus
+    8 samples of inter-sweep drift. Removing only the latter anchors the
+    correct -62.5 us basin even though the supplied GCC seed is -650 us.
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    # Keep both peaks beyond IR_PRE_MS so the direct-arrival windows share the
+    # same local origin instead of clipping against index zero.
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+    physical_gap_us = 3 / SR * 1e6
+    inter_sweep_drift_us = 8 / SR * 1e6
+    gcc_seed_us = -650.0
+    alignment = AlignmentEstimate(
+        delay_us=gcc_seed_us,
+        raw_delay_us=gcc_seed_us,
+        parallax_us=0.0,
+        polarity="normal",
+        polarity_sign=1,
+        polarity_agrees_with_sum=True,
+        confidence=0.9,
+        status=ALIGNMENT_OK,
+    )
+
+    candidate, _predicted = _build_candidate(
+        woofer_ir,
+        tweeter_ir,
+        SR,
+        16_384,
+        2000.0,
+        "woofer",
+        "tweeter",
+        alignment,
+        None,
+        alignment_delay_bounds_us=(0.0, 1000.0),
+        inter_sweep_drift_us=inter_sweep_drift_us,
+    )
+
+    gcc_lobe = _flatness_search_lobe_us((0.0, 1000.0), gcc_seed_us, 2000.0)
+    assert not gcc_lobe[0] <= -physical_gap_us <= gcc_lobe[1]
+    assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=2.0)
+    assert candidate.alignment_seed_ripple_db is not None
+    assert candidate.flatness_improvement_db > 1.0
+    assert candidate.predicted_ripple_db < 0.1
+
+
+@pytest.mark.parametrize(
+    ("d_w", "d_t"),
+    [
+        (230, 200),
+        (200, 230),
+    ],
+)
+def test_flatness_refinement_production_path_preserves_parallax_contract(
+    d_w, d_t,
+):
+    """T2's full MEASURE path keeps raw/corrected frames honest on both lobes."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0},
+        _roles(),
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    woofer_ir = _band_impulse(d_w, 150.0, 6000.0, 1.0)
+    tweeter_ir = _band_impulse(d_t, 300.0, 20000.0, 0.9)
+    cap = _synthesize(
+        prog,
+        woofer_ir=woofer_ir,
+        tweeter_ir=tweeter_ir,
+        epsilon=30e-6,
+        noise=0.0,
+    )
+    geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
+    result = analyze_program_capture(
+        prog,
+        cap,
+        SR,
+        geometry=geometry,
+        priors=MeasurementPriors(
+            crossover_fc_hz=FC_HZ,
+            alignment_delay_bounds_us=(0.0, 1000.0),
+        ),
+    )
+
+    expected_raw_us = (d_w - d_t) / SR * 1e6
+    expected_delay_us = expected_raw_us - geometry.parallax_us()
+    assert result.drift.epsilon_ppm == pytest.approx(30.0, abs=2.0)
+    assert result.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
+    measured_global_offset, _first, _stimuli = _global_offset(prog, cap, SR)
+    seg_w = prog.segment("sweep_w")
+    seg_t = prog.segment("sweep_t")
+    epsilon = result.drift.epsilon_ppm / 1e6
+    woofer_full_ir, _pre_w = _deconvolve_window(
+        cap,
+        seg_w,
+        measured_global_offset + seg_w.start_sample,
+        SR,
+        epsilon=epsilon,
+    )
+    tweeter_full_ir, _pre_t = _deconvolve_window(
+        cap,
+        seg_t,
+        measured_global_offset + seg_t.start_sample,
+        SR,
+        epsilon=epsilon,
+    )
+    measured_peak_gap_us = (
+        int(np.argmax(np.abs(tweeter_full_ir)))
+        - int(np.argmax(np.abs(woofer_full_ir)))
+    ) / SR * 1e6
+    inter_sweep_drift_us = (
+        epsilon * (seg_t.start_sample - seg_w.start_sample) / SR * 1e6
+    )
+    physical_peak_gap_us = measured_peak_gap_us - inter_sweep_drift_us
+    physical_seed_us = -(physical_peak_gap_us + geometry.parallax_us())
+    signed_lobe = _flatness_search_lobe_us(
+        (0.0, 1000.0),
+        physical_seed_us,
+        FC_HZ,
+    )
+    assert signed_lobe[0] <= result.alignment.delay_us <= signed_lobe[1]
+    assert math.copysign(1.0, signed_lobe[0] + signed_lobe[1]) == math.copysign(
+        1.0,
+        physical_seed_us,
+    )
+    # The band-limited synthetic IR's spectral truncation shifts its argmax by
+    # a fraction of a sample relative to the impulse placement. The production
+    # objective operates in that measured argmax frame, so allow that expected
+    # analysis granularity in addition to the 2 us search grid.
+    assert result.alignment.delay_us == pytest.approx(
+        expected_delay_us, abs=8.0,
+    )
+    assert result.alignment.raw_delay_us == pytest.approx(
+        result.alignment.delay_us + result.alignment.parallax_us, abs=1e-9,
+    )
+    assert result.alignment.confidence_source == "gcc_phat_seed"
+    assert result.candidate.delay_us == result.alignment.delay_us
+    assert result.candidate.alignment_seed_ripple_db is not None
+    assert result.candidate.flatness_improvement_db >= 0.0
+    responses = {response.role: response for response in result.driver_responses}
+    lo_hz, hi_hz = _overlap_band_hz(
+        FC_HZ,
+        tweeter_sweep_lo_hz=prog.segment("sweep_t").f1_hz,
+        woofer_sweep_hi_hz=prog.segment("sweep_w").f2_hz,
+    )
+    floors = [
+        response.validity_floor_hz
+        for response in responses.values()
+        if response.validity_floor_hz is not None
+    ]
+    lo_hz = max([lo_hz, *floors])
+    predicted_aligned = _predicted_sum(
+        responses["woofer"].complex_tf,
+        responses["tweeter"].complex_tf,
+        result.candidate.trim_db["woofer"],
+        result.candidate.trim_db["tweeter"],
+        result.alignment.polarity_sign,
+    )
+    assert result.candidate.predicted_ripple_db == pytest.approx(
+        _ripple_db(
+            responses["woofer"].freqs_hz,
+            predicted_aligned,
+            lo_hz,
+            hi_hz,
+        ),
+        abs=1e-9,
+    )
+
+    # Close the physics loop in the fixture's original common time origin.
+    # This assertion fails if the production path discards the physical peak
+    # gap even though its peak-referenced objective may still look flat.
+    n_fft = (responses["woofer"].freqs_hz.size - 1) * 2
+    freqs_hz = responses["woofer"].freqs_hz
+    g_w = 10.0 ** (result.candidate.trim_db["woofer"] / 20.0)
+    g_t = 10.0 ** (result.candidate.trim_db["tweeter"] / 20.0)
+
+    def physical_sum(applied_delay_us: float) -> np.ndarray:
+        W_physical = np.fft.rfft(woofer_ir, n=n_fft) * g_w
+        T_physical = np.fft.rfft(tweeter_ir, n=n_fft) * g_t
+        W_physical *= np.exp(
+            -1j * 2.0 * np.pi * freqs_hz
+            * max(0.0, -applied_delay_us) * 1e-6
+        )
+        T_physical *= np.exp(
+            -1j * 2.0 * np.pi * freqs_hz
+            * max(0.0, applied_delay_us) * 1e-6
+        )
+        return W_physical + result.alignment.polarity_sign * T_physical
+
+    applied_ripple_db = _ripple_db(
+        freqs_hz,
+        physical_sum(result.candidate.delay_us),
+        lo_hz,
+        hi_hz,
+    )
+    unapplied_ripple_db = _ripple_db(
+        freqs_hz,
+        physical_sum(0.0),
+        lo_hz,
+        hi_hz,
+    )
+    assert applied_ripple_db < 1.0
+    assert unapplied_ripple_db > 5.0
+    diagnostic = analysis_diagnostic_summary(result)
+    assert diagnostic["alignment_confidence_source"] == "gcc_phat_seed"
+    assert diagnostic["alignment_seed_delay_us"] == pytest.approx(
+        result.alignment.seed_delay_us,
+        abs=0.001,
+    )
+    assert diagnostic["alignment_refinement_delta_us"] == pytest.approx(
+        result.alignment.delay_us - result.alignment.seed_delay_us,
+        abs=0.001,
+    )
+    assert diagnostic["flatness_improvement_db"] == pytest.approx(
+        result.candidate.flatness_improvement_db,
+        abs=0.0001,
+    )
+    assert diagnostic["flatness_at_bound"] is False
+    assert not result.candidate.flatness_at_bound
 
 
 def test_parallax_is_subtracted():
@@ -920,6 +1225,100 @@ def test_verify_tracking_against_predicted_sum():
     assert res.verify_tracking["rms_db_notch_excluded"] == pytest.approx(
         res.verify_tracking["rms_db"]
     )
+
+
+def test_verify_tracking_smooths_measured_and_predicted_curves_equally():
+    """An exact raw model must not fail because only the capture is smoothed."""
+    prog = build_verify_program(FC_HZ, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    ir = np.zeros(8192)
+    # A pre-arrival 100 samples before the direct peak creates fine, bounded
+    # ripple that 1/6-octave smoothing changes materially without introducing
+    # a modeled deep-notch exclusion that would hide the mismatch.
+    ir[100] = 0.7
+    ir[200] = 1.0
+    mono = fftconvolve(pcm[:, 0], ir)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+
+    baseline = analyze_program_capture(
+        prog,
+        cap,
+        SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    response = baseline.summed_response
+    assert response is not None
+    predicted_sum = (response.freqs_hz, response.magnitude_db)
+
+    result = analyze_program_capture(
+        prog,
+        cap,
+        SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=FC_HZ,
+            predicted_sum=predicted_sum,
+        ),
+    )
+    tracking = result.verify_tracking
+    assert tracking is not None
+    assert tracking["max_db_notch_excluded"] == pytest.approx(0.0, abs=1e-5)
+    assert tracking["rms_db_notch_excluded"] == pytest.approx(0.0, abs=1e-5)
+
+    # Prove the fixture catches the hardware failure mode: the old one-sided
+    # comparator falsely rejects this exact model against its own capture.
+    measured_smoothed = analysis_mod.smooth_fractional_octave(
+        response.freqs_hz,
+        response.magnitude_db,
+        program_analysis.VERIFY_TRACKING_SMOOTHING_FRACTION,
+    )
+    _old_rms, old_max = analysis_mod.notch_excluded_tracking_error_db(
+        response.freqs_hz,
+        measured_smoothed,
+        response.magnitude_db,
+        (FC_HZ / 2.0, FC_HZ * 2.0),
+        notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+    )
+    assert old_max > 1.5
+
+
+def test_notch_mask_uses_raw_prediction_when_comparison_is_smoothed():
+    """Smoothing must not erase the identity of a modeled deep notch."""
+    freqs = np.geomspace(500.0, 8000.0, 2001)
+    raw_predicted_db = np.zeros_like(freqs)
+    notch_idx = int(np.argmin(np.abs(freqs - FC_HZ)))
+    raw_predicted_db[notch_idx] = -30.0
+    smoothed_predicted_db = analysis_mod.smooth_fractional_octave(
+        freqs,
+        raw_predicted_db,
+        program_analysis.VERIFY_TRACKING_SMOOTHING_FRACTION,
+    )
+    # The narrow raw notch is lifted above the 12 dB mask threshold by the
+    # comparison smoothing. Put the only mismatch at that modeled-notch bin.
+    assert smoothed_predicted_db[notch_idx] > -12.0
+    measured_db = smoothed_predicted_db.copy()
+    measured_db[notch_idx] += 8.0
+
+    _smoothed_mask_rms, smoothed_mask_max = (
+        analysis_mod.notch_excluded_tracking_error_db(
+            freqs,
+            measured_db,
+            smoothed_predicted_db,
+            (500.0, 8000.0),
+            notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+        )
+    )
+    raw_mask_rms, raw_mask_max = analysis_mod.notch_excluded_tracking_error_db(
+        freqs,
+        measured_db,
+        smoothed_predicted_db,
+        (500.0, 8000.0),
+        notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+        notch_reference_db=raw_predicted_db,
+    )
+
+    assert smoothed_mask_max > 1.5
+    assert raw_mask_rms == pytest.approx(0.0)
+    assert raw_mask_max == pytest.approx(0.0)
 
 
 def test_verify_tracking_notch_exclusion_reduces_max_through_the_pipeline():

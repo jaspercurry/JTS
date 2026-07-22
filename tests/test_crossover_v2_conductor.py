@@ -47,7 +47,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     CrossoverV2Conductor,
     CrossoverV2FlowError,
     V2FlowSeams,
+    _analysis_json,
     abandon_measurement_volume,
+    alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
     back_off_gain,
     build_v2_capture_plan,
@@ -440,6 +442,24 @@ def test_implausible_delay_rejects_measure_even_at_high_confidence():
     _run_phase(c2, 1, 1)
     verdict2 = _run_phase(c2, 2, 2)
     assert verdict2["accepted"] is True
+
+
+def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target():
+    """T2 threads declared magnitudes even before a target is applied.
+
+    The reference preset declares [50, 300] us; Fix 3's 100 us margin makes
+    [0, 400] us. ``delay_target_driver`` may legitimately be absent on a fresh
+    preset; GCC later orients the signed lobe, so that must not disable T2.
+    """
+    c = _conductor(FakeSeams())
+    expected = (0.0, 400.0)
+    assert alignment_delay_search_bounds_us(_preset()) == expected
+    assert c._measure_priors().alignment_delay_bounds_us == expected
+
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["delay_target_driver"] = None
+    fresh = ActiveSpeakerPreset.from_mapping(raw)
+    assert alignment_delay_search_bounds_us(fresh) == expected
 
 
 def test_measure_program_gains_back_off_from_caps():
@@ -1310,10 +1330,17 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
                 "tweeter", window_ms=9.0, snr_db=8.0, snr_verdict="insufficient",
             ),
         ),
-        alignment=_alignment(confidence=0.9),
+        alignment=AlignmentEstimate(
+            delay_us=150.0, raw_delay_us=161.0, parallax_us=11.0,
+            polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+            confidence=0.9, seed_delay_us=120.0,
+            confidence_source="gcc_phat_seed",
+        ),
         candidate=CrossoverCandidate(
             trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
             delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
+            alignment_seed_ripple_db=4.56, flatness_improvement_db=3.33,
+            flatness_at_bound=False,
         ),
         linearity_ok=True,
         predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
@@ -1326,6 +1353,9 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert "event=correction.crossover_v2_measure_diag" in caplog.text
     assert "accepted=true" in caplog.text
     assert "alignment_confidence=0.9" in caplog.text
+    assert "alignment_confidence_source=gcc_phat_seed" in caplog.text
+    assert "alignment_seed_delay_us=120.0" in caplog.text
+    assert "alignment_refinement_delta_us=30.0" in caplog.text
     assert "gate_window_ms=8.0" in caplog.text  # min(8.0, 9.0)
     assert "validity_floor_hz=180.0" in caplog.text  # max(180.0) — only one floor set
     assert "epsilon_ppm=30.0" in caplog.text
@@ -1338,10 +1368,19 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     # POLARITY_KEEP ("keep").
     assert "polarity=keep" in caplog.text
     assert "predicted_ripple_db=1.23" in caplog.text
+    assert "alignment_seed_ripple_db=4.56" in caplog.text
+    assert "flatness_improvement_db=3.33" in caplog.text
+    assert "flatness_at_bound=false" in caplog.text
     assert "woofer_snr_db=25.0" in caplog.text
     assert "woofer_snr_verdict=ok" in caplog.text
     assert "tweeter_snr_db=8.0" in caplog.text
     assert "tweeter_snr_verdict=insufficient" in caplog.text
+    evidence = _analysis_json(fakes.measure(c._measure_program))
+    assert evidence["alignment_confidence_source"] == "gcc_phat_seed"
+    assert evidence["alignment_seed_delay_us"] == 120.0
+    assert evidence["alignment_seed_ripple_db"] == 4.56
+    assert evidence["flatness_improvement_db"] == 3.33
+    assert evidence["flatness_at_bound"] is False
 
 
 def test_measure_diag_logs_full_numbers_on_glitch_rejection_too(caplog):

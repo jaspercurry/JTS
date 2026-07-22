@@ -424,7 +424,9 @@ create a second retention system.
   `crossover_alignment.py`), `program.py` + `program_analysis.py` (crossover
   conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/
   VERIFY composers, and the pure `(program, capture) → ProgramAnalysis`
-  locator / clock-drift ε / GCC-PHAT aligner / candidate pipeline) — all
+  locator / clock-drift ε / GCC-PHAT polarity-and-confidence seed +
+  declaration-bounded summed-flatness candidate pipeline whose comb lobe is
+  anchored by the drift-corrected physical peak gap) — all
   under `jasper/audio_measurement/`; plus,
   staying in `jasper/correction/`: `confidence.py`, `coordinator.py`
   (`measurement_window`: pauses renderers + voice, serializes), `session.py`

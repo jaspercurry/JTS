@@ -321,8 +321,9 @@ LOCATE_MIN_CONFIDENCE = 0.1
 VERIFY_TOLERANCE_DB = 1.5
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
-# Below this alignment-estimator confidence (see ``AlignmentEstimate.confidence``
-# in ``program_analysis.py``), the conductor refuses to auto-apply and rejects
+# Below this GCC-seed/capture confidence (see ``AlignmentEstimate.confidence``
+# and ``confidence_source`` in ``program_analysis.py``), the conductor refuses
+# to auto-apply and rejects
 # MEASURE with ``REASON_LOW_ALIGNMENT_CONFIDENCE`` instead of building a
 # candidate (owner ruling, 2026-07-20). Formerly
 # ``crossover_envelope_v2.ALIGNMENT_CONFIDENCE_NUDGE_FLOOR`` — a review-screen
@@ -401,6 +402,44 @@ def alignment_to_candidate_fields(
     return magnitude, role, polarity
 
 
+def _declared_alignment_delay_range_ms(
+    source_preset: Any,
+) -> tuple[Any, float, float] | None:
+    """Return the single v2 region plus its valid declared delay range."""
+    regions = getattr(source_preset, "crossover_regions", None)
+    if not regions:
+        return None
+    region = regions[0]
+    delay_range_ms = getattr(region, "delay_range_ms", None)
+    if not (isinstance(delay_range_ms, (tuple, list)) and len(delay_range_ms) == 2):
+        return None
+    lo_ms, hi_ms = float(delay_range_ms[0]), float(delay_range_ms[1])
+    if not (math.isfinite(lo_ms) and math.isfinite(hi_ms)) or lo_ms > hi_ms:
+        return None
+    return region, lo_ms, hi_ms
+
+
+def alignment_delay_search_bounds_us(
+    source_preset: Any,
+    *,
+    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
+) -> tuple[float, float] | None:
+    """Flatness-search magnitude bounds from the preset's declaration.
+
+    The range and margin are the same ones Fix 3's plausibility gate reads.
+    ``delay_target_driver`` is optional until a delay has actually been applied,
+    so it cannot orient a fresh measurement. The analysis uses the GCC seed's
+    sign to choose one signed lobe inside these declared magnitude bounds.
+    """
+    declared = _declared_alignment_delay_range_ms(source_preset)
+    if declared is None:
+        return None
+    _region, lo_ms, hi_ms = declared
+    lo_ms = max(0.0, lo_ms - margin_ms)
+    hi_ms += margin_ms
+    return lo_ms * 1000.0, hi_ms * 1000.0
+
+
 def alignment_delay_plausible(
     delay_us: float | None,
     source_preset: Any,
@@ -421,15 +460,10 @@ def alignment_delay_plausible(
     """
     if delay_us is None:
         return True
-    regions = getattr(source_preset, "crossover_regions", None)
-    if not regions:
+    declared = _declared_alignment_delay_range_ms(source_preset)
+    if declared is None:
         return True
-    delay_range_ms = getattr(regions[0], "delay_range_ms", None)
-    if not (isinstance(delay_range_ms, (tuple, list)) and len(delay_range_ms) == 2):
-        return True
-    lo_ms, hi_ms = float(delay_range_ms[0]), float(delay_range_ms[1])
-    if not (math.isfinite(lo_ms) and math.isfinite(hi_ms)) or lo_ms > hi_ms:
-        return True
+    _region, lo_ms, hi_ms = declared
     delay_ms = abs(float(delay_us)) / 1000.0
     return (lo_ms - margin_ms) <= delay_ms <= (hi_ms + margin_ms)
 
@@ -451,14 +485,28 @@ def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
         "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
         "glitch_detected": bool(analysis.glitch_detected),
         "delay_us": round(float(align.delay_us), 3) if align else None,
+        "alignment_seed_delay_us": (
+            round(float(align.seed_delay_us), 3)
+            if align and align.seed_delay_us is not None else None
+        ),
         "polarity": align.polarity if align else None,
         "alignment_confidence": round(float(align.confidence), 4) if align else None,
+        "alignment_confidence_source": align.confidence_source if align else None,
         "trim_db": (
             {k: round(float(v), 4) for k, v in cand.trim_db.items()} if cand else None
         ),
         "predicted_ripple_db": (
             round(float(cand.predicted_ripple_db), 4) if cand else None
         ),
+        "alignment_seed_ripple_db": (
+            round(float(cand.alignment_seed_ripple_db), 4)
+            if cand and cand.alignment_seed_ripple_db is not None else None
+        ),
+        "flatness_improvement_db": (
+            round(float(cand.flatness_improvement_db), 4)
+            if cand and cand.flatness_improvement_db is not None else None
+        ),
+        "flatness_at_bound": bool(cand.flatness_at_bound) if cand else None,
     }
 
 
@@ -823,7 +871,10 @@ class CrossoverV2Conductor:
     # --- priors per phase ----------------------------------------------------
 
     def _measure_priors(self) -> MeasurementPriors:
-        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+        return MeasurementPriors(
+            crossover_fc_hz=self._fc_hz,
+            alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
+        )
 
     def _verify_priors(self) -> MeasurementPriors:
         # Carry MEASURE's actual per-driver sweep bounds forward (§5.6 fix) so
@@ -1161,7 +1212,9 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
         if analysis.alignment is not None and analysis.alignment.status != ALIGNMENT_OK:
             return PhaseVerdict(False, REASON_DELAY_EXCEEDS_SEARCH_WINDOW)
-        # Trust gate (owner ruling, 2026-07-20): below the confidence floor the
+        # Trust gate (owner ruling, 2026-07-20): this is GCC's capture/seed
+        # confidence, not confidence in T2's refined delay (the alignment and
+        # candidate retain both facts separately). Below the floor the
         # candidate is never built or published — a household has no basis to
         # judge a confidence number, so this is guidance ("move the mic"), not
         # a question ("apply anyway?"). Skipped entirely when there is no
@@ -1320,6 +1373,15 @@ class CrossoverV2Conductor:
             logger, "correction.crossover_v2_measure_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
             alignment_confidence=round(float(align.confidence), 4) if align else None,
+            alignment_confidence_source=(align.confidence_source if align else None),
+            alignment_seed_delay_us=(
+                round(float(align.seed_delay_us), 3)
+                if align and align.seed_delay_us is not None else None
+            ),
+            alignment_refinement_delta_us=(
+                round(float(align.delay_us - align.seed_delay_us), 3)
+                if align and align.seed_delay_us is not None else None
+            ),
             gate_window_ms=self._measure_gate(analysis),
             validity_floor_hz=_measure_validity_floor_hz(analysis),
             epsilon_ppm=round(float(drift.epsilon_ppm), 3) if drift else None,
@@ -1333,6 +1395,15 @@ class CrossoverV2Conductor:
             predicted_ripple_db=(
                 round(float(cand.predicted_ripple_db), 4) if cand else None
             ),
+            alignment_seed_ripple_db=(
+                round(float(cand.alignment_seed_ripple_db), 4)
+                if cand and cand.alignment_seed_ripple_db is not None else None
+            ),
+            flatness_improvement_db=(
+                round(float(cand.flatness_improvement_db), 4)
+                if cand and cand.flatness_improvement_db is not None else None
+            ),
+            flatness_at_bound=(bool(cand.flatness_at_bound) if cand else None),
             woofer_snr_db=woofer_snr_db,
             woofer_snr_verdict=woofer_snr_verdict,
             tweeter_snr_db=tweeter_snr_db,

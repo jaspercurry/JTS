@@ -11,24 +11,23 @@
 > work lands, after which the durable outcomes fold into the HANDOFF and this
 > doc is archived.
 >
-> **Last updated:** 2026-07-21. **Owner:** Fable (architect/coordinator).
+> **Last updated:** 2026-07-22. **Owner:** Fable (architect/coordinator).
 
 ---
 
-## Revised plan (2026-07-21, post-feasibility)
+## Revised plan (2026-07-22, post-hardware diagnosis)
 
-> **Supersedes §3–§5.** Written after the offline τ-sweep feasibility
-> experiment (E-replay, §7) ran against the E0 corpus
-> (`captures/xover-e0-2026-07-21/`). The Tier 1/2/3 framing below correctly
-> located causes (a)/(b)/(c)/(d) in §1, but scoped the fix for (a) at the
-> wrong band and didn't yet have hardware evidence. §3–§5 are kept as
-> decision archaeology — do not implement against them. This section is the
-> current plan; §11 points here.
+> **Supersedes §1–§5.** Written after the protected JTS3 delay sweep and two
+> fresh CHECK → MEASURE → APPLY → VERIFY flows. The older Tier 1/2/3
+> framing remains decision archaeology — do not implement against it. This
+> section is the current plan; §10 carries the exact evidence and §11 the gate
+> state.
 
 ### The refined diagnosis
 
-The τ-sweep found the real root cause of "confidence never passes" (E0,
-§10): it's a **correlation-band bug, not an estimator-quality problem**. GCC
+The original offline τ-sweep found the root cause of "confidence never
+passes" (E0, §10): a **correlation-band bug, not an estimator-quality
+problem**. GCC
 delay/confidence correlate over `[Fc/2, 2·Fc]` = `[1000, 4000]` Hz, but the
 tweeter is only excited from 2000 Hz (its MEASURE sweep starts at `Fc`), so
 `[1000, 2000]` is tweeter-deconvolution noise, not signal. Clamping the
@@ -39,18 +38,21 @@ is why T1.1 as originally scoped (§3) was a mathematical no-op (E0 confirmed
 every branch's `validity_floor_hz` ≤ 302 Hz on this room, so the floor clamp
 never binds).
 
-Two more defects compound it:
-- **Prediction ≠ apply (cause (c), confirmed in code).** VERIFY's predicted
-  sum (`_build_candidate` / `_predicted_sum`) is built at the argmax-peak
-  alignment, but the flow applies the GCC-PHAT delay (`_estimate_alignment`)
-  — the two are ~100 µs apart. VERIFY can fail even when confidence passes,
-  because the number VERIFY is scored against isn't the number that got
-  applied.
-- **Comb ambiguity + a confidently-wrong implausible delay.** The ~1-octave
-  correlation overlap yields a comb of near-equal candidate delays. The
-  confident band-clamped delay sits ~100 µs off the delay that actually
-  flattens the sum, and one E0 capture confidently certified an implausible
-  **−631 µs** that no flatness check caught.
+The later hardware sweep located three upstream defects that offline flatness
+alone could not settle:
+- **Wrong comb-lobe prior.** GCC-PHAT's periodic peak selected a neighboring
+  basin near 336 µs while hardware VERIFY bottomed at 40–50 µs. The raw IR
+  peak gap was 208.333 µs, but 178.150 µs of that was inter-sweep clock
+  drift. Removing only that clock term leaves the physical gap that anchors
+  the correct 55 µs objective basin; discarding the whole gap or leaving the
+  drift in both point elsewhere.
+- **A candidate-specific prediction could explain its own mistake.** VERIFY
+  must compare the applied response with the fixed independently aligned
+  zero-residual target, not phase the target by the delay under test.
+- **One-sided smoothing created a false hardware failure.** The production
+  comparator smoothed the capture but not the prediction. At the retained
+  50 µs hardware point this reported 1.991 dB max; smooth↔smooth is 0.490 dB
+  and raw↔raw is 0.606 dB.
 
 **Key limit — offline analysis cannot settle VERIFY-pass.** VERIFY
 re-measures through the applied LR4 graph, and the raw MEASURE captures in
@@ -65,24 +67,21 @@ that test right.
    `[max(Fc/2, tweeter_sweep_lo), min(2·Fc, woofer_sweep_hi)]` from one
    declaration-driven SSOT helper (same DRY shape T1.1 aimed for, corrected
    band + source). **Offline-proven: 12/12 confidence** on the E0 corpus.
-2. **Predict at the applied delay**, closing cause (c) — VERIFY's
-   prediction and the DSP-applied delay become the same number by
-   construction.
-3. **Physical-plausibility bound on the delay** (from the declared
-   plausible-delay range) **+ a flatness/lobe-depth guard**.
-   Offline-proven: catches the −628 µs outlier.
-4. **Widen the driver-sweep overlap** by extending the tweeter's MEASURE
-   sweep down to its declared do-not-test-below safe limit. Conservative by
-   construction: never below the declared tweeter limit, and the **woofer
-   stays at its declared top** — breakup is a common risk on the woofer side
-   and the owner ruled against pushing it (below). Driven by declared
-   per-driver usable ranges, so the overlap widens per hardware without a
-   code change. **Hardware-gated** — needs new captures.
-5. **The full estimator rewrite (T2-core / T2-robust, B1+B2+B3, §4–§5) is
-   DEMOTED to a robustness cross-check**, not the primary fix. Sum-flatness
-   survives as a guard (it rescued the reflection-corrupted capture in the
-   corpus); coherence-weighting (T2-robust's borrow) is reserved for
-   down-weighting ragged band edges *if* the widened overlap still needs it.
+2. **Select inside the physical comb lobe.** Remove the measured inter-sweep
+   clock contribution from the raw peak gap, retain the physical remainder,
+   add declared parallax, and use that non-periodic seed to orient one
+   declaration-bounded ±half-period lobe. GCC remains polarity,
+   capture-confidence, and fallback evidence only.
+3. **Keep VERIFY honest.** Compare against the fixed independently aligned
+   target, smooth measured and predicted curves identically, and use the raw
+   prediction only to identify a genuine modeled-notch interior.
+4. **Retain the physical-plausibility bound and flatness evidence.** The
+   candidate records GCC seed ripple, selected ripple improvement, and bound
+   state; selection and apply use the same τ.
+5. **Pause T2-robust and Fix 4.** Coherence weighting and a wider overlap are
+   robustness layers, not fixes for an objective whose basin is wrong. Resume
+   them only after the corrected T2-core clears the independent 0/0 review and
+   owner-controlled fixed-placement repeat.
 
 ### Owner decisions (2026-07-21)
 
@@ -95,8 +94,9 @@ that test right.
 - **The min-safe crossover is the value to always use.**
 - **Keep everything dynamic / declaration-driven** for any future drivers —
   no hardcoded bands or spacings.
-- **Sequencing:** fix the measurement via headless direct-Pi control FIRST
-  (same harness as E0); productionize the Chrome/relay capture UX after.
+- **Sequencing:** corrected T2-core's independent review cleared 0 blockers /
+  0 should-fixes. Run the owner's fixed-placement repeat next; keep T2-robust
+  and Fix 4 paused until that passes.
 
 ### Prior-art note
 
@@ -111,12 +111,11 @@ port stays reserved for if the widened overlap proves insufficient.
 
 ### Sequencing
 
-Fixes 1–3 are offline-provable on the retained E0 corpus and are being
-implemented now on branch `claude/xover-measure-fix`. Fix 4 (widen) and the
-VERIFY-pass question both need one hardware session: build the offline
-fixes → hardware VERIFY at the current sweep AND the widened sweep → ship if
-VERIFY passes, else escalate to the demoted T2-core/T2-robust estimator
-(§4–§5).
+The corrected T2-core is implemented on `claude/xover-t2-flatness`, passes
+retained replay and fresh calibrated JTS3 VERIFY, and cleared independent
+review at 0 blockers / 0 should-fixes. T2-robust and Fix 4 remain paused until
+the owner's fixed-placement repeat. The older sequencing below is retained as
+decision archaeology.
 
 ---
 
@@ -255,18 +254,29 @@ quality target (owner call, 2026-07-21), not a build/no-build gamble; it's built
 in two layers with a clear 80/20 line so effort tracks benefit. Rationale and
 benefits: §5.
 
-### T2-core — one consistent τ + a predictive confidence (causes b, c)
+### T2-core — one consistent τ + honest quality evidence (causes b, c)
 - **What:** coarse latency-immune cross-correlation (period disambiguation,
-  geometry-bounded) → **bounded (±½-period, single-cycle-safe) reverse-null /
-  summed-flatness refine** over the single capture's complex branch responses,
-  reusing `_predicted_sum` / `_ripple_db` and evaluating reuse of `null_walk`'s
-  selection logic. **One τ\*** flows to *both* prediction and apply. **Confidence
-  = the sharpness of the ripple-minimum / null-depth vs τ** (a metric that *is*
-  what VERIFY measures).
-- **Benefits:** B1 (confidence predicts VERIFY) + B2 (prediction = apply). See §5.
-- **Quality bar:** **SoC** (delay is one pure function; confidence falls out of
-  it) + **observability** (the confidence + the objective curve into the diag
-  events).
+  polarity, capture-confidence seed) → **declaration-bounded summed-flatness
+  refine** over the single capture's complex branch responses, reusing
+  `_predicted_sum` / `_ripple_db`. The active region's `delay_range_ms`
+  constrains the magnitude; the drift-corrected physical peak gap plus
+  parallax supplies the signed center of one ±half-period comb lobe without
+  requiring a pre-existing `delay_target_driver`. GCC supplies polarity,
+  capture confidence, and fallback only. **One τ\*** is selected and applied;
+  VERIFY compares the result with the zero-residual aligned target that τ\*
+  is supposed to realize, rather than letting a wrong candidate predict its
+  own wrong-lobe response. The implemented T2-core scope deliberately
+  keeps confidence as the labelled GCC seed/capture confidence (fix 1 already
+  made that gate reliable); seed ripple, objective improvement, selection
+  delta, and boundary state are separate diagnostics. A predictive sharpness
+  or σ_τ confidence remains T2-robust work rather than being implied by the
+  GCC number.
+- **Benefits:** B2 (selector/apply/target consistency) plus the evidence needed
+  to evaluate B1; T2-core does not claim that its GCC seed-confidence predicts
+  VERIFY.
+- **Quality bar:** **SoC** (one declaration-bounded delay selector) +
+  **observability** (seed, selected delay, ripple improvement, and bound state
+  in the diagnostic evidence/events).
 - **Size:** medium; reuses existing machinery. **Builder:** Opus-high (tricky SP).
 
 ### T2-robust — coherence-weighted phase-slope + CRB σ_τ (best practice, IN SCOPE)
@@ -280,7 +290,7 @@ benefits: §5.
   ship-to-real-people bar). See §5.
 - **Status (owner call, 2026-07-21): IN SCOPE, not data-gated.** Coherence
   weighting is documented best practice, and the σ_τ it produces *is* the
-  principled confidence (it supersedes T2-core's sharpness heuristic), so we
+  principled confidence (it supersedes any future T2-core sharpness heuristic), so we
   build it as the target estimator. The corpus (U3) *validates* it delivers the
   expected robustness — it does not decide whether to build it.
 - **Size:** medium-large. **Builder:** Opus-high.
@@ -299,25 +309,28 @@ This is the decision Tier 2 hinges on. Tier 1 makes the *measurement*
 reproducible **at a good placement**; Tier 2 makes the *decision* trustworthy
 and the measurement robust **everywhere else**. Three benefits, ranked:
 
-- **B1 — a confidence that predicts VERIFY.** *Biggest quality benefit, and
+- **B1 — a confidence that predicts VERIFY.** *Biggest remaining quality
+  benefit, and
   largely independent of placement.* Today the auto-apply gate uses the GCC peak
   margin, which doesn't predict whether applying the candidate will flatten the
   sum. That forces a lose-lose: set the floor loose → auto-apply things that
   then fail VERIFY (the current complaint); set it tight → reject good
   measurements and frustrate re-measures. A confidence that **is** the
-  sum-flatness objective (T2-core's sharpness, or T2-robust's σ_τ) turns
+  sum-flatness objective (a future sharpness metric, or T2-robust's σ_τ) turns
   auto-apply into "apply when it will verify, guide when it won't" — which is
   exactly what every shipping calibrator does and what the product needs. This
   benefit stands **even if Tier 1 makes good-placement measurements
   reproducible**, because it's about decision quality, not delay accuracy.
-- **B2 — one consistent τ (prediction = apply).** *Correctness fix that bites
-  even at good placements.* Cause (c) is structural: the prediction assumes
-  perfect argmax-peak alignment while a slightly different GCC-PHAT value is
-  applied, so VERIFY can fail marginally on an otherwise-clean measurement.
-  Deriving τ once, from the objective VERIFY checks, removes this by
-  construction. Small conceptually, but it *requires* the T2-core objective to
-  exist (you can't have "one τ from the flatness objective" without the flatness
-  objective).
+  T2-core intentionally does not claim this benefit yet: it labels the
+  existing number `gcc_phat_seed` and retains flatness-quality evidence
+  separately.
+- **B2 — selector/apply/target consistency.** *Correctness fix that bites even
+  at good placements.* Cause (c) is structural: a GCC delay could be applied
+  while VERIFY checked an unrelated peak-aligned model. T2-core derives one
+  τ from the flatness objective and applies it; VERIFY checks the fixed aligned
+  target that this τ is supposed to realize. A candidate-specific prediction
+  is forbidden because it could explain away a wrong-lobe apply. Small
+  conceptually, but it requires the T2-core objective to exist.
 - **B3 — robustness at modest SNR / imperfect placement.** *The
   ship-to-real-people bar.* Coherence weighting down-weights the low-SNR band
   edges (woofer rolling off high, tweeter low) that PHAT wrongly up-weights. It's
@@ -402,6 +415,104 @@ Captured so they're off the table for the landing work:
 ---
 
 ## 10. Decision log (append; newest first)
+
+- *2026-07-22 (upstream diagnosis + corrected JTS3 VERIFY pass)* — Per the
+  owner-directed pause, T2-robust and Fix 4 were not started. A clean protected
+  hardware sweep first applied woofer delays from **0–1100 µs** in 50 µs
+  steps, then refined **0–100 µs** in 10 µs steps. The honest fixed aligned-τ
+  VERIFY curve bottoms at the Camilla sample-quantized **40–50 µs** pair. The
+  production comparator initially reported **1.991 dB max** there, but that was
+  not physical disagreement: it compared a 1/6-octave-smoothed capture with a
+  raw prediction. On the identical retained 50 µs capture, smooth↔smooth is
+  **0.312 dB RMS / 0.490 dB max** and raw↔raw is **0.347 / 0.606 dB**. Woofer,
+  tweeter, and VERIFY all used the same **7.0 ms** gate and **142.857 Hz**
+  validity floor with no detected earlier reflection, ruling out the room gate
+  as the primary failure.
+
+  The sweep also located the selector defect. The live MEASURE had a raw peak
+  gap of **208.333 µs**, an inter-sweep clock contribution of **178.150 µs**,
+  and therefore a physical remainder of **30.183 µs**. The corrected flatness
+  curve's relevant local minimum is **55 µs**, matching hardware; leaving the
+  clock term in moves that same minimum to **233 µs**, while centering the
+  lobe on periodic GCC selects the neighboring ~**336 µs** basin. T2-core now
+  centers its bounded lobe on the negative corrected physical gap plus
+  parallax; GCC remains polarity/capture-confidence evidence. VERIFY's
+  reference remains the fixed zero-residual aligned target so a wrong-lobe
+  candidate cannot explain itself. Both measured and predicted curves receive
+  identical smoothing; the raw prediction is used only for the modeled-notch
+  mask. The standalone physical-delay/clock-drift test and a production-path
+  wrong-GCC-lobe regression pin both contracts. The raw-notch-mask branch is
+  separately pinned against smoothing erasing notch identity. Targeted suite:
+  **189 passed**.
+
+  Two fresh real relay + UMIK-2 flows then passed CHECK → MEASURE → automatic
+  APPLY → VERIFY on JTS3. The final calibrated run selected a **53.669 µs
+  woofer delay** from GCC **−354.167 µs**, improved objective ripple
+  **7.1304→5.3800 dB**, and the live Camilla graph read back the same
+  **0.0537 ms** delay. VERIFY passed the product's 1.5 dB gate at **0.824 dB
+  RMS / 1.279 dB max** over **2–4 kHz**, with matching 7.0 ms MEASURE/VERIFY
+  gates and the 142.857 Hz floor. The session restored volume exactly to
+  **−15.15 dB**, recorded zero input overflows, and the user surface reached
+  `done` / `Verified.` The earlier scripted run without the browser's stored-
+  calibration payload also passed at **1.220 dB max**; it is supporting
+  evidence only, not the definitive calibrated gate. Fresh independent
+  adversarial re-review cleared **0 blockers / 0 should-fixes** after the final
+  contract-text and raw-notch-mask coverage corrections. `scripts/test-fast`
+  passed **2,585 + 13** tests and the focused final suite passed **189**. The
+  full local merge runner remains an infrastructure caveat: macOS Python
+  subprocesses SIGSEGV under both parallel and serial suite load, while the
+  three implicated test cases pass **18/18** in isolation. Nothing is merged.
+
+- *2026-07-22 (T2 hardware frame correction; Gate 1 failed)* — The first
+  reviewed T2 deploy proved the estimator ran and the candidate was applied,
+  but **failed Gate 3**: GCC seed **−355.531 µs** refined to **−233.531 µs**
+  and the graph applied one 233.5 µs woofer delay, while three VERIFY captures
+  worsened to **7.579 / 7.636 / 7.613 dB** (prior fix-1 baseline ~4.29 dB).
+  Retained MEASURE/VERIFY replay plus a bounded protected-graph probe located
+  a frame error around the measured **208.333 µs** full-IR argmax gap. The
+  production response moved one-for-one with commanded delay but carried a
+  stable model-coordinate offset across both the old and new runs. Direct
+  probe results were 0 µs →
+  **4.01 dB**, 50 µs → **2.79 dB**, 100 µs → **3.29 dB**, and 233.5 µs →
+  **7.58–7.64 dB** against the original prediction (the 50 µs capture's
+  smoothed crossover-ripple standard deviation was **0.94 dB**). The corrected
+  frame removes only the inter-sweep clock term
+  `ε × (tweeter_start − woofer_start)` from the argmax gap and retains the
+  physical remainder in objective/prediction. The mandatory physics test now
+  injects a **170 µs physical gap plus 170 µs clock offset**, recovers the
+  physical −170 µs correction, and flattens the actual common-time-origin
+  sum; the production-path fixture repeats the proof with nonzero drift on
+  both delay signs. Targeted suite: **160 passed**.
+
+  That correction invalidated the earlier Gate 1 result. On the two retained
+  M1 captures, raw peak gap **208.3 µs** minus measured inter-sweep drift
+  **180.6 / 182.8 µs** leaves a physical gap of **27.7 / 25.6 µs**. Inside
+  the required GCC-centered lobe the corrected selector chooses **−335.5 /
+  −329.3 µs** and improves max-minus-min ripple only **7.118→7.040 dB /
+  7.082→6.998 dB**, nowhere near the ≤1.5–2 dB offline target. A full
+  declaration-range scan lobe-hops to **−684 / −680 µs** at **4.680 /
+  4.698 dB**, also inadequate. The new live MEASURE has **178.2 µs** clock
+  contribution and **30.2 µs** physical remainder; its corrected selector
+  chooses **−335.5 µs**, while the bounded hardware probe was best near a
+  **50 µs woofer delay**. Per the T2 session stop rule, work stopped at Gate
+  1: no corrected adversarial re-review, redeploy, or merge. JTS3 remains on
+  reviewed commit `4b3f23258` and was restored to its pre-probe volume.
+
+- *2026-07-21 (T2 Gate 1, hardware-free)* — Implemented the
+  declaration-bounded summed-flatness delay selection on
+  `claude/xover-t2-flatness`. The selected delay was then made to feed both
+  prediction and apply in the argmax/parallax reference frame; GCC remained the
+  labelled seed/polarity/capture-confidence source. A physical known-sum test
+  recovers the flattening delay, and production-path coverage pins nonzero
+  parallax on both signed lobes. Replaying the two retained M1 captures reduced
+  max-minus-min ripple from **37.524→5.042 dB** and **30.253→5.118 dB**
+  (standard deviation **7.729→1.065 dB** and **6.881→1.082 dB**), selecting
+  a common **−22.0 µs peak-frame residual** instead of GCC's
+  −353.5/−348.2 µs full-IR seed. The 2026-07-22 entry above records why
+  that result was invalid: it did not remove the inter-sweep clock
+  contribution from the argmax gap, and a candidate-specific prediction could
+  explain its own apply. This historical Gate 1 claim is superseded and must
+  not be used as merge evidence.
 
 - *2026-07-21 (hardware validation, fix 1+3)* — **The reviewed increment
   (fix 1 band-clamp + fix 3 plausibility bound; fix 2 reverted, fix 4
@@ -497,21 +608,16 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status:** fix 1 (band-clamp) is hardware-validated — MEASURE confidence
-  and predicted ripple both moved as feasibility predicted, and the flow
-  completed CHECK→MEASURE→apply→VERIFY end to end for the first time. The
-  remaining gap is delay *accuracy*, not confidence: VERIFY reproducibly
-  fails at ~4.29 dB (gate 1.5 dB) because the confident GCC delay is still
-  off the delay that actually flattens the sum (the 1-octave comb
-  ambiguity). See "2026-07-21 (hardware validation, fix 1+3)" in §10 for the
-  full readout and the T2/fix-4 recommendation.
-- **Next action:** build T2 (the flatness estimator) — offline-provable on
-  the retained corpus, and feasibility already shows it should clear the
-  1.5 dB gate — then run a *controlled* hardware VERIFY (fixed mic
-  placement, unlike the uncontrolled fix-1 run), then add fix 4 (widen the
-  tweeter sweep) as reliability hardening only if T2 alone is marginal.
-  Merge-now-vs-hold for the reviewed fix1+fix3 increment on
-  `claude/xover-measure-fix` is an owner decision.
+- **Status:** the upstream diagnosis is complete. The corrected objective's
+  physical lobe tracks the hardware sweep, like-for-like VERIFY comparison
+  passes retained replay, the strengthened physics/regression suite passes,
+  and a fully calibrated JTS3 flow selected/applied 53.669 µs and VERIFY-
+  passed at 1.279 dB max. Gate 2 cleared **0 blockers / 0 should-fixes**;
+  nothing is merged.
+- **Next action:** the owner-controlled fixed-placement repeat remains the
+  final reproducibility check before merge or resuming T2-robust / Fix 4.
+  Re-run the full merge suite in CI or a stable local Python runner because the
+  macOS local runner hit unrelated subprocess SIGSEGVs under suite load.
 - **Room caveat carried forward:** JTS3's room is a ~10 ft cube, capping
   any reflection-free analysis window at ~7 ms regardless of mic
   placement (confirmed directly in E0's data — see §10). Any future
