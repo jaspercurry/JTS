@@ -1341,7 +1341,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
             trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
             delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
             alignment_seed_ripple_db=4.56, flatness_improvement_db=3.33,
-            flatness_at_bound=False,
+            anchor_delay_us=145.0, snap_delta_us=5.0, snap_found=True,
         ),
         linearity_ok=True,
         predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
@@ -1371,7 +1371,9 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert "predicted_ripple_db=1.23" in caplog.text
     assert "alignment_seed_ripple_db=4.56" in caplog.text
     assert "flatness_improvement_db=3.33" in caplog.text
-    assert "flatness_at_bound=false" in caplog.text
+    assert "anchor_delay_us=145.0" in caplog.text
+    assert "snap_delta_us=5.0" in caplog.text
+    assert "snap_found=true" in caplog.text
     assert "woofer_snr_db=25.0" in caplog.text
     assert "woofer_snr_verdict=ok" in caplog.text
     assert "tweeter_snr_db=8.0" in caplog.text
@@ -1381,7 +1383,9 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert evidence["alignment_seed_delay_us"] == 120.0
     assert evidence["alignment_seed_ripple_db"] == 4.56
     assert evidence["flatness_improvement_db"] == 3.33
-    assert evidence["flatness_at_bound"] is False
+    assert evidence["anchor_delay_us"] == 145.0
+    assert evidence["snap_delta_us"] == 5.0
+    assert evidence["snap_found"] is True
 
 
 def test_measure_diag_logs_full_numbers_on_glitch_rejection_too(caplog):

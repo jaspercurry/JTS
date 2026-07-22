@@ -123,11 +123,21 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
 DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
-# Applied-delay grid for the bounded sum-flatness refinement. Two microseconds
-# is <1/10 sample at 48 kHz and <3 degrees at the top of the reference
-# crossover overlap (4 kHz), while keeping the declaration-bounded walk cheap
-# on a 1 GB Pi.
-FLATNESS_DELAY_STEP_US = 2.0
+
+# Gated local-peak snap radius, as a fraction of the crossover period at Fc
+# (delay-selection methodology: docs/crossover-measurement-reproducibility-plan.md
+# §10, 2026-07-22 bake-off + methodology entries). The drift-corrected physical
+# peak-gap anchor owns comb-lobe selection; the fine stage snaps it to the
+# nearest local maximum of the SAME upsampled GCC-PHAT correlation, but only
+# within ±(period/6) of the anchor. period/6 = λ/6 is the GPS integer-ambiguity
+# lobe-selection budget (Teunissen): a coarse anchor with error σ ≤ λ/6 selects
+# the correct comb lobe with ≥99.7% probability. On the E0 hardware corpus this
+# radius is ~2× the largest legitimate observed snap (≈39 µs) and structurally
+# below the +166 µs stable-but-wrong correlation feature the bake-off ruled out,
+# so the snap can never rail onto a neighbouring comb lobe. PROVISIONAL pending
+# more crossover-measurement hardware runs; declaration-driven — the µs radius
+# derives from the priors' Fc, never a hardcoded value (≈83.3 µs at Fc=2 kHz).
+GCC_SNAP_RADIUS_PERIODS = 1.0 / 6.0
 
 # Alignment estimator status vocabulary.
 ALIGNMENT_OK = "ok"
@@ -369,14 +379,22 @@ class AlignmentEstimate:
     delayed by that amount** to time-align the crossover.
 
     T2 keeps GCC as the capture-quality seed: ``seed_delay_us`` records that
-    corrected delay, while ``delay_us`` becomes the declaration-bounded
-    sum-flatness selection. ``confidence`` therefore remains explicitly
-    ``confidence_source='gcc_phat_seed'``; the flatness objective's own
-    quality evidence is stored separately on :class:`CrossoverCandidate`.
+    corrected delay, while ``delay_us`` becomes the anchor-primary,
+    gated-local-peak-snapped selection. ``confidence`` therefore remains
+    explicitly ``confidence_source='gcc_phat_seed'``; the selection's own
+    ripple/snap evidence is stored separately on :class:`CrossoverCandidate`.
     After refinement, ``raw_delay_us`` is the selected delay in the
     pre-parallax coordinate, preserving
     ``delay_us == raw_delay_us - parallax_us``; it is not the discarded GCC
     raw peak, whose corrected form remains available as ``seed_delay_us``.
+
+    ``snapped_delay_us`` is the fine-stage result: the drift-corrected physical
+    peak-gap anchor snapped to the nearest local maximum of the SAME upsampled
+    GCC-PHAT correlation within ±(period/6) at Fc (:data:`GCC_SNAP_RADIUS_PERIODS`).
+    ``None`` when the radius held no local maximum (the candidate then keeps the
+    bare anchor) or the seed was refused. It is plumbing from the aligner — which
+    owns the correlation — to :func:`_build_candidate`, which owns the anchor and
+    the final selection; direct ``_build_candidate`` callers leave it ``None``.
 
     ``status`` is :data:`ALIGNMENT_OK` for a trustworthy estimate. When the
     correlation peak lands at (or within one sample of) the ±search-window
@@ -396,11 +414,25 @@ class AlignmentEstimate:
     status: str = ALIGNMENT_OK
     seed_delay_us: float | None = None
     confidence_source: str = "gcc_phat"
+    snapped_delay_us: float | None = None
 
 
 @dataclass(frozen=True)
 class CrossoverCandidate:
-    """The proposed measured candidate (design §5.6.6)."""
+    """The proposed measured candidate (design §5.6.6).
+
+    Delay selection is anchor-primary (the drift-corrected physical peak gap)
+    with a gated local-peak snap; summed-magnitude flatness is demoted to
+    evidence and never chooses the applied delay (methodology:
+    docs/crossover-measurement-reproducibility-plan.md §10, 2026-07-22).
+    ``anchor_delay_us`` is the bare anchor in the signed candidate convention,
+    ``snap_delta_us`` is ``selected − anchor`` (0.0 when the snap was not taken),
+    and ``snap_found`` records whether a local correlation peak existed inside
+    the snap radius. ``alignment_seed_ripple_db`` is the summed ripple evaluated
+    AT the anchor and ``flatness_improvement_db`` is ``anchor_ripple −
+    selected_ripple`` — evidence only, so a slightly negative value is honest
+    (the snap is chosen for comb-lobe correctness, not ripple).
+    """
 
     trim_db: Mapping[str, float]
     polarity: str
@@ -409,7 +441,9 @@ class CrossoverCandidate:
     confidence: float
     alignment_seed_ripple_db: float | None = None
     flatness_improvement_db: float | None = None
-    flatness_at_bound: bool = False
+    anchor_delay_us: float | None = None
+    snap_delta_us: float | None = None
+    snap_found: bool = False
 
 
 @dataclass(frozen=True)
@@ -633,28 +667,25 @@ def _bandlimit(ir: np.ndarray, sample_rate: int, lo_hz: float, hi_hz: float) -> 
     return np.fft.irfft(spectrum, n=n)
 
 
-def _gcc_phat(
+def _gcc_correlation(
     a: np.ndarray,
     b: np.ndarray,
     *,
     sample_rate: int,
     band_hz: tuple[float, float],
     upsample: int,
-    max_lag_samples: float,
-):
-    """Band-limited GCC-PHAT of ``a`` vs ``b``; ``a ≈ b`` shifted right by the lag.
+) -> tuple[np.ndarray, int]:
+    """Band-limited GCC-PHAT cross-correlation of ``a`` vs ``b``, ×``upsample``
+    FFT-interpolated.
 
-    Returns ``(lag_samples, polarity_sign, confidence, at_edge)``. The
+    Returns ``(cc, m)``: ``cc`` is the length-``m`` upsampled real
+    cross-correlation on the circular-lag axis (index ``i`` → lag ``i`` for
+    ``i <= m/2`` else ``i - m``; native lag = index / ``upsample``). The
     cross-power is phase-transform weighted **only inside ``band_hz``**
     (whitening the near-zero out-of-band bins otherwise piles a spurious peak
-    near zero lag); the correlation is ×``upsample`` FFT-interpolated and
-    parabolically refined. ``polarity_sign`` is the sign of the (signed)
-    correlation at the peak, and ``confidence`` mirrors
-    ``cross_correlation_alignment``'s primary-over-secondary margin.
-
-    ``at_edge`` is True when the peak lands within one native sample of the
-    ±``max_lag_samples`` search bound — the true peak is likely OUTSIDE the
-    window and the returned lag is a clamped artifact the caller must refuse.
+    near zero lag). Shared core of :func:`_gcc_phat` (global-peak seed) and
+    :func:`_gcc_local_peak_snap` (anchor-gated fine snap), so both read one
+    correlation formula rather than two that could silently drift apart.
     """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -673,6 +704,33 @@ def _gcc_phat(
     R_phat = R_phat * in_band
     m = n * upsample
     cc = np.fft.irfft(R_phat, n=m) * upsample
+    return cc, m
+
+
+def _gcc_phat(
+    a: np.ndarray,
+    b: np.ndarray,
+    *,
+    sample_rate: int,
+    band_hz: tuple[float, float],
+    upsample: int,
+    max_lag_samples: float,
+):
+    """Band-limited GCC-PHAT of ``a`` vs ``b``; ``a ≈ b`` shifted right by the lag.
+
+    Returns ``(lag_samples, polarity_sign, confidence, at_edge)``. The
+    correlation (see :func:`_gcc_correlation`) is ×``upsample`` FFT-interpolated
+    and parabolically refined. ``polarity_sign`` is the sign of the (signed)
+    correlation at the peak, and ``confidence`` mirrors
+    ``cross_correlation_alignment``'s primary-over-secondary margin.
+
+    ``at_edge`` is True when the peak lands within one native sample of the
+    ±``max_lag_samples`` search bound — the true peak is likely OUTSIDE the
+    window and the returned lag is a clamped artifact the caller must refuse.
+    """
+    cc, m = _gcc_correlation(
+        a, b, sample_rate=sample_rate, band_hz=band_hz, upsample=upsample,
+    )
     # Circular-lag axis: index i → lag i for i<=m/2 else i-m; native = /upsample.
     max_lag_up = int(round(max_lag_samples * upsample))
     max_lag_up = max(1, min(max_lag_up, m // 2 - 1))
@@ -704,6 +762,65 @@ def _gcc_phat(
     max_lag_native = max_lag_up / upsample
     at_edge = abs(lag_samples) >= max_lag_native - 1.0
     return lag_samples, polarity_sign, confidence, at_edge
+
+
+def _gcc_local_peak_snap(
+    a: np.ndarray,
+    b: np.ndarray,
+    *,
+    sample_rate: int,
+    band_hz: tuple[float, float],
+    upsample: int,
+    anchor_lag_samples: float,
+    radius_samples: float,
+) -> float | None:
+    """Snap ``anchor_lag_samples`` to the nearest local maximum of the
+    band-limited GCC-PHAT correlation of ``a`` vs ``b`` within ±``radius_samples``.
+
+    Reuses the exact upsampled phase-transform machinery of :func:`_gcc_phat`
+    (via the shared :func:`_gcc_correlation` core) and the same ±1-bin
+    :func:`_parabolic_peak` sub-sample refine. Returns the refined native lag of
+    the nearest genuine interior local maximum of the correlation MAGNITUDE — an
+    upsampled bin strictly greater than both its neighbours — whose lag is within
+    the radius of the anchor; ``None`` when the radius contains no such peak (the
+    caller then keeps the bare anchor). "Nearest" = smallest ``|lag − anchor|``.
+
+    Ianniello's gated correlator (docs/crossover-measurement-reproducibility-plan.md
+    §10, 2026-07-22): the drift-corrected physical peak-gap anchor already owns
+    comb-lobe selection, so this refines it inside one λ/6 lobe instead of
+    trusting the global correlation peak, which can land on a neighbouring
+    stable-but-wrong comb lobe.
+    """
+    cc, m = _gcc_correlation(
+        a, b, sample_rate=sample_rate, band_hz=band_hz, upsample=upsample,
+    )
+    abs_cc = np.abs(cc)
+    # Search the ±radius neighbourhood in UPSAMPLED-lag units around the anchor,
+    # reading the circular array modularly (upsampled lag ℓ → index ℓ % m). A
+    # local maximum is an upsampled bin strictly greater than both neighbours.
+    anchor_up = anchor_lag_samples * upsample
+    radius_up = abs(radius_samples) * upsample
+    lo = int(math.floor(anchor_up - radius_up))
+    hi = int(math.ceil(anchor_up + radius_up))
+    best_ell: int | None = None
+    best_dist = float("inf")
+    for ell in range(lo, hi + 1):
+        # The integer sweep brackets the fractional radius; keep only lags
+        # genuinely inside it so a snap can never exceed λ/6 from the anchor.
+        if abs(ell - anchor_up) > radius_up:
+            continue
+        idx = ell % m
+        if abs_cc[idx] <= abs_cc[(idx - 1) % m] or abs_cc[idx] <= abs_cc[(idx + 1) % m]:
+            continue
+        dist = abs(ell - anchor_up)
+        if dist < best_dist:
+            best_dist = dist
+            best_ell = ell
+    if best_ell is None:
+        return None
+    refined = _parabolic_peak(abs_cc, best_ell % m)
+    circ = refined if refined <= m / 2 else refined - m
+    return float(circ / upsample)
 
 
 def _complex_tf(
@@ -1259,6 +1376,30 @@ def _estimate_alignment(
             search_window_ms=priors.align_search_ms,
         )
 
+    # Fine stage (methodology §10, 2026-07-22): snap the drift-corrected
+    # physical peak-gap anchor to the nearest local maximum of the SAME
+    # correlation within ±(period/6) at Fc. The anchor's lag-domain position is
+    # the raw full-IR argmax gap (same time base as ``ir_t``/``ir_w``); the
+    # seed's ε/parallax conversion maps a snapped lag back to the signed delay
+    # frame. ``None`` (no local peak in radius, or an edge-refused estimate)
+    # leaves ``_build_candidate`` on the bare anchor. GCC polarity/confidence
+    # machinery is unchanged — this snaps the applied delay only.
+    snapped_delay_us: float | None = None
+    if status == ALIGNMENT_OK and fc_hz > 0.0:
+        anchor_lag_samples = float(
+            int(np.argmax(np.abs(tweeter_full_ir)))
+            - int(np.argmax(np.abs(woofer_full_ir)))
+        )
+        radius_samples = sample_rate / fc_hz * GCC_SNAP_RADIUS_PERIODS
+        snapped_lag = _gcc_local_peak_snap(
+            ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
+            upsample=GCC_UPSAMPLE, anchor_lag_samples=anchor_lag_samples,
+            radius_samples=radius_samples,
+        )
+        if snapped_lag is not None:
+            snapped_tau = snapped_lag - epsilon * delta_start
+            snapped_delay_us = -snapped_tau / sample_rate * 1e6 - parallax_us
+
     # Cross-check polarity against the flatter predicted sum.
     agrees = _flatter_sum_polarity(
         capture, program, sample_rate, global_offset, fc_hz, priors,
@@ -1274,6 +1415,7 @@ def _estimate_alignment(
         polarity_agrees_with_sum=polarity_agrees,
         confidence=confidence,
         status=status,
+        snapped_delay_us=snapped_delay_us,
     )
 
 
@@ -1303,122 +1445,6 @@ def _predicted_sum(
             -1j * 2.0 * np.pi * np.asarray(freqs_hz) * residual_delay_us * 1e-6
         )
     return W * g_w + sign * tweeter
-
-
-def _flatness_delay_us(
-    freqs_hz: np.ndarray,
-    W: np.ndarray,
-    T: np.ndarray,
-    trim_w_db: float,
-    trim_t_db: float,
-    sign: int,
-    *,
-    lo_hz: float,
-    hi_hz: float,
-    reference_gap_us: float,
-    search_bounds_us: tuple[float, float],
-    seed_delay_us: float,
-) -> tuple[float, float, float, bool]:
-    """Refine an applied delay by minimizing summed ripple in one delay lobe.
-
-    ``reference_gap_us`` is the drift-corrected physical ``D_t - D_w`` peak
-    gap plus the declared mic-parallax correction. Candidate applied delays use
-    :class:`AlignmentEstimate`'s signed convention, so the residual evaluated
-    in the independently peak-referenced transfer functions is
-    ``reference_gap_us + candidate_delay_us``. The caller supplies a
-    declaration-derived signed search lobe; GCC remains the seed/fallback.
-
-    Returns ``(selected_delay, selected_ripple, seed_ripple, at_bound)`` so
-    the refinement is durable evidence rather than an unobservable overwrite.
-    """
-    lower_us, upper_us = (float(value) for value in search_bounds_us)
-    if not (
-        math.isfinite(lower_us)
-        and math.isfinite(upper_us)
-        and lower_us <= upper_us
-    ):
-        return float(seed_delay_us), float("inf"), float("inf"), False
-
-    band = (freqs_hz >= lo_hz) & (freqs_hz <= hi_hz)
-    if not np.any(band):
-        return float(seed_delay_us), float("inf"), float("inf"), False
-    freqs = freqs_hz[band]
-    W_band = W[band]
-    T_band = T[band]
-
-    span_us = upper_us - lower_us
-    intervals = max(1, int(math.ceil(span_us / FLATNESS_DELAY_STEP_US)))
-    candidates = np.linspace(lower_us, upper_us, intervals + 1)
-    if lower_us <= seed_delay_us <= upper_us:
-        candidates = np.append(candidates, float(seed_delay_us))
-
-    def _score(candidate_delay_us: float) -> float:
-        residual_delay_us = reference_gap_us + float(candidate_delay_us)
-        summed = _predicted_sum(
-            W_band,
-            T_band,
-            trim_w_db,
-            trim_t_db,
-            sign,
-            freqs_hz=freqs,
-            residual_delay_us=residual_delay_us,
-        )
-        return _ripple_db(freqs, summed, lo_hz, hi_hz)
-
-    seed_ripple_db = _score(float(seed_delay_us))
-    best_delay_us = float(seed_delay_us)
-    best_ripple_db = float("inf")
-    for candidate_delay_us in candidates:
-        ripple_db = _score(float(candidate_delay_us))
-        if ripple_db < best_ripple_db:
-            best_delay_us = float(candidate_delay_us)
-            best_ripple_db = ripple_db
-    at_bound = math.isclose(best_delay_us, lower_us) or math.isclose(
-        best_delay_us, upper_us,
-    )
-    return best_delay_us, best_ripple_db, seed_ripple_db, at_bound
-
-
-def _flatness_search_lobe_us(
-    magnitude_bounds_us: tuple[float, float],
-    lobe_center_delay_us: float,
-    fc_hz: float,
-) -> tuple[float, float] | None:
-    """Orient and narrow declared magnitudes to the physical-delay lobe.
-
-    A fresh preset legitimately has no ``delay_target_driver`` yet. The
-    drift-corrected physical peak gap identifies which branch must be delayed
-    and supplies the only non-periodic lobe anchor available in the capture.
-    Limit the refinement to ±half a crossover period around that anchor,
-    intersected with the declared magnitude range. GCC is deliberately absent:
-    its periodic correlation peak can land on the wrong comb lobe even when its
-    polarity and confidence remain useful capture evidence.
-    """
-    lo_mag_us, hi_mag_us = (float(value) for value in magnitude_bounds_us)
-    if not (
-        math.isfinite(lo_mag_us)
-        and math.isfinite(hi_mag_us)
-        and 0.0 <= lo_mag_us <= hi_mag_us
-        and math.isfinite(lobe_center_delay_us)
-        and math.isfinite(fc_hz)
-        and fc_hz > 0.0
-    ):
-        return magnitude_bounds_us
-
-    if lobe_center_delay_us < 0.0:
-        declared_lo_us, declared_hi_us = -hi_mag_us, -lo_mag_us
-    else:
-        declared_lo_us, declared_hi_us = lo_mag_us, hi_mag_us
-    half_period_us = 0.5e6 / fc_hz
-    search_lo_us = max(
-        declared_lo_us, lobe_center_delay_us - half_period_us,
-    )
-    search_hi_us = min(
-        declared_hi_us, lobe_center_delay_us + half_period_us,
-    )
-    if search_lo_us > search_hi_us:
-        return None
-    return search_lo_us, search_hi_us
 
 
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
@@ -2086,7 +2112,9 @@ def _build_candidate(
     delay_us = alignment.delay_us
     seed_ripple_db = None
     flatness_improvement_db = None
-    flatness_at_bound = False
+    anchor_delay_us = None
+    snap_delta_us = None
+    snap_found = False
     if alignment.status == ALIGNMENT_OK and alignment_delay_bounds_us is not None:
         peak_gap_us = (
             int(np.argmax(np.abs(tweeter_full_ir)))
@@ -2095,48 +2123,56 @@ def _build_candidate(
         # The two sweeps occur at different schedule times, so their raw IR
         # argmax gap contains both the physical branch delay and epsilon times
         # that schedule separation. Remove only the measured clock-drift term;
-        # the remaining physical gap must stay in the independently
-        # peak-referenced flatness objective.
+        # the remaining physical gap is the anchor that owns comb-lobe selection
+        # (methodology §10, 2026-07-22). Discarding the whole gap or leaving the
+        # drift in both point at the wrong lobe.
         drift_corrected_peak_gap_us = peak_gap_us - inter_sweep_drift_us
         objective_reference_gap_us = (
             drift_corrected_peak_gap_us + alignment.parallax_us
         )
         physical_seed_delay_us = -objective_reference_gap_us
-        search_lobe_us = _flatness_search_lobe_us(
-            alignment_delay_bounds_us,
-            physical_seed_delay_us,
-            fc_hz,
-        )
-        if search_lobe_us is not None:
-            (
-                selected_delay_us,
-                selected_ripple_db,
-                selected_seed_ripple_db,
-                at_bound,
-            ) = _flatness_delay_us(
-                freqs,
-                W,
-                T,
-                trim_w,
-                trim_t,
-                alignment.polarity_sign,
-                lo_hz=lo_clamped,
-                hi_hz=hi,
-                reference_gap_us=objective_reference_gap_us,
-                search_bounds_us=search_lobe_us,
-                seed_delay_us=alignment.delay_us,
-            )
-            if math.isfinite(selected_ripple_db) and math.isfinite(
-                selected_seed_ripple_db
-            ):
-                delay_us = selected_delay_us
-                seed_ripple_db = selected_seed_ripple_db
-                flatness_improvement_db = seed_ripple_db - selected_ripple_db
-                flatness_at_bound = at_bound
+        anchor_delay_us = physical_seed_delay_us
+        # Gated local-peak snap owns the fine step: the aligner already snapped
+        # this anchor to the nearest local maximum of the SAME GCC-PHAT
+        # correlation within ±(period/6) at Fc, or ruled one out. No local peak
+        # in radius ⇒ keep the bare anchor; the snap is bounded closed-form, so
+        # nothing can rail here. The declared `alignment_delay_bounds_us`
+        # plausibility rail (Fix 3) still applies to the final `delay_us`
+        # downstream in `crossover_v2_flow`.
+        if alignment.snapped_delay_us is not None:
+            delay_us = float(alignment.snapped_delay_us)
+            snap_found = True
+        else:
+            delay_us = anchor_delay_us
+        snap_delta_us = delay_us - anchor_delay_us
+        # Flatness demoted to evidence (methodology §10): the summed ripple AT
+        # the anchor and AT the snapped selection, in the argmax-referenced frame
+        # (residual = objective_reference_gap + candidate; the anchor residual is
+        # exactly 0). Never a selector, so `flatness_improvement_db` can be
+        # slightly negative — the snap is chosen for lobe-correctness, not ripple.
+        band = (freqs >= lo_clamped) & (freqs <= hi)
+        if np.any(band):
+            freqs_band = freqs[band]
+            W_band = W[band]
+            T_band = T[band]
+
+            def _ripple_at(candidate_delay_us: float) -> float:
+                summed = _predicted_sum(
+                    W_band, T_band, trim_w, trim_t, alignment.polarity_sign,
+                    freqs_hz=freqs_band,
+                    residual_delay_us=objective_reference_gap_us + candidate_delay_us,
+                )
+                return _ripple_db(freqs_band, summed, lo_clamped, hi)
+
+            anchor_ripple_db = _ripple_at(anchor_delay_us)
+            selected_ripple_db = _ripple_at(delay_us)
+            if math.isfinite(anchor_ripple_db) and math.isfinite(selected_ripple_db):
+                seed_ripple_db = anchor_ripple_db
+                flatness_improvement_db = anchor_ripple_db - selected_ripple_db
     # VERIFY's reference is the flattest-achievable, independently aligned sum
     # (design §5.6.6), not a candidate-specific model that can explain away a
-    # wrong comb lobe. The selection objective above proves which applied delay
-    # should realize this zero-residual target in the original physical frame.
+    # wrong comb lobe. The selected applied delay above proves which correction
+    # realizes this zero-residual target in the original physical frame.
     predicted = _predicted_sum(
         W,
         T,
@@ -2154,7 +2190,9 @@ def _build_candidate(
         confidence=alignment.confidence,
         alignment_seed_ripple_db=seed_ripple_db,
         flatness_improvement_db=flatness_improvement_db,
-        flatness_at_bound=flatness_at_bound,
+        anchor_delay_us=anchor_delay_us,
+        snap_delta_us=snap_delta_us,
+        snap_found=snap_found,
     )
     return candidate, (freqs, predicted_db)
 
@@ -2321,6 +2359,14 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     candidate = getattr(analysis, "candidate", None)
     if candidate is not None:
         out["predicted_ripple_db"] = round(float(candidate.predicted_ripple_db), 4)
+        anchor_delay_us = getattr(candidate, "anchor_delay_us", None)
+        if anchor_delay_us is not None:
+            out["anchor_delay_us"] = round(float(anchor_delay_us), 3)
+            snap_delta_us = getattr(candidate, "snap_delta_us", None)
+            out["snap_delta_us"] = (
+                round(float(snap_delta_us), 3) if snap_delta_us is not None else None
+            )
+            out["snap_found"] = bool(getattr(candidate, "snap_found", False))
         if candidate.alignment_seed_ripple_db is not None:
             out["alignment_seed_ripple_db"] = round(
                 float(candidate.alignment_seed_ripple_db), 4,
@@ -2328,7 +2374,6 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             out["flatness_improvement_db"] = round(
                 float(candidate.flatness_improvement_db), 4,
             )
-            out["flatness_at_bound"] = bool(candidate.flatness_at_bound)
 
     for resp in getattr(analysis, "driver_responses", None) or ():
         role = resp.role

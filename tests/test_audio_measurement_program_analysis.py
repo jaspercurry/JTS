@@ -48,6 +48,8 @@ from jasper.audio_measurement.program_analysis import (
     AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
     GAIN_MAX_DIGITAL_PEAK_DBFS,
+    GCC_SNAP_RADIUS_PERIODS,
+    GCC_UPSAMPLE,
     IR_POST_MS,
     IR_PRE_MS,
     LINEARITY_SNR_BIAS_BUDGET_FRACTION,
@@ -62,8 +64,7 @@ from jasper.audio_measurement.program_analysis import (
     _complex_tf,
     _deconvolve_window,
     _gate_floor_hz,
-    _flatness_delay_us,
-    _flatness_search_lobe_us,
+    _gcc_local_peak_snap,
     _gcc_phat,
     _global_offset,
     _locate_segments,
@@ -480,89 +481,175 @@ def test_delay_sign_convention_tweeter_earlier_is_positive():
     assert res.alignment.delay_us == pytest.approx((d_w - d_t) / SR * 1e6, abs=5.0)
 
 
-def test_flatness_delay_recovers_and_flattens_known_physical_sum():
-    """T2 physics gate: remove clock drift but retain physical peak gap.
-
-    A physical 170 us inter-driver delay and a 170 us inter-sweep clock-drift
-    offset produce a measured 340 us IR argmax gap. The refiner must recover
-    the physical -170 us correction from the drift-corrected gap, and that
-    correction must flatten the actual common-time-origin branch sum.
+def test_snap_recovers_physical_delay_through_drift_and_noise():
+    """Delay-selection physics gate (methodology §10, 2026-07-22): with the
+    plausibility bound supplied, the anchor-primary + gated-local-peak-snap
+    selector recovers the physical inter-driver delay from a capture carrying a
+    known clock drift. The successor to the retired ``_flatness_delay_us``
+    170/170 drift-removal gate: the inter-sweep clock term is removed from the
+    raw argmax gap, the physical remainder is kept, and the SELECTED applied
+    delay tracks truth.
     """
-    freqs = np.linspace(2000.0, 4000.0, 1001)
-    omega = 2.0 * np.pi * freqs
-    woofer_peak = np.ones(freqs.size, dtype=complex)
-    tweeter_peak = np.full(freqs.size, 0.85 + 0.0j)
-    physical_peak_gap_us = 170.0
-    inter_sweep_drift_us = 170.0
-    measured_peak_gap_us = physical_peak_gap_us + inter_sweep_drift_us
-    drift_corrected_peak_gap_us = measured_peak_gap_us - inter_sweep_drift_us
-    gcc_seed_us = -350.0
-
-    refined_us, refined_objective, seed_objective, at_bound = _flatness_delay_us(
-        freqs,
-        woofer_peak,
-        tweeter_peak,
-        0.0,
-        0.0,
-        +1,
-        lo_hz=2000.0,
-        hi_hz=4000.0,
-        reference_gap_us=drift_corrected_peak_gap_us,
-        search_bounds_us=(-400.0, 0.0),
-        seed_delay_us=gcc_seed_us,
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
     )
-    assert refined_us == pytest.approx(-physical_peak_gap_us, abs=2.0)
-    assert refined_objective < seed_objective
-    assert not at_bound
-
-    d_w_us = 500.0
-    d_t_us = d_w_us + physical_peak_gap_us
-    W_physical = woofer_peak * np.exp(-1j * omega * d_w_us * 1e-6)
-    T_physical = tweeter_peak * np.exp(-1j * omega * d_t_us * 1e-6)
-
-    def actual_sum(applied_delay_us: float) -> np.ndarray:
-        # Negative signed delay means delay the woofer by its magnitude.
-        return W_physical * np.exp(
-            -1j * omega * max(0.0, -applied_delay_us) * 1e-6
-        ) + T_physical * np.exp(
-            -1j * omega * max(0.0, applied_delay_us) * 1e-6
-        )
-
-    refined_ripple = _ripple_db(
-        freqs, actual_sum(refined_us), 2000.0, 4000.0,
+    tau_true = 25  # tweeter arrives 25 samples LATER than the woofer
+    eps = 80e-6
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
+        epsilon=eps,
     )
-    gcc_ripple = _ripple_db(
-        freqs, actual_sum(gcc_seed_us), 2000.0, 4000.0,
+    res = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(
+            crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0.0, 1000.0),
+        ),
+        geometry=MeasurementGeometry(),  # d=0 ⇒ no parallax
     )
-    uncorrected_gap_ripple = _ripple_db(
-        freqs,
-        actual_sum(-measured_peak_gap_us),
-        2000.0,
-        4000.0,
-    )
-    discarded_gap_ripple = _ripple_db(
-        freqs, actual_sum(0.0), 2000.0, 4000.0,
-    )
-    assert refined_ripple < 0.05
-    assert gcc_ripple > 5.0
-    assert uncorrected_gap_ripple > 5.0
-    assert discarded_gap_ripple > 5.0
+    expected_delay_us = -tau_true / SR * 1e6
+    # The SELECTED (snapped) applied delay recovers truth within the sub-sample
+    # snap precision — the drift term ε·(tweeter_start − woofer_start) was
+    # removed from the raw gap, and the physical remainder retained.
+    assert res.alignment.status == ALIGNMENT_OK
+    assert res.candidate.snap_found is True
+    assert res.candidate.delay_us == res.alignment.delay_us
+    assert res.alignment.delay_us == pytest.approx(expected_delay_us, abs=5.0)
+    # The integer anchor is close; the GCC seed is retained separately. On a
+    # single clean correlation peak, anchor, seed, and snap all coincide.
+    assert res.candidate.anchor_delay_us == pytest.approx(expected_delay_us, abs=11.0)
+    assert res.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
 
 
-def test_flatness_search_lobe_intersects_physical_seed_window_or_falls_back():
-    half_period_us = 0.5e6 / 1600.0
-    assert _flatness_search_lobe_us((0.0, 400.0), -631.0, 1600.0) == pytest.approx(
-        (-400.0, -631.0 + half_period_us),
+def test_gcc_local_peak_snap_stays_near_anchor_despite_taller_far_peak():
+    """Wrong-peak regression (methodology §10, 2026-07-22): a TALLER correlation
+    peak planted ~200 µs from the anchor must NOT steer the selector — the
+    radius-gated snap stays on the near-anchor local peak. Pins the bake-off's
+    'window-max is a stable wrong answer' finding: the global GCC peak lands on
+    the taller far feature, the ±(period/6) snap does not.
+    """
+    fc_hz = 1600.0
+    lo, hi = 800.0, 3200.0
+    near = 8  # samples: the true near-anchor peak
+    far = near + 12  # ~250 µs away at 48 kHz — well outside ±(period/6) ≈ 104 µs
+    base = 400
+    woofer_ir = _band_impulse(base, lo, hi, 1.0, n=4096)
+    # Tweeter: a SMALLER near component + a LARGER far component (the echo).
+    tweeter_ir = (
+        _band_impulse(base + near, lo, hi, 0.55, n=4096)
+        + _band_impulse(base + far, lo, hi, 1.0, n=4096)
     )
-    assert _flatness_search_lobe_us((0.0, 400.0), -800.0, 1600.0) is None
+    radius = SR / fc_hz * GCC_SNAP_RADIUS_PERIODS
+
+    # The GLOBAL correlation peak sits on the taller far feature...
+    global_lag, _sign, _conf, _edge = _gcc_phat(
+        tweeter_ir, woofer_ir, sample_rate=SR, band_hz=(lo, hi),
+        upsample=GCC_UPSAMPLE, max_lag_samples=200,
+    )
+    assert global_lag == pytest.approx(far, abs=1.5)
+
+    # ...but the anchor-gated snap stays on the near peak. (The band-limited
+    # main lobe blends the near component toward the taller far one, so the
+    # near local max sits a little past `near` — the point is that it stays
+    # inside the radius and never rails the full ~250 µs to the far lobe.)
+    snapped = _gcc_local_peak_snap(
+        tweeter_ir, woofer_ir, sample_rate=SR, band_hz=(lo, hi),
+        upsample=GCC_UPSAMPLE, anchor_lag_samples=float(near), radius_samples=radius,
+    )
+    assert snapped is not None
+    assert abs(snapped - near) <= radius  # never rails to the far lobe
+    assert abs(snapped - far) > radius  # decisively NOT the taller far peak
+    assert snapped < (near + far) / 2
 
 
-def test_flatness_production_path_uses_physical_lobe_not_periodic_gcc_lobe():
-    """A confident GCC peak on a neighboring comb lobe must not steer T2.
+def test_gcc_local_peak_snap_heals_anchor_jitter():
+    """Anchor-jitter healing (methodology §10, 2026-07-22): the integer argmax
+    anchor is ±1–2 samples unstable on back-to-back captures; snapping both to
+    the SAME nearby correlation peak collapses that jitter. Pins the bake-off's
+    44.7→6.9 µs healing at the selector level.
+    """
+    fc_hz = 1600.0
+    lo, hi = 800.0, 3200.0
+    true_lag = 9
+    base = 400
+    woofer_ir = _band_impulse(base, lo, hi, 1.0, n=4096)
+    tweeter_ir = _band_impulse(base + true_lag, lo, hi, 0.8, n=4096)
+    radius = SR / fc_hz * GCC_SNAP_RADIUS_PERIODS
+
+    # Two anchors differing by 2 samples (integer-argmax jitter) → same peak.
+    snap_lo = _gcc_local_peak_snap(
+        tweeter_ir, woofer_ir, sample_rate=SR, band_hz=(lo, hi),
+        upsample=GCC_UPSAMPLE, anchor_lag_samples=float(true_lag - 1),
+        radius_samples=radius,
+    )
+    snap_hi = _gcc_local_peak_snap(
+        tweeter_ir, woofer_ir, sample_rate=SR, band_hz=(lo, hi),
+        upsample=GCC_UPSAMPLE, anchor_lag_samples=float(true_lag + 1),
+        radius_samples=radius,
+    )
+    assert snap_lo is not None and snap_hi is not None
+    # Both anchors heal to the same sub-sample peak (≪ the 1-sample jitter).
+    assert abs(snap_lo - snap_hi) * 1e6 / SR < 3.0  # µs
+    assert snap_lo == pytest.approx(true_lag, abs=0.5)
+
+
+def test_gcc_local_peak_snap_falls_back_when_no_local_max_in_radius():
+    """Fallback: a monotonic correlation neighbourhood (no interior local
+    maximum within the radius) returns ``None`` so the caller keeps the bare
+    anchor — never railing, never searching wider.
+    """
+    lo, hi = 800.0, 3200.0
+    base = 400
+    woofer_ir = _band_impulse(base, lo, hi, 1.0, n=4096)
+    tweeter_ir = _band_impulse(base + 6, lo, hi, 0.8, n=4096)  # peak at lag 6
+    # Anchor on the main lobe's rising flank (apex at 6 just outside a ±2-sample
+    # window): the neighbourhood is monotonic, so no interior local max exists.
+    snapped = _gcc_local_peak_snap(
+        tweeter_ir, woofer_ir, sample_rate=SR, band_hz=(lo, hi),
+        upsample=GCC_UPSAMPLE, anchor_lag_samples=3.0, radius_samples=2.0,
+    )
+    assert snapped is None
+
+
+def test_build_candidate_falls_back_to_anchor_when_snap_absent():
+    """When the aligner found no local peak in the snap radius
+    (``snapped_delay_us is None``), ``_build_candidate`` selects the bare anchor
+    and records ``snap_found=False`` / ``snap_delta_us=0`` — the physical
+    plausibility rail then still gates that anchor downstream (Fix 3).
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+    physical_gap_us = 3 / SR * 1e6
+    inter_sweep_drift_us = 8 / SR * 1e6
+    alignment = AlignmentEstimate(
+        delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK, snapped_delay_us=None,
+    )
+    candidate, _predicted = _build_candidate(
+        woofer_ir, tweeter_ir, SR, 16_384, 2000.0, "woofer", "tweeter",
+        alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
+        inter_sweep_drift_us=inter_sweep_drift_us,
+    )
+    assert candidate.snap_found is False
+    assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
+    assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=1e-6)
+    assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-6)
+
+
+def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
+    """A confident GCC peak on a neighboring comb lobe must not steer selection.
 
     The measured argmax gap contains 3 samples of physical branch delay plus
-    8 samples of inter-sweep drift. Removing only the latter anchors the
-    correct -62.5 us basin even though the supplied GCC seed is -650 us.
+    8 samples of inter-sweep drift. Removing only the latter anchors the correct
+    -62.5 us basin even though the supplied GCC seed is -650 us. The anchor is
+    primary (methodology §10, 2026-07-22); with no correlation context on a
+    direct ``_build_candidate`` call, the bare anchor is selected — never the
+    wrong GCC lobe.
     """
     woofer_ir = np.zeros(8192)
     tweeter_ir = np.zeros(8192)
@@ -598,11 +685,13 @@ def test_flatness_production_path_uses_physical_lobe_not_periodic_gcc_lobe():
         inter_sweep_drift_us=inter_sweep_drift_us,
     )
 
-    gcc_lobe = _flatness_search_lobe_us((0.0, 1000.0), gcc_seed_us, 2000.0)
-    assert not gcc_lobe[0] <= -physical_gap_us <= gcc_lobe[1]
     assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=2.0)
+    assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=2.0)
+    assert candidate.snap_found is False  # no correlation context on a direct call
+    assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
     assert candidate.alignment_seed_ripple_db is not None
-    assert candidate.flatness_improvement_db > 1.0
+    # Flatness is evidence only: anchor == selection ⇒ zero improvement.
+    assert candidate.flatness_improvement_db == pytest.approx(0.0, abs=1e-9)
     assert candidate.predicted_ripple_db < 0.1
 
 
@@ -674,20 +763,20 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
     )
     physical_peak_gap_us = measured_peak_gap_us - inter_sweep_drift_us
     physical_seed_us = -(physical_peak_gap_us + geometry.parallax_us())
-    signed_lobe = _flatness_search_lobe_us(
-        (0.0, 1000.0),
-        physical_seed_us,
-        FC_HZ,
-    )
-    assert signed_lobe[0] <= result.alignment.delay_us <= signed_lobe[1]
-    assert math.copysign(1.0, signed_lobe[0] + signed_lobe[1]) == math.copysign(
+    # Anchor-primary + gated snap (methodology §10, 2026-07-22): the selected
+    # delay is the physical peak-gap anchor snapped within ±(period/6) at Fc —
+    # same sign side as the anchor, never a periodic-comb-lobe jump.
+    snap_radius_us = 1e6 / FC_HZ * GCC_SNAP_RADIUS_PERIODS
+    assert result.candidate.anchor_delay_us == pytest.approx(physical_seed_us, abs=1e-6)
+    assert abs(result.alignment.delay_us - physical_seed_us) <= snap_radius_us + 1e-6
+    assert math.copysign(1.0, result.alignment.delay_us) == math.copysign(
         1.0,
         physical_seed_us,
     )
     # The band-limited synthetic IR's spectral truncation shifts its argmax by
     # a fraction of a sample relative to the impulse placement. The production
-    # objective operates in that measured argmax frame, so allow that expected
-    # analysis granularity in addition to the 2 us search grid.
+    # selector operates in that measured argmax frame, so allow that expected
+    # analysis granularity in addition to the sub-sample snap.
     assert result.alignment.delay_us == pytest.approx(
         expected_delay_us, abs=8.0,
     )
@@ -697,7 +786,9 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
     assert result.alignment.confidence_source == "gcc_phat_seed"
     assert result.candidate.delay_us == result.alignment.delay_us
     assert result.candidate.alignment_seed_ripple_db is not None
-    assert result.candidate.flatness_improvement_db >= 0.0
+    # Flatness is evidence only now — not a selector — so the anchor→snap ripple
+    # improvement is recorded but not constrained to be non-negative.
+    assert result.candidate.flatness_improvement_db is not None
     responses = {response.role: response for response in result.driver_responses}
     lo_hz, hi_hz = _overlap_band_hz(
         FC_HZ,
@@ -776,8 +867,13 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
         result.candidate.flatness_improvement_db,
         abs=0.0001,
     )
-    assert diagnostic["flatness_at_bound"] is False
-    assert not result.candidate.flatness_at_bound
+    assert diagnostic["anchor_delay_us"] == pytest.approx(
+        result.candidate.anchor_delay_us, abs=0.001,
+    )
+    assert diagnostic["snap_delta_us"] == pytest.approx(
+        result.candidate.snap_delta_us, abs=0.001,
+    )
+    assert diagnostic["snap_found"] is result.candidate.snap_found
 
 
 def test_parallax_is_subtracted():

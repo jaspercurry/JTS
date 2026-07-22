@@ -508,7 +508,15 @@ def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
             round(float(cand.flatness_improvement_db), 4)
             if cand and cand.flatness_improvement_db is not None else None
         ),
-        "flatness_at_bound": bool(cand.flatness_at_bound) if cand else None,
+        "anchor_delay_us": (
+            round(float(cand.anchor_delay_us), 3)
+            if cand and cand.anchor_delay_us is not None else None
+        ),
+        "snap_delta_us": (
+            round(float(cand.snap_delta_us), 3)
+            if cand and cand.snap_delta_us is not None else None
+        ),
+        "snap_found": bool(cand.snap_found) if cand else None,
     }
 
 
@@ -1405,7 +1413,15 @@ class CrossoverV2Conductor:
                 round(float(cand.flatness_improvement_db), 4)
                 if cand and cand.flatness_improvement_db is not None else None
             ),
-            flatness_at_bound=(bool(cand.flatness_at_bound) if cand else None),
+            anchor_delay_us=(
+                round(float(cand.anchor_delay_us), 3)
+                if cand and cand.anchor_delay_us is not None else None
+            ),
+            snap_delta_us=(
+                round(float(cand.snap_delta_us), 3)
+                if cand and cand.snap_delta_us is not None else None
+            ),
+            snap_found=(bool(cand.snap_found) if cand else None),
             woofer_snr_db=woofer_snr_db,
             woofer_snr_verdict=woofer_snr_verdict,
             tweeter_snr_db=tweeter_snr_db,
