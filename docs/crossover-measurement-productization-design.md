@@ -439,14 +439,17 @@ ProgramAnalysis`:
    polarity, and capture-quality confidence. The applied delay is then chosen
    by minimizing summed ripple over that same overlap inside the active
    crossover region's declared `delay_range_ms` magnitude range, plus the
-   shared plausibility margin. The full-IR GCC seed is residualized once by
-   the branch crop's argmax offset, then supplies the sign and centers one
-   ±half-period comb lobe; a fresh preset need not have an applied
-   `delay_target_driver` yet. The selected/applied value is the residual in
-   the independently argmax-referenced branch frame — the full-IR crop offset
-   is never added back as a second physical delay. The deterministic parallax
-   term (√(r²+d²)−r at the prescribed ~1 m) is the only coordinate transform
-   restored for the measurement-mic prediction, so VERIFY remains comparable.
+   shared plausibility margin. The drift-corrected physical peak gap plus
+   declared parallax supplies the signed lobe center; GCC remains the polarity
+   and capture-confidence seed but does not choose the periodic comb basin.
+   Search stays inside one ±half-period lobe; a fresh preset need not have an applied
+   `delay_target_driver` yet. Because the branch TFs are independently
+   argmax-referenced, the raw IR peak gap is corrected by removing only its
+   inter-sweep clock-drift contribution. The remaining physical peak gap plus
+   the deterministic parallax term (√(r²+d²)−r at the prescribed ~1 m)
+   defines the listening-plane objective. VERIFY's reference is the
+   independently aligned zero-residual target sum, not a candidate-specific
+   model that could explain away a wrong-lobe apply.
    Polarity comes from
    the correlation sign, cross-checked against the
    flatter predicted sum. The confidence gate remains explicitly GCC-seed
@@ -454,11 +457,15 @@ ProgramAnalysis`:
    are stored separately rather than mislabelling it as confidence in the
    selected minimum.
 6. **Prediction/validation:** because MEASURE captures as-crossed branches
-   (§5.4), the predicted applied sum is directly
-   `W_xo·10^(trim_w/20) + s·T_xo·10^(trim_t/20)·e^(−jωτ)`; trims level-match
-   the branches through the crossover region and the candidate (trims, s, τ)
-   is validated against the target's ripple tolerance. VERIFY compares the
-   measured post-apply sum against this prediction.
+   (§5.4), trims level-match the branches through the crossover region. The
+   selection objective trials
+   `W_xo·g_w + s·T_xo·g_t·e^(−jω(physical_gap + parallax + τ))`;
+   the selected τ is the applied correction that should drive that residual
+   to zero. VERIFY therefore compares the applied response with the fixed
+   independently aligned target `W_xo·g_w + s·T_xo·g_t`, not with a
+   candidate-specific response. Measured and predicted magnitude receive the
+   same 1/6-octave smoothing; the raw prediction is retained only as the
+   modeled-notch mask key.
 
 New estimator code (ε, GCC-PHAT sub-sample) is net-new and lands with
 synthetic-fixture tests: composed captures with injected known ε, delay,
@@ -730,7 +737,11 @@ the ask) is archived at `deep-research-crossover-measurement-prompt.md`
 
 ---
 
-_Last updated: 2026-07-19 (v2.3 — W6.9 forensics fixes folded: the VERIFY
+_Last updated: 2026-07-22 (v2.4 — T2-core's declaration-bounded comb lobe is
+now anchored by the drift-corrected physical peak gap while GCC supplies
+polarity/capture confidence; VERIFY uses the fixed aligned target and symmetric
+1/6-octave smoothing with the raw prediction retained only for notch identity;
+v2.3's W6.9 forensics fixes folded: the VERIFY
 tracking comparator (RMS and MAX, and the notch-exclusion bin set) now clamps
 to this capture's own gate-derived validity floor, and the MEASURE-side
 prediction (`_aligned_branch_tf`) now shares VERIFY's adaptive reflection gate

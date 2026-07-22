@@ -953,7 +953,7 @@ reference. Currently:
   — **Operational canon for the crossover measurement v2 "conductor" flow**
   (the default `/correction/crossover/` flow since 2026-07-19). The conductor
   model (phone = dumb recorder, Pi = conductor, analysis = pure functions), the
-  CHECK → MEASURE → REVIEW/APPLY → VERIFY capture flow, the `JASPER_CROSSOVER_FLOW`
+  CHECK → MEASURE → automatic APPLYING → VERIFY capture flow, the `JASPER_CROSSOVER_FLOW`
   selector, the file map, invariants, failure taxonomy, session-state paths, the
   W6 hardware bug catalog, and the W5b future-work list. Read this for how the
   flow works today; the design/decision record below is the "why."

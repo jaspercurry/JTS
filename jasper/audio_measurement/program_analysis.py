@@ -26,9 +26,10 @@ Pipeline (per phase):
 5. **Alignment (MEASURE)** — band-limited GCC-PHAT supplies an ×16-upsampled,
    ε/parallax-corrected seed, polarity, and capture confidence; a
    declaration-bounded summed-flatness search selects the applied delay.
-6. **Candidate + prediction** — as-crossed branches (design §5.4) ⇒ trims level-
-   match the branches through the crossover, then the predicted applied sum is
-   ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` and its Fc±1-octave ripple is reported.
+6. **Candidate + target** — as-crossed branches (design §5.4) ⇒ trims level-
+   match the branches through the crossover. The selected delay should realize
+   the fixed independently aligned target ``W_xo·g_w + s·T_xo·g_t``; its
+   Fc±1-octave ripple is reported and VERIFY compares against that target.
 
 CHECK additionally returns the ambient band floor, per-pilot captured levels +
 the behavioral linearity verdict (§3.4), channel-map sanity, and the solved
@@ -294,9 +295,9 @@ class MeasurementPriors:
     ``alignment_delay_bounds_us`` is the unsigned, declaration-derived
     applied-delay magnitude range the flatness refinement may search. The
     conductor derives it from the crossover region's ``delay_range_ms``; the
-    GCC seed, expressed in the peak-referenced residual frame, orients and
-    centers one ±half-period signed lobe inside it. ``None`` keeps GCC as the
-    applied-delay estimate.
+    drift-corrected physical peak gap orients and centers one ±half-period
+    signed lobe inside it. GCC remains the confidence/polarity seed and the
+    fallback estimate. ``None`` keeps GCC as the applied-delay estimate.
     """
 
     crossover_fc_hz: float | None = None
@@ -507,8 +508,8 @@ class ProgramAnalysis:
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
     verify_tracking: dict[str, Any] | None = None
-    # MEASURE-predicted applied summed magnitude ``(freqs_hz, magnitude_db)`` —
-    # the flattest-achievable aligned sum for the candidate (design §5.6.6). The
+    # MEASURE-predicted aligned target magnitude ``(freqs_hz, magnitude_db)`` —
+    # the flattest-achievable zero-residual sum (design §5.6.6). The
     # v2 conductor hands this to the VERIFY analysis as
     # ``MeasurementPriors.predicted_sum`` so VERIFY's PASS is |measured −
     # predicted| ≤ ±1.5 dB (design §5.2), not merely the summed ripple.
@@ -1288,10 +1289,11 @@ def _predicted_sum(
 ) -> np.ndarray:
     """Return the complex branch sum in the argmax-referenced frame.
 
-    ``_aligned_branch_tf`` independently references both direct peaks, so the
-    delay entering here is the *residual correction* in that frame. Rebuilding
-    a full delay by adding the deconvolved IR argmax gap counts a reference
-    offset as physical DSP delay (the reverted fix-2 failure mode).
+    ``_aligned_branch_tf`` independently references both direct peaks, so a
+    physical applied delay must enter here only as the *residual* relative to
+    that frame: ``(D_t - D_w) + applied_signed_delay``. Passing the full
+    applied delay would count the measured peak gap twice (the reverted fix-2
+    failure mode).
     """
     g_w = 10.0 ** (trim_w_db / 20.0)
     g_t = 10.0 ** (trim_t_db / 20.0)
@@ -1319,15 +1321,12 @@ def _flatness_delay_us(
 ) -> tuple[float, float, float, bool]:
     """Refine an applied delay by minimizing summed ripple in one delay lobe.
 
-    ``reference_gap_us`` is the coordinate offset that remains meaningful
-    after both branches have been independently peak-referenced (today, only
-    the declared mic-parallax correction). Candidate applied delays use
+    ``reference_gap_us`` is the drift-corrected physical ``D_t - D_w`` peak
+    gap plus the declared mic-parallax correction. Candidate applied delays use
     :class:`AlignmentEstimate`'s signed convention, so the residual evaluated
-    in the peak-referenced transfer functions is
-    ``reference_gap_us + candidate_delay_us``. The deconvolved full-IR argmax
-    gap is deliberately absent: it locates each branch's crop, but is not a
-    second physical delay to apply. The caller supplies a declaration-derived
-    signed search lobe; GCC remains the coarse seed/fallback.
+    in the independently peak-referenced transfer functions is
+    ``reference_gap_us + candidate_delay_us``. The caller supplies a
+    declaration-derived signed search lobe; GCC remains the seed/fallback.
 
     Returns ``(selected_delay, selected_ripple, seed_ripple, at_bound)`` so
     the refinement is durable evidence rather than an unobservable overwrite.
@@ -1382,34 +1381,41 @@ def _flatness_delay_us(
 
 def _flatness_search_lobe_us(
     magnitude_bounds_us: tuple[float, float],
-    seed_delay_us: float,
+    lobe_center_delay_us: float,
     fc_hz: float,
 ) -> tuple[float, float] | None:
-    """Orient and narrow declared magnitudes to the GCC seed's comb lobe.
+    """Orient and narrow declared magnitudes to the physical-delay lobe.
 
-    A fresh preset legitimately has no ``delay_target_driver`` yet. GCC's sign
-    identifies which branch must be delayed; its coarse period estimate then
-    disambiguates the comb by limiting the refinement to ±half a crossover
-    period around the seed, intersected with the declared magnitude range.
+    A fresh preset legitimately has no ``delay_target_driver`` yet. The
+    drift-corrected physical peak gap identifies which branch must be delayed
+    and supplies the only non-periodic lobe anchor available in the capture.
+    Limit the refinement to ±half a crossover period around that anchor,
+    intersected with the declared magnitude range. GCC is deliberately absent:
+    its periodic correlation peak can land on the wrong comb lobe even when its
+    polarity and confidence remain useful capture evidence.
     """
     lo_mag_us, hi_mag_us = (float(value) for value in magnitude_bounds_us)
     if not (
         math.isfinite(lo_mag_us)
         and math.isfinite(hi_mag_us)
         and 0.0 <= lo_mag_us <= hi_mag_us
-        and math.isfinite(seed_delay_us)
+        and math.isfinite(lobe_center_delay_us)
         and math.isfinite(fc_hz)
         and fc_hz > 0.0
     ):
         return magnitude_bounds_us
 
-    if seed_delay_us < 0.0:
+    if lobe_center_delay_us < 0.0:
         declared_lo_us, declared_hi_us = -hi_mag_us, -lo_mag_us
     else:
         declared_lo_us, declared_hi_us = lo_mag_us, hi_mag_us
     half_period_us = 0.5e6 / fc_hz
-    search_lo_us = max(declared_lo_us, seed_delay_us - half_period_us)
-    search_hi_us = min(declared_hi_us, seed_delay_us + half_period_us)
+    search_lo_us = max(
+        declared_lo_us, lobe_center_delay_us - half_period_us,
+    )
+    search_hi_us = min(
+        declared_hi_us, lobe_center_delay_us + half_period_us,
+    )
     if search_lo_us > search_hi_us:
         return None
     return search_lo_us, search_hi_us
@@ -2005,6 +2011,11 @@ def _analyze_measure(
         seg_w.role, seg_t.role, alignment, calibration,
         tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
+        inter_sweep_drift_us=(
+            epsilon * (seg_t.start_sample - seg_w.start_sample)
+            / sample_rate
+            * 1e6
+        ),
     )
     if candidate.alignment_seed_ripple_db is not None:
         alignment = replace(
@@ -2044,6 +2055,7 @@ def _build_candidate(
     tweeter_sweep_lo_hz: float | None = None,
     woofer_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
+    inter_sweep_drift_us: float = 0.0,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -2072,7 +2084,6 @@ def _build_candidate(
     )
     trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
     delay_us = alignment.delay_us
-    residual_delay_us = 0.0
     seed_ripple_db = None
     flatness_improvement_db = None
     flatness_at_bound = False
@@ -2081,16 +2092,19 @@ def _build_candidate(
             int(np.argmax(np.abs(tweeter_full_ir)))
             - int(np.argmax(np.abs(woofer_full_ir)))
         ) / sample_rate * 1e6
-        # GCC is measured in the full-IR coordinate. Residualize it once into
-        # the independently peak-referenced branch frame before it orients the
-        # flatness lobe. The selected value is already the DSP correction in
-        # that residual frame; adding ``peak_gap_us`` back after selection
-        # recreates the full-vs-residual bug that hardware exposed.
-        residual_seed_delay_us = peak_gap_us + alignment.delay_us
-        objective_reference_gap_us = alignment.parallax_us
+        # The two sweeps occur at different schedule times, so their raw IR
+        # argmax gap contains both the physical branch delay and epsilon times
+        # that schedule separation. Remove only the measured clock-drift term;
+        # the remaining physical gap must stay in the independently
+        # peak-referenced flatness objective.
+        drift_corrected_peak_gap_us = peak_gap_us - inter_sweep_drift_us
+        objective_reference_gap_us = (
+            drift_corrected_peak_gap_us + alignment.parallax_us
+        )
+        physical_seed_delay_us = -objective_reference_gap_us
         search_lobe_us = _flatness_search_lobe_us(
             alignment_delay_bounds_us,
-            residual_seed_delay_us,
+            physical_seed_delay_us,
             fc_hz,
         )
         if search_lobe_us is not None:
@@ -2110,7 +2124,7 @@ def _build_candidate(
                 hi_hz=hi,
                 reference_gap_us=objective_reference_gap_us,
                 search_bounds_us=search_lobe_us,
-                seed_delay_us=residual_seed_delay_us,
+                seed_delay_us=alignment.delay_us,
             )
             if math.isfinite(selected_ripple_db) and math.isfinite(
                 selected_seed_ripple_db
@@ -2119,23 +2133,16 @@ def _build_candidate(
                 seed_ripple_db = selected_seed_ripple_db
                 flatness_improvement_db = seed_ripple_db - selected_ripple_db
                 flatness_at_bound = at_bound
-                # VERIFY is captured back at the measurement microphone, so
-                # restore only the declared mic-parallax transform. Both W/T
-                # are already argmax-referenced; their full-IR peak gap must
-                # not be counted again.
-                residual_delay_us = alignment.parallax_us + delay_us
-    # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
-    # The legacy/GCC path retains its zero-residual prediction. T2's bounded
-    # flatness path explicitly predicts at the selected ARGMAX-FRAME residual,
-    # never at a reconstructed full-IR delay (which would count the peak gap).
+    # VERIFY's reference is the flattest-achievable, independently aligned sum
+    # (design §5.6.6), not a candidate-specific model that can explain away a
+    # wrong comb lobe. The selection objective above proves which applied delay
+    # should realize this zero-residual target in the original physical frame.
     predicted = _predicted_sum(
         W,
         T,
         trim_w,
         trim_t,
         alignment.polarity_sign,
-        freqs_hz=freqs,
-        residual_delay_us=residual_delay_us,
     )
     ripple = _ripple_db(freqs, predicted, lo_clamped, hi)
     predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12))
@@ -2181,6 +2188,11 @@ def _analyze_verify(
                 summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION
             )
             predicted_db_interp = np.interp(summed.freqs_hz, pred_freqs, pred_db)
+            predicted_db = analysis_mod.smooth_fractional_octave(
+                summed.freqs_hz,
+                predicted_db_interp,
+                VERIFY_TRACKING_SMOOTHING_FRACTION,
+            )
             # Validity-floor clamp (W6.9 forensics, 2026-07-19): this capture's
             # OWN reflection gate (`summed.validity_floor_hz`, from the same
             # `_driver_response` call above) can be tighter than the nominal
@@ -2202,19 +2214,20 @@ def _analyze_verify(
             )
             tracking_band = (lo_clamped, hi)
             rms, max_abs = analysis_mod.tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db_interp, tracking_band,
+                summed.freqs_hz, measured_db, predicted_db, tracking_band,
             )
             # Notch-excluded: the actual gating comparator
             # (`crossover_v2_flow._consume_verify` reads ``max_db_notch_excluded``).
             rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db_interp, tracking_band,
+                summed.freqs_hz, measured_db, predicted_db, tracking_band,
                 notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
+                notch_reference_db=predicted_db_interp,
             )
             # Raw full-band (pre-floor-clamp) numbers, kept as DIAGNOSTIC
             # fields only — never consumed by the gate. What ``rms_db``/
             # ``max_db`` used to mean before the floor clamp landed.
             raw_rms, raw_max = analysis_mod.tracking_error_db(
-                summed.freqs_hz, measured_db, predicted_db_interp, (lo, hi),
+                summed.freqs_hz, measured_db, predicted_db, (lo, hi),
             )
             tracking = {
                 "rms_db": rms,

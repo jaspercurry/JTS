@@ -17,8 +17,8 @@
 
 - ✅ **Crossover measurement is now the v2 conductor flow (default flipped
   2026-07-19).** The `/correction/crossover/` measurement + tuning flow is
-  the three-capture conductor (CHECK → MEASURE → REVIEW/APPLY → VERIFY, one
-  mic position). Its canonical operational truth — how to run it, the file
+  the three-capture conductor (CHECK → MEASURE → automatic APPLYING →
+  VERIFY, one mic position). Its canonical operational truth — how to run it, the file
   map, invariants, failure taxonomy, session-state paths, and the W6 bug
   catalog — lives in
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);

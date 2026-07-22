@@ -485,6 +485,7 @@ def notch_excluded_tracking_error_db(
     band,
     *,
     notch_exclusion_db: float,
+    notch_reference_db=None,
 ) -> tuple[float, float]:
     """Tracking error, excluding bins inside a deep PREDICTED notch.
 
@@ -499,13 +500,16 @@ def notch_excluded_tracking_error_db(
     predicted notch, not a broadband alignment problem).
 
     The exclusion key is deliberately asymmetric: it reads the PREDICTED
-    level only, never the measured one. A deep MEASURED notch at bins where
-    the prediction is flat is the wrong-polarity / wrong-alignment
-    discriminant — real evidence the applied graph does not sum as the
-    candidate predicted — and must count in full. Keying on the measured
-    level would exclude exactly that evidence and silently pass a broken
-    apply (pinned by the case-A/case-B fixtures in
-    ``tests/test_audio_measurement_harmonics.py``).
+    level only, never the measured one. ``notch_reference_db`` may supply the
+    corresponding unsmoothed predicted curve when ``predicted_db`` has been
+    smoothed for a like-for-like tracking comparison. This preserves genuine
+    modeled-notch identity without comparing a smoothed capture to an
+    unsmoothed prediction. A deep MEASURED notch at bins where the prediction
+    is flat is the wrong-polarity / wrong-alignment discriminant — real
+    evidence the applied graph does not sum as the candidate predicted — and
+    must count in full. Keying on the measured level would exclude exactly
+    that evidence and silently pass a broken apply (pinned by the case-A/
+    case-B fixtures in ``tests/test_audio_measurement_harmonics.py``).
 
     Falls back to the full band when every bin would be excluded (a
     degenerate all-notch band), so the comparator is never computed over an
@@ -514,15 +518,32 @@ def notch_excluded_tracking_error_db(
     frequencies = np.asarray(freqs, dtype=np.float64)
     measured = np.asarray(measured_db, dtype=np.float64)
     predicted = np.asarray(predicted_db, dtype=np.float64)
-    if not (frequencies.ndim == measured.ndim == predicted.ndim == 1):
+    notch_reference = (
+        predicted
+        if notch_reference_db is None
+        else np.asarray(notch_reference_db, dtype=np.float64)
+    )
+    if not (
+        frequencies.ndim
+        == measured.ndim
+        == predicted.ndim
+        == notch_reference.ndim
+        == 1
+    ):
         raise ValueError("tracking arrays must be 1-D")
-    if not (len(frequencies) == len(measured) == len(predicted)):
+    if not (
+        len(frequencies)
+        == len(measured)
+        == len(predicted)
+        == len(notch_reference)
+    ):
         raise ValueError("tracking arrays must have matching lengths")
     mask = _band_mask(frequencies, band)
     band_predicted = predicted[mask]
     band_measured = measured[mask]
-    median_predicted = float(np.median(band_predicted))
-    keep = band_predicted >= (median_predicted - notch_exclusion_db)
+    band_notch_reference = notch_reference[mask]
+    median_predicted = float(np.median(band_notch_reference))
+    keep = band_notch_reference >= (median_predicted - notch_exclusion_db)
     if not np.any(keep):
         keep = np.ones_like(keep, dtype=bool)
     return _offset_invariant_rms_and_max(band_measured[keep], band_predicted[keep])

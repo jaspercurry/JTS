@@ -48,9 +48,13 @@ and scheduled for deletion in W5b (see Future work). The v2 acoustic
 playback binding
 (`bind_program_playback_seams`) is exercised on real CamillaDSP
 hardware; every orchestration test injects fakes. T2's summed-flatness
-delay refinement is still pre-merge: its first JTS3 run caught a
-full-IR-gap-versus-peak-frame-residual bug, now corrected and awaiting a clean
-independent re-review plus repeat hardware VERIFY. See
+delay refinement is still pre-merge: its first JTS3 run failed VERIFY, but a
+clean hardware delay sweep then isolated the wrong-lobe prior and a one-sided
+VERIFY smoothing bug. The corrected selector applied a 53.669 µs woofer delay
+and passed a fresh calibrated JTS3 VERIFY at 1.279 dB max (1.5 dB gate);
+the fresh independent adversarial re-review cleared 0 blockers / 0 should-fixes.
+The owner-controlled fixed-placement repeat remains the final reproducibility
+gate. See
 [`crossover-measurement-reproducibility-plan.md`](crossover-measurement-reproducibility-plan.md)
 §10–§11 for the exact evidence and gate state.
 
@@ -102,12 +106,13 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    Yields per-driver gated complex responses (cal applied), relative
    delay, polarity, trims, per-band SNR — folded into a
    `MeasuredCrossoverCandidate`. GCC-PHAT supplies a drift/parallax-corrected
-   seed, polarity, and capture confidence. The delay actually selected for
-   prediction and apply is the minimum-ripple **peak-referenced residual**
+   seed, polarity, and capture confidence. The delay actually selected and
+   applied is the minimum-ripple applied delay
    within the crossover region's declared `delay_range_ms` magnitude range
-   (plus the same plausibility margin used by the conductor). The GCC seed is
-   residualized once into that frame, then supplies the sign and centers one
-   ±half-period comb lobe inside the range.
+   (plus the same plausibility margin used by the conductor). The
+   drift-corrected physical peak gap supplies the sign and centers one
+   ±half-period comb lobe inside the range; GCC is deliberately not the lobe
+   prior because its periodic peak can identify a neighboring comb basin.
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
@@ -148,7 +153,7 @@ most visible thing on the screen.
 | [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py) | The `JASPER_CROSSOVER_FLOW` selector — `active_crossover_flow()` / `resolve_crossover_flow()`. No product policy. |
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
-| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT alignment seed + declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. |
+| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
@@ -425,40 +430,50 @@ SSOT helper, `_overlap_band_hz` in `program_analysis.py`, computes the
 clamp; every consumer reads the real sweep bounds off the program's own
 segments rather than re-deriving the nominal edges.
 
-### Delay selection — GCC seed, declaration-bounded flatness result
+### Delay selection — physical lobe, declaration-bounded flatness result
 
 `_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source
 for polarity and capture-quality confidence. `_build_candidate` reads the
 active crossover region's `delay_range_ms`, expanded by
-`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`; the full-IR GCC seed is first
-residualized by the branch crop's argmax offset, then supplies the sign and
-centers a ±half-crossover-period lobe inside that declared magnitude range.
+`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`. The drift-corrected physical peak
+gap plus declared parallax defines the signed applied-delay seed; that seed
+centers a ±half-crossover-period lobe inside the declared magnitude range.
+GCC remains the polarity and capture-confidence source, plus the fallback when
+refinement is unavailable; it does not choose the comb lobe.
 The search minimizes `_ripple_db` across the `_overlap_band_hz` band. The
-selected residual is used by both the predicted sum and the applied candidate.
+selected delay is applied by the candidate and is the correction the objective
+uses to reach the independently aligned target sum.
 `delay_target_driver` is intentionally not required: a fresh preset has no
 applied delay target until this measurement chooses one. The lobe is the true
-intersection around the residualized GCC seed; if it does not overlap the
-declared range, refinement is skipped so Fix 3 can reject the original
-implausible seed.
+intersection around the physical seed; if it does not overlap the declared
+range, refinement is skipped so Fix 3 can reject the original implausible GCC
+fallback.
 
-The complex branch TFs are independently argmax-peak-referenced. Therefore
-the objective phases the tweeter by
-`parallax + selected_signed_residual`; the deconvolved full-IR argmax gap only
-locates the two independent crops and is never added back to the DSP delay.
-Applying that full gap to an already referenced TF double-counts the reference
-offset and recreates the reverted comb bug (the 2026-07-22 JTS3 run measured
-7.58–7.64 dB after exactly this mistake). After selection, the alignment record preserves
+The complex branch TFs are independently argmax-peak-referenced. The raw
+deconvolved-IR argmax gap must first have the inter-sweep clock term
+`ε × (tweeter_start − woofer_start)` removed. The remaining physical peak
+gap is retained: the listening-plane objective phases the tweeter by
+`drift_corrected_peak_gap + parallax + selected_signed_delay`. Removing the
+whole peak gap loses real driver timing; retaining its clock-drift component
+recreates the 2026-07-22 JTS3 mismatch. After selection, the alignment record preserves
 `delay_us == raw_delay_us - parallax_us`; `seed_delay_us` retains the corrected
 GCC seed. `alignment_confidence` remains GCC seed/capture confidence and is
 labelled `gcc_phat_seed`—it is not a confidence score for the flatness
 minimum. Seed ripple, improvement, refinement delta, and boundary status are
 separate retained evidence.
 
-The selection objective uses the listening-plane reference
-`parallax + selected_delay`. The predicted sum is compared with VERIFY back at
-the measurement mic using the same expression. Keeping this coordinate
-transform explicit preserves both the parallax correction and prediction ↔
-VERIFY comparability without reconstructing an unrelated full-IR delay.
+VERIFY compares the applied response with the independently aligned
+zero-residual target sum. Do not phase that reference by a candidate-specific
+delay: doing so lets a wrong comb-lobe apply explain itself and recreates the
+fix-2 false-pass class. The selection objective is what proves the applied
+delay should realize the aligned target in the original physical frame.
+
+Both measured and predicted magnitude curves receive the same 1/6-octave
+smoothing before tracking error is computed. The unsmoothed prediction is used
+only to identify the interior of a genuine modeled notch for the established
+notch-exclusion mask. Comparing a smoothed capture with a raw prediction caused
+a false 1.99 dB failure at the hardware-best delay; like-for-like comparison of
+that same capture is 0.490 dB max (raw-to-raw is 0.606 dB).
 
 ## Gotchas — the W6 bug-class catalog (do not reintroduce)
 
