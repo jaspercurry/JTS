@@ -86,6 +86,21 @@ reproducibility working plan is archived as decision archaeology. See
 [`crossover-measurement-reproducibility-plan.md`](historical/crossover-measurement-reproducibility-plan.md)
 §10–§11 for the exact evidence and gate state.
 
+The first phone-class-mic series (Dayton iMM-6C on a computer, same headless
+path, same evening) mapped the next frontier: woofer-band SNR matches a
+reference mic, but its ~8–10 dB lower **tweeter-band** SNR scatters the
+anchor/correlation — accepted selections spanned 22.4 µs (vs the UMIK's
+1.22 µs), brushing the ±1-sample budget, with the confidence gate refusing
+honestly twice (the first such refusals ever — including one snap capped at
+its radius edge). Two confounds are being attributed offline before any
+hardening decision: an audible `event=outputd.xrun` playback glitch
+(15:52:26) in one refusal's window, and hallway transients behind the one
+VERIFY fail. Live trail: issue #1654 (Fix 4 shelf — trigger-condition data
+and whether it truly fired), #1652 (anomaly detection/attribution — now
+including the free outputd-xrun cross-reference detector), #1650 (relay
+voids). The sub-sample anchor upgrade is being evaluated offline as the
+cheaper first lever.
+
 ---
 
 ## Architecture — the conductor model
