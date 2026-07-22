@@ -1,8 +1,19 @@
 # Crossover measurement — reproducibility working plan
 
-> **Status: ACTIVE — selector implemented, adversarial-reviewed 0/0/0, and
-> confirmed on JTS3 (2026-07-22); pending merge + the owner's definitive
-> 5-run controlled repeat (§2 stop rule).**
+> **Status: historical.** Snapshot from 2026-07-22, the day the v2
+> delay-selection reproducibility blocker was closed: the anchor-primary +
+> gated-snap selector merged via PR #1649 and the §2 stop rule was met on
+> all three measurement criteria (six consecutive verdicts, worst 1.106 dB
+> max; selections within a 1.22 µs span; one relay-layer transport void
+> disclosed as issue #1650). Preserved for primary-source archaeology — the
+> full diagnosis, methodology decision, bake-off, negative results, review
+> gates, and campaign evidence live in §10's decision log; specific facts
+> (env defaults, line numbers, "what's working" snapshots) will drift over
+> time. Read this for the narrative, not for current state. Current
+> operational truth lives in
+> [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md);
+> the follow-on productization workstream is tracked in issues #1650 and
+> #1652.
 > This is the execution and decision reference for the "MEASURE is not
 > reproducible → VERIFY fails" blocker on the v2 conductor flow. T2-core
 > merged via PR #1647, its post-merge UMIK-2 repeat failed (bound-pinned
@@ -17,8 +28,8 @@
 > *targeted refactor of the measurement core*, not a rewrite of the conductor
 > architecture.
 >
-> Canonical operational truth: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
-> v2 decision record: [crossover-measurement-productization-design.md](crossover-measurement-productization-design.md).
+> Canonical operational truth: [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md).
+> v2 decision record: [crossover-measurement-productization-design.md](../crossover-measurement-productization-design.md).
 > Keep those two authoritative; this doc is the plan + decision log until the
 > work lands, after which the durable outcomes fold into the HANDOFF and this
 > doc is archived.
@@ -443,6 +454,75 @@ Captured so they're off the table for the landing work:
 
 ## 10. Decision log (append; newest first)
 
+- *2026-07-22 (final dispositions, owner-approved; doc archived)* — With the
+  stop rule met, the owner approved consolidating outcomes now rather than
+  deferring. Dispositions of the two paused items:
+  - **Fix 4 (widen tweeter sweep to declared safe-low): SHELVED with a named
+    revival trigger.** Its original purpose — uniquifying the flatness
+    minimum — is moot (flatness no longer selects anything). Its residual
+    value (more correlation bandwidth → sharper snap peaks at low SNR) is
+    real physics but unneeded at the measured margins (1.22 µs selection
+    span vs a ±20.8 µs budget at 22–29 dB woofer SNR). Revive only if
+    phone-mic-era evidence shows the selection cluster spreading toward the
+    ±1-sample budget or `snap_found=false` appearing in practice.
+  - **T2-robust (coherence phase-slope + σ_τ): RETIRED as designed.** Its
+    estimator core is empirically non-viable on as-crossed branches (bake-off:
+    railed 16/16 captures at +388 ± 38 µs systematic — differential
+    filter/driver dispersion, not timing). Its surviving goal — a confidence
+    that predicts VERIFY — is reassigned to the far simpler CHECK-SNR
+    quality gate + noise-attributed VERIFY failures, tracked as issue #1652,
+    deferred to the productization phase so thresholds derive from phone-mic
+    data.
+  This doc is archived per §8 (durable outcomes folded into the HANDOFF;
+  status banner flipped to historical). The productization phase (Chrome-path
+  phone-mic validation with the Dayton iMM-6C, anomaly-detection/discard UX,
+  relay-void hardening) proceeds under issues #1650/#1652 and new planning
+  surfaces as needed.
+
+- *2026-07-22 (§2 stop-rule campaign: MET on all three measurement criteria;
+  two environmental/infra anomalies disclosed)* — With PR #1649 merged and
+  JTS3 on the content-identical branch tip, the owner quieted the room
+  (fridge unplugged, windows shut, door dampener, blinds down) and delegated
+  the controlled repeats to the architect. Thirteen headless sessions ran in
+  two series at the fixed tweeter-axis placement.
+
+  **Series A (6 sessions):** run 1 failed VERIFY (1.79–2.31 dB) on an anchor
+  excursion (−4.3 µs, ≈1 argmax sample from the cluster) that latched a
+  nearer correlation peak (selected 21.8 µs, valley edge); runs 2–4 passed
+  clean (0.867/0.531/0.491 dB max, selections 26.7–28.4 µs); runs 5–6
+  degraded (1.2008, then 1.562 dB) while CHECK woofer-band SNR fell
+  28.7 → 24.4 dB — ambient rising (NYC traffic/building noise), with
+  selections still in-cluster (26.4/29.8 µs). Run 5's 1.2008 exceeds the
+  1.2 margin criterion by 0.0008 dB — sub-repeatability, counted against.
+  Series A therefore did not meet 5-consecutive.
+
+  **Series B (7 sessions, owner out of the room): the stop rule's
+  measurement criteria are MET.** Six measurement verdicts, all passes:
+  **0.501 / 0.532 / 1.106 / 0.535 / 0.547 / 0.518 dB max** (RMS
+  0.24–0.74), every one ≤ 1.2 with margin; **selections 28.077 / 27.688 /
+  27.880 / 27.312 / 26.858 / 27.438 µs — total span 1.22 µs** (±0.61 about
+  the 27.7 median) against the ±20.8 µs criterion — a 34× margin; every
+  phase single-attempt (captures-per-phase median 1.0). Two anchor-mode
+  excursions (−48.6 in B3; both series showed the ±1-sample argmax
+  bimodality) were healed by the snap to within 0.6 µs of the cluster.
+  **Disclosure:** session B4 was a relay/session-layer void — the MEASURE
+  blob uploaded but was never analyzed and the session refused on its
+  attempt budget; no measurement verdict was produced. Filed as issue
+  #1650 (second occurrence that day; series A run 6 hit a result-delivery
+  timeout after its verdict logged). Under the strictest
+  sessions-consecutive reading the void interrupts the chain; under the
+  measurement-verdict reading the criteria are met 6-for-6. The void is a
+  transport flake orthogonal to measurement reproducibility.
+
+  **Environmental readings across the day** (product-relevant, feeds the
+  anomaly-detection/discard-UX workstream): VERIFY tracking error moved
+  0.49 → 2.31 dB with room state while selections stayed within ~3 µs;
+  CHECK woofer-band SNR (17.4–28.7 dB observed) is a strong single-number
+  predictor of VERIFY health. The afternoon cluster (~27.7 µs) sits ~4 µs
+  below the morning cluster (~32 µs) — consistent with the owner's room
+  reconfiguration (blinds/dampener) shifting the acoustic optimum slightly;
+  each session's VERIFY is self-consistent against its own capture.
+
 - *2026-07-22 (on-device confirmation: anchor+snap selector reproducible and
   VERIFY-green on JTS3)* — After the implementation cleared its independent
   adversarial review at **0 blockers / 0 should-fixes / 0 nits** (first round
@@ -863,7 +943,7 @@ Captured so they're off the table for the landing work:
   evidence; `flatness_at_bound` retired for `anchor_delay_us` / `snap_delta_us`
   / `snap_found`). Hardware-free physics/regression tests land in the same
   change; canonical operational truth is
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md)
   "Delay selection". Local replay on the two hardware-anchored captures matches
   the bake-off within <1 µs (run A applied 33.7 µs, run B 31.4 µs; anchors
   28.281 / 49.948 exact; A–B spread 2.4 µs, inside the ±20.8 µs stop-rule).
