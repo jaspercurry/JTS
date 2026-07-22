@@ -1,6 +1,6 @@
 # Crossover measurement — reproducibility working plan
 
-> **Status: ACTIVE — diagnosis complete; methodology decided (2026-07-22).**
+> **Status: ACTIVE — selector implemented (2026-07-22); pending adversarial review + JTS3 hardware confirmation.**
 > This is the execution and decision reference for the "MEASURE is not
 > reproducible → VERIFY fails" blocker on the v2 conductor flow. T2-core
 > merged via PR #1647, its post-merge UMIK-2 repeat failed (bound-pinned
@@ -806,22 +806,28 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status:** diagnosis of the failed repeat is complete (overlay artifacts in
-  `captures/xover-e0-2026-07-21/overlay-20260722/`; prior-art reports in
-  `captures/xover-e0-2026-07-21/prior-art-20260722/`). The offline objective
-  measurably does not track hardware VERIFY on the failing capture (wrong
-  basin preferred by 0.7–1.8 dB; wrong fine structure even inside the correct
-  basin), while the physical anchor landed inside the hardware pass valley on
-  both runs. Methodology decision recorded in §10 (2026-07-22): anchor
-  primary, bounded fine stage by bake-off, flatness demoted to evidence,
-  railed selection → guidance.
-- **Next action:** run the offline fine-stage bake-off (sub-sample anchor
-  alone vs gated GCC vs coherence-weighted phase-slope) on the retained
-  corpus + the two hardware-anchored captures; then implement the winning
-  selector + conductor gating with physics/regression tests, adversarial
-  review (0/0), and an on-device JTS3 confirmation. PR #1647's CI and 0/0
-  review remain valid code-quality evidence, not hardware-reproducibility
-  evidence.
+- **Status: implementation built; pending adversarial review + JTS3
+  confirmation.** Diagnosis of the failed repeat is complete (overlay artifacts
+  in `captures/xover-e0-2026-07-21/overlay-20260722/`; prior-art reports in
+  `captures/xover-e0-2026-07-21/prior-art-20260722/`), the offline fine-stage
+  bake-off ran (`captures/xover-e0-2026-07-21/bakeoff-20260722/`) and picked
+  **anchor + gated-GCC local-peak snap** (§10, 2026-07-22), and that selector is
+  now implemented in `jasper/audio_measurement/program_analysis.py`
+  (`_gcc_local_peak_snap` + the `GCC_SNAP_RADIUS_PERIODS` = period/6 radius; the
+  `_flatness_search_lobe_us` / `_flatness_delay_us` *selection* path is deleted,
+  flatness demoted to `alignment_seed_ripple_db` / `flatness_improvement_db`
+  evidence; `flatness_at_bound` retired for `anchor_delay_us` / `snap_delta_us`
+  / `snap_found`). Hardware-free physics/regression tests land in the same
+  change; canonical operational truth is
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  "Delay selection". Local replay on the two hardware-anchored captures matches
+  the bake-off within <1 µs (run A applied 33.7 µs, run B 31.4 µs; anchors
+  28.281 / 49.948 exact; A–B spread 2.4 µs, inside the ±20.8 µs stop-rule).
+- **Next action:** independent adversarial review (0/0) of the implemented
+  selector, then an on-device JTS3 CHECK→MEASURE→APPLY→VERIFY confirmation —
+  the decisive hardware-reproducibility test the offline work cannot settle.
+  PR #1647's CI and 0/0 review remain code-quality evidence only. Do not resume
+  T2-robust / Fix 4 until the base selector clears that hardware gate.
 - **Room caveat carried forward:** JTS3's room is a ~10 ft cube, capping
   any reflection-free analysis window at ~7 ms regardless of mic
   placement (confirmed directly in E0's data — see §10). Any future

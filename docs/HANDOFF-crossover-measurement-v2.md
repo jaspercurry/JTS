@@ -303,7 +303,8 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `alignment_confidence`, `alignment_confidence_source`,
   `alignment_seed_delay_us`, `alignment_refinement_delta_us`,
   `alignment_seed_ripple_db`, `flatness_improvement_db`,
-  `flatness_at_bound`, `gate_window_ms`, `validity_floor_hz`,
+  `anchor_delay_us`, `snap_delta_us`, `snap_found`,
+  `gate_window_ms`, `validity_floor_hz`,
   `epsilon_ppm`, `max_residual_samples`, `repeat_level_delta_db`,
   `delay_us`, `delay_role`, `polarity`, `predicted_ripple_db`, plus
   per-role `woofer_snr_db`/`woofer_snr_verdict`/`tweeter_snr_db`/
@@ -441,43 +442,71 @@ SSOT helper, `_overlap_band_hz` in `program_analysis.py`, computes the
 clamp; every consumer reads the real sweep bounds off the program's own
 segments rather than re-deriving the nominal edges.
 
-### Delay selection — physical lobe, declaration-bounded flatness result
+### Delay selection — physical anchor primary, gated local-peak snap
 
-`_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source
-for polarity and capture-quality confidence. `_build_candidate` reads the
-active crossover region's `delay_range_ms`, expanded by
-`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`. The drift-corrected physical peak
-gap plus declared parallax defines the signed applied-delay seed; that seed
-centers a ±half-crossover-period lobe inside the declared magnitude range.
-GCC remains the polarity and capture-confidence source, plus the fallback when
-refinement is unavailable; it does not choose the comb lobe.
-The search minimizes `_ripple_db` across the `_overlap_band_hz` band. The
-selected delay is applied by the candidate and is the correction the objective
-uses to reach the independently aligned target sum.
-`delay_target_driver` is intentionally not required: a fresh preset has no
-applied delay target until this measurement chooses one. The lobe is the true
-intersection around the physical seed; if it does not overlap the declared
-range, refinement is skipped so Fix 3 can reject the original implausible GCC
-fallback.
+**Selection is anchor-primary; summed-magnitude flatness is evidence, never a
+selector.** Methodology decision:
+[crossover-measurement-reproducibility-plan.md](crossover-measurement-reproducibility-plan.md)
+§10, 2026-07-22 (bake-off verdict + methodology entries). The narrowband
+flatness objective's basin ordering is capture-noise dependent and preferred
+the wrong comb lobe on a hardware repeat, so it no longer chooses the delay.
+
+`_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source for
+polarity and capture-quality confidence, and now also computes the fine stage.
+Two steps:
+
+1. **Anchor (primary value; owns lobe selection).** The drift-corrected
+   physical peak gap `(argmax|tweeter IR| − argmax|woofer IR|)/fs` with the
+   inter-sweep clock term removed, plus declared parallax, in
+   `AlignmentEstimate`'s signed frame. The anchor is non-periodic, so it selects
+   the comb lobe outright — it cannot land on a neighbouring lobe the way GCC's
+   periodic correlation peak can.
+2. **Gated local-peak snap (fine step).** `_gcc_local_peak_snap` snaps the
+   anchor to the nearest local maximum of the SAME upsampled GCC-PHAT
+   correlation `_estimate_alignment` already computed (shared `_gcc_correlation`
+   core — one correlation, never a second formula), searching only within
+   ±(period/6) at Fc (`GCC_SNAP_RADIUS_PERIODS`, ≈83 µs at Fc = 2 kHz — the λ/6
+   GPS lobe-selection budget). Magnitude finds the peak; the same ±1-bin
+   `_parabolic_peak` sub-sample refine as the global-peak path applies. No local
+   maximum inside the radius ⇒ the bare anchor is kept (`snap_found=False`). The
+   snap is bounded closed-form, so it can never rail onto a neighbouring lobe,
+   and it heals the ±1–2-sample integer-argmax jitter of the bare anchor (the
+   reproducibility clause — bake-off: a 44.7 µs anchor jump collapsed to 6.9 µs).
+
+`_build_candidate` selects `alignment.snapped_delay_us` when present, else the
+bare anchor; polarity/confidence machinery is unchanged. GCC's global
+correlation peak stays the polarity and capture-quality seed (`seed_delay_us`,
+`confidence_source='gcc_phat_seed'`) and is NOT the applied delay. The declared
+`delay_range_ms` (expanded by `ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`) is the
+outer plausibility rail (Fix 3): a final selected value outside it routes to
+`low_alignment_confidence` re-measure guidance in `crossover_v2_flow`, never
+auto-apply. `delay_target_driver` is intentionally not required — a fresh preset
+has no applied-delay target until this measurement chooses one.
 
 The complex branch TFs are independently argmax-peak-referenced. The raw
 deconvolved-IR argmax gap must first have the inter-sweep clock term
-`ε × (tweeter_start − woofer_start)` removed. The remaining physical peak
-gap is retained: the listening-plane objective phases the tweeter by
-`drift_corrected_peak_gap + parallax + selected_signed_delay`. Removing the
-whole peak gap loses real driver timing; retaining its clock-drift component
-recreates the 2026-07-22 JTS3 mismatch. After selection, the alignment record preserves
-`delay_us == raw_delay_us - parallax_us`; `seed_delay_us` retains the corrected
-GCC seed. `alignment_confidence` remains GCC seed/capture confidence and is
-labelled `gcc_phat_seed`—it is not a confidence score for the flatness
-minimum. Seed ripple, improvement, refinement delta, and boundary status are
-separate retained evidence.
+`ε × (tweeter_start − woofer_start)` removed. The remaining physical peak gap is
+retained: the listening-plane prediction phases the tweeter by
+`objective_reference_gap + selected_signed_delay` (the residual relative to the
+argmax-referenced frame — never the full applied delay, the reverted fix-2).
+Removing the whole peak gap loses real driver timing; retaining its clock-drift
+component recreates the 2026-07-22 JTS3 mismatch. After selection, the alignment
+record preserves `delay_us == raw_delay_us - parallax_us`; `seed_delay_us`
+retains the corrected GCC seed. `alignment_confidence` remains GCC seed/capture
+confidence, labelled `gcc_phat_seed` — it is not a confidence score for any
+flatness minimum.
+
+Flatness survives only as evidence on the candidate: `alignment_seed_ripple_db`
+is the summed ripple AT the anchor, `flatness_improvement_db` is
+`anchor_ripple − selected_ripple` (may be slightly negative — the snap is chosen
+for lobe-correctness, not ripple), and `anchor_delay_us` / `snap_delta_us` /
+`snap_found` record the fine step. `flatness_at_bound` is retired.
 
 VERIFY compares the applied response with the independently aligned
 zero-residual target sum. Do not phase that reference by a candidate-specific
 delay: doing so lets a wrong comb-lobe apply explain itself and recreates the
-fix-2 false-pass class. The selection objective is what proves the applied
-delay should realize the aligned target in the original physical frame.
+fix-2 false-pass class. The selected applied delay is what proves the correction
+realizes the aligned target in the original physical frame.
 
 Both measured and predicted magnitude curves receive the same 1/6-octave
 smoothing before tracking error is computed. The unsmoothed prediction is used
