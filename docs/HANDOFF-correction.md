@@ -65,6 +65,40 @@
   safe. A session that establishes a DIFFERENT mic is never blocked; the
   new success replaces the record
   (`event=correction.household_mic_replaced`).
+- 🧱 **Household-mic identity reconciliation on the room page (issue #1656,
+  2026-07-22).** The Wave-2 prefill above sets `micModelSelect.value`
+  directly (bypassing `updateMicCalibrationRows`, to avoid wiping the
+  prefetched calibration or re-triggering the per-browser saved-serial
+  auto-fetch) — but this left `maybeInferCalibrationModel`'s "never
+  override an explicit choice" guard treating the REPLAYED prefill as if
+  the household had picked it in this session, so a positively-identified
+  DIFFERENT physical mic (e.g. a Dayton iMM-6C after JTS remembered a
+  miniDSP UMIK-2) never got a chance to correct the model picker — even
+  when explicitly re-selected from Input device — and the banner was
+  never retired by a fresh Fetch/Upload once shown, only by Change. Fix
+  (`deploy/assets/correction/js/main.js`): a `householdMicPrefillPending`
+  flag distinguishes an unconfirmed replayed choice from a genuine
+  household one, so a detected mismatch can override it (disclosed, not
+  silent); the banner now retires on any reconciliation of the
+  model/serial UI, not just Change; and `checkCalibrationHonesty`
+  compares the `calibration_id` this page asked for against what
+  `/start` / `/local-capture/setup` / `/status` report actually got
+  bound, alerting once per run on a disagreement — surfacing the
+  existing server-side guard's refusal instead of a silent uncalibrated
+  capture. Guarded to only reconcile against a `/status` snapshot for
+  our own `session_id` (an unguarded version false-fired on every page
+  load for any household with a saved mic, since `/status` is polled
+  before the boot-time prefill resolves). Pinned in
+  `tests/js/correction_render_harness.mjs`. **Separately identified, NOT
+  fixed here:** the room flow's own relay path
+  (`_apply_relay_setup_to_session` in `jasper/web/correction_setup.py`)
+  never threads a `device` value into `_relay_calibration_from_setup`,
+  unlike `jasper.web.correction_crossover_v2.resolve_relay_calibration`
+  which does — so `_stored_calibration_model_mismatch`'s refusal is
+  reachable for a v2 crossover capture but NOT for a room-correction
+  phone-relay capture today; a mismatched stored reconfirm there would
+  currently apply the wrong calibration rather than refuse it. Needs its
+  own follow-up.
 - 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
   2026-07-19).** Every v2 crossover capture logged
   `crossover_v2_uncalibrated_capture` even with a resolvable stored mic
