@@ -1,9 +1,14 @@
 # Crossover measurement — reproducibility working plan
 
-> **Status: PROPOSED — active working doc across sessions.** This is the
-> execution reference for landing the "MEASURE is not reproducible → VERIFY
-> fails" blocker on the v2 conductor flow. It is a *targeted refactor of the
-> measurement core*, not a rewrite of the conductor architecture.
+> **Status: ACTIVE — T2-core merged; controlled repeat failed.** This is the
+> execution and decision reference for the "MEASURE is not reproducible →
+> VERIFY fails" blocker on the v2 conductor flow. T2-core merged via PR #1647
+> on 2026-07-22, but the required post-merge UMIK-2 repeat selected a bound-
+> pinned 299.948 µs woofer delay and failed three VERIFY captures at
+> 5.264–6.454 dB max. T2-robust and Fix 4 remain paused while the upstream
+> offline-objective/hardware-VERIFY mismatch is diagnosed. This is a *targeted
+> refactor of the measurement core*, not a rewrite of the conductor
+> architecture.
 >
 > Canonical operational truth: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
 > v2 decision record: [crossover-measurement-productization-design.md](crossover-measurement-productization-design.md).
@@ -22,6 +27,16 @@
 > framing remains decision archaeology — do not implement against it. This
 > section is the current plan; §10 carries the exact evidence and §11 the gate
 > state.
+
+> **Post-merge repeat update (2026-07-22):** the corrected implementation did
+> not reproduce its earlier green hardware result. With stored UMIK-2
+> calibration, CHECK passed and capture integrity was clean, but MEASURE chose
+> a signed −299.948 µs correction at its search bound and applied 0.2999 ms to
+> the woofer. Three VERIFY captures failed at 5.264, 6.453, and 6.454 dB max.
+> The flow then restored its exact pre-test volume and the sanctioned Undo
+> restored the earlier 0.0537 ms profile. This supersedes the sequencing claim
+> below that only a repeat remained: the upstream objective must first be made
+> to track the hardware VERIFY curve. Do not resume T2-robust or Fix 4 yet.
 
 ### The refined diagnosis
 
@@ -80,8 +95,9 @@ that test right.
    state; selection and apply use the same τ.
 5. **Pause T2-robust and Fix 4.** Coherence weighting and a wider overlap are
    robustness layers, not fixes for an objective whose basin is wrong. Resume
-   them only after the corrected T2-core clears the independent 0/0 review and
-   owner-controlled fixed-placement repeat.
+   them only after the base selector tracks the protected hardware delay curve
+   and clears another controlled repeat. The pre-merge independent 0/0 review
+   remains code-quality evidence, not a substitute for that hardware gate.
 
 ### Owner decisions (2026-07-21)
 
@@ -95,8 +111,11 @@ that test right.
 - **Keep everything dynamic / declaration-driven** for any future drivers —
   no hardcoded bands or spacings.
 - **Sequencing:** corrected T2-core's independent review cleared 0 blockers /
-  0 should-fixes. Run the owner's fixed-placement repeat next; keep T2-robust
-  and Fix 4 paused until that passes.
+  0 should-fixes, but the post-merge UMIK-2 repeat failed. Diagnose
+  why the selector moved from the hardware-green 53.669 µs result to a bound-
+  pinned 299.948 µs result before changing the robustness layers. Keep
+  T2-robust and Fix 4 paused until the selector tracks the hardware VERIFY
+  curve on fresh captures.
 
 ### Prior-art note
 
@@ -111,11 +130,12 @@ port stays reserved for if the widened overlap proves insufficient.
 
 ### Sequencing
 
-The corrected T2-core is implemented on `claude/xover-t2-flatness`, passes
-retained replay and fresh calibrated JTS3 VERIFY, and cleared independent
-review at 0 blockers / 0 should-fixes. T2-robust and Fix 4 remain paused until
-the owner's fixed-placement repeat. The older sequencing below is retained as
-decision archaeology.
+The corrected T2-core merged to `main` via PR #1647, passes retained replay and
+an earlier calibrated JTS3 VERIFY, and cleared its pre-merge T2-specific
+independent review at 0 blockers / 0 should-fixes. Its required post-merge
+UMIK-2 repeat then failed three VERIFY captures. T2-robust and Fix 4 remain
+paused until the base selector tracks the protected hardware delay curve on
+fresh captures. The older sequencing below is retained as decision archaeology.
 
 ---
 
@@ -416,6 +436,29 @@ Captured so they're off the table for the landing work:
 
 ## 10. Decision log (append; newest first)
 
+- *2026-07-22 (post-merge controlled repeat failed; prior sound restored)* —
+  On merged T2-core plus the review-only status/contract-text corrections, a
+  fresh headless CHECK → MEASURE → automatic APPLY → VERIFY run used the
+  stored UMIK-2 calibration (`minidsp-minidsp_umik2-b7343c0c625b`). CHECK
+  passed with 48.35 dB tweeter and 24.95 dB woofer pilot SNR; both 10 dB
+  linearity steps and channel-map checks passed. MEASURE capture integrity was
+  clean: **30.656 ppm** clock drift, **0.02 sample** maximum residual,
+  **0.001 dB** repeat-level delta, and no detected glitch. Nevertheless the
+  selector refined GCC **−352.220 µs** to signed **−299.948 µs**, reported only
+  **0.4451 dB** objective improvement, and landed **at the flatness bound**.
+  The live Camilla graph read back the matching **0.2999 ms woofer delay**.
+
+  VERIFY then failed three same-session captures at **5.264, 6.453,
+  and 6.454 dB max** (RMS **1.805, 2.282, and 2.270 dB**) against the 1.5 dB
+  gate. MEASURE and VERIFY used matching **7.0 ms** gates, **142.857 Hz**
+  validity floors, and the declared **2–4 kHz** tracking band. No input
+  overflow, xrun, clipping, service failure, or safety-unit failure was
+  observed. The session restored listening volume exactly to **−15.151515
+  dB**; the v2 Undo transaction then restored the prior protected profile and
+  live **0.0537 ms** woofer delay. This repeat fails the T2-core completion
+  gate and reopens the upstream objective-vs-hardware diagnosis. T2-robust and
+  Fix 4 remain paused.
+
 - *2026-07-22 (upstream diagnosis + corrected JTS3 VERIFY pass)* — Per the
   owner-directed pause, T2-robust and Fix 4 were not started. A clean protected
   hardware sweep first applied woofer delays from **0–1100 µs** in 50 µs
@@ -608,16 +651,18 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status:** the upstream diagnosis is complete. The corrected objective's
-  physical lobe tracks the hardware sweep, like-for-like VERIFY comparison
-  passes retained replay, the strengthened physics/regression suite passes,
-  and a fully calibrated JTS3 flow selected/applied 53.669 µs and VERIFY-
-  passed at 1.279 dB max. Gate 2 cleared **0 blockers / 0 should-fixes**;
-  nothing is merged.
-- **Next action:** the owner-controlled fixed-placement repeat remains the
-  final reproducibility check before merge or resuming T2-robust / Fix 4.
-  Re-run the full merge suite in CI or a stable local Python runner because the
-  macOS local runner hit unrelated subprocess SIGSEGVs under suite load.
+- **Status:** T2-core merged via PR #1647 and its pre-merge physics/replay/CI
+  gates remain green, but its required post-merge hardware repeat failed. The
+  fresh run selected and applied 299.948 µs at the objective bound, then failed
+  three honest VERIFY captures at 5.264–6.454 dB max. T2-core is not complete.
+- **Next action:** use a fresh protected hardware delay curve as labeled ground
+  truth for the same capture and overlay the selector's physical-lobe,
+  flatness, GCC, and drift terms. The immediate question is why the objective
+  moved from the previously hardware-green 40–53.7 µs basin to the 299.948 µs
+  bound despite clean drift residuals. Do not tune coherence weighting or
+  widen overlap until the base objective follows hardware VERIFY. PR #1647's
+  CI and 0/0 review remain valid code-quality evidence, not hardware-
+  reproducibility evidence.
 - **Room caveat carried forward:** JTS3's room is a ~10 ft cube, capping
   any reflection-free analysis window at ~7 ms regardless of mic
   placement (confirmed directly in E0's data — see §10). Any future
