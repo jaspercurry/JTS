@@ -66,8 +66,8 @@ read_registers() {
     gint="unavailable"; daint="unavailable"
     if [[ -n "${debug_dir}" && -r "${debug_dir}/state" ]]; then
         state_head="$(head -n 5 "${debug_dir}/state" 2>/dev/null || true)"
-        [[ "${state_head}" =~ GINTSTS=([^,\ ]+) ]] && gint="${BASH_REMATCH[1]}"
-        [[ "${state_head}" =~ DAINT=([^,\ ]+) ]] && daint="${BASH_REMATCH[1]}"
+        [[ "${state_head}" =~ GINTSTS=([^,[:space:]]+) ]] && gint="${BASH_REMATCH[1]}"
+        [[ "${state_head}" =~ DAINT=([^,[:space:]]+) ]] && daint="${BASH_REMATCH[1]}"
     fi
     return 0
 }

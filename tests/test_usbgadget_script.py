@@ -775,6 +775,7 @@ def test_snapshot_preserves_wedged_controller_evidence(tmp_path):
     assert "event=usb_gadget.snapshot" in proc.stderr
     assert "gintsts=0x04048038" in proc.stderr
     assert "daint=0x00000002" in proc.stderr
+    assert len(proc.stderr.splitlines()) == 1
 
 
 def test_snapshot_rotation_is_bounded_and_preserves_unrelated_files(tmp_path):
