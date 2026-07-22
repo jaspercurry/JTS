@@ -32,7 +32,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve, resample_poly
 
-from jasper.audio_measurement import deconv
+from jasper.audio_measurement import deconv, program_analysis
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     RoleBand,
@@ -64,6 +64,7 @@ from jasper.audio_measurement.program_analysis import (
     _global_offset,
     _locate_segments,
     _n_fft_for,
+    _overlap_band_hz,
     _peak_dbfs,
     _predicted_sum,
     _ripple_db,
@@ -1214,6 +1215,71 @@ def test_build_candidate_raises_when_validity_floor_consumes_whole_band():
         _build_candidate(
             woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
         )
+
+
+def test_overlap_band_hz_clamps_to_true_driver_sweep():
+    """Fix 1 (root cause): the SSOT overlap-band helper clamps the nominal
+    [Fc/2, 2*Fc] band up/down to the REAL driver-sweep bounds, since a
+    driver's MEASURE sweep only covers its own declared band — e.g. a
+    tweeter sweep starting AT Fc means [Fc/2, Fc) is pure deconvolution
+    noise for that branch, never a real measurement."""
+    fc_hz = 2000.0
+    # Tweeter excited only from Fc (its own MEASURE sweep starts at 2000 Hz,
+    # the real-world root cause) — the nominal Fc/2=1000 Hz floor is noise
+    # for that branch, so the helper clamps `lo` up to it.
+    lo, hi = _overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=6000.0)
+    assert lo == pytest.approx(2000.0)
+    assert hi == pytest.approx(4000.0)  # woofer's 6000 Hz ceiling doesn't bind here
+
+    # Woofer's own sweep ceiling narrower than the nominal 2*Fc ⇒ hi clamps down.
+    lo, hi = _overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=300.0, woofer_sweep_hi_hz=3000.0)
+    assert lo == pytest.approx(1000.0)  # tweeter's 300 Hz doesn't bind
+    assert hi == pytest.approx(3000.0)
+
+    # No sweep-segment evidence (legacy callers) ⇒ byte-identical nominal band.
+    assert _overlap_band_hz(fc_hz) == (1000.0, 4000.0)
+
+
+def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
+    """Fix 1, consumer wiring: `_build_candidate` must compute lo/hi via the
+    SAME SSOT `_overlap_band_hz` helper (clamped to the true driver-sweep
+    bounds) and pass that band into the ripple calculation — not silently
+    keep computing its own unclamped [Fc/2, 2*Fc] locally. Spies on
+    `_ripple_db` (rather than asserting on DSP output numbers, which are
+    sensitive to windowing/gating details unrelated to this fix) to pin the
+    actual band value `_build_candidate` used."""
+    fc_hz = 2000.0
+    woofer_ir = _band_impulse(300, 500.0, 6000.0, 1.0)
+    tweeter_ir = _band_impulse(300, 300.0, 20000.0, 0.7)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    alignment = AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+    )
+    seen_lo_hi = []
+    real_ripple_db = program_analysis._ripple_db
+
+    def _spy_ripple_db(freqs, magnitude, lo, hi):
+        seen_lo_hi.append((lo, hi))
+        return real_ripple_db(freqs, magnitude, lo, hi)
+
+    monkeypatch.setattr(program_analysis, "_ripple_db", _spy_ripple_db)
+
+    _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
+        tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=3000.0,
+    )
+    # A clean (non-reflective) fixture never trips the branch-floor clamp, so
+    # the ripple call's band is exactly the SSOT helper's output — proving
+    # `_build_candidate` threads the sweep bounds through, not just accepts
+    # and ignores them.
+    expected_lo, expected_hi = _overlap_band_hz(
+        fc_hz, tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=3000.0,
+    )
+    assert seen_lo_hi == [(expected_lo, expected_hi)]
+    assert expected_lo == pytest.approx(fc_hz)  # lo clamped UP from the nominal Fc/2=1000
+    assert expected_hi == pytest.approx(3000.0)  # hi clamped DOWN from the nominal 2*Fc=4000
 
 
 # --------------------------------------------------------------------------- #

@@ -407,6 +407,41 @@ def test_no_alignment_estimate_skips_the_confidence_gate():
     assert fakes.published_candidates[0].alignment == MeasuredCrossoverAlignment()
 
 
+def test_implausible_delay_rejects_measure_even_at_high_confidence():
+    """Fix 3: a confidently-WRONG delay (high GCC confidence at the wrong
+    lag — a real hardware failure mode, not a hypothetical one) must still
+    be rejected when its magnitude falls outside the preset's declared
+    ``delay_range_ms`` search bound (``_two_way_preset``'s [0.05, 0.30] ms =
+    [50, 300] us), reusing the low_alignment_confidence guidance rather than
+    auto-applying a physically implausible correction. A delay inside that
+    declared bound is unaffected."""
+    fakes = FakeSeams()
+    # High confidence (clears ALIGNMENT_CONFIDENCE_TRUST_FLOOR) but a
+    # magnitude (631 us) more than double the declared 300 us upper bound —
+    # mirrors the confidently-implausible -631 us hardware failure.
+    fakes.measure = lambda program: _measure_analysis(
+        program, alignment=_alignment(delay_us=-631.0, confidence=0.9),
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "low_alignment_confidence"
+    assert not fakes.published_candidates
+    assert c.candidate is None
+    assert c.current_phase == PHASE_MEASURE
+
+    # A delay inside the declared bound (same high confidence) is accepted.
+    fakes2 = FakeSeams()
+    fakes2.measure = lambda program: _measure_analysis(
+        program, alignment=_alignment(delay_us=-200.0, confidence=0.9),
+    )
+    c2 = _conductor(fakes2)
+    _run_phase(c2, 1, 1)
+    verdict2 = _run_phase(c2, 2, 2)
+    assert verdict2["accepted"] is True
+
+
 def test_measure_program_gains_back_off_from_caps():
     """W2 gate: the solver backs off ≥0.01 dB from exact per-driver caps."""
     fakes = FakeSeams()
