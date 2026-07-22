@@ -39,7 +39,11 @@ JTS intentionally separates:
    via `bash scripts/pi-system-soak.sh ...`, which in turn uses
    `scripts/pi-run-diagnostic.sh` so systemd bounds memory/runtime and
    gives the kernel an obvious diagnostic process to kill before
-   product daemons.
+   product daemons. A device-specific intermittent fault may instead use an
+   explicitly enabled, hard-capped RAM ring with deliberate artifact freezes;
+   USB gadget forensics is the concrete instance and remains separate from the
+   TTL log-level toggle. Its limits and retention live in
+   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
 
 This is the project rule that keeps observability from muddying the
 steady state: production gets truth, not lab equipment.
@@ -420,6 +424,8 @@ and its toggles trigger real daemon restarts, so after a deploy open
 `journalctl -u jasper-voice` shows DEBUG lines + the countdown and
 auto-quiet fire. USB input is not a debug subsystem: its readiness unit has no
 resident process; inspect fan-in STATUS and the usbsink doctor group instead.
+The separate USB gadget forensics card samples controller counters, not daemon
+logs, and therefore does not extend this Debug logging registry.
 
 **Tier C — flight recorder (built 2026-05-30; pending on-device
 verification).** A bounded in-RAM verbose ring per daemon,
@@ -592,7 +598,9 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-15 (normalized audio-health ownership, cadence,
+Last verified: 2026-07-22 (USB gadget forensics' separate bounded-diagnostics
+boundary rechecked against its root sampler, `/state`, and `/system/` card).
+Prior 2026-07-15 (normalized audio-health ownership, cadence,
 current-stream/session projection, continuity-vs-timing semantics, bounded
 persistent incident lifecycle, and legacy AirPlay compatibility rechecked
 against `jasper/control/audio_health.py`,

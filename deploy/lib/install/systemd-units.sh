@@ -306,9 +306,17 @@ install_resilience_identity_unit_files() {
 }
 
 install_usbsink_unit_files() {
+    # Root-owned, bounded USB incident artifacts. Creating it here makes the
+    # opt-in sampler's narrow ReadWritePaths= contract valid even when the
+    # gadget has never bound (and therefore never emitted a startup snapshot).
+    install -d -m 0750 /var/lib/jasper/usb-gadget-incidents
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbgadget.service" \
         "${SYSTEMD_DIR}/jasper-usbgadget.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbgadget-forensics.service" \
+        "${REPO_DIR}/deploy/systemd/jasper-usbgadget-forensics.path" \
+        "${SYSTEMD_DIR}/"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
         "${SYSTEMD_DIR}/jasper-usbsink.service"
@@ -330,6 +338,9 @@ install_usbsink_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-down" \
         /usr/local/sbin/jasper-usbgadget-down
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-snapshot" \
+        /usr/local/sbin/jasper-usbgadget-snapshot
     install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-wanted" \
         /usr/local/sbin/jasper-usbgadget-wanted
@@ -441,6 +452,13 @@ enable_usbgadget() {
     # already-active gadget only when prior derived audio or the UAC2 card proves
     # stale audio may be present; a converged NCM-only gadget must not flap on
     # every deploy (the deploy itself may be using that management link).
+    # The path watcher is always cheap/inert; the sampler starts only while the
+    # persistent operator marker exists. try-restart picks up helper updates on
+    # deploy without turning a disabled sampler on.
+    systemctl enable --now jasper-usbgadget-forensics.path >/dev/null 2>&1 || \
+        echo "  WARN: could not arm opt-in USB gadget forensics watcher"
+    systemctl try-restart jasper-usbgadget-forensics.service >/dev/null 2>&1 || true
+
     local audio_was_enabled=0
     local audio_was_active=0
     local uac2_was_present=0

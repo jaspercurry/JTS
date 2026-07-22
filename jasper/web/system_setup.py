@@ -14,6 +14,7 @@ Data comes from jasper-control:
   GET  /system/diagnostics  serves cached jasper-doctor JSON and
                              refreshes stale snapshots in the background
   POST /system/restart/*    restart voice / audio chain
+  POST /usb-forensics       persistent sampler toggle / capture / USB repair
   POST /system/reboot       full Pi reboot
 
 Wake detection lives on /wake/ — the model picker, the AEC + per-leg
@@ -138,7 +139,7 @@ def _make_handler(
             path = url.path.rstrip("/") or "/"
             POST_ROUTES = (
                 "/restart/voice", "/restart/audio", "/reboot", "/poweroff",
-                "/audio-quality",
+                "/audio-quality", "/usb-forensics",
             )
             if path not in POST_ROUTES:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -147,7 +148,7 @@ def _make_handler(
                 reject_csrf(self)
                 return
             body = None
-            if path == "/audio-quality":
+            if path in ("/audio-quality", "/usb-forensics"):
                 try:
                     length = int(self.headers.get("Content-Length") or "0")
                 except ValueError:
@@ -161,8 +162,11 @@ def _make_handler(
             # control-token gate sees it on /system/reboot|poweroff (the
             # wizard proxies server-side; the header can't ride the browser
             # fetch otherwise).
+            control_path = (
+                "/usb-forensics" if path == "/usb-forensics" else "/system" + path
+            )
             status, body = proxy_post(
-                "/system" + path, control_base=control_base, body=body,
+                control_path, control_base=control_base, body=body,
                 headers=forward_control_token_headers(self),
             )
             send_proxy_json(self, body, status=status)

@@ -105,6 +105,8 @@ automatically (embedded in each page behind the read guard, read by
 - `POST /system/poweroff` / `POST /system/reboot` — power off / reboot.
 - `POST /system/restart/voice` / `POST /system/restart/audio` — restart the
   assistant / the audio chain.
+- `POST /usb-forensics` — enable/disable the bounded USB sampler, freeze its
+  local evidence, or request the gadget-only repair restart.
 - `POST /mic/mute` — the legacy route behind the dashboard's Voice assistant
   Pause/Resume control. It stops JTS wake detection and voice capture; it does
   not stop an independently enabled USB microphone export.

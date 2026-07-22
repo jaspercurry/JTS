@@ -1,0 +1,9 @@
+[Unit]
+Description=Start Jasper USB gadget forensics when enabled
+
+[Path]
+PathExists=/var/lib/jasper/usb_gadget_forensics.env
+Unit=jasper-usbgadget-forensics.service
+
+[Install]
+WantedBy=multi-user.target

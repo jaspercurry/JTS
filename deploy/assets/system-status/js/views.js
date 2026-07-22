@@ -21,6 +21,7 @@ import {
   vitalsCards, softwareList, haBody, networkList, servicesTable, waitingNote,
 } from "./sections.js";
 import { buildDebugCard } from "./debug-card.js";
+import { buildUsbForensicsCard } from "./usb-forensics-card.js";
 
 export function buildSystemPanel(handlers) {
   const live = livePill();
@@ -92,11 +93,12 @@ export function buildSystemPanel(handlers) {
   // Debug logging — self-contained collapsible (built once; fetches its
   // own /debug state from control and self-manages). Not poll-driven.
   const debugCard = buildDebugCard();
+  const forensics = buildUsbForensicsCard();
 
   const panel = h("main.app-main", { "attr:data-status-view": "system" },
     live.el, vitals, software.section, ha.section,
     network.section, actions.section,
-    diag.section, debugCard, services,
+    diag.section, forensics.card, debugCard, services,
   );
 
   const refs = {
@@ -105,6 +107,7 @@ export function buildSystemPanel(handlers) {
     network: network.body, svc: svcBody,
     actionsStatus, capabilityNote,
     actionButtons: { restartVoice, restartAudio },
+    forensics,
     _memo: {},
   };
   return { panel, refs };
@@ -174,4 +177,5 @@ export function update(refs, snap) {
   } catch (e) {
     console.error("system: applying capabilities failed", e);
   }
+  refs.forensics.update(snap.usb_gadget_forensics || {});
 }

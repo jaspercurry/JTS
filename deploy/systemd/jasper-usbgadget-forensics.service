@@ -1,0 +1,26 @@
+[Unit]
+Description=Jasper opt-in USB gadget forensics sampler
+ConditionPathExists=/var/lib/jasper/usb_gadget_forensics.env
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/jasper-usbgadget-snapshot watch
+Restart=on-failure
+RestartSec=2s
+Group=jasper
+UMask=0007
+RuntimeDirectory=jasper-usb-gadget-forensics
+RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=restart
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR JASPER_USBGADGET_SNAPSHOT_DEBUG_ROOT JASPER_USBGADGET_SNAPSHOT_PROC_INTERRUPTS JASPER_USBGADGET_SNAPSHOT_USB_MIC_STATUS JASPER_USBGADGET_SNAPSHOT_DIR JASPER_USBGADGET_FORENSICS_ENABLED_FILE JASPER_USBGADGET_FORENSICS_RUN_DIR JASPER_USBGADGET_FORENSICS_INTERVAL JASPER_USBGADGET_FORENSICS_MAX_BYTES
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/jasper/usb-gadget-incidents
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+MemoryMax=32M
+TasksMax=32

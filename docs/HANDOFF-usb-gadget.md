@@ -605,10 +605,115 @@ xrun/counter evidence remain hardware checklist items #1 and #3.
 
 Repeated development-time descriptor cycling is also not benign on the tested
 macOS 26 build: after many back-to-back production/lab swaps, CoreAudio once
-lost its entire device graph (including built-in devices), and restarting its
-daemon group did not recover it. Physical reconnect or a Mac restart remains
-the recovery for that observed wedge. Avoid rapid repeated descriptor cycling;
-use the product switch for ordinary operation.
+lost its entire device graph (including built-in devices). Avoid rapid repeated
+descriptor cycling; use the product switch for ordinary operation.
+
+### macOS total-audio wedge (2026-07-22 incident)
+
+An ordinary, non-development failure has now been captured on the Mac Studio.
+This is a **whole composite-gadget/controller wedge**, not a stalled AEC bridge,
+mic relay, Spotify client, browser, or speech application:
+
+- macOS still enumerated the physical JTS USB device, but Core Audio reported
+  zero audio devices. Spotify refused to start tracks, YouTube waited forever,
+  and every microphone disappeared. The JTS NCM interface still showed link
+  locally but could not ping `10.12.194.1`.
+- The Pi still reported the UDC as `configured`, `usb0` as `LOWER_UP`, and all
+  JTS audio services as active. AEC and the USB-mic source continued producing
+  fresh packets. Those healthy userspace surfaces therefore cannot detect this
+  failure by themselves.
+- macOS logs show the first hard failure while stopping JTS's playback stream,
+  exactly 30 seconds after a successful Wispr Flow dictation ended: endpoint
+  `0x02` aborted, endpoint `0x84` returned `0xe00002ed`, then the control
+  endpoint timed out with `0xe00002d6` while selecting alternate setting 0.
+  Every later audio start failed with the same USB timeout.
+- DWC2 debugfs simultaneously held a pending endpoint interrupt
+  (`GINTSTS=0x04048038`, `DAINT=0x00000002`, `DIEPINT(1)=0x90`/`0x2090`) and
+  queued requests remained unfinished. The Pi kernel journal had no matching
+  fault, which explains why the service manager saw a healthy oneshot.
+- Core Audio attributed the JTS streams to Wispr Flow's audio-service PID.
+  Claude's audio-service PID had no matching stream or error in the incident
+  window. This does not prove Flow caused the kernel fault; it identifies the
+  client whose normal stream-stop exposed it.
+
+Restarting **only** `jasper-usbgadget.service` over Wi-Fi re-enumerated JTS,
+restored NCM ping, and brought Mac audio back without restarting the Mac or the
+applications. Core Audio rebuilt its full device list shortly afterward. Flow
+retained a stale input view until its audio helper was restarted. This A/B
+recovery establishes JTS USB as causal for the host-wide outage.
+
+The exact kernel/function race is not yet proven. The mic-enabled descriptor is
+a leading hypothesis because it adds endpoint `0x84`, which faulted immediately
+after playback endpoint `0x02` stopped. Selecting a different microphone in an
+app does **not** remove that endpoint: `p_chmask=1` remains on the same UAC2
+function until the Mac-microphone switch is turned off. Conversely, the first
+failed operation was the playback stream stop, so the evidence does not justify
+claiming the mic feature alone is the cause. Turning the Mac microphone off in
+`/wake/` when it is not needed is a reasonable temporary risk reduction and an
+important A/B test, not a guaranteed fix.
+
+Raspberry Pi OS offered `6.18.34-1+rpt1` while the incident box was running
+`6.12.75-1+rpt1`. A source comparison of Raspberry Pi's `rpi-6.12.y` and
+`rpi-6.18.y` DWC2/UAC2 drivers found no endpoint-disable or audio stream-stop
+fix matching this signature; the shared `u_audio.c` engine was unchanged.
+Do not treat that major kernel upgrade as an incident fix without a controlled
+soak/rollback window.
+
+**Recovery and evidence preservation:** run the restart over Wi-Fi, because the
+USB management link is part of the wedge:
+
+```bash
+ssh pi@<wifi-ip> sudo systemctl restart jasper-usbgadget.service
+```
+
+`jasper-usbgadget.service` now runs the bounded
+`jasper-usbgadget-snapshot` helper before unbind and after bind. It records the
+UDC/configuration state, DWC2 state and registers, endpoint queues, interrupt
+line, `usb0` counters, and USB-mic status under
+`/var/lib/jasper/usb-gadget-incidents/`. Only the latest 12 snapshots are kept.
+Each capture is wrapped in a two-second timeout and best-effort systemd
+directive, so diagnostics cannot prevent teardown/recovery. Structured
+`event=usb_gadget.snapshot` journal lines carry the reason, UDC state,
+`GINTSTS`, `DAINT`, and artifact path. The production unit strips every
+test-only path override before invoking this root helper.
+
+### Opt-in rolling USB forensics
+
+The **USB forensics** card under `/system/` is the bounded investigation mode
+for failures that cannot be reconstructed from one restart snapshot. It is off
+by default. Enabling it writes the sole persistent intent marker at
+`/var/lib/jasper/usb_gadget_forensics.env`; the marker survives ordinary
+deploys and reboots, and removing it is the entire disable operation. A tiny
+always-enabled systemd path watcher starts the sampler only while that marker
+exists, so the off state has no resident sampler or polling timer.
+
+While enabled, `jasper-usbgadget-forensics.service` samples every 10 seconds.
+It records only controller/UDC state, `GINTSTS`/`DAINT`, the DWC2 interrupt
+counter, and `usb0` packet/error counters. It never opens an audio device,
+records audio, reads application data, or writes a steady-state journal line.
+The rolling timeline lives under `/run/jasper-usb-gadget-forensics/` (tmpfs)
+and is hard-capped at 512 KiB across the current and previous segment. The
+service itself is capped at 32 MiB by systemd.
+
+Disk writes happen only when evidence is frozen:
+
+- **Capture now** adds at most the latest 128 KiB of rolling history to one
+  ordinary incident artifact.
+- **Capture & repair USB** queues a gadget-only restart; the gadget unit's
+  existing pre-reset and post-start hooks freeze the timeline on both sides of
+  the transition. The Mac may need a few seconds to rebuild its device graph,
+  and an application such as Wispr Flow may still need a restart if it cached
+  the stale microphone list.
+- The shared incident directory still retains only the latest 12
+  `usb-gadget-*.txt` files. Turning forensics off releases the RAM timeline but
+  deliberately leaves that bounded incident history available for diagnosis.
+
+The dashboard reads the same state exposed as
+`/state.usb_gadget_forensics`: requested enablement, observed sampler freshness,
+sample count, last fixed action, and latest artifact path. A requested-but-stale
+sampler is shown as needing attention rather than silently reported healthy.
+The root sampler accepts only two fixed request filenames (`capture` and
+`repair`); `jasper-control` never receives general root command execution.
 
 ## RAM contract
 
@@ -707,6 +812,14 @@ contrast case. See `tests/test_http_security.py`.
   error state.
 - Structured logs: `event=usb_gadget.compose|up|down|skip ...` from the
   gadget scripts (the wifi-guardian idiom).
+- Bounded pre-reset/post-start controller artifacts and
+  `event=usb_gadget.snapshot ...` lines from `jasper-usbgadget-snapshot`; see
+  "macOS total-audio wedge" above. These exist because UDC `configured` and
+  healthy userspace audio do not prove the controller still answers the host.
+- Optional rolling forensics state in `/state.usb_gadget_forensics` and the
+  `/system/` USB forensics card. Its timeline is RAM-only and bounded; only an
+  explicit capture or gadget restart freezes it into the same retained
+  incident-artifact family.
 
 ## Hardware-validation checklist
 
@@ -834,7 +947,10 @@ Each item names the specific claim above it verifies.
 
 ---
 
-Last verified: 2026-07-17 (the active-plan-derived computer-microphone source
+Last verified: 2026-07-22 (live Mac Studio total-audio wedge localized to the
+JTS composite DWC2 path and recovered by a gadget-only restart; pre-reset,
+post-start, and opt-in RAM-bounded rolling controller capture added and covered
+by focused tests; the active-plan-derived computer-microphone source
 selector, bridge-only restart-broker path, relay `PartOf=` convergence, and
 explicit no-gadget/no-descriptor/no-NCM boundary were rechecked against the
 control, bridge, systemd, and `/wake/` paths; the USB-microphone switch's
