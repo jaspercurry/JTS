@@ -403,6 +403,46 @@ Captured so they're off the table for the landing work:
 
 ## 10. Decision log (append; newest first)
 
+- *2026-07-21 (hardware validation, fix 1+3)* — **The reviewed increment
+  (fix 1 band-clamp + fix 3 plausibility bound; fix 2 reverted, fix 4
+  dropped) was deployed to JTS3 and run headless** — direct-Pi control, no
+  browser, same shape as E0. **Fix 1 validated:** MEASURE
+  `alignment_confidence` went from E0's ~0.50 (every run refused) to
+  **0.737** (accepts, reproducible across 2 runs); `predicted_ripple` dropped
+  from E0's 10.96–24.72 dB to **5.3 dB**. First time the flow has completed
+  CHECK→MEASURE→auto-apply→VERIFY end to end. **VERIFY reproducibly fails at
+  ~4.29 dB** against the 1.5 dB gate. Root cause: fix 1 fixes *confidence*,
+  but the confident GCC delay (~348 µs) is still off the delay that actually
+  flattens the sum — the 1-octave-overlap comb ambiguity from the "refined
+  diagnosis" above, now confirmed on hardware rather than only in the
+  offline corpus. **Reverting fix 2 was the right call**: VERIFY compares the
+  applied sum against the τ=0-aligned flattest prediction, not a
+  prediction-at-the-applied-delay, so a wrong delay fails honestly — predicting
+  at the applied delay would have masked it. Caveat: the mic was at an
+  uncontrolled placement this run (owner away), so the 4.29 dB conflates
+  placement error with delay-accuracy error until a controlled run separates
+  them. Corpus: `captures/xover-e0-2026-07-21/M1-fix-deployed/`.
+  **Recommendation (owner decision pending): T2 (flatness estimator) as the
+  primary fix, fix 4 (widen the tweeter sweep) as reliability hardening.**
+  Feasibility already showed the flatness-optimal delay hits 0.6–2.0 dB
+  summed ripple vs GCC's ~4–5 dB — and because v2 VERIFY measures as-crossed,
+  that ripple number *is* what VERIFY scores, so switching the applied delay
+  from the GCC correlation peak to the flatness-minimizing delay is what gets
+  VERIFY under the gate. Offline-provable on the retained captures; same
+  class of subtle-SP risk as the reverted fix 2, so it needs its own physics
+  test plus its own adversarial review before merge. Fix 4 is recommended as
+  hardening on top, not instead: it collapses T2's comb of near-equal minima
+  to a single deeper minimum, avoiding lobe-hopping and buying margin under
+  1.5 dB — but it's hardware-gated and needs the excitation-admission
+  reconciliation the adversarial review flagged (the widened sweep is
+  currently refused by `admit_excitation` unless the admitted band widens
+  too). **Sequence:** build T2 (offline-provable) → controlled hardware
+  VERIFY → add fix 4 if T2 alone is marginal; do both for the robust end
+  state. The reviewed fix1+fix3 increment stays on `claude/xover-measure-fix`
+  (adversarial-reviewed at 0 blockers / 0 should-fixes), **not merged** —
+  merge-now-vs-hold-for-T2 is an owner decision, since fix 1 alone converts
+  "MEASURE refuses" into "applies → VERIFY fails → undo," a real but
+  incomplete improvement.
 - *2026-07-21 (E0 results)* — **E0 executed on hardware** via headless
   direct-Pi control (`e0_capture.py` speaking the real phone/relay wire
   protocol from a Mac + UMIK-2 against `jts3.local`; no browser touched, no
@@ -457,23 +497,30 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status:** revised plan defined. The offline τ-sweep feasibility
-  experiment is done; see "Revised plan (2026-07-21, post-feasibility)"
-  near the top of this doc, which supersedes §3–§5. Offline fixes (band
-  clamp + predict=apply + plausibility bound) are under implementation on
-  branch `claude/xover-measure-fix`; the docs PR for this revision is
-  pending.
-- **Next action:** land the offline fixes → one JTS3 hardware VERIFY run
-  (current sweep AND the widened sweep) → ship if VERIFY passes, else
-  escalate to the coherence-weighted estimator (T2-core/T2-robust, now
-  demoted to a robustness cross-check per the revised plan). Corpus:
-  `captures/xover-e0-2026-07-21/` (`MANIFEST.md` / `RESULTS.md`).
+- **Status:** fix 1 (band-clamp) is hardware-validated — MEASURE confidence
+  and predicted ripple both moved as feasibility predicted, and the flow
+  completed CHECK→MEASURE→apply→VERIFY end to end for the first time. The
+  remaining gap is delay *accuracy*, not confidence: VERIFY reproducibly
+  fails at ~4.29 dB (gate 1.5 dB) because the confident GCC delay is still
+  off the delay that actually flattens the sum (the 1-octave comb
+  ambiguity). See "2026-07-21 (hardware validation, fix 1+3)" in §10 for the
+  full readout and the T2/fix-4 recommendation.
+- **Next action:** build T2 (the flatness estimator) — offline-provable on
+  the retained corpus, and feasibility already shows it should clear the
+  1.5 dB gate — then run a *controlled* hardware VERIFY (fixed mic
+  placement, unlike the uncontrolled fix-1 run), then add fix 4 (widen the
+  tweeter sweep) as reliability hardening only if T2 alone is marginal.
+  Merge-now-vs-hold for the reviewed fix1+fix3 increment on
+  `claude/xover-measure-fix` is an owner decision.
 - **Room caveat carried forward:** JTS3's room is a ~10 ft cube, capping
   any reflection-free analysis window at ~7 ms regardless of mic
   placement (confirmed directly in E0's data — see §10). Any future
   measurement session in this room should expect the same ceiling; it is
   not something placement alone can fix.
 - **JTS3:** up and available.
+- **Corpus:** `captures/xover-e0-2026-07-21/` (`MANIFEST.md` / `RESULTS.md`)
+  plus the fix-1-deployed run at
+  `captures/xover-e0-2026-07-21/M1-fix-deployed/`.
 
 ---
 
