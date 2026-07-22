@@ -15,10 +15,9 @@
 # hw-validation runbooks there).
 session_artifacts = [
   "docs/AEC-DIAG-01-baseline.md",
-  # Working plan + decision log for the crossover-measurement reproducibility
-  # effort. PROPOSED/active across sessions; folds into
-  # HANDOFF-crossover-measurement-v2.md and is archived once the fix lands.
-  "docs/crossover-measurement-reproducibility-plan.md",
+  # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
+  # historical decision archaeology, no longer a scan target; current truth
+  # is HANDOFF-crossover-measurement-v2.md.)
   # Verbatim point-in-time implementation plan retained as an execution record;
   # current relay truth lives in HANDOFF-usb-gadget.md and HANDOFF-aec.md.
   "docs/PLAN-usb-mic-export-latency-fix.md",
