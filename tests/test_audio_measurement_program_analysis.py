@@ -624,32 +624,31 @@ def test_build_candidate_falls_back_to_anchor_when_snap_absent():
     woofer_ir[1000] = 1.0
     tweeter_ir[1011] = 1.0
     physical_gap_us = 3 / SR * 1e6
-    inter_sweep_drift_us = 8 / SR * 1e6
+    # The aligner owns the anchor; supply it as the aligner would (argmax gap 11
+    # − drift 8 = 3 samples, no parallax) with no local snap peak found.
     alignment = AlignmentEstimate(
         delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
         polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
-        confidence=0.9, status=ALIGNMENT_OK, snapped_delay_us=None,
+        confidence=0.9, status=ALIGNMENT_OK,
+        anchor_delay_us=-physical_gap_us, snapped_delay_us=None,
     )
     candidate, _predicted = _build_candidate(
         woofer_ir, tweeter_ir, SR, 16_384, 2000.0, "woofer", "tweeter",
         alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
-        inter_sweep_drift_us=inter_sweep_drift_us,
     )
     assert candidate.snap_found is False
     assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
-    assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=1e-6)
-    assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-6)
+    assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
+    assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
 
 
 def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
     """A confident GCC peak on a neighboring comb lobe must not steer selection.
 
-    The measured argmax gap contains 3 samples of physical branch delay plus
-    8 samples of inter-sweep drift. Removing only the latter anchors the correct
-    -62.5 us basin even though the supplied GCC seed is -650 us. The anchor is
-    primary (methodology §10, 2026-07-22); with no correlation context on a
-    direct ``_build_candidate`` call, the bare anchor is selected — never the
-    wrong GCC lobe.
+    The aligner-owned anchor is 3 samples of physical branch delay (the measured
+    argmax gap minus its inter-sweep drift). The anchor is primary (methodology
+    §10, 2026-07-22); even when the GCC seed sits on a wrong comb lobe (-650 us)
+    and no snap was found, the bare anchor is selected — never the wrong GCC lobe.
     """
     woofer_ir = np.zeros(8192)
     tweeter_ir = np.zeros(8192)
@@ -658,7 +657,6 @@ def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
     woofer_ir[1000] = 1.0
     tweeter_ir[1011] = 1.0
     physical_gap_us = 3 / SR * 1e6
-    inter_sweep_drift_us = 8 / SR * 1e6
     gcc_seed_us = -650.0
     alignment = AlignmentEstimate(
         delay_us=gcc_seed_us,
@@ -669,6 +667,8 @@ def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
         polarity_agrees_with_sum=True,
         confidence=0.9,
         status=ALIGNMENT_OK,
+        anchor_delay_us=-physical_gap_us,
+        snapped_delay_us=None,
     )
 
     candidate, _predicted = _build_candidate(
@@ -682,12 +682,11 @@ def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
         alignment,
         None,
         alignment_delay_bounds_us=(0.0, 1000.0),
-        inter_sweep_drift_us=inter_sweep_drift_us,
     )
 
-    assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=2.0)
-    assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=2.0)
-    assert candidate.snap_found is False  # no correlation context on a direct call
+    assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
+    assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
+    assert candidate.snap_found is False  # aligner reported no local snap peak
     assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
     assert candidate.alignment_seed_ripple_db is not None
     # Flatness is evidence only: anchor == selection ⇒ zero improvement.
@@ -702,10 +701,10 @@ def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
         (200, 230),
     ],
 )
-def test_flatness_refinement_production_path_preserves_parallax_contract(
+def test_snap_production_path_preserves_parallax_contract(
     d_w, d_t,
 ):
-    """T2's full MEASURE path keeps raw/corrected frames honest on both lobes."""
+    """The full MEASURE snap path keeps raw/corrected frames honest on both lobes."""
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0},
         _roles(),
@@ -767,7 +766,11 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
     # delay is the physical peak-gap anchor snapped within ±(period/6) at Fc —
     # same sign side as the anchor, never a periodic-comb-lobe jump.
     snap_radius_us = 1e6 / FC_HZ * GCC_SNAP_RADIUS_PERIODS
-    assert result.candidate.anchor_delay_us == pytest.approx(physical_seed_us, abs=1e-6)
+    # S1 single-source pin: the candidate's anchor is EXACTLY the aligner-owned
+    # anchor (derived, never a parallel argmax), and both equal the manual
+    # physical peak-gap computation.
+    assert result.candidate.anchor_delay_us == result.alignment.anchor_delay_us
+    assert result.candidate.anchor_delay_us == pytest.approx(physical_seed_us, abs=1e-9)
     assert abs(result.alignment.delay_us - physical_seed_us) <= snap_radius_us + 1e-6
     assert math.copysign(1.0, result.alignment.delay_us) == math.copysign(
         1.0,

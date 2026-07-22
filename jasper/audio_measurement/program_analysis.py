@@ -133,10 +133,12 @@ DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
 # lobe-selection budget (Teunissen): a coarse anchor with error σ ≤ λ/6 selects
 # the correct comb lobe with ≥99.7% probability. On the E0 hardware corpus this
 # radius is ~2× the largest legitimate observed snap (≈39 µs) and structurally
-# below the +166 µs stable-but-wrong correlation feature the bake-off ruled out,
-# so the snap can never rail onto a neighbouring comb lobe. PROVISIONAL pending
-# more crossover-measurement hardware runs; declaration-driven — the µs radius
-# derives from the priors' Fc, never a hardcoded value (≈83.3 µs at Fc=2 kHz).
+# below the +166 µs stable-but-wrong correlation feature the bake-off ruled out.
+# A snapped selection is bounded to the radius plus at most one upsampled bin of
+# parabolic sub-sample refine (~1/GCC_UPSAMPLE sample), so it can never rail onto
+# a neighbouring comb lobe. PROVISIONAL pending more crossover-measurement
+# hardware runs; declaration-driven — the µs radius derives from the priors' Fc,
+# never a hardcoded value (≈83.3 µs at Fc=2 kHz).
 GCC_SNAP_RADIUS_PERIODS = 1.0 / 6.0
 
 # Alignment estimator status vocabulary.
@@ -388,13 +390,19 @@ class AlignmentEstimate:
     ``delay_us == raw_delay_us - parallax_us``; it is not the discarded GCC
     raw peak, whose corrected form remains available as ``seed_delay_us``.
 
-    ``snapped_delay_us`` is the fine-stage result: the drift-corrected physical
-    peak-gap anchor snapped to the nearest local maximum of the SAME upsampled
-    GCC-PHAT correlation within ±(period/6) at Fc (:data:`GCC_SNAP_RADIUS_PERIODS`).
+    ``anchor_delay_us`` is the drift-corrected physical peak-gap anchor (raw
+    full-IR argmax gap − inter-sweep drift + parallax) in the signed frame — the
+    aligner computes it once and OWNS it, so ``_build_candidate`` derives the
+    applied anchor and the objective reference gap from it rather than
+    re-running the argmax (a parallel computation of one load-bearing decision).
+    ``snapped_delay_us`` is the fine-stage result: that anchor snapped to the
+    nearest local maximum of the SAME upsampled GCC-PHAT correlation within
+    ±(period/6) at Fc (:data:`GCC_SNAP_RADIUS_PERIODS`). ``snapped_delay_us`` is
     ``None`` when the radius held no local maximum (the candidate then keeps the
-    bare anchor) or the seed was refused. It is plumbing from the aligner — which
-    owns the correlation — to :func:`_build_candidate`, which owns the anchor and
-    the final selection; direct ``_build_candidate`` callers leave it ``None``.
+    bare anchor); both are ``None`` when the seed was refused. They are plumbing
+    from the aligner — which owns the correlation and the anchor — to
+    :func:`_build_candidate`, which owns the final selection; direct
+    ``_build_candidate`` callers set ``anchor_delay_us`` explicitly.
 
     ``status`` is :data:`ALIGNMENT_OK` for a trustworthy estimate. When the
     correlation peak lands at (or within one sample of) the ±search-window
@@ -414,6 +422,7 @@ class AlignmentEstimate:
     status: str = ALIGNMENT_OK
     seed_delay_us: float | None = None
     confidence_source: str = "gcc_phat"
+    anchor_delay_us: float | None = None
     snapped_delay_us: float | None = None
 
 
@@ -781,9 +790,11 @@ def _gcc_local_peak_snap(
     (via the shared :func:`_gcc_correlation` core) and the same ±1-bin
     :func:`_parabolic_peak` sub-sample refine. Returns the refined native lag of
     the nearest genuine interior local maximum of the correlation MAGNITUDE — an
-    upsampled bin strictly greater than both its neighbours — whose lag is within
-    the radius of the anchor; ``None`` when the radius contains no such peak (the
-    caller then keeps the bare anchor). "Nearest" = smallest ``|lag − anchor|``.
+    upsampled bin strictly greater than both its neighbours — whose bin lies
+    within the radius of the anchor (the parabolic refine may nudge the returned
+    lag by up to one upsampled bin past it); ``None`` when the radius contains no
+    such peak (the caller then keeps the bare anchor). "Nearest" = smallest
+    ``|lag − anchor|``.
 
     Ianniello's gated correlator (docs/crossover-measurement-reproducibility-plan.md
     §10, 2026-07-22): the drift-corrected physical peak-gap anchor already owns
@@ -805,8 +816,10 @@ def _gcc_local_peak_snap(
     best_ell: int | None = None
     best_dist = float("inf")
     for ell in range(lo, hi + 1):
-        # The integer sweep brackets the fractional radius; keep only lags
-        # genuinely inside it so a snap can never exceed λ/6 from the anchor.
+        # The integer sweep brackets the fractional radius; keep only bins
+        # genuinely inside it. (The parabolic refine below can nudge the RETURNED
+        # lag by at most one upsampled bin past the radius — negligible against
+        # the comb-lobe spacing, so no lobe jump.)
         if abs(ell - anchor_up) > radius_up:
             continue
         idx = ell % m
@@ -1376,29 +1389,47 @@ def _estimate_alignment(
             search_window_ms=priors.align_search_ms,
         )
 
-    # Fine stage (methodology §10, 2026-07-22): snap the drift-corrected
-    # physical peak-gap anchor to the nearest local maximum of the SAME
-    # correlation within ±(period/6) at Fc. The anchor's lag-domain position is
-    # the raw full-IR argmax gap (same time base as ``ir_t``/``ir_w``); the
-    # seed's ε/parallax conversion maps a snapped lag back to the signed delay
-    # frame. ``None`` (no local peak in radius, or an edge-refused estimate)
-    # leaves ``_build_candidate`` on the bare anchor. GCC polarity/confidence
-    # machinery is unchanged — this snaps the applied delay only.
+    # Fine stage (methodology §10, 2026-07-22). The aligner OWNS the physical
+    # peak-gap anchor: the raw full-IR argmax gap (same time base as ``ir_t`` /
+    # ``ir_w``), drift-corrected and parallax-corrected into the signed delay
+    # frame. Both the fine-snap center (lag domain) and ``_build_candidate``'s
+    # applied anchor derive from THIS single computation — the argmax is never
+    # recomputed downstream (a parallel argmax could silently desynchronize the
+    # snap center from the reported anchor in a subsystem that has died on frame
+    # errors). The snap moves the anchor to the nearest local maximum of the
+    # SAME correlation within ±(period/6) at Fc; ``None`` (no local peak in
+    # radius, or an edge-refused estimate) leaves ``_build_candidate`` on the
+    # bare anchor. GCC polarity/confidence machinery is unchanged — this snaps
+    # the applied delay only.
     snapped_delay_us: float | None = None
-    if status == ALIGNMENT_OK and fc_hz > 0.0:
+    anchor_delay_us: float | None = None
+    if status == ALIGNMENT_OK:
         anchor_lag_samples = float(
             int(np.argmax(np.abs(tweeter_full_ir)))
             - int(np.argmax(np.abs(woofer_full_ir)))
         )
-        radius_samples = sample_rate / fc_hz * GCC_SNAP_RADIUS_PERIODS
-        snapped_lag = _gcc_local_peak_snap(
-            ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
-            upsample=GCC_UPSAMPLE, anchor_lag_samples=anchor_lag_samples,
-            radius_samples=radius_samples,
+        # Same step-by-step form the candidate used before this ownership move,
+        # so the applied anchor is bit-identical: peak gap − inter-sweep drift,
+        # plus parallax, negated into the signed frame.
+        inter_sweep_drift_us = epsilon * delta_start / sample_rate * 1e6
+        drift_corrected_peak_gap_us = (
+            anchor_lag_samples / sample_rate * 1e6 - inter_sweep_drift_us
         )
-        if snapped_lag is not None:
-            snapped_tau = snapped_lag - epsilon * delta_start
-            snapped_delay_us = -snapped_tau / sample_rate * 1e6 - parallax_us
+        anchor_delay_us = -(drift_corrected_peak_gap_us + parallax_us)
+        if fc_hz > 0.0:
+            radius_samples = sample_rate / fc_hz * GCC_SNAP_RADIUS_PERIODS
+            # Deliberate: `_gcc_local_peak_snap` recomputes the correlation via
+            # the shared `_gcc_correlation` core rather than threading the seed's
+            # array here. One extra small FFT once per MEASURE is the accepted
+            # cost of not coupling the aligner's return to a big-array handoff.
+            snapped_lag = _gcc_local_peak_snap(
+                ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
+                upsample=GCC_UPSAMPLE, anchor_lag_samples=anchor_lag_samples,
+                radius_samples=radius_samples,
+            )
+            if snapped_lag is not None:
+                snapped_tau = snapped_lag - epsilon * delta_start
+                snapped_delay_us = -snapped_tau / sample_rate * 1e6 - parallax_us
 
     # Cross-check polarity against the flatter predicted sum.
     agrees = _flatter_sum_polarity(
@@ -1415,6 +1446,7 @@ def _estimate_alignment(
         polarity_agrees_with_sum=polarity_agrees,
         confidence=confidence,
         status=status,
+        anchor_delay_us=anchor_delay_us,
         snapped_delay_us=snapped_delay_us,
     )
 
@@ -2037,11 +2069,6 @@ def _analyze_measure(
         seg_w.role, seg_t.role, alignment, calibration,
         tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
-        inter_sweep_drift_us=(
-            epsilon * (seg_t.start_sample - seg_w.start_sample)
-            / sample_rate
-            * 1e6
-        ),
     )
     if candidate.alignment_seed_ripple_db is not None:
         alignment = replace(
@@ -2081,7 +2108,6 @@ def _build_candidate(
     tweeter_sweep_lo_hz: float | None = None,
     woofer_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
-    inter_sweep_drift_us: float = 0.0,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -2115,23 +2141,18 @@ def _build_candidate(
     anchor_delay_us = None
     snap_delta_us = None
     snap_found = False
-    if alignment.status == ALIGNMENT_OK and alignment_delay_bounds_us is not None:
-        peak_gap_us = (
-            int(np.argmax(np.abs(tweeter_full_ir)))
-            - int(np.argmax(np.abs(woofer_full_ir)))
-        ) / sample_rate * 1e6
-        # The two sweeps occur at different schedule times, so their raw IR
-        # argmax gap contains both the physical branch delay and epsilon times
-        # that schedule separation. Remove only the measured clock-drift term;
-        # the remaining physical gap is the anchor that owns comb-lobe selection
-        # (methodology §10, 2026-07-22). Discarding the whole gap or leaving the
-        # drift in both point at the wrong lobe.
-        drift_corrected_peak_gap_us = peak_gap_us - inter_sweep_drift_us
-        objective_reference_gap_us = (
-            drift_corrected_peak_gap_us + alignment.parallax_us
-        )
-        physical_seed_delay_us = -objective_reference_gap_us
-        anchor_delay_us = physical_seed_delay_us
+    if (
+        alignment.status == ALIGNMENT_OK
+        and alignment_delay_bounds_us is not None
+        and alignment.anchor_delay_us is not None
+    ):
+        # The aligner single-sourced the physical peak-gap anchor (raw argmax gap
+        # − inter-sweep drift + parallax, in the signed frame; methodology §10,
+        # 2026-07-22). Derive the applied anchor and the argmax-referenced
+        # residual base FROM it — never recompute the argmax here, which would be
+        # a parallel computation of one load-bearing frame decision.
+        anchor_delay_us = float(alignment.anchor_delay_us)
+        objective_reference_gap_us = -anchor_delay_us
         # Gated local-peak snap owns the fine step: the aligner already snapped
         # this anchor to the nearest local maximum of the SAME GCC-PHAT
         # correlation within ±(period/6) at Fc, or ruled one out. No local peak
