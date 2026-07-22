@@ -48,13 +48,24 @@ and scheduled for deletion in W5b (see Future work). The v2 acoustic
 playback binding
 (`bind_program_playback_seams`) is exercised on real CamillaDSP
 hardware; every orchestration test injects fakes. T2's summed-flatness
-delay refinement is still pre-merge: its first JTS3 run failed VERIFY, but a
-clean hardware delay sweep then isolated the wrong-lobe prior and a one-sided
-VERIFY smoothing bug. The corrected selector applied a 53.669 µs woofer delay
-and passed a fresh calibrated JTS3 VERIFY at 1.279 dB max (1.5 dB gate);
-the fresh independent adversarial re-review cleared 0 blockers / 0 should-fixes.
-The owner-controlled fixed-placement repeat remains the final reproducibility
-gate. See
+delay refinement merged via PR #1647 on 2026-07-22. Its first JTS3 run failed
+VERIFY, but a clean hardware delay sweep then isolated the wrong-lobe prior and
+a one-sided VERIFY smoothing bug. The corrected selector subsequently applied a
+53.669 µs woofer delay and passed a calibrated JTS3 VERIFY at 1.279 dB max
+(1.5 dB gate); the pre-merge T2-specific adversarial re-review cleared 0
+blockers / 0 should-fixes.
+
+The required post-merge UMIK-2 repeat did **not** reproduce that result. CHECK
+passed, but MEASURE selected a signed −299.948 µs correction at the flatness
+search bound and the live graph applied the corresponding 0.2999 ms woofer
+delay. Three same-session VERIFY captures failed at 5.264, 6.453, and
+6.454 dB max. All used matching 7.0 ms gates and a 142.857 Hz validity floor;
+drift residual was 0.02 samples and no capture glitch or input overflow was
+reported. The sanctioned Undo restored the prior 0.0537 ms profile and the
+exact −15.151515 dB listening volume. T2-core is therefore merged but **not
+complete**: its offline objective still does not reliably track hardware
+VERIFY. Keep T2-robust and Fix 4 paused while that upstream mismatch is
+diagnosed. See
 [`crossover-measurement-reproducibility-plan.md`](crossover-measurement-reproducibility-plan.md)
 §10–§11 for the exact evidence and gate state.
 

@@ -428,8 +428,10 @@ def alignment_delay_search_bounds_us(
 
     The range and margin are the same ones Fix 3's plausibility gate reads.
     ``delay_target_driver`` is optional until a delay has actually been applied,
-    so it cannot orient a fresh measurement. The analysis uses the GCC seed's
-    sign to choose one signed lobe inside these declared magnitude bounds.
+    so it cannot orient a fresh measurement. The analysis uses the
+    drift-corrected physical peak gap to orient and center one signed lobe
+    inside these declared magnitude bounds; GCC remains confidence, polarity,
+    and fallback evidence only.
     """
     declared = _declared_alignment_delay_range_ms(source_preset)
     if declared is None:

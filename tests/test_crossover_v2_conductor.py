@@ -449,7 +449,8 @@ def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target(
 
     The reference preset declares [50, 300] us; Fix 3's 100 us margin makes
     [0, 400] us. ``delay_target_driver`` may legitimately be absent on a fresh
-    preset; GCC later orients the signed lobe, so that must not disable T2.
+    preset; the drift-corrected physical peak gap later orients the signed
+    lobe, so that must not disable T2.
     """
     c = _conductor(FakeSeams())
     expected = (0.0, 400.0)
