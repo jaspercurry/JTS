@@ -259,8 +259,10 @@ benefits: §5.
 - **What:** coarse latency-immune cross-correlation (period disambiguation,
   polarity, capture-confidence seed) → **declaration-bounded summed-flatness
   refine** over the single capture's complex branch responses, reusing
-  `_predicted_sum` / `_ripple_db`. The active region's signed
-  `delay_target_driver` + `delay_range_ms` lobe constrains the comb. **One τ\***
+  `_predicted_sum` / `_ripple_db`. The active region's `delay_range_ms`
+  constrains the magnitude; the GCC seed supplies the sign and centers one
+  ±half-period comb lobe without requiring a pre-existing
+  `delay_target_driver`. **One τ\***
   flows to *both* prediction and apply. The implemented T2-core scope deliberately
   keeps confidence as the labelled GCC seed/capture confidence (fix 1 already
   made that gate reliable); seed ripple, objective improvement, selection
@@ -419,9 +421,9 @@ Captured so they're off the table for the landing work:
   labelled seed/polarity/capture-confidence source. A physical known-sum test
   recovers the flattening delay, and production-path coverage pins nonzero
   parallax on both signed lobes. Replaying the two retained M1 captures reduced
-  max-minus-min ripple from **37.524→5.040 dB** and **30.253→5.118 dB**
-  (standard deviation **7.729→1.064 dB** and **6.881→1.082 dB**), selecting
-  **−230 µs** instead of GCC's −353.5/−348.2 µs. This is an offline proof,
+  max-minus-min ripple from **37.524→5.042 dB** and **30.253→5.118 dB**
+  (standard deviation **7.729→1.065 dB** and **6.881→1.082 dB**), selecting
+  **−229.5/−229.7 µs** instead of GCC's −353.5/−348.2 µs. This is an offline proof,
   not hardware validation; independent re-review and JTS3 VERIFY remain gates.
 
 - *2026-07-21 (hardware validation, fix 1+3)* — **The reviewed increment

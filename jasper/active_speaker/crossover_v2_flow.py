@@ -424,26 +424,20 @@ def alignment_delay_search_bounds_us(
     *,
     margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
 ) -> tuple[float, float] | None:
-    """Signed flatness-search lobe from the preset's delay declaration.
+    """Flatness-search magnitude bounds from the preset's declaration.
 
-    The magnitude range and margin are the same ones Fix 3's plausibility gate
-    reads. ``delay_target_driver`` supplies the sign in the analysis contract:
-    delaying the upper/tweeter branch is positive; delaying the lower/woofer
-    branch is negative. Without that sign declaration, GCC remains the fallback
-    rather than searching multiple comb lobes.
+    The range and margin are the same ones Fix 3's plausibility gate reads.
+    ``delay_target_driver`` is optional until a delay has actually been applied,
+    so it cannot orient a fresh measurement. The analysis uses the GCC seed's
+    sign to choose one signed lobe inside these declared magnitude bounds.
     """
     declared = _declared_alignment_delay_range_ms(source_preset)
     if declared is None:
         return None
-    region, lo_ms, hi_ms = declared
+    _region, lo_ms, hi_ms = declared
     lo_ms = max(0.0, lo_ms - margin_ms)
     hi_ms += margin_ms
-    target = getattr(region, "delay_target_driver", None)
-    if target == getattr(region, "lower_driver", None):
-        return -hi_ms * 1000.0, -lo_ms * 1000.0
-    if target == getattr(region, "upper_driver", None):
-        return lo_ms * 1000.0, hi_ms * 1000.0
-    return None
+    return lo_ms * 1000.0, hi_ms * 1000.0
 
 
 def alignment_delay_plausible(

@@ -444,16 +444,22 @@ def test_implausible_delay_rejects_measure_even_at_high_confidence():
     assert verdict2["accepted"] is True
 
 
-def test_measure_priors_search_only_the_declared_delay_target_lobe():
-    """T2 reuses Fix 3's declared range + margin and the declared target.
+def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target():
+    """T2 threads declared magnitudes even before a target is applied.
 
-    The reference preset delays the lower/woofer driver over [50, 300] us;
-    with Fix 3's 100 us margin the signed analysis lobe is [-400, 0] us.
+    The reference preset declares [50, 300] us; Fix 3's 100 us margin makes
+    [0, 400] us. ``delay_target_driver`` may legitimately be absent on a fresh
+    preset; GCC later orients the signed lobe, so that must not disable T2.
     """
     c = _conductor(FakeSeams())
-    expected = (-400.0, 0.0)
+    expected = (0.0, 400.0)
     assert alignment_delay_search_bounds_us(_preset()) == expected
     assert c._measure_priors().alignment_delay_bounds_us == expected
+
+    raw = _two_way_preset()
+    raw["crossover_regions"][0]["delay_target_driver"] = None
+    fresh = ActiveSpeakerPreset.from_mapping(raw)
+    assert alignment_delay_search_bounds_us(fresh) == expected
 
 
 def test_measure_program_gains_back_off_from_caps():

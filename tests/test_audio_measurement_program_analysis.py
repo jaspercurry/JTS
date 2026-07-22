@@ -61,6 +61,7 @@ from jasper.audio_measurement.program_analysis import (
     _complex_tf,
     _gate_floor_hz,
     _flatness_delay_us,
+    _flatness_search_lobe_us,
     _gcc_phat,
     _global_offset,
     _locate_segments,
@@ -533,14 +534,14 @@ def test_flatness_delay_recovers_and_flattens_known_physical_sum():
 
 
 @pytest.mark.parametrize(
-    ("d_w", "d_t", "bounds_us"),
+    ("d_w", "d_t"),
     [
-        (230, 200, (0.0, 1000.0)),
-        (200, 230, (-1000.0, 0.0)),
+        (230, 200),
+        (200, 230),
     ],
 )
 def test_flatness_refinement_production_path_preserves_parallax_contract(
-    d_w, d_t, bounds_us,
+    d_w, d_t,
 ):
     """T2's full MEASURE path keeps raw/corrected frames honest on both lobes."""
     prog = build_measure_program(
@@ -565,13 +566,23 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
         geometry=geometry,
         priors=MeasurementPriors(
             crossover_fc_hz=FC_HZ,
-            alignment_delay_bounds_us=bounds_us,
+            alignment_delay_bounds_us=(0.0, 1000.0),
         ),
     )
 
     expected_raw_us = (d_w - d_t) / SR * 1e6
     expected_delay_us = expected_raw_us - geometry.parallax_us()
     assert result.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
+    signed_lobe = _flatness_search_lobe_us(
+        (0.0, 1000.0),
+        result.alignment.seed_delay_us,
+        FC_HZ,
+    )
+    assert signed_lobe[0] <= result.alignment.delay_us <= signed_lobe[1]
+    assert math.copysign(1.0, signed_lobe[0] + signed_lobe[1]) == math.copysign(
+        1.0,
+        result.alignment.seed_delay_us,
+    )
     # The band-limited synthetic IR's spectral truncation shifts its argmax by
     # a fraction of a sample relative to the impulse placement. The production
     # objective operates in that measured argmax frame, so allow that expected

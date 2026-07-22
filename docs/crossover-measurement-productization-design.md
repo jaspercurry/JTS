@@ -438,8 +438,10 @@ ProgramAnalysis`:
    overlap supplies a sub-sample, ε-corrected seed (not raw parabolic),
    polarity, and capture-quality confidence. The applied delay is then chosen
    by minimizing summed ripple over that same overlap inside the active
-   crossover region's declared signed `delay_range_ms` lobe, plus the shared
-   plausibility margin. The deterministic parallax term
+   crossover region's declared `delay_range_ms` magnitude range, plus the
+   shared plausibility margin. The GCC seed supplies the sign and centers one
+   ±half-period comb lobe; a fresh preset need not have an applied
+   `delay_target_driver` yet. The deterministic parallax term
    (√(r²+d²)−r at the prescribed ~1 m) is included in the conversion between
    the full-IR peak-gap frame and the independently argmax-referenced branch
    TFs for selection; prediction uses that same selected delay back in the

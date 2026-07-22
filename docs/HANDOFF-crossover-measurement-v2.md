@@ -99,8 +99,9 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    `MeasuredCrossoverCandidate`. GCC-PHAT supplies a drift/parallax-corrected
    seed, polarity, and capture confidence. The delay actually selected for
    prediction and apply is the minimum-ripple sum within the crossover
-   region's declared signed `delay_range_ms` lobe (plus the same plausibility
-   margin used by the conductor).
+   region's declared `delay_range_ms` magnitude range (plus the same
+   plausibility margin used by the conductor). The GCC seed supplies the sign
+   and centers one ±half-period comb lobe inside that range.
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
@@ -421,12 +422,14 @@ segments rather than re-deriving the nominal edges.
 ### Delay selection — GCC seed, declaration-bounded flatness result
 
 `_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source
-for polarity and capture-quality confidence. `_build_candidate` then searches
-only the signed delay lobe declared by the active crossover region
-(`delay_target_driver` + `delay_range_ms`, expanded by
-`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`) and minimizes `_ripple_db` across
-the `_overlap_band_hz` band. The selected delay is used by both the predicted
-sum and the applied candidate.
+for polarity and capture-quality confidence. `_build_candidate` reads the
+active crossover region's `delay_range_ms`, expanded by
+`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`; the GCC seed supplies the sign and
+centers a ±half-crossover-period lobe inside that declared magnitude range.
+The search minimizes `_ripple_db` across the `_overlap_band_hz` band. The
+selected delay is used by both the predicted sum and the applied candidate.
+`delay_target_driver` is intentionally not required: a fresh preset has no
+applied delay target until this measurement chooses one.
 
 The complex branch TFs are independently argmax-peak-referenced. Therefore
 the objective phases the tweeter by the residual

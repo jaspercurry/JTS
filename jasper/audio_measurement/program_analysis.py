@@ -291,10 +291,11 @@ class MeasurementPriors:
     capture data against sub-floor noise inherited from an unexcited MEASURE
     branch. ``None`` (legacy callers) falls back to the unclamped nominal band.
 
-    ``alignment_delay_bounds_us`` is the signed, declaration-derived applied-
-    delay lobe the flatness refinement may search. The conductor derives it
-    from the crossover region's ``delay_target_driver`` and
-    ``delay_range_ms``; ``None`` keeps GCC as the applied-delay estimate.
+    ``alignment_delay_bounds_us`` is the unsigned, declaration-derived
+    applied-delay magnitude range the flatness refinement may search. The
+    conductor derives it from the crossover region's ``delay_range_ms``; the
+    GCC seed orients and centers one ±half-period signed lobe inside it.
+    ``None`` keeps GCC as the applied-delay estimate.
     """
 
     crossover_fc_hz: float | None = None
@@ -1376,6 +1377,41 @@ def _flatness_delay_us(
     return best_delay_us, best_ripple_db, seed_ripple_db, at_bound
 
 
+def _flatness_search_lobe_us(
+    magnitude_bounds_us: tuple[float, float],
+    seed_delay_us: float,
+    fc_hz: float,
+) -> tuple[float, float]:
+    """Orient and narrow declared magnitudes to the GCC seed's comb lobe.
+
+    A fresh preset legitimately has no ``delay_target_driver`` yet. GCC's sign
+    identifies which branch must be delayed; its coarse period estimate then
+    disambiguates the comb by limiting the refinement to ±half a crossover
+    period around the seed, intersected with the declared magnitude range.
+    """
+    lo_mag_us, hi_mag_us = (float(value) for value in magnitude_bounds_us)
+    if not (
+        math.isfinite(lo_mag_us)
+        and math.isfinite(hi_mag_us)
+        and 0.0 <= lo_mag_us <= hi_mag_us
+        and math.isfinite(seed_delay_us)
+        and math.isfinite(fc_hz)
+        and fc_hz > 0.0
+    ):
+        return magnitude_bounds_us
+
+    if seed_delay_us < 0.0:
+        declared_lo_us, declared_hi_us = -hi_mag_us, -lo_mag_us
+    else:
+        declared_lo_us, declared_hi_us = lo_mag_us, hi_mag_us
+    center_us = min(max(float(seed_delay_us), declared_lo_us), declared_hi_us)
+    half_period_us = 0.5e6 / fc_hz
+    return (
+        max(declared_lo_us, center_us - half_period_us),
+        min(declared_hi_us, center_us + half_period_us),
+    )
+
+
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
     mask = (freqs >= lo) & (freqs <= hi)
     if not np.any(mask):
@@ -2043,6 +2079,11 @@ def _build_candidate(
             - int(np.argmax(np.abs(woofer_full_ir)))
         ) / sample_rate * 1e6
         objective_reference_gap_us = peak_gap_us + alignment.parallax_us
+        search_lobe_us = _flatness_search_lobe_us(
+            alignment_delay_bounds_us,
+            alignment.delay_us,
+            fc_hz,
+        )
         selected_delay_us, selected_ripple_db, selected_seed_ripple_db, at_bound = (
             _flatness_delay_us(
                 freqs,
@@ -2054,7 +2095,7 @@ def _build_candidate(
                 lo_hz=lo_clamped,
                 hi_hz=hi,
                 reference_gap_us=objective_reference_gap_us,
-                search_bounds_us=alignment_delay_bounds_us,
+                search_bounds_us=search_lobe_us,
                 seed_delay_us=alignment.delay_us,
             )
         )
