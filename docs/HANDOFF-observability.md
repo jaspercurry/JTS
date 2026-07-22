@@ -363,7 +363,7 @@ decision telemetry and remains INFO.
 
 **Tier B — done (2026-05-30; pending on-device verification).** A
 collapsed **Debug logging** card on `/system` expands to one
-checkbox per subsystem (**voice**, **aec**, **control**, **USB input** — the
+checkbox per subsystem (**voice**, **aec**, **control** — the
 daemons with a clean `basicConfig` seam; shairport's config-file
 `log_verbosity` and mux's `--log-level` are a different mechanism,
 deferred). Each toggle raises that daemon's `jasper` logger to
@@ -382,10 +382,8 @@ DEBUG. As built:
   `/system` page server (:8772) idle-exits after 30 min and can't
   own the auto-expiry timer. `set_debug` writes `debug.env`
   atomically, then applies according to each subsystem's policy:
-  always-on daemons such as voice and AEC restart, optional daemons
-  such as USB input restart **only if already active** (otherwise the
-  flag is deferred until the source's next legitimate start), and
-  control applies **in-process** (a self-restart would drop the request
+  always-on daemons such as voice and AEC restart, and control applies
+  **in-process** (a self-restart would drop the request
   + the timer). (WS1 Phase 3b-2: `jasper-control` runs as a non-root
   user, so the `systemctl restart <unit>` this issues is now
   **polkit-authorized** against the `MANAGED_UNITS` allowlist —
@@ -598,8 +596,9 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-22 (USB gadget forensics' separate bounded-diagnostics
-boundary rechecked against its root sampler, `/state`, and `/system/` card).
+Last verified: 2026-07-22 (the three-member debug registry and USB gadget
+forensics' separate bounded-diagnostics boundary were rechecked against code,
+the root sampler, `/state`, and `/system/` cards).
 Prior 2026-07-15 (normalized audio-health ownership, cadence,
 current-stream/session projection, continuity-vs-timing semantics, bounded
 persistent incident lifecycle, and legacy AirPlay compatibility rechecked
