@@ -5,13 +5,14 @@
 """Guard for the USB audio-level threshold — now DISPLAY-ONLY.
 
 History: this threshold used to gate mux's source arbitration ("a Mac streaming
-digital silence must not seize the speaker"). The sticky-session rework
-(2026-07-17) removed that gate — an explicit AirPlay/Spotify session simply
-outranks the passive USB stream, so a silently-streaming host can't steal a
-cast without any level check, and USB liveness is now purely frames-based (see
+digital silence must not seize the speaker"). The 2026-07-17 liveness rework
+removed that gate: USB liveness is now purely frames-based (see
 `jasper.mux.step_combo_liveness`). Removing the gate fixed dropped faint audio
-and the level-driven quiet-passage dropouts on browser video (it did NOT change
-the ~1-2 s cold-start detect, which is the mux poll cadence).
+and level-driven quiet-passage dropouts on browser video. Since 2026-07-22, the
+frame-flow edge enters the same latest-start-wins policy as every other source;
+pinning a source or disabling USB are the explicit opt-outs. fan-in publishes
+that edge at 20 Hz and wakes mux directly, while the 1 Hz patrol is only a
+lost-alert fallback.
 
 `jasper.source_state.USBSINK_PLAYING_RMS_DBFS` survives only as the level shown
 on the `/state` dashboard (via `usbsink_direct_audible`, read by
@@ -44,8 +45,8 @@ def test_state_aggregate_is_the_display_consumer():
 
 def test_mux_no_longer_gates_arbitration_on_level():
     """The arbiter must not reference the audio-level threshold at all — the
-    whole point of sticky sessions is that routing is level-independent. A
-    future edit that re-imports the gate into mux would resurrect the
+    source-neutral policy operates on confirmed frame-flow transitions. A future
+    edit that re-imports the gate into mux would resurrect the
     dropped-faint-audio / startup-lag / quiet-dropout class this fixed."""
     assert not hasattr(mux, "USBSINK_PLAYING_RMS_DBFS")
     assert not hasattr(mux, "usbsink_direct_rms_dbfs")

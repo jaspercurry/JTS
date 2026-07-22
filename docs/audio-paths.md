@@ -103,13 +103,18 @@ deploy/index.html
 
 Ownership is deliberately split:
 
-- `jasper-mux` owns policy and the source-handoff transaction. Auto
-  mode is latest-source-wins; manual mode is the user-selected source.
+- `jasper-mux` owns policy and the source-handoff transaction. Auto mode is
+  source-neutral latest-start-wins: every confirmed inactive→active transition,
+  including USB frame flow, becomes the winner. Manual mode persistently pins
+  the user-selected source; `/sources/` disables sources entirely. mux records
+  process-local confirmed-start order so returning to Auto or losing the winner
+  selects the newest source still active. Starts first observed in one snapshot
+  use deterministic registry order because their historical order is unknowable.
   Native producer events are wake hints only: `jasper/source_events.py`
   translates librespot inotify and AirPlay/Bluetooth D-Bus signals, while
   fan-in sends USB frame-flow edges over mux's UDS. Every hint and the fixed
   1 Hz lost-alert patrol enter the same reconciler, which re-reads all source
-  state before applying policy.
+  state before applying policy; alert arrival order never chooses the winner.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
   CamillaDSP or by a push-to-source volume API. Operational lifecycle

@@ -80,6 +80,8 @@ def test_every_source_row_rendered():
         assert marker in html
         seg = html[html.index(marker):html.index(marker) + 120]
         assert "disabled" in seg
+    assert "new computer audio takes over" in html
+    assert "pin another source to prevent automatic switching" in html
 
 
 def test_first_paint_toggles_are_disabled_and_unchecked():

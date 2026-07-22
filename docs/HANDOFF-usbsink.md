@@ -640,7 +640,7 @@ reads the current volume value and sets that as `listening_level`.
 > [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "Arbitration
 > mechanism — now fan-in-native (combo)".
 
-#### Sticky sessions — current arbitration model (2026-07-17)
+#### Uniform latest-start-wins — current arbitration model (2026-07-22)
 
 **The condensed story of how USB arbitration works today and why.**
 
@@ -658,19 +658,20 @@ and each fan-in control connection could then land in a blind 500 ms accept
 sleep (live automatic handoffs averaged 514 ms). Those are addressed by the
 event/reconcile path below; macOS device/session resume remains upstream of JTS.
 
-*How we thought about it.* The level gate was quietly doing **two** jobs: (A)
-**arbitration** — "should USB win *against another source*?" — which is real,
-and (B) **output gating** — "is USB audible *at all*?" — which is the bug.
-The deeper asymmetry: AirPlay/Spotify/Bluetooth are explicit, long-lived
-**sessions** (starting one is a deliberate "play here" act); USB is a dumb
-**byte stream** whose intent we can only infer, and any host app (a Slack ding,
-a UI click) feeds it. Treating them symmetrically under latest-source-wins is
-the "signal-sense auto-switch" pattern that AV receivers and **Sonos line-in
-autoplay** are infamous for: an incidental signal grabs the speaker and — because
-the preempted source is paused — never hands it back. Level can't encode intent,
-and lowering the threshold only makes the false grabs *more* frequent.
+*Policy decision.* The level gate had quietly coupled two different concerns:
+(A) **liveness** — "is the host sending frames?" — and (B) **arbitration** —
+"which active source should own the speaker?" Level cannot infer intent: a
+faint video is intentional, while a loud notification may not be. The brief
+2026-07-17 sticky-session policy treated USB as passive so incidental computer
+audio could not interrupt an explicit AirPlay/Spotify/Bluetooth session. That
+exception protected one edge case but made Auto inconsistent and surprising:
+"latest source wins" was true for every source except USB.
 
-*Where we landed — sticky sessions.* Separate the two jobs:
+The product contract is now uniform. USB Audio Input is opt-in, source pins are
+persistent, and `/sources/` can disable USB entirely. Those explicit controls
+are the understandable escape hatches; Auto itself has one rule.
+
+*Where we landed — separate liveness from one generic policy:*
 
 - **Routing is level-independent.** USB liveness is now purely "is the host
   streaming frames to us." fan-in samples its existing DIRECT host-input counter
@@ -685,16 +686,19 @@ and lowering the threshold only makes the false grabs *more* frequent.
   so the lane never closes), and it lets a *quiet* start be detected at all. A
   real pause stops the frames and macOS tears the stream down, so USB releases
   after the stop hysteresis.
-- **Explicit sessions outrank the passive USB stream, and are sticky.** An
-  AirPlay/Spotify/BT session that *starts* preempts USB (a deliberate cast
-  wins). But USB is a **passive** source: it takes the speaker only when no
-  explicit session is active — it **never** preempts an in-progress cast, so a
-  laptop's incidental sound can't yank a housemate's music. USB re-takes the
-  speaker when the session ends. Code: `_pick_winner` / `_explicit_active` /
-  `step_combo_liveness` in [`jasper/mux.py`](../jasper/mux.py); the mux module
-  docstring has the full rationale.
-- **Manual override** via the `/sources/` Source selector for the rare "switch
-  to my Mac mid-cast."
+- **Every confirmed start is equal in Auto.** A source's authoritative
+  inactive→active transition becomes the winner, including USB. mux records a
+  process-local activation sequence so returning from a pin to Auto, or losing
+  the current winner, selects the most recently started source that is still
+  active. Simultaneous starts first observed in one snapshot use deterministic
+  `MUSIC_SOURCES` registry order; alert arrival order never decides policy.
+- **Pin or disable are explicit opt-outs.** Selecting AirPlay/Spotify/
+  Bluetooth/USB on the landing page persistently pins that source and blocks
+  automatic switching. Turning USB Audio Input off on `/sources/` removes it
+  from arbitration entirely. Because normal preemption stops/pauses the losing
+  renderer, USB taking over can stop an AirPlay session; AirPlay may need to be
+  started again after USB ends. That is an intentional consequence of the
+  uniform Auto contract, not an undetected session.
 
 The `−60 dBFS` threshold (`USBSINK_PLAYING_RMS_DBFS`) survives **display-only**
 — the `/state` dashboard's "is there audible content" readout — and no longer
@@ -707,7 +711,7 @@ routing. This is not new drift.)
 hints**, not desired-source commands. Librespot's atomic state-file replacement,
 AirPlay/Bluetooth D-Bus signals, and fan-in's USB frame-flow edges mark a source
 dirty; mux then re-reads **all** authoritative source state and runs its one
-sticky-session policy function. The fixed 1 Hz patrol runs that exact same
+latest-start-wins policy function. The fixed 1 Hz patrol runs that exact same
 function and is never postponed by alerts. Duplicate alerts coalesce; a probe
 failure is `unknown` and retains an active last-known state for a bounded 5 s
 grace rather than inventing an immediate stop/start edge (sustained failure then
@@ -729,14 +733,11 @@ detector. A dropout caused by the host actually **tearing the stream down**
 still stops frames and therefore releases USB after 2 s; the alert path cannot
 turn absent audio into a continuous session.
 
-*Deliberately not built (possible future toggle): "sustained-audio grab."* If
-we ever want USB to auto-interrupt an active cast when you *deliberately* start
-playing on the host, the escape from the false-grab pathology is a **duration**
-gate — USB preempts a session only after N seconds of continuous real audio, so
-a ding can't trigger it but a song can. It reintroduces a threshold + timer and
-delays the grab a few seconds, so it would ship as an opt-in toggle, not the
-default. Noted here so the option isn't rediscovered from scratch; not
-implemented as of 2026-07-17.
+*Superseded alternative.* Sticky explicit sessions and a future
+"sustained-audio grab" timer were considered to protect casts from incidental
+computer sounds. They are deliberately not part of the shipped policy: pinning
+or disabling USB expresses that preference directly without giving Auto a
+source-specific exception or reintroducing a level/duration heuristic.
 
 ---
 
@@ -1232,8 +1233,8 @@ identity + value of that one Python constant). Mux routes from streaming state,
 not level; the renderer probe below reports
 the current single-snapshot audible activity. That level classification remains
 useful for dashboards/renderer status, but it is deliberately not mux routing
-authority: sticky explicit sessions prevent passive USB from seizing an active
-cast, while uncontested USB is allowed to pass faint content.
+authority. USB's frame-flow transition participates in the same
+latest-start-wins policy as every other source, including for faint content.
 
 **Owner**: `jasper/renderer.py`. `active_renderers()` exports
 `usbsinkactive` from `usbsink_playing()`:
@@ -2268,9 +2269,12 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-16 (hardware-resolved USB role and Zero/USB-DAC
-unavailability contract rechecked against the shared output-hardware artifact;
-the optional reverse USB-mic path is explicitly separated from the one
-host-to-speaker fan-in data plane and links to its certification tool; runtime
-capture recovery was rechecked as
-local fan-in self-heal plus telemetry with no health-driven composition owner.)
+Last verified: 2026-07-22 (source-neutral latest-start-wins arbitration,
+process-local activation order, persistent-pin/disable opt-outs, alert/patrol
+single-policy ownership, and UI guidance rechecked against `jasper/mux.py`, mux
+contract tests, and both source controls. Prior 2026-07-16: hardware-resolved
+USB role and Zero/USB-DAC unavailability contract rechecked against the shared
+output-hardware artifact; the optional reverse USB-mic path is explicitly
+separated from the one host-to-speaker fan-in data plane and links to its
+certification tool; runtime capture recovery was rechecked as local fan-in
+self-heal plus telemetry with no health-driven composition owner.)

@@ -153,14 +153,15 @@ level/source-volume knob.
 > assistant loudness matching works:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
-`jasper-mux` arbitrates between the renderers. In auto mode, when a new
-source transitions to playing while another is already active, it
-preempts the older one so the user gets "latest source wins" UX. For
-AirPlay, preempt means MPRIS `Stop` so shairport-sync drops the current
-playback session instead of leaving an invisible paused sender behind.
-The landing page
-also exposes a lightweight Source selector: manual mode gates one
-renderer lane through `jasper-fanin` without turning any source on/off.
+`jasper-mux` arbitrates between the renderers. In auto mode, every confirmed
+source start is equal, including USB: a new inactive→active transition preempts
+the older winner so the user gets one consistent "latest source wins" rule. For
+AirPlay, preempt means MPRIS `Stop` so shairport-sync drops the current playback
+session instead of leaving an invisible paused sender behind. The landing page
+also exposes a lightweight Source selector: manual mode persistently pins one
+renderer lane through `jasper-fanin` without turning any source on/off. The
+`/sources/` page can disable a source entirely; pinning or disabling USB are the
+explicit opt-outs when computer audio should not interrupt another source.
 Before mux moves the fan-in gate, it asks `VolumeCoordinator` to make the
 target source's volume carrier safe, so switching between push-volume
 sources (Spotify/Bluetooth) and Camilla-master sources (AirPlay/USB)

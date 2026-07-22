@@ -273,11 +273,10 @@ def test_direct_muted_none_when_absent_or_non_bool():
 
 # ---- Combo liveness is frames-only (no audio-level gate) --------------------
 
-# The old "frames-advanced AND audible (rms > -60)" gate was removed with the
-# sticky-session rework (2026-07-17). USB liveness is now purely "is the host
-# streaming frames to us" — a faint sound streams frames just like a loud one,
-# and USB wins whenever it streams and no explicit session is active (the
-# arbiter, not the level, keeps a silently-streaming host from stealing a cast).
+# The old "frames-advanced AND audible (rms > -60)" gate was removed in 2026.
+# USB liveness is now purely "is the host streaming frames to us" — a faint
+# sound streams frames just like a loud one. The confirmed start enters mux's
+# source-neutral latest-start-wins policy; pin/disable are the explicit opt-outs.
 # The per-lane rms readers below still exist for /state telemetry, but no longer
 # gate liveness. See jasper.mux.step_combo_liveness and docs/HANDOFF-usbsink.md.
 

@@ -27,9 +27,9 @@ JTS already has the right system ownership:
 
 - `jasper-fanin` is the hot audio gate. It knows labels and PCM lanes,
   not product policy.
-- `jasper-mux` owns audible source policy: latest-source-wins, manual
-  selection, preemption, and guarded source handoff before opening a
-  fan-in lane.
+- `jasper-mux` owns audible source policy: source-neutral latest-start-wins,
+  persistent manual selection, preemption, and guarded source handoff before
+  opening a fan-in lane. No source adapter owns priority.
 - `VolumeCoordinator` owns the single user-facing `listening_level`,
   source handoff safety, degraded push guards, duck-aware Camilla
   writes, and persistence.
@@ -94,7 +94,12 @@ Spotify Connect volume is renderer/source logic.
 7. **Events wake; the host reconciler decides.** A source adapter may translate
    an inotify/D-Bus/frame-flow edge into a dirty-source hint. It must not choose
    a winner or move fan-in itself. `jasper-mux` re-reads authoritative state and
-   applies one policy path for both alerts and its fixed lost-alert patrol.
+   applies one policy path for both alerts and its fixed lost-alert patrol. A
+   confirmed inactive→active observation receives a process-local start
+   sequence; the newest active sequence wins regardless of source type. The
+   sequence, never hint arrival order, also controls return-to-Auto and
+   winner-stopped fallback. Per-source `started_seq` in mux STATUS makes that
+   decision inspectable.
    Duplicate hints coalesce; `unknown` observations retain an active last-known
    state for a bounded 5 s grace so a transient probe failure cannot synthesize
    a stop/start flap, then expire inactive so a dead adapter cannot pin a winner.

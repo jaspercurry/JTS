@@ -22,17 +22,17 @@ from unittest.mock import AsyncMock
 import pytest
 
 import jasper.mux as mux_module
-from jasper.music_sources import VolumeMode
+from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 class _FakeHandoff:
-    def __init__(self, prev, current, *, level=50, result="ok"):
+    def __init__(self, prev, current, *, reason="test", level=50, result="ok"):
         self.prev_source = prev
         self.current_source = current
-        self.reason = "test"
+        self.reason = reason
         self.level = level
         self.prev_mode = VolumeMode.CAMILLA_MASTER
         self.current_mode = VolumeMode.CAMILLA_MASTER
@@ -60,7 +60,12 @@ class _FakeVolumeCoordinator:
     async def prepare_source_handoff(self, prev, current, *, reason):
         self.prepared.append((prev, current, reason))
         self.events.append(f"prepare:{current.value}")
-        return _FakeHandoff(prev, current, result=self.next_result)
+        return _FakeHandoff(
+            prev,
+            current,
+            reason=reason,
+            result=self.next_result,
+        )
 
     async def finalize_source_handoff(self, handoff):
         self.finalized.append(handoff)
@@ -493,16 +498,21 @@ async def test_three_way_preemption(mux, patched_probes):
 
 @pytest.mark.asyncio
 async def test_simultaneous_start_picks_one_deterministically(mux, patched_probes):
-    """If multiple sources transition in the same tick (e.g. user
-    starts Spotify and AirPlay within 1s), the mux picks one as
-    the winner and pauses the other. Determinism comes from Source
-    enum order — we just verify there's no crash + a winner is set."""
+    """One snapshot cannot reveal real-world ordering between two starts.
+
+    Registry order is the deterministic tie-break, and the same recorded
+    sequence then drives fallback arbitration.
+    """
     _stub_probes(patched_probes, spotify=True, airplay=True, bluetooth=False)
     _stub_pauses(mux)
     await mux._tick()
     # One pause call (winner has none); the loser pauses.
     assert mux._pause.await_count == 1
-    assert mux._winner is not None
+    assert mux._winner is Source.AIRPLAY
+    assert (
+        mux._state.started_seq[Source.AIRPLAY]
+        > mux._state.started_seq[Source.SPOTIFY]
+    )
 
 
 @pytest.mark.asyncio
@@ -650,9 +660,8 @@ def test_mux_service_can_write_state_dir():
 
 
 # ----------------------------------------------------------------------
-# USB sink arbitration — fourth source. Volume/preempt protocol uses
-# an HTTP POST to the daemon's localhost listener; tests stub the
-# wrapper method so they don't try to hit a real socket.
+# USB sink arbitration — fourth source. Preemption is a fan-in lane mute;
+# tests stub the wrapper method so they do not touch the real control socket.
 # ----------------------------------------------------------------------
 
 
@@ -719,35 +728,35 @@ async def test_usbsink_preempt_released_when_others_idle(mux, patched_probes):
 
 
 @pytest.mark.asyncio
-async def test_usb_pause_then_play_does_not_grab_from_active_airplay(
+async def test_usb_pause_then_play_preempts_active_airplay(
     mux, patched_probes,
 ):
-    """Sticky sessions: a USB pause-then-play while an AirPlay cast is active
-    must NOT grab the speaker. USB restarting is not an explicit intent to take
-    over an active session — so AirPlay stays the winner and USB stays
-    preempted (it re-takes only once the cast ends; see
-    test_usbsink_preempt_released_when_others_idle)."""
+    """USB follows the same latest-start-wins rule as every other source.
+
+    A USB restart while AirPlay owns the gate first clears USB's old defensive
+    mute, then selects USB and preempts AirPlay.
+    """
     _stub_pauses(mux)
     preempt = _stub_usbsink_preempt(mux)
 
-    # Initial: USB + AirPlay both playing → the cast wins, USB preempted.
+    _stub_probes(patched_probes, usbsink=True, airplay=False)
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+
     _stub_probes(patched_probes, usbsink=True, airplay=True)
     await mux._tick()
     assert mux._winner is Source.AIRPLAY
+    # _pause is mocked, so model the real USB pause side effect explicitly.
     mux._usbsink_preempted = True
 
-    # Host paused → daemon publishes playing=false. AirPlay still on.
     _stub_probes(patched_probes, usbsink=False, airplay=True)
     await mux._tick()
 
-    # Host plays again → USB false→true edge, but AirPlay is still the active
-    # session, so USB does NOT preempt it.
     _stub_probes(patched_probes, usbsink=True, airplay=True)
     await mux._tick()
-    assert mux._winner is Source.AIRPLAY
-    # USB was never released back to un-preempted while the cast holds the
-    # speaker (no _usbsink_set_preempt(False) on this edge).
-    assert all(call.args[0] is not False for call in preempt.await_args_list)
+    assert mux._winner is Source.USBSINK
+    preempt.assert_any_await(False, reason="new_transition")
+    mux._pause.assert_any_await(Source.AIRPLAY)
 
 
 @pytest.mark.asyncio
@@ -918,73 +927,134 @@ async def test_combo_usb_survives_single_fanin_status_miss(
 
 
 # ----------------------------------------------------------------------
-# Sticky sessions. USB is a PASSIVE source: it takes the speaker only when no
-# explicit session (AirPlay/Spotify/BT) is active, and NEVER preempts an active
-# cast — otherwise an incidental host sound would yank a housemate's AirPlay and
-# (because we pause the preempted source) never hand it back. An explicit
-# session that STARTS still preempts USB. See jasper.mux _pick_winner /
-# _explicit_active and the module docstring.
+# Source-neutral latest-start-wins. USB uses the same confirmed inactive→active
+# edge as AirPlay/Spotify/Bluetooth. Persistent manual selection and source
+# disablement are the explicit opt-outs; alert arrival order is never policy.
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_usb_streaming_does_not_preempt_active_airplay(
+async def test_usb_streaming_preempts_active_airplay(
     mux, patched_probes, monkeypatch,
 ):
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
-    # AirPlay is the established session; USB frames start advancing underneath.
+    # AirPlay is established; a later USB frame-flow edge must take the speaker.
     _stub_probes(patched_probes, usbsink=False, airplay=True)
     _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
 
     await mux._tick()
-    assert mux._winner is Source.AIRPLAY  # the cast wins first
-
-    # USB is now streaming (frames advancing) but must NOT grab the speaker.
-    await mux._tick()
-    await mux._tick()
     assert mux._winner is Source.AIRPLAY
-    # AirPlay was never paused to hand the speaker to USB.
-    mux._pause.assert_not_awaited()
+
+    # USB is now streaming (frames advancing) and is the newest source.
+    await mux._tick()
+    assert mux._winner is Source.USBSINK
+    mux._pause.assert_awaited_with(Source.AIRPLAY)
+    status = mux._status_payload()
+    assert (
+        status["sources"]["usbsink"]["started_seq"]
+        > status["sources"]["airplay"]["started_seq"]
+    )
 
 
 @pytest.mark.asyncio
-async def test_usb_takes_over_when_airplay_session_ends(
-    mux, patched_probes, monkeypatch,
+async def test_winner_stop_falls_back_to_most_recent_active_source(
+    mux, patched_probes,
 ):
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
-    _stub_probes(patched_probes, usbsink=False, airplay=True)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000, 192_000])
 
+    _stub_probes(patched_probes, airplay=True)
     await mux._tick()
+    _stub_probes(patched_probes, airplay=True, usbsink=True)
     await mux._tick()
-    assert mux._winner is Source.AIRPLAY  # sticky: USB streams but AirPlay holds
+    _stub_probes(
+        patched_probes,
+        spotify=True,
+        airplay=True,
+        usbsink=True,
+    )
+    await mux._tick()
+    assert mux._winner is Source.SPOTIFY
 
-    # The cast ends. USB is still streaming -> it takes the now-free speaker.
-    _stub_probes(patched_probes, usbsink=False, airplay=False)
+    # Spotify stops. USB started after AirPlay, so USB is the newest remaining
+    # active source even though both older probes still report active.
+    _stub_probes(patched_probes, airplay=True, usbsink=True)
     await mux._tick()
     assert mux._winner is Source.USBSINK
 
 
 @pytest.mark.asyncio
-async def test_auto_select_prefers_active_session_over_streaming_usb(
-    mux, patched_probes, monkeypatch,
+async def test_auto_select_uses_starts_observed_while_manual_pin_was_active(
+    mux, patched_probes,
 ):
-    """Flipping to auto while AirPlay plays and USB streams must land on the
-    explicit session, not the passive USB stream."""
-    from jasper.mux import ComboLiveness
-
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
-    _stub_probes(patched_probes, usbsink=False, airplay=True)
-    # Pre-seed USB as already streaming so auto_select's single probe (frames
-    # advancing 48_000 -> 96_000) reads USB active alongside the AirPlay cast.
-    mux._usbsink_combo = ComboLiveness(prev_frames=48_000, idle_ticks=0, streaming=True)
-    _make_combo_box(mux, monkeypatch, [96_000])
+    mux._manual_source = Source.AIRPLAY
+    mux._winner = Source.AIRPLAY
+
+    _stub_probes(patched_probes, airplay=True, usbsink=False)
+    await mux._tick()
+    _stub_probes(patched_probes, airplay=True, usbsink=True)
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY
 
     await mux.auto_select()
-    assert mux._winner is Source.AIRPLAY
+    assert mux._manual_source is None
+    assert mux._winner is Source.USBSINK
+    mux._pause.assert_awaited_with(Source.AIRPLAY)
+
+
+@pytest.mark.asyncio
+async def test_manual_control_refresh_preserves_newest_start_for_auto(
+    mux, patched_probes,
+):
+    """A control-path status refresh must record, not consume, start edges."""
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+
+    _stub_probes(patched_probes, spotify=True)
+    await mux._tick()
+    spotify_seq = mux._state.started_seq[Source.SPOTIFY]
+
+    # select_source refreshes source state for its response. USB starts before
+    # that refresh, while AirPlay becomes the persistent manual pin.
+    _stub_probes(patched_probes, spotify=True, usbsink=True)
+    await mux.select_source(Source.AIRPLAY)
+    usb_seq = mux._state.started_seq[Source.USBSINK]
+    assert usb_seq > spotify_seq
+
+    # Returning to Auto must retain that observed order rather than falling
+    # back to registry order or treating the refresh as an unsequenced edge.
+    await mux.auto_select()
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_source_observations_serialize_probe_and_record(mux):
+    """Concurrent patrol/control refreshes cannot commit snapshots out of order."""
+    first_probe_started = asyncio.Event()
+    release_first_probe = asyncio.Event()
+    calls = 0
+
+    async def probe_sources():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_probe_started.set()
+            await release_first_probe.wait()
+        return {source: False for source in MUSIC_SOURCES}
+
+    mux._probe_sources = probe_sources
+    first = asyncio.create_task(mux._observe_sources())
+    await first_probe_started.wait()
+    second = asyncio.create_task(mux._observe_sources())
+    await asyncio.sleep(0)
+    assert calls == 1
+
+    release_first_probe.set()
+    await asyncio.gather(first, second)
+    assert calls == 2
 
 
 # ----------------------------------------------------------------------
@@ -1606,6 +1676,38 @@ async def test_failed_auto_handoff_retries_target_on_next_tick(
 
 
 @pytest.mark.asyncio
+async def test_new_start_supersedes_older_failed_handoff_retry(
+    mux, patched_probes,
+):
+    """An old pending retry must not consume a newer source-start edge."""
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, spotify=True)
+    await mux._tick()
+    assert mux._winner is Source.SPOTIFY
+
+    coord = mux._volume_coordinator
+    coord.next_result = "failed"
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+    await mux._tick()
+    assert mux._pending_auto_target is Source.AIRPLAY
+
+    coord.next_result = "ok"
+    _stub_probes(
+        patched_probes,
+        spotify=True,
+        airplay=True,
+        usbsink=True,
+    )
+    await mux._tick()
+
+    assert mux._pending_auto_target is None
+    assert mux._winner is Source.USBSINK
+    assert mux._last_handoff["to"] == "usbsink"
+    assert mux._last_handoff["reason"] == "auto_new_source"
+
+
+@pytest.mark.asyncio
 async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
     mux, patched_probes,
 ):
@@ -1723,21 +1825,26 @@ async def test_bluetooth_preempt_avrcp_failure_is_best_effort(
 async def test_manual_tick_keeps_selected_source_when_other_source_starts(
     mux, patched_probes,
 ):
-    mux._manual_source = Source.BLUETOOTH
+    mux._manual_source = Source.AIRPLAY
+    mux._winner = Source.AIRPLAY
     mux._fanin_select = AsyncMock(return_value={})
     _stub_pauses(mux)
 
-    _stub_probes(patched_probes, bluetooth=True, spotify=False)
+    _stub_probes(patched_probes, airplay=True, usbsink=False)
     await mux._tick()
     mux._pause.assert_not_awaited()
 
-    _stub_probes(patched_probes, bluetooth=True, spotify=True)
+    _stub_probes(patched_probes, airplay=True, usbsink=True)
     await mux._tick()
 
     mux._pause.assert_not_awaited()
     assert mux._fanin_select.await_count == 2
-    mux._fanin_select.assert_awaited_with(Source.BLUETOOTH)
-    assert mux._winner is Source.BLUETOOTH
+    mux._fanin_select.assert_awaited_with(Source.AIRPLAY)
+    assert mux._winner is Source.AIRPLAY
+    assert (
+        mux._state.started_seq[Source.USBSINK]
+        > mux._state.started_seq[Source.AIRPLAY]
+    )
 
 
 @pytest.mark.asyncio

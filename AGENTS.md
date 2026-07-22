@@ -991,11 +991,13 @@ daemon's own surface:
   activity/level/mute, plus `/sys/class/udc/*/state` for host connection
 
 `jasper-mux.service` owns renderer source policy. In auto mode it does
-latest-source-wins preemption: when a new source transitions to playing
-while another is already active, it pauses the older one. The landing
-page's Source selector can switch mux into manual mode; mux then asks
-`jasper-fanin` to pass one renderer lane without turning any source on
-or off. Before moving the fan-in gate, mux asks `VolumeCoordinator` to
+source-neutral latest-start-wins preemption: every confirmed inactive→active
+transition, including USB frame flow, becomes the winner and preempts the older
+source. mux records process-local confirmed-start order for winner-stopped and
+return-to-Auto fallback; alerts never supply priority. The landing page's Source
+selector can persistently pin one source, and `/sources/` can disable a source
+entirely. mux then asks `jasper-fanin` to pass one renderer lane without turning
+any source on or off. Before moving the fan-in gate, mux asks `VolumeCoordinator` to
 prepare the target source's volume carrier; after the gate moves, it
 finalizes the steady-state carrier. This is the source-switch transient
 guard. Native producer notifications (librespot state-file inotify,
