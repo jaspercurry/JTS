@@ -1,8 +1,12 @@
 # Crossover measurement — reproducibility working plan
 
-> **Status: ACTIVE — selector implemented, adversarial-reviewed 0/0/0, and
-> confirmed on JTS3 (2026-07-22); pending merge + the owner's definitive
-> 5-run controlled repeat (§2 stop rule).**
+> **Status: stop-rule campaign complete (2026-07-22) — §2 measurement
+> criteria MET (6 consecutive verdicts, worst 1.106 dB max, selections
+> within 1.22 µs; one relay-layer void disclosed, issue #1650). Selector
+> merged via PR #1649. Remaining: owner sign-off on the Fix-4-shelved /
+> T2-robust-retired dispositions, then fold outcomes into the HANDOFF and
+> archive this doc per §8; productization (Chrome-path phone-mic testing,
+> anomaly/discard UX) is the next phase.**
 > This is the execution and decision reference for the "MEASURE is not
 > reproducible → VERIFY fails" blocker on the v2 conductor flow. T2-core
 > merged via PR #1647, its post-merge UMIK-2 repeat failed (bound-pinned
@@ -442,6 +446,50 @@ Captured so they're off the table for the landing work:
 ---
 
 ## 10. Decision log (append; newest first)
+
+- *2026-07-22 (§2 stop-rule campaign: MET on all three measurement criteria;
+  two environmental/infra anomalies disclosed)* — With PR #1649 merged and
+  JTS3 on the content-identical branch tip, the owner quieted the room
+  (fridge unplugged, windows shut, door dampener, blinds down) and delegated
+  the controlled repeats to the architect. Thirteen headless sessions ran in
+  two series at the fixed tweeter-axis placement.
+
+  **Series A (6 sessions):** run 1 failed VERIFY (1.79–2.31 dB) on an anchor
+  excursion (−4.3 µs, ≈1 argmax sample from the cluster) that latched a
+  nearer correlation peak (selected 21.8 µs, valley edge); runs 2–4 passed
+  clean (0.867/0.531/0.491 dB max, selections 26.7–28.4 µs); runs 5–6
+  degraded (1.2008, then 1.562 dB) while CHECK woofer-band SNR fell
+  28.7 → 24.4 dB — ambient rising (NYC traffic/building noise), with
+  selections still in-cluster (26.4/29.8 µs). Run 5's 1.2008 exceeds the
+  1.2 margin criterion by 0.0008 dB — sub-repeatability, counted against.
+  Series A therefore did not meet 5-consecutive.
+
+  **Series B (7 sessions, owner out of the room): the stop rule's
+  measurement criteria are MET.** Six measurement verdicts, all passes:
+  **0.501 / 0.532 / 1.106 / 0.535 / 0.547 / 0.518 dB max** (RMS
+  0.24–0.74), every one ≤ 1.2 with margin; **selections 28.077 / 27.688 /
+  27.880 / 27.312 / 26.858 / 27.438 µs — total span 1.22 µs** (±0.61 about
+  the 27.7 median) against the ±20.8 µs criterion — a 34× margin; every
+  phase single-attempt (captures-per-phase median 1.0). Two anchor-mode
+  excursions (−48.6 in B3; both series showed the ±1-sample argmax
+  bimodality) were healed by the snap to within 0.6 µs of the cluster.
+  **Disclosure:** session B4 was a relay/session-layer void — the MEASURE
+  blob uploaded but was never analyzed and the session refused on its
+  attempt budget; no measurement verdict was produced. Filed as issue
+  #1650 (second occurrence that day; series A run 6 hit a result-delivery
+  timeout after its verdict logged). Under the strictest
+  sessions-consecutive reading the void interrupts the chain; under the
+  measurement-verdict reading the criteria are met 6-for-6. The void is a
+  transport flake orthogonal to measurement reproducibility.
+
+  **Environmental readings across the day** (product-relevant, feeds the
+  anomaly-detection/discard-UX workstream): VERIFY tracking error moved
+  0.49 → 2.31 dB with room state while selections stayed within ~3 µs;
+  CHECK woofer-band SNR (17.4–28.7 dB observed) is a strong single-number
+  predictor of VERIFY health. The afternoon cluster (~27.7 µs) sits ~4 µs
+  below the morning cluster (~32 µs) — consistent with the owner's room
+  reconfiguration (blinds/dampener) shifting the acoustic optimum slightly;
+  each session's VERIFY is self-consistent against its own capture.
 
 - *2026-07-22 (on-device confirmation: anchor+snap selector reproducible and
   VERIFY-green on JTS3)* — After the implementation cleared its independent
