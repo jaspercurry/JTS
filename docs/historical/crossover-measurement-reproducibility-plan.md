@@ -1,12 +1,19 @@
 # Crossover measurement — reproducibility working plan
 
-> **Status: stop-rule campaign complete (2026-07-22) — §2 measurement
-> criteria MET (6 consecutive verdicts, worst 1.106 dB max, selections
-> within 1.22 µs; one relay-layer void disclosed, issue #1650). Selector
-> merged via PR #1649. Remaining: owner sign-off on the Fix-4-shelved /
-> T2-robust-retired dispositions, then fold outcomes into the HANDOFF and
-> archive this doc per §8; productization (Chrome-path phone-mic testing,
-> anomaly/discard UX) is the next phase.**
+> **Status: historical.** Snapshot from 2026-07-22, the day the v2
+> delay-selection reproducibility blocker was closed: the anchor-primary +
+> gated-snap selector merged via PR #1649 and the §2 stop rule was met on
+> all three measurement criteria (six consecutive verdicts, worst 1.106 dB
+> max; selections within a 1.22 µs span; one relay-layer transport void
+> disclosed as issue #1650). Preserved for primary-source archaeology — the
+> full diagnosis, methodology decision, bake-off, negative results, review
+> gates, and campaign evidence live in §10's decision log; specific facts
+> (env defaults, line numbers, "what's working" snapshots) will drift over
+> time. Read this for the narrative, not for current state. Current
+> operational truth lives in
+> [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md);
+> the follow-on productization workstream is tracked in issues #1650 and
+> #1652.
 > This is the execution and decision reference for the "MEASURE is not
 > reproducible → VERIFY fails" blocker on the v2 conductor flow. T2-core
 > merged via PR #1647, its post-merge UMIK-2 repeat failed (bound-pinned
@@ -21,8 +28,8 @@
 > *targeted refactor of the measurement core*, not a rewrite of the conductor
 > architecture.
 >
-> Canonical operational truth: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
-> v2 decision record: [crossover-measurement-productization-design.md](crossover-measurement-productization-design.md).
+> Canonical operational truth: [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md).
+> v2 decision record: [crossover-measurement-productization-design.md](../crossover-measurement-productization-design.md).
 > Keep those two authoritative; this doc is the plan + decision log until the
 > work lands, after which the durable outcomes fold into the HANDOFF and this
 > doc is archived.
@@ -446,6 +453,31 @@ Captured so they're off the table for the landing work:
 ---
 
 ## 10. Decision log (append; newest first)
+
+- *2026-07-22 (final dispositions, owner-approved; doc archived)* — With the
+  stop rule met, the owner approved consolidating outcomes now rather than
+  deferring. Dispositions of the two paused items:
+  - **Fix 4 (widen tweeter sweep to declared safe-low): SHELVED with a named
+    revival trigger.** Its original purpose — uniquifying the flatness
+    minimum — is moot (flatness no longer selects anything). Its residual
+    value (more correlation bandwidth → sharper snap peaks at low SNR) is
+    real physics but unneeded at the measured margins (1.22 µs selection
+    span vs a ±20.8 µs budget at 22–29 dB woofer SNR). Revive only if
+    phone-mic-era evidence shows the selection cluster spreading toward the
+    ±1-sample budget or `snap_found=false` appearing in practice.
+  - **T2-robust (coherence phase-slope + σ_τ): RETIRED as designed.** Its
+    estimator core is empirically non-viable on as-crossed branches (bake-off:
+    railed 16/16 captures at +388 ± 38 µs systematic — differential
+    filter/driver dispersion, not timing). Its surviving goal — a confidence
+    that predicts VERIFY — is reassigned to the far simpler CHECK-SNR
+    quality gate + noise-attributed VERIFY failures, tracked as issue #1652,
+    deferred to the productization phase so thresholds derive from phone-mic
+    data.
+  This doc is archived per §8 (durable outcomes folded into the HANDOFF;
+  status banner flipped to historical). The productization phase (Chrome-path
+  phone-mic validation with the Dayton iMM-6C, anomaly-detection/discard UX,
+  relay-void hardening) proceeds under issues #1650/#1652 and new planning
+  surfaces as needed.
 
 - *2026-07-22 (§2 stop-rule campaign: MET on all three measurement criteria;
   two environmental/infra anomalies disclosed)* — With PR #1649 merged and
@@ -911,7 +943,7 @@ Captured so they're off the table for the landing work:
   evidence; `flatness_at_bound` retired for `anchor_delay_us` / `snap_delta_us`
   / `snap_found`). Hardware-free physics/regression tests land in the same
   change; canonical operational truth is
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md)
   "Delay selection". Local replay on the two hardware-anchored captures matches
   the bake-off within <1 µs (run A applied 33.7 µs, run B 31.4 µs; anchors
   28.281 / 49.948 exact; A–B spread 2.4 µs, inside the ±20.8 µs stop-rule).

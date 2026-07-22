@@ -70,12 +70,20 @@ three fresh headless JTS3 flows selected 32.411 / 31.013 / 33.783 µs —
 captures — with VERIFY passing at 1.233 and **0.597 dB max** (best recorded
 on this rig); the one VERIFY-failed run was a measured room-noise event
 (CHECK woofer SNR 17.4 dB vs 23.3 nominal) with the selector still
-in-cluster. The definitive 5-consecutive-run stop rule remains owed (owner's
-controlled hands). T2-robust and Fix 4 stay paused; the bake-off additionally
-recorded that a cross-spectrum phase-slope estimator rails systematically on
-as-crossed branches (+388 ± 38 µs, 16/16 captures), so any future σ_τ layer
-needs a different base quantity. See
-[`crossover-measurement-reproducibility-plan.md`](crossover-measurement-reproducibility-plan.md)
+in-cluster. **The stop rule was then met the same day** (owner-delegated
+controlled campaign, quieted room): six consecutive measurement verdicts all
+passed — worst 1.106 dB max, five of six ≤ 0.55 — with selections spanning
+**1.22 µs** total (median 27.7 µs) against the ±20.8 µs criterion, every
+phase single-attempt. One session was a relay-layer transport void (capture
+uploaded, never analyzed — issue #1650); ambient-noise events measurably
+degrade VERIFY while leaving selection unaffected, and CHECK's woofer-band
+SNR predicts VERIFY health — productized as the anomaly-detection/discard-UX
+workstream, issue #1652. Final dispositions: Fix 4 shelved (revival trigger:
+phone-mic-era cluster spread or `snap_found=false`), T2-robust retired (its
+phase-slope core rails systematically on as-crossed branches, +388 ± 38 µs
+16/16; its predictive-confidence goal lives on in #1652). The
+reproducibility working plan is archived as decision archaeology. See
+[`crossover-measurement-reproducibility-plan.md`](historical/crossover-measurement-reproducibility-plan.md)
 §10–§11 for the exact evidence and gate state.
 
 ---
@@ -455,7 +463,7 @@ segments rather than re-deriving the nominal edges.
 
 **Selection is anchor-primary; summed-magnitude flatness is evidence, never a
 selector.** Methodology decision:
-[crossover-measurement-reproducibility-plan.md](crossover-measurement-reproducibility-plan.md)
+[crossover-measurement-reproducibility-plan.md](historical/crossover-measurement-reproducibility-plan.md)
 §10, 2026-07-22 (bake-off verdict + methodology entries). The narrowband
 flatness objective's basin ordering is capture-noise dependent and preferred
 the wrong comb lobe on a hardware repeat, so it no longer chooses the delay.
