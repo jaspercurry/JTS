@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
@@ -123,6 +123,11 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
 DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
+# Applied-delay grid for the bounded sum-flatness refinement. Two microseconds
+# is <1/10 sample at 48 kHz and <3 degrees at the top of the reference
+# crossover overlap (4 kHz), while keeping the declaration-bounded walk cheap
+# on a 1 GB Pi.
+FLATNESS_DELAY_STEP_US = 2.0
 
 # Alignment estimator status vocabulary.
 ALIGNMENT_OK = "ok"
@@ -286,6 +291,11 @@ class MeasurementPriors:
     SAME band; a wider nominal Fc±1-octave band would compare real VERIFY
     capture data against sub-floor noise inherited from an unexcited MEASURE
     branch. ``None`` (legacy callers) falls back to the unclamped nominal band.
+
+    ``alignment_delay_bounds_us`` is the signed, declaration-derived applied-
+    delay lobe the flatness refinement may search. The conductor derives it
+    from the crossover region's ``delay_target_driver`` and
+    ``delay_range_ms``; ``None`` keeps GCC as the applied-delay estimate.
     """
 
     crossover_fc_hz: float | None = None
@@ -295,6 +305,7 @@ class MeasurementPriors:
     ambient_report: Mapping[str, Any] | None = None
     measure_tweeter_sweep_lo_hz: float | None = None
     measure_woofer_sweep_hi_hz: float | None = None
+    alignment_delay_bounds_us: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -1255,10 +1266,89 @@ def _predicted_sum(
     trim_w_db: float,
     trim_t_db: float,
     sign: int,
+    *,
+    freqs_hz: np.ndarray | None = None,
+    residual_delay_us: float = 0.0,
 ) -> np.ndarray:
+    """Return the complex branch sum in the argmax-referenced frame.
+
+    ``_aligned_branch_tf`` independently references both direct peaks, so a
+    physical applied delay must enter here only as the *residual* relative to
+    that frame: ``(D_t - D_w) + applied_signed_delay``. Passing the full
+    applied delay would count the measured peak gap twice (the reverted fix-2
+    failure mode).
+    """
     g_w = 10.0 ** (trim_w_db / 20.0)
     g_t = 10.0 ** (trim_t_db / 20.0)
-    return W * g_w + sign * T * g_t
+    tweeter = T * g_t
+    if freqs_hz is not None and residual_delay_us != 0.0:
+        tweeter = tweeter * np.exp(
+            -1j * 2.0 * np.pi * np.asarray(freqs_hz) * residual_delay_us * 1e-6
+        )
+    return W * g_w + sign * tweeter
+
+
+def _flatness_delay_us(
+    freqs_hz: np.ndarray,
+    W: np.ndarray,
+    T: np.ndarray,
+    trim_w_db: float,
+    trim_t_db: float,
+    sign: int,
+    *,
+    lo_hz: float,
+    hi_hz: float,
+    peak_gap_us: float,
+    search_bounds_us: tuple[float, float],
+    seed_delay_us: float,
+) -> float:
+    """Refine an applied delay by minimizing summed ripple in one delay lobe.
+
+    ``peak_gap_us`` is ``D_t - D_w`` from the two full-IR argmaxes. Candidate
+    applied delays use :class:`AlignmentEstimate`'s signed convention, so the
+    residual evaluated in the independently peak-referenced transfer
+    functions is ``peak_gap_us + candidate_delay_us``. The caller supplies a
+    declaration-derived signed search lobe; GCC remains the seed/fallback.
+    """
+    lower_us, upper_us = (float(value) for value in search_bounds_us)
+    if not (
+        math.isfinite(lower_us)
+        and math.isfinite(upper_us)
+        and lower_us <= upper_us
+    ):
+        return float(seed_delay_us)
+
+    band = (freqs_hz >= lo_hz) & (freqs_hz <= hi_hz)
+    if not np.any(band):
+        return float(seed_delay_us)
+    freqs = freqs_hz[band]
+    W_band = W[band]
+    T_band = T[band]
+
+    span_us = upper_us - lower_us
+    intervals = max(1, int(math.ceil(span_us / FLATNESS_DELAY_STEP_US)))
+    candidates = np.linspace(lower_us, upper_us, intervals + 1)
+    if lower_us <= seed_delay_us <= upper_us:
+        candidates = np.append(candidates, float(seed_delay_us))
+
+    best_delay_us = float(seed_delay_us)
+    best_ripple_db = float("inf")
+    for candidate_delay_us in candidates:
+        residual_delay_us = peak_gap_us + float(candidate_delay_us)
+        summed = _predicted_sum(
+            W_band,
+            T_band,
+            trim_w_db,
+            trim_t_db,
+            sign,
+            freqs_hz=freqs,
+            residual_delay_us=residual_delay_us,
+        )
+        ripple_db = _ripple_db(freqs, summed, lo_hz, hi_hz)
+        if ripple_db < best_ripple_db:
+            best_delay_us = float(candidate_delay_us)
+            best_ripple_db = ripple_db
+    return best_delay_us
 
 
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
@@ -1850,7 +1940,10 @@ def _analyze_measure(
         woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
         seg_w.role, seg_t.role, alignment, calibration,
         tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
+        alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
     )
+    if candidate.delay_us != alignment.delay_us:
+        alignment = replace(alignment, delay_us=candidate.delay_us)
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a leading pilot pair; legacy programs carry none, so
     # the verdicts stay ``None`` (byte-identical to the pre-v2 analysis).
@@ -1880,6 +1973,7 @@ def _build_candidate(
     *,
     tweeter_sweep_lo_hz: float | None = None,
     woofer_sweep_hi_hz: float | None = None,
+    alignment_delay_bounds_us: tuple[float, float] | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -1907,17 +2001,46 @@ def _build_candidate(
         else lo
     )
     trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
+    delay_us = alignment.delay_us
+    residual_delay_us = 0.0
+    if alignment.status == ALIGNMENT_OK and alignment_delay_bounds_us is not None:
+        peak_gap_us = (
+            int(np.argmax(np.abs(tweeter_full_ir)))
+            - int(np.argmax(np.abs(woofer_full_ir)))
+        ) / sample_rate * 1e6
+        delay_us = _flatness_delay_us(
+            freqs,
+            W,
+            T,
+            trim_w,
+            trim_t,
+            alignment.polarity_sign,
+            lo_hz=lo_clamped,
+            hi_hz=hi,
+            peak_gap_us=peak_gap_us,
+            search_bounds_us=alignment_delay_bounds_us,
+            seed_delay_us=alignment.delay_us,
+        )
+        residual_delay_us = peak_gap_us + delay_us
     # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
-    # ``_aligned_branch_tf`` references each branch to its own direct peak, i.e.
-    # the proposed delay is already applied (τ_residual → 0, e^{−jωτ} → 1), so
-    # this is the flattest-achievable aligned sum for the candidate.
-    predicted = _predicted_sum(W, T, trim_w, trim_t, alignment.polarity_sign)
+    # The legacy/GCC path retains its zero-residual prediction. T2's bounded
+    # flatness path explicitly predicts at the selected ARGMAX-FRAME residual,
+    # not at the full applied delay (which would count the peak gap twice).
+    predicted = _predicted_sum(
+        W,
+        T,
+        trim_w,
+        trim_t,
+        alignment.polarity_sign,
+        freqs_hz=freqs,
+        residual_delay_us=residual_delay_us,
+    )
     ripple = _ripple_db(freqs, predicted, lo_clamped, hi)
     predicted_db = 20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12))
     candidate = CrossoverCandidate(
         trim_db={woofer_role: trim_w, tweeter_role: trim_t},
         polarity=alignment.polarity,
-        delay_us=alignment.delay_us,
+        delay_us=delay_us,
         predicted_ripple_db=ripple,
         confidence=alignment.confidence,
     )

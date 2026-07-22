@@ -48,6 +48,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     CrossoverV2FlowError,
     V2FlowSeams,
     abandon_measurement_volume,
+    alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
     back_off_gain,
     build_v2_capture_plan,
@@ -440,6 +441,18 @@ def test_implausible_delay_rejects_measure_even_at_high_confidence():
     _run_phase(c2, 1, 1)
     verdict2 = _run_phase(c2, 2, 2)
     assert verdict2["accepted"] is True
+
+
+def test_measure_priors_search_only_the_declared_delay_target_lobe():
+    """T2 reuses Fix 3's declared range + margin and the declared target.
+
+    The reference preset delays the lower/woofer driver over [50, 300] us;
+    with Fix 3's 100 us margin the signed analysis lobe is [-400, 0] us.
+    """
+    c = _conductor(FakeSeams())
+    expected = (-400.0, 0.0)
+    assert alignment_delay_search_bounds_us(_preset()) == expected
+    assert c._measure_priors().alignment_delay_bounds_us == expected
 
 
 def test_measure_program_gains_back_off_from_caps():

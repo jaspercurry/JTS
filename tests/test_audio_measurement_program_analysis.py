@@ -60,6 +60,7 @@ from jasper.audio_measurement.program_analysis import (
     _build_candidate,
     _complex_tf,
     _gate_floor_hz,
+    _flatness_delay_us,
     _gcc_phat,
     _global_offset,
     _locate_segments,
@@ -473,6 +474,59 @@ def test_delay_sign_convention_tweeter_earlier_is_positive():
     # D_w − D_t = 60 samples ⇒ positive delay_us.
     assert res.alignment.delay_us > 0
     assert res.alignment.delay_us == pytest.approx((d_w - d_t) / SR * 1e6, abs=5.0)
+
+
+def test_flatness_delay_recovers_and_flattens_known_physical_sum():
+    """T2 physics gate: a wrong GCC lobe must not survive the argmax frame.
+
+    The two branch TFs have known flat magnitude/phase and the tweeter's real
+    arrival is 170 us later. A deliberately comb-ambiguous GCC seed points at
+    -350 us; the bounded flatness walk must recover the physical -170 us
+    woofer delay and flatten the ACTUAL (non-peak-referenced) branch sum.
+    """
+    freqs = np.linspace(2000.0, 4000.0, 1001)
+    omega = 2.0 * np.pi * freqs
+    woofer_peak = np.ones(freqs.size, dtype=complex)
+    tweeter_peak = np.full(freqs.size, 0.85 + 0.0j)
+    peak_gap_us = 170.0  # D_t - D_w: tweeter arrives later
+    gcc_seed_us = -350.0
+
+    refined_us = _flatness_delay_us(
+        freqs,
+        woofer_peak,
+        tweeter_peak,
+        0.0,
+        0.0,
+        +1,
+        lo_hz=2000.0,
+        hi_hz=4000.0,
+        peak_gap_us=peak_gap_us,
+        search_bounds_us=(-400.0, 0.0),
+        seed_delay_us=gcc_seed_us,
+    )
+    assert refined_us == pytest.approx(-peak_gap_us, abs=2.0)
+
+    d_w_us = 500.0
+    d_t_us = d_w_us + peak_gap_us
+    W_physical = woofer_peak * np.exp(-1j * omega * d_w_us * 1e-6)
+    T_physical = tweeter_peak * np.exp(-1j * omega * d_t_us * 1e-6)
+
+    def actual_sum(applied_delay_us: float) -> np.ndarray:
+        # Negative signed delay means delay the woofer by its magnitude.
+        return W_physical * np.exp(
+            -1j * omega * max(0.0, -applied_delay_us) * 1e-6
+        ) + T_physical * np.exp(
+            -1j * omega * max(0.0, applied_delay_us) * 1e-6
+        )
+
+    refined_ripple = _ripple_db(
+        freqs, actual_sum(refined_us), 2000.0, 4000.0,
+    )
+    gcc_ripple = _ripple_db(
+        freqs, actual_sum(gcc_seed_us), 2000.0, 4000.0,
+    )
+    assert refined_ripple < 0.05
+    assert gcc_ripple > 5.0
 
 
 def test_parallax_is_subtracted():

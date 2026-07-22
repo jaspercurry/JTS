@@ -401,6 +401,50 @@ def alignment_to_candidate_fields(
     return magnitude, role, polarity
 
 
+def _declared_alignment_delay_range_ms(
+    source_preset: Any,
+) -> tuple[Any, float, float] | None:
+    """Return the single v2 region plus its valid declared delay range."""
+    regions = getattr(source_preset, "crossover_regions", None)
+    if not regions:
+        return None
+    region = regions[0]
+    delay_range_ms = getattr(region, "delay_range_ms", None)
+    if not (isinstance(delay_range_ms, (tuple, list)) and len(delay_range_ms) == 2):
+        return None
+    lo_ms, hi_ms = float(delay_range_ms[0]), float(delay_range_ms[1])
+    if not (math.isfinite(lo_ms) and math.isfinite(hi_ms)) or lo_ms > hi_ms:
+        return None
+    return region, lo_ms, hi_ms
+
+
+def alignment_delay_search_bounds_us(
+    source_preset: Any,
+    *,
+    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
+) -> tuple[float, float] | None:
+    """Signed flatness-search lobe from the preset's delay declaration.
+
+    The magnitude range and margin are the same ones Fix 3's plausibility gate
+    reads. ``delay_target_driver`` supplies the sign in the analysis contract:
+    delaying the upper/tweeter branch is positive; delaying the lower/woofer
+    branch is negative. Without that sign declaration, GCC remains the fallback
+    rather than searching multiple comb lobes.
+    """
+    declared = _declared_alignment_delay_range_ms(source_preset)
+    if declared is None:
+        return None
+    region, lo_ms, hi_ms = declared
+    lo_ms = max(0.0, lo_ms - margin_ms)
+    hi_ms += margin_ms
+    target = getattr(region, "delay_target_driver", None)
+    if target == getattr(region, "lower_driver", None):
+        return -hi_ms * 1000.0, -lo_ms * 1000.0
+    if target == getattr(region, "upper_driver", None):
+        return lo_ms * 1000.0, hi_ms * 1000.0
+    return None
+
+
 def alignment_delay_plausible(
     delay_us: float | None,
     source_preset: Any,
@@ -421,15 +465,10 @@ def alignment_delay_plausible(
     """
     if delay_us is None:
         return True
-    regions = getattr(source_preset, "crossover_regions", None)
-    if not regions:
+    declared = _declared_alignment_delay_range_ms(source_preset)
+    if declared is None:
         return True
-    delay_range_ms = getattr(regions[0], "delay_range_ms", None)
-    if not (isinstance(delay_range_ms, (tuple, list)) and len(delay_range_ms) == 2):
-        return True
-    lo_ms, hi_ms = float(delay_range_ms[0]), float(delay_range_ms[1])
-    if not (math.isfinite(lo_ms) and math.isfinite(hi_ms)) or lo_ms > hi_ms:
-        return True
+    _region, lo_ms, hi_ms = declared
     delay_ms = abs(float(delay_us)) / 1000.0
     return (lo_ms - margin_ms) <= delay_ms <= (hi_ms + margin_ms)
 
@@ -823,7 +862,10 @@ class CrossoverV2Conductor:
     # --- priors per phase ----------------------------------------------------
 
     def _measure_priors(self) -> MeasurementPriors:
-        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+        return MeasurementPriors(
+            crossover_fc_hz=self._fc_hz,
+            alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
+        )
 
     def _verify_priors(self) -> MeasurementPriors:
         # Carry MEASURE's actual per-driver sweep bounds forward (§5.6 fix) so
