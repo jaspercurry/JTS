@@ -95,11 +95,22 @@ honestly twice (the first such refusals ever — including one snap capped at
 its radius edge). Two confounds are being attributed offline before any
 hardening decision: an audible `event=outputd.xrun` playback glitch
 (15:52:26) in one refusal's window, and hallway transients behind the one
-VERIFY fail. Live trail: issue #1654 (Fix 4 shelf — trigger-condition data
-and whether it truly fired), #1652 (anomaly detection/attribution — now
-including the free outputd-xrun cross-reference detector), #1650 (relay
-voids). The sub-sample anchor upgrade is being evaluated offline as the
-cheaper first lever.
+VERIFY fail. Offline forensics then attributed every anomaly (see the
+#1652/#1654 comment threads): the xrun capture's sweep segments located
+−25…−28 ms off schedule while `glitch_detected` stayed False — the
+repeat-pair gate is structurally blind to uniform whole-capture shifts, and
+the per-segment location residual/confidence the analysis already computes
+is a free detector for it; the residual mic signal is a single unambiguous
+correlation peak at LOW prominence whose position wanders (not lobe
+ambiguity). **The naive sub-sample anchor upgrade is refuted** — it left the
+iMM-6C span unchanged and degraded the UMIK span 12× in direct testing — so
+the standing levers are tweeter-sweep bandwidth (Fix 4, #1654) and/or
+energy, decided after the iPhone-chain series. Live trail: #1654 (Fix 4
+shelf + mechanism data), #1652 (anomaly detection/attribution), #1650
+(relay voids), #1656 (calibration identity follows the saved setup — the
+iMM-6C series silently ran under the UMIK's calibration curve;
+magnitude-only impact, but it makes the saved-mic serial-entry UI bug a
+correctness issue).
 
 ---
 
