@@ -294,8 +294,9 @@ class MeasurementPriors:
     ``alignment_delay_bounds_us`` is the unsigned, declaration-derived
     applied-delay magnitude range the flatness refinement may search. The
     conductor derives it from the crossover region's ``delay_range_ms``; the
-    GCC seed orients and centers one ±half-period signed lobe inside it.
-    ``None`` keeps GCC as the applied-delay estimate.
+    GCC seed, expressed in the peak-referenced residual frame, orients and
+    centers one ±half-period signed lobe inside it. ``None`` keeps GCC as the
+    applied-delay estimate.
     """
 
     crossover_fc_hz: float | None = None
@@ -1287,11 +1288,10 @@ def _predicted_sum(
 ) -> np.ndarray:
     """Return the complex branch sum in the argmax-referenced frame.
 
-    ``_aligned_branch_tf`` independently references both direct peaks, so a
-    physical applied delay must enter here only as the *residual* relative to
-    that frame: ``(D_t - D_w) + applied_signed_delay``. Passing the full
-    applied delay would count the measured peak gap twice (the reverted fix-2
-    failure mode).
+    ``_aligned_branch_tf`` independently references both direct peaks, so the
+    delay entering here is the *residual correction* in that frame. Rebuilding
+    a full delay by adding the deconvolved IR argmax gap counts a reference
+    offset as physical DSP delay (the reverted fix-2 failure mode).
     """
     g_w = 10.0 ** (trim_w_db / 20.0)
     g_t = 10.0 ** (trim_t_db / 20.0)
@@ -1319,12 +1319,15 @@ def _flatness_delay_us(
 ) -> tuple[float, float, float, bool]:
     """Refine an applied delay by minimizing summed ripple in one delay lobe.
 
-    ``reference_gap_us`` is the full-IR ``D_t - D_w`` argmax gap plus the
-    declared mic-parallax correction. Candidate applied delays use
+    ``reference_gap_us`` is the coordinate offset that remains meaningful
+    after both branches have been independently peak-referenced (today, only
+    the declared mic-parallax correction). Candidate applied delays use
     :class:`AlignmentEstimate`'s signed convention, so the residual evaluated
-    in the independently peak-referenced transfer functions is
-    ``reference_gap_us + candidate_delay_us``. The caller supplies a
-    declaration-derived signed search lobe; GCC remains the seed/fallback.
+    in the peak-referenced transfer functions is
+    ``reference_gap_us + candidate_delay_us``. The deconvolved full-IR argmax
+    gap is deliberately absent: it locates each branch's crop, but is not a
+    second physical delay to apply. The caller supplies a declaration-derived
+    signed search lobe; GCC remains the coarse seed/fallback.
 
     Returns ``(selected_delay, selected_ripple, seed_ripple, at_bound)`` so
     the refinement is durable evidence rather than an unobservable overwrite.
@@ -2078,10 +2081,16 @@ def _build_candidate(
             int(np.argmax(np.abs(tweeter_full_ir)))
             - int(np.argmax(np.abs(woofer_full_ir)))
         ) / sample_rate * 1e6
-        objective_reference_gap_us = peak_gap_us + alignment.parallax_us
+        # GCC is measured in the full-IR coordinate. Residualize it once into
+        # the independently peak-referenced branch frame before it orients the
+        # flatness lobe. The selected value is already the DSP correction in
+        # that residual frame; adding ``peak_gap_us`` back after selection
+        # recreates the full-vs-residual bug that hardware exposed.
+        residual_seed_delay_us = peak_gap_us + alignment.delay_us
+        objective_reference_gap_us = alignment.parallax_us
         search_lobe_us = _flatness_search_lobe_us(
             alignment_delay_bounds_us,
-            alignment.delay_us,
+            residual_seed_delay_us,
             fc_hz,
         )
         if search_lobe_us is not None:
@@ -2101,7 +2110,7 @@ def _build_candidate(
                 hi_hz=hi,
                 reference_gap_us=objective_reference_gap_us,
                 search_bounds_us=search_lobe_us,
-                seed_delay_us=alignment.delay_us,
+                seed_delay_us=residual_seed_delay_us,
             )
             if math.isfinite(selected_ripple_db) and math.isfinite(
                 selected_seed_ripple_db
@@ -2110,17 +2119,15 @@ def _build_candidate(
                 seed_ripple_db = selected_seed_ripple_db
                 flatness_improvement_db = seed_ripple_db - selected_ripple_db
                 flatness_at_bound = at_bound
-                # VERIFY is captured back at the measurement microphone. The
-                # applied delay therefore appears there against the measured peak
-                # gap, without the listening-plane parallax transform used by the
-                # selection objective above. It is the same selected delay in two
-                # explicit coordinate frames, not two independently derived
-                # delays.
-                residual_delay_us = peak_gap_us + delay_us
+                # VERIFY is captured back at the measurement microphone, so
+                # restore only the declared mic-parallax transform. Both W/T
+                # are already argmax-referenced; their full-IR peak gap must
+                # not be counted again.
+                residual_delay_us = alignment.parallax_us + delay_us
     # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
     # The legacy/GCC path retains its zero-residual prediction. T2's bounded
     # flatness path explicitly predicts at the selected ARGMAX-FRAME residual,
-    # not at the full applied delay (which would count the peak gap twice).
+    # never at a reconstructed full-IR delay (which would count the peak gap).
     predicted = _predicted_sum(
         W,
         T,

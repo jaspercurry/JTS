@@ -439,13 +439,15 @@ ProgramAnalysis`:
    polarity, and capture-quality confidence. The applied delay is then chosen
    by minimizing summed ripple over that same overlap inside the active
    crossover region's declared `delay_range_ms` magnitude range, plus the
-   shared plausibility margin. The GCC seed supplies the sign and centers one
+   shared plausibility margin. The full-IR GCC seed is residualized once by
+   the branch crop's argmax offset, then supplies the sign and centers one
    ±half-period comb lobe; a fresh preset need not have an applied
-   `delay_target_driver` yet. The deterministic parallax term
-   (√(r²+d²)−r at the prescribed ~1 m) is included in the conversion between
-   the full-IR peak-gap frame and the independently argmax-referenced branch
-   TFs for selection; prediction uses that same selected delay back in the
-   measurement-mic frame so VERIFY remains comparable. Polarity comes from
+   `delay_target_driver` yet. The selected/applied value is the residual in
+   the independently argmax-referenced branch frame — the full-IR crop offset
+   is never added back as a second physical delay. The deterministic parallax
+   term (√(r²+d²)−r at the prescribed ~1 m) is the only coordinate transform
+   restored for the measurement-mic prediction, so VERIFY remains comparable.
+   Polarity comes from
    the correlation sign, cross-checked against the
    flatter predicted sum. The confidence gate remains explicitly GCC-seed
    capture confidence; flatness seed/objective improvement and boundary state

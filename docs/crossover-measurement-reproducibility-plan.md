@@ -414,6 +414,30 @@ Captured so they're off the table for the landing work:
 
 ## 10. Decision log (append; newest first)
 
+- *2026-07-22 (T2 hardware frame correction; Gate 2 reopened)* — The first
+  reviewed T2 deploy proved the estimator ran and the candidate was applied,
+  but **failed Gate 3**: GCC seed **−355.531 µs** refined to **−233.531 µs**
+  and the graph applied one 233.5 µs woofer delay, while three VERIFY captures
+  worsened to **7.579 / 7.636 / 7.613 dB** (prior fix-1 baseline ~4.29 dB).
+  Retained MEASURE/VERIFY replay plus a bounded protected-graph probe located
+  the failure: `_aligned_branch_tf` has already argmax-peak-referenced both
+  branches, but T2 added the measured **208.333 µs** full-IR argmax gap back to
+  the flatness residual before apply. The production response moved one-for-one
+  with commanded delay but carried the expected ~190 µs model-coordinate
+  offset across both the old and new runs. Direct probe results were 0 µs →
+  **4.01 dB**, 50 µs → **2.79 dB**, 100 µs → **3.29 dB**, and 233.5 µs →
+  **7.58–7.64 dB** against the corrected prediction (the 50 µs capture's
+  smoothed crossover-ripple standard deviation was **0.94 dB**). The fix now
+  residualizes the GCC seed once to orient the declared lobe, selects/applies
+  the peak-frame residual itself, and restores only mic parallax for VERIFY —
+  never the argmax crop offset. The mandatory physics test now independently
+  injects a known residual and an unrelated full-IR gap, and proves adding the
+  gap back recreates a >5 dB comb. Updated retained M1 replay converges at
+  **−22.0 / −22.0 µs** with the same flatness improvement; today's live
+  MEASURE replays at **−23.95 µs**. Targeted suite: **160 passed**; independent
+  re-review and a fresh JTS3 flow remain gates. JTS3 was restored to the
+  reviewed candidate graph and its pre-session volume after the probe.
+
 - *2026-07-21 (T2 Gate 1, hardware-free)* — Implemented the
   declaration-bounded summed-flatness delay selection on
   `claude/xover-t2-flatness`. The selected delay now feeds both prediction and
@@ -423,8 +447,11 @@ Captured so they're off the table for the landing work:
   parallax on both signed lobes. Replaying the two retained M1 captures reduced
   max-minus-min ripple from **37.524→5.042 dB** and **30.253→5.118 dB**
   (standard deviation **7.729→1.065 dB** and **6.881→1.082 dB**), selecting
-  **−229.5/−229.7 µs** instead of GCC's −353.5/−348.2 µs. This is an offline proof,
-  not hardware validation; independent re-review and JTS3 VERIFY remain gates.
+  a common **−22.0 µs peak-frame residual** instead of GCC's
+  −353.5/−348.2 µs full-IR seed. (The earlier −229.5/−229.7 report added the
+  deconvolved-IR argmax crop gap back to that residual; the 2026-07-22 hardware
+  entry above records the correction.) This is an offline proof, not passing
+  hardware validation; independent re-review and JTS3 VERIFY remain gates.
 
 - *2026-07-21 (hardware validation, fix 1+3)* — **The reviewed increment
   (fix 1 band-clamp + fix 3 plausibility bound; fix 2 reverted, fix 4
@@ -520,12 +547,14 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status:** T2's hardware-free Gate 1 is complete on
-  `claude/xover-t2-flatness`: physics and production-frame tests pass, and
-  retained-capture replay materially beats the GCC seed on both M1 captures.
-  The result has not yet been validated by a live VERIFY and is not merged.
-- **Next action:** clear the independent adversarial re-review, deploy T2 to
-  JTS3, and run an initial headless VERIFY; then run the definitive
+- **Status:** T2's first reviewed hardware run exposed and reproduced a
+  full-vs-residual frame bug before merge. The corrected residual contract now
+  passes its strengthened physics test and the 160-test targeted suite;
+  retained M1 replay converges at −22.0 µs and the new live MEASURE replays at
+  −23.95 µs. Gate 2 is reopened for independent review. Nothing is merged.
+- **Next action:** clear the independent adversarial re-review of the hardware
+  delta, deploy the residual correction to JTS3, and repeat the initial
+  headless VERIFY; then run the definitive
   *controlled* hardware VERIFY (fixed mic placement, unlike the uncontrolled
   fix-1 run). Add fix 4 (widen the
   tweeter sweep) as reliability hardening only if T2 alone is marginal.

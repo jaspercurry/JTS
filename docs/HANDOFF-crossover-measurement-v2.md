@@ -40,14 +40,19 @@ this doc is the current operational truth.
   the page's `supported_capture_protocol_versions` must include a
   protocol before the Pi emits it.
 
-## Current status (2026-07-19)
+## Current status (2026-07-22)
 
 Waves W1–W6 complete (PRs #1578–#1604). Hardware-validated on JTS3 +
 UMIK-2: first fully-calibrated run 2026-07-19. **Legacy is deprecated**
 and scheduled for deletion in W5b (see Future work). The v2 acoustic
 playback binding
 (`bind_program_playback_seams`) is exercised on real CamillaDSP
-hardware; every orchestration test injects fakes.
+hardware; every orchestration test injects fakes. T2's summed-flatness
+delay refinement is still pre-merge: its first JTS3 run caught a
+full-IR-gap-versus-peak-frame-residual bug, now corrected and awaiting a clean
+independent re-review plus repeat hardware VERIFY. See
+[`crossover-measurement-reproducibility-plan.md`](crossover-measurement-reproducibility-plan.md)
+§10–§11 for the exact evidence and gate state.
 
 ---
 
@@ -98,10 +103,11 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    delay, polarity, trims, per-band SNR — folded into a
    `MeasuredCrossoverCandidate`. GCC-PHAT supplies a drift/parallax-corrected
    seed, polarity, and capture confidence. The delay actually selected for
-   prediction and apply is the minimum-ripple sum within the crossover
-   region's declared `delay_range_ms` magnitude range (plus the same
-   plausibility margin used by the conductor). The GCC seed supplies the sign
-   and centers one ±half-period comb lobe inside that range.
+   prediction and apply is the minimum-ripple **peak-referenced residual**
+   within the crossover region's declared `delay_range_ms` magnitude range
+   (plus the same plausibility margin used by the conductor). The GCC seed is
+   residualized once into that frame, then supplies the sign and centers one
+   ±half-period comb lobe inside the range.
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
@@ -424,20 +430,24 @@ segments rather than re-deriving the nominal edges.
 `_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source
 for polarity and capture-quality confidence. `_build_candidate` reads the
 active crossover region's `delay_range_ms`, expanded by
-`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`; the GCC seed supplies the sign and
+`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`; the full-IR GCC seed is first
+residualized by the branch crop's argmax offset, then supplies the sign and
 centers a ±half-crossover-period lobe inside that declared magnitude range.
 The search minimizes `_ripple_db` across the `_overlap_band_hz` band. The
-selected delay is used by both the predicted sum and the applied candidate.
+selected residual is used by both the predicted sum and the applied candidate.
 `delay_target_driver` is intentionally not required: a fresh preset has no
 applied delay target until this measurement chooses one. The lobe is the true
-intersection around the actual GCC seed; if it does not overlap the declared
-range, refinement is skipped so Fix 3 can reject the original implausible seed.
+intersection around the residualized GCC seed; if it does not overlap the
+declared range, refinement is skipped so Fix 3 can reject the original
+implausible seed.
 
 The complex branch TFs are independently argmax-peak-referenced. Therefore
-the objective phases the tweeter by the residual
-`(D_t − D_w) + parallax + selected_signed_delay`; applying the full delay to
-an already referenced TF would double-count the peak gap and recreate the
-reverted ~52 dB comb bug. After selection, the alignment record preserves
+the objective phases the tweeter by
+`parallax + selected_signed_residual`; the deconvolved full-IR argmax gap only
+locates the two independent crops and is never added back to the DSP delay.
+Applying that full gap to an already referenced TF double-counts the reference
+offset and recreates the reverted comb bug (the 2026-07-22 JTS3 run measured
+7.58–7.64 dB after exactly this mistake). After selection, the alignment record preserves
 `delay_us == raw_delay_us - parallax_us`; `seed_delay_us` retains the corrected
 GCC seed. `alignment_confidence` remains GCC seed/capture confidence and is
 labelled `gcc_phat_seed`—it is not a confidence score for the flatness
@@ -445,11 +455,10 @@ minimum. Seed ripple, improvement, refinement delta, and boundary status are
 separate retained evidence.
 
 The selection objective uses the listening-plane reference
-`peak_gap + parallax + selected_delay`. The predicted sum is compared with
-VERIFY back at the measurement mic, so it uses that same selected delay in
-the measured frame, `peak_gap + selected_delay`. Keeping this coordinate
+`parallax + selected_delay`. The predicted sum is compared with VERIFY back at
+the measurement mic using the same expression. Keeping this coordinate
 transform explicit preserves both the parallax correction and prediction ↔
-VERIFY comparability.
+VERIFY comparability without reconstructing an unrelated full-IR delay.
 
 ## Gotchas — the W6 bug-class catalog (do not reintroduce)
 
@@ -768,4 +777,4 @@ so waves could run in parallel.**
 The default flips to `v2` on 2026-07-19. Legacy remains reachable via
 `JASPER_CROSSOVER_FLOW=legacy` until W5b deletes it.
 
-Last verified: 2026-07-20
+Last verified: 2026-07-22

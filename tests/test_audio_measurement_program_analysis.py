@@ -479,19 +479,22 @@ def test_delay_sign_convention_tweeter_earlier_is_positive():
 
 
 def test_flatness_delay_recovers_and_flattens_known_physical_sum():
-    """T2 physics gate: a wrong GCC lobe must not survive the argmax frame.
+    """T2 physics gate: recover a known RESIDUAL, not the full IR gap.
 
-    The two branch TFs have known flat magnitude/phase and the tweeter's real
-    arrival is 170 us later. A deliberately comb-ambiguous GCC seed points at
-    -350 us; the bounded flatness walk must recover the physical -170 us
-    woofer delay and flatten the ACTUAL (non-peak-referenced) branch sum.
+    The independently peak-referenced branch TFs need a known -40 us woofer
+    correction. Their source IRs may nevertheless have an arbitrary 170 us
+    argmax gap, and the deliberately comb-ambiguous GCC seed lives in that
+    full-IR coordinate. Residualizing the seed may orient the search lobe; the
+    170 us crop offset must never be added back to the applied result.
     """
     freqs = np.linspace(2000.0, 4000.0, 1001)
     omega = 2.0 * np.pi * freqs
     woofer_peak = np.ones(freqs.size, dtype=complex)
-    tweeter_peak = np.full(freqs.size, 0.85 + 0.0j)
-    peak_gap_us = 170.0  # D_t - D_w: tweeter arrives later
-    gcc_seed_us = -350.0
+    known_residual_us = -40.0
+    tweeter_peak = 0.85 * np.exp(-1j * omega * 40.0e-6)
+    analysis_peak_gap_us = 170.0
+    gcc_full_seed_us = -350.0
+    residual_seed_us = gcc_full_seed_us + analysis_peak_gap_us
 
     refined_us, refined_objective, seed_objective, at_bound = _flatness_delay_us(
         freqs,
@@ -502,24 +505,19 @@ def test_flatness_delay_recovers_and_flattens_known_physical_sum():
         +1,
         lo_hz=2000.0,
         hi_hz=4000.0,
-        reference_gap_us=peak_gap_us,
+        reference_gap_us=0.0,
         search_bounds_us=(-400.0, 0.0),
-        seed_delay_us=gcc_seed_us,
+        seed_delay_us=residual_seed_us,
     )
-    assert refined_us == pytest.approx(-peak_gap_us, abs=2.0)
+    assert refined_us == pytest.approx(known_residual_us, abs=2.0)
     assert refined_objective < seed_objective
     assert not at_bound
 
-    d_w_us = 500.0
-    d_t_us = d_w_us + peak_gap_us
-    W_physical = woofer_peak * np.exp(-1j * omega * d_w_us * 1e-6)
-    T_physical = tweeter_peak * np.exp(-1j * omega * d_t_us * 1e-6)
-
     def actual_sum(applied_delay_us: float) -> np.ndarray:
         # Negative signed delay means delay the woofer by its magnitude.
-        return W_physical * np.exp(
+        return woofer_peak * np.exp(
             -1j * omega * max(0.0, -applied_delay_us) * 1e-6
-        ) + T_physical * np.exp(
+        ) + tweeter_peak * np.exp(
             -1j * omega * max(0.0, applied_delay_us) * 1e-6
         )
 
@@ -527,10 +525,17 @@ def test_flatness_delay_recovers_and_flattens_known_physical_sum():
         freqs, actual_sum(refined_us), 2000.0, 4000.0,
     )
     gcc_ripple = _ripple_db(
-        freqs, actual_sum(gcc_seed_us), 2000.0, 4000.0,
+        freqs, actual_sum(residual_seed_us), 2000.0, 4000.0,
+    )
+    reconstructed_full_ripple = _ripple_db(
+        freqs,
+        actual_sum(refined_us - analysis_peak_gap_us),
+        2000.0,
+        4000.0,
     )
     assert refined_ripple < 0.05
     assert gcc_ripple > 5.0
+    assert reconstructed_full_ripple > 5.0
 
 
 def test_flatness_search_lobe_intersects_actual_seed_window_or_falls_back():
@@ -581,21 +586,26 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
     expected_raw_us = (d_w - d_t) / SR * 1e6
     expected_delay_us = expected_raw_us - geometry.parallax_us()
     assert result.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
+    peak_gap_us = (
+        int(np.argmax(np.abs(tweeter_ir))) - int(np.argmax(np.abs(woofer_ir)))
+    ) / SR * 1e6
+    residual_seed_us = peak_gap_us + result.alignment.seed_delay_us
     signed_lobe = _flatness_search_lobe_us(
         (0.0, 1000.0),
-        result.alignment.seed_delay_us,
+        residual_seed_us,
         FC_HZ,
     )
     assert signed_lobe[0] <= result.alignment.delay_us <= signed_lobe[1]
     assert math.copysign(1.0, signed_lobe[0] + signed_lobe[1]) == math.copysign(
         1.0,
-        result.alignment.seed_delay_us,
+        residual_seed_us,
     )
-    # The band-limited synthetic IR's spectral truncation shifts its argmax by
-    # a fraction of a sample relative to the impulse placement. The production
-    # objective operates in that measured argmax frame, so allow that expected
-    # analysis granularity in addition to the 2 us search grid.
-    assert result.alignment.delay_us == pytest.approx(expected_delay_us, abs=8.0)
+    # Peak-referencing removes the injected absolute branch-delay difference.
+    # Only the declared mic-parallax transform remains in the applied residual;
+    # rebuilding the full ``expected_delay_us`` here is the hardware-caught bug.
+    assert result.alignment.delay_us == pytest.approx(
+        -geometry.parallax_us(), abs=8.0,
+    )
     assert result.alignment.raw_delay_us == pytest.approx(
         result.alignment.delay_us + result.alignment.parallax_us, abs=1e-9,
     )
@@ -615,9 +625,6 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
         if response.validity_floor_hz is not None
     ]
     lo_hz = max([lo_hz, *floors])
-    peak_gap_us = (
-        int(np.argmax(np.abs(tweeter_ir))) - int(np.argmax(np.abs(woofer_ir)))
-    ) / SR * 1e6
     predicted_at_mic = _predicted_sum(
         responses["woofer"].complex_tf,
         responses["tweeter"].complex_tf,
@@ -625,7 +632,7 @@ def test_flatness_refinement_production_path_preserves_parallax_contract(
         result.candidate.trim_db["tweeter"],
         result.alignment.polarity_sign,
         freqs_hz=responses["woofer"].freqs_hz,
-        residual_delay_us=peak_gap_us + result.candidate.delay_us,
+        residual_delay_us=geometry.parallax_us() + result.candidate.delay_us,
     )
     assert result.candidate.predicted_ripple_db == pytest.approx(
         _ripple_db(
