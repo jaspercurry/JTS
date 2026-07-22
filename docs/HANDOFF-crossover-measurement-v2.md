@@ -429,7 +429,9 @@ centers a ±half-crossover-period lobe inside that declared magnitude range.
 The search minimizes `_ripple_db` across the `_overlap_band_hz` band. The
 selected delay is used by both the predicted sum and the applied candidate.
 `delay_target_driver` is intentionally not required: a fresh preset has no
-applied delay target until this measurement chooses one.
+applied delay target until this measurement chooses one. The lobe is the true
+intersection around the actual GCC seed; if it does not overlap the declared
+range, refinement is skipped so Fix 3 can reject the original implausible seed.
 
 The complex branch TFs are independently argmax-peak-referenced. Therefore
 the objective phases the tweeter by the residual

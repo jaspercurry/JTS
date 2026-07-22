@@ -1381,7 +1381,7 @@ def _flatness_search_lobe_us(
     magnitude_bounds_us: tuple[float, float],
     seed_delay_us: float,
     fc_hz: float,
-) -> tuple[float, float]:
+) -> tuple[float, float] | None:
     """Orient and narrow declared magnitudes to the GCC seed's comb lobe.
 
     A fresh preset legitimately has no ``delay_target_driver`` yet. GCC's sign
@@ -1404,12 +1404,12 @@ def _flatness_search_lobe_us(
         declared_lo_us, declared_hi_us = -hi_mag_us, -lo_mag_us
     else:
         declared_lo_us, declared_hi_us = lo_mag_us, hi_mag_us
-    center_us = min(max(float(seed_delay_us), declared_lo_us), declared_hi_us)
     half_period_us = 0.5e6 / fc_hz
-    return (
-        max(declared_lo_us, center_us - half_period_us),
-        min(declared_hi_us, center_us + half_period_us),
-    )
+    search_lo_us = max(declared_lo_us, seed_delay_us - half_period_us)
+    search_hi_us = min(declared_hi_us, seed_delay_us + half_period_us)
+    if search_lo_us > search_hi_us:
+        return None
+    return search_lo_us, search_hi_us
 
 
 def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -> float:
@@ -2084,8 +2084,13 @@ def _build_candidate(
             alignment.delay_us,
             fc_hz,
         )
-        selected_delay_us, selected_ripple_db, selected_seed_ripple_db, at_bound = (
-            _flatness_delay_us(
+        if search_lobe_us is not None:
+            (
+                selected_delay_us,
+                selected_ripple_db,
+                selected_seed_ripple_db,
+                at_bound,
+            ) = _flatness_delay_us(
                 freqs,
                 W,
                 T,
@@ -2098,21 +2103,20 @@ def _build_candidate(
                 search_bounds_us=search_lobe_us,
                 seed_delay_us=alignment.delay_us,
             )
-        )
-        if math.isfinite(selected_ripple_db) and math.isfinite(
-            selected_seed_ripple_db
-        ):
-            delay_us = selected_delay_us
-            seed_ripple_db = selected_seed_ripple_db
-            flatness_improvement_db = seed_ripple_db - selected_ripple_db
-            flatness_at_bound = at_bound
-            # VERIFY is captured back at the measurement microphone. The
-            # applied delay therefore appears there against the measured peak
-            # gap, without the listening-plane parallax transform used by the
-            # selection objective above. It is the same selected delay in two
-            # explicit coordinate frames, not two independently derived
-            # delays.
-            residual_delay_us = peak_gap_us + delay_us
+            if math.isfinite(selected_ripple_db) and math.isfinite(
+                selected_seed_ripple_db
+            ):
+                delay_us = selected_delay_us
+                seed_ripple_db = selected_seed_ripple_db
+                flatness_improvement_db = seed_ripple_db - selected_ripple_db
+                flatness_at_bound = at_bound
+                # VERIFY is captured back at the measurement microphone. The
+                # applied delay therefore appears there against the measured peak
+                # gap, without the listening-plane parallax transform used by the
+                # selection objective above. It is the same selected delay in two
+                # explicit coordinate frames, not two independently derived
+                # delays.
+                residual_delay_us = peak_gap_us + delay_us
     # Predicted APPLIED sum ``W_xo·g_w + s·T_xo·g_t·e^{−jωτ}`` (design §5.6.6).
     # The legacy/GCC path retains its zero-residual prediction. T2's bounded
     # flatness path explicitly predicts at the selected ARGMAX-FRAME residual,

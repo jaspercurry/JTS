@@ -533,6 +533,14 @@ def test_flatness_delay_recovers_and_flattens_known_physical_sum():
     assert gcc_ripple > 5.0
 
 
+def test_flatness_search_lobe_intersects_actual_seed_window_or_falls_back():
+    half_period_us = 0.5e6 / 1600.0
+    assert _flatness_search_lobe_us((0.0, 400.0), -631.0, 1600.0) == pytest.approx(
+        (-400.0, -631.0 + half_period_us),
+    )
+    assert _flatness_search_lobe_us((0.0, 400.0), -800.0, 1600.0) is None
+
+
 @pytest.mark.parametrize(
     ("d_w", "d_t"),
     [
