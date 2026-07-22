@@ -998,9 +998,16 @@ page's Source selector can switch mux into manual mode; mux then asks
 or off. Before moving the fan-in gate, mux asks `VolumeCoordinator` to
 prepare the target source's volume carrier; after the gate moves, it
 finalizes the steady-state carrier. This is the source-switch transient
-guard. While no source has a guarded winner, mux keeps fan-in in `NONE`
-so a renderer cannot leak through between polls. The `/sources/`
-wizard remains the on/off surface.
+guard. Native producer notifications (librespot state-file inotify,
+AirPlay/Bluetooth D-Bus signals, and fan-in USB frame-flow edges) are wake hints
+only: every hint makes mux re-read all source state and enter the same
+reconciler used by its fixed 1 Hz lost-alert patrol. Duplicate hints coalesce;
+an unreadable probe is `unknown` and retains an active last-known state for a
+bounded 5 s grace rather than inventing an immediate stop/start edge; sustained
+failure then expires inactive so a dead adapter cannot pin a winner. While no
+source has a guarded winner, mux keeps
+fan-in in `NONE` so a renderer cannot leak through before reconciliation. The
+`/sources/` wizard remains the on/off surface.
 
 All music/content sources enter the fan-in topology through a private
 snd-aloop lane. Before adding another playback source, read
@@ -2610,7 +2617,7 @@ Dial / voice "louder" / etc. do NOT write back to the gadget mixer
 — the host slider is one-way input, mirroring AirPlay sender
 behavior. See HANDOFF-usbsink.md §3.2 for the rationale.
 
-**Source arbitration — sticky sessions (updated 2026-07-17).** USB is a
+**Source arbitration — sticky sessions (updated 2026-07-22).** USB is a
 **passive** source: in auto mode it takes the speaker whenever it is streaming
 frames AND no explicit session (AirPlay/Spotify/Bluetooth) is active. An
 explicit session that *starts* preempts USB (a deliberate cast wins), but USB
@@ -2622,8 +2629,12 @@ is the manual override. **Liveness is frames-only — there is NO audio-level
 gate.** The old `rms_dbfs > −60` "combo silence gate" was removed: it conflated
 arbitration with output-gating and dropped faint audio and cut out on
 level-driven quiet browser-video passages (a quiet stretch below −60 read as
-"stopped"). It did NOT cause the ~1-2s cold-start detect — that is the 1 Hz
-poll's 2-tick frames baseline, unchanged by this. The −60 threshold
+"stopped"). USB start detection no longer waits for two 1 Hz samples: fan-in
+samples its existing frame counter at 20 Hz, publishes `direct.streaming`, and
+sends an edge-only `NOTIFY usbsink` wake hint to mux. Start detection is thus
+bounded to roughly 0–50 ms before the normal probes/handoff; stop retains a 2 s
+hysteresis. The fixed 1 Hz patrol is still the recovery path if an alert is
+lost. The −60 threshold
 (`USBSINK_PLAYING_RMS_DBFS`) is display-only now (the `/state` level readout).
 Code: `_pick_winner` / `_explicit_active` / `step_combo_liveness` in
 [`jasper/mux.py`](jasper/mux.py) (module docstring has the full rationale);

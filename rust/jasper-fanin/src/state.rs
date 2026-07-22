@@ -51,11 +51,13 @@
 //!   instance). On shutdown, we don't bother — systemd's
 //!   `RuntimeDirectory=` cleans up the whole runtime dir on stop.
 //!
-//! - **Shutdown via `set_nonblocking` + poll.** The accept loop
-//!   sets a 500ms timeout, checks the shutdown flag between accepts,
-//!   so SIGTERM is honored within ~500ms.
+//! - **Readiness-driven accept with bounded shutdown poll.** `poll(2)` wakes as
+//!   soon as a client connects while retaining a 500 ms timeout for checking the
+//!   shutdown flag. Do not replace this with a blind sleep: that added ~500 ms
+//!   to every other short-lived STATUS/SELECT connection in production.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -80,8 +82,8 @@ use crate::watchdog::Heartbeat;
 /// server thread).
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Poll interval for the accept loop, used to honor shutdown without
-/// blocking indefinitely in `accept()`.
+/// Maximum `poll(2)` wait for the accept loop, bounding shutdown latency while
+/// socket readiness still wakes immediately.
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Bound on how long a `TRIM` command waits for the mixer work loop to consume
@@ -97,6 +99,28 @@ const TRIM_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 /// enough to return promptly once the flag clears (a trim usually completes in
 /// one period), long enough that the poll loop is not a busy-spin.
 const TRIM_WAIT_POLL: Duration = Duration::from_millis(1);
+
+fn wait_for_listener(listener: &UnixListener, timeout: Duration) -> std::io::Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    loop {
+        // SAFETY: `descriptor` points to one initialized pollfd for the duration
+        // of the syscall; poll neither retains nor aliases the pointer.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if ready >= 0 {
+            return Ok(ready > 0);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
+}
 
 pub struct StateServer {
     /// Process start instant — for uptime in the snapshot.
@@ -291,18 +315,24 @@ impl StateServer {
         );
 
         while !shutdown.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    if let Err(e) = self.handle_connection(stream) {
-                        warn!("event=fanin.state_server.handle_failed detail={:#}", e);
+            match wait_for_listener(&listener, ACCEPT_POLL_INTERVAL) {
+                Ok(false) => continue,
+                Ok(true) => loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            if let Err(e) = self.handle_connection(stream) {
+                                warn!("event=fanin.state_server.handle_failed detail={:#}", e);
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) => {
+                            warn!("event=fanin.state_server.accept_failed detail={}", e);
+                            break;
+                        }
                     }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(ACCEPT_POLL_INTERVAL);
-                }
+                },
                 Err(e) => {
-                    warn!("event=fanin.state_server.accept_failed detail={}", e);
-                    std::thread::sleep(ACCEPT_POLL_INTERVAL);
+                    warn!("event=fanin.state_server.poll_failed detail={}", e);
                 }
             }
         }
@@ -876,6 +906,32 @@ impl StateServer {
                 buf.push(',');
                 push_kv_bool(&mut buf, "present", d.present.load(Ordering::Relaxed));
                 buf.push(',');
+                push_kv_bool(&mut buf, "streaming", d.streaming.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "stream_starts",
+                    d.stream_starts.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "stream_stops",
+                    d.stream_stops.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "notify_attempts",
+                    d.notify_attempts.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "notify_failures",
+                    d.notify_failures.load(Ordering::Relaxed),
+                );
+                buf.push(',');
                 // Coarse capture-health observability: "capturing" (present +
                 // flowing), "idle" (no host / attached-but-silent / (re)opening),
                 // or "broken" (the flowing→dead zombie signature). This and the
@@ -1368,6 +1424,34 @@ fn push_reference(buf: &mut String, key: &str, reference: Option<HeldLoudnessRef
 mod tests {
     use super::*;
 
+    #[test]
+    fn listener_poll_wakes_on_connection_before_shutdown_timeout() {
+        let unique = format!(
+            "jasper-fanin-poll-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        );
+        let path = std::env::temp_dir().join(unique);
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client_path = path.clone();
+        let connector = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            UnixStream::connect(client_path).unwrap()
+        });
+        let started = Instant::now();
+        assert!(wait_for_listener(&listener, Duration::from_millis(500)).unwrap());
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "socket readiness must wake poll rather than pay the 500 ms timeout",
+        );
+        let _stream = connector.join().unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
     fn make_test_server() -> StateServer {
         // Test-only: the direct fixture builds a DrainStats. Scoped here (not a
         // module-level import) so a non-test build doesn't carry an unused import.
@@ -1449,6 +1533,11 @@ mod tests {
                         period_frames: 256,
                         buffer_frames: Arc::new(AtomicU64::new(768)),
                         present: Arc::new(AtomicBool::new(true)),
+                        streaming: Arc::new(AtomicBool::new(true)),
+                        stream_starts: Arc::new(AtomicU64::new(2)),
+                        stream_stops: Arc::new(AtomicU64::new(1)),
+                        notify_attempts: Arc::new(AtomicU64::new(3)),
+                        notify_failures: Arc::new(AtomicU64::new(0)),
                         opens: Arc::new(AtomicU64::new(1)),
                         retries: Arc::new(AtomicU64::new(0)),
                         reopens: Arc::new(AtomicU64::new(0)),
@@ -2299,6 +2388,11 @@ mod tests {
         let direct = inputs.iter().find(|i| i["label"] == "usbsink").unwrap();
         assert_eq!(direct["source"].as_str(), Some("direct"));
         assert_eq!(direct["direct"]["present"].as_bool(), Some(true));
+        assert_eq!(direct["direct"]["streaming"].as_bool(), Some(true));
+        assert_eq!(direct["direct"]["stream_starts"].as_u64(), Some(2));
+        assert_eq!(direct["direct"]["stream_stops"].as_u64(), Some(1));
+        assert_eq!(direct["direct"]["notify_attempts"].as_u64(), Some(3));
+        assert_eq!(direct["direct"]["notify_failures"].as_u64(), Some(0));
         // health: present + frames_flowed + zero streak = actively capturing (the
         // combo runtime-fallback watcher's healthy reading). See mixer::direct_health.
         assert_eq!(direct["direct"]["health"].as_str(), Some("capturing"));

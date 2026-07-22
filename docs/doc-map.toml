@@ -206,7 +206,7 @@ code = [
   "jasper/local_sources/**",
   "jasper/mux.py",
   "jasper/renderer.py",
-  "jasper/source_state.py",
+  "jasper/source_[es]*.py",
   "jasper/camilla.py",
   "jasper/camilla_config_contract.py",
   "jasper/output_hardware.py",

@@ -91,6 +91,13 @@ Spotify Connect volume is renderer/source logic.
 6. **Do not hide audio safety behind plugins.** Camilla ceilings,
    positive-gain clamps, source handoff guards, and duck/restore
    invariants remain centralized and testable.
+7. **Events wake; the host reconciler decides.** A source adapter may translate
+   an inotify/D-Bus/frame-flow edge into a dirty-source hint. It must not choose
+   a winner or move fan-in itself. `jasper-mux` re-reads authoritative state and
+   applies one policy path for both alerts and its fixed lost-alert patrol.
+   Duplicate hints coalesce; `unknown` observations retain an active last-known
+   state for a bounded 5 s grace so a transient probe failure cannot synthesize
+   a stop/start flap, then expire inactive so a dead adapter cannot pin a winner.
 
 ## Target Capability Shape
 
@@ -446,7 +453,8 @@ capability unsupported and return a clear user-facing result.
 - A source-specific `if provider == ...` branch in `VolumeCoordinator`.
 - A source-specific `if provider == ...` branch in mux policy unless it
   is genuinely source arbitration, not provider routing.
-- Network calls inside a 1 Hz loop unless rate-limited and proven cheap.
+- Network calls inside the fixed patrol/reconcile loop unless rate-limited and
+  proven cheap.
 - Silent fallback from broken push volume to permanent Camilla-master
   semantics without surfacing degraded health.
 

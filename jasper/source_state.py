@@ -4,10 +4,11 @@
 
 """Source-state probes for the four music renderers.
 
-Each `<source>_playing()` returns True iff that renderer is
-currently producing audio. Probes are fail-soft: any transport
-error (missing daemon, missing CLI, timeout, parse miss) is
-logged at debug and returns False.
+Each `<source>_playing()` returns True iff that renderer is currently producing
+audio and preserves the historical fail-soft bool contract. The mux uses the
+matching `<source>_playing_observed()` probes, whose third ``None`` state means
+"the probe failed, do not reinterpret that as the source stopping." This keeps
+a transient D-Bus/CLI/status failure from creating a false stop/start edge.
 
 Both `jasper.renderer.RendererClient.active_renderers` (consumed
 by voice tools, transport, volume coordinator) and `jasper.mux`'s
@@ -19,10 +20,12 @@ when daemons change.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from . import bluealsa_probe
@@ -63,7 +66,34 @@ async def spotify_playing(
     event via its --onevent hook. Reading on every probe is cheap
     (file is a few hundred bytes); is_playing returns False on
     missing/malformed file."""
-    return librespot_state.is_playing(librespot_state_path)
+    return await spotify_playing_observed(librespot_state_path) is True
+
+
+async def spotify_playing_observed(
+    librespot_state_path: str = librespot_state.DEFAULT_PATH,
+) -> bool | None:
+    """Tri-state Spotify observation for source arbitration.
+
+    A missing state file is a definite inactive state: librespot has not emitted
+    an event yet. A malformed/unreadable file is unknown, because treating a
+    torn or temporarily inaccessible observation as "stopped" can make the mux
+    flutter away from an otherwise healthy session.
+    """
+    path = Path(librespot_state_path)
+    try:
+        state = json.loads(path.read_text())
+    except FileNotFoundError:
+        return False
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.debug("librespot state observation failed (%s): %s", path, exc)
+        return None
+    if not isinstance(state, dict):
+        return None
+    if state.get("playing") is True:
+        return True
+    if state.get("paused") is True or state.get("stopped") is True:
+        return False
+    return False
 
 
 def _airplay_metadata_gate_disabled() -> bool:
@@ -80,7 +110,7 @@ def _airplay_metadata_gate_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
-async def _airplay_has_metadata_title() -> bool:
+async def _airplay_has_metadata_title_observed() -> bool | None:
     """True iff shairport-sync's MPRIS Metadata carries a non-empty
     xesam:title at the moment we ask.
 
@@ -92,9 +122,8 @@ async def _airplay_has_metadata_title() -> bool:
     audio frames carry a track title from the sender. Genuine sessions
     populate xesam:title with the sender's current track.
 
-    Fail-soft: any DBus / busctl error returns False, treating an
-    unverifiable session as phantom. The off-switch above is the
-    escape hatch if this ever produces false negatives in the field.
+    Transport failures are unknown rather than inactive. The public bool wrapper
+    below retains the historical fail-soft behavior for non-mux callers.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -109,13 +138,18 @@ async def _airplay_has_metadata_title() -> bool:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
     except (FileNotFoundError, asyncio.TimeoutError) as e:
         logger.debug("busctl Metadata probe failed: %s", e)
-        return False
+        return None
     if proc.returncode != 0:
         return False
     return _AIRPLAY_TITLE_RE.search(stdout) is not None
 
 
-async def airplay_playing() -> bool:
+async def _airplay_has_metadata_title() -> bool:
+    """Historical bool wrapper used by tests and non-arbiter callers."""
+    return await _airplay_has_metadata_title_observed() is True
+
+
+async def airplay_playing_observed() -> bool | None:
     """True iff shairport-sync is currently emitting AirPlay audio.
 
     Predicate is two-part since 2026-05-22:
@@ -151,7 +185,7 @@ async def airplay_playing() -> bool:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
     except (FileNotFoundError, asyncio.TimeoutError) as e:
         logger.debug("busctl PlaybackStatus probe failed: %s", e)
-        return False
+        return None
     if proc.returncode != 0:
         return False
     # busctl emits a single line like:  v s "Playing"
@@ -163,7 +197,12 @@ async def airplay_playing() -> bool:
     # the gate is disabled via the escape-hatch env var.
     if _airplay_metadata_gate_disabled():
         return True
-    return await _airplay_has_metadata_title()
+    return await _airplay_has_metadata_title_observed()
+
+
+async def airplay_playing() -> bool:
+    """Historical fail-soft bool wrapper around the mux's tri-state probe."""
+    return await airplay_playing_observed() is True
 
 
 async def usbsink_playing() -> bool:
@@ -212,6 +251,30 @@ def usbsink_direct_frames_read(
         if frames is not None:
             return frames
     return _nonnegative_int_counter(lane.get("frames_read"))
+
+
+def usbsink_direct_streaming(
+    fanin_status: dict[str, Any] | None,
+) -> bool | None:
+    """Fan-in's edge-detected USB streaming state, when available.
+
+    New fan-in builds sample their existing host-input counter on a lightweight
+    helper thread and publish this boolean in ``direct.streaming``. Older builds
+    omit it; mux then falls back to comparing the cumulative frame counter across
+    patrols. ``None`` also covers a missing/malformed STATUS response, allowing
+    the arbiter to retain its last known state rather than invent a stop.
+    """
+    lane = fanin_usbsink_input(fanin_status)
+    if not (
+        isinstance(lane, dict)
+        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
+    ):
+        return None
+    direct = lane.get("direct")
+    if not isinstance(direct, dict):
+        return None
+    value = direct.get("streaming")
+    return value if isinstance(value, bool) else None
 
 
 def _finite_float(value: Any) -> float | None:
@@ -310,7 +373,7 @@ def usbsink_direct_muted(
     return value if isinstance(value, bool) else None
 
 
-async def bluetooth_playing() -> bool:
+async def bluetooth_playing_observed() -> bool | None:
     """bluealsa-cli list-pcms prints one line per BlueALSA PCM path.
     On an idle box this is empty; with a phone connected and an A2DP
     stream open you get one or more lines like
@@ -320,5 +383,10 @@ async def bluetooth_playing() -> bool:
     reliably."""
     stdout = await bluealsa_probe.list_pcms(logger)
     if stdout is None:
-        return False
+        return None
     return b"a2dpsnk/source" in stdout
+
+
+async def bluetooth_playing() -> bool:
+    """Historical fail-soft bool wrapper around the mux's tri-state probe."""
+    return await bluetooth_playing_observed() is True

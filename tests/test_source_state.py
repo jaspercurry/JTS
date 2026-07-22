@@ -101,6 +101,15 @@ async def test_spotify_playing_state_file_says_paused(tmp_path):
     assert await source_state.spotify_playing(str(path)) is False
 
 
+@pytest.mark.asyncio
+async def test_spotify_observation_distinguishes_bad_read_from_stopped(tmp_path):
+    path = tmp_path / "librespot.state.json"
+    path.write_text("{not-json")
+    assert await source_state.spotify_playing_observed(str(path)) is None
+    # Existing callers retain the historical fail-soft bool contract.
+    assert await source_state.spotify_playing(str(path)) is False
+
+
 # ----------------------------------------------------------------------
 # airplay_playing — busctl Get PlaybackStatus AND Metadata on shairport
 #
@@ -175,6 +184,15 @@ async def test_airplay_playing_handles_busctl_missing():
         side_effect=FileNotFoundError("busctl"),
     ):
         assert await source_state.airplay_playing() is False
+
+
+@pytest.mark.asyncio
+async def test_airplay_observation_reports_transport_failure_as_unknown():
+    with patch(
+        "asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError("busctl"),
+    ):
+        assert await source_state.airplay_playing_observed() is None
 
 
 @pytest.mark.asyncio
@@ -260,6 +278,21 @@ async def test_usbsink_playing_fails_soft_when_fanin_is_unavailable(monkeypatch)
     monkeypatch.setattr(source_state, "read_fanin_status", lambda: None)
 
     assert await source_state.usbsink_playing() is False
+
+
+def test_usbsink_direct_streaming_reads_new_fanin_edge_state():
+    status = {
+        "inputs": [{
+            "label": "usbsink",
+            "source": "direct",
+            "direct": {"streaming": True},
+        }],
+    }
+    assert source_state.usbsink_direct_streaming(status) is True
+    status["inputs"][0]["direct"]["streaming"] = False
+    assert source_state.usbsink_direct_streaming(status) is False
+    del status["inputs"][0]["direct"]["streaming"]
+    assert source_state.usbsink_direct_streaming(status) is None
 
 
 # ----------------------------------------------------------------------

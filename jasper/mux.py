@@ -4,13 +4,11 @@
 
 """jasper-mux — renderer source-arbiter.
 
-Polls each renderer's state on a short interval and, when a new
-source transitions to "playing" while another is already playing,
-pauses the older one. Implements "most recent source wins" UX
-across the AirPlay / Spotify Connect / Bluetooth A2DP renderers.
-
-Cadence: 1 Hz polling. Each tick fans out to three concurrent
-state probes; the whole tick takes <100 ms typically.
+Native producer notifications wake one host-owned reconciler, which re-reads
+all source state and applies the existing sticky-session policy. A fixed 1 Hz
+patrol invokes that exact same reconciler as a lost-alert safety net. Alerts are
+therefore hints, never routing commands: stale and duplicate alerts are harmless,
+and the patrol cannot disagree with a separate alert policy because none exists.
 
 Renderer support:
   Spotify (librespot):
@@ -103,10 +101,11 @@ from .audio_runtime_plan import (
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
-    airplay_playing,
-    bluetooth_playing,
-    spotify_playing,
+    airplay_playing_observed as airplay_playing,
+    bluetooth_playing_observed as bluetooth_playing,
+    spotify_playing_observed as spotify_playing,
     usbsink_direct_frames_read,
+    usbsink_direct_streaming,
 )
 from .spotify_oauth import default_spotify_redirect_uri
 
@@ -188,6 +187,12 @@ def _usbsink_preempt_disabled() -> bool:
 # stops the frames and macOS tears the stream down, so the counter genuinely
 # stalls and USB releases after this many ticks.
 USBSINK_COMBO_STOP_TICKS = 2
+ALERT_COALESCE_SEC = 0.05
+# A transient unreadable probe must not synthesize stop/start flutter, but a
+# permanently dead adapter must not pin a vanished winner forever. Hold an
+# active last-known state for this bounded grace, then fail inactive until a
+# successful observation re-establishes it.
+UNKNOWN_ACTIVE_HOLD_SEC = 5.0
 
 
 @dataclass(frozen=True)
@@ -203,10 +208,10 @@ class ComboLiveness:
     the arbiter (an explicit session simply outranks USB), so level dropped out
     of liveness entirely. That fixed dropped-faint-audio and the level-driven
     quiet-passage dropout (a quiet stretch keeps the counter advancing, so the
-    lane no longer reads "stopped"). It does NOT change the ~1-2 s cold-start
-    detect — that is this 1 Hz poll's 2-tick frames baseline, not the gate — nor
-    a dropout from the host actually tearing the stream down (frames stop; both
-    old and new drop identically). See docs/HANDOFF-usbsink.md §3.3 "Residual".
+    lane no longer reads "stopped"). New fan-in builds publish a 20 Hz-derived
+    streaming edge; this state machine remains the rolling-upgrade fallback for
+    older STATUS shapes. A host that actually tears the stream down still stops
+    frames and releases after the stop hysteresis.
     """
 
     prev_frames: int | None = None
@@ -229,11 +234,13 @@ def step_combo_liveness(
 
     - advanced -> streaming, idle reset.
     - first reading or counter reset -> re-baseline without inventing a delta.
-    - flat / missing frames -> non-advance; drop after ``stop_ticks`` consecutive
-      non-advancing ticks while streaming (the pause / stream-teardown edge).
-      ``prev_frames`` still tracks the counter so a later advance is seen.
+    - flat frames -> drop after ``stop_ticks`` consecutive non-advancing patrols.
+    - missing frames -> unknown; retain the complete prior state. A STATUS miss
+      is not evidence that a stream stopped.
     """
     prev = state.prev_frames
+    if frames is None:
+        return state
     advanced = frames is not None and prev is not None and frames > prev
     new_prev = frames if frames is not None else prev
     if advanced:
@@ -251,6 +258,12 @@ class _State:
     when a source goes from not-playing to playing."""
     playing: dict[Source, bool] = field(
         default_factory=lambda: {s: False for s in MUSIC_SOURCES},
+    )
+    observations: dict[Source, str] = field(
+        default_factory=lambda: {s: "unknown" for s in MUSIC_SOURCES},
+    )
+    known_at: dict[Source, float] = field(
+        default_factory=lambda: {s: 0.0 for s in MUSIC_SOURCES},
     )
 
 
@@ -321,30 +334,150 @@ class Mux:
         # must not restart-storm the shared daemon every tick. Stay full until
         # the source set changes.
         self._buffer_shrink_blocked = False
+        # Alert/patrol reconciliation. Producers may only mark a source dirty
+        # and wake this event; `_reconcile` is the single policy entry point.
+        self._reconcile_wake = asyncio.Event()
+        self._dirty_sources: set[Source] = set()
+        self._notification_received = {s: 0 for s in MUSIC_SOURCES}
+        self._notification_coalesced = {s: 0 for s in MUSIC_SOURCES}
+        self._notification_last: dict[Source, tuple[str, float] | None] = {
+            s: None for s in MUSIC_SOURCES
+        }
+        self._reconcile_seq = 0
+        self._patrol_count = 0
+        self._patrol_repairs = 0
+        self._last_reconcile: dict[str, Any] | None = None
+        self._last_alert_reconcile_at = 0.0
 
     async def run(self) -> None:
         logger.info(
-            "jasper-mux starting (poll=%.1fs, librespot_state=%s)",
+            "jasper-mux starting (alerts=native, patrol=%.1fs, librespot_state=%s)",
             self.POLL_INTERVAL_SEC, self._librespot_state_path,
         )
         await self._fanin_none_best_effort(reason="startup")
         control_task = asyncio.create_task(self._run_control_server())
+        from .source_events import start_source_event_tasks
+
+        event_tasks = start_source_event_tasks(
+            self.notify_source_changed,
+            spotify_state_path=self._librespot_state_path,
+        )
         try:
+            await self._reconcile(trigger="startup", dirty_sources=set())
+            loop = asyncio.get_running_loop()
+            next_patrol = loop.time() + self.POLL_INTERVAL_SEC
             while True:
                 try:
-                    await self._tick()
+                    timeout = max(0.0, next_patrol - loop.time())
+                    woke = False
+                    try:
+                        await asyncio.wait_for(
+                            self._reconcile_wake.wait(), timeout=timeout,
+                        )
+                        woke = True
+                    except asyncio.TimeoutError:
+                        pass
+
+                    # Catch an alert that landed at the timeout boundary.
+                    if self._reconcile_wake.is_set():
+                        self._reconcile_wake.clear()
+                        woke = True
+                    if woke:
+                        # Coalesce a short burst (e.g. MPRIS status + metadata)
+                        # without imposing delay on the first alert after idle.
+                        since_last = loop.time() - self._last_alert_reconcile_at
+                        if since_last < ALERT_COALESCE_SEC:
+                            await asyncio.sleep(ALERT_COALESCE_SEC - since_last)
+
+                        # An alert may have landed during that sleep. Clear its
+                        # level-triggered wake immediately before snapshotting
+                        # the dirty set (there is no await between these
+                        # operations). A later alert then remains set for the
+                        # next loop instead of causing an empty reconciliation.
+                        self._reconcile_wake.clear()
+
+                    now = loop.time()
+                    patrol_due = now >= next_patrol
+                    dirty = set(self._dirty_sources)
+                    self._dirty_sources.clear()
+                    if not dirty and not patrol_due:
+                        continue
+                    if patrol_due:
+                        while next_patrol <= now:
+                            next_patrol += self.POLL_INTERVAL_SEC
+                    trigger = (
+                        "alert+patrol" if dirty and patrol_due
+                        else "alert" if dirty
+                        else "patrol"
+                    )
+                    await self._reconcile(
+                        trigger=trigger,
+                        dirty_sources=dirty,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("mux tick failed: %s", e)
-                await asyncio.sleep(self.POLL_INTERVAL_SEC)
+                    logger.warning("mux reconcile failed: %s", e)
         finally:
-            control_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await control_task
+            tasks = [control_task, *event_tasks]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if self._volume_coordinator is not None:
                 with contextlib.suppress(Exception):
                     await self._volume_coordinator.aclose()
+
+    def notify_source_changed(self, source: Source, via: str) -> None:
+        """Record a wake hint without making or applying a routing decision."""
+        if source not in MUSIC_SOURCES:
+            return
+        self._notification_received[source] += 1
+        if source in self._dirty_sources:
+            self._notification_coalesced[source] += 1
+        self._dirty_sources.add(source)
+        self._notification_last[source] = (via, time.monotonic())
+        self._reconcile_wake.set()
+        logger.debug("source alert source=%s via=%s", source.value, via)
+
+    async def _reconcile(
+        self,
+        *,
+        trigger: str,
+        dirty_sources: set[Source],
+    ) -> None:
+        """The sole automatic arbitration entry point for alerts and patrols."""
+        started = time.monotonic()
+        before = (self._winner, tuple(self._state.playing.items()))
+        await self._tick()
+        after = (self._winner, tuple(self._state.playing.items()))
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        changed = before != after
+        patrol = "patrol" in trigger
+        if patrol:
+            self._patrol_count += 1
+            if changed and not dirty_sources:
+                self._patrol_repairs += 1
+        self._reconcile_seq += 1
+        if dirty_sources:
+            self._last_alert_reconcile_at = asyncio.get_running_loop().time()
+        self._last_reconcile = {
+            "id": self._reconcile_seq,
+            "trigger": trigger,
+            "dirty_sources": sorted(s.value for s in dirty_sources),
+            "changed": changed,
+            "winner": self._winner.value if self._winner else None,
+            "elapsed_ms": elapsed_ms,
+        }
+        if dirty_sources or (patrol and changed):
+            log_event(
+                logger,
+                "source.reconcile",
+                trigger=trigger,
+                dirty=",".join(sorted(s.value for s in dirty_sources)) or "none",
+                changed=changed,
+                winner=self._winner.value if self._winner else "idle",
+                elapsed_ms=elapsed_ms,
+            )
 
     async def _probe_sources(self) -> dict[Source, bool]:
         spotify, airplay, bluetooth, usbsink = await asyncio.gather(
@@ -353,26 +486,62 @@ class Mux:
             bluetooth_playing(),
             self._usbsink_playing(),
         )
-        return {
+        observed: dict[Source, bool | None] = {
             Source.SPOTIFY: spotify,
             Source.AIRPLAY: airplay,
             Source.BLUETOOTH: bluetooth,
             Source.USBSINK: usbsink,
         }
+        resolved = dict(self._state.playing)
+        now = time.monotonic()
+        for source, value in observed.items():
+            if value is None:
+                known_age = now - self._state.known_at[source]
+                if (
+                    resolved[source]
+                    and known_age >= UNKNOWN_ACTIVE_HOLD_SEC
+                ):
+                    resolved[source] = False
+                    self._state.observations[source] = "unknown_expired"
+                else:
+                    self._state.observations[source] = "unknown"
+                continue
+            resolved[source] = bool(value)
+            self._state.known_at[source] = now
+            self._state.observations[source] = (
+                "active" if value else "inactive"
+            )
+        return resolved
 
-    async def _usbsink_playing(self) -> bool:
+    async def _usbsink_playing(self) -> bool | None:
         """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
         lane.
 
-        fan-in DIRECT-captures the gadget as its sole live ingress owner, so
-        liveness comes from the DIRECT-lane counter advancing across ticks —
-        purely "is the host feeding us frames", with NO audio-level gate (see
-        the module docstring's "Sticky sessions" and `ComboLiveness`). A
-        missing/non-direct fan-in snapshot advances the debounce with an unknown
-        counter; do not issue a second STATUS probe on the 1 Hz mux hot path.
+        fan-in DIRECT-captures the gadget as its sole live ingress owner. New
+        builds publish an edge-detected ``direct.streaming`` boolean from their
+        existing frame counter; older builds fall back to counter deltas across
+        patrols. There is NO audio-level gate (see the module docstring's
+        "Sticky sessions"). A missing/non-direct snapshot is unknown and retains
+        the arbiter's last-known state; do not issue a second STATUS probe.
         """
         fanin = await self._fanin_status_best_effort()
+        streaming = usbsink_direct_streaming(fanin)
+        if streaming is not None:
+            # Keep fallback state coherent for rolling upgrades/downgrades.
+            frames = usbsink_direct_frames_read(fanin)
+            self._usbsink_combo = ComboLiveness(
+                prev_frames=(
+                    frames
+                    if frames is not None
+                    else self._usbsink_combo.prev_frames
+                ),
+                idle_ticks=0,
+                streaming=streaming,
+            )
+            return streaming
         frames = usbsink_direct_frames_read(fanin)
+        if frames is None:
+            return None
         self._usbsink_combo = step_combo_liveness(
             self._usbsink_combo,
             frames,
@@ -968,8 +1137,17 @@ class Mux:
             "winner": self._winner.value if self._winner else None,
             "last_handoff": self._last_handoff,
             "sources": {
-                source.value: {"playing": bool(current.get(source, False))}
+                source.value: self._source_status_payload(source, current)
                 for source in MUSIC_SOURCES
+            },
+            "reconciler": {
+                "patrol_interval_sec": self.POLL_INTERVAL_SEC,
+                "patrols": self._patrol_count,
+                "patrol_repairs": self._patrol_repairs,
+                "pending_sources": sorted(
+                    source.value for source in self._dirty_sources
+                ),
+                "last": self._last_reconcile,
             },
             "usbsink": {
                 # fan-in DIRECT-captures the gadget on every box now; the aloop
@@ -991,6 +1169,27 @@ class Mux:
                     else br.DEFAULT_OUTPUT_BUFFER_FRAMES
                 ),
             },
+        }
+
+    def _source_status_payload(
+        self,
+        source: Source,
+        current: dict[Source, bool],
+    ) -> dict[str, Any]:
+        last_notification = self._notification_last[source]
+        return {
+            "playing": bool(current.get(source, False)),
+            "observation": self._state.observations[source],
+            "notifications": self._notification_received[source],
+            "notifications_coalesced": self._notification_coalesced[source],
+            "last_notification_via": (
+                last_notification[0] if last_notification is not None else None
+            ),
+            "last_notification_age_ms": (
+                round((time.monotonic() - last_notification[1]) * 1000)
+                if last_notification is not None
+                else None
+            ),
         }
 
     def _active_source_name(self, current: dict[Source, bool]) -> str:
@@ -1366,6 +1565,24 @@ class Mux:
             command = raw.decode("utf-8", "replace").strip()
             if command == "STATUS":
                 payload = self._status_payload()
+            elif command.startswith("NOTIFY "):
+                source_name = command.split(" ", 1)[1].strip()
+                try:
+                    source = Source(source_name)
+                except ValueError:
+                    payload = {"error": f"unknown source {source_name!r}"}
+                else:
+                    if source not in MUSIC_SOURCES:
+                        payload = {
+                            "error": f"not a music source {source_name!r}",
+                        }
+                    else:
+                        self.notify_source_changed(source, "uds")
+                        payload = {
+                            "accepted": True,
+                            "source": source.value,
+                            "policy_applied": False,
+                        }
             elif command == "AUTO":
                 payload = await self.auto_select()
             elif command.startswith("TEST_SELECT "):
@@ -1587,10 +1804,11 @@ class Mux:
         fan-in bounce mid-preempt would drop the silence while mux still tracks
         ``_usbsink_preempted=True`` and would never re-mute (the state guard in
         ``_usbsink_set_preempt`` short-circuits the unchanged decision). This
-        per-tick reassertion closes that gap — the next tick re-mutes an
+        per-reconcile reassertion closes that gap — the next alert or patrol re-mutes an
         unmuted-after-restart lane. Idempotent on the fan-in side (it logs only
-        on a real flip → no steady-state journal spam), bounded at the 1 Hz poll
-        cadence, and fail-soft. Mirrors ``_reassert_auto_winner``'s per-tick
+        on a real flip → no steady-state journal spam), alert-coalesced with a
+        fixed 1 Hz patrol fallback, and fail-soft. Mirrors
+        ``_reassert_auto_winner``'s
         SELECT reassertion.
 
         No-op when USB isn't preempted or when the escape hatch is set."""

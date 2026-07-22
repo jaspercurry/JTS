@@ -429,9 +429,14 @@ restarts because it avoids even that gap being spliced mid-stream.
 `state.json`. The system derives USB liveness directly from fan-in's identity-
 bound DIRECT lane:
 
-- **Mux DOES see USB streaming.** `Mux._usbsink_playing` reads the DIRECT lane's
-  liveness counter (`usbsink_direct_frames_read`), and `step_combo_liveness`
-  reports "streaming" purely on frames-advanced — **no audio-level gate** (the
+- **Mux DOES see USB streaming.** fan-in samples the DIRECT lane's existing
+  liveness counter at 20 Hz off the audio thread, publishes
+  `direct.streaming`, and sends an edge-only `NOTIFY usbsink` wake hint to mux.
+  Start detection is roughly 0–50 ms; 2 s of flat samples clears streaming.
+  `Mux._usbsink_playing` reads that published state, with
+  `usbsink_direct_frames_read` + `step_combo_liveness` retained as the
+  rolling-upgrade fallback for older fan-in STATUS shapes. There is **no
+  audio-level gate** (the
   old `rms_dbfs > −60` combo silence gate was removed with the sticky-session
   rework, 2026-07-17; see `docs/HANDOFF-usbsink.md` §3.3 "Sticky sessions" and
   the `jasper.mux` module docstring). USB is a **passive** source: it wins when
@@ -446,9 +451,10 @@ bound DIRECT lane:
   `docs/HANDOFF-usbsink.md` §4.4 / §4.9.
 
 **Arbitration mechanism — now fan-in-native (combo).** mux has
-single-SELECTed the winner lane on every auto-mode tick since the source-
-selection hardening (`414adcd0`, 2026-05-27): `_reassert_auto_winner` re-sends
-`SELECT <winner>` each poll, the sum-all `AUTO` command (`Mux._fanin_auto`)
+single-SELECTed the winner lane on every auto-mode reconciliation since the
+source-selection hardening (`414adcd0`, 2026-05-27):
+`_reassert_auto_winner` re-sends `SELECT <winner>` on native alerts and on the
+fixed 1 Hz lost-alert patrol, the sum-all `AUTO` command (`Mux._fanin_auto`)
 has zero production callers, and the mixer boots at `selected_input_index=-2`
 (NONE — nothing sums but the correction/test lane). The DIRECT usbsink lane
 passes the exact same per-lane `input_selected`/`lane_mix_contributes` gate as
@@ -466,7 +472,8 @@ transition-logged observability (`event=fanin.lane_mute`,
 `/state.renderers.usbsink.muted`) — layered on top of an exclusion that was
 already structurally sound. Crucially the mute is applied at the SUM only:
 the direct lane keeps reporting its pre-mute `frames_read` / `rms_dbfs`, so
-mux's combo-liveness gate still sees a muted-but-streaming host as active (no
+the published `direct.streaming` state still sees a muted-but-streaming host as
+active (no
 mute→"stopped"→release flap; pinned by
 `lane_mix_contributes_mute_overrides_selection`). **Since 2026-07-10 the `:8781`
 preempt path is deleted** (with the aloop solo capture): every box is

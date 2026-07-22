@@ -407,11 +407,23 @@ line command:
 `NONE`. The fan-in daemon does not decide what source should win and
 does not know about volume policy; it only executes the cheap audio
 gate. It starts in `NONE`, and mux keeps it in `NONE` while no source
-has a guarded winner so a renderer that starts between mux polls cannot
+has a guarded winner so a renderer that starts before mux reconciles cannot
 leak through at stale volume. Mux prepares the safe volume carrier
 before moving the gate. The `correction` lane is always mixed so
 room-correction/test sweeps still work while a household source is
 manually selected or while the mux has temporarily selected `NONE`.
+
+The control listener is nonblocking but readiness-driven: `poll(2)` wakes as
+soon as a connection is queued and uses a 500 ms timeout only to re-check the
+shutdown flag. The retired blind `sleep(500 ms)` on `WouldBlock` was measured
+adding about 500 ms to short-lived STATUS/SELECT handoffs.
+
+On the USB DIRECT lane, `fanin-source-notify` samples the already-published
+host-input frame counter every 50 ms off the audio thread. A false→true edge
+publishes `direct.streaming=true` immediately; 40 flat samples (2 s) publish
+false. Each edge best-effort sends `NOTIFY usbsink` to mux. This is only a wake
+adapter: fan-in never chooses a winner, failed delivery is counted, and mux's
+fixed 1 Hz patrol re-reads `direct.streaming` to repair a lost notification.
 
 `STATUS` JSON:
 
@@ -445,6 +457,11 @@ manually selected or while the mux has temporarily selected `NONE`.
   }
 }
 ```
+
+The USB DIRECT input's optional `direct` block also exposes `streaming`,
+`stream_starts`, `stream_stops`, `notify_attempts`, and `notify_failures`.
+Together with mux's reconcile trigger/counters, these distinguish producer
+edges, delivery failures, and patrol repairs without journal guesswork.
 
 `jasper/control/server.py:_get_state` adds a new top-level `"fanin"` key,
 following the same 2 s timeout / fail-soft pattern used for the other

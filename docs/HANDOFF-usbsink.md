@@ -652,12 +652,11 @@ startup delay. mux decided "is USB playing?" with an **audio-level gate**
 threshold (silence), and any quiet passage below −60 for ~2 s closed the gate →
 dropout. Spotify is mastered loud and continuous, so it stayed above the gate;
 browser video isn't. The **level gate is squarely the cause of the faint-audio
-and level-driven quiet-dropout classes.** Startup is more nuanced: the level
-gate delayed only *quiet-starting* audio (a fade-in had to climb past −60); a
-normal-volume track's ~1–2 s to first sound is the **1 Hz poll's 2-tick frames
-baseline** (two samples to see the counter advance) plus the handoff and macOS's
-own USB-device resume — none of which this gate, or its removal, touches. See
-"Residual" below.
+and level-driven quiet-dropout classes.** The remaining normal-volume startup
+delay was separately localized: USB waited for two 1 Hz frame-counter samples,
+and each fan-in control connection could then land in a blind 500 ms accept
+sleep (live automatic handoffs averaged 514 ms). Those are addressed by the
+event/reconcile path below; macOS device/session resume remains upstream of JTS.
 
 *How we thought about it.* The level gate was quietly doing **two** jobs: (A)
 **arbitration** — "should USB win *against another source*?" — which is real,
@@ -674,14 +673,18 @@ and lowering the threshold only makes the false grabs *more* frequent.
 *Where we landed — sticky sessions.* Separate the two jobs:
 
 - **Routing is level-independent.** USB liveness is now purely "is the host
-  streaming frames to us" (`step_combo_liveness`, frames-only, brief debounce).
+  streaming frames to us." fan-in samples its existing DIRECT host-input counter
+  at 20 Hz off the audio thread, publishes `direct.streaming`, and sends an
+  edge-only `NOTIFY usbsink` wake hint to mux. Start detection is therefore
+  roughly 0–50 ms before the normal probes/handoff; stop retains a 2 s
+  hysteresis. `step_combo_liveness` remains as rolling-upgrade fallback for an
+  older fan-in STATUS shape.
   If USB is the only thing playing, we play whatever it streams — faint or loud.
   This directly fixes the faint-audio class (it always crosses now) and the
   level-driven quiet-passage dropout (a quiet stretch keeps the frames flowing,
-  so the lane never closes), and it lets a *quiet* start be detected at all. It
-  does **not** shorten the ~1–2 s cold-start detect for normal-volume audio —
-  that is the poll cadence, unchanged (see "Residual"). A real pause stops the
-  frames and macOS tears the stream down, so USB releases on its own.
+  so the lane never closes), and it lets a *quiet* start be detected at all. A
+  real pause stops the frames and macOS tears the stream down, so USB releases
+  after the stop hysteresis.
 - **Explicit sessions outrank the passive USB stream, and are sticky.** An
   AirPlay/Spotify/BT session that *starts* preempts USB (a deliberate cast
   wins). But USB is a **passive** source: it takes the speaker only when no
@@ -700,19 +703,31 @@ faint-but-streaming USB is the routed `active_source` — a deliberate,
 long-standing split: `playing` = "audible content", `active_source` = mux
 routing. This is not new drift.)
 
-*Residual / not addressed by this change.* Two things stay as they were:
-(1) the ~1–2 s cold-start detect for normal-volume audio is the **1 Hz poll +
-2-tick frames baseline**, not the level gate — shortening it (faster poll, or a
-1-tick absolute-frames-present detect) is a separate change, deliberately not
-taken here. (2) A dropout caused by the host actually **tearing the stream
-down** (frames stop — e.g. between YouTube videos, an ad transition, or a
-buffering stall that closes the device) is frames-based, so both the old and new
-code drop and re-detect it identically; this change only removes the
-**level-driven** dropout (frames flowing, level dips through a quiet passage).
-Which mechanism dominates a given host's "YouTube dropouts" is **not yet
-hardware-confirmed** on jts.local — the level-driven class is the expected common
-case for continuous in-video playback, but confirming needs the Spotify-vs-YouTube
-A/B against the fan-in event timeline.
+*Alert + patrol reconciliation (2026-07-22).* Producer notifications are **wake
+hints**, not desired-source commands. Librespot's atomic state-file replacement,
+AirPlay/Bluetooth D-Bus signals, and fan-in's USB frame-flow edges mark a source
+dirty; mux then re-reads **all** authoritative source state and runs its one
+sticky-session policy function. The fixed 1 Hz patrol runs that exact same
+function and is never postponed by alerts. Duplicate alerts coalesce; a probe
+failure is `unknown` and retains an active last-known state for a bounded 5 s
+grace rather than inventing an immediate stop/start edge (sustained failure then
+expires inactive). Consequently there are no two authorities to disagree or
+flutter: a stale alert causes a harmless no-change reconcile, while a lost alert
+is repaired by the next patrol. `/state.renderers.mux` exposes per-source
+observation/notification counts plus the last trigger and `patrol_repairs`.
+
+The old ~514 ms automatic-handoff component was the fan-in UDS listener's blind
+500 ms sleep after an empty nonblocking `accept()`. It now uses `poll(2)` socket
+readiness, preserving a 500 ms shutdown-check bound without making a queued
+client wait. The expected JTS-owned USB onset is now 0–50 ms edge detection plus
+probe/handoff time; this must be re-measured on hardware before recording a new
+p95. If the notification is lost, the unchanged patrol fallback adds 0–1 s.
+
+*Residual.* A delay before the Mac begins sending frames is outside the speaker's
+detector. A dropout caused by the host actually **tearing the stream down**
+(between videos, an ad transition, or a buffering stall that closes the device)
+still stops frames and therefore releases USB after 2 s; the alert path cannot
+turn absent audio into a continuous session.
 
 *Deliberately not built (possible future toggle): "sustained-audio grab."* If
 we ever want USB to auto-interrupt an active cast when you *deliberately* start
@@ -1204,19 +1219,21 @@ compatibility `playing:false`; it is not an activity source.
 The source-state module also owns the lower-level helpers used by `jasper-mux`:
 `usbsink_direct_frames_read()` extracts the direct-lane liveness counter from
 fan-in `STATUS`, preferring `resampler.input_frames` and falling back to
-lane-level `frames_read`; `usbsink_direct_rms_dbfs()` /
+lane-level `frames_read`. New fan-in builds also publish the edge-detected
+`direct.streaming` read by `usbsink_direct_streaming()`; counter deltas remain a
+rolling-upgrade fallback. `usbsink_direct_rms_dbfs()` /
 `usbsink_direct_audible()` read the direct lane's live per-period level and
 compare it against the shared
 `USBSINK_PLAYING_RMS_DBFS` gate (`-60.0` dBFS — the single definition, in
 `jasper/source_state.py`; the solo bridge's Rust `PLAYING_RMS_DBFS` anchor
 was deleted 2026-07-11 with the solo path, and
 `tests/test_usbsink_playing_rms_contract.py` now pins the mux ↔ source_state
-identity + value of that one Python constant). Mux combines the frame delta and
-level across ticks for debounced arbitration; the renderer probe below reports
-the current single-snapshot activity. The level gate exists because the fan-in
-DIRECT lane keeps clocking silence frames when the host is connected but muted
-(a muted Zoom, an idle tab), so **frames-advanced alone would seize the speaker
-on silence**.
+identity + value of that one Python constant). Mux routes from streaming state,
+not level; the renderer probe below reports
+the current single-snapshot audible activity. That level classification remains
+useful for dashboards/renderer status, but it is deliberately not mux routing
+authority: sticky explicit sessions prevent passive USB from seizing an active
+cast, while uncontested USB is allowed to pass faint content.
 
 **Owner**: `jasper/renderer.py`. `active_renderers()` exports
 `usbsinkactive` from `usbsink_playing()`:

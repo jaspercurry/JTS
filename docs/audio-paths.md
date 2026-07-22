@@ -105,6 +105,11 @@ Ownership is deliberately split:
 
 - `jasper-mux` owns policy and the source-handoff transaction. Auto
   mode is latest-source-wins; manual mode is the user-selected source.
+  Native producer events are wake hints only: `jasper/source_events.py`
+  translates librespot inotify and AirPlay/Bluetooth D-Bus signals, while
+  fan-in sends USB frame-flow edges over mux's UDS. Every hint and the fixed
+  1 Hz lost-alert patrol enter the same reconciler, which re-reads all source
+  state before applying policy.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
   CamillaDSP or by a push-to-source volume API. Operational lifecycle
@@ -184,12 +189,18 @@ mixer, a second output device, or a new volume model.
    and make the disabled state cost zero resident RAM.
 4. **Expose fail-soft playing state.** Add one probe in
    `jasper/source_state.py`, surface it through
-   `RendererClient.active_renderers()`, and keep transport failures as
-   `False` plus debug logging. This state feeds mux, volume and
+   `RendererClient.active_renderers()`, and preserve the public bool contract
+   (`False` plus debug logging on failure). If mux needs the source for
+   arbitration, also expose a tri-state observation where `None` means unknown;
+   mux holds an active last-known state for a bounded grace rather than turning
+   one failed read into a stop/start flap. This state feeds mux, volume and
    transport fallbacks, dashboards, and voice tools, so avoid
    duplicating probes in each caller. Runtime callers that need the
    effective audible source should prefer `RendererClient.selected_source()`
    when mux is available.
+   If the renderer has a native event surface, add a wake adapter in
+   `jasper/source_events.py`; the adapter marks the source dirty but must never
+   choose a winner or command fan-in.
 5. **Declare source metadata.** Add one `Source` enum member and one
    `MusicSourceSpec` in `jasper/music_sources.py`: public ID, fan-in
    label, renderer active key, `/sources/` wizard key, display name,

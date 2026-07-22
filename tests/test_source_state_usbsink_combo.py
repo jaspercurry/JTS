@@ -175,8 +175,14 @@ def test_single_status_miss_does_not_drop_a_live_winner():
     assert _run([0, 48_000, None, 96_000]) == [False, True, True, True]
 
 
-def test_two_consecutive_misses_drop_after_debounce():
-    assert _run([0, 48_000] + [None] * STOP)[-1] is False
+def test_repeated_status_misses_remain_unknown_not_false_stops():
+    """The mux-level five-second unknown grace owns bounded expiry.
+
+    This counter fallback cannot distinguish "fan-in unavailable" from "frames
+    stopped," so missing samples preserve its state instead of manufacturing a
+    stop. Definite flat counters still exercise the stop debounce above.
+    """
+    assert _run([0, 48_000] + [None] * (STOP + 2))[-1] is True
 
 
 def test_counter_reset_rebaselines_without_spurious_advance():

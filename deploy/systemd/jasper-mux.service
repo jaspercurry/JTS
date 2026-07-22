@@ -46,8 +46,9 @@ Group=jasper
 SupplementaryGroups=jasper-intsecrets
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
-# 1 Hz polling of three sources is light; stay under typical
-# python+httpx idle footprint. CPU should be <1%.
+# Native source alerts are edge-only wake hints; the fixed 1 Hz patrol remains
+# the lost-alert safety net. Both run the same bounded probes/reconciler. The USB
+# detector samples an existing atomic in fan-in, not in this Python process.
 MemoryHigh=80M
 MemoryMax=120M
 Nice=-3

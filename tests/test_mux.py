@@ -11,6 +11,8 @@ just patch their bound names in jasper.mux's namespace and mutate the
 return values per tick.
 """
 from __future__ import annotations
+
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -138,6 +140,215 @@ async def test_no_transitions_no_pause_calls(mux, patched_probes):
     _stub_pauses(mux)
     await mux._tick()
     mux._pause.assert_not_awaited()
+
+
+def test_duplicate_alerts_coalesce_without_applying_policy(mux):
+    mux.notify_source_changed(Source.AIRPLAY, "dbus")
+    mux.notify_source_changed(Source.AIRPLAY, "dbus")
+
+    assert mux._dirty_sources == {Source.AIRPLAY}
+    assert mux._notification_received[Source.AIRPLAY] == 2
+    assert mux._notification_coalesced[Source.AIRPLAY] == 1
+    # The producer alert cannot route directly. Only `_reconcile` may do so.
+    mux._fanin_select.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_control_command_only_marks_source_dirty(mux):
+    class Writer:
+        def __init__(self):
+            self.body = bytearray()
+
+        def write(self, data):
+            self.body.extend(data)
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"NOTIFY usbsink\n")
+    reader.feed_eof()
+    writer = Writer()
+
+    await mux._handle_control_client(reader, writer)
+
+    payload = json.loads(writer.body)
+    assert payload == {
+        "accepted": True,
+        "source": "usbsink",
+        "policy_applied": False,
+    }
+    assert mux._dirty_sources == {Source.USBSINK}
+    mux._fanin_select.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, spotify=True)
+
+    mux.notify_source_changed(Source.SPOTIFY, "spotify_inotify")
+    dirty = set(mux._dirty_sources)
+    mux._dirty_sources.clear()
+    await mux._reconcile(trigger="alert", dirty_sources=dirty)
+
+    assert mux._winner is Source.SPOTIFY
+    assert mux._last_reconcile["trigger"] == "alert"
+    assert mux._last_reconcile["dirty_sources"] == ["spotify"]
+
+    # A lost alert is repaired by the same operation on the patrol path.
+    _stub_probes(patched_probes, spotify=False, airplay=True)
+    await mux._reconcile(trigger="patrol", dirty_sources=set())
+    assert mux._winner is Source.AIRPLAY
+    assert mux._patrol_repairs == 1
+
+
+@pytest.mark.asyncio
+async def test_alert_storm_does_not_postpone_fixed_patrol(
+    mux, monkeypatch,
+):
+    import jasper.source_events as source_events
+
+    mux.POLL_INTERVAL_SEC = 0.02
+    mux._fanin_none_best_effort = AsyncMock()
+    monkeypatch.setattr(
+        source_events,
+        "start_source_event_tasks",
+        lambda *args, **kwargs: [],
+    )
+
+    async def control_forever():
+        await asyncio.Future()
+
+    mux._run_control_server = control_forever
+    triggers = []
+
+    async def record_reconcile(*, trigger, dirty_sources):
+        triggers.append(trigger)
+        if dirty_sources:
+            mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
+
+    mux._reconcile = record_reconcile
+    task = asyncio.create_task(mux.run())
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 0.14
+        while loop.time() < deadline:
+            mux.notify_source_changed(Source.AIRPLAY, "test")
+            await asyncio.sleep(0.005)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    patrol_triggers = [trigger for trigger in triggers if "patrol" in trigger]
+    assert len(patrol_triggers) >= 2
+
+
+@pytest.mark.asyncio
+async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
+    mux, monkeypatch,
+):
+    import jasper.source_events as source_events
+
+    mux.POLL_INTERVAL_SEC = 1.0
+    mux._fanin_none_best_effort = AsyncMock()
+    monkeypatch.setattr(
+        source_events,
+        "start_source_event_tasks",
+        lambda *args, **kwargs: [],
+    )
+
+    async def control_forever():
+        await asyncio.Future()
+
+    mux._run_control_server = control_forever
+    reconciles = []
+    startup_done = asyncio.Event()
+    first_alert_done = asyncio.Event()
+    second_alert_done = asyncio.Event()
+
+    async def record_reconcile(*, trigger, dirty_sources):
+        reconciles.append((trigger, tuple(sorted(s.value for s in dirty_sources))))
+        if trigger == "startup":
+            startup_done.set()
+        elif len(reconciles) == 2:
+            mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
+            first_alert_done.set()
+        elif len(reconciles) == 3:
+            mux._last_alert_reconcile_at = asyncio.get_running_loop().time()
+            second_alert_done.set()
+
+    mux._reconcile = record_reconcile
+    task = asyncio.create_task(mux.run())
+    try:
+        await asyncio.wait_for(startup_done.wait(), timeout=0.2)
+        mux.notify_source_changed(Source.AIRPLAY, "test")
+        await asyncio.wait_for(first_alert_done.wait(), timeout=0.2)
+
+        mux.notify_source_changed(Source.AIRPLAY, "test")
+        await asyncio.sleep(0.01)
+        mux.notify_source_changed(Source.AIRPLAY, "test")
+        await asyncio.wait_for(second_alert_done.wait(), timeout=0.2)
+        await asyncio.sleep(0.02)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert reconciles == [
+        ("startup", ()),
+        ("alert", ("airplay",)),
+        ("alert", ("airplay",)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unknown_probe_holds_last_known_state_without_flutter(
+    mux, patched_probes,
+):
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, spotify=True)
+    await mux._tick()
+    assert mux._winner is Source.SPOTIFY
+
+    patched_probes.spotify.return_value = None
+    await mux._tick()
+
+    assert mux._winner is Source.SPOTIFY
+    assert mux._state.playing[Source.SPOTIFY] is True
+    status = mux._status_payload()
+    assert status["sources"]["spotify"]["observation"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_sustained_unknown_expires_instead_of_pinning_dead_winner(
+    mux, patched_probes, monkeypatch,
+):
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, bluetooth=True)
+    await mux._tick()
+    assert mux._winner is Source.BLUETOOTH
+    known_at = mux._state.known_at[Source.BLUETOOTH]
+
+    patched_probes.bluetooth.return_value = None
+    monkeypatch.setattr(
+        mux_module.time,
+        "monotonic",
+        lambda: known_at + mux_module.UNKNOWN_ACTIVE_HOLD_SEC + 0.1,
+    )
+    await mux._tick()
+
+    assert mux._winner is None
+    assert mux._state.playing[Source.BLUETOOTH] is False
+    assert (
+        mux._status_payload()["sources"]["bluetooth"]["observation"]
+        == "unknown_expired"
+    )
 
 
 @pytest.mark.asyncio
@@ -555,6 +766,36 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
 
     await mux._tick()
     assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_fanin_streaming_edge_promotes_usb_without_two_patrol_baseline(
+    mux, patched_probes, monkeypatch,
+):
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    _stub_probes(patched_probes, usbsink=False)
+    monkeypatch.setattr(
+        mux,
+        "_usbsink_playing",
+        Mux._usbsink_playing.__get__(mux, Mux),
+    )
+
+    async def fanin_status():
+        return {
+            "inputs": [{
+                "label": "usbsink",
+                "source": "direct",
+                "resampler": {"input_frames": 48_000},
+                "direct": {"streaming": True},
+            }],
+        }
+
+    mux._fanin_status_best_effort = fanin_status
+    await mux._tick()
+
+    assert mux._winner is Source.USBSINK
+    assert mux._state.playing[Source.USBSINK] is True
 
 
 @pytest.mark.asyncio
