@@ -1,6 +1,8 @@
 # Crossover measurement — reproducibility working plan
 
-> **Status: ACTIVE — selector implemented (2026-07-22); pending adversarial review + JTS3 hardware confirmation.**
+> **Status: ACTIVE — selector implemented, adversarial-reviewed 0/0/0, and
+> confirmed on JTS3 (2026-07-22); pending merge + the owner's definitive
+> 5-run controlled repeat (§2 stop rule).**
 > This is the execution and decision reference for the "MEASURE is not
 > reproducible → VERIFY fails" blocker on the v2 conductor flow. T2-core
 > merged via PR #1647, its post-merge UMIK-2 repeat failed (bound-pinned
@@ -441,6 +443,41 @@ Captured so they're off the table for the landing work:
 
 ## 10. Decision log (append; newest first)
 
+- *2026-07-22 (on-device confirmation: anchor+snap selector reproducible and
+  VERIFY-green on JTS3)* — After the implementation cleared its independent
+  adversarial review at **0 blockers / 0 should-fixes / 0 nits** (first round
+  0/1/3; the S1 anchor-SSOT refactor was verified behavior-preserving by
+  bit-identical replay), the branch was deployed to JTS3
+  (`04fab56d8`, manifest verified) and three fresh headless
+  CHECK → MEASURE → auto-APPLY → VERIFY flows ran through the real relay +
+  UMIK-2 at the controlled tweeter-axis placement:
+  - **Run 1: PASS.** Selected **32.411 µs** woofer delay (anchor −29.7, snap
+    −2.7, GCC seed −353.6 ignored); VERIFY **1.233 dB max / 0.620 RMS**
+    (1.5 gate). One VERIFY capture was first honestly rejected
+    `verify_inconclusive` when a transient collapsed its reflection gate to
+    1.5 ms — the gate-comparability rule working as designed.
+  - **Run 2: VERIFY failed 3× at 1.74/2.12/1.88 dB — diagnosed as a room-noise
+    event, not a selector error.** CHECK woofer-band SNR dropped 23.3 →
+    **17.4 dB** for this run only; the selector still chose an in-cluster
+    **31.013 µs** (anchor −47.3 healed by a +16.3 snap). A noisy MEASURE
+    inflates VERIFY's own aligned target, so the failure mode under noise is
+    now "applies a good value, grades conservatively" (safe, honest retry)
+    rather than the old "applies a wrong lobe."
+  - **Run 3: PASS with the best margin ever recorded on this rig.** SNR
+    recovered (23.24 dB); selected **33.783 µs**; VERIFY **0.597 dB max /
+    0.343 RMS** — 2× inside even the stop rule's stricter 1.2 dB bar.
+
+  **Reproducibility read: five independent captures — the two replayed
+  hardware-anchored captures plus three fresh runs — select within a
+  2.77 µs total spread** (33.745, 31.385, 32.411, 31.013, 33.783 µs),
+  spanning two days, two code states, and a 6 dB ambient swing; every value
+  sits in the hardware pass valley measured by the protected delay sweep.
+  Anchors alone ranged −28.3…−49.9 (integer-argmax jitter); the snap
+  collapsed them all. The applied polarity (`invert`) is consistent across
+  every run of this rig. This is the initial on-device read the plan owed;
+  the definitive §2 stop rule (5 consecutive controlled runs) remains the
+  owner's hands.
+
 - *2026-07-22 (fine-stage bake-off result: anchor + gated-GCC local-peak snap
   wins; phase-slope and broadband-xcorr ruled out with recorded negative
   results)* — The offline bake-off (artifacts:
@@ -806,8 +843,15 @@ Captured so they're off the table for the landing work:
 
 ## 11. Current status / next action
 
-- **Status: implementation built; pending adversarial review + JTS3
-  confirmation.** Diagnosis of the failed repeat is complete (overlay artifacts
+- **Status: implementation built, independently adversarial-reviewed clean
+  (0 blockers / 0 should-fixes / 0 nits after the S1 anchor-SSOT
+  remediation), deployed to JTS3, and confirmed on hardware — 2 of 3 fresh
+  headless flows VERIFY-passed (best 0.597 dB max / 0.343 RMS) and the one
+  failure was a measured room-noise event with the selector still in-cluster
+  (§10, on-device confirmation entry). Five captures select within 2.77 µs
+  total spread.** Remaining: merge via PR (green CI), then the owner's
+  definitive §2 5-run controlled repeat at a verified-good placement.
+  Diagnosis of the failed repeat is complete (overlay artifacts
   in `captures/xover-e0-2026-07-21/overlay-20260722/`; prior-art reports in
   `captures/xover-e0-2026-07-21/prior-art-20260722/`), the offline fine-stage
   bake-off ran (`captures/xover-e0-2026-07-21/bakeoff-20260722/`) and picked

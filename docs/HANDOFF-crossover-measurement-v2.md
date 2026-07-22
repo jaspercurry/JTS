@@ -55,17 +55,26 @@ a one-sided VERIFY smoothing bug. The corrected selector subsequently applied a
 (1.5 dB gate); the pre-merge T2-specific adversarial re-review cleared 0
 blockers / 0 should-fixes.
 
-The required post-merge UMIK-2 repeat did **not** reproduce that result. CHECK
-passed, but MEASURE selected a signed −299.948 µs correction at the flatness
-search bound and the live graph applied the corresponding 0.2999 ms woofer
-delay. Three same-session VERIFY captures failed at 5.264, 6.453, and
-6.454 dB max. All used matching 7.0 ms gates and a 142.857 Hz validity floor;
-drift residual was 0.02 samples and no capture glitch or input overflow was
-reported. The sanctioned Undo restored the prior 0.0537 ms profile and the
-exact −15.151515 dB listening volume. T2-core is therefore merged but **not
-complete**: its offline objective still does not reliably track hardware
-VERIFY. Keep T2-robust and Fix 4 paused while that upstream mismatch is
-diagnosed. See
+The required post-merge UMIK-2 repeat did **not** reproduce that result
+(MEASURE railed to a signed −299.948 µs correction at the flatness search
+bound; three VERIFY captures failed at 5.264–6.454 dB max; Undo restored the
+prior profile). The follow-up diagnosis proved the flatness objective's comb
+basin ordering is capture-noise-dependent and replaced the selector: **the
+drift-corrected physical peak-gap anchor now owns lobe selection and the
+primary delay, refined only by a bounded nearest-GCC-local-peak snap
+(±period/6); flatness is evidence, never a selector** (see "Delay selection"
+below). The replacement cleared an independent adversarial review at
+0 blockers / 0 should-fixes / 0 nits and its on-device confirmation:
+three fresh headless JTS3 flows selected 32.411 / 31.013 / 33.783 µs —
+2.77 µs total spread together with the two replayed hardware-anchored
+captures — with VERIFY passing at 1.233 and **0.597 dB max** (best recorded
+on this rig); the one VERIFY-failed run was a measured room-noise event
+(CHECK woofer SNR 17.4 dB vs 23.3 nominal) with the selector still
+in-cluster. The definitive 5-consecutive-run stop rule remains owed (owner's
+controlled hands). T2-robust and Fix 4 stay paused; the bake-off additionally
+recorded that a cross-spectrum phase-slope estimator rails systematically on
+as-crossed branches (+388 ± 38 µs, 16/16 captures), so any future σ_τ layer
+needs a different base quantity. See
 [`crossover-measurement-reproducibility-plan.md`](crossover-measurement-reproducibility-plan.md)
 §10–§11 for the exact evidence and gate state.
 
