@@ -496,8 +496,8 @@ MUSIC chain (gets CamillaDSP + main_volume ducking)
                   librespot_substream   → hw:Loopback,0,0
                   shairport_substream   → hw:Loopback,0,1
                   bluealsa_substream    → hw:Loopback,0,2
-                  usbsink_substream     → hw:Loopback,0,3
-              → jasper-fanin sums lanes to hw:Loopback,0,7
+                  USB UAC2 gadget       → fan-in DIRECT hw:UAC2Gadget capture
+              → jasper-fanin sums loopback + DIRECT lanes to hw:Loopback,0,7
               → snd-aloop capture side hw:Loopback,1,7
               → CamillaDSP
               → pcm.jasper_out (dmix on dongle)

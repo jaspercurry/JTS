@@ -4,14 +4,19 @@
 
 from pathlib import Path
 
+from jasper.accessories.registry import KNOWN_PROFILES
 from jasper.local_sources import (
-    local_source_park_restart_units,
+    local_source_lifecycles,
     local_source_park_units,
 )
 
 
 REPO = Path(__file__).resolve().parents[1]
-GUARD = "ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed"
+GUARD = "ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed"
+SOURCE_GUARD = GUARD
+LOADER_ENV_SCRUB = (
+    "UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES"
+)
 
 PARKED_UNIT_DEPLOY_FILES = {
     "shairport-sync.service": REPO / "deploy/systemd/shairport-sync.service",
@@ -31,12 +36,12 @@ PARKED_UNIT_DEPLOY_FILES = {
     "jasper-mux.service": REPO / "deploy/systemd/jasper-mux.service",
 }
 
-# The composite USB gadget is RECOMPOSED (park_restart), not stopped, on park —
-# it is infrastructure now (it carries the always-on USB management network),
-# NOT a local-source unit. It must NOT carry the local-source ExecCondition:
-# the network function has to survive follower parking. The AUDIO-function gate
-# lives inside jasper-usbgadget-up instead. This is a deliberate change from
-# the pre-composite model where the gadget owner carried the guard.
+# The composite USB gadget is recomposed, not put in the ordinary source-park
+# stop set. It is hardware-gated infrastructure that may carry the default-on
+# management network, not a local-source unit. Its own hardware condition and
+# internal audio gate decide which functions survive follower parking. This is
+# a deliberate change from the pre-composite model where the gadget owner
+# carried the local-source guard.
 PARK_RESTART_UNIT_DEPLOY_FILES = {
     "jasper-usbgadget.service": REPO / "deploy/systemd/jasper-usbgadget.service",
 }
@@ -44,25 +49,81 @@ PARK_RESTART_UNIT_DEPLOY_FILES = {
 
 def test_every_parked_local_source_unit_has_systemd_start_guard():
     assert set(PARKED_UNIT_DEPLOY_FILES) == set(local_source_park_units())
+    declared_runtime = {
+        unit
+        for lifecycle in local_source_lifecycles()
+        for unit in lifecycle.runtime_units
+    }
+    declared_sources = {
+        unit: lifecycle.source.value
+        for lifecycle in local_source_lifecycles()
+        for unit in lifecycle.park_units
+    }
+    # Every declared source runtime is either source-gated here or is an
+    # explicitly recomposed composite owner whose internal audio limb carries
+    # the same gate (currently only jasper-usbgadget/NCM).
+    # The composite gadget is runtime inventory but not a parkable source
+    # unit: its NCM management function must survive source parking.
+    assert set(declared_sources) | set(PARK_RESTART_UNIT_DEPLOY_FILES) == declared_runtime
     for unit, path in PARKED_UNIT_DEPLOY_FILES.items():
         assert path.exists(), unit
-        assert GUARD in path.read_text(), unit
+        text = path.read_text()
+        if unit == "jasper-mux.service":
+            # Shared arbiter infrastructure has role policy but no one source
+            # intent. Every source-owned resource below carries a fixed id.
+            assert SOURCE_GUARD in text, unit
+            assert f"{SOURCE_GUARD} --source" not in text, unit
+            assert LOADER_ENV_SCRUB in text, unit
+            continue
+        source = declared_sources[unit]
+        assert f"{SOURCE_GUARD} --source {source}" in text, unit
+        assert LOADER_ENV_SCRUB in text, unit
 
 
-def test_park_restart_units_are_infrastructure_without_local_source_guard():
-    """park_restart units (the composite USB gadget) are recomposed, not
-    stopped, on park. They carry the always-on USB management network, so they
-    must NOT carry the local-source ExecCondition — the network has to survive
-    follower parking. The audio-function gate lives inside jasper-usbgadget-up.
+def test_every_declared_bluetooth_accessory_adapter_has_source_start_guard():
+    """Optional adapters inherit Bluetooth Off from registry metadata."""
+
+    services = {
+        profile.mic.adapter_service
+        for profile in KNOWN_PROFILES
+        if profile.mic.status == "adapter" and profile.mic.adapter_service
+    }
+    assert services
+    for service in services:
+        path = REPO / "deploy" / "systemd" / service
+        assert path.exists(), service
+        text = path.read_text()
+        assert f"{SOURCE_GUARD} --source bluetooth" in text, service
+        assert LOADER_ENV_SCRUB in text, service
+
+
+def test_source_start_guards_do_not_order_after_the_coordinator():
+    """The coordinator starts these units; an After= edge would deadlock."""
+
+    accessory_paths = {
+        REPO / "deploy" / "systemd" / str(profile.mic.adapter_service)
+        for profile in KNOWN_PROFILES
+        if profile.mic.status == "adapter" and profile.mic.adapter_service
+    }
+    for path in set(PARKED_UNIT_DEPLOY_FILES.values()) | accessory_paths:
+        for line in path.read_text().splitlines():
+            if line.startswith(("After=", "Requires=")):
+                assert "jasper-source-intent-reconcile.service" not in line, path
+
+
+def test_composite_gadget_is_infrastructure_without_local_source_guard():
+    """The composite USB gadget is recomposed, not stopped, on park.
+
+    When hardware permits it, the gadget carries the default-on management
+    network, so it must not carry the local-source ExecCondition: follower
+    parking withdraws audio without dropping NCM. The hardware and
+    audio-function gates live inside the gadget boundary.
     """
-    assert set(PARK_RESTART_UNIT_DEPLOY_FILES) == set(
-        local_source_park_restart_units()
-    )
     for unit, path in PARK_RESTART_UNIT_DEPLOY_FILES.items():
         assert path.exists(), unit
         assert GUARD not in path.read_text(), (
             f"{unit} must NOT carry the local-source ExecCondition — it is "
-            "infrastructure carrying the always-on USB network."
+            "hardware-gated infrastructure that may carry the USB network."
         )
 
 

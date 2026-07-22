@@ -24,6 +24,7 @@ from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_st
 from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
 )
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -1496,6 +1497,7 @@ def _active_speaker_driver_research_payload(*, frequency_hz: float = 2500) -> di
 
 def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> dict:
     sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
         "operator_inputs": {
             "woofer": "Dayton Epique E150HE-44",
             "tweeter": "Eminence F110M-8",
@@ -1505,6 +1507,40 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
         ),
     })
     return sound_setup._active_speaker_crossover_preview_save_payload()
+
+
+def test_driver_research_request_payload_is_target_bound_and_silent(
+    monkeypatch,
+) -> None:
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    topology = mono_output_topology(card_id=None)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+
+    payload = sound_setup._active_speaker_driver_research_request_payload({
+        "operator_inputs": {
+            "woofer": "Example W6",
+            "tweeter": "Example T1",
+            "notes": "sealed cabinet",
+        }
+    })
+
+    request = payload["request"]
+    assert request["targets"][0]["target_id"] == "mono:woofer"
+    assert request["targets"][1]["target_id"] == "mono:tweeter"
+    assert request["request_fingerprint"] in payload["prompt"]
+    assert payload["safety"] == {
+        "no_audio": True,
+        "loads_camilla": False,
+        "applies_filters": False,
+        "authorizes_playback": False,
+        "research_is_advisory": True,
+    }
+    with pytest.raises(ValueError, match="unknown fields: typo"):
+        sound_setup._active_speaker_driver_research_request_payload({
+            "operator_inputs": {},
+            "typo": "must not disappear silently",
+        })
 
 
 def test_active_speaker_crossover_preview_refreshes_current_output_topology(
@@ -1928,6 +1964,7 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     })
 
     payload = sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
         "operator_inputs": {
             "woofer": "Dayton Epique E150HE-44",
             "tweeter": "Eminence F110M-8",
@@ -1997,6 +2034,128 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     assert "crossover_preview_stale_design_draft" in {
         issue["code"] for issue in stale_preview["issues"]
     }
+
+
+def test_design_draft_save_payload_requires_strict_revision_contract() -> None:
+    with pytest.raises(ValueError, match="requires expected_revision"):
+        sound_setup._active_speaker_design_draft_save_payload({})
+    with pytest.raises(ValueError, match="expected_revision must be"):
+        sound_setup._active_speaker_design_draft_save_payload({
+            "expected_revision": True,
+        })
+    with pytest.raises(ValueError, match="confirm_safety_profile must be boolean"):
+        sound_setup._active_speaker_design_draft_save_payload({
+            "expected_revision": 0,
+            "confirm_safety_profile": 1,
+        })
+    with pytest.raises(ValueError, match="unknown fields: typo"):
+        sound_setup._active_speaker_design_draft_save_payload({
+            "expected_revision": 0,
+            "typo": "ignored before this contract",
+        })
+
+
+def test_design_draft_http_conflict_returns_fresh_revision(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "design_draft.json"),
+    )
+    current_topology = {"value": mono_output_topology(card_id=None)}
+    monkeypatch.setattr(
+        sound_setup,
+        "load_output_topology",
+        lambda: current_topology["value"],
+    )
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        first = json_post_with_csrf(
+            base,
+            "/active-speaker/design-draft",
+            {"expected_revision": 0, "operator_inputs": {"notes": "first"}},
+        )
+        assert json.loads(first.read().decode("utf-8"))["revision"] == 1
+
+        changed = current_topology["value"].to_dict()
+        changed["speaker_groups"][0]["channels"][1][
+            "driver_style"
+        ] = "ribbon_tweeter"
+        current_topology["value"] = OutputTopology.from_mapping(changed)
+
+        conflict = json_post_with_csrf(
+            base,
+            "/active-speaker/design-draft",
+            {"expected_revision": 0, "operator_inputs": {"notes": "stale"}},
+            expect_status=409,
+        )
+        fresh = json.loads(conflict.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert fresh["revision"] == 1
+    assert fresh["operator_inputs"]["notes"] == "first"
+    assert fresh["driver_safety_profile_evaluation"]["status"] == "stale"
+    assert "another session" in fresh["error"]
+
+
+def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jasper.active_speaker.driver_safety import build_driver_research_request
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import (
+        _manual_settings,
+        _operator_inputs,
+        _research_result,
+    )
+
+    topology = mono_output_topology(card_id=None)
+    draft_path = tmp_path / "design_draft.json"
+    preview_path = tmp_path / "crossover_preview.json"
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(draft_path),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(preview_path),
+    )
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    request = build_driver_research_request(
+        topology,
+        _operator_inputs(),
+        _manual_settings(),
+    )
+    saved = sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "driver_research_request": request,
+        "driver_research": _research_result(request),
+        "manual_settings": _manual_settings(),
+        "operator_inputs": _operator_inputs(),
+        "confirm_safety_profile": True,
+    })
+    before = draft_path.read_bytes()
+
+    sound_setup._active_speaker_crossover_preview_save_payload()
+
+    after = draft_path.read_bytes()
+    loaded = sound_setup._active_speaker_design_draft_payload()
+    assert after == before
+    assert loaded["revision"] == saved["revision"] == 1
+    assert loaded["driver_research_request"] == saved["driver_research_request"]
+    assert loaded["driver_research"] == saved["driver_research"]
+    assert loaded["driver_safety_profile"]["confirmation"] == (
+        saved["driver_safety_profile"]["confirmation"]
+    )
 
 
 def _dual_apple_hardware() -> dict:
@@ -3700,7 +3859,11 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
         json_post_with_csrf(
             base,
             "/active-speaker/design-draft",
-            {"operator_inputs": {}, "driver_research": research},
+            {
+                "expected_revision": 0,
+                "operator_inputs": {},
+                "driver_research": research,
+            },
         )
 
         resp = json_post_with_csrf(base, "/active-speaker/crossover-preview", {})

@@ -39,7 +39,9 @@ from jasper.capture_relay.session import (
     CaptureAborted,
     CaptureFailed,
     CapturePageIncompatible,
+    CaptureStopped,
     CaptureTimeout,
+    _run_with_failure_cues,
     classify_status,
     mint_session,
     register_session,
@@ -262,6 +264,34 @@ def test_full_round_trip_returns_decrypted_wav():
     assert result.wav == wav  # bit-identical, decrypted + verified
     assert result.device is None  # phone reported no device this time
     assert armed_calls == [True]  # on_armed fired exactly once
+
+
+def test_host_stop_after_poll_prevents_arm_without_failure_cue(caplog):
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_arm(session.session_id)
+    checks = iter((False, True))
+    armed_calls = []
+    cues = []
+
+    with caplog.at_level(logging.INFO), pytest.raises(
+        CaptureStopped, match="capture stopped"
+    ):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: armed_calls.append(True),
+            stop_requested=lambda: next(checks),
+            poll_interval_s=0.0,
+            timeout_s=5.0,
+            sleep=lambda _s: None,
+            play_cue=cues.append,
+        )
+
+    assert armed_calls == []
+    assert cues == []
+    assert "event=capture_relay.stopped" in caplog.text
+    assert "event=capture_relay.failed" not in caplog.text
 
 
 def test_required_acknowledgement_is_verified_before_stimulus():
@@ -1034,6 +1064,27 @@ def test_client_requires_https_base_without_custom_transport():
     RelayClient("http://relay.test", transport=lambda *_a: RelayResponse(200, {}, b"{}"))
 
 
+def test_client_with_timeout_clones_the_control_transport():
+    calls = []
+
+    def transport(method, url, headers, body):
+        calls.append((method, url))
+        return RelayResponse(200, {}, b"{}")
+
+    client = RelayClient(
+        "https://relay.test",
+        transport=transport,
+        timeout=10.0,
+        registration_token="registration",
+    )
+    control = client.with_timeout(1.5)
+
+    assert control is not client
+    assert control._timeout == 1.5
+    control.status("cap_1", "pull")
+    assert calls == [("GET", "https://relay.test/sessions/cap_1/status")]
+
+
 # --- observability (event= logs) ---------------------------------------------
 
 
@@ -1080,6 +1131,30 @@ def test_failure_logs_warning_with_reason_and_traceback(caplog):
         )
     assert "capture_relay.failed" in caplog.text
     assert "CaptureAborted" in caplog.text  # operator can see the real cause
+
+
+def test_failure_reason_names_config_rejected_not_camilla_unavailable(caplog):
+    """W6 hardware run 4 finding J: a healthy CamillaDSP that REJECTED a config
+    (e.g. "Use of missing mixer 'split_active_2way'") used to log
+    ``reason=CamillaUnavailable`` here -- indistinguishable from an actually
+    unreachable/dead daemon. ``CamillaConfigRejected`` (jasper.camilla) is a
+    ``CamillaUnavailable`` subclass raised for exactly that case; this reason
+    field is derived generically as ``type(exc).__name__`` (see
+    ``_run_with_failure_cues`` above), so the honest ``reason=
+    CamillaConfigRejected`` falls out for free -- no change needed here."""
+    from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
+
+    caplog.set_level(logging.WARNING, logger="jasper.capture_relay.session")
+    backend = FakeRelayBackend()
+    _client, session = _mint(backend)
+
+    def runner():
+        raise CamillaConfigRejected("Use of missing mixer 'split_active_2way'")
+
+    with pytest.raises(CamillaUnavailable):
+        _run_with_failure_cues(session, None, runner)
+    assert "reason=CamillaConfigRejected" in caplog.text
+    assert "reason=CamillaUnavailable" not in caplog.text
 
 
 def test_classify_status():

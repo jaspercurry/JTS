@@ -11,23 +11,31 @@ and CLI tools do not each grow their own partial JSON parser.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..log_event import log_event
+from jasper.audio_measurement.bundles import (
+    ARTIFACT_MANIFEST_NAME as ARTIFACT_MANIFEST_NAME,
+    CURRENT_ARTIFACT_MANIFEST_VERSION as CURRENT_ARTIFACT_MANIFEST_VERSION,
+    ArtifactEntry as ArtifactEntry,
+    BundleError,
+    _is_exact_version,
+    _manifest_path,
+    _read_json,
+    relative_artifact_path as _relative_artifact_path,
+    read_artifact_manifest as read_artifact_manifest,
+    record_artifact as _record_artifact,
+    sha256_file as _sha256_file,
+    write_json_artifact as _write_json_artifact,
+)
 
 # v4 (P4): result.json / info.json / status gain the deterministic
 # `acceptance` verdict block and the `auto_revert_outcome` rollback record,
 # and result.json gains the `position1` matched-basis curve. Additive — older
 # readers ignore the new keys.
 CURRENT_BUNDLE_SCHEMA_VERSION = 5
-CURRENT_ARTIFACT_MANIFEST_VERSION = 1
-ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
 RAW_AUDIO_RELATIVE_PATHS = ("verify.wav",)
 RAW_AUDIO_DIRS = ("captures", "noise", "repeat_captures")
 
@@ -43,13 +51,6 @@ RAW_AUDIO_DIRS = ("captures", "noise", "repeat_captures")
 # to force a full hash check of every artifact.
 DEFAULT_MAX_SHA_VERIFY_BYTES = 1 * 1024 * 1024
 
-logger = logging.getLogger(__name__)
-
-
-class BundleError(RuntimeError):
-    """A session bundle is missing or malformed."""
-
-
 @dataclass(frozen=True)
 class BundleIssue:
     code: str
@@ -62,72 +63,6 @@ class BundleIssue:
             "severity": self.severity,
             "message": self.message,
         }
-
-
-@dataclass(frozen=True)
-class ArtifactEntry:
-    path: str
-    kind: str
-    sensitivity: str
-    recomputable: bool
-    sha256: str
-    byte_size: int
-    recorded_at: float
-    generated_by: str
-    dependencies: tuple[str, ...] = ()
-    schema_version: int | None = None
-    metadata: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
-            "path": self.path,
-            "kind": self.kind,
-            "sensitivity": self.sensitivity,
-            "recomputable": self.recomputable,
-            "sha256": self.sha256,
-            "byte_size": self.byte_size,
-            "recorded_at": self.recorded_at,
-            "generated_by": self.generated_by,
-            "dependencies": list(self.dependencies),
-        }
-        if self.schema_version is not None:
-            out["schema_version"] = self.schema_version
-        if self.metadata:
-            out["metadata"] = self.metadata
-        return out
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text())
-    except OSError as e:
-        raise BundleError(f"could not read {path.name}: {e}") from e
-    except json.JSONDecodeError as e:
-        raise BundleError(f"{path.name} is invalid JSON: {e.msg}") from e
-    if not isinstance(data, dict):
-        raise BundleError(f"{path.name} must be a JSON object")
-    return data
-
-
-def _write_json_atomically(
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    file_mode: int | None = None,
-) -> None:
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, default=str))
-    if file_mode is not None:
-        tmp_path.chmod(file_mode)
-    tmp_path.replace(path)
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _bundle_byte_size(bundle_dir: Path) -> int:
@@ -154,105 +89,24 @@ def _private_raw_audio_paths(bundle_dir: Path) -> list[Path]:
     return sorted(paths)
 
 
-def _relative_artifact_path(bundle_dir: Path, artifact_path: Path | str) -> str:
-    bundle_root = bundle_dir.resolve()
-    path = Path(artifact_path)
-    if not path.is_absolute():
-        path = bundle_dir / path
-    try:
-        rel = path.resolve().relative_to(bundle_root)
-    except ValueError as e:
-        raise BundleError(f"artifact path {artifact_path!s} is outside bundle") from e
-    if rel.name == ARTIFACT_MANIFEST_NAME:
-        raise BundleError("artifact_manifest.json cannot list itself")
-    if any(part in {"", ".", ".."} for part in rel.parts):
-        raise BundleError(f"artifact path {artifact_path!s} is not normalized")
-    return rel.as_posix()
-
-
-def _safe_manifest_dependencies(
-    bundle_dir: Path,
-    dependencies: Iterable[str],
-) -> tuple[str, ...]:
-    out: list[str] = []
-    for dep in dependencies:
-        try:
-            out.append(_relative_artifact_path(bundle_dir, dep))
-        except BundleError:
-            log_event(
-                logger,
-                "correction_bundle_dependency_ignored",
-                path=dep,
-                level=logging.WARNING,
-            )
-    return tuple(sorted(set(out)))
-
-
-def _manifest_path(bundle_dir: Path) -> Path:
-    return bundle_dir / ARTIFACT_MANIFEST_NAME
-
-
-def _read_manifest_artifacts(bundle_dir: Path) -> list[dict[str, Any]]:
-    manifest_path = _manifest_path(bundle_dir)
-    if not manifest_path.exists():
-        return []
-    data = _read_json(manifest_path)
-    artifacts = data.get("artifacts")
-    if not isinstance(artifacts, list):
-        raise BundleError("artifact_manifest.json artifacts must be a list")
-    return [a for a in artifacts if isinstance(a, dict)]
-
-
-def read_artifact_manifest(bundle_dir: Path) -> dict[str, Any]:
-    """Read artifact_manifest.json for callers that need raw details."""
-    return _read_json(_manifest_path(bundle_dir))
-
-
 def _is_positive_int(value: object) -> bool:
     """Whether ``value`` is a JSON-style positive integer, excluding bool."""
 
     return type(value) is int and value > 0
 
 
-def _is_exact_version(value: object, expected: int) -> bool:
-    """Whether ``value`` is the exact positive-integer version expected."""
-
-    return _is_positive_int(value) and value == expected
-
-
-def _resolve_bundle_schema_version(
+def _legacy_schema_override(
     bundle_dir: Path,
-    explicit: int | None,
+    requested: int | None,
     *,
     info_payload: dict[str, Any] | None = None,
-) -> int:
-    """Resolve the owning bundle schema from info.json when available."""
+) -> int | None:
+    """Own Room's schema-5 fallback without exposing it to the neutral core."""
 
-    info = info_payload
-    info_path = bundle_dir / "info.json"
-    if info is None and info_path.exists():
-        info = _read_json(info_path)
-
-    if explicit is not None and not _is_positive_int(explicit):
-        raise BundleError("bundle schema override must be a positive integer")
-
-    if info is not None:
-        if "bundle_schema_version" not in info:
-            raise BundleError("info.json missing bundle_schema_version")
-        owner_schema = info["bundle_schema_version"]
-        if not _is_positive_int(owner_schema):
-            raise BundleError(
-                "info.json bundle_schema_version must be a positive integer"
-            )
-        if explicit is not None and explicit != owner_schema:
-            raise BundleError(
-                "bundle schema override "
-                f"{explicit} contradicts info.json bundle_schema_version "
-                f"{owner_schema}"
-            )
-        return owner_schema
-    if explicit is not None:
-        return explicit
+    if requested is not None or info_payload is not None:
+        return requested
+    if (bundle_dir / "info.json").exists():
+        return None
     return CURRENT_BUNDLE_SCHEMA_VERSION
 
 
@@ -285,68 +139,21 @@ def record_artifact(
     runs on an asyncio.to_thread worker. A future multi-session or
     parallel-bundle change MUST add a per-bundle lock here.
     """
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    rel_path = _relative_artifact_path(bundle_dir, artifact_path)
-    path = bundle_dir / rel_path
-    try:
-        stat = path.stat()
-    except OSError as e:
-        raise BundleError(f"artifact {rel_path} cannot be stat'ed: {e}") from e
-    resolved_bundle_schema_version = _resolve_bundle_schema_version(
+    return _record_artifact(
         bundle_dir,
-        bundle_schema_version,
-    )
-
-    try:
-        artifacts = _read_manifest_artifacts(bundle_dir)
-    except BundleError as e:
-        log_event(
-            logger,
-            "correction_bundle_manifest_reset",
-            bundle=bundle_dir,
-            error=e,
-            level=logging.WARNING,
-        )
-        artifacts = []
-
-    entry = ArtifactEntry(
-        path=rel_path,
+        artifact_path,
         kind=kind,
         sensitivity=sensitivity,
-        recomputable=bool(recomputable),
-        sha256=_sha256_file(path),
-        byte_size=stat.st_size,
-        recorded_at=time.time(),
+        recomputable=recomputable,
         generated_by=generated_by,
-        dependencies=_safe_manifest_dependencies(bundle_dir, dependencies),
+        bundle_schema_version=_legacy_schema_override(
+            bundle_dir,
+            bundle_schema_version,
+        ),
+        dependencies=dependencies,
         schema_version=schema_version,
         metadata=metadata,
-    ).to_dict()
-    by_path: dict[str, dict[str, Any]] = {}
-    for artifact in artifacts:
-        raw_path = artifact.get("path")
-        if not isinstance(raw_path, str):
-            continue
-        try:
-            existing_rel_path = _relative_artifact_path(bundle_dir, raw_path)
-        except BundleError:
-            log_event(
-                logger,
-                "correction_bundle_manifest_entry_dropped",
-                path=raw_path,
-                level=logging.WARNING,
-            )
-            continue
-        by_path[existing_rel_path] = {**artifact, "path": existing_rel_path}
-    by_path[rel_path] = entry
-    manifest = {
-        "manifest_schema_version": CURRENT_ARTIFACT_MANIFEST_VERSION,
-        "bundle_schema_version": resolved_bundle_schema_version,
-        "generated_at": time.time(),
-        "artifacts": [by_path[path] for path in sorted(by_path)],
-    }
-    _write_json_atomically(_manifest_path(bundle_dir), manifest)
-    return entry
+    )
 
 
 def write_json_artifact(
@@ -366,24 +173,22 @@ def write_json_artifact(
 ) -> None:
     """Atomically write JSON and update its manifest entry."""
     rel_path = _relative_artifact_path(bundle_dir, relative_path)
-    resolved_bundle_schema_version = _resolve_bundle_schema_version(
+    _write_json_artifact(
         bundle_dir,
-        bundle_schema_version,
-        info_payload=payload if rel_path == "info.json" else None,
-    )
-    target_path = bundle_dir / rel_path
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomically(target_path, payload, file_mode=file_mode)
-    record_artifact(
-        bundle_dir,
-        rel_path,
+        relative_path,
+        payload,
         kind=kind,
         sensitivity=sensitivity,
         recomputable=recomputable,
         generated_by=generated_by,
-        bundle_schema_version=resolved_bundle_schema_version,
+        bundle_schema_version=_legacy_schema_override(
+            bundle_dir,
+            bundle_schema_version,
+            info_payload=payload if rel_path == "info.json" else None,
+        ),
         dependencies=dependencies,
         schema_version=schema_version,
+        file_mode=file_mode,
         metadata=metadata,
     )
 

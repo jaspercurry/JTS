@@ -28,8 +28,9 @@ from .audio_io import (
 )
 from .assistant_loudness import (
     active_voice_identity,
-    silence_target_lufs_for_level,
+    tts_envelope_lufs_for_level,
 )
+from .tts_routing import tts_socket_feeds_pre_dsp_fanin
 from .wake_events import (
     WakeEventStore,
     make_event_id,
@@ -188,6 +189,11 @@ class FanInDucker:
     @property
     def is_ducked(self) -> bool:
         return self._ducked
+
+    @property
+    def locks_camilla_volume(self) -> bool:
+        """Fan-in ducking leaves Camilla available as the master volume."""
+        return False
 
     async def duck(self) -> None:
         if self._ducked:
@@ -2360,14 +2366,46 @@ class WakeLoop:
 
     async def _prepare_assistant_loudness_context(self) -> None:
         provider, model, voice = active_voice_identity(self._cfg)
-        silence_target = silence_target_lufs_for_level(
+        tts_envelope = tts_envelope_lufs_for_level(
             self._volume_coordinator.get_listening_level(),
         )
+        prepare_kwargs = {
+            "provider": provider,
+            "model": model,
+            "voice": voice,
+            "tts_envelope_lufs": tts_envelope,
+        }
+        context_reader = (
+            getattr(self._volume_coordinator, "effective_volume_context", None)
+            if (
+                getattr(self._cfg, "duck_transport", "") == "fanin"
+                and tts_socket_feeds_pre_dsp_fanin(os.environ)
+            )
+            else None
+        )
+        if callable(context_reader):
+            try:
+                volume_context = await context_reader()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                log_event(
+                    logger,
+                    "assistant_loudness.context_unavailable",
+                    exc_type=type(exc).__name__,
+                    detail=str(exc),
+                    level=logging.WARNING,
+                )
+            else:
+                prepare_kwargs.update(
+                    canonical_volume_db=volume_context.canonical_db,
+                    downstream_volume_db=volume_context.downstream_db,
+                    context_tts_envelope_lufs=(
+                        volume_context.tts_envelope_lufs
+                    ),
+                    muted=volume_context.muted,
+                    context_stamp_boot_ns=volume_context.stamp_boot_ns,
+                )
         await self._tts.prepare_assistant_context(
-            provider=provider,
-            model=model,
-            voice=voice,
-            silence_target_lufs=silence_target,
+            **prepare_kwargs,
         )
 
     async def mute_mic(self) -> str:
@@ -3626,12 +3664,10 @@ class WakeLoop:
         jasper-control / the dial can render correct UI without polling
         the spend-cap or connection state separately.
 
-        `duck_active` is the authoritative signal for "is the Ducker
-        currently holding camilla main_volume below the canonical
-        listening_level target?" — consumed by jasper-control's
-        VolumeCoordinator to decide whether to defer a dial/web-slider
-        camilla write. See docs/HANDOFF-volume.md "Cross-daemon defer
-        signal" for the design.
+        ``camilla_volume_locked`` is the authoritative cross-daemon signal
+        for whether a dial/web-slider Camilla write must be deferred. Fan-in
+        can duck program audio while leaving this false, so ``duck_active``
+        remains user-facing session telemetry rather than a volume lock.
         """
         return {
             "state": self._state.name,
@@ -3647,6 +3683,10 @@ class WakeLoop:
             "mic_muted": self._mic_muted,
             "measurement_active": self._measurement_active.is_set(),
             "duck_active": self._ducker.is_ducked,
+            "camilla_volume_locked": bool(
+                self._ducker.is_ducked
+                and getattr(self._ducker, "locks_camilla_volume", True)
+            ),
             "assistant_output": {
                 "active": self._output_gate.is_active,
                 "kind": self._output_gate.active_kind,
@@ -3764,7 +3804,12 @@ class WakeLoop:
         # Tell the volume coordinator a session is active so its
         # source-transition handler doesn't fight the ducker's
         # additive math on camilla.
-        self._volume_coordinator.note_voice_session(True)
+        self._volume_coordinator.note_voice_session(
+            True,
+            camilla_volume_locked=getattr(
+                self._ducker, "locks_camilla_volume", True,
+            ),
+        )
         t_after_loudness_prepare = _time.monotonic()
         await self._ducker.duck()
         t_after_duck = _time.monotonic()

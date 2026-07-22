@@ -313,6 +313,30 @@ def test_driver_measurement_counts_correct_driver_without_requiring_mic(
     assert captured["summary"]["captured_driver_count"] == 1
 
 
+def test_driver_measurement_never_trusts_client_capture_admission(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    state = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "playback_id": "playback-1",
+            "observed_mic_dbfs": -42.5,
+            "capture_admission": {"admission_id": "client-forged"},
+        },
+        safe_session=_safe_session(
+            role="woofer", output_index=0, playback_id="playback-1"
+        ),
+        state_path=tmp_path / "measurements.json",
+    )
+
+    record = state["summary"]["latest_driver_measurements"]["mono:woofer"]
+    assert record["capture_admission"] is None
+
+
 def test_confirmed_driver_roles_are_current_topology_captured_roles(
     tmp_path: Path,
 ) -> None:
@@ -443,6 +467,105 @@ def test_current_driver_floor_evidence_rejects_malformed_issues_container(
 
     assert evidence["valid"] is False
     assert evidence["reason"] == "driver_floor_confirmation_invalid"
+
+
+def test_sweep_evidence_never_clobbers_the_confirmation_gate(
+    tmp_path: Path,
+) -> None:
+    """JTS3 run 13 -> run 14 (punch #29): recording sweep evidence for a
+    driver used to overwrite ``latest_driver_measurements``'s only entry for
+    that target -- the same slot ``current_driver_floor_evidence`` validated
+    as "the operator's confirmation". A sweep capture's own per-capture
+    playback id can never equal the original confirmation's, so its floor-
+    confirmation check always mismatches and it records ``captured: False``.
+    Once that became "latest", every subsequent measurement was refused
+    pre-playback with "the saved driver confirmation is incomplete", even
+    though the operator's ear-check was never actually invalidated.
+    """
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+
+    confirmed = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "playback_id": "confirm-1",
+        },
+        safe_session=_safe_session(
+            role="woofer", output_index=0, playback_id="confirm-1"
+        ),
+        state_path=state_path,
+        now="2026-07-16T05:41:12Z",
+    )
+    confirmation_record = confirmed["summary"]["latest_driver_confirmations"][
+        "mono:woofer"
+    ]
+    assert confirmation_record["captured"] is True
+
+    # Sweep evidence for the SAME target, recorded seconds later with its own
+    # fresh playback id -- exactly what
+    # commissioning_capture.record_driver_acoustic_capture does, passing the
+    # ORIGINAL confirmation through as `durable_floor_confirmation`.
+    swept = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": "woofer",
+            "outcome": "heard_correct_driver",
+            "playback_id": "sweep-1",
+            "observed_mic_dbfs": -18.0,
+            "acoustic": {"verdict": "present", "capture_geometry": "near_field"},
+        },
+        durable_floor_confirmation=confirmation_record["floor_confirmation"],
+        state_path=state_path,
+        now="2026-07-16T11:08:42Z",
+    )
+    sweep_record = swept["summary"]["latest_driver_measurements"]["mono:woofer"]
+    # Reproduces the live JTS3 shape: the sweep's own playback id can never
+    # match the original confirmation's, so it is recorded captured=False.
+    assert sweep_record["captured"] is False
+    assert sweep_record["acoustic"] is not None
+    assert any(
+        issue["code"] == "driver_measurement_playback_mismatch"
+        for issue in sweep_record["issues"]
+    )
+
+    # THE REPRO: pre-fix, `current_driver_floor_evidence` read this same
+    # clobbered record from `latest_driver_measurements` and refused. Post-fix
+    # it reads the confirmation-only index, which the sweep never touched.
+    evidence = current_driver_floor_evidence(
+        topology,
+        swept,
+        speaker_group_id="mono",
+        role="woofer",
+    )
+    assert evidence["valid"] is True
+    assert evidence["playback_id"] == "confirm-1"
+
+    # The by-ear write path still round-trips: the operator is still reported
+    # as having confirmed the woofer, unaffected by the sweep evidence.
+    assert confirmed_driver_roles(
+        topology, speaker_group_id="mono", state_path=state_path
+    ) == ["woofer"]
+
+
+def test_current_driver_floor_evidence_refuses_when_never_confirmed(
+    tmp_path: Path,
+) -> None:
+    topology = _topology()
+    state = load_measurement_state(topology, state_path=tmp_path / "measurements.json")
+
+    evidence = current_driver_floor_evidence(
+        topology,
+        state,
+        speaker_group_id="mono",
+        role="woofer",
+    )
+
+    assert evidence["valid"] is False
+    assert evidence["reason"] == "driver_floor_confirmation_required"
 
 
 def test_latest_wrong_driver_result_removes_confirmed_driver_role(
@@ -1102,6 +1225,9 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
             "bundle_dir": tmp_path / "bundle",
             "analysis_kwargs": {"captured_wav": wav_path},
             "preset": object(),
+            "capture_admission": {
+                "admission_id": f"admission-{path.stem}",
+            },
         }
 
     repeats = [
@@ -1152,6 +1278,10 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
         "repeat_captures/r1.wav",
         "repeat_captures/r2.wav",
     ]
+    assert [
+        entry["capture_admission"]["admission_id"]
+        for entry in record["repeats"]["per_repeat"]
+    ] == ["admission-r0", "admission-r1", "admission-r2"]
 
     # Re-read the actual file, not only the returned in-memory state. Before
     # the fix, json.dumps failed here on aggregate_repeat.analysis_kwargs's
@@ -1184,8 +1314,9 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
             "estimated_snr_db",
             "clipping",
             "above_validity_floor",
-            "level_dbfs",
-        }
+                "level_dbfs",
+                "capture_admission",
+            }
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,7 @@ staged config (crash-recovery-MUTED). These tests pin:
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,7 @@ from jasper.active_speaker import (
     rollback_driver_commissioning_config,
     running_commission_evidence,
 )
+from jasper.active_speaker.staging import running_graph_matches_staged_anchor
 
 # Reuse the canonical mono DAC8x topology + passing-validation stub + path-safety
 # evidence writer from the protected-startup-load tests.
@@ -163,6 +165,7 @@ class FakeCommissionCamilla:
         self.persisted_path = str(persisted_path)
         self.running_raw: str | None = None
         self.loaded_paths: list[str] = []
+        self.read_calls = 0
 
     async def apply_running_config(self, path: str) -> bool:
         text = Path(path).read_text(encoding="utf-8")
@@ -172,6 +175,7 @@ class FakeCommissionCamilla:
         return True
 
     async def read_running_config(self) -> str | None:
+        self.read_calls += 1
         return self.running_raw
 
     async def get_config_file_path(self) -> str | None:
@@ -205,6 +209,37 @@ class ReadFailingCamilla(FakeCommissionCamilla):
 
     async def read_running_config(self) -> str | None:
         raise RuntimeError("camilla unavailable")
+
+
+class SettlingCamilla(FakeCommissionCamilla):
+    """CamillaDSP acks the inline load but the readback lags: the first
+    ``lag_reads`` reads still return the staged all-muted anchor before the
+    switch lands (the hardware-observed 2026-07-15 race)."""
+
+    def __init__(
+        self, persisted_path: str | Path, staged_raw: str, lag_reads: int
+    ) -> None:
+        super().__init__(persisted_path)
+        self._staged_raw = staged_raw
+        self._lag_reads = lag_reads
+
+    async def read_running_config(self) -> str | None:
+        self.read_calls += 1
+        if self.read_calls <= self._lag_reads:
+            return self._staged_raw
+        return self.running_raw
+
+
+class StuckCamilla(FakeCommissionCamilla):
+    """The readback NEVER leaves the staged anchor (the load never took)."""
+
+    def __init__(self, persisted_path: str | Path, staged_raw: str) -> None:
+        super().__init__(persisted_path)
+        self._staged_raw = staged_raw
+
+    async def read_running_config(self) -> str | None:
+        self.read_calls += 1
+        return self._staged_raw
 
 
 def _load(
@@ -519,6 +554,121 @@ def test_live_confirm_readback_failure_is_observable(monkeypatch, tmp_path):
     assert result["load"]["live_evidence"]["checks"] == {
         "running_config_readable": False
     }
+    assert cam.loaded_paths[-1] == staged_path
+
+
+def test_running_graph_matches_staged_anchor_discriminates():
+    # The convergence discriminator: True only when every INTENDED-audible
+    # output is still hard-muted (the staged anchor's defining feature). An
+    # unparseable readback or an empty intent cannot positively prove "still
+    # the anchor", so both return False and the live evidence decides.
+    preset = _two_way()
+    woofer = set(audible_outputs_for_role(preset, "woofer"))
+    staged_raw = _block(_emit(preset, set()))  # all-muted anchor shape
+    commission_raw = _block(_emit(preset, woofer))
+    assert (
+        running_graph_matches_staged_anchor(staged_raw, audible_outputs=woofer)
+        is True
+    )
+    assert (
+        running_graph_matches_staged_anchor(commission_raw, audible_outputs=woofer)
+        is False
+    )
+    for raw in (None, "", "::not yaml::"):
+        assert running_graph_matches_staged_anchor(raw, audible_outputs=woofer) is False
+    assert running_graph_matches_staged_anchor(staged_raw, audible_outputs=[]) is False
+
+
+def test_live_confirm_polls_until_readback_leaves_staged_anchor(
+    monkeypatch, tmp_path
+):
+    # THE 2026-07-15 JTS3 bug (hardware-reproduced 2/2): CamillaDSP acks the
+    # inline load ~22 ms before its readback reflects the new graph, so a
+    # single-shot read still sees the staged all-muted anchor and fails safety
+    # (audible_mask_correct + startup_headroom). The live confirm must POLL —
+    # re-read until the readback leaves the anchor — then pass on the converged
+    # graph.
+    monkeypatch.setattr(startup_load_mod, "LIVE_CONFIRM_POLL_INTERVAL_S", 0.0)
+    staged = _staged(tmp_path)
+    staged_raw = _block(Path(staged["config"]["path"]).read_text(encoding="utf-8"))
+    cam = SettlingCamilla(staged["config"]["path"], staged_raw, lag_reads=3)
+
+    result, cam, *_ = _load(tmp_path, monkeypatch, role="woofer", camilla=cam)
+
+    assert result["load"]["status"] == "loaded"
+    assert result["load"]["live_evidence"]["passed"] is True
+    # It re-read the running graph (polled), not slept once and hoped: three
+    # staged readbacks, then the converged one.
+    assert cam.read_calls == 4
+
+
+def test_live_confirm_never_converging_raises_convergence_not_safety(
+    monkeypatch, caplog, tmp_path
+):
+    # If the readback NEVER stops matching the staged anchor within the budget,
+    # the failure is a load/convergence failure — a DISTINCT taxonomy from the
+    # safety-check failure, so downstream surfaces don't burn the operator's
+    # repeat budget with "keep the room quiet" advice for an infra fault.
+    monkeypatch.setattr(startup_load_mod, "LIVE_CONFIRM_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(startup_load_mod, "LIVE_CONFIRM_CONVERGENCE_BUDGET_S", 0.05)
+    staged = _staged(tmp_path)
+    staged_path = staged["config"]["path"]
+    staged_raw = _block(Path(staged_path).read_text(encoding="utf-8"))
+    cam = StuckCamilla(staged_path, staged_raw)
+    # Deterministic budget expiry: with a real wall clock, a CI scheduling
+    # stall > the 50 ms budget between loop start and the first post-read
+    # check ends the loop after ONE read and flakes `read_calls > 1`
+    # (observed twice on the py3.12 leg, 2026-07-16). Freeze the module's
+    # clock at 0 until the second read has happened, then expire the
+    # budget — read-count-keyed, so it stays valid if the loop gains or
+    # loses monotonic() call sites. Scoped to the module's `time` binding
+    # (delegating wrapper), never the global time module.
+    class _ReadKeyedTime:
+        def monotonic(self):
+            return 0.0 if cam.read_calls < 2 else 1000.0
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    monkeypatch.setattr(startup_load_mod, "time", _ReadKeyedTime())
+
+    with caplog.at_level("INFO", logger=startup_load_mod.logger.name):
+        result, cam, *_ = _load(tmp_path, monkeypatch, role="woofer", camilla=cam)
+
+    assert result["load"]["status"] == "failed"
+    reason = result["load"]["dsp_apply"]["persist_error"]
+    assert "never switched off the staged all-muted anchor" in reason
+    assert "commissioning load did not take effect" in reason
+    assert "failed live commissioning safety" not in reason
+    # It kept polling until the budget, and rolled back to the staged anchor.
+    assert cam.read_calls > 1
+    assert cam.loaded_paths[-1] == staged_path
+    # One structured convergence-outcome line per commission attempt.
+    assert "event=active_speaker.driver_commission_live_confirm" in caplog.text
+    assert "converged=false" in caplog.text
+
+
+def test_live_confirm_converged_unsafe_graph_keeps_safety_taxonomy(
+    monkeypatch, tmp_path
+):
+    # A readback that HAS left the staged anchor but genuinely violates the
+    # intended mask keeps the existing safety-failure message — and decides on
+    # the first read (no pointless convergence polling of an unsafe graph).
+    preset = _two_way()
+    woofer = set(audible_outputs_for_role(preset, "woofer"))
+    tweeter = set(audible_outputs_for_role(preset, "tweeter"))
+    drift_raw = _block(_emit(preset, woofer | tweeter))
+
+    result, cam, staged, staged_path, *_ = _load(
+        tmp_path, monkeypatch, role="woofer", drift_raw=drift_raw
+    )
+
+    assert result["load"]["status"] == "failed"
+    reason = result["load"]["dsp_apply"]["persist_error"]
+    assert "failed live commissioning safety" in reason
+    assert "audible_mask_correct" in reason
+    assert "did not take effect" not in reason
+    assert cam.read_calls == 1
     assert cam.loaded_paths[-1] == staged_path
 
 

@@ -452,6 +452,14 @@ def test_deploy_defines_and_calls_post_install_verification():
         assert text.count(fn) >= 2, f"{fn} is defined but never called"
 
 
+def test_deploy_verifies_browser_visible_status_asset_version():
+    """A 200 JSON poll must not hide a warm wizard serving stale CSS."""
+    text = _DEPLOY_TO_PI.read_text()
+    assert "Verifying Status asset version" in text
+    assert 'http://127.0.0.1/system/ | grep -Fq' in text
+    assert '"/assets/app.css?v=${SHA}${DIRTY}\\\""' in text
+
+
 def test_deploy_captures_pi_clock_for_oom_window():
     """The OOM scan bounds its kernel-log window to the Pi's clock at
     install start — captured before the install run."""

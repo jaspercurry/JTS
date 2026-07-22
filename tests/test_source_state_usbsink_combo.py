@@ -4,20 +4,19 @@
 
 """Combo-mode USB liveness primitives.
 
-On a USB combo box (``JASPER_FANIN_USB_DIRECT=enabled``) jasper-fanin
-DIRECT-captures the gadget and the jasper-usbsink bridge runs in standby. The
-bridge's ``playing`` / ``rms_dbfs`` fields are frozen idle values; mux has to
-infer liveness from fan-in's direct-lane counters.
+On a USB combo box (``JASPER_FANIN_USB_DIRECT=enabled``) jasper-fanin is the
+sole live ingress owner and DIRECT-captures the gadget. Mux infers temporal
+liveness from fan-in's direct-lane telemetry.
 """
 from __future__ import annotations
 
 from jasper.mux import ComboLiveness, USBSINK_COMBO_STOP_TICKS, step_combo_liveness
 from jasper.source_state import (
     USBSINK_PLAYING_RMS_DBFS,
-    usbsink_bridge_in_standby,
     usbsink_direct_audible,
     usbsink_direct_frames_read,
     usbsink_direct_muted,
+    usbsink_direct_playing,
     usbsink_direct_rms_dbfs,
 )
 
@@ -38,18 +37,45 @@ def _fanin_status(
     }
 
 
-def test_standby_flag_true_is_combo():
-    assert usbsink_bridge_in_standby({"standby": True, "playing": False}) is True
+def test_direct_playing_requires_capturing_health_and_audible_level():
+    assert (
+        usbsink_direct_playing(
+            _fanin_status(
+                "direct",
+                rms_dbfs=-12.0,
+                direct={"health": "capturing"},
+            ),
+        )
+        is True
+    )
+    assert (
+        usbsink_direct_playing(
+            _fanin_status(
+                "direct",
+                rms_dbfs=-90.0,
+                direct={"health": "capturing"},
+            ),
+        )
+        is False
+    )
+    assert (
+        usbsink_direct_playing(
+            _fanin_status(
+                "direct",
+                rms_dbfs=-12.0,
+                direct={"health": "waiting"},
+            ),
+        )
+        is False
+    )
 
 
-def test_no_standby_flag_is_solo():
-    assert usbsink_bridge_in_standby({"playing": True}) is False
-    assert usbsink_bridge_in_standby({"standby": False, "playing": True}) is False
-
-
-def test_standby_missing_or_bad_state_is_solo():
-    assert usbsink_bridge_in_standby(None) is False
-    assert usbsink_bridge_in_standby(["nope"]) is False  # type: ignore[arg-type]
+def test_direct_playing_older_snapshot_falls_back_to_audibility():
+    assert usbsink_direct_playing(_fanin_status("direct", rms_dbfs=-12.0)) is True
+    assert usbsink_direct_playing(_fanin_status("direct", rms_dbfs=-90.0)) is False
+    assert usbsink_direct_playing(_fanin_status("direct")) is False
+    assert usbsink_direct_playing(_fanin_status("lane", rms_dbfs=-12.0)) is None
+    assert usbsink_direct_playing(None) is None
 
 
 def test_direct_liveness_prefers_resampler_input_frames():
@@ -120,7 +146,7 @@ def _run(frames_seq, *, start=ComboLiveness(), stop_ticks=STOP):
     out = []
     for frames in frames_seq:
         state = step_combo_liveness(state, frames, stop_ticks=stop_ticks)
-        out.append(state.playing)
+        out.append(state.streaming)
     return out
 
 
@@ -149,8 +175,14 @@ def test_single_status_miss_does_not_drop_a_live_winner():
     assert _run([0, 48_000, None, 96_000]) == [False, True, True, True]
 
 
-def test_two_consecutive_misses_drop_after_debounce():
-    assert _run([0, 48_000] + [None] * STOP)[-1] is False
+def test_repeated_status_misses_remain_unknown_not_false_stops():
+    """The mux-level five-second unknown grace owns bounded expiry.
+
+    This counter fallback cannot distinguish "fan-in unavailable" from "frames
+    stopped," so missing samples preserve its state instead of manufacturing a
+    stop. Definite flat counters still exercise the stop debounce above.
+    """
+    assert _run([0, 48_000] + [None] * (STOP + 2))[-1] is True
 
 
 def test_counter_reset_rebaselines_without_spurious_advance():
@@ -161,23 +193,23 @@ def test_reset_state_baseline_is_the_new_low_value():
     state = ComboLiveness()
     for frames in (0, 48_000):
         state = step_combo_liveness(state, frames, stop_ticks=STOP)
-    assert state.prev_frames == 48_000 and state.playing is True
+    assert state.prev_frames == 48_000 and state.streaming is True
     state = step_combo_liveness(state, 100, stop_ticks=STOP)
     assert state.prev_frames == 100
 
 
 def test_status_miss_keeps_prev_frames_baseline():
-    state = ComboLiveness(prev_frames=48_000, idle_ticks=0, playing=True)
+    state = ComboLiveness(prev_frames=48_000, idle_ticks=0, streaming=True)
     state = step_combo_liveness(state, None, stop_ticks=STOP)
     assert state.prev_frames == 48_000
 
 
 def test_advance_resets_idle_counter():
-    state = ComboLiveness(prev_frames=48_000, idle_ticks=0, playing=True)
+    state = ComboLiveness(prev_frames=48_000, idle_ticks=0, streaming=True)
     state = step_combo_liveness(state, 48_000, stop_ticks=STOP)
-    assert state.idle_ticks == 1 and state.playing is True
+    assert state.idle_ticks == 1 and state.streaming is True
     state = step_combo_liveness(state, 96_000, stop_ticks=STOP)
-    assert state.idle_ticks == 0 and state.playing is True
+    assert state.idle_ticks == 0 and state.streaming is True
 
 
 # ---- Per-lane level readers -------------------------------------------------
@@ -239,68 +271,31 @@ def test_direct_muted_none_when_absent_or_non_bool():
     assert usbsink_direct_muted({"inputs": "nope"}) is None
 
 
-# ---- Combo silence gate: frames-advanced AND audible ------------------------
+# ---- Combo liveness is frames-only (no audio-level gate) --------------------
 
-# An audible / silent level for the level-aware _run below. -6 dBFS is loud
-# content; -90 dBFS is a host streaming digital silence (muted Zoom / idle tab).
-LOUD = -6.0
-SILENT = -90.0
-
-
-def _run_leveled(pairs, *, start=ComboLiveness(), stop_ticks=STOP):
-    """Drive the gate with (frames, rms_dbfs) pairs, returning per-tick playing."""
-    state = start
-    out = []
-    for frames, rms in pairs:
-        state = step_combo_liveness(
-            state, frames, stop_ticks=stop_ticks, rms_dbfs=rms,
-        )
-        out.append(state.playing)
-    return out
+# The old "frames-advanced AND audible (rms > -60)" gate was removed with the
+# sticky-session rework (2026-07-17). USB liveness is now purely "is the host
+# streaming frames to us" — a faint sound streams frames just like a loud one,
+# and USB wins whenever it streams and no explicit session is active (the
+# arbiter, not the level, keeps a silently-streaming host from stealing a cast).
+# The per-lane rms readers below still exist for /state telemetry, but no longer
+# gate liveness. See jasper.mux.step_combo_liveness and docs/HANDOFF-usbsink.md.
 
 
-def test_advancing_frames_but_silent_never_plays():
-    # THE BUG THIS PR FIXES: a Mac emitting digital silence keeps the fan-in
-    # DIRECT counter advancing, but the lane level stays at the floor. Combo must
-    # read that as NOT playing (parity with a solo box), so auto-return works.
-    assert _run_leveled(
-        [(0, SILENT), (48_000, SILENT), (96_000, SILENT), (144_000, SILENT)],
-    ) == [False, False, False, False]
+def test_step_combo_liveness_takes_no_level_argument():
+    """The level gate is gone: step_combo_liveness ignores audio level entirely.
+
+    Pins the removal so a future edit can't quietly reintroduce an rms kwarg and
+    re-gate faint audio out of the pipeline."""
+    import inspect
+
+    params = inspect.signature(step_combo_liveness).parameters
+    assert "rms_dbfs" not in params
+    assert "rms_threshold_dbfs" not in params
 
 
-def test_advancing_frames_and_audible_plays():
-    assert _run_leveled([(0, LOUD), (48_000, LOUD), (96_000, LOUD)]) == [
-        False,
-        True,
-        True,
-    ]
-
-
-def test_audio_stops_when_host_goes_silent_mid_stream():
-    # Playing on loud frames, then the host mutes (frames keep advancing, level
-    # drops). The advancing-but-silent ticks count toward stop_ticks and the
-    # winner drops after the debounce — the fade-out / mute edge.
-    seq = [(0, LOUD), (48_000, LOUD)] + [(48_000 + i * 48_000, SILENT) for i in range(1, STOP + 1)]
-    verdicts = _run_leveled(seq)
-    assert verdicts[:2] == [False, True]
-    assert verdicts[2 : 2 + STOP - 1] == [True] * (STOP - 1)
-    assert verdicts[-1] is False
-
-
-def test_silent_gap_within_debounce_does_not_drop_a_live_winner():
-    # A single quiet period (a beat gap in music) inside the stop-tick window
-    # must not drop the winner — the hysteresis rides it out, then loud resumes.
-    assert STOP >= 2
-    assert _run_leveled(
-        [(0, LOUD), (48_000, LOUD), (96_000, SILENT), (144_000, LOUD)],
-    ) == [False, True, True, True]
-
-
-def test_missing_level_falls_back_to_frames_only():
-    # rms_dbfs=None (older fan-in with no per-lane level) → audible-by-default, so
-    # the pre-level frames-only behaviour is preserved for that deploy window.
-    assert _run_leveled([(0, None), (48_000, None), (96_000, None)]) == [
-        False,
-        True,
-        True,
-    ]
+def test_faint_streaming_wins_like_loud_streaming():
+    """A near-silent host that keeps the counter advancing is 'streaming' —
+    identical to a loud one. This is the faint-audio fix: the level never
+    factors into liveness, so quiet content is not gated out."""
+    assert _run([0, 48_000, 96_000]) == [False, True, True]

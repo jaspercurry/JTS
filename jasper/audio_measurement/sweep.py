@@ -154,6 +154,48 @@ def synchronized_swept_sine(
       amp = 10**(amplitude_dbfs/20). `meta` carries the exact
       duration / L / etc. needed by deconvolution.
     """
+    meta = synchronized_sweep_metadata(
+        f1=f1,
+        f2=f2,
+        duration_approx_s=duration_approx_s,
+        sample_rate=sample_rate,
+        amplitude_dbfs=amplitude_dbfs,
+    )
+
+    t = np.arange(meta.n_samples, dtype=np.float64) / meta.sample_rate
+    amp = 10 ** (meta.amplitude_dbfs / 20.0)
+    phase = 2 * np.pi * meta.f1 * meta.L * (np.exp(t / meta.L) - 1)
+    sweep = amp * np.sin(phase)
+
+    # Light fade-in/out — eliminates the click from a sweep that
+    # doesn't quite end at a zero-crossing in float32 precision, and
+    # masks any DC offset on the playback chain. 5 ms fade at 48 kHz =
+    # 240 samples; trivially short relative to 10-second sweep.
+    fade_samples = max(8, int(0.005 * meta.sample_rate))
+    if fade_samples * 2 < meta.n_samples:
+        fade_in = np.linspace(0.0, 1.0, fade_samples) ** 2
+        fade_out = np.linspace(1.0, 0.0, fade_samples) ** 2
+        sweep[:fade_samples] *= fade_in
+        sweep[-fade_samples:] *= fade_out
+
+    return sweep.astype(np.float32), meta
+
+
+def synchronized_sweep_metadata(
+    f1: float = 20.0,
+    f2: float = 20000.0,
+    duration_approx_s: float = 10.0,
+    sample_rate: int = 48000,
+    amplitude_dbfs: float = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+) -> SweepMeta:
+    """Return exact synchronized-sweep metadata without allocating PCM.
+
+    Automatic excitation admission must bind the realized, phase-rounded
+    duration before it is allowed to generate a signal.  Keeping the Novak
+    synchronization calculation here gives planning and generation one source
+    of truth while avoiding a multi-megabyte allocation before admission.
+    """
+
     if (
         isinstance(amplitude_dbfs, bool)
         or not isinstance(amplitude_dbfs, (int, float))
@@ -191,30 +233,13 @@ def synchronized_swept_sine(
     duration_s = L * math.log(f2 / f1)
     n_samples = int(round(duration_s * sample_rate))
 
-    t = np.arange(n_samples, dtype=np.float64) / sample_rate
-    amp = 10 ** (amplitude_dbfs / 20.0)
-    phase = 2 * np.pi * f1 * L * (np.exp(t / L) - 1)
-    sweep = amp * np.sin(phase)
-
-    # Light fade-in/out — eliminates the click from a sweep that
-    # doesn't quite end at a zero-crossing in float32 precision, and
-    # masks any DC offset on the playback chain. 5 ms fade at 48 kHz =
-    # 240 samples; trivially short relative to 10-second sweep.
-    fade_samples = max(8, int(0.005 * sample_rate))
-    if fade_samples * 2 < n_samples:
-        fade_in = np.linspace(0.0, 1.0, fade_samples) ** 2
-        fade_out = np.linspace(1.0, 0.0, fade_samples) ** 2
-        sweep[:fade_samples] *= fade_in
-        sweep[-fade_samples:] *= fade_out
-
-    meta = SweepMeta(
+    return SweepMeta(
         f1=float(f1), f2=float(f2), L=float(L),
         duration_s=float(duration_s),
         n_samples=int(n_samples),
         sample_rate=int(sample_rate),
         amplitude_dbfs=float(amplitude_dbfs),
     )
-    return sweep.astype(np.float32), meta
 
 
 def write_sweep_wav(

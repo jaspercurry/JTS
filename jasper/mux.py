@@ -4,13 +4,11 @@
 
 """jasper-mux — renderer source-arbiter.
 
-Polls each renderer's state on a short interval and, when a new
-source transitions to "playing" while another is already playing,
-pauses the older one. Implements "most recent source wins" UX
-across the AirPlay / Spotify Connect / Bluetooth A2DP renderers.
-
-Cadence: 1 Hz polling. Each tick fans out to three concurrent
-state probes; the whole tick takes <100 ms typically.
+Native producer notifications wake one host-owned reconciler, which re-reads
+all source state and applies the existing sticky-session policy. A fixed 1 Hz
+patrol invokes that exact same reconciler as a lost-alert safety net. Alerts are
+therefore hints, never routing commands: stale and duplicate alerts are harmless,
+and the patrol cannot disagree with a separate alert policy because none exists.
 
 Renderer support:
   Spotify (librespot):
@@ -21,9 +19,10 @@ Renderer support:
             We iterate household accounts and issue
             PUT /me/player/pause to any account that has the configured
             speaker device in its list. Tier 2 (added 2026-05-22) is
-            `systemctl restart librespot.service` if Tier 1 fails
+            `systemctl try-restart librespot.service` if Tier 1 fails
             — guarantees librespot releases its private fan-in lane
-            so the new winner is heard alone. Tier 2 is still useful
+            when it is still active, without resurrecting a concurrently
+            disabled or role-parked source. Tier 2 is still useful
             after the 2026-05-26 fan-in cutover: renderers no longer
             share one ALSA device, so an un-pauseable librespot would
             keep streaming into its own lane and be summed alongside
@@ -48,13 +47,33 @@ Renderer support:
             degrade to phone-side pause.
   USB sink (jasper-usbsink):
     detect: fan-in DIRECT-captures the gadget, so USB liveness comes
-            from the fan-in DIRECT-lane counter advancing (the standby
-            bridge's /run/jasper-usbsink/state.json publishes frozen
-            idle values). See _usbsink_playing.
+            from fan-in DIRECT-lane telemetry. See _usbsink_playing.
+            NOTE: liveness is now purely "is the host streaming frames to
+            us" — there is no audio-LEVEL gate. A faint sound is still a
+            sound; if USB is the only source, we play it.
     pause:  MUTE the fan-in usbsink lane at its mix stage. When all
             other sources go idle, we release the preempt (unmute) so
             user-host transitions (pause then play on Mac) can re-take
             the speaker.
+
+Sticky sessions — the USB↔explicit-source asymmetry:
+  AirPlay / Spotify / Bluetooth are explicit, long-lived SESSIONS: starting one
+  is a deliberate "play here" act. USB is a dumb byte stream we can only infer
+  intent from (any app on the host — a Slack ding, a UI click — feeds it). So
+  the two are NOT peers under "latest-source-wins":
+    - An explicit session that STARTS preempts anything, including USB (a
+      deliberate cast wins). This is unchanged.
+    - USB is a PASSIVE source: it takes the speaker only when no explicit
+      session is active (uncontested, or after the session ends). A USB stream
+      opening does NOT preempt an active AirPlay/Spotify — otherwise an
+      incidental host sound would yank a housemate's cast and (because we pause
+      the preempted source) never hand it back. That "signal-sense auto-switch
+      grabs and doesn't switch back" failure is the well-known Sonos line-in /
+      AVR-input-sense pathology; sticky sessions avoid it structurally.
+  The user can always override via the /sources Source selector (manual pin).
+  See _pick_winner / _explicit_active and docs/HANDOFF-usbsink.md. A future
+  opt-in "sustained-audio grab" (USB preempts after N seconds of continuous
+  real audio) is noted there but deliberately NOT built.
 
 """
 from __future__ import annotations
@@ -79,17 +98,14 @@ from .audio_runtime_plan import (
     decide_source_low_latency_route,
     low_latency_feature_flags,
 )
+from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
-    USBSINK_PLAYING_RMS_DBFS,
-    airplay_playing,
-    bluetooth_playing,
-    read_usbsink_state,
-    spotify_playing,
-    usbsink_bridge_in_standby,
+    airplay_playing_observed as airplay_playing,
+    bluetooth_playing_observed as bluetooth_playing,
+    spotify_playing_observed as spotify_playing,
     usbsink_direct_frames_read,
-    usbsink_direct_rms_dbfs,
-    usbsink_playing,
+    usbsink_direct_streaming,
 )
 from .spotify_oauth import default_spotify_redirect_uri
 
@@ -111,11 +127,19 @@ MUX_MODE_STATE_PATH = os.environ.get(
 )
 # The fan-in input-lane label for the USB source. USB preempt is a MUTE/UNMUTE
 # of THIS lane over the fan-in control socket — the only USB-silencing primitive
-# now that fan-in DIRECT-captures the gadget and the jasper-usbsink bridge is a
-# standby-only daemon that owns no audio path. Derived from the same
+# now that fan-in DIRECT-captures the gadget as its sole live ingress owner.
+# Derived from the same
 # source→label map fan-in SELECT uses, so the two never drift.
 USBSINK_FANIN_LABEL = SOURCE_TO_FANIN_LABEL[Source.USBSINK]
 FANIN_TEST_LABELS = frozenset({"correction"})
+FANIN_TEST_OWNERS = frozenset({
+    "active-speaker-commissioning",
+    "correction-measurement",
+})
+# A diagnostic owner must renew before this monotonic deadline. This is long
+# enough for the 35 s commissioning tone; correction renews every 20 s. A web
+# worker crash therefore self-recovers instead of pinning household music off.
+FANIN_TEST_LEASE_SEC = 60.0
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
 MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
@@ -123,7 +147,7 @@ MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 
 def _spotify_preempt_restart_disabled() -> bool:
     """Env-var escape hatch for the Spotify-preempt Tier 2 escalation
-    (the systemctl restart librespot fallback added 2026-05-22).
+    (the active-only systemctl try-restart fallback added 2026-05-22).
 
     Set JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled to revert preempt
     to "Web API only, mix-on-failure" behaviour — useful if the
@@ -141,8 +165,8 @@ def _usbsink_preempt_disabled() -> bool:
     Set JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env to
     short-circuit `_usbsink_set_preempt` — mux stops MUTE/UNMUTE-ing the
     fan-in usbsink lane when another source wins (the only USB-silencing
-    primitive; jasper-fanin DIRECT-captures the gadget and the jasper-usbsink
-    bridge is a standby-only daemon with no audio of its own to silence).
+    primitive; jasper-fanin DIRECT-captures the gadget as its sole live ingress
+    owner).
     USB then behaves like an unsupported source (audio briefly mixes when a
     new source starts). Operator escape hatch for cases where the lane mute
     is causing unexpected disruption, without requiring a redeploy or daemon
@@ -156,20 +180,43 @@ def _usbsink_preempt_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
-# Combo-mode USB liveness debounce (mux ticks at POLL_INTERVAL_SEC = 1 Hz).
-# On a combo box (JASPER_FANIN_USB_DIRECT) the usbsink bridge is in standby, so
-# its RMS-gated `playing` flag is frozen. The best liveness signal is fan-in's
-# DIRECT-lane host-input counter, read via usbsink_direct_frames_read().
+# Combo-mode USB streaming debounce (mux ticks at POLL_INTERVAL_SEC = 1 Hz).
+# The liveness signal is fan-in's DIRECT-lane host-input counter, read via
+# usbsink_direct_frames_read(). The debounce rides through a brief delivery gap
+# (a status miss / a momentary stall) so the source doesn't flap; a real pause
+# stops the frames and macOS tears the stream down, so the counter genuinely
+# stalls and USB releases after this many ticks.
 USBSINK_COMBO_STOP_TICKS = 2
+ALERT_COALESCE_SEC = 0.05
+# A transient unreadable probe must not synthesize stop/start flutter, but a
+# permanently dead adapter must not pin a vanished winner forever. Hold an
+# active last-known state for this bounded grace, then fail inactive until a
+# successful observation re-establishes it.
+UNKNOWN_ACTIVE_HOLD_SEC = 5.0
 
 
 @dataclass(frozen=True)
 class ComboLiveness:
-    """Temporal state for combo-mode USB frames-flowing detection."""
+    """Temporal state for combo-mode USB frames-flowing detection.
+
+    ``streaming`` is "is the host feeding us frames right now" — there is NO
+    audio-LEVEL component (removed with the sticky-session rework, 2026-07-17).
+    A faint sound and a loud one both stream frames; USB is the winner whenever
+    it streams and no explicit session is active (see the module docstring's
+    "Sticky sessions"). The old ``rms_dbfs > -60`` gate lived here to stop a
+    silently-streaming host from seizing the speaker; that job now belongs to
+    the arbiter (an explicit session simply outranks USB), so level dropped out
+    of liveness entirely. That fixed dropped-faint-audio and the level-driven
+    quiet-passage dropout (a quiet stretch keeps the counter advancing, so the
+    lane no longer reads "stopped"). New fan-in builds publish a 20 Hz-derived
+    streaming edge; this state machine remains the rolling-upgrade fallback for
+    older STATUS shapes. A host that actually tears the stream down still stops
+    frames and releases after the stop hysteresis.
+    """
 
     prev_frames: int | None = None
     idle_ticks: int = 0
-    playing: bool = False
+    streaming: bool = False
 
 
 def step_combo_liveness(
@@ -177,48 +224,28 @@ def step_combo_liveness(
     frames: int | None,
     *,
     stop_ticks: int,
-    rms_dbfs: float | None = None,
-    rms_threshold_dbfs: float = USBSINK_PLAYING_RMS_DBFS,
 ) -> ComboLiveness:
-    """Advance the combo-USB liveness state by one mux tick.
+    """Advance the combo-USB streaming state by one mux tick.
 
-    A combo box "plays" on a tick iff BOTH:
-
-    - **frames advanced** — the fan-in DIRECT-lane counter ``frames`` grew since
-      the previous tick (the lane is being fed), AND
-    - **audible** — the lane's most-recent-period ``rms_dbfs`` is above
-      ``rms_threshold_dbfs`` (the shared :data:`USBSINK_PLAYING_RMS_DBFS` gate).
-
-    The audibility half is what a solo box gets for free from the bridge's
-    RMS-gated ``playing`` flag: a fan-in DIRECT lane keeps clocking silence
-    frames when the host is connected but emitting digital silence (a muted Zoom,
-    an idle tab — see rust/jasper-fanin/src/mixer.rs on
-    DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS), so frames-advanced ALONE would seize the
-    speaker on silence, where a solo box reads playing=false. Gating on level
-    makes combo == solo.
+    A combo box is ``streaming`` on a tick iff the fan-in DIRECT-lane counter
+    ``frames`` grew since the previous tick (the host is feeding the lane).
 
     Semantics:
 
-    - advanced AND audible -> playing, idle reset.
+    - advanced -> streaming, idle reset.
     - first reading or counter reset -> re-baseline without inventing a delta.
-    - flat / missing frames, OR advancing-but-silent -> non-advance; drop after
-      ``stop_ticks`` consecutive non-advancing ticks while playing (the fade-out
-      / pause edge). ``prev_frames`` still tracks the counter so a later audible
-      advance is seen.
-
-    ``rms_dbfs=None`` (an older fan-in build with no per-lane level) is treated
-    as audible so the pre-level frames-only behaviour is preserved for that
-    transition window — a deploy ships fan-in + mux together, so a real combo
-    box carries the level within a bounce.
+    - flat frames -> drop after ``stop_ticks`` consecutive non-advancing patrols.
+    - missing frames -> unknown; retain the complete prior state. A STATUS miss
+      is not evidence that a stream stopped.
     """
     prev = state.prev_frames
-    frames_advanced = frames is not None and prev is not None and frames > prev
-    audible = rms_dbfs is None or rms_dbfs > rms_threshold_dbfs
-    advanced = frames_advanced and audible
+    if frames is None:
+        return state
+    advanced = frames is not None and prev is not None and frames > prev
     new_prev = frames if frames is not None else prev
     if advanced:
         return ComboLiveness(new_prev, 0, True)
-    if not state.playing:
+    if not state.streaming:
         return ComboLiveness(new_prev, 0, False)
     idle = state.idle_ticks + 1
     return ComboLiveness(new_prev, idle, idle < stop_ticks)
@@ -231,6 +258,12 @@ class _State:
     when a source goes from not-playing to playing."""
     playing: dict[Source, bool] = field(
         default_factory=lambda: {s: False for s in MUSIC_SOURCES},
+    )
+    observations: dict[Source, str] = field(
+        default_factory=lambda: {s: "unknown" for s in MUSIC_SOURCES},
+    )
+    known_at: dict[Source, float] = field(
+        default_factory=lambda: {s: 0.0 for s in MUSIC_SOURCES},
     )
 
 
@@ -275,8 +308,7 @@ class Mux:
         # re-take the speaker via a fresh inactive→active transition).
         self._usbsink_preempted = False
         # USB liveness (see step_combo_liveness). fan-in DIRECT-captures the USB
-        # gadget and the standby bridge's `playing` flag is frozen, so
-        # `_usbsink_playing` measures liveness off fan-in's DIRECT lane.
+        # gadget, so `_usbsink_playing` measures liveness off that DIRECT lane.
         self._usbsink_combo = ComboLiveness()
         self._volume_coordinator = volume_coordinator
         self._last_handoff: dict[str, Any] | None = None
@@ -287,6 +319,8 @@ class Mux:
         # temporarily own the fan-in gate without changing the household's
         # persisted manual-vs-auto source selection.
         self._test_fanin_label: str | None = None
+        self._test_fanin_owner: str | None = None
+        self._test_fanin_expires_at: float | None = None
         low_latency_flags = low_latency_feature_flags()
         # Adaptive fan-in OUTPUT-buffer (default-OFF): shrink fan-in's near-FULL
         # output buffer when USB is the sole exclusive winner, and restore the
@@ -300,30 +334,162 @@ class Mux:
         # must not restart-storm the shared daemon every tick. Stay full until
         # the source set changes.
         self._buffer_shrink_blocked = False
+        # Alert/patrol reconciliation. Producers may only mark a source dirty
+        # and wake this event; `_reconcile` is the single policy entry point.
+        self._reconcile_wake = asyncio.Event()
+        self._dirty_sources: set[Source] = set()
+        self._notification_received = {s: 0 for s in MUSIC_SOURCES}
+        self._notification_coalesced = {s: 0 for s in MUSIC_SOURCES}
+        self._notification_last: dict[Source, tuple[str, float] | None] = {
+            s: None for s in MUSIC_SOURCES
+        }
+        self._reconcile_seq = 0
+        self._patrol_count = 0
+        self._patrol_repairs = 0
+        self._last_reconcile: dict[str, Any] | None = None
+        self._last_alert_reconcile_at = 0.0
 
     async def run(self) -> None:
         logger.info(
-            "jasper-mux starting (poll=%.1fs, librespot_state=%s)",
+            "jasper-mux starting (alerts=native, patrol=%.1fs, librespot_state=%s)",
             self.POLL_INTERVAL_SEC, self._librespot_state_path,
         )
         await self._fanin_none_best_effort(reason="startup")
         control_task = asyncio.create_task(self._run_control_server())
+        from .source_events import start_source_event_tasks
+
+        event_tasks = start_source_event_tasks(
+            self.notify_source_changed,
+            spotify_state_path=self._librespot_state_path,
+        )
         try:
+            loop = asyncio.get_running_loop()
+            next_patrol = loop.time() + self.POLL_INTERVAL_SEC
+            startup_pending = True
             while True:
                 try:
-                    await self._tick()
+                    # Startup uses the same protected reconciliation path as
+                    # every later patrol. A transient first probe must not exit
+                    # into Restart=always while fan-in remains held at NONE.
+                    if startup_pending:
+                        startup_pending = False
+                        await self._reconcile(
+                            trigger="startup",
+                            dirty_sources=set(),
+                        )
+                        continue
+
+                    timeout = max(0.0, next_patrol - loop.time())
+                    woke = False
+                    try:
+                        await asyncio.wait_for(
+                            self._reconcile_wake.wait(), timeout=timeout,
+                        )
+                        woke = True
+                    except asyncio.TimeoutError:
+                        pass
+
+                    # Catch an alert that landed at the timeout boundary.
+                    if self._reconcile_wake.is_set():
+                        self._reconcile_wake.clear()
+                        woke = True
+                    if woke:
+                        # Coalesce a short burst (e.g. MPRIS status + metadata)
+                        # without imposing delay on the first alert after idle.
+                        since_last = loop.time() - self._last_alert_reconcile_at
+                        if since_last < ALERT_COALESCE_SEC:
+                            await asyncio.sleep(ALERT_COALESCE_SEC - since_last)
+
+                        # An alert may have landed during that sleep. Clear its
+                        # level-triggered wake immediately before snapshotting
+                        # the dirty set (there is no await between these
+                        # operations). A later alert then remains set for the
+                        # next loop instead of causing an empty reconciliation.
+                        self._reconcile_wake.clear()
+
+                    now = loop.time()
+                    patrol_due = now >= next_patrol
+                    dirty = set(self._dirty_sources)
+                    self._dirty_sources.clear()
+                    if not dirty and not patrol_due:
+                        continue
+                    if patrol_due:
+                        while next_patrol <= now:
+                            next_patrol += self.POLL_INTERVAL_SEC
+                    trigger = (
+                        "alert+patrol" if dirty and patrol_due
+                        else "alert" if dirty
+                        else "patrol"
+                    )
+                    await self._reconcile(
+                        trigger=trigger,
+                        dirty_sources=dirty,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("mux tick failed: %s", e)
-                await asyncio.sleep(self.POLL_INTERVAL_SEC)
+                    logger.warning("mux reconcile failed: %s", e)
         finally:
-            control_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await control_task
+            tasks = [control_task, *event_tasks]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if self._volume_coordinator is not None:
                 with contextlib.suppress(Exception):
                     await self._volume_coordinator.aclose()
+
+    def notify_source_changed(self, source: Source, via: str) -> None:
+        """Record a wake hint without making or applying a routing decision."""
+        if source not in MUSIC_SOURCES:
+            return
+        self._notification_received[source] += 1
+        if source in self._dirty_sources:
+            self._notification_coalesced[source] += 1
+        self._dirty_sources.add(source)
+        self._notification_last[source] = (via, time.monotonic())
+        self._reconcile_wake.set()
+        logger.debug("source alert source=%s via=%s", source.value, via)
+
+    async def _reconcile(
+        self,
+        *,
+        trigger: str,
+        dirty_sources: set[Source],
+    ) -> None:
+        """The sole automatic arbitration entry point for alerts and patrols."""
+        started = time.monotonic()
+        before = (self._winner, tuple(self._state.playing.items()))
+        await self._tick()
+        after = (self._winner, tuple(self._state.playing.items()))
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        changed = before != after
+        patrol = "patrol" in trigger
+        if patrol:
+            self._patrol_count += 1
+            if changed and not dirty_sources:
+                self._patrol_repairs += 1
+        self._reconcile_seq += 1
+        if dirty_sources:
+            self._last_alert_reconcile_at = asyncio.get_running_loop().time()
+        self._last_reconcile = {
+            "id": self._reconcile_seq,
+            "trigger": trigger,
+            "dirty_sources": sorted(s.value for s in dirty_sources),
+            "changed": changed,
+            "winner": self._winner.value if self._winner else None,
+            "elapsed_ms": elapsed_ms,
+        }
+        if dirty_sources or (patrol and changed):
+            log_event(
+                logger,
+                "mux.source_reconcile",
+                level=logging.INFO if changed else logging.DEBUG,
+                trigger=trigger,
+                dirty=",".join(sorted(s.value for s in dirty_sources)) or "none",
+                changed=changed,
+                winner=self._winner.value if self._winner else "idle",
+                elapsed_ms=elapsed_ms,
+            )
 
     async def _probe_sources(self) -> dict[Source, bool]:
         spotify, airplay, bluetooth, usbsink = await asyncio.gather(
@@ -332,36 +498,68 @@ class Mux:
             bluetooth_playing(),
             self._usbsink_playing(),
         )
-        return {
+        observed: dict[Source, bool | None] = {
             Source.SPOTIFY: spotify,
             Source.AIRPLAY: airplay,
             Source.BLUETOOTH: bluetooth,
             Source.USBSINK: usbsink,
         }
+        resolved = dict(self._state.playing)
+        now = time.monotonic()
+        for source, value in observed.items():
+            if value is None:
+                known_age = now - self._state.known_at[source]
+                if (
+                    resolved[source]
+                    and known_age >= UNKNOWN_ACTIVE_HOLD_SEC
+                ):
+                    resolved[source] = False
+                    self._state.observations[source] = "unknown_expired"
+                else:
+                    self._state.observations[source] = "unknown"
+                continue
+            resolved[source] = bool(value)
+            self._state.known_at[source] = now
+            self._state.observations[source] = (
+                "active" if value else "inactive"
+            )
+        return resolved
 
-    async def _usbsink_playing(self) -> bool:
-        """"Is USB playing" for the source arbiter, off fan-in's DIRECT lane.
+    async def _usbsink_playing(self) -> bool | None:
+        """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
+        lane.
 
-        fan-in DIRECT-captures the gadget and the standby bridge opens no PCM
-        (publishing frozen idle values), so liveness comes from the fan-in
-        DIRECT-lane counter advancing across ticks. When the bridge state is
-        absent (USB Audio Input off / daemon not running) there is no combo box
-        to measure, so fall back to the bridge's own (false) ``playing`` flag.
+        fan-in DIRECT-captures the gadget as its sole live ingress owner. New
+        builds publish an edge-detected ``direct.streaming`` boolean from their
+        existing frame counter; older builds fall back to counter deltas across
+        patrols. There is NO audio-level gate (see the module docstring's
+        "Sticky sessions"). A missing/non-direct snapshot is unknown and retains
+        the arbiter's last-known state; do not issue a second STATUS probe.
         """
-        state = read_usbsink_state()
-        if not usbsink_bridge_in_standby(state):
-            return await usbsink_playing()
-
         fanin = await self._fanin_status_best_effort()
+        streaming = usbsink_direct_streaming(fanin)
+        if streaming is not None:
+            # Keep fallback state coherent for rolling upgrades/downgrades.
+            frames = usbsink_direct_frames_read(fanin)
+            self._usbsink_combo = ComboLiveness(
+                prev_frames=(
+                    frames
+                    if frames is not None
+                    else self._usbsink_combo.prev_frames
+                ),
+                idle_ticks=0,
+                streaming=streaming,
+            )
+            return streaming
         frames = usbsink_direct_frames_read(fanin)
-        rms_dbfs = usbsink_direct_rms_dbfs(fanin)
+        if frames is None:
+            return None
         self._usbsink_combo = step_combo_liveness(
             self._usbsink_combo,
             frames,
             stop_ticks=USBSINK_COMBO_STOP_TICKS,
-            rms_dbfs=rms_dbfs,
         )
-        return self._usbsink_combo.playing
+        return self._usbsink_combo.streaming
 
     async def _fanin_status_best_effort(self) -> dict[str, Any] | None:
         """Read jasper-fanin's STATUS snapshot over its control UDS, fail-soft."""
@@ -410,6 +608,23 @@ class Mux:
         self._state.playing = current
         self._winner_age_ticks += 1
 
+        if (
+            self._test_fanin_label is not None
+            and self._test_fanin_owner is not None
+            and self._test_fanin_expires_at is not None
+            and time.monotonic() >= self._test_fanin_expires_at
+        ):
+            expired_owner = self._test_fanin_owner
+            payload = await self.release_test_fanin_label(
+                expired_owner, reason="lease_expired",
+            )
+            if "error" in payload:
+                logger.warning(
+                    "expired test fan-in gate restore failed owner=%s: %s",
+                    expired_owner,
+                    payload["error"],
+                )
+
         if self._test_fanin_label is not None:
             await self._reassert_test_fanin_label()
             # A diagnostic lane owns fan-in; never the exclusive-USB low-latency
@@ -426,34 +641,47 @@ class Mux:
 
         target: Source | None = None
         transition_reason = ""
-        if (
-            self._pending_auto_target is not None
-            and current.get(self._pending_auto_target, False)
-            and self._pending_auto_target != self._winner
-        ):
-            target = self._pending_auto_target
+        pending = self._pending_auto_target
+        # Sticky-session inputs (see the module docstring + _pick_winner):
+        # an explicit session (AirPlay/Spotify/BT) that STARTS preempts anything,
+        # including USB; a USB stream that starts takes the speaker only when no
+        # explicit session is active — it never preempts a cast.
+        explicit_started = [s for s in newly_started if s is not Source.USBSINK]
+        usb_started_free = (
+            Source.USBSINK in newly_started and not self._explicit_active(current)
+        )
+        pending_ok = (
+            pending is not None
+            and current.get(pending, False)
+            and pending != self._winner
+            and not (pending is Source.USBSINK and self._explicit_active(current))
+        )
+        if pending_ok:
+            target = pending
             transition_reason = "auto_retry"
-        elif self._pending_auto_target is not None:
-            self._pending_auto_target = None
-
-        if target is None and newly_started:
-            target = newly_started[-1]
-            transition_reason = "auto_new_source"
+        else:
+            if pending is not None:
+                self._pending_auto_target = None
+            if explicit_started:
+                target = explicit_started[-1]
+                transition_reason = "auto_new_source"
+            elif usb_started_free:
+                target = Source.USBSINK
+                transition_reason = "auto_new_source"
+            elif self._winner is not None and not current.get(self._winner, False):
+                target = self._pick_winner(current)
+                transition_reason = "auto_winner_stopped"
+            elif self._winner is None:
+                target = self._pick_winner(current)
+                if target is not None:
+                    transition_reason = "auto_startup_active"
+        if transition_reason == "auto_new_source":
             logger.info(
                 "source transition: %s started (was %s, age=%d ticks)",
-                target.value,
+                target.value if target else "none",
                 self._winner.value if self._winner else "none",
                 self._winner_age_ticks,
             )
-        elif self._winner is not None and not current.get(self._winner, False):
-            active_sources = self._active_sources(current)
-            target = active_sources[-1] if active_sources else None
-            transition_reason = "auto_winner_stopped"
-        elif self._winner is None:
-            active_sources = self._active_sources(current)
-            if active_sources:
-                target = active_sources[-1]
-                transition_reason = "auto_startup_active"
 
         if target is not None and target != self._winner:
             async with self._transition_lock:
@@ -664,6 +892,9 @@ class Mux:
         wizard remains the on/off surface.
         """
         async with self._transition_lock:
+            gate_error = self._test_gate_error("source selection")
+            if gate_error is not None:
+                return gate_error
             previous = self._winner or self._manual_source or Source.IDLE
             self._pending_auto_target = None
             selected = await self._transition_to_source_locked(
@@ -699,12 +930,18 @@ class Mux:
         return self._status_payload(current)
 
     async def auto_select(self) -> dict[str, Any]:
-        """Return to latest-source-wins behavior."""
+        """Return to latest-source-wins behavior (sticky-session priority)."""
+        gate_error = self._test_gate_error("automatic selection")
+        if gate_error is not None:
+            return gate_error
         current = await self._probe_sources()
         active_sources = self._active_sources(current)
-        if active_sources:
-            new_winner = active_sources[-1]
+        new_winner = self._pick_winner(current)
+        if new_winner is not None:
             async with self._transition_lock:
+                gate_error = self._test_gate_error("automatic selection")
+                if gate_error is not None:
+                    return gate_error
                 previous = self._winner or self._manual_source or Source.IDLE
                 selected = await self._transition_to_source_locked(
                     previous, new_winner, reason="auto_select",
@@ -741,6 +978,9 @@ class Mux:
                     )
         else:
             async with self._transition_lock:
+                gate_error = self._test_gate_error("automatic selection")
+                if gate_error is not None:
+                    return gate_error
                 self._winner = None
                 self._manual_source = None
                 self._pending_auto_target = None
@@ -761,7 +1001,19 @@ class Mux:
         log_event(logger, "source.auto_select")
         return self._status_payload(current)
 
-    async def select_test_fanin_label(self, label: str) -> dict[str, Any]:
+    def _test_gate_error(self, action: str) -> dict[str, str] | None:
+        if self._test_fanin_owner is None:
+            return None
+        return {
+            "error": (
+                f"{action} is unavailable while test gate is owned by "
+                f"{self._test_fanin_owner!r}"
+            ),
+        }
+
+    async def select_test_fanin_label(
+        self, label: str, owner: str,
+    ) -> dict[str, Any]:
         """Temporarily route a non-music diagnostic lane through fan-in.
 
         This is intentionally not persisted and does not change the household
@@ -771,31 +1023,105 @@ class Mux:
         """
 
         label = str(label or "").strip()
+        owner = str(owner or "").strip()
         if label not in FANIN_TEST_LABELS:
             return {"error": f"not a selectable test fan-in label {label!r}"}
+        if owner not in FANIN_TEST_OWNERS:
+            return {"error": f"not a recognized test fan-in owner {owner!r}"}
         async with self._transition_lock:
+            if self._test_fanin_owner not in {None, owner}:
+                return {
+                    "error": (
+                        "test fan-in gate is owned by "
+                        f"{self._test_fanin_owner!r}"
+                    ),
+                }
+            already_owned = self._test_fanin_owner == owner
+            # Claim BEFORE low-level SELECT: its command may land even if the
+            # response is lost. The owner-scoped release/lease can then recover
+            # without risking another feature's gate.
             self._test_fanin_label = label
-            await self._fanin_select_label(label)
-        log_event(logger, "source.test_select", label=label)
+            self._test_fanin_owner = owner
+            self._test_fanin_expires_at = time.monotonic() + FANIN_TEST_LEASE_SEC
+            try:
+                await self._fanin_select_label(label)
+            except (OSError, asyncio.TimeoutError, RuntimeError, ValueError) as exc:
+                if not already_owned:
+                    try:
+                        await self._restore_normal_fanin_gate()
+                    except (
+                        OSError,
+                        asyncio.TimeoutError,
+                        RuntimeError,
+                        ValueError,
+                    ) as rollback_exc:
+                        log_event(
+                            logger,
+                            "source.test_select_rollback_failed",
+                            label=label,
+                            owner=owner,
+                            reason=str(rollback_exc),
+                            level=logging.ERROR,
+                        )
+                    else:
+                        self._test_fanin_label = None
+                        self._test_fanin_owner = None
+                        self._test_fanin_expires_at = None
+                return {"error": f"could not select the test source gate: {exc}"}
+        log_event(logger, "source.test_select", label=label, owner=owner)
         return self._status_payload(self._state.playing)
 
-    async def release_test_fanin_label(self) -> dict[str, Any]:
+    async def _restore_normal_fanin_gate(self) -> None:
+        """Strictly restore the current household source gate."""
+
+        if self._manual_source is not None:
+            await self._fanin_select(self._manual_source)
+        elif self._winner is not None and self._state.playing.get(
+            self._winner, False,
+        ):
+            await self._fanin_select(self._winner)
+        else:
+            await self._fanin_none()
+
+    async def release_test_fanin_label(
+        self, owner: str, *, reason: str = "requested",
+    ) -> dict[str, Any]:
+        owner = str(owner or "").strip()
+        if owner not in FANIN_TEST_OWNERS:
+            return {"error": f"not a recognized test fan-in owner {owner!r}"}
         async with self._transition_lock:
+            if self._test_fanin_owner not in {None, owner}:
+                return {
+                    "error": (
+                        "test fan-in gate is owned by "
+                        f"{self._test_fanin_owner!r}"
+                    ),
+                }
             released = self._test_fanin_label
+            try:
+                await self._restore_normal_fanin_gate()
+            except (OSError, asyncio.TimeoutError, RuntimeError, ValueError) as exc:
+                # Fail closed: retain owner + label so the caller can retry and
+                # the per-tick diagnostic reassertion keeps music excluded.
+                log_event(
+                    logger,
+                    "source.test_release_failed",
+                    label=released,
+                    owner=owner,
+                    reason=str(exc),
+                    level=logging.ERROR,
+                )
+                return {"error": f"could not restore the source gate: {exc}"}
             self._test_fanin_label = None
-            if self._manual_source is not None:
-                await self._fanin_select_best_effort(
-                    self._manual_source, reason="test_release_manual",
-                )
-            elif self._winner is not None and self._state.playing.get(
-                self._winner, False,
-            ):
-                await self._fanin_select_best_effort(
-                    self._winner, reason="test_release_auto",
-                )
-            else:
-                await self._fanin_none_best_effort(reason="test_release_idle")
-        log_event(logger, "source.test_release", label=released)
+            self._test_fanin_owner = None
+            self._test_fanin_expires_at = None
+        log_event(
+            logger,
+            "source.test_release",
+            label=released,
+            owner=owner,
+            reason=reason,
+        )
         return self._status_payload(self._state.playing)
 
     def _status_payload(
@@ -813,16 +1139,31 @@ class Mux:
                 self._manual_source.value if self._manual_source else None
             ),
             "test_source": self._test_fanin_label,
+            "test_owner": self._test_fanin_owner,
+            "test_lease_remaining_sec": (
+                max(0.0, self._test_fanin_expires_at - time.monotonic())
+                if self._test_fanin_expires_at is not None
+                else None
+            ),
             "active_source": active,
             "winner": self._winner.value if self._winner else None,
             "last_handoff": self._last_handoff,
             "sources": {
-                source.value: {"playing": bool(current.get(source, False))}
+                source.value: self._source_status_payload(source, current)
                 for source in MUSIC_SOURCES
             },
+            "reconciler": {
+                "patrol_interval_sec": self.POLL_INTERVAL_SEC,
+                "patrols": self._patrol_count,
+                "patrol_repairs": self._patrol_repairs,
+                "pending_sources": sorted(
+                    source.value for source in self._dirty_sources
+                ),
+                "last": self._last_reconcile,
+            },
             "usbsink": {
-                # fan-in DIRECT-captures the gadget on every box now (the aloop
-                # solo path was removed); the bridge is always a standby daemon.
+                # fan-in DIRECT-captures the gadget on every box now; the aloop
+                # bridge path and its resident helper were removed.
                 "combo": True,
             },
             # Review should-fix #1: surface the adaptive output-buffer mode so an
@@ -842,6 +1183,27 @@ class Mux:
             },
         }
 
+    def _source_status_payload(
+        self,
+        source: Source,
+        current: dict[Source, bool],
+    ) -> dict[str, Any]:
+        last_notification = self._notification_last[source]
+        return {
+            "playing": bool(current.get(source, False)),
+            "observation": self._state.observations[source],
+            "notifications": self._notification_received[source],
+            "notifications_coalesced": self._notification_coalesced[source],
+            "last_notification_via": (
+                last_notification[0] if last_notification is not None else None
+            ),
+            "last_notification_age_ms": (
+                round((time.monotonic() - last_notification[1]) * 1000)
+                if last_notification is not None
+                else None
+            ),
+        }
+
     def _active_source_name(self, current: dict[Source, bool]) -> str:
         if self._test_fanin_label is not None:
             return self._test_fanin_label
@@ -853,6 +1215,32 @@ class Mux:
 
     def _active_sources(self, current: dict[Source, bool]) -> list[Source]:
         return [source for source in MUSIC_SOURCES if current.get(source, False)]
+
+    def _explicit_active(self, current: dict[Source, bool]) -> bool:
+        """Any explicit-session source (everything except the passive USB
+        stream) currently active. Used by the sticky-session rule: USB never
+        takes or holds the speaker against an active AirPlay/Spotify/Bluetooth
+        session."""
+        return any(
+            current.get(source, False)
+            for source in MUSIC_SOURCES
+            if source is not Source.USBSINK
+        )
+
+    def _pick_winner(self, current: dict[Source, bool]) -> Source | None:
+        """Choose the auto-mode winner under the sticky-session priority.
+
+        An explicit session (AirPlay/Spotify/Bluetooth) always outranks the
+        passive USB stream; USB wins only when no explicit session is active.
+        Among explicit sessions, enum order is the tiebreaker — recency-based
+        preemption is driven by the ``newly_started`` edge in ``_tick`` (and by
+        the pause of the loser), exactly as before; this fallback only decides
+        who owns a newly-free speaker."""
+        active = self._active_sources(current)
+        explicit = [s for s in active if s is not Source.USBSINK]
+        if explicit:
+            return explicit[-1]
+        return Source.USBSINK if Source.USBSINK in active else None
 
     async def _reassert_manual_source(self) -> None:
         async with self._transition_lock:
@@ -891,6 +1279,7 @@ class Mux:
         if self._volume_coordinator is not None:
             return self._volume_coordinator
         from .camilla import CamillaController
+        from .assistant_volume import volume_context_publisher_for_runtime
         from .renderer import RendererClient
         from .speaker_name import runtime_name as speaker_runtime_name
         from .volume_coordinator import VolumeCoordinator
@@ -914,6 +1303,10 @@ class Mux:
             spotify_router=self._ensure_spotify_router(),
             spotify_device_name=speaker_runtime_name(),
             duck_active_probe=_make_duck_active_probe(),
+            volume_context_publisher=volume_context_publisher_for_runtime(
+                os.environ,
+                dynamic_topology=True,
+            ),
             handoff_settle_sec=float(os.environ.get(
                 "JASPER_SOURCE_HANDOFF_SETTLE_SEC", "0.45",
             )),
@@ -953,6 +1346,8 @@ class Mux:
             prev_source, source, reason=reason,
         )
         if not getattr(handoff, "ok", False):
+            with contextlib.suppress(Exception):
+                await coordinator.publish_volume_context()
             self._record_handoff(
                 handoff, started, handoff_id=handoff_id, result=handoff.result,
             )
@@ -975,6 +1370,8 @@ class Mux:
         except Exception as e:  # noqa: BLE001
             with contextlib.suppress(Exception):
                 await coordinator.abort_source_handoff(handoff)
+            with contextlib.suppress(Exception):
+                await coordinator.publish_volume_context()
             self._record_handoff(
                 handoff, started,
                 handoff_id=handoff_id,
@@ -1010,6 +1407,11 @@ class Mux:
                 },
                 level=logging.WARNING,
             )
+        # Prepare/finalize can mutate Camilla even when the handoff does not
+        # complete. Always converge the pre-DSP TTS context to the carrier that
+        # actually remains after success, rollback, or degraded failure.
+        with contextlib.suppress(Exception):
+            await coordinator.publish_volume_context()
         result = handoff.result if finalized else "finalize_failed"
         self._record_handoff(
             handoff, started, handoff_id=handoff_id, result=result,
@@ -1076,13 +1478,15 @@ class Mux:
         return await self._fanin_select_label(label)
 
     async def _fanin_select_label(self, label: str) -> dict[str, Any]:
-        return await _fanin_command(f"SELECT {label}")
+        return await fanin_command(
+            f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET,
+        )
 
     async def _fanin_auto(self) -> dict[str, Any]:
-        return await _fanin_command("AUTO")
+        return await fanin_command("AUTO", socket_path=FANIN_CONTROL_SOCKET)
 
     async def _fanin_none(self) -> dict[str, Any]:
-        return await _fanin_command("NONE")
+        return await fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)
 
     async def _fanin_lane_mute(
         self, label: str, muted: bool,
@@ -1094,7 +1498,9 @@ class Mux:
         selection and to volume. Today's only caller is the combo-box USB
         preempt; the command is lane-general (mirrors SELECT)."""
         verb = "MUTE" if muted else "UNMUTE"
-        return await _fanin_command(f"{verb} {label}")
+        return await fanin_command(
+            f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
+        )
 
     async def _fanin_select_best_effort(
         self, source: Source, *, reason: str,
@@ -1171,13 +1577,42 @@ class Mux:
             command = raw.decode("utf-8", "replace").strip()
             if command == "STATUS":
                 payload = self._status_payload()
+            elif command.startswith("NOTIFY "):
+                source_name = command.split(" ", 1)[1].strip()
+                try:
+                    source = Source(source_name)
+                except ValueError:
+                    payload = {"error": f"unknown source {source_name!r}"}
+                else:
+                    if source not in MUSIC_SOURCES:
+                        payload = {
+                            "error": f"not a music source {source_name!r}",
+                        }
+                    else:
+                        self.notify_source_changed(source, "uds")
+                        payload = {
+                            "accepted": True,
+                            "source": source.value,
+                            "policy_applied": False,
+                        }
             elif command == "AUTO":
                 payload = await self.auto_select()
             elif command.startswith("TEST_SELECT "):
-                label = command.split(" ", 1)[1].strip()
-                payload = await self.select_test_fanin_label(label)
-            elif command == "TEST_RELEASE":
-                payload = await self.release_test_fanin_label()
+                parts = command.split()
+                if len(parts) != 3:
+                    payload = {
+                        "error": "TEST_SELECT requires a label and owner",
+                    }
+                else:
+                    payload = await self.select_test_fanin_label(
+                        parts[1], parts[2],
+                    )
+            elif command.startswith("TEST_RELEASE"):
+                parts = command.split()
+                if len(parts) != 2:
+                    payload = {"error": "TEST_RELEASE requires an owner"}
+                else:
+                    payload = await self.release_test_fanin_label(parts[1])
             elif command.startswith("SELECT "):
                 source_name = command.split(" ", 1)[1].strip()
                 try:
@@ -1227,8 +1662,8 @@ class Mux:
             # it just keeps streaming and mixes with the new winner.
             # The user's contract ("we cannot have both played at the
             # same time") requires us to force a release. systemctl
-            # restart kills librespot's FD on its fan-in lane; the
-            # new winner is then heard alone for the ~2-3 s before
+            # try-restart kills librespot's FD only while the source remains
+            # active; the new winner is then heard alone for the ~2-3 s before
             # systemd brings librespot back as an idle Connect device.
             if _spotify_preempt_restart_disabled():
                 logger.warning(
@@ -1239,8 +1674,8 @@ class Mux:
                 return
             logger.warning(
                 "spotify pause: Web API failed; escalating to "
-                "`systemctl restart librespot.service` to force "
-                "release of the fan-in spotify lane",
+                "`systemctl try-restart librespot.service` to force "
+                "release of the fan-in spotify lane if still active",
             )
             await self._spotify_force_restart_librespot()
         elif source == Source.AIRPLAY:
@@ -1311,17 +1746,15 @@ class Mux:
     # ------------------------------------------------------------------
     # USB sink preempt protocol — MUTE/UNMUTE the fan-in usbsink lane.
     # fan-in DIRECT-captures the gadget, so the lane's mix-stage mute is
-    # the only USB-silencing primitive (the jasper-usbsink bridge is a
-    # standby-only daemon that owns no audio path).
+    # the only USB-silencing primitive.
     # ------------------------------------------------------------------
 
     async def _usbsink_set_preempt(self, silenced: bool, *, reason: str) -> None:
         """Silence/un-silence the USB source when it loses/regains the speaker.
 
-        jasper-fanin DIRECT-captures the gadget and the jasper-usbsink bridge is
-        a standby-only daemon (opens no PCM, emits nothing), so USB is silenced by
-        ``MUTE``/``UNMUTE`` of the fan-in usbsink lane at its mix stage — the real,
-        independent silencing primitive. The lane keeps reporting its pre-mute
+        jasper-fanin DIRECT-captures the gadget as its sole live ingress owner,
+        so USB is silenced by ``MUTE``/``UNMUTE`` of the fan-in usbsink lane at
+        its mix stage. The lane keeps reporting its pre-mute
         frames/level, so mux still sees a muted-but-streaming host as "playing"
         (no mute→release→mute flap). See ``_usbsink_set_preempt_fanin``.
 
@@ -1383,10 +1816,11 @@ class Mux:
         fan-in bounce mid-preempt would drop the silence while mux still tracks
         ``_usbsink_preempted=True`` and would never re-mute (the state guard in
         ``_usbsink_set_preempt`` short-circuits the unchanged decision). This
-        per-tick reassertion closes that gap — the next tick re-mutes an
+        per-reconcile reassertion closes that gap — the next alert or patrol re-mutes an
         unmuted-after-restart lane. Idempotent on the fan-in side (it logs only
-        on a real flip → no steady-state journal spam), bounded at the 1 Hz poll
-        cadence, and fail-soft. Mirrors ``_reassert_auto_winner``'s per-tick
+        on a real flip → no steady-state journal spam), alert-coalesced with a
+        fixed 1 Hz patrol fallback, and fail-soft. Mirrors
+        ``_reassert_auto_winner``'s
         SELECT reassertion.
 
         No-op when USB isn't preempted or when the escape hatch is set."""
@@ -1532,8 +1966,8 @@ class Mux:
         return False
 
     async def _spotify_force_restart_librespot(self) -> bool:
-        """Tier 2 escalation: restart librespot.service to force it
-        to drop its FD on the Spotify fan-in lane.
+        """Tier 2 escalation: try-restart librespot.service to force an
+        active instance to drop its FD on the Spotify fan-in lane.
 
         Effects observed at the audio layer: librespot exits and closes
         its private `librespot_substream` writer; fanin then reads
@@ -1547,15 +1981,16 @@ class Mux:
         state inside librespot's current session (track position, queue)
         is lost — the next Spotify Connect cast picks up fresh.
 
-        We use `systemctl restart` rather than `kill -TERM` so the
+        We use `systemctl try-restart` rather than `restart` or `kill -TERM` so the
         same `Restart=always` policy that handles every other
-        librespot exit also handles this one — no special-case
-        recovery path.
+        active librespot exit also handles this one, while a concurrent
+        household Off or follower park wins the race and stays stopped.
 
-        Returns True on a successful restart. Logged but not retried on
-        failure (the only thing that would happen on retry is more log
-        spam — the failure mode is "restart unavailable" which doesn't
-        self-heal).
+        Returns True when the active-only mutation succeeds, including
+        systemd's intentional no-op for an already-inactive unit. Logged but
+        not retried on failure (the only thing that would happen on retry is
+        more log spam — the failure mode is "try-restart unavailable" which
+        doesn't self-heal).
 
         WS1 Phase 3: routed through jasper-control's restart broker
         (off-thread, since the broker client is blocking) so jasper-mux
@@ -1565,18 +2000,18 @@ class Mux:
         """
         resp = await asyncio.to_thread(
             restart_broker.manage_units,
-            "librespot.service", verb="restart",
+            "librespot.service", verb="try-restart",
             reason="spotify Tier-2 recovery", no_block=False, timeout=8.0,
         )
         if not resp.get("ok"):
             logger.warning(
-                "spotify force-restart: librespot restart failed: %s",
+                "spotify force-restart: librespot try-restart failed: %s",
                 resp.get("error") or f"rc={resp.get('rc')}",
             )
             return False
         logger.info(
-            "spotify force-restart: librespot.service restarted "
-            "(Tier 2 escalation succeeded)",
+            "spotify force-restart: librespot.service try-restart completed "
+            "(active-only Tier 2 escalation succeeded)",
         )
         return True
 
@@ -1597,34 +2032,6 @@ async def _busctl(*args: str) -> Optional[str]:
     if proc.returncode != 0:
         return None
     return stdout.decode("utf-8", "replace")
-
-
-async def _fanin_command(cmd: str) -> dict[str, Any]:
-    """Send one line to jasper-fanin's control socket.
-
-    Fan-in owns the hot-path audio gate; mux owns policy. Keeping the
-    IPC here as a one-command UDS call mirrors jasper-control's voice
-    socket helper without importing any Rust-specific detail.
-    """
-    reader, writer = await asyncio.open_unix_connection(FANIN_CONTROL_SOCKET)
-    try:
-        writer.write((cmd + "\n").encode("ascii"))
-        await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
-    if not line:
-        raise RuntimeError("jasper-fanin returned no response")
-    payload = json.loads(line.decode("utf-8"))
-    if isinstance(payload, dict) and "error" in payload:
-        raise RuntimeError(str(payload["error"]))
-    if not isinstance(payload, dict):
-        raise RuntimeError("jasper-fanin returned non-object JSON")
-    return payload
 
 
 def _fmt_db(value: float | None) -> str:
@@ -1673,6 +2080,9 @@ def _make_duck_active_probe() -> Any:
             json.JSONDecodeError,
         ):
             return None
+        camilla_locked = response.get("camilla_volume_locked")
+        if isinstance(camilla_locked, bool):
+            return camilla_locked
         duck_active = response.get("duck_active")
         return duck_active if isinstance(duck_active, bool) else None
 

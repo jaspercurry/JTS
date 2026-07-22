@@ -201,7 +201,7 @@ units, reason.
 
 The clients now route through it via `restart_broker.manage_units(...)`:
 `jasper-web`'s restart sites (`_common.restart_systemd_units` /
-`_enable_systemd_unit`, `sources` enable/disable, `airplay` shairport restart,
+`_enable_systemd_unit`, the source-lifecycle helper kick, `airplay` shairport restart,
 `speaker` rename, `wake-corpus` bridge-output + voice start/stop),
 `jasper-mux`'s librespot recovery, and `correction`'s renderer pause. While the
 clients are still root, `manage_units` falls back to a **direct `systemctl` if
@@ -219,6 +219,29 @@ broker: all non-control units are queued first, then `jasper-control` is
 restarted as a detached `--no-block` self-restart so the broker can still return
 an answer. This covers wizard saves that need to restart voice/control/mux
 together; a wedged or unreachable broker still fails soft as described below.
+
+Broker calls retain a hard 120-second execution ceiling except for one exact
+request shape: blocking `start` of only
+`jasper-source-intent-reconcile.service` may use 793 seconds. That fixed
+start-only coordinator has a finite 783-second systemd limit because one pass
+visits all four sources and may wait through bounded source actions and
+failed-unit resets, two accessory barriers, the fan-in coupling owner, and
+fail-closed USB cleanup. The
+broker derives the exception from the validated
+verb, normalized singleton unit list, and `no_block=false`; a client-supplied
+number alone cannot extend any other action. The client waits five seconds
+beyond its requested execution bound, so PID 1's verdict arrives before the
+socket deadline. This alignment prevents a 120-second client timeout from
+killing only the coordinator's `systemctl` waiter while privileged hardware
+changes continue in the background. Pinned by the broker clamp/request tests
+and the source lifecycle timeout hierarchy tests.
+
+The root coordinator publishes its per-source completion acknowledgement at
+`/run/jasper-source-intent/status.json` inside a root-owned 0755
+`RuntimeDirectory` with preservation across oneshot stop. The 0644 atomic file
+is readable by the web request path but that non-root caller cannot replace the
+directory or forge a result; the request also binds it to the exact intent
+fingerprint and a fresh monotonic completion time.
 
 ### Phase 3b — Tier-A user drop
 
@@ -243,6 +266,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-voice | `jasper-voice` | `audio`, `jasper-secrets`, `jasper-intsecrets` | **3b-1 + 4a/4b (LANDED)** | clean: no caps/RT/udev/polkit; config via env injection; 4a/4b groups grant only the secret compartments it must read/write |
 | jasper-mux | `jasper-mux` | `jasper-intsecrets` | **3b-1 + 4b (LANDED)** | broker client (librespot recovery); shared broad file is `speaker_volume.json`; Spotify token refresh writes the 4b compartment |
 | jasper-input | `jasper-input` | `input` | **3b-1 (LANDED)** | trivial: `/dev/input/event*`, posts to control over TCP, no files |
+| jasper-usbmic | `jasper-usbmic` | `audio` | **USB host mic (LANDED 2026-07-15)** | optional localhost-UDP-to-UAC2 relay; reads only group-shared USB-mic intent, writes only its private runtime status, and deliberately has no `input`/secret membership |
 | jasper-accessory-reconcile | root (oneshot) | `jasper` primary group | **accessory reconciler (LANDED 2026-06-26)** | reads BlueZ paired-device state, writes `/var/lib/jasper/accessory-mics.env`, and owns adapter unit enable/disable; `Group=jasper` gives access to the group-owned state dir while `CapabilityBoundingSet=` stays empty; kept as a narrow root oneshot rather than granting systemctl privilege to `jasper-input` or a wizard |
 | jasper-wiim-remote-mic | `jasper-input` | `bluetooth` | **accessory adapter (LANDED 2026-06-26)** | BlueZ D-Bus GATT client for WiiM Remote 2 voice reports; sends decoded PCM to localhost UDP; no filesystem writes |
 | jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, and `systemd-journal` for journal-based /state cards |
@@ -391,29 +415,25 @@ coupled artifacts make the drop work:
   a future root client / Phase-4 grant), but they fail-soft for the non-root
   broker.
 
-  Where a wizard genuinely needs to **persist** enable/disable across reboots —
-  the `/sources/` on/off toggles (AirPlay, Spotify Connect, USB Audio Input) —
-  it does so through a **fixed root helper**, not this grant. Before that helper,
-  the non-root wizard's `enable-now`/`disable-now` fail-soft was a real bug: the
-  toggle POST returned 200 while nothing changed ("Interactive authentication
-  required" swallowed). The fix is `jasper-source-intent-reconcile` (a
-  `START_ONLY_UNITS` oneshot, mirroring `jasper-wifi-scan-repair`): the wizard
-  records the household's choice in `/var/lib/jasper/source_intent.env` and
-  `start`s the helper through the broker (`manage-units`, scoped/granted); the
-  helper runs as root, enforces its **own** source-unit allowlist (derived from
-  `jasper.local_sources`, never trusting the file for arbitrary unit names), and
-  enable/disables only those units. The oneshot's exit code is the success signal
-  the broker relays, so a failed apply surfaces as a visible wizard error rather
-  than a lying 200. Runtime start/stop stays on the broker's `manage-units`; only
-  the enable/disable *persistence* needs the helper. `install.sh` also runs the
-  same helper **directly** (it is already root) with `--stop-disabled` on every
-  deploy, right after it unconditionally re-`enable`s + `restart`s
-  shairport-sync/librespot — otherwise a deploy would re-enable AND leave running
-  a source the household disabled, while `source_intent.env` still says disabled;
-  `--stop-disabled` also `systemctl stop`s an intent-disabled unit (the wizard
-  path never stops — the broker owns runtime stop there), and a missing/empty
-  file is a clean no-op. See the fixed-helper table below and
-  [`jasper/source_intent.py`](../jasper/source_intent.py).
+  Source enable/disable persistence and runtime convergence use a **fixed root
+  helper**, not this grant. `/sources/` and the Bluetooth Power switch write one
+  fixed key to `/var/lib/jasper/source_intent.env`, then may only `start`
+  `jasper-source-intent-reconcile.service` through `START_ONLY_UNITS`. The
+  oneshot owns the complete four-source transition, including RF-kill/BlueZ and
+  ordered USB gadget work; the web user never receives `manage-unit-files`,
+  adapter-power, or arbitrary unit authority. `install.sh` invokes the same
+  coordinator directly after its renderer baseline, and boot runs the enabled
+  oneshot after RF-kill restore. The intent allowlist, desired/effective model,
+  concrete transitions, and failure behavior are canonical in
+  [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md). The security point
+  here is narrower: polkit grants only a fixed start, and the root process
+  derives every operation from code rather than the management-group-writable,
+  untrusted file. The file and adjacent locks stay `root:jasper 0660` below the
+  `0770` state directory; renderers do not join the writer group. Their final
+  guard uses a fixed privileged `/usr/bin/env -i` boundary instead. Every such
+  unit first unsets native-loader injection variables before `env` starts,
+  then supplies only a fixed `PATH` and fixed guard argv, so neither the native
+  loader nor root Python inherits renderer-controlled environment files.
 
 - **Group-readable config/env on the broad state path (`0640` group `jasper`).**
   `jasper-control` does off-disk fresh reads a non-root user must keep doing:
@@ -473,7 +493,7 @@ WARNINGs; the non-root peering-advert write into the setgid `/etc/avahi/services
 succeeds. And the original matrix:
 non-root with `NRestarts=0` under `@system-service` (no SIGSYS); manage-units
 **scoping confirmed** (allowlisted units restart, `cron`/`nginx`/`sshd` denied);
-the `shairport_supervisor` `reset-failed`+restart path works under polkit; a
+the `shairport_supervisor` `reset-failed`+try-restart path works under polkit; a
 **real `systemctl --no-block reboot` run as `jasper-control` fired** and the Pi
 recovered with `jasper-control` back non-root + healthy; secrets readable; the
 token gate still 403s an unauthenticated POST.
@@ -556,7 +576,7 @@ web-as-non-root paths (including the wifi-lockout brick path) with 3b-3
 | Recovery path (changed by the drop) | Now runs as | Validation result |
 |---|---|---|
 | `system_supervisor` reboot | control (polkit) | ✅ ran the exact `systemctl --no-block reboot` as `jasper-control` → authorized, Pi rebooted + recovered non-root |
-| `shairport_supervisor` restart | control (polkit) | ✅ `reset-failed`+restart of `shairport-sync`/`nqptp` authorized as `jasper-control`; non-allowlisted units denied |
+| `shairport_supervisor` inactive-capable restart | control (polkit) | ✅ `reset-failed` + `restart` of `shairport-sync`/`nqptp` authorized as `jasper-control`; final unit ExecConditions preserve concurrent Off/role parking; non-allowlisted units denied |
 | `jasper-web` config-save restarts | web (non-root) → broker | ✅ (3b-3) non-root `jasper-web` reaches the broker socket (group `jasper`, `0660`); broker proxies `restart jasper-voice` (allowlisted) |
 | `jasper-web` failed-connect rollback | web (polkit NM) | ✅ (3b-3) as `jasper-web`: a nonexistent-SSID connect failed, then `connection up <active>` re-activated — `wlan0` never dropped (no lockout) |
 | `jasper-mux` librespot recovery | mux → broker | ✅ (3b-1) mux→broker; `librespot` is in the allowlist |
@@ -908,15 +928,15 @@ Rules for all Tier-B slices:
 | `jasper-wifi-guardian.service` + [`deploy/bin/jasper-wifi-guardian`](../deploy/bin/jasper-wifi-guardian) | boot after NetworkManager wait-online | Read the root-only PSK stash, inspect NM state, run `nmcli connection up`, `nmcli dev wifi connect`, and cleanup of broken profiles. | `jasper-recon` could own the stash plus a narrow NetworkManager polkit rule parallel to `jasper-web`, but the failed-connect/recreate path is lockout-sensitive. Not first without Wi-Fi hardware validation. |
 | `jasper-wifi-recover.service` + timer + [`deploy/bin/jasper-wifi-recover`](../deploy/bin/jasper-wifi-recover) | periodic (~3 min) timer, manual operator retry | Read active Wi-Fi state, inspect recent kernel logs for brcmfmac scan suppression, and run the bounded `jasper.wifi_scan_repair` CLI when warranted even if NetworkManager still reports an active profile. If Wi-Fi is down, invoke the Wi-Fi guardian only when the root-only PSK stash exists. | Keep root with the guardian for now. The scan-repair and guardian handoff are lockout-sensitive and should move only after the Wi-Fi recovery slice has hardware validation under a narrower user/polkit/root-helper design. |
 | `jasper-wifi-scan-repair.service` + [`jasper/wifi_scan_repair.py`](../jasper/wifi_scan_repair.py) | `/wifi/scan` after brcmfmac scan-suppression evidence | Root-only oneshot sends the bounded `NL80211_CMD_CRIT_PROTOCOL_STOP` repair and records rate-limit state. `jasper-web` may only `start` it through `START_ONLY_UNITS`; it is not generally restartable/stoppable. | Keep root. This is the narrow helper shape chosen specifically so `jasper-web` does not regain `CAP_NET_ADMIN`. |
-| `jasper-fanin-coupling-auto.service` + [`jasper/fanin/coupling_auto.py`](../jasper/fanin/coupling_auto.py) | boot + deploy; **and the `/sources/` USB-audio toggle** (enable/disable) | Root oneshot reconciler that resolves the USB low-latency combo (single writer of the fan-in `JASPER_FANIN_*` keys + `JASPER_USBSINK_AUDIO_STANDBY`, now written unconditionally `1` since the daemon is standby-only) and bounces fan-in/usbsink. `jasper-web` may only `start` it through `START_ONLY_UNITS` so the combo arms/disarms the same session a USB toggle lands, not only at the next reboot; a failed kick surfaces a "takes effect after reboot" notice on the wizard row. | Keep root. Reconciler owns the env I/O + daemon transitions; the start-only grant is the narrow graph-transition shape (mirrors `jasper-wifi-scan-repair`). |
-| `jasper-source-intent-reconcile.service` + [`jasper/source_intent.py`](../jasper/source_intent.py) | the `/sources/` on/off toggles (AirPlay, Spotify Connect, USB Audio Input) enable/disable | Root oneshot that persists a source's enable/disable choice — `systemctl enable`/`disable` (manage-unit-files) which the non-root broker deliberately cannot run. The non-root wizard writes the household intent to `/var/lib/jasper/source_intent.env` and `start`s this helper through `START_ONLY_UNITS`; the helper enforces its **own** source-unit allowlist (derived from `jasper.local_sources`, never trusting the file for arbitrary unit names) and enable/disables only those units. Exit code is the wizard's success signal (a failed apply is a visible error, not a lying 200). Runtime start/stop stays on the broker. `install.sh` also runs this helper directly with `--stop-disabled` on every deploy (re-applying the household's choice after it unconditionally re-enables/restarts the renderers; `--stop-disabled` also stops an intent-disabled unit). | Keep root. This is the narrow fixed-helper shape (mirrors `jasper-wifi-scan-repair`) chosen because `manage-unit-files` cannot be polkit-unit-scoped and granting it would re-open restart-of-any-unit. |
+| `jasper-fanin-coupling-auto.service` + [`jasper/fanin/coupling_auto.py`](../jasper/fanin/coupling_auto.py) | boot + deploy; **and the `/sources/` USB-audio toggle** (enable/disable) | Root oneshot reconciler that resolves the USB low-latency path (single writer of the three live fan-in USB keys) and bounces fan-in when the plan changes. The process-free USB readiness marker has no capture-mode env or generated overlay. `jasper-web` may only `start` it through `START_ONLY_UNITS` so DIRECT arms/disarms the same session a USB toggle lands, not only at the next reboot; a failed kick surfaces a "takes effect after reboot" notice on the wizard row. | Keep root. Reconciler owns the env I/O + daemon transitions; the start-only grant is the narrow graph-transition shape (mirrors `jasper-wifi-scan-repair`). |
+| `jasper-source-intent-reconcile.service` + [`jasper/source_intent.py`](../jasper/source_intent.py) | `/sources/`, Bluetooth Power, boot, and deploy | Root oneshot for the complete four-source lifecycle. The non-root web process writes only a fixed intent key and may only `start` this unit; the helper's code-derived allowlist and three concrete appliers own unit enablement/activity, Bluetooth RF-kill/BlueZ, and ordered USB recompose. See [HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md) for behavior. | Keep root. This is the narrow fixed-helper shape chosen because `manage-unit-files` cannot be polkit-unit-scoped and radio/ConfigFS work must not be granted to the web process. |
 | `jasper-aec-init.service` + `jasper-aec-init` | boot and AEC reconcile restarts | Raw XVF3800 USB control writes through `xvf_host`; `amixer` on the `Array` UAC mixer; volatile chip profile only, with `SAVE_CONFIGURATION` and `REBOOT` deliberately forbidden. | Needs a hardware-gated design. Either `jasper-recon` gets a device-specific udev group for the XVF control endpoint plus `audio`, or a root helper owns the raw USB writes. Brick-loop hazards mean this is not an early slice. |
 | `jasper-aec-reconcile.service` + [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile) | install, boot, udev sound add/remove, `/wake/`, grouping | Read/write AEC env state, inspect `/proc/asound`, self-heal XVF mixer with `amixer`/`alsactl store`, and orchestrate `jasper-aec-init`, `jasper-aec-bridge`, `jasper-voice`, and `jasper-outputd`. | Split policy from apply. The policy can become `jasper-recon`; unit orchestration and mixer persistence likely need a root helper or a dedicated reconciler broker. Preserve stale-UDP clearing and voice parking. |
 | `jasper-audio-hardware-reconcile.service` + [`deploy/bin/jasper-audio-hardware-reconcile`](../deploy/bin/jasper-audio-hardware-reconcile) | install, boot, udev sound add/remove | Detect output hardware, write `/var/lib/jasper/outputd.env` and `/run/jasper-output-hardware/output_hardware.json`, render `/etc/jasper/asoundrc.jasper.template`, toggle `jasper-dac-init`/monitor, and kick outputd/AEC reconcile. | Split policy from root apply. Rendering `/etc/jasper/*` and unit orchestration should stay behind a fixed root helper; state observation can move to `jasper-recon`. |
 | `jasper-dongle-recover.service` | Apple dongle sound-card udev add | Fixed `systemctl reset-failed` and `start` sequence for Camilla/outputd/audio-hardware/AEC after Card A reappears. | Keep as a root-owned fixed-argv recovery helper unless a later reconciler broker explicitly absorbs it. It is already tiny and exists to preserve hotplug self-healing. |
-| `jasper-grouping-reconcile.service` + `jasper-grouping-reconcile-trailing.service` + `jasper.multiroom.reconcile` | `/rooms/`, install, grouping state changes; `/grouping/set` burst coalescing arms the trailing service | Apply snapserver/snapclient role changes via `systemctl`, write grouping env/FIFO runtime state, and kick `jasper-aec-reconcile` rather than restarting voice directly. The trailing service sleeps for the remaining cooldown, then starts the same reconciler so the last grouping env write applies after a calibration burst. | Candidate for `jasper-recon` policy with a root apply helper for systemctl. It is already broker-routed from Tier-A clients; the trailing service is intentionally a named fixed unit instead of a transient-unit grant. |
+| `jasper-grouping-reconcile.service` + `jasper-grouping-reconcile-trailing.service` + `jasper.multiroom.reconcile` | `/rooms/`, install, grouping state changes; `/grouping/set` burst coalescing arms the trailing service | Apply snapserver/snapclient role changes via `systemctl`, write grouping env/FIFO runtime state, and kick `jasper-aec-reconcile` rather than restarting voice directly. Resident triggers launch the fixed `jasper-grouping-reconcile-kick` helper: one blocking `start` drains/joins any active ordered transaction, then one non-blocking `start` guarantees a fresh pass. The trailing service sleeps for the remaining cooldown before launching that helper. | Candidate for `jasper-recon` policy with a root apply helper for systemctl. It is already broker-routed from Tier-A clients; the trailing service is intentionally a named fixed unit instead of a transient-unit grant. |
 | `jasper-identity-reconcile.service` + timer + [`deploy/bin/jasper-identity-reconcile`](../deploy/bin/jasper-identity-reconcile) | boot and 5-minute timer | Read hostname/Avahi over subprocess/DBus and write non-secret `/var/lib/jasper/identity.env`. | Probably safe to move to `jasper-recon` or another non-root writer after verifying `/var/lib/jasper` write ownership. Low security value compared with hardware recovery paths, so do not use it to claim Tier-B done. |
-| `jasper-usbgadget.service` + `deploy/usbsink/jasper-usbgadget-*` | boot (always-on USB network), `/sources/` USB audio enable/disable, multiroom follower park/restore, speaker rename | Load/unload kernel modules, patch `usb_f_uac2`, create/remove the composite ConfigFS gadget descriptor (both `ncm.usb0` network + `uac2.usb0` audio) under `/sys/kernel/config`. Replaces the retired `jasper-usbsink-init.service`; now always-on for the management network, no longer only an audio-toggle helper. | Root helper by design. The privileged operation is kernel/configfs setup; treat separately from the reconciler drop. |
+| `jasper-usbgadget.service` + `deploy/usbsink/jasper-usbgadget-*` | boot when gadget hardware is available, `/sources/` USB audio enable/disable, multiroom follower park/restore, speaker rename | Load/unload kernel modules, patch `usb_f_uac2`, create/remove the composite ConfigFS gadget descriptor (both `ncm.usb0` network + `uac2.usb0` audio) under `/sys/kernel/config`. Replaces the retired `jasper-usbsink-init.service`; the management network is default-on only where the hardware-resolved port role supports a gadget. | Root helper by design. The privileged operation is kernel/configfs setup; treat separately from the reconciler drop. |
 | `jasper-usbnet-dhcp.service` + `deploy/usb-network/usbnet-dnsmasq.conf` | device-activated on `usb0` (the composite gadget's NCM link) | Runs a scoped `dnsmasq` (DHCP only, no DNS, no route/DNS push) so a plugged-in laptop gets an address on the USB link. Root to bind the DHCP socket, then drops to `nobody:nogroup`; `CapabilityBoundingSet` scoped to `CAP_NET_BIND_SERVICE`/`CAP_NET_ADMIN`/`CAP_NET_RAW` (+ `CAP_SETUID`/`CAP_SETGID` for the drop), `ProtectSystem=strict`. | Already tightly caps-bounded and drops privileges; a full non-root run would need the DHCP socket bind delegated. Low RCE value (no shell, tiny scoped conf). |
 | `jasper-bootloop-guard.service` + [`deploy/bin/jasper-bootloop-guard`](../deploy/bin/jasper-bootloop-guard) | early boot | Write runtime systemd drop-ins under `/run/systemd/system` to disarm reboot loops after repeated bad boots. | Keep root. This is part of the T5.1 safety ladder and should not depend on the restart broker or a non-root user. |
 
@@ -1048,14 +1068,23 @@ the goal is closing *known* risk — that is already done by the phases above.
 Either way it is the **last** WS1 phase and **must follow** the doctor
 permissions check.
 
-Last verified: 2026-07-12 (light touch — rechecked the `jasper-aec-tune`
+Last verified: 2026-07-15 (`jasper-usbmic` dedicated service identity rechecked
+as primary group `jasper` plus supplementary `audio`, with no inherited
+`input` or secret-group authority; prior 2026-07-14 shairport supervisor
+polkit path rechecked as
+`reset-failed` + inactive-capable `restart`, with final unit ExecConditions
+preserving concurrent Off/role parking; source-intent fixed-helper boundary
+and its exact-shape 793-second broker exception rechecked against
+`jasper.source_intent`, the
+restart-broker start-only grant, and boot/deploy wiring; lifecycle behavior
+moved to HANDOFF-source-lifecycle.md. Prior
+2026-07-12 light touch — rechecked the `jasper-aec-tune`
 operator-CLI row against its diagnostic-only default and explicit guarded,
 volatile XVF apply; removed the obsolete delay state-file ownership claim. No
 other privilege-separation content re-verified this pass.
-2026-07-10: noted that the coupling reconciler now
-writes `JASPER_USBSINK_AUDIO_STANDBY` unconditionally `1` (the usbsink daemon is
-standby-only since the aloop solo path was deleted 2026-07-10); the reconciler is
-still the single writer. No other privilege-separation content re-verified this
+2026-07-14: the usbsink Rust helper was removed; its systemd unit is now a
+hardened process-free readiness marker under `jasper-recon`, while the coupling
+reconciler owns only live fan-in keys. No other privilege-separation content re-verified this
 pass. 2026-07-07: `jasper-wifi-recover.service` inventory rechecked:
 timer is no longer stash-gated, active-link scan repair does not need the PSK
 stash, and only the no-active guardian handoff reads the stash. 2026-07-04

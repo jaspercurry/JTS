@@ -91,15 +91,12 @@ _UNCODIFIED = {
     "JASPER_VOLUME_DIAGNOSTICS_PATH",
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "JASPER_WAKE_EVENTS_DIR",
+    # Product intent has a fixed canonical path; this override only lets the
+    # AEC bridge's environment parser use a hermetic temp file in tests.
+    "JASPER_USB_MIC_INTENT_PATH",
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",
-    # Boot-config path override for the USB-gadget dtoverlay probe
-    # (jasper.fanin.coupling_auto). Default is /boot/firmware/config.txt; the
-    # override exists only so tests can point at a tmp file. The installer's own
-    # name for the same override is JTS_BOOT_CONFIG_FILE (renderers.sh); the probe
-    # honors both. Pure test seam, not operator config.
-    "JASPER_BOOT_CONFIG_PATH",
     "JASPER_PROC_ASOUND",
     "JASPER_SYS_CLASS_SOUND",
     # -- Internal AEC bridge / wake-corpus experiment knobs. Developer
@@ -141,12 +138,11 @@ _UNCODIFIED = {
     #    substream ever collides with the fan-in layout. Not operator config.
     "JASPER_GROUPING_LOOPBACK_CAPTURE",
     "JASPER_GROUPING_LOOPBACK_PLAYBACK",
-    # -- USB-sink internals: daemon-local knobs. The operator-facing members of
+    # -- USB-sink volume-observer internals. The operator-facing members of
     #    the family (JASPER_USBSINK_PREEMPT — the mux fan-in-mute escape hatch,
     #    _CAPTURE_DEVICE, _MIXER_CARD) are documented in .env.example and are not
-    #    in this list. (The _PREEMPT_HOST/_PREEMPT_PORT HTTP wiring was removed with
-    #    the aloop solo path — the usbsink daemon is standby-only and mux silences
-    #    USB by muting the fan-in lane.)
+    #    in this list. (The _PREEMPT_HOST/_PREEMPT_PORT HTTP wiring was removed
+    #    with the aloop solo path; mux silences USB by muting the fan-in lane.)
     "JASPER_USBSINK_CONTROL_URL",
     "JASPER_USBSINK_LOG_LEVEL",
     # -- Internal timing / safety tunables with code defaults, below

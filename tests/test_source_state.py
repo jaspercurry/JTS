@@ -28,11 +28,15 @@ def _reset_bluealsa_probe_state():
     source_state.bluealsa_probe._reset_for_tests()
 
 
-def _mock_subprocess(stdout: bytes = b"", returncode: int = 0):
+def _mock_subprocess(
+    stdout: bytes = b"",
+    returncode: int = 0,
+    stderr: bytes = b"",
+):
     """Build an asyncio.create_subprocess_exec replacement that returns
     a mock proc with .communicate() pre-canned."""
     proc = MagicMock()
-    proc.communicate = AsyncMock(return_value=(stdout, b""))
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.returncode = returncode
 
     async def fake(*args, **kwargs):
@@ -98,6 +102,15 @@ async def test_spotify_playing_state_file_says_paused(tmp_path):
     path.write_text(json.dumps(
         {"playing": False, "paused": True, "stopped": False},
     ))
+    assert await source_state.spotify_playing(str(path)) is False
+
+
+@pytest.mark.asyncio
+async def test_spotify_observation_distinguishes_bad_read_from_stopped(tmp_path):
+    path = tmp_path / "librespot.state.json"
+    path.write_text("{not-json")
+    assert await source_state.spotify_playing_observed(str(path)) is None
+    # Existing callers retain the historical fail-soft bool contract.
     assert await source_state.spotify_playing(str(path)) is False
 
 
@@ -178,14 +191,39 @@ async def test_airplay_playing_handles_busctl_missing():
 
 
 @pytest.mark.asyncio
+async def test_airplay_observation_reports_transport_failure_as_unknown():
+    with patch(
+        "asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError("busctl"),
+    ):
+        assert await source_state.airplay_playing_observed() is None
+
+
+@pytest.mark.asyncio
 async def test_airplay_playing_handles_busctl_nonzero_returncode():
-    """busctl returns non-zero when the bus name doesn't exist
-    (e.g. shairport-sync isn't running). Treat as not-playing."""
+    """An unclassified nonzero is unknown to mux but fail-soft to callers."""
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b"", returncode=1),
     ):
+        assert await source_state.airplay_playing_observed() is None
         assert await source_state.airplay_playing() is False
+
+
+@pytest.mark.asyncio
+async def test_airplay_observation_treats_missing_bus_name_as_inactive():
+    with patch(
+        "asyncio.create_subprocess_exec",
+        new=_mock_subprocess(
+            returncode=1,
+            stderr=(
+                b"Call failed: The name "
+                b"org.mpris.MediaPlayer2.ShairportSync was not provided "
+                b"by any .service files\n"
+            ),
+        ),
+    ):
+        assert await source_state.airplay_playing_observed() is False
 
 
 @pytest.mark.asyncio
@@ -211,11 +249,8 @@ async def test_airplay_playing_off_switch_reverts_to_playbackstatus_only(
 
 
 @pytest.mark.asyncio
-async def test_airplay_playing_metadata_call_failure_treated_as_phantom():
-    """If the Metadata busctl call fails (DBus glitch, timeout) while
-    PlaybackStatus is Playing, we fail closed — treat as phantom rather
-    than risk a 30 s -25 dB duck. Off-switch is the escape if this is
-    too aggressive in practice."""
+async def test_airplay_metadata_transport_failure_is_unknown_to_mux():
+    """A Metadata transport glitch must not synthesize an AirPlay stop."""
     async def router(*args, **kwargs):
         args_blob = b" ".join(
             a.encode() if isinstance(a, str) else a for a in args
@@ -229,20 +264,53 @@ async def test_airplay_playing_metadata_call_failure_treated_as_phantom():
         raise asyncio.TimeoutError()
 
     with patch("asyncio.create_subprocess_exec", side_effect=router):
+        assert await source_state.airplay_playing_observed() is None
         assert await source_state.airplay_playing() is False
 
 
 # ----------------------------------------------------------------------
-# usbsink state — JSON state file shared by mux and diagnostics
+# usbsink state — fan-in DIRECT is the sole live USB ingress owner
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_usbsink_playing_reads_published_playing(tmp_path):
-    path = tmp_path / "state.json"
-    path.write_text(json.dumps({"playing": True}))
+async def test_usbsink_playing_reads_fanin_direct_activity(monkeypatch):
+    monkeypatch.setattr(
+        source_state,
+        "read_fanin_status",
+        lambda: {
+            "inputs": [{
+                "label": "usbsink",
+                "source": "direct",
+                "rms_dbfs": -12.0,
+                "direct": {"health": "capturing"},
+            }],
+        },
+    )
 
-    assert await source_state.usbsink_playing(str(path)) is True
+    assert await source_state.usbsink_playing() is True
+
+
+@pytest.mark.asyncio
+async def test_usbsink_playing_fails_soft_when_fanin_is_unavailable(monkeypatch):
+    monkeypatch.setattr(source_state, "read_fanin_status", lambda: None)
+
+    assert await source_state.usbsink_playing() is False
+
+
+def test_usbsink_direct_streaming_reads_new_fanin_edge_state():
+    status = {
+        "inputs": [{
+            "label": "usbsink",
+            "source": "direct",
+            "direct": {"streaming": True},
+        }],
+    }
+    assert source_state.usbsink_direct_streaming(status) is True
+    status["inputs"][0]["direct"]["streaming"] = False
+    assert source_state.usbsink_direct_streaming(status) is False
+    del status["inputs"][0]["direct"]["streaming"]
+    assert source_state.usbsink_direct_streaming(status) is None
 
 
 # ----------------------------------------------------------------------

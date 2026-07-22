@@ -859,6 +859,143 @@ def test_driver_capture_snr_block_populated_with_noise_evidence(tmp_path):
     assert result.verdict == "present"
 
 
+# ---------- narrow-excitation-band SNR (phantom noise floor fix) -----------
+#
+# Real driver captures use a per-driver excitation band confirmed safe for
+# that driver (jasper.active_speaker.commissioning_admission), routinely
+# narrower than the full analysis range — a woofer's is commonly f1~60 Hz,
+# f2~4000 Hz (the exact shape of the real jts3 hardware captures behind this
+# fix; see tests/test_audio_measurement_snr_policy.py's ground-truth fixture
+# for the unit-level pin). sub_bass (20-80 Hz) straddles f1, so the
+# reference sweep barely excites it — before this fix, the deconvolved
+# ambient-noise reading there was a Tikhonov regularization artifact roughly
+# 50 dB too loud, driving a false "insufficient" verdict even in a quiet
+# room. These two tests exercise the REAL deconvolution/alignment pipeline
+# (not the isolated snr_policy unit) with that exact narrow-band shape.
+
+
+def _write_narrow_band_capture(
+    tmp_path, name, reference, *, lf_tone_dbfs, tone_hz=40.0,
+):
+    """A relay-shaped capture (quiet ambient span, then the sweep) with an
+    optional continuous low-frequency tone placed INSIDE the ambient span —
+    simulating a genuinely noisy room during the quiet window, as opposed to
+    a deconvolution artifact. Returns (path, ambient_duration_s)."""
+
+    reference_s = len(reference) / SR
+    ambient_duration_s = reference_s + 1.0
+    arrival = int(round((1.0 + ambient_duration_s) * SR))
+    tail = int(round(0.6 * SR))
+    rng = np.random.default_rng(5)
+    captured = rng.normal(0.0, 0.001, arrival + len(reference) + tail)
+    ambient_start = arrival - len(reference) - SR
+    ambient_end = arrival - int(round(0.25 * SR))
+    if lf_tone_dbfs is not None:
+        n = ambient_end - ambient_start
+        t = np.arange(n) / SR
+        amp = 10.0 ** (lf_tone_dbfs / 20.0) * np.sqrt(2.0)
+        captured[ambient_start:ambient_end] += amp * np.sin(2 * np.pi * tone_hz * t)
+    captured[arrival:arrival + len(reference)] += 0.13 * reference
+    path = _write_capture(tmp_path, name, captured)
+    return path, ambient_duration_s
+
+
+def test_narrow_excitation_sweep_reports_confident_sub_bass_snr_in_a_quiet_room(
+    tmp_path,
+):
+    """The bug this fix closes: f1=60/f2=4000 barely excites sub_bass, so
+    pre-fix the deconvolved ambient reading there was a ~50 dB overstated
+    regularization artifact -- a quiet room's sub_bass capture read
+    "insufficient" (13-16 dB) when the room's true SNR was ~60+ dB. Post-fix
+    it reads "ok" and clears a conservative 40 dB floor, driven by the raw
+    (non-deconvolved) ambient measurement instead."""
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=60.0, f2=4000.0, duration_approx_s=1.0, sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    path, ambient_duration_s = _write_narrow_band_capture(
+        tmp_path, "quiet-room.wav", reference, lf_tone_dbfs=None,
+    )
+
+    result = da.analyze_driver_capture(
+        path,
+        sweep_meta.to_dict(),
+        passband_hz=(40.0, 2000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+
+    assert result.verdict == "present"
+    sub_bass = [b for b in result.snr["bands"] if b["band_id"] == "sub_bass"][0]
+    assert sub_bass["verdict"] == "ok"
+    assert sub_bass["estimated_snr_db"] >= 40.0
+    ambient_sub_bass = [
+        b for b in result.ambient["bands"] if b["band_id"] == "sub_bass"
+    ][0]
+    assert ambient_sub_bass["basis"] == "raw_ambient_fallback"
+
+
+def test_narrow_excitation_sweep_still_flags_a_genuinely_noisy_quiet_window(
+    tmp_path,
+):
+    """Protective-power check, full pipeline: the fallback this fix adds is
+    not a blanket "everything passes" shortcut — a genuinely noisy quiet
+    window still reads "insufficient", and the raw sub_bass fallback reports
+    the room's real energy rather than laundering it.
+
+    The tone is deliberately quiet (-30 dBFS) and in-excitation-band (70 Hz:
+    inside sub_bass 20-80 Hz AND inside the sweep's [60, 4000], so its
+    deconvolution is a clean division by real reference energy, not the
+    Tikhonov resonance this fix works around). An earlier revision used a
+    -10 dBFS 40 Hz tone, which smeared through the regularized inverse into
+    EVERY covered band's deconvolved ambient reading — the overall
+    "insufficient" was over-determined and said nothing per-band. Empirical
+    note for future editors: the covered bands' deconvolved readings pick up
+    quiet-window energy at roughly (injected - 3 dB) while the sub_bass raw
+    fallback registers the same energy band-mean-diluted (~25 dB down), so
+    sub_bass can never be the WORST band in this synthetic shape — the
+    per-band assertions below are the teeth, scoping exactly which bands a
+    quiet 70 Hz tone degrades (bass) and which stay clean
+    (upper_bass/transition/mid)."""
+
+    reference, sweep_meta = sweep_mod.synchronized_swept_sine(
+        f1=60.0, f2=4000.0, duration_approx_s=1.0, sample_rate=SR,
+        amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
+    )
+    path, ambient_duration_s = _write_narrow_band_capture(
+        tmp_path, "noisy-room.wav", reference,
+        lf_tone_dbfs=-30.0, tone_hz=70.0,
+    )
+
+    result = da.analyze_driver_capture(
+        path,
+        sweep_meta.to_dict(),
+        passband_hz=(40.0, 2000.0),
+        ambient_duration_s=ambient_duration_s,
+    )
+
+    assert result.verdict == "present"  # the driver itself is fine
+    assert result.snr["verdict"] == "insufficient"
+    by_id = {b["band_id"]: b for b in result.snr["bands"]}
+    # The one band the tone genuinely degrades in the deconvolved domain
+    # drives the verdict; its neighbors stay clean — not wholesale
+    # contamination.
+    assert by_id["bass"]["verdict"] == "insufficient"
+    assert by_id["upper_bass"]["verdict"] == "ok"
+    assert by_id["transition"]["verdict"] == "ok"
+    assert by_id["mid"]["verdict"] == "ok"
+    # sub_bass: the raw fallback reports the tone's true band power (~-55
+    # dBFS; the quiet-room sibling test reads ~-111) — measured reality,
+    # not a laundered floor. Its own SNR drops well below the quiet room's
+    # >=40 dB showing.
+    ambient_sub_bass = [
+        b for b in result.ambient["bands"] if b["band_id"] == "sub_bass"
+    ][0]
+    assert ambient_sub_bass["basis"] == "raw_ambient_fallback"
+    assert -60.0 < ambient_sub_bass["level_dbfs"] < -50.0
+    assert by_id["sub_bass"]["estimated_snr_db"] < 40.0
+
+
 def test_summed_near_field_default_gating_is_exempt(tmp_path):
     sig, meta = _reference_sweep()
     ir = np.zeros(256, dtype=np.float64)

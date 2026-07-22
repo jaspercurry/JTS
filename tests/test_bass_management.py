@@ -138,6 +138,7 @@ def test_no_state_resolves_to_no_bass_management(
     assert state.corner_hz is None
     assert state.owner is None
     assert state.sub_present is False
+    assert "bass_extension" not in state.to_dict()
     assert bm.active_crossover_corner_hz() is None
 
 

@@ -163,9 +163,23 @@ pub struct Config {
     /// mixed by fan-in. This ducks renderer lanes only; TTS remains
     /// unattenuated before CamillaDSP crossover/protection.
     pub tts_program_duck_db: f32,
+    pub tts_cue_duck_db: f32,
+
+    /// How long the program-lane duck takes to engage (attack) and to
+    /// release back to full level, in milliseconds. The mixer glides the
+    /// applied duck gain over these times per sample instead of stepping
+    /// it at a period boundary, so a ~25 dB duck around a short earcon/cue
+    /// no longer clicks or pumps the music. Attack is short so speech/cues
+    /// aren't masked; release is longer so the music swells back gently.
+    pub tts_duck_attack_ms: u32,
+    pub tts_duck_release_ms: u32,
 
     /// Assistant loudness policy for the pre-DSP TTS socket.
     pub assistant_loudness: AssistantLoudnessConfig,
+
+    /// Versioned last-achieved assistant loudness. Separate from the
+    /// canonical speaker-volume record because fan-in is the sole writer.
+    pub assistant_reference_path: String,
 
     /// fan-in → CamillaDSP coupling transport. `Loopback` (the default) writes
     /// the ALSA snd-aloop substream `output_pcm` exactly as today; CamillaDSP
@@ -313,13 +327,14 @@ pub struct Config {
     pub usb_direct_enabled: bool,
 
     /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
-    /// Default `hw:UAC2Gadget` (the UAC2 gadget card the usbsink bridge captures
-    /// today). Unused when direct is off. Env: `JASPER_FANIN_USB_DIRECT_DEVICE`.
+    /// Default `hw:UAC2Gadget` (the UAC2 gadget card fan-in owns while the USB
+    /// source is armed). Unused when direct is off. Env:
+    /// `JASPER_FANIN_USB_DIRECT_DEVICE`.
     pub usb_direct_device: String,
 
     /// The gadget capture OPEN period (frames) the USB DIRECT lane negotiates
     /// (lever 2 — the H1 "hw-pointer/period granularity" test knob). Default 256
-    /// (byte-identical to today's bridge-proven envelope); fail-loud range
+    /// (the hardware-validated direct-capture envelope); fail-loud range
     /// 32..=1024. Shrinking it (e.g. 64) is the H1 experiment: if the gadget's
     /// readable `avail` advances in period-sized steps, a smaller open period
     /// exposes ready frames sooner. The capture BUFFER stays DEEP regardless
@@ -332,13 +347,13 @@ pub struct Config {
     /// DEFAULT-OFF combo-mode host-slaved USB clock (`JASPER_FANIN_HOST_CLOCK`).
     /// When `true` AND `usb_direct_enabled`, a dedicated `fanin-host-clock`
     /// thread steers the gadget's `Capture Pitch 1000000` ctl so the host tracks
-    /// the DAC clock (the shared [`jasper_host_clock`] ladder, same servo the
-    /// usbsink bridge runs in solo mode). Fail-safe: only the exact literal
+    /// the DAC clock through the shared [`jasper_host_clock`] ladder. Fail-safe:
+    /// only the exact literal
     /// `enabled` (case-insensitive) arms it; any other non-empty value warns
     /// once (`event=fanin.host_clock_config_ignored`) and stays OFF. Meaningful
     /// ONLY with `usb_direct_enabled`: fan-in must own the gadget capture to own
     /// the pitch ctl. `enabled` + direct-off resolves to a fully-inert warn (no
-    /// ctl writes ever) — in aloop mode the usbsink bridge owns the clock. Env:
+    /// ctl writes ever). Env:
     /// `JASPER_FANIN_HOST_CLOCK` (`enabled` to arm).
     pub host_clock_enabled: bool,
 
@@ -349,12 +364,6 @@ pub struct Config {
     /// probe inside the ±1000 ppm validity window. Env:
     /// `JASPER_FANIN_HOST_CLOCK_PROBE_PPM`. Unused when host-clock is off.
     pub host_clock_probe_ppm: u32,
-
-    /// The host-clock probe's step-phase duration in seconds. Default 6;
-    /// fail-fast range 5..=10. A fixed 4 s neutral baseline runs first, so the
-    /// whole probe is `4 + this` seconds. Env:
-    /// `JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS`. Unused when host-clock is off.
-    pub host_clock_probe_secs: u64,
 }
 
 impl Config {
@@ -374,7 +383,7 @@ impl Config {
     /// combo-mode host-slaved USB clock. True only when the host-clock DLL is
     /// armed AND USB direct capture is on, because fan-in must own the gadget
     /// capture to own the pitch ctl (`enabled` + direct-off is a fully-inert
-    /// warn — the usbsink bridge owns the clock in aloop mode). This is the
+    /// warn because no process owns direct gadget clock control). This is the
     /// SINGLE source of truth for that coupling: `main` derives the servo-spawn
     /// gate (`host_clock_enabled_effective`) from it, and the mixer gates the
     /// host-compliance PRIME-AT-FLOOR on it — the prime skips the cushion
@@ -789,9 +798,7 @@ impl Config {
             }
             Err(_) => false,
         };
-        // Probe knobs — identical ranges/defaults to usbsink's so the two
-        // daemons share one servo contract. Fail-fast on out-of-range (the
-        // daemon's `validate_audio_config` idiom): a probe below the ~163 ppm
+        // Probe command. Fail-fast on out-of-range: a probe below the ~163 ppm
         // Windows deadband would falsely fail every session.
         let host_clock_probe_ppm = env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", 300)?;
         if !(200..=800).contains(&host_clock_probe_ppm) {
@@ -803,14 +810,6 @@ impl Config {
                 host_clock_probe_ppm,
             );
         }
-        let host_clock_probe_secs = u64::from(env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", 6)?);
-        if !(5..=10).contains(&host_clock_probe_secs) {
-            anyhow::bail!(
-                "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS={} out of range 5..=10",
-                host_clock_probe_secs,
-            );
-        }
-
         let tts_program_duck_db =
             env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
         if tts_program_duck_db > 0.0 {
@@ -818,6 +817,56 @@ impl Config {
                 "JASPER_FANIN_TTS_PROGRAM_DUCK_DB={} must be <= 0 (a duck \
                  attenuates; positive gain on the program is never allowed)",
                 tts_program_duck_db
+            );
+        }
+        // Shallower duck used only for the segment-driven auto-duck that
+        // fires while a standalone short earcon/cue is queued (mute/unmute
+        // sparkle, wake chirp) — see TtsMixer::program_duck_gain. These are
+        // quick, self-loud cues, not speech to follow, so the full program
+        // duck slams the music for no reason. Deliberately NOT falling back
+        // to JASPER_DUCK_DB: the whole point is that a cue ducks less than a
+        // conversation.
+        let tts_cue_duck_db = env_f32("JASPER_FANIN_TTS_CUE_DUCK_DB", -6.0)?;
+        if tts_cue_duck_db > 0.0 {
+            anyhow::bail!(
+                "JASPER_FANIN_TTS_CUE_DUCK_DB={} must be <= 0 (a duck \
+                 attenuates; positive gain on the program is never allowed)",
+                tts_cue_duck_db
+            );
+        }
+        let held_content_ttl_sec = env_f32(
+            "JASPER_FANIN_HELD_CONTENT_TTL_SEC",
+            AssistantLoudnessConfig::default().held_content_ttl_sec,
+        )?;
+        if !(1.0..=86_400.0).contains(&held_content_ttl_sec) {
+            anyhow::bail!(
+                "JASPER_FANIN_HELD_CONTENT_TTL_SEC={} out of range 1..=86400",
+                held_content_ttl_sec
+            );
+        }
+        let assistant_envelope_offset_limit_lu = env_f32(
+            "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU",
+            AssistantLoudnessConfig::default().assistant_envelope_offset_limit_lu,
+        )?;
+        if !(0.0..=24.0).contains(&assistant_envelope_offset_limit_lu) {
+            anyhow::bail!(
+                "JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU={} out of range 0..=24",
+                assistant_envelope_offset_limit_lu
+            );
+        }
+
+        let tts_duck_attack_ms = env_u32("JASPER_FANIN_TTS_DUCK_ATTACK_MS", 15)?;
+        if !(1..=200).contains(&tts_duck_attack_ms) {
+            anyhow::bail!(
+                "JASPER_FANIN_TTS_DUCK_ATTACK_MS={} out of range 1..=200",
+                tts_duck_attack_ms
+            );
+        }
+        let tts_duck_release_ms = env_u32("JASPER_FANIN_TTS_DUCK_RELEASE_MS", 150)?;
+        if !(1..=2000).contains(&tts_duck_release_ms) {
+            anyhow::bail!(
+                "JASPER_FANIN_TTS_DUCK_RELEASE_MS={} out of range 1..=2000",
+                tts_duck_release_ms
             );
         }
 
@@ -844,6 +893,9 @@ impl Config {
                 crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             )?,
             tts_program_duck_db,
+            tts_cue_duck_db,
+            tts_duck_attack_ms,
+            tts_duck_release_ms,
             assistant_loudness: AssistantLoudnessConfig {
                 assistant_offset_lu: env_f32(
                     "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
@@ -861,15 +913,22 @@ impl Config {
                     "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
                     loudness_defaults.fallback_source_peak_dbfs,
                 )?,
-                default_silence_target_lufs: env_f32(
+                default_tts_envelope_lufs: env_f32_fallback(
+                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
                     "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    loudness_defaults.default_silence_target_lufs,
+                    loudness_defaults.default_tts_envelope_lufs,
                 )?,
                 content_silence_lufs: env_f32(
                     "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
                     loudness_defaults.content_silence_lufs,
                 )?,
+                held_content_ttl_sec,
+                assistant_envelope_offset_limit_lu,
             },
+            assistant_reference_path: env_str(
+                "JASPER_FANIN_ASSISTANT_REFERENCE_PATH",
+                "/var/lib/jasper/assistant_volume_reference.json",
+            ),
             camilla_coupling,
             ring_path,
             ring_slots,
@@ -890,7 +949,6 @@ impl Config {
             usb_direct_period_frames,
             host_clock_enabled,
             host_clock_probe_ppm,
-            host_clock_probe_secs,
         })
     }
 }
@@ -1090,12 +1148,15 @@ mod tests {
                 ("JASPER_FANIN_TTS_SOCKET", None),
                 ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
                 ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
+                ("JASPER_FANIN_TTS_CUE_DUCK_DB", None),
                 ("JASPER_OUTPUTD_ASSISTANT_OFFSET_LU", None),
                 ("JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
+                ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
                 ("JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS", None),
                 ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
+                ("JASPER_FANIN_ASSISTANT_REFERENCE_PATH", None),
                 ("JASPER_DUCK_DB", None),
             ],
             || {
@@ -1117,9 +1178,19 @@ mod tests {
                 );
                 assert_eq!(cfg.tts_max_pending_frames, 96_000);
                 assert_eq!(cfg.tts_program_duck_db, -25.0);
+                assert_eq!(cfg.tts_cue_duck_db, -6.0);
                 assert_eq!(cfg.assistant_loudness.assistant_offset_lu, 1.5);
                 assert_eq!(cfg.assistant_loudness.max_peak_dbfs, -3.0);
-                assert_eq!(cfg.assistant_loudness.default_silence_target_lufs, -41.0);
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -41.0);
+                assert_eq!(cfg.assistant_loudness.held_content_ttl_sec, 600.0);
+                assert_eq!(
+                    cfg.assistant_loudness.assistant_envelope_offset_limit_lu,
+                    8.0
+                );
+                assert_eq!(
+                    cfg.assistant_reference_path,
+                    "/var/lib/jasper/assistant_volume_reference.json"
+                );
                 // Per-input adaptive resampler is DEFAULT-OFF — the whole point
                 // of the feature flag (HIGH-RISK real-time path).
                 assert!(
@@ -1536,15 +1607,11 @@ mod tests {
             &[
                 ("JASPER_FANIN_HOST_CLOCK", None),
                 ("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", None),
-                ("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", None),
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
                 assert!(!cfg.host_clock_enabled, "host-clock defaults OFF");
-                // Identical defaults to usbsink's so the two servos share a
-                // contract.
                 assert_eq!(cfg.host_clock_probe_ppm, 300);
-                assert_eq!(cfg.host_clock_probe_secs, 6);
             },
         );
     }
@@ -1567,31 +1634,6 @@ mod tests {
             with_env(&[("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", Some(ok))], || {
                 assert!(Config::from_env().is_ok(), "{ok} must be accepted");
             });
-        }
-    }
-
-    #[test]
-    fn host_clock_probe_secs_range_fails_fast() {
-        for bad in ["3", "4", "11", "20"] {
-            with_env(
-                &[("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", Some(bad))],
-                || {
-                    let err = Config::from_env().expect_err("out-of-range probe secs must error");
-                    let msg = format!("{:#}", err);
-                    assert!(
-                        msg.contains("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS"),
-                        "expected probe-secs range error, got: {msg}"
-                    );
-                },
-            );
-        }
-        for ok in ["5", "6", "10"] {
-            with_env(
-                &[("JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS", Some(ok))],
-                || {
-                    assert!(Config::from_env().is_ok(), "{ok} must be accepted");
-                },
-            );
         }
     }
 
@@ -1650,6 +1692,43 @@ mod tests {
             || {
                 let cfg = Config::from_env().expect("duck fallback must parse");
                 assert_eq!(cfg.tts_program_duck_db, -18.5);
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_silence_target_migrates_to_default_tts_envelope() {
+        with_env(
+            &[
+                ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
+                (
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    Some("-37.5"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("legacy envelope must parse");
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -37.5);
+            },
+        );
+    }
+
+    #[test]
+    fn new_default_tts_envelope_wins_over_legacy_silence_target() {
+        with_env(
+            &[
+                (
+                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
+                    Some("-39.0"),
+                ),
+                (
+                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                    Some("-37.5"),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().expect("new envelope must parse");
+                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -39.0);
             },
         );
     }

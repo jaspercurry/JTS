@@ -13,7 +13,8 @@ There are exactly TWO install profiles: ``full`` and ``streambox``. The
 former third tier (``endpoint`` / ``satellite``) is GONE as an install
 tier — "endpoint behavior" is now purely the multiroom *follower*
 grouping role at runtime (a full/streambox box bonded as a follower
-parks its brain and sources; see jasper.multiroom.reconcile). The legacy
+parks its brain, then hands source parking to the canonical source coordinator;
+see jasper.multiroom.reconcile and jasper.source_intent). The legacy
 tokens are still ACCEPTED here and mapped to ``streambox`` so a field box
 with a persisted ``endpoint``/``satellite`` marker auto-migrates on its
 next deploy instead of stranding.

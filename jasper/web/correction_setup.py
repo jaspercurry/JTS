@@ -16,8 +16,10 @@ Architecture (per docs/HANDOFF-correction.md):
     spotify_setup, dial_setup. No FastAPI / ASGI dependency.
   - Single in-memory `MeasurementSession` (jasper.correction.session)
     drives the multi-step state machine.
-  - Browser polls GET /status every 500 ms — simpler than SSE in
-    stdlib, plenty fast for state transitions that take seconds.
+  - Browser polls GET /status every 500 ms while work is active, the
+    presentation envelope every 900 ms on active screens, and lightweight
+    entry facts every 10 s while idle — simpler than SSE in stdlib and bounded
+    for state transitions that take seconds.
   - Background asyncio loop in a daemon thread bridges the sync HTTP
     handlers to the async session methods.
   - HTTP routes (after nginx strips the /correction/ prefix): the full,
@@ -45,7 +47,6 @@ import math
 import os
 import re
 import secrets
-import sqlite3
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -60,6 +61,7 @@ from urllib.parse import parse_qs, urlparse
 from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 from ..log_event import log_event
+from . import correction_tuning
 
 if TYPE_CHECKING:
     from jasper.capture_relay.client import RelayClient
@@ -73,6 +75,7 @@ from ._common import (
     canonical_page,
     guard_mutating_request,
     guard_read_request,
+    json_island,
     reject_csrf,
     send_html_response,
 )
@@ -94,30 +97,6 @@ MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_CROSSOVER_WAV_BODY_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 MAX_DEVICE_FIELD_CHARS = 160
-# P6 tuning-LLM per-tap call budget. A frontier text model answering the
-# interpret / propose packet is a few seconds; 90 s is a generous ceiling
-# that still bounds a stalled provider connection on the Pi web process.
-# Parse defensively: a jasper.env typo must degrade to the default, not
-# crash the whole /correction/ wizard at import.
-def _tuning_timeout_sec() -> float:
-    try:
-        value = float(os.environ.get("JASPER_TUNING_LLM_TIMEOUT_SEC", "90") or "90")
-    except ValueError:
-        return 90.0
-    return value if value > 0 else 90.0
-
-
-TUNING_LLM_TIMEOUT_SEC = _tuning_timeout_sec()
-# The per-call output-token cap for the paid tuning calls lives at the
-# model boundary — jasper.calibration_agent.model_client
-# .TUNING_LLM_MAX_OUTPUT_TOKENS — shared with the live harness so the
-# deployed cap and the live-validated cap cannot drift. The paid handlers
-# reference it through their existing lazy model_client import.
-# Minimum spacing between PAID tuning calls (interpret/propose), per
-# process. Human taps are seconds apart; a stuck client retry loop must not
-# silently burn spend. A second call inside the window gets an honest JSON
-# error (409) the panel shows — never a silent drop.
-TUNING_LLM_MIN_INTERVAL_SEC = 3.0
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
 _RETURN_HOST_RE = re.compile(
     r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$"
@@ -132,12 +111,23 @@ class RequestConflict(RuntimeError):
     """Client request conflicts with the current correction session state."""
 
 
-class SpendCapExceeded(RuntimeError):
-    """The household daily spend cap is reached, so a PAID tuning call is
-    refused. Distinct from RequestConflict (409, transient session/rate
-    conflict) because this maps to HTTP 429 (Too Many Requests) with a
-    rollover-worded message — the condition clears at the daily UTC rollover,
-    not by retrying in a moment."""
+class RoomRequestFailure(RequestConflict):
+    """A rejected Room request with bounded homeowner presentation data."""
+
+    def __init__(
+        self,
+        diagnostic: str,
+        failure: Mapping[str, Any],
+        *,
+        status: HTTPStatus,
+    ) -> None:
+        super().__init__(diagnostic)
+        self.failure = dict(failure)
+        self.status = status
+
+
+class TuningSetupUnavailable(RequestConflict):
+    """The optional tuning assistant has no configured model credential."""
 
 
 # Module-level session + bridge to the async loop. Lazy-init on
@@ -153,18 +143,222 @@ _loop_thread: threading.Thread | None = None
 # Set by POST /relay/capture, updated by its background runner. Guarded by
 # _session_lock (same single-session scope).
 _relay_capture: dict[str, Any] | None = None
+_relay_stop_request: Callable[[], None] | None = None
+_RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
+_RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
+    "finishing",
+    "committing",
+    "stopping",
+}
 # Bound the foreground relay registration so a slow/unreachable relay fails fast
 # rather than hanging the request thread for RelayClient's 15 s default.
 _RELAY_REGISTER_TIMEOUT_S = 10.0
+# Repeating one host event is safe, but distinct progress and terminal events
+# must preserve order in the relay's last-write-wins slot. One transient relay
+# 5xx or socket timeout must not abort a guarded level walk, while retries stay
+# tightly bounded so a dead relay still reaches the existing restore/Stop path.
+_RELAY_HOST_EVENT_ATTEMPTS = 2
+_RELAY_HOST_EVENT_RETRY_DELAY_S = 0.25
+# Keep bounded level-control calls in submission order even after the awaiting
+# coroutine reaches its wall-clock deadline.  A timed-out write stays in this
+# single-worker queue, so an older progress event cannot complete after a newer
+# terminal event and replace it in the relay's last-write-wins slot.
+_RELAY_LEVEL_CONTROL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="correction-relay-control",
+)
+# Level-ramp status and Room host events share one serialized pump. Give those
+# small control requests a separate WAN timeout: one retried level event plus
+# the next status read can then block for at most 4.75 s, comfortably inside
+# the ramp's default 8 s feed-loss guard. Registration retains its wider 10 s
+# budget.
+_RELAY_CONTROL_TIMEOUT_S = 1.5
+_RELAY_LEVEL_PUMP_MAX_BLOCK_S = (
+    (_RELAY_HOST_EVENT_ATTEMPTS + 1) * _RELAY_CONTROL_TIMEOUT_S
+    + _RELAY_HOST_EVENT_RETRY_DELAY_S
+)
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
+_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S = _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S
 _ROOM_RELAY_RETURN_PATH = "/correction/room/"
+_SUMMED_CAPTURE_UNAVAILABLE_REASON = "active_summed_persisted_admission_unavailable"
 # Require a short rolling ambient window before the Pi starts the level tone.
 # A single USB-mic startup block is too noisy to become the trust-floor SSOT;
 # ten 200 ms samples gives a stable two-second median while keeping setup
 # bounded and well inside the relay's rolling three-second sample window.
 _RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
+_ROOM_SWEEP_PHONE_FAILURE = "the speaker could not complete this measurement"
+
+
+async def _run_relay_control_request(
+    call: Callable[..., Any],
+    *args: Any,
+    hard_timeout_s: float | None = None,
+    preserve_write_order: bool = False,
+) -> Any:
+    """Run one blocking relay request with an optional wall-clock deadline."""
+
+    executor = _RELAY_LEVEL_CONTROL_EXECUTOR if hard_timeout_s is not None else None
+    request = asyncio.get_running_loop().run_in_executor(executor, call, *args)
+    if hard_timeout_s is None:
+        return await request
+    done, _pending = await asyncio.wait(
+        {request},
+        timeout=hard_timeout_s,
+    )
+    if not done:
+        # A running thread cannot be killed safely, but the level-control pump
+        # must not wait for it.  Preserve writes in the FIFO executor so every
+        # newer event runs after this one; queued status reads are safe to drop.
+        if preserve_write_order:
+            request.add_done_callback(_consume_relay_control_result)
+        else:
+            request.cancel()
+        raise asyncio.TimeoutError
+    return request.result()
+
+
+def _consume_relay_control_result(request: asyncio.Future[Any]) -> None:
+    """Retrieve a detached ordered write result after its caller timed out."""
+
+    if request.cancelled():
+        return
+    request.exception()
+
+
+async def _post_relay_host_event(
+    client: Any,
+    pi_session: Any,
+    payload: Mapping[str, Any],
+    *,
+    hard_timeout_s: float | None = None,
+) -> None:
+    """Publish one idempotent host event with one bounded transient retry."""
+
+    from jasper.capture_relay.client import RelayError
+
+    for attempt in range(1, _RELAY_HOST_EVENT_ATTEMPTS + 1):
+        try:
+            await _run_relay_control_request(
+                client.post_host_event,
+                pi_session.session_id,
+                pi_session.pull_token,
+                payload,
+                hard_timeout_s=hard_timeout_s,
+                preserve_write_order=hard_timeout_s is not None,
+            )
+            return
+        except RelayError as exc:
+            retryable = exc.status == 429 or exc.status >= 500
+            if not retryable or attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
+                raise
+        except OSError:
+            if attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
+                raise
+        log_event(
+            logger,
+            "capture_relay.host_event_retry",
+            level=logging.WARNING,
+            session_id=pi_session.session_id,
+            attempt=attempt,
+        )
+        await asyncio.sleep(_RELAY_HOST_EVENT_RETRY_DELAY_S)
+
+
+def _bounded_relay_control_client(client: Any) -> Any:
+    """Clone the production relay client onto the narrow control deadline."""
+
+    from jasper.capture_relay.client import RelayClient
+
+    return (
+        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
+        if isinstance(client, RelayClient)
+        else client  # injected deterministic test double
+    )
+
+
+async def _post_room_sweep_host_event(
+    control_client: Any,
+    pi_session: Any,
+    payload: Mapping[str, Any],
+) -> None:
+    """Publish ordered Room progress without discarding ambiguous captures."""
+
+    from jasper.capture_relay.client import RelayError
+
+    try:
+        await _post_relay_host_event(
+            control_client,
+            pi_session,
+            payload,
+            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
+        )
+        return
+    except RelayError as exc:
+        # The Worker rejects 4xx before committing the event. A final 4xx
+        # (including 429 after the bounded retry) is therefore definitive:
+        # do not play a sweep whose recorder session is gone or unauthorized.
+        if exc.status < 500:
+            raise
+        reason = f"RelayError:{exc.status}"
+    except (asyncio.TimeoutError, OSError) as exc:
+        # The request may have committed before its response timed out. Its
+        # detached write remains ordered, and run_capture's ready blob is the
+        # authoritative completion signal. Do not discard a valid WAV merely
+        # because this progress acknowledgement is unconfirmed.
+        reason = type(exc).__name__
+    log_event(
+        logger,
+        "capture_relay.room_sweep_host_event",
+        level=logging.WARNING,
+        session_id=pi_session.session_id,
+        phase=payload.get("phase"),
+        result="unconfirmed",
+        reason=reason,
+    )
+
+
+def _summed_capture_unavailable(*, ingress: str) -> dict[str, Any]:
+    """Refuse legacy browser/raw summed capture before it can touch audio."""
+
+    log_event(
+        logger,
+        "active_speaker.web_summed_capture_ingress_refused",
+        status="refused",
+        reason=_SUMMED_CAPTURE_UNAVAILABLE_REASON,
+        ingress=ingress,
+        audio_emitted=False,
+    )
+    return {
+        "status": "refused",
+        "reason": _SUMMED_CAPTURE_UNAVAILABLE_REASON,
+        "audio_emitted": False,
+        "issues": [
+            {
+                "code": _SUMMED_CAPTURE_UNAVAILABLE_REASON,
+                "message": (
+                    "combined crossover capture is available only through "
+                    "the trusted internal commissioning host"
+                ),
+            }
+        ],
+        "next_step": (
+            "Continue with isolated-driver commissioning; summed capture "
+            "remains internal-host-only."
+        ),
+    }
+
+
+def _crossover_volume_safety_refusal() -> dict[str, str]:
+    return {
+        "status": "refused",
+        "reason": "crossover_volume_safety_unresolved",
+        "next_step": (
+            "Use Recover safe listening volume before another crossover action."
+        ),
+    }
+
 
 # Mutating routes this handler accepts. Module-scoped so route membership is
 # pinnable by a test (deleting a line would otherwise 404 a route silently).
@@ -179,6 +373,7 @@ _POST_ROUTES = frozenset({
     "/autolevel/cancel",
     "/upload-noise",
     "/upload-capture",
+    "/local-capture/setup",
     "/relay/level-match",
     "/relay/capture",
     "/relay/verify",
@@ -198,9 +393,23 @@ _POST_ROUTES = frozenset({
     "/crossover/summed-capture-sweep",
     "/crossover/summed-capture",
     "/crossover/level-match",
+    "/crossover/region-geometry",
+    "/crossover/candidate",
     "/crossover/relay-capture",
+    "/crossover/relay-cancel",
+    "/crossover/reset",
     "/crossover/apply",
+    "/crossover/restore",
     "/crossover/recover-volume",
+    # v2 conductor flow (Wave 5a, JASPER_CROSSOVER_FLOW=v2). Registered in the
+    # allowlist unconditionally — like every route, unknown-path 404s happen
+    # BEFORE guard_mutating_request — but each handler refuses fail-closed
+    # when the legacy flow is active, so a legacy install's surface behavior
+    # is a named 400, never a live v2 session.
+    "/crossover/v2/session",
+    "/crossover/v2/verify",
+    "/crossover/v2/apply",
+    "/crossover/v2/restore",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -219,14 +428,42 @@ _POST_ROUTES = frozenset({
 
 
 def _set_relay_capture(value: dict[str, Any] | None) -> None:
-    global _relay_capture
+    global _relay_capture, _relay_stop_request
     with _session_lock:
         _relay_capture = value
+        if value is None or value.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
+            _relay_stop_request = None
 
 
 def _get_relay_capture() -> dict[str, Any] | None:
     with _session_lock:
         return dict(_relay_capture) if _relay_capture else None
+
+
+def _publish_crossover_capture_plan_progress(
+    kind_label: str, plan_progress: Mapping[str, Any]
+) -> None:
+    """Merge session-spanning capture-plan progress into the relay snapshot.
+
+    Session-spanning capture plans (protocol v3, SPEC W2.3) run every repeat
+    of a driver's set inside one relay session, so the wizard envelope's
+    passive progress mirror (``crossover_envelope._plan_measuring_verdict``)
+    needs live "N of {target} done" — this is the write side, called by the
+    v3 orchestrator (``correction_crossover_flow.
+    build_crossover_relay_plan_run_and_consume``) at session start and after
+    every capture. Best-effort: a stale/changed owner (a concurrent Stop, or
+    the session already ended) silently drops the update rather than
+    resurrecting a slot that has moved on — the same non-blocking posture
+    ``_publish_relay_waiting`` and friends already use for this global slot.
+    """
+    global _relay_capture
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("kind") != kind_label:
+            return
+        if relay.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
+            return
+        _relay_capture = {**relay, "capture_plan": dict(plan_progress)}
 
 
 def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
@@ -246,25 +483,128 @@ def _active_relay_phase() -> str | None:
     """Return the in-flight global relay phase that excludes DSP apply."""
 
     relay = _get_relay_capture()
-    if relay is None or relay.get("status") not in {"starting", "awaiting_phone"}:
+    if relay is None or relay.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
         return None
     return f"relay:{str(relay.get('kind') or 'measurement')}"
 
 
-def _begin_relay_capture() -> bool:
+def _begin_relay_capture(
+    kind_label: str,
+    *,
+    request_stop: Callable[[], None] | None = None,
+) -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
     race for one position — mirrors /autolevel's "already in progress" guard).
     The slot is released by `_set_relay_capture(None)` on a failed open, or by the
     background runner setting `complete`/`failed`."""
-    global _relay_capture
+    global _relay_capture, _relay_stop_request
     with _session_lock:
-        if _relay_capture and _relay_capture.get("status") in (
-            "starting",
-            "awaiting_phone",
+        if (
+            _relay_capture
+            and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
         ):
             return False
-        _relay_capture = {"status": "starting"}
+        _relay_capture = {"status": "starting", "kind": kind_label}
+        _relay_stop_request = request_stop
+        return True
+
+
+def _publish_relay_waiting(kind_label: str, tap_link: str) -> dict[str, Any]:
+    """Publish a registered link without overwriting a concurrent Stop."""
+
+    global _relay_capture
+    with _session_lock:
+        relay = _relay_capture
+        if (
+            relay is None
+            or relay.get("kind") != kind_label
+            or relay.get("status") not in {"starting", "stopping"}
+        ):
+            raise RuntimeError("phone capture ownership changed during registration")
+        status = "awaiting_phone" if relay.get("status") == "starting" else "stopping"
+        _relay_capture = {**relay, "tap_link": tap_link, "status": status}
+        return dict(_relay_capture)
+
+
+def _request_relay_stop(*kind_prefixes: str) -> dict[str, Any]:
+    """Signal the active matching relay owner and expose Stop as in progress.
+
+    The owner publishes ``stopped`` only after its transport worker, audio
+    player, and rollback have all drained. Keeping ``stopping`` in the global
+    slot prevents a second run from entering during cleanup.
+    """
+
+    global _relay_capture
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
+            raise ValueError("no matching phone capture is running")
+        kind = str(relay.get("kind") or "")
+        if not any(kind.startswith(prefix) for prefix in kind_prefixes):
+            raise ValueError("no matching phone capture is running")
+        callback = _relay_stop_request
+        if callback is None:
+            raise RuntimeError("this phone capture cannot be stopped safely")
+        try:
+            # Request callbacks are deliberately non-blocking signals. Fire
+            # one under the same lock as the public state so another tab can
+            # never observe ``stopping`` before the owner is actually signaled.
+            callback()
+        except (OSError, RuntimeError, ValueError) as exc:
+            _relay_capture = {
+                **relay,
+                "status": "failed",
+                "error": "the measurement stop signal failed",
+            }
+            raise RuntimeError("the measurement stop signal failed") from exc
+        _relay_capture = {**relay, "status": "stopping"}
+        return dict(_relay_capture)
+
+
+def _begin_relay_commit(kind_label: str) -> bool:
+    """Atomically choose evidence commit over a concurrent Stop request.
+
+    ``False`` means Stop won the same lock first, so the caller must not write
+    evidence. A missing/different owner is a failure, not a safe cancellation.
+    Once this returns ``True``, the capture is no longer stoppable and retains
+    the shared slot until its synchronous persistence call reaches a terminal
+    result.
+    """
+
+    global _relay_capture, _relay_stop_request
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("kind") != kind_label:
+            raise RuntimeError("phone capture ownership changed before evidence commit")
+        if relay.get("status") == "stopping":
+            return False
+        if relay.get("status") not in _RELAY_STOPPABLE_STATUSES | {"finishing"}:
+            raise RuntimeError("phone capture is not ready to commit evidence")
+        _relay_capture = {**relay, "status": "committing"}
+        _relay_stop_request = None
+        return True
+
+
+def _begin_relay_finishing(kind_label: str) -> bool:
+    """Atomically end the Stop window after playback and rollback finish.
+
+    ``False`` means Stop won the same lock first. Once this returns ``True``,
+    the phone owns bounded recorder close/encryption/upload and the host cannot
+    delete its relay session underneath an in-flight PUT.
+    """
+
+    global _relay_capture, _relay_stop_request
+    with _session_lock:
+        relay = _relay_capture
+        if relay is None or relay.get("kind") != kind_label:
+            raise RuntimeError("phone capture ownership changed before upload")
+        if relay.get("status") == "stopping":
+            return False
+        if relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
+            raise RuntimeError("phone capture is not ready to finish")
+        _relay_capture = {**relay, "status": "finishing"}
+        _relay_stop_request = None
         return True
 
 
@@ -289,6 +629,7 @@ class RelayCaptureKind:
     label: str
     open: Callable[[RelayClient, str, str, str], "RelayCapture"]
     run_and_consume: Callable[[RelayClient, PiCaptureSession], Awaitable[None]]
+    request_stop: Callable[[], None] | None = None
 
 
 def _request_local_return_url(
@@ -315,6 +656,108 @@ def _request_local_return_url(
     return f"http://{host}{clean_path}"
 
 
+def _relay_failure_reason(exc: BaseException) -> str:
+    """The stable log ``reason=`` for a relay-capture-lifecycle failure.
+
+    ``LevelMatchRefused`` (jasper.correction.level_match) carries the ramp's
+    own terminal code (e.g. ``agc_suspected``) — every refusal names its
+    reason, never a bare exception class. Every other exception keeps the
+    prior behavior: the exception class name.
+    """
+    from jasper.correction.level_match import LevelMatchRefused
+
+    if isinstance(exc, LevelMatchRefused):
+        return exc.code
+    if isinstance(exc, ServerOwnedNextStepMismatch):
+        return exc.code
+    return type(exc).__name__
+
+
+def _relay_failure_message(exc: BaseException) -> str:
+    """The phone/operator-facing text for a relay-capture-lifecycle failure.
+
+    ``ServerOwnedNextStepMismatch`` (hardware run 21) is the
+    envelope-derivation guard's own refusal
+    (``_assert_crossover_driver_action`` /
+    ``_assert_crossover_reference_axis_level_action`` in this module) — a
+    stale wizard tab racing a fresher server-driven step. Its raw message
+    ("...is not the server-owned next step") is programmer-facing jargon;
+    map it to plain, actionable copy instead of falling through to
+    ``str(exc)`` below.
+
+    ``LevelMatchRefused`` carries pre-translated homeowner copy (see
+    ``jasper.correction.level_match.describe_ramp_refusal``).
+    ``jasper.web.correction_crossover_backend.LevelSolveRefused`` follows the
+    same pattern one layer differently (W2.4, hardware run 20): its
+    ``str(exc)`` -- built at the raise site from
+    ``jasper.active_speaker.crossover_envelope.describe_level_solve_refusal``
+    -- IS the mapped homeowner copy, so it needs no special-case branch here;
+    it falls straight through to the generic ``str(exc)`` return below and
+    still reads honestly. Before that fix, ``str(exc)`` was the raw
+    ``"level_solve_refused code=... band=...Hz"`` diagnostic string and DID
+    leak onto the wizard's relay status line through this exact fallback.
+
+    A bare socket/HTTP read timeout (Python's ``socket.timeout`` --
+    ``TimeoutError`` since 3.10 -- whose message is the literal programmer
+    string "The read operation timed out") means the phone relay connection
+    died mid-measurement; hardware run 19 surfaced that exact string
+    unchanged on the wizard's status line
+    (``deploy/assets/correction/js/crossover/main.js``'s ``renderRelay``
+    just echoes ``relay.error``). Route it through the same kind of honest,
+    actionable copy every other refusal gets instead.
+
+    ``CapturePageIncompatible``'s ``str(exc)`` is the raw protocol
+    diagnostic ("capture page is incompatible with this speaker (expected
+    protocol 3, observed 2, build ...)") -- right for the journal (the
+    ``event=capture_relay.page_incompatible`` log already carries the same
+    fields), wrong for the household surface. Map it to the one action that
+    fixes it: reload the phone page so it serves the current build.
+
+    ``CrossoverV2LocalSeamError`` (W6 hardware run 3 finding G) wraps a bare
+    ``OSError`` raised by the v2 crossover's LOCAL play/DSP seam -- e.g. the
+    DSP writer lock's ``os.open`` hitting a read-only ``config_dir``
+    (finding F), which surfaced the raw
+    ``"[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"``
+    string on the wizard's relay status line via the generic ``str(exc)``
+    fallback below. Its household copy comes from the SAME
+    ``REASON_REGISTRY[REASON_INTERNAL_ERROR]`` text the v2 envelope itself
+    renders for an internal error, so the two surfaces never say different
+    things about the same failure. The raw exception string still reaches
+    the journal unchanged -- this function only shapes what the household
+    sees; ``event=capture_relay.adapter_failed`` above logs with
+    ``exc_info=True`` regardless of the mapped message.
+
+    Every other exception falls back to ``str(exc)`` unchanged (prior
+    behavior) -- not evidenced as a wizard-facing problem, so left alone
+    per "scope fixes to the observed-broken path."
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_INTERNAL_ERROR,
+        REASON_REGISTRY,
+    )
+    from jasper.capture_relay.session import CapturePageIncompatible
+    from jasper.correction.level_match import LevelMatchRefused
+    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError
+
+    if isinstance(exc, LevelMatchRefused):
+        return exc.user_message
+    if isinstance(exc, CapturePageIncompatible):
+        return (
+            "The phone page is out of date for this speaker. "
+            "Close the phone tab and open a fresh link from this page."
+        )
+    if isinstance(exc, ServerOwnedNextStepMismatch):
+        return exc.user_message
+    if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
+        return (
+            "The connection to the phone timed out mid-measurement. "
+            "Reopen the phone link and try this step again."
+        )
+    if isinstance(exc, CrossoverV2LocalSeamError):
+        return REASON_REGISTRY[REASON_INTERNAL_ERROR].message
+    return str(exc)
+
+
 def _run_relay_capture(
     kind: RelayCaptureKind,
     relay_base: str,
@@ -330,7 +773,7 @@ def _run_relay_capture(
     from jasper.capture_relay.client import RelayClient
     from jasper.capture_relay.health import relay_registration_token_from_env
 
-    if not _begin_relay_capture():
+    if not _begin_relay_capture(kind.label, request_stop=kind.request_stop):
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
     spawned = False
@@ -345,37 +788,58 @@ def _run_relay_capture(
         rc = kind.open(client, relay_base, capture_origin, return_url)
 
         async def _run() -> None:
+            from jasper.capture_relay.session import CaptureStopped
+
             try:
                 await kind.run_and_consume(client, rc.pi_session)
+                relay = _get_relay_capture()
+                if (
+                    relay is not None
+                    and relay.get("kind") == kind.label
+                    and relay.get("status") == "stopping"
+                ):
+                    raise CaptureStopped("capture stopped")
                 _set_relay_capture(
                     {"tap_link": rc.tap_link, "status": "complete", "kind": kind.label}
+                )
+            except (asyncio.CancelledError, CaptureStopped):
+                _set_relay_capture({
+                    "tap_link": rc.tap_link,
+                    "status": "stopped",
+                    "kind": kind.label,
+                    "error": "Measurement stopped safely.",
+                })
+                log_event(
+                    logger,
+                    "capture_relay.adapter_stopped",
+                    kind=kind.label,
                 )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
                 # run_capture already logs event=capture_relay.failed with a
                 # traceback; this outer net also flips /status.relay to failed and
                 # carries the operator-facing reason (e.g. a device/calibration
-                # mismatch) so the jts3/jts5 status page can show why.
+                # mismatch, or the ramp's own translated refusal — see
+                # _relay_failure_reason/_relay_failure_message) so the jts3/jts5
+                # status page can show why.
                 log_event(
                     logger,
                     "capture_relay.adapter_failed",
                     level=logging.WARNING,
                     exc_info=True,
                     kind=kind.label,
-                    reason=type(exc).__name__,
+                    reason=_relay_failure_reason(exc),
                 )
                 _set_relay_capture({
                     "tap_link": rc.tap_link,
                     "status": "failed",
                     "kind": kind.label,
-                    "error": str(exc),
+                    "error": _relay_failure_message(exc),
                 })
 
-        _set_relay_capture(
-            {"tap_link": rc.tap_link, "status": "awaiting_phone", "kind": kind.label}
-        )
+        waiting = _publish_relay_waiting(kind.label, rc.tap_link)
         asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
         spawned = True
-        return {"tap_link": rc.tap_link, "status": "awaiting_phone"}
+        return {"tap_link": rc.tap_link, "status": waiting["status"]}
     finally:
         if not spawned:
             _set_relay_capture(None)  # release the slot on any early failure
@@ -517,14 +981,22 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
     return _loop
 
 
-def _run_async(coro, *, timeout: float = 60.0):
+def _run_async(coro, *, timeout: float | None = 60.0):
     """Run a coroutine on the background loop and return its result.
 
     Long timeout default (60 s) covers sweep playback (10 s) + setup
     margin. Endpoints that should be fast (status / apply / reset)
     pass shorter timeouts.
     """
-    fut = asyncio.run_coroutine_threadsafe(coro, _ensure_loop())
+    drained = threading.Event()
+
+    async def _tracked():
+        try:
+            return await coro
+        finally:
+            drained.set()
+
+    fut = asyncio.run_coroutine_threadsafe(_tracked(), _ensure_loop())
     try:
         return fut.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
@@ -533,7 +1005,32 @@ def _run_async(coro, *, timeout: float = 60.0):
         # caller has already reported failure. Owning coroutines retain their
         # bounded/shielded rollback in ``finally`` blocks.
         fut.cancel()
+        if not drained.wait(_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S):
+            log_event(
+                logger,
+                "correction.async_cancel_drain_timeout",
+                level=logging.CRITICAL,
+                timeout_s=_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S,
+            )
+            # A terminal response must never release measurement ownership
+            # while its graph/volume finalizer can still mutate the speaker.
+            # The threshold above is an observability alarm, not permission to
+            # abandon cleanup; fail closed until the owner actually drains.
+            drained.wait()
         raise
+
+
+def _run_graph_mutation(coro):
+    """Wait for one Room-owned graph mutation to reach a terminal result.
+
+    CamillaController bounds and drains each transport attempt. Shared writer-
+    lock admission is currently blocking and remains a Shared-owned bounded-
+    admission gap. Once admitted, adding a second outer deadline here could
+    cancel between graph load and rollback/state persistence, so Room waits for
+    the transaction's terminal result.
+    """
+
+    return _run_async(coro, timeout=None)
 
 
 def _get_or_create_session():
@@ -550,12 +1047,12 @@ def _get_or_create_session():
 
 def _replace_session(
     *,
-    total_positions: int = 1,
-    target_choice: str = "flat",
-    strategy_choice: str | None = None,
+    total_positions: int,
+    target_choice: str,
+    strategy_choice: str,
     mic_calibration=None,
     input_device: dict[str, Any] | None = None,
-    repeat_main_position: bool = False,
+    repeat_main_position: bool,
 ):
     """Replace the global session with a fresh one. Called by /start
     so the user can re-run measurements without restarting the
@@ -582,30 +1079,25 @@ def _replace_session(
 # /correction/ is a restyle-in-place migration onto the canonical look:
 # the document shell is canonical_page() (app.css + CSRF meta + icon
 # sprite); the chrome is canonical_header() + the shared .btn / card
-# vocabulary. The page's behaviour — getUserMedia mic capture, the
+# vocabulary. The page's mechanism layer — getUserMedia mic capture, the
 # AudioWorklet level meter, the measurement-sweep + autolevel + verify
 # state machine driven by polling GET /status, the canvas chart, and the
-# session-report reader — ships UNCHANGED as the static ES module
-# /assets/correction/js/main.js. The measurement/DSP correctness can only
-# be re-verified on real Pi hardware, so the JS was relocated verbatim
-# (one module), not split or rewritten.
+# session-report reader — ships as /assets/correction/js/main.js. The
+# server-owned GET /envelope contract controls whole-page membership and
+# order; the browser has no parallel screen-to-section policy.
 #
 # getUserMedia requires a secure context; /correction/ is served over
-# HTTPS (mkcert local CA). The back link is an absolute http://<host>/ so
-# the Home affordance lands on the plain-HTTP dashboard rather than trying
-# HTTPS on /. Page-specific styling lives in /assets/correction/correction.css.
+# HTTPS with the speaker's local certificate. The back link is an absolute
+# http://<host>/ so the Home affordance lands on the plain-HTTP dashboard
+# rather than trying HTTPS on /. Page-specific styling lives in
+# /assets/correction/correction.css.
 
 
 _PAGE_BODY = """
 __HEADER__
-<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__">
+<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__" data-level-trust-margin-db="__LEVEL_TRUST_MARGIN_DB__">
 __TABS__
-<p class="page-sub">Measure your room with a phone, design correction filters, and apply them to the speaker.</p>
-
-<div id="current-correction" class="flat" aria-live="polite">
-  <span class="label" id="current-correction-label">Checking current correction…</span>
-  <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset correction</button>
-</div>
+<p class="page-sub">Measure your room with a phone and apply the result to the speaker.</p>
 
 <!-- Stepped-wizard chrome (P3b). Server-computed screen envelope (GET
      /envelope) drives everything here: which step you're on, the one
@@ -613,18 +1105,24 @@ __TABS__
      a block), the single primary action (always live — nudges never
      disable it), and the step indicator. The workflow sections below stay;
      the router shows the ones the current step needs. -->
-<section id="wizard-chrome" class="wizard-chrome hidden" aria-live="polite">
+<section id="wizard-chrome" class="wizard-chrome" aria-live="polite">
   <ol id="wizard-steps" class="wizard-steps" aria-label="Room correction steps"></ol>
   <p id="wizard-verdict" class="wizard-verdict"></p>
   <div id="wizard-nudges" class="wizard-nudges"></div>
   <button id="wizard-next" type="button" class="btn btn--primary hidden"></button>
+  <button id="cancel-measurement" type="button" class="btn btn--danger hidden">Cancel measurement</button>
 </section>
 
-<!-- P6 tuning assistant. Hidden until the envelope's tuning_llm block says
-     it is offered (a measurement screen). When offered-but-unavailable
-     (no OpenAI key) it renders the nudge; when available it shows the two
-     per-tap actions. The paid call happens ONLY on a tap. -->
-<section id="tuning-panel" class="tuning-panel hidden" aria-live="polite">
+<div id="envelope-sections" class="correction-sections">
+<section id="current-correction" data-envelope-section="current-correction" class="flat hidden" aria-live="polite">
+  <span class="label" id="current-correction-label">Checking current correction…</span>
+  <button id="current-correction-reset" type="button" class="btn btn--danger hidden">Reset correction</button>
+</section>
+
+<!-- P6 tuning assistant. The envelope's sections list owns top-level
+     visibility; tuning_llm fills the nudge/actions inside it. The paid call
+     happens ONLY on a tap. -->
+<section id="tuning-panel" data-envelope-section="tuning" class="tuning-panel hidden" aria-live="polite">
   <h2 class="tuning-title">Tuning assistant</h2>
   <p id="tuning-nudge" class="tuning-nudge hidden"></p>
   <div id="tuning-actions" class="tuning-actions hidden">
@@ -637,34 +1135,34 @@ __TABS__
   <div id="tuning-proposals" class="tuning-proposals"></div>
 </section>
 
-<section id="relay-panel" class="relay-panel hidden" aria-live="polite">
-  <h2 style="margin-top:0">Room measurement</h2>
-  <p class="hint">JTS will open a guided capture page on <code>capture.jasper.tech</code>. The phone records first; the speaker plays only after that page is ready.</p>
-  <button id="relay-start-capture" type="button" class="btn btn--primary">Start</button>
-  <div id="relay-link-row" class="relay-link-row hidden">
-    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open capture page</a>
-  </div>
-  <p id="relay-status" class="relay-status">Ready to create a phone capture link.</p>
+<section id="readiness-blocker" data-envelope-section="readiness-blocker" class="info-card hidden" role="alert">
+  <p id="readiness-blocker-message"></p>
+  <a id="readiness-blocker-action" class="btn hidden" href=""></a>
 </section>
 
-<details class="advice" open>
-  <summary>Where to put the phone</summary>
-  <ol>
-    <li><strong>Hold or prop the phone where your head will be when listening</strong> — sitting on the couch / chair, at ear height. <em>Not</em> on the cushion below your head; the cushion absorbs sound your ears would receive.</li>
-    <li>Phone <strong>flat, screen up</strong>, with the <strong>bottom edge</strong> (speaker / mic end) pointing toward the speakers.</li>
-    <li>Take it out of any case if it has one.</li>
-    <li>Keep the room quiet during the sweep — close windows, mute other devices, no talking.</li>
-  </ol>
-  <p class="hint">If you are using an external USB measurement mic, pick it below after granting mic permission. Holding the mic at ear height means we're measuring what you actually hear.</p>
-</details>
+<section id="capture-handoff" data-envelope-section="capture-handoff" class="info-card hidden" aria-live="polite">
+  <p id="capture-handoff-copy" class="hint"></p>
+  <div id="relay-link-row" class="relay-link-row hidden">
+    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open phone capture</a>
+    <div id="relay-qr" class="relay-qr"></div>
+  </div>
+  <p id="relay-status" class="relay-status"></p>
+</section>
 
-<details id="advanced-correction-options" class="advice">
-  <summary>Advanced</summary>
-  <p class="hint">Advanced options are mostly for development, relay outages, or calibrated local-browser capture on a trusted HTTPS speaker page.</p>
-  <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use local browser capture</button>
-</details>
+<section id="placement" data-envelope-section="placement" class="info-card hidden">
+  <h2 class="section__title">Place the microphone</h2>
+  <p id="placement-instruction">Put the phone or microphone at head height where you normally listen. For a phone, lay it flat screen up, point the bottom edge toward the speakers, and remove its case. Keep the room quiet.</p>
+  <div id="position-prompt" class="note-box hidden">
+    <p style="margin:0; font-weight:600">Move to position <span id="position-current">2</span> of <span id="position-total">__DEFAULT_ROOM_POSITION_COUNT__</span>.</p>
+    <p class="hint" style="margin-top:0.3em">Move about 30 cm from the previous position, keep the microphone at ear height, then continue.</p>
+  </div>
+</section>
 
-<div id="mic-panel" class="mic-panel">
+<section id="local-certificate-warning" data-envelope-section="local-certificate-warning" class="info-card hidden" role="note">
+  Your browser will warn about the speaker's local certificate — continue past it.
+</section>
+
+<section id="capture-setup" data-envelope-section="capture-setup" class="mic-panel hidden">
   <h2 style="margin-top:0">Microphone</h2>
   <div class="mic-grid">
     <div id="local-input-row" class="mic-row local-capture-only">
@@ -675,7 +1173,7 @@ __TABS__
       </label>
       <button id="refresh-inputs" type="button" class="btn btn--ghost">Refresh microphones</button>
     </div>
-    <p id="local-input-hint" class="hint local-capture-only" style="margin:0">Your USB measurement mic should appear automatically (grant mic permission if asked). Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Start mic capture</strong>.</p>
+    <p id="local-input-hint" class="hint local-capture-only" style="margin:0">Your USB measurement mic should appear automatically. Tap <strong>Refresh microphones</strong> if it doesn’t, then select it before <strong>Allow microphone</strong>.</p>
 
     <label for="mic-model-select">Calibration
       <select id="mic-model-select">
@@ -684,6 +1182,11 @@ __TABS__
         <option value="other">Other calibrated mic</option>
       </select>
     </label>
+
+    <p id="household-mic-banner" class="mic-status hidden" role="status">
+      <span id="household-mic-banner-text"></span>
+      <button id="household-mic-change" type="button" class="btn btn--ghost">Change</button>
+    </p>
 
     <div id="serial-row" class="mic-row hidden">
       <label for="mic-serial">Serial number
@@ -712,16 +1215,13 @@ __TABS__
       </label>
       <button id="upload-calibration" type="button" class="btn btn--ghost">Upload calibration</button>
     </div>
-    <p id="calibration-status" class="mic-status">No calibration loaded. This is okay for a quick check, but a calibrated mic is recommended before trusting filter decisions.</p>
+    <p id="calibration-status" class="mic-status">No calibration loaded. This is okay for a quick check; use a calibrated microphone before relying on the final result.</p>
     <p id="calibration-preview" class="cal-preview hidden"></p>
   </div>
-</div>
-
-<button id="start" type="button" class="btn btn--primary local-capture-only">Start mic capture</button>
 
 <div id="constraints" class="hidden" aria-live="polite">
   <h2>Capture settings</h2>
-  <p class="hint">iOS Safari may silently ignore audio constraints (WebKit Bug 179411). The measurement refuses to start unless every row reads <span class="ok">✓ ok</span>.</p>
+  <p class="hint">JTS checks that this browser can record a clean measurement. Continue when every row reads <span class="ok">✓ ok</span>.</p>
   <table class="constraint-table">
     <thead><tr><th>Setting</th><th>Requested</th><th>Actual</th><th>Status</th></tr></thead>
     <tbody id="constraint-rows"></tbody>
@@ -730,25 +1230,26 @@ __TABS__
   <div id="browser-audio-report" class="browser-audio-card hidden"></div>
 
   <h2>Live mic level</h2>
-  <p class="hint">Talk into the bottom of the phone — the bar should respond within 50 ms.</p>
+  <p class="hint">Speak near the microphone. The meter should move with your voice.</p>
   <div class="level-bar-track" aria-label="microphone level">
     <div id="level-bar-fill" class="level-bar-fill"></div>
   </div>
-  <div class="level-readout">RMS: <span id="level-db">—</span> dBFS</div>
 </div>
+</section>
 
-<div id="measure-section" class="hidden">
-  <h2>Measurement</h2>
-  <p>Music will pause automatically. The sweep is loud — make sure no one is asleep.</p>
-
-  <div id="measurement-options" class="info-card">
+<section id="run-defaults" data-envelope-section="run-defaults" class="info-card hidden">
+  <div class="run-defaults-line">
+    <p id="run-defaults-summary">__RUN_DEFAULTS_SUMMARY__</p>
+    <span aria-hidden="true">—</span>
+    <button id="change-run-defaults" type="button" class="btn btn--ghost" aria-controls="measurement-options" aria-expanded="false">Change</button>
+  </div>
+  <p id="repeat-main-position-disclosure" class="hint">__REPEAT_MAIN_POSITION_DISCLOSURE__</p>
+  <div id="measurement-options" class="hidden">
     <label for="positions-select">Positions to measure</label>
     <select id="positions-select" form="dummy">
-      <option value="1">1 — quick (single position)</option>
-      <option value="5" selected>5 — recommended (MMM averaging)</option>
-      <option value="3">3 — compromise</option>
+      __ROOM_POSITION_OPTIONS__
     </select>
-    <p class="hint" style="margin-top:0.3em">5 positions across your couch / listening area give a much better correction than a single point. We'll guide you through each one.</p>
+    <p class="hint" style="margin-top:0.3em">More positions describe more of the listening area. We'll guide you through each one.</p>
 
     <label for="target-select" style="margin-top:0.6em">Target curve</label>
     <select id="target-select" form="dummy">
@@ -759,58 +1260,36 @@ __TABS__
     <select id="strategy-select" form="dummy">
       __CORRECTION_STRATEGY_OPTIONS__
     </select>
-    <p class="hint" style="margin-top:0.3em">Strategy controls the correction band, filter count, cut/boost policy, and safety bounds. Balanced is the default; Assertive is for calibrated, repeatable measurements.</p>
-    <label id="repeat-main-position-row" style="margin-top:0.6em">
-      <input id="repeat-main-position" type="checkbox" checked>
-      Repeat the main seat once for a trust check
-    </label>
-    <p id="repeat-main-position-hint" class="hint" style="margin-top:0.3em">This adds one extra sweep at the first position and helps JTS tell measurement noise from real room behavior.</p>
+    <p class="hint" style="margin-top:0.3em">Balanced is the recommended household setting. Safe makes fewer, gentler adjustments.</p>
+    <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use this device's microphone</button>
   </div>
+</section>
 
-  <p>Status: <span id="state-badge" class="state-badge idle">idle</span>
-    <span id="state-detail" class="hint"></span></p>
-  <div id="quality-banner" class="quality-banner hidden"></div>
-
-  <div id="position-prompt" class="note-box hidden">
-    <p style="margin:0; font-weight:600">Move phone to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
-    <p class="hint" style="margin-top:0.3em">Move ~30 cm from the previous position — left, right, forward, or back, head-height. Same orientation: phone flat, bottom edge pointing at the speakers. Tap Continue when ready.</p>
-  </div>
-
+<section id="level-check" data-envelope-section="level-check" class="info-card hidden">
+  <h2 class="section__title">Check measurement level</h2>
   <p style="display:flex; gap:0.6em; flex-wrap:wrap">
-    <button id="autolevel" type="button" class="btn btn--ghost" disabled>Auto-level</button>
     <button id="autolevel-lock" type="button" class="btn btn--primary hidden">Lock now</button>
     <button id="autolevel-cancel" type="button" class="btn btn--danger hidden">Cancel</button>
-    <button id="run-measurement" type="button" class="btn btn--primary" disabled>Run measurement</button>
-    <button id="repeat-position" type="button" class="btn btn--primary hidden">Repeat main seat</button>
-    <button id="continue-position" type="button" class="btn btn--primary hidden">Continue to next position</button>
-    <button id="apply-correction" type="button" class="btn btn--primary hidden">Apply correction</button>
-    <button id="verify-correction" type="button" class="btn btn--primary hidden">Verify with re-measurement</button>
-    <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset correction</button>
-    <button id="cancel-measurement" type="button" class="btn btn--danger hidden">Cancel measurement</button>
   </p>
-  <p id="autolevel-hint" class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the phone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
-  <p class="hint" style="margin-top:0.4em">Each measurement bypasses your current correction and preference EQ first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
+  <p id="autolevel-hint" class="hint" style="margin-top:0.4em">The speaker slowly raises a short test tone until the microphone hears a clear measurement level, then stops automatically. If it sounds comfortably loud first, choose <strong>Lock now</strong>. This takes only a few seconds.</p>
+  <p class="hint" style="margin-top:0.4em">JTS temporarily pauses your current sound settings so it can measure the room clearly. They return unless you apply the new correction.</p>
   <div id="autolevel-status" class="note-box hidden">
     <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
     <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
   </div>
+</section>
+
+<section id="position-capture" data-envelope-section="position-capture" class="info-card hidden">
+  <h2 class="section__title">Measure this position</h2>
+  <p>Music pauses automatically while the speaker plays the test sweep.</p>
+  <div id="quality-banner" class="quality-banner hidden"></div>
+</section>
+
+<section id="measurement-review" data-envelope-section="measurement-review" class="hidden">
   <div id="result-section" class="hidden">
-    <div id="confidence-panel" class="confidence-card hidden"></div>
-    <div id="runtime-integrity-panel" class="runtime-card hidden"></div>
-    <div id="results-summary" class="results-summary hidden"></div>
     <h3>Frequency response</h3>
     <div class="chart-controls">
-      <label class="stacked" for="chart-smoothing">Display smoothing<br>
-        <select id="chart-smoothing">
-          <option value="none">Saved 1/48-oct</option>
-          <option value="1/12" selected>1/12-oct</option>
-          <option value="1/6">1/6-oct</option>
-          <option value="1/3">1/3-oct</option>
-        </select>
-      </label>
-      <label><input id="chart-show-spread" type="checkbox" checked> spatial spread</label>
       <label><input id="chart-show-filter" type="checkbox" checked> filter effect</label>
-      <label><input id="chart-show-band" type="checkbox" checked> correction band</label>
     </div>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
     <p class="hint">
@@ -823,34 +1302,30 @@ __TABS__
       <span style="color:#1db954">green</span> where it moved toward target and
       <span style="color:#d68200">amber</span> where it moved away.
     </p>
-    <p id="verify-summary" class="hint hidden"></p>
-    <div id="design-report" class="hidden"></div>
-    <h3>Filters designed</h3>
-    <div class="peq-list" id="peq-list"></div>
+    <button id="reset-correction" type="button" class="btn btn--danger hidden">Reset correction</button>
   </div>
-</div>
+</section>
 
-<section id="measurement-reports" class="report-panel">
+<section id="apply-status" data-envelope-section="apply-status" class="info-card hidden">
+  <p>Room correction is applied. The next measurement checks whether it helped.</p>
+</section>
+
+<section id="verification" data-envelope-section="verification" class="info-card hidden">
+  <p>Return the microphone to the main seat for a fresh comparison.</p>
+</section>
+
+<section id="result-proof" data-envelope-section="result-proof" class="hidden"></section>
+
+<section id="reports" data-envelope-section="reports" class="report-panel hidden">
   <h2>Measurement reports</h2>
   <p class="hint">Read-only evidence from previous sessions. Raw measurement recordings are private and stay on the speaker unless you delete the bundle.</p>
   <button id="load-sessions" type="button" class="btn btn--ghost">Load recent reports</button>
   <div id="session-history" class="session-list"></div>
   <div id="session-report" class="session-report hidden"></div>
 </section>
-
-<details class="disclosure">
-  <summary>Optional: silence Safari's "Not Private" warning on future visits</summary>
-  <div class="disclosure-body">
-    <p>You're seeing this page because you tapped through Safari's "Not Private" warning — that's fine and the page works correctly. The warning appears on every visit unless you install this speaker's certificate as a trusted authority on this device.</p>
-    <ol>
-      <li>Tap <a href="http://__HOSTNAME__/jts-root-ca.crt">Download the JTS root CA</a> (plain HTTP — necessary because HTTPS isn't trusted yet). Safari prompts <em>"This website is trying to download a configuration profile."</em> Tap <strong>Allow</strong>.</li>
-      <li>Open the <strong>Settings</strong> app. A new entry near the top says <em>"Profile Downloaded — JTS Speaker Local CA"</em>. Tap it → <strong>Install</strong> → enter passcode → <strong>Install</strong> → <strong>Done</strong>.</li>
-      <li>Go to <strong>Settings → General → About → Certificate Trust Settings</strong>. Toggle <strong>JTS Speaker Local CA</strong> on. Tap <strong>Continue</strong> through the warning Apple shows for any non-public CA.</li>
-    </ol>
-    <p class="hint">To remove later: Settings → General → VPN &amp; Device Management → JTS Speaker Local CA → Remove Profile.</p>
-  </div>
-</details>
+</div>
 </main>
+__HOUSEHOLD_MIC_ISLAND__
 <script type="module" src="/assets/correction/js/main.js"></script>
 """
 
@@ -899,9 +1374,15 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
     from jasper.correction.strategy import (
         DEFAULT_CORRECTION_STRATEGY_ID,
         DEFAULT_TARGET_PROFILE_ID,
-        correction_strategy_options,
+        household_correction_strategy_options,
         target_profile_options,
     )
+    from jasper.correction.envelope import room_position_label
+    from jasper.correction.session import (
+        DEFAULT_ROOM_POSITION_COUNT,
+        ROOM_POSITION_COUNT_CHOICES,
+    )
+    from jasper.audio_measurement.ramp import MeasurementRamp
 
     # data-aliases carries the registry's label tokens to the wizard so it can
     # infer the model from a device label without a hardcoded client-side map.
@@ -914,7 +1395,7 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         for key, spec in SUPPORTED_MODELS.items()
     )
     target_profile_options_html = "\n      ".join(
-        '<option value="{key}"{selected}>{label} — {description}</option>'.format(
+        '<option value="{key}"{selected}>{label}</option>'.format(
             key=html.escape(str(spec["target_id"]), quote=True),
             selected=(
                 " selected"
@@ -922,12 +1403,11 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
                 else ""
             ),
             label=html.escape(str(spec["label"])),
-            description=html.escape(str(spec["description"])),
         )
         for spec in target_profile_options()
     )
     correction_strategy_options_html = "\n      ".join(
-        '<option value="{key}"{selected}>{label} — {description}</option>'.format(
+        '<option value="{key}"{selected}>{label}</option>'.format(
             key=html.escape(str(spec["strategy_id"]), quote=True),
             selected=(
                 " selected"
@@ -935,12 +1415,40 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
                 else ""
             ),
             label=html.escape(str(spec["label"])),
-            description=html.escape(str(spec["description"])),
         )
-        for spec in correction_strategy_options()
+        for spec in household_correction_strategy_options()
     )
+    room_position_options_html = "\n      ".join(
+        (
+            '<option value="{count}" data-summary-label="{summary_label}"'
+            '{selected}>{label}</option>'
+        ).format(
+            count=count,
+            summary_label=html.escape(room_position_label(count), quote=True),
+            selected=(" selected" if count == DEFAULT_ROOM_POSITION_COUNT else ""),
+            label=html.escape(
+                (
+                    "1 position — quick check"
+                    if count == 1
+                    else f"{count} positions"
+                    + (
+                        " — recommended"
+                        if count == DEFAULT_ROOM_POSITION_COUNT
+                        else ""
+                    )
+                )
+            ),
+        )
+        for count in ROOM_POSITION_COUNT_CHOICES
+    )
+    # The server-owned envelope fills both after the first presentation read.
+    run_defaults_summary = ""
+    repeat_main_position_disclosure = ""
     from jasper.capture_relay import correction_adapter
     capture_relay_enabled = correction_adapter.relay_enabled()
+    household_mic_island = json_island(
+        "household-mic-data", _household_mic_prefill_payload()
+    )
     # Absolute http:// back link: /correction/ is HTTPS but the dashboard at /
     # is plain HTTP, so a relative "/" would try HTTPS on the root and fail.
     header = canonical_header(
@@ -953,15 +1461,29 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         _PAGE_BODY
         .replace("__HEADER__", header)
         .replace("__TABS__", section_tabs("room"))
-        .replace("__HOSTNAME__", html.escape(hostname, quote=True))
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
+        .replace(
+            "__DEFAULT_ROOM_POSITION_COUNT__",
+            str(DEFAULT_ROOM_POSITION_COUNT),
+        )
+        .replace("__RUN_DEFAULTS_SUMMARY__", run_defaults_summary)
+        .replace("__ROOM_POSITION_OPTIONS__", room_position_options_html)
+        .replace(
+            "__REPEAT_MAIN_POSITION_DISCLOSURE__",
+            repeat_main_position_disclosure,
+        )
         .replace(
             "__CAPTURE_RELAY_ENABLED__",
             "1" if capture_relay_enabled else "0",
         )
+        .replace(
+            "__LEVEL_TRUST_MARGIN_DB__",
+            format(MeasurementRamp.from_env().trust_margin_db, ".6g"),
+        )
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
         .replace("__TARGET_PROFILE_OPTIONS__", target_profile_options_html)
         .replace("__CORRECTION_STRATEGY_OPTIONS__", correction_strategy_options_html)
+        .replace("__HOUSEHOLD_MIC_ISLAND__", household_mic_island)
     )
     return canonical_page(
         "Room correction — JTS speaker",
@@ -1023,6 +1545,165 @@ def _calibration_root() -> Path:
     )
 
 
+def _household_mic_path() -> Path:
+    return Path(
+        os.environ.get(
+            "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH",
+            "/var/lib/jasper/correction/household_mic.json",
+        )
+    )
+
+
+def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
+    """Persist a just-established calibration as the household's default
+    measurement mic (Wave-2 household-mic persistence,
+    ``jasper.correction.household_mic``).
+
+    Called from every point a calibration is NEWLY established, or the
+    household's already-remembered one is explicitly RE-confirmed: the phone
+    relay flow (``_relay_calibration_from_setup``, shared by the room and
+    crossover flows — its ``serial``/``upload`` modes establish a new
+    calibration, its ``stored`` mode re-confirms the current one) and the
+    local/laptop flow (``_handle_calibration_fetch`` /
+    ``_handle_calibration_upload``, below). Handlers that merely load an
+    already-established ``calibration_id`` WITHOUT the household saying so
+    (``_handle_start``, ``_handle_local_capture_setup``) do not call this —
+    the household record only moves on a new success or an explicit confirm.
+
+    Fail-soft: a write failure must never block the calibration that
+    triggered it. A different mic than the currently-remembered one is
+    never refused — the new success simply replaces the record (the
+    cross-session staleness guard, item 6): logged as
+    ``correction.household_mic_replaced`` rather than blocked.
+    """
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        read_household_mic,
+        write_household_mic,
+    )
+
+    path = _household_mic_path()
+    try:
+        new_record = household_mic_from_calibration(record, serial=serial)
+        previous = read_household_mic(path=path)
+        write_household_mic(new_record, path=path)
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning(
+            "failed to persist household mic record: %r", exc, exc_info=True,
+        )
+        return
+    # A replace is any change of mic IDENTITY: the model, or — within the
+    # same model — a different physical unit (serial_hash). The hashes
+    # themselves stay out of the log line (they are stable per-unit
+    # identifiers; the event only needs to say WHAT kind of change
+    # happened), so `changed=` is the minimal discriminator.
+    changed: list[str] = []
+    if previous is not None:
+        if previous.model_key != new_record.model_key:
+            changed.append("model")
+        if previous.serial_hash != new_record.serial_hash:
+            changed.append("serial")
+    if previous is not None and changed:
+        log_event(
+            logger,
+            "correction.household_mic_replaced",
+            old_model=previous.model_key,
+            new_model=new_record.model_key,
+            changed="+".join(changed),
+        )
+    else:
+        log_event(
+            logger,
+            "correction.household_mic_saved",
+            model=new_record.model_key,
+        )
+
+
+def _resolved_household_mic() -> tuple[Any, Any] | None:
+    """Read + resolve the household mic record in one fail-soft step.
+
+    Returns ``(HouseholdMicRecord, CalibrationRecord)`` when a household
+    default exists AND its calibration is still resolvable on disk, else
+    ``None``. Shared by the spec prefill hint and the room wizard's
+    server-rendered banner so both degrade identically when the record is
+    absent or its calibration has been removed from under it.
+    """
+    from jasper.correction.household_mic import (
+        read_household_mic,
+        resolve_household_mic_calibration,
+    )
+
+    household = read_household_mic(path=_household_mic_path())
+    if household is None:
+        return None
+    resolved = resolve_household_mic_calibration(household, root=_calibration_root())
+    if resolved is None:
+        return None
+    return household, resolved
+
+
+def _default_setup_calibration_for_spec() -> Any | None:
+    """Build the capture spec's OPTIONAL ``default_setup.calibration`` hint
+    from the household's remembered mic (Wave-2 household-mic persistence).
+
+    Never binding — the 2026-07 Wave-2 capture page reads it and renders a
+    one-tap confirm screen that submits ``{mode: "stored", calibration_id,
+    model}`` when the hint is marked ``resolvable: true`` (minted by the
+    ``mode="stored"`` branch of ``_relay_calibration_from_setup`` below —
+    see `DefaultSetupCalibration`'s docstring); an older page still ignores
+    unknown spec fields, so this stays a safe no-op there. Fail-soft: any
+    resolution miss yields no hint rather than blocking the capture.
+
+    ``resolvable`` is a SECOND, freshly-taken resolver call — not inferred
+    from ``found`` succeeding above — so the flag always reflects a
+    just-checked fact rather than "resolved a moment ago, presumed still
+    good." `resolve_household_mic_calibration` is itself documented
+    fail-soft (returns `None`, never raises), so this stays a plain call: a
+    miss here simply leaves `resolvable` at its `False` default, which
+    `DefaultSetupCalibration.to_dict()` omits from the wire payload.
+    """
+    from jasper.capture_relay.spec import DefaultSetupCalibration
+    from jasper.correction.household_mic import resolve_household_mic_calibration
+
+    found = _resolved_household_mic()
+    if found is None:
+        return None
+    household, resolved = found
+    mode = "upload" if household.provider == "manual_upload" else "serial"
+    resolvable = (
+        resolve_household_mic_calibration(household, root=_calibration_root())
+        is not None
+    )
+    return DefaultSetupCalibration(
+        mode=mode,
+        model=household.model_key,
+        serial_display=household.serial_display or "",
+        calibration_id=resolved.calibration_id,
+        resolvable=resolvable,
+    )
+
+
+def _household_mic_prefill_payload() -> dict[str, Any] | None:
+    """Server-rendered prefill for the room wizard's local mic/calibration
+    UI (Wave-2 household-mic persistence). ``None`` when there is no
+    household default, or its calibration is no longer resolvable — the page
+    then renders exactly as it did before this feature. Reuses
+    ``_calibration_payload``'s shape (``{"calibration": ..., "preview":
+    ...}``) so the page's existing `showCalibrationLoaded` renderer can
+    consume it unmodified; `model_key` additionally selects the right
+    `<option>` in the model picker.
+
+    The crossover flow has no equivalent local UI — its mic setup runs
+    entirely through the phone relay page, covered by the spec
+    `default_setup` hint above.
+    """
+    found = _resolved_household_mic()
+    if found is None:
+        return None
+    household, resolved = found
+    return {"model_key": household.model_key, **_calibration_payload(resolved)}
+
+
 def _short_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -1062,6 +1743,18 @@ def _runtime_integrity_summary(sess: Any) -> dict[str, Any] | None:
         return None
 
 
+async def _run_session_background_audio(
+    sess: Any,
+    operation: Callable[[], Awaitable[None]],
+) -> None:
+    """Use the session-owned cancellable slot when the session provides it."""
+    runner = getattr(sess, "run_background_audio_operation", None)
+    if callable(runner):
+        await runner(operation)
+    else:
+        await operation()
+
+
 def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
     """Start the next normal measurement sweep and wait for visible progress."""
     from jasper.correction import coordinator, playback
@@ -1079,7 +1772,10 @@ def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None
         except Exception as e:  # noqa: BLE001
             logger.exception("measurement sweep failed: %s", e)
 
-    asyncio.run_coroutine_threadsafe(_run_sweep(), _ensure_loop())
+    asyncio.run_coroutine_threadsafe(
+        _run_session_background_audio(sess, _run_sweep),
+        _ensure_loop(),
+    )
     _run_async(sess.state_changed_from(from_state), timeout=6.0)
 
 
@@ -1089,8 +1785,9 @@ def _run_relay_measurement_sweep(
     *,
     client: RelayClient,
     pi_session: PiCaptureSession,
+    repeat: bool = False,
 ) -> None:
-    """Play one relay-triggered sweep and publish real progress to the phone.
+    """Play one relay-triggered Room sweep and publish progress to the phone.
 
     The old relay flow relied on a fixed phone-side recording window. The phone
     now records until it sees ``phase=sweep_complete`` from the Pi, then keeps
@@ -1100,14 +1797,25 @@ def _run_relay_measurement_sweep(
     """
     from jasper.correction import coordinator, playback
 
-    def _host_event(phase: str, **extra: Any) -> None:
+    control_client = _bounded_relay_control_client(client)
+
+    async def _host_event(phase: str, **extra: Any) -> None:
         payload = {
             "phase": phase,
-            "position": int(getattr(sess, "current_position", 0)) + 1,
+            "position": (
+                1
+                if repeat
+                else int(getattr(sess, "current_position", 0)) + 1
+            ),
             "total_positions": int(getattr(sess, "total_positions", 1)),
+            "capture_kind": "repeat" if repeat else "measurement",
             **extra,
         }
-        client.post_host_event(pi_session.session_id, pi_session.pull_token, payload)
+        await _post_room_sweep_host_event(
+            control_client,
+            pi_session,
+            payload,
+        )
 
     async def _run_sweep() -> None:
         async def _runtime_probe() -> dict[str, Any] | None:
@@ -1122,12 +1830,17 @@ def _run_relay_measurement_sweep(
                     "check again"
                 )
             try:
-                await asyncio.to_thread(_host_event, "sweep_started")
-                await sess.prepare_and_play_sweep(
+                await _host_event("sweep_started")
+                prepare = (
+                    sess.prepare_and_play_repeat_sweep
+                    if repeat
+                    else sess.prepare_and_play_sweep
+                )
+                await prepare(
                     playback.play_sweep,
                     runtime_probe_async=_runtime_probe,
                 )
-                await asyncio.to_thread(_host_event, "sweep_complete")
+                await _host_event("sweep_complete")
             finally:
                 # The renderers resume when measurement_window exits. Restore
                 # the household listening volume before that boundary, on every
@@ -1137,11 +1850,26 @@ def _run_relay_measurement_sweep(
                 )
 
     try:
-        _run_async(_run_sweep(), timeout=90.0)
-    except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError) as exc:
+        _run_async(
+            _run_session_background_audio(sess, _run_sweep),
+            timeout=90.0,
+        )
+    except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError):
         try:
-            _host_event("sweep_failed", error=str(exc))
-        except (RuntimeError, OSError, ValueError):
+            _run_async(
+                _host_event(
+                    "sweep_failed",
+                    error=_ROOM_SWEEP_PHONE_FAILURE,
+                    error_code="room_sweep_unavailable",
+                ),
+                timeout=_RELAY_LEVEL_PUMP_MAX_BLOCK_S + 1.0,
+            )
+        except (
+            concurrent.futures.TimeoutError,
+            RuntimeError,
+            OSError,
+            ValueError,
+        ):
             logger.debug("could not publish relay sweep failure", exc_info=True)
         raise
 
@@ -1163,7 +1891,10 @@ def _schedule_repeat_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
         except Exception as e:  # noqa: BLE001
             logger.exception("repeat sweep failed: %s", e)
 
-    asyncio.run_coroutine_threadsafe(_run_sweep(), _ensure_loop())
+    asyncio.run_coroutine_threadsafe(
+        _run_session_background_audio(sess, _run_sweep),
+        _ensure_loop(),
+    )
     _run_async(sess.state_changed_from(from_state), timeout=6.0)
 
 
@@ -1247,6 +1978,73 @@ def _calibration_device_mismatch(
     return None
 
 
+def _normalize_label_token(value: str) -> str:
+    """Lowercase, punctuation-stripped comparison key for a device label.
+
+    Shared normalization so ``"UMIK-2 (2752:002b)"`` and an alias of
+    ``"umik-2"`` compare equal regardless of casing/hyphenation/parenthetical
+    USB descriptor suffixes the OS appends.
+    """
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _stored_calibration_model_mismatch(
+    record: Any, device: Mapping[str, Any] | None
+) -> str | None:
+    """Detect a resolved measurement-mic calibration that is for a DIFFERENT
+    external mic than the one this capture's ``device`` reports (2026-07-20
+    incident: a Dayton iMM-6C capture silently carried a remembered UMIK-2
+    calibration — ``setup.calibration.mode == "stored"`` re-confirms whatever
+    calibration_id the phone echoes, independent of which mic actually
+    recorded). Calibration is frequency-magnitude, so applying the WRONG
+    mic's curve corrupts a same-frequency measurement just as surely as the
+    built-in-mic case `_calibration_device_mismatch` guards — this is that
+    check's sibling for external-mic-vs-external-mic identity.
+
+    Conservative and anchored, never a fuzzy label guess: reuses the SAME
+    curated ``SUPPORTED_MODELS``/``model_label_aliases`` registry the wizard's
+    own label-based auto-inference uses (single source of truth for "which OS
+    label names which model" — not a new heuristic). Only trips when the
+    device's own reported label positively matches a DIFFERENT registered
+    model's aliases than the record's own model. An unrecognized model on
+    either side, or a device label that matches nothing (or matches its OWN
+    model), is NOT a mismatch — there's nothing concrete to contradict the
+    stored choice with, so the current (apply) behavior is preserved.
+    """
+    from jasper.audio_measurement.calibration import (
+        SUPPORTED_MODELS,
+        model_label_aliases,
+    )
+
+    model_key = str(getattr(record, "model", "") or "")
+    if model_key not in SUPPORTED_MODELS:
+        return None
+    label = ""
+    if isinstance(device, Mapping):
+        label = str(device.get("label") or device.get("browser_label") or "")
+    if not label:
+        return None
+    normalized_label = _normalize_label_token(label)
+    if any(
+        _normalize_label_token(alias) in normalized_label
+        for alias in model_label_aliases(model_key)
+    ):
+        return None  # matches its own model — fine
+    for other_key, spec in SUPPORTED_MODELS.items():
+        if other_key == model_key:
+            continue
+        if any(
+            _normalize_label_token(alias) in normalized_label
+            for alias in model_label_aliases(other_key)
+        ):
+            return (
+                f'stored calibration is for "{SUPPORTED_MODELS[model_key]["label"]}" '
+                f'but the captured device "{label}" looks like a '
+                f'"{spec["label"]}"'
+            )
+    return None
+
+
 def _relay_device_calibration_block(
     mic_calibration: Any, device: dict[str, Any] | None
 ) -> str | None:
@@ -1256,9 +2054,10 @@ def _relay_device_calibration_block(
     A relay capture is recorded by whatever input the phone selected — its
     built-in mic, OR a USB-C measurement mic plugged into the phone. A loaded
     vendor calibration curve is valid only for that USB measurement mic, never the
-    phone's built-in. We can't know which until the phone records, so this runs
-    POST-capture against the phone-reported `device` (the same built-in-vs-USB
-    decision the same-origin browser flow makes via `_calibration_device_mismatch`):
+    phone's built-in. We can't know which until the phone arms a recording, so
+    this runs before playback and again post-capture against the phone-reported
+    `device` (the same built-in-vs-USB decision the same-origin browser flow
+    makes via `_calibration_device_mismatch`):
 
       - no calibration loaded            → allow (nothing to mis-apply);
       - calibration loaded, no device    → refuse (can't verify the mic — an older
@@ -1268,8 +2067,8 @@ def _relay_device_calibration_block(
                                             USB measurement mic the curve is for).
 
     Returns a refusal message, or None to allow. The calibration itself is applied
-    Pi-side during analysis (`MeasurementSession._smooth_capture`); this only gates
-    whether the capture is trustworthy to analyze.
+    Pi-side in the owning analysis path; this only gates whether the capture
+    is trustworthy to analyze.
     """
     if mic_calibration is None:
         return None
@@ -1425,11 +2224,272 @@ def _assert_relay_level_identity(
         )
 
 
-def _room_correction_readiness() -> dict[str, Any]:
-    """Read the speaker-owned prerequisite; never derive a second rule here."""
+async def _read_room_correction_readiness_with_graph(
+    cam: Any,
+) -> tuple[dict[str, Any], Any]:
+    """Read Active's decision and retain its canonical live graph proof."""
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
+    from jasper.camilla import CamillaUnavailable
 
-    return read_active_speaker_setup_status()
+    try:
+        graph = await _classify_live_bass_extension_graph(cam)
+        running_raw = await cam.get_active_config_raw(best_effort=False)
+    except CamillaUnavailable as exc:
+        raise RuntimeError("the running CamillaDSP graph is unavailable") from exc
+    if not isinstance(running_raw, str) or not running_raw.strip():
+        raise RuntimeError("the running CamillaDSP graph is unavailable")
+    return read_active_speaker_setup_status(active_config_text=running_raw), graph
+
+
+async def _read_room_correction_readiness(cam: Any) -> dict[str, Any]:
+    """Read Active's decision against CamillaDSP's fresh running graph."""
+
+    readiness, _graph = await _read_room_correction_readiness_with_graph(cam)
+    return readiness
+
+
+async def _classify_live_bass_extension_graph(cam: Any):
+    """Prove the live graph and every bass authority in one canonical read."""
+
+    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+    from jasper.active_speaker.runtime_contract import (
+        classify_active_bass_extension_graph,
+    )
+    from jasper.active_speaker.staging import staged_metadata_path
+    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+    from jasper.output_topology import load_output_topology_strict
+
+    graph = await classify_active_bass_extension_graph(
+        load_output_topology_strict(),
+        statefile_path=Path(DEFAULT_CAMILLA_STATEFILE),
+        read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
+        applied_baseline_path=baseline_profile_state_path(),
+        profile_path=DEFAULT_PROFILE_PATH,
+        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+        staged_metadata_path=staged_metadata_path(),
+    )
+    summary = graph.details.get("bass_extension_profile_summary")
+    if not graph.allowed or not isinstance(summary, Mapping):
+        code = graph.issues[0].get("code") if graph.issues else graph.classification
+        raise RuntimeError(
+            f"the running CamillaDSP graph authority is unavailable ({code})"
+        )
+    return graph
+
+
+def _room_correction_readiness() -> dict[str, Any]:
+    """Synchronous web-handler bridge for Active's fresh decision."""
+
+    return _run_async(
+        _read_room_correction_readiness(_camilla()),
+        timeout=2.0,
+    )
+
+
+@dataclass(frozen=True)
+class _RoomReadiness:
+    allowed: bool
+    blocker: dict[str, Any] | None
+    reason: str
+    detail: str
+    active: bool | None = None
+    authority: str | None = None
+    layer_a_identity: str | None = None
+
+    @property
+    def authority_binding(self) -> tuple[bool, str, str | None] | None:
+        """Opaque Active decision that Room may carry and compare only."""
+
+        if not self.allowed or self.active is None or self.authority is None:
+            return None
+        return (self.active, self.authority, self.layer_a_identity)
+
+
+def _normalize_room_readiness(raw: Any) -> _RoomReadiness:
+    """Normalize one Active-owned decision without reading its evidence.
+
+    Room does not inspect measurement artifacts or reconstruct crossover
+    authority. It validates the versioned Active-owned decision and consumes
+    that one result. Manual applied-profile authority and automatic
+    receipt-backed authority are deliberately distinct; an older unversioned
+    active result remains rejected. Only Active's safe local recovery href
+    crosses this adapter.
+    """
+    from jasper.correction import failures
+    from jasper.active_speaker.setup_status import (
+        ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
+        ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
+        ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED,
+        ROOM_ELIGIBILITY_SCHEMA_VERSION,
+    )
+
+    setup = raw if isinstance(raw, Mapping) else {}
+    acoustic_raw = setup.get("acoustic_commissioning")
+    acoustic = acoustic_raw if isinstance(acoustic_raw, Mapping) else {}
+    active = setup.get("active")
+    allowed = setup.get("room_correction_allowed")
+    acoustic_allowed = acoustic.get("allowed")
+    acoustic_status = acoustic.get("status")
+    decision_schema_version = acoustic.get("decision_schema_version")
+    authority = acoustic.get("authority")
+    layer_a_identity = acoustic.get("layer_a_identity")
+    well_formed = (
+        isinstance(active, bool)
+        and isinstance(allowed, bool)
+        and isinstance(acoustic_raw, Mapping)
+        and isinstance(acoustic_allowed, bool)
+        and acoustic_allowed is allowed
+        and type(decision_schema_version) is int
+        and decision_schema_version == ROOM_ELIGIBILITY_SCHEMA_VERSION
+        and (
+            (
+                active is False
+                and allowed is True
+                and acoustic_status == "not_required"
+                and authority == ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED
+                and layer_a_identity is None
+            )
+            or (
+                active is True
+                and (
+                    (
+                        allowed is True
+                        and acoustic_status == "ready"
+                        and authority in {
+                            ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE,
+                            ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT,
+                        }
+                        and isinstance(layer_a_identity, str)
+                        and bool(layer_a_identity)
+                    )
+                    or (
+                        allowed is False
+                        and acoustic_status in {"incomplete", "unknown"}
+                        and authority is None
+                        and layer_a_identity is None
+                    )
+                )
+            )
+        )
+    )
+    href = acoustic.get("setup_href")
+    action = None
+    if (
+        well_formed
+        and (allowed is False or (active is True and allowed is True))
+        and
+        isinstance(href, str)
+        and href.startswith("/")
+        and not href.startswith("//")
+        and "\\" not in href
+        and not any(ord(char) < 0x20 for char in href)
+        and not urlparse(href).scheme
+        and not urlparse(href).netloc
+    ):
+        action = {"label": "Open speaker setup", "href": href}
+
+    if well_formed and allowed is True:
+        return _RoomReadiness(
+            allowed=True,
+            blocker=None,
+            reason="speaker_readiness_allowed",
+            detail="speaker readiness allows room correction",
+            active=active,
+            authority=authority,
+            layer_a_identity=(
+                layer_a_identity if isinstance(layer_a_identity, str) else None
+            ),
+        )
+
+    reason = str(
+        acoustic.get("reason")
+        or setup.get("reason")
+        or (
+            "speaker_readiness_malformed"
+            if not well_formed
+            else "speaker_room_correction_not_ready"
+        )
+    )
+    detail = str(
+        acoustic.get("detail")
+        or setup.get("detail")
+        or "speaker setup is not ready for room correction"
+    )
+    unavailable = not well_formed or acoustic_status == "unknown"
+    public_code = (
+        failures.SPEAKER_READINESS_UNAVAILABLE
+        if unavailable
+        else failures.SPEAKER_SETUP_INCOMPLETE
+    )
+    blocker = failures.public_failure(
+        public_code,
+        recovery_action=action or failures.ROOM_RETRY_ACTION,
+    )
+    return _RoomReadiness(
+        allowed=False,
+        blocker=blocker,
+        reason=reason,
+        detail=detail,
+    )
+
+
+def _room_readiness() -> _RoomReadiness:
+    """Read and normalize Active's one decision for envelope and `/start`."""
+
+    from jasper.correction import failures
+
+    try:
+        return _normalize_room_readiness(_room_correction_readiness())
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        log_event(
+            logger,
+            "correction_readiness_unavailable",
+            error_type=type(exc).__name__,
+            level=logging.WARNING,
+        )
+        return _RoomReadiness(
+            allowed=False,
+            blocker=failures.public_failure(
+                failures.SPEAKER_READINESS_UNAVAILABLE,
+                recovery_action=failures.ROOM_RETRY_ACTION,
+            ),
+            reason="speaker_readiness_unavailable",
+            detail="speaker readiness could not be read",
+        )
+
+
+async def _assert_room_authority_current(
+    cam: Any,
+    expected: tuple[bool, str, str | None] | None,
+) -> Mapping[str, Any]:
+    """Revalidate the accepted Active identity at a DSP-writer boundary."""
+
+    if expected is None:
+        raise RuntimeError("room correction authority binding is missing")
+    raw_readiness, graph = await _read_room_correction_readiness_with_graph(cam)
+    current = _normalize_room_readiness(
+        raw_readiness,
+    )
+    if current.authority_binding == expected:
+        summary = graph.details.get("bass_extension_profile_summary")
+        if isinstance(summary, Mapping):
+            return summary
+        raise RuntimeError("room correction bass authority evidence is invalid")
+    log_event(
+        logger,
+        "correction.layer_a_authority_changed",
+        level=logging.WARNING,
+        expected_active=expected[0],
+        current_active=current.active,
+        expected_authority=expected[1],
+        current_authority=current.authority,
+    )
+    raise RuntimeError(
+        "speaker crossover authority changed during this Room run; "
+        "reset or start a new measurement"
+    )
 
 
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1439,13 +2499,14 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     after `POST /upload-noise` lands.
 
     Body fields:
-      - total_positions: int = 1 (Phase 1 default; UI sends 5 for MMM)
-      - target_choice:   str = 'flat' | 'neutral' | 'warm' | 'bright'
-      - strategy_choice: str = 'safe' | 'balanced' | 'assertive'
+      - total_positions: supported household count; defaults to the
+        session-owned six-position policy.
+      - target_choice:   one registered Room target; defaults to flat.
+      - strategy_choice: 'safe' | 'balanced' on the household surface.
       - noise_floor_db:  float | None — optional, client autolevel
         preflight measurement; only saved into the debug bundle.
-      - repeat_main_position: bool = true — optional same-seat repeat
-        for repeatability evidence.
+      - repeat_main_position: when present, must agree with the session-owned
+        automatic same-seat trust repeat.
 
     Why strip layers before sweeping: if a correction or preference EQ is
     loaded, the sweep traverses that layer and the resulting curve reflects
@@ -1453,27 +2514,42 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     keeps the topology-owned speaker graph (crossovers, driver EQ, delays,
     gains, limiters) and strips only Layer B/C.
     """
-    from jasper.correction.session import SessionState
-    setup = _room_correction_readiness()
-    if setup.get("room_correction_allowed") is not True:
-        raw_acoustic = setup.get("acoustic_commissioning")
-        acoustic = raw_acoustic if isinstance(raw_acoustic, dict) else {}
-        reason = str(
-            acoustic.get("reason") or "speaker_room_correction_not_ready"
-        )
-        detail = str(
-            acoustic.get("detail")
-            or "Speaker setup is not ready for room correction."
-        )
-        href = str(acoustic.get("setup_href") or "/sound/")
+    from jasper.correction import failures
+    from jasper.correction.session import (
+        DEFAULT_REPEAT_MAIN_POSITION,
+        DEFAULT_ROOM_POSITION_COUNT,
+        ROOM_POSITION_COUNT_CHOICES,
+        SessionState,
+    )
+    from jasper.correction.strategy import (
+        DEFAULT_CORRECTION_STRATEGY_ID,
+        DEFAULT_TARGET_PROFILE_ID,
+        HOUSEHOLD_CORRECTION_STRATEGY_IDS,
+        TARGET_PROFILES,
+    )
+    readiness = _room_readiness()
+    if not readiness.allowed:
         log_event(
             logger,
             "correction_start_rejected",
-            reason=reason,
-            setup_href=href,
+            reason=readiness.reason,
             level=logging.WARNING,
         )
-        raise RequestConflict(f"{detail} Open {href}")
+        assert readiness.blocker is not None
+        status = (
+            HTTPStatus.SERVICE_UNAVAILABLE
+            if readiness.blocker.get("code")
+            == failures.SPEAKER_READINESS_UNAVAILABLE
+            else HTTPStatus.CONFLICT
+        )
+        raise RoomRequestFailure(
+            readiness.detail,
+            readiness.blocker,
+            status=status,
+        )
+    authority_binding = readiness.authority_binding
+    if authority_binding is None:
+        raise RuntimeError("speaker readiness omitted its authority binding")
 
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
@@ -1491,13 +2567,52 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
 
     try:
-        total_positions = max(1, min(10, int(body.get("total_positions", 1))))
-        target_choice = str(body.get("target_choice", "flat"))
-        strategy_choice = str(body.get("strategy_choice", "balanced"))
+        total_raw = body.get("total_positions", DEFAULT_ROOM_POSITION_COUNT)
+        if not isinstance(total_raw, int) or isinstance(total_raw, bool):
+            raise ValueError("total_positions must be a supported count")
+        total_positions = total_raw
+        if total_positions not in ROOM_POSITION_COUNT_CHOICES:
+            raise ValueError("total_positions must be a supported count")
+        target_choice = str(
+            body.get("target_choice", DEFAULT_TARGET_PROFILE_ID)
+        )
+        if target_choice not in TARGET_PROFILES:
+            raise ValueError("target_choice must be a registered Room target")
+        strategy_choice = str(
+            body.get("strategy_choice", DEFAULT_CORRECTION_STRATEGY_ID)
+        )
+        if strategy_choice not in HOUSEHOLD_CORRECTION_STRATEGY_IDS:
+            raise ValueError(
+                "strategy_choice must be an authorized household strategy"
+            )
         noise_floor_db_raw = body.get("noise_floor_db")
         calibration_id = str(body.get("calibration_id") or "").strip()
         input_device = _sanitize_input_device(body.get("input_device"))
-        repeat_main_position = bool(body.get("repeat_main_position", True))
+        repeat_raw = body.get(
+            "repeat_main_position",
+            DEFAULT_REPEAT_MAIN_POSITION,
+        )
+        if repeat_raw is not DEFAULT_REPEAT_MAIN_POSITION:
+            raise ValueError(
+                "repeat_main_position must use the automatic trust check"
+            )
+        repeat_main_position = DEFAULT_REPEAT_MAIN_POSITION
+        from jasper.capture_relay import correction_adapter
+
+        requested_transport = body.get("capture_transport")
+        if requested_transport is None:
+            capture_transport = (
+                "relay" if correction_adapter.relay_enabled() else "local"
+            )
+        else:
+            capture_transport = str(requested_transport)
+            if capture_transport not in {"relay", "local"}:
+                raise ValueError("capture_transport must be relay or local")
+            if (
+                capture_transport == "relay"
+                and not correction_adapter.relay_enabled()
+            ):
+                raise ValueError("phone capture is not configured")
         noise_floor_db: float | None
         try:
             noise_floor_db = (
@@ -1570,11 +2685,9 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             input_device=input_device,
             repeat_main_position=repeat_main_position,
         )
-        requested_transport = str(body.get("capture_transport") or "local")
-        sess.capture_transport = (
-            "relay" if requested_transport == "relay" else "local"
-        )
+        sess.capture_transport = capture_transport
         sess.noise_floor_db = noise_floor_db
+        sess.room_authority_binding = authority_binding
 
         if sess.browser_audio_report.get("failed") is True:
             issue_codes = [
@@ -1597,9 +2710,12 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         from jasper.sound.graph_carrier import CarrierCannotHostEq
 
         try:
-            baseline_payload = _run_async(
-                _load_measurement_baseline(sess, cam),
-                timeout=10.0,
+            baseline_payload = _run_graph_mutation(
+                _load_measurement_baseline(
+                    sess,
+                    cam,
+                    expected_authority_binding=authority_binding,
+                ),
             )
         except CarrierCannotHostEq:
             logger.warning("/start: measurement baseline rejected by graph carrier")
@@ -1624,6 +2740,11 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             state_started = False
 
         if state_started:
+            if sess.capture_transport == "local":
+                # Browser permission + device selection are human-paced. The
+                # ordinary upload watchdog resumes when the first noise upload
+                # actually begins, after setup and level matching are done.
+                sess.suspend_capture_timeout()
             _clear_start_slot()
         else:
             _clear_start_slot()
@@ -1661,7 +2782,147 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise
 
 
-async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
+def _room_graph_artifact_path(sess: Any, label: str) -> Path:
+    """Return a collision-free managed config path for one Room transaction."""
+
+    cfg = getattr(sess, "cfg", None)
+    config_dir = Path(
+        getattr(cfg, "config_dir", None)
+        or "/var/lib/camilladsp/configs"
+    )
+    token = re.sub(
+        r"[^A-Za-z0-9]",
+        "",
+        str(getattr(sess, "session_id", "session")),
+    ) or "session"
+    return config_dir / f"sound_{label}_{token}_{time.time_ns()}.yml"
+
+
+def _running_graph_snapshot_text(
+    raw: str,
+    current_path: str | Path,
+    *,
+    carrier: Any | None = None,
+) -> str:
+    """Make Camilla's comment-free active_raw reloadable with provenance.
+
+    CamillaDSP's active_raw is the graph-content authority but drops YAML
+    comments. Preserve only the bounded JTS ``# Source:`` marker from the
+    durable path so the graph carrier can distinguish a safe Active baseline
+    from transient commissioning graphs. All executable graph content remains
+    the fresh Camilla readback.
+    """
+
+    source_line = None
+    try:
+        for line in Path(current_path).read_text(encoding="utf-8").splitlines():
+            if line.startswith("# Source: ") and len(line) <= 256:
+                source_line = line
+                break
+    except OSError:
+        pass
+    # PR #1009's one-time recovery shape is a protected active-leader pipe
+    # graph stamped with the generic sound marker. Resolve it while the
+    # original durable name is still available; the collision-free snapshot
+    # name intentionally cannot trigger that filename-scoped compatibility
+    # rule later.
+    if carrier is None:
+        from jasper.sound.graph_carrier import carrier_for_loaded_config
+
+        carrier = carrier_for_loaded_config(
+            current_path,
+            config_dir=Path(current_path).parent,
+        )
+    if carrier.kind == "active_leader_program_bake":
+        from jasper.active_speaker.camilla_yaml import ACTIVE_PROGRAM_BAKE_SOURCE
+
+        source_line = f"# Source: {ACTIVE_PROGRAM_BAKE_SOURCE}"
+    text = raw.rstrip() + "\n"
+    if source_line:
+        body = "\n".join(
+            line for line in text.splitlines()
+            if not line.startswith("# Source: ")
+        )
+        return f"{source_line}\n{body.rstrip()}\n"
+    return text
+
+
+def _running_graph_body(text: str) -> str:
+    """Executable snapshot body, excluding the one JTS provenance comment."""
+
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.startswith("# Source: ")
+    ).strip()
+
+
+async def _snapshot_running_room_graph(
+    sess: Any,
+    cam: Any,
+    *,
+    current_path: str | Path | None = None,
+    bass_profile_summary: Mapping[str, Any] | None = None,
+) -> tuple[Path, Path, Mapping[str, Any]]:
+    """Persist one validated, content-stable copy of Camilla's running graph."""
+
+    from jasper.atomic_io import atomic_write_text
+    from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.dsp_apply import validate_camilla_config
+    from jasper.sound.graph_carrier import (
+        CarrierCannotHostEq,
+        carrier_for_loaded_config,
+    )
+
+    current = current_path or await cam.get_config_file_path(best_effort=False)
+    if not current:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    carrier = carrier_for_loaded_config(
+        current,
+        config_dir=Path(current).parent,
+    )
+    if carrier.kind == "unknown":
+        raise CarrierCannotHostEq(
+            "unknown_config",
+            "CamillaDSP is running a configuration JTS didn't generate, so "
+            "Room cannot preserve it for exact restoration.",
+        )
+    if bass_profile_summary is None:
+        live_authority = await _classify_live_bass_extension_graph(cam)
+        bass_profile_summary = live_authority.details[
+            "bass_extension_profile_summary"
+        ]
+    raw = await cam.get_active_config_raw(best_effort=False)
+    if not isinstance(raw, str) or not raw.strip():
+        raise RuntimeError("CamillaDSP did not report a running graph")
+    text = _running_graph_snapshot_text(raw, current, carrier=carrier)
+    assert_correction_graph_safe(
+        text,
+        bass_profile_summary=bass_profile_summary,
+    )
+    snapshot = _room_graph_artifact_path(sess, "snapshot")
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        snapshot,
+        text,
+        mode=0o640,
+        group_from_parent=True,
+    )
+    validation = validate_camilla_config(snapshot)
+    if not validation.ok_to_apply:
+        snapshot.unlink(missing_ok=True)
+        raise RuntimeError(
+            "CamillaDSP's running graph could not be validated for exact "
+            f"restoration: {validation.error or validation.status.value}"
+        )
+    return Path(current), snapshot, bass_profile_summary
+
+
+async def _load_measurement_baseline(
+    sess: Any,
+    cam: Any,
+    *,
+    expected_authority_binding: tuple[bool, str, str | None],
+) -> dict[str, Any]:
     """Load a topology-preserving measurement graph for this correction run.
 
     The graph carrier is the single bridge between "whatever CamillaDSP is
@@ -1683,10 +2944,6 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
     )
     from jasper.sound.profile import SoundProfile
 
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    sess.pre_measurement_config_path = Path(current_path)
     sess.cfg.config_dir.mkdir(parents=True, exist_ok=True)
     out_path = sess.cfg.config_dir / (
         f"correction_measurement_{sess.session_id}_{int(sess.started_at)}.yml"
@@ -1696,10 +2953,26 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
     coupling_capture_kwargs = coupling_capture_kwargs_from_env()
 
     async def _prepare_config() -> dict[str, Any]:
+        # apply_dsp_config invokes prepare while /start owns the shared
+        # DSP-writer lock. Re-read Active's decision here so the graph being
+        # re-emitted cannot rely on a Layer-A sample taken before reservation.
+        bass_profile_summary = await _assert_room_authority_current(
+            cam,
+            expected_authority_binding,
+        )
         anchor = await cam.get_config_file_path(best_effort=False)
         if not anchor:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
-        carrier = carrier_for_loaded_config(anchor, config_dir=sess.cfg.config_dir)
+        _, restore_path, _ = await _snapshot_running_room_graph(
+            sess,
+            cam,
+            current_path=anchor,
+            bass_profile_summary=bass_profile_summary,
+        )
+        carrier = carrier_for_loaded_config(
+            restore_path,
+            config_dir=sess.cfg.config_dir,
+        )
         result = carrier.reemit(
             SoundProfile(enabled=False),
             room_peqs=[],
@@ -1707,10 +2980,16 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
             profile_id=f"measurement-{sess.session_id}",
             fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
-        assert_correction_graph_safe(result.yaml)
+        assert_correction_graph_safe(
+            result.yaml,
+            bass_profile_summary=bass_profile_summary,
+        )
         sess.pre_measurement_config_path = Path(anchor)
+        sess.pre_measurement_restore_path = restore_path
         return {
-            "prior_config_path": anchor,
+            # apply_dsp_config must roll back to immutable graph content, not
+            # the mutable durable filename Camilla happened to report.
+            "prior_config_path": str(restore_path),
             "room_peq_count": result.room_peq_count,
             "sound_filter_count": 0,
         }
@@ -1738,10 +3017,8 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
             raise exc.__cause__ from exc
         raise
     sess.measurement_config_path = out_path
-    if state.prior_config_path:
-        sess.pre_measurement_config_path = Path(state.prior_config_path)
     descriptor = describe_current_config(
-        sess.pre_measurement_config_path,
+        sess.pre_measurement_restore_path,
         config_dir=sess.cfg.config_dir,
         base_config_path=sess.cfg.base_config_path,
     )
@@ -1750,6 +3027,7 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
         "correction.measurement_baseline_loaded",
         session=sess.session_id,
         prior=str(sess.pre_measurement_config_path),
+        restore=str(sess.pre_measurement_restore_path),
         candidate=str(out_path),
         op_id=state.op_id,
     )
@@ -1757,6 +3035,7 @@ async def _load_measurement_baseline(sess: Any, cam: Any) -> dict[str, Any]:
         "current_correction_at_start": descriptor,
         "measurement_config_path": str(out_path),
         "prior_config_path": str(sess.pre_measurement_config_path),
+        "restore_config_path": str(sess.pre_measurement_restore_path),
         "last_dsp_apply": state.to_dict(),
     }
 
@@ -1813,7 +3092,10 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             logger.exception("verify sweep failed: %s", e)
 
-    asyncio.run_coroutine_threadsafe(_run_verify_sweep(), _ensure_loop())
+    asyncio.run_coroutine_threadsafe(
+        _run_session_background_audio(sess, _run_verify_sweep),
+        _ensure_loop(),
+    )
 
     _run_async(
         sess.state_changed_from(
@@ -1823,6 +3105,29 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     )
 
     return {"session_id": sess.session_id, "state": sess.state.value}
+
+
+def _wait_for_new_autolevel_run(
+    sess: Any,
+    previous_data: Any,
+    future: Any,
+    *,
+    timeout_s: float = 5.0,
+) -> dict[str, Any]:
+    """Wait for ``run()`` to replace terminal/idle autolevel data."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        current = sess.autolevel
+        if current is not previous_data:
+            return current.snapshot()
+        if future.done():
+            break
+        time.sleep(0.05)
+    try:
+        _run_async(sess.cancel_autolevel(), timeout=1.0)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not cancel a stalled autolevel start", exc_info=True)
+    raise RequestConflict("the measurement level check could not start")
 
 
 def _handle_autolevel_start(
@@ -1844,11 +3149,28 @@ def _handle_autolevel_start(
     """
     from jasper.camilla import CamillaController
     from jasper.correction import coordinator, playback
-    from jasper.correction.session import AutolevelStatus
+    from jasper.correction.session import AutolevelStatus, SessionState
 
     sess = _get_or_create_session()
-    if sess.autolevel.status == AutolevelStatus.RAMPING:
-        raise RuntimeError("autolevel already in progress")
+    if (
+        getattr(sess, "capture_transport", "local") != "local"
+        or sess.state != SessionState.NEEDS_NOISE_CAPTURE
+        or not bool(getattr(sess, "local_capture_setup_bound", False))
+    ):
+        raise RequestConflict(
+            "local microphone setup must be complete before level matching"
+        )
+    retryable_statuses = {
+        AutolevelStatus.IDLE,
+        AutolevelStatus.CANCELLED,
+        AutolevelStatus.ERROR,
+        AutolevelStatus.MAXED_OUT,
+    }
+    if sess.autolevel.status not in retryable_statuses:
+        raise RequestConflict(
+            "the measurement level is already locked or still running"
+        )
+    previous_data = sess.autolevel
 
     cam = CamillaController(
         host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
@@ -1882,6 +3204,7 @@ def _handle_autolevel_start(
                     await cam.set_volume_db(db, best_effort=True)
 
                 await sess.run_autolevel(
+                    reservation_token=reserved,
                     get_main_volume_db=_get_vol,
                     set_main_volume_db=_set_vol,
                     play_continuous_tone=player.play,
@@ -1889,18 +3212,25 @@ def _handle_autolevel_start(
                 )
         except Exception as e:  # noqa: BLE001
             logger.exception("autolevel run failed: %s", e)
+        finally:
+            await sess.release_autolevel_run_reservation(reserved)
 
-    asyncio.run_coroutine_threadsafe(_run_autolevel(), _ensure_loop())
+    reserved = _run_async(sess.reserve_autolevel_run(), timeout=2.0)
+    if not reserved:
+        raise RequestConflict("the measurement level check is already running")
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _run_autolevel(), _ensure_loop()
+        )
+    except RuntimeError:
+        _run_async(
+            sess.release_autolevel_run_reservation(reserved),
+            timeout=2.0,
+        )
+        raise
+    started = _wait_for_new_autolevel_run(sess, previous_data, future)
 
-    # Wait briefly for status to leave IDLE so the response is
-    # non-stale (same anti-race pattern as /next-position).
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        if sess.autolevel.status != AutolevelStatus.IDLE:
-            break
-        time.sleep(0.05)
-
-    return {"started": True, "autolevel": sess.autolevel.snapshot()}
+    return {"started": True, "autolevel": started}
 
 
 def _handle_autolevel_lock(
@@ -1980,6 +3310,7 @@ def _handle_calibration_fetch(
         orientation=orientation,
         root=_calibration_root(),
     )
+    _save_household_mic(record, serial=serial)
     return _calibration_payload(record)
 
 
@@ -2011,16 +3342,43 @@ def _handle_calibration_upload(
         sign_convention=sign_convention,
         root=_calibration_root(),
     )
+    _save_household_mic(record)
     return _calibration_payload(record)
 
 
-def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
+def _relay_calibration_from_setup(
+    setup: dict[str, Any] | None, *, device: Mapping[str, Any] | None = None,
+) -> Any | None:
     """Materialize the phone wizard's calibration choice on the Pi.
 
-    The phone cannot call the Pi directly, so serial/upload choices ride the
-    relay event that arms the sweep. This mirrors the local `/calibration/*`
-    handlers and returns the stored calibration record, or None for phone/no
-    calibration.
+    The phone cannot call the Pi directly, so serial/upload/stored choices
+    ride the relay event that arms the sweep. This mirrors the local
+    `/calibration/*` handlers and returns the stored calibration record, or
+    None for phone/no calibration.
+
+    Shared by BOTH the room and crossover flows (both drive their level
+    match through `_run_relay_level_match`, which calls this via
+    `_apply_relay_setup_to_session`) — this is the ONE point where a
+    successfully-established relay calibration is persisted as the
+    household's default mic (`_save_household_mic`, Wave-2 household-mic
+    persistence). `mode == "stored"` (the one-tap "Using {mic} — confirm"
+    follow-up) re-confirms an already-remembered calibration rather than
+    establishing a new one, but still counts as success here for the same
+    reason: the household explicitly confirmed intent to use it.
+
+    ``device`` (optional, the capture's phone-reported input device — see
+    `CaptureResult.device`) is consulted ONLY in the `mode == "stored"`
+    branch: a re-confirmed calibration is a passive carry-over the household
+    never re-selects a mic for, so it is the one mode where a DIFFERENT
+    physical mic can silently ride a stale pairing (the 2026-07-20 incident —
+    see `_stored_calibration_model_mismatch`). A detected mismatch skips the
+    household-mic save (never re-persists the wrong pairing) and returns
+    `None` — the caller's existing "no calibration resolved" path already
+    degrades to an annotated-uncalibrated analysis, never a blocked capture.
+    `serial`/`upload` are the household actively establishing a NEW pairing
+    in the moment, a different risk shape, and are unchanged here — callers
+    that don't have a `device` to offer (the default) see byte-identical
+    behavior.
     """
     calibration = setup.get("calibration") if isinstance(setup, dict) else None
     if not isinstance(calibration, dict):
@@ -2031,18 +3389,21 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
     if mode == "serial":
         from jasper.audio_measurement.calibration import fetch_vendor_calibration
 
-        return fetch_vendor_calibration(
+        serial = str(calibration.get("serial") or "").strip()
+        record = fetch_vendor_calibration(
             model_key=str(calibration.get("model") or "").strip(),
-            serial=str(calibration.get("serial") or "").strip(),
+            serial=serial,
             orientation=str(calibration.get("orientation") or "unknown").strip()
             or "unknown",
             root=_calibration_root(),
         )
+        _save_household_mic(record, serial=serial)
+        return record
     if mode == "upload":
         from jasper.audio_measurement.calibration import store_calibration
 
         filename = str(calibration.get("filename") or "uploaded-calibration.txt")
-        return store_calibration(
+        record = store_calibration(
             text=str(calibration.get("content") or ""),
             provider="manual_upload",
             model=str(calibration.get("model") or "other").strip() or "other",
@@ -2057,24 +3418,80 @@ def _relay_calibration_from_setup(setup: dict[str, Any] | None) -> Any | None:
             ),
             root=_calibration_root(),
         )
+        _save_household_mic(record)
+        return record
+    if mode == "stored":
+        from jasper.correction.household_mic import (
+            HouseholdMicRecord,
+            read_household_mic,
+            resolve_household_mic_calibration,
+        )
+
+        calibration_id = str(calibration.get("calibration_id") or "").strip()
+        if not calibration_id:
+            raise ValueError("calibration_id is required for a stored calibration")
+        model = str(calibration.get("model") or "").strip()
+        # The one-tap confirm only ever echoes calibration_id + model (no raw
+        # serial, no file hash) — see DefaultSetupCalibration. Thread the
+        # household's OWN file_sha256/serial_display through when the id still
+        # matches the current default, so resolution gets the same content-hash
+        # fallback a full HouseholdMicRecord would carry, and a re-confirm
+        # doesn't blank out the "...1234" display on the next hint.
+        previous = read_household_mic(path=_household_mic_path())
+        if previous is not None and previous.calibration_id != calibration_id:
+            previous = None
+        candidate = HouseholdMicRecord(
+            model_key=model,
+            label=model or "Stored microphone",
+            calibration_id=calibration_id,
+            file_sha256=previous.file_sha256 if previous is not None else "",
+            orientation="unknown",
+            provider="stored",
+        )
+        resolved = resolve_household_mic_calibration(
+            candidate, root=_calibration_root(),
+        )
+        if resolved is None:
+            raise ValueError(
+                "the remembered microphone calibration is no longer available; "
+                "set it up again"
+            )
+        mismatch = _stored_calibration_model_mismatch(resolved, device)
+        if mismatch is not None:
+            # Refuse to apply AND refuse to re-persist the wrong pairing —
+            # never a blocked capture (the caller degrades to an annotated-
+            # uncalibrated analysis), but never silent either.
+            device_label = (
+                str(device.get("label") or device.get("browser_label") or "")
+                if isinstance(device, Mapping) else ""
+            )
+            log_event(
+                logger,
+                "correction.calibration_device_identity_mismatch",
+                level=logging.WARNING,
+                stored_model=resolved.model,
+                device_label=_short_text(device_label) or "",
+                reason=mismatch,
+            )
+            return None
+        # `serial=` is documented as the RAW serial, but a stored re-confirm
+        # never sees one — the phone only echoes calibration_id + model. The
+        # already-truncated last-4 display is fed back deliberately:
+        # serial_display_from_raw is idempotent for values of <= 4 characters
+        # (returns them unchanged), so the household record keeps its
+        # "...1234" display across re-confirms instead of blanking it.
+        _save_household_mic(
+            resolved,
+            serial=previous.serial_display if previous is not None else None,
+        )
+        return resolved
     raise ValueError(f"unknown calibration mode: {mode}")
 
 
 def _apply_relay_setup_to_session(sess: Any, setup: dict[str, Any] | None) -> None:
-    """Apply phone-side setup before the relay-triggered sweep starts."""
+    """Apply phone microphone/calibration setup without changing Room policy."""
     if not isinstance(setup, dict):
         return
-    if "total_positions" in setup:
-        try:
-            total_raw = setup.get("total_positions")
-            if total_raw is None:
-                raise ValueError
-            requested_total = int(total_raw)
-        except (TypeError, ValueError):
-            requested_total = int(getattr(sess, "total_positions", 1))
-        min_total = int(getattr(sess, "current_position", 0)) + 1
-        sess.total_positions = max(min_total, min(10, requested_total))
-
     if isinstance(setup.get("calibration"), dict):
         sess.mic_calibration = _relay_calibration_from_setup(setup)
 
@@ -2084,11 +3501,30 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     CamillaDSP config descriptor. `current_correction` is best-effort
     (returns None if CamillaDSP is unreachable) so the page still
     renders something useful when the daemon is restarting."""
-    from jasper.correction.status import describe_current_config
     from jasper.dsp_apply import last_dsp_apply_state
 
     sess = _get_or_create_session()
     snap = sess.snapshot()
+    current_config, presentation = _current_config_presentation(sess)
+    snap["current_config"] = current_config
+    snap["current_correction"] = current_config.get("current_correction")
+    snap["current_correction_presentation"] = presentation
+    snap["last_dsp_apply"] = last_dsp_apply_state()
+    # Active phone-mic-relay capture, when one is in flight (tap-link + status).
+    # None on the default on-Pi flow, so the page only shows the relay UI when the
+    # operator has enabled it.
+    snap["relay"] = _get_relay_capture_for("room_", "level_ramp:room")
+    return snap
+
+
+def _current_config_presentation(sess: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read the current Camilla descriptor and its homeowner presentation."""
+
+    from jasper.correction.status import (
+        current_correction_presentation,
+        describe_current_config,
+    )
+
     cam = _camilla()
     try:
         path = _run_async(
@@ -2102,26 +3538,97 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         config_dir=sess.cfg.config_dir,
         base_config_path=sess.cfg.base_config_path,
     )
-    snap["current_config"] = current_config
-    snap["current_correction"] = current_config.get("current_correction")
-    snap["last_dsp_apply"] = last_dsp_apply_state()
-    # Active phone-mic-relay capture, when one is in flight (tap-link + status).
-    # None on the default on-Pi flow, so the page only shows the relay UI when the
-    # operator has enabled it.
-    snap["relay"] = _get_relay_capture_for("room_", "level_ramp:room")
-    return snap
+    return current_config, current_correction_presentation(current_config)
+
+
+def _handle_entry_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """Lightweight idle refresh: screen/state, readiness, and config banner."""
+
+    from jasper.correction import envelope
+
+    sess = _get_or_create_session()
+    _current_config, presentation = _current_config_presentation(sess)
+    return {
+        "screen": envelope.screen_for_session(sess),
+        "state": sess.state.value,
+        "readiness_blocker": _room_readiness().blocker,
+        "current_correction_presentation": presentation,
+    }
 
 
 def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """GET /envelope: the server-computed screen envelope for the current
-    session (revision plan §3.2). Additive alongside /status — a pure
-    read that the dumb-frontend wizard renders each step from. The legacy
-    single-page UI keeps using /status untouched; the page migration is a
-    later PR."""
-    from jasper.correction.envelope import build_envelope_logged
+    session. It is a pure presentation read alongside the unchanged
+    mechanism snapshot at /status. The browser renders the envelope's exact
+    ordered section list and closed action vocabulary without owning a
+    second screen policy."""
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction import envelope
 
     sess = _get_or_create_session()
-    return build_envelope_logged(sess)
+    screen = envelope.screen_for_session(sess)
+    readiness_blocker = None
+    if screen == envelope.SCREEN_IDLE:
+        readiness_blocker = _room_readiness().blocker
+
+    # Capture path is a bounded presentation input while the idle page is
+    # open. Once a run starts, the session's own transport is authoritative.
+    # Relay is the fleet default when configured; the local HTTPS backup asks
+    # for `capture_transport=local` on envelope refreshes after the user picks
+    # it under Change.
+    capture_transport = str(getattr(sess, "capture_transport", "local"))
+    if screen == envelope.SCREEN_IDLE:
+        query = parse_qs(urlparse(handler.path).query)
+        requested = str((query.get("capture_transport") or [""])[0])
+        relay_enabled = correction_adapter.relay_enabled()
+        if requested == "local":
+            capture_transport = "local"
+        elif requested == "relay" and relay_enabled:
+            capture_transport = "relay"
+        else:
+            capture_transport = "relay" if relay_enabled else "local"
+
+    # Session discovery reads every bundle today, so it is intentionally
+    # confined to idle/result static edges. Active screens are fetched every
+    # 900 ms and must never inherit this directory scan.
+    reports_available = False
+    if screen in envelope.REPORT_SECTION_SCREENS:
+        from jasper.correction.bundles import list_bundles
+
+        try:
+            reports_available = bool(
+                list_bundles(sess.cfg.sessions_dir, limit=1)
+            )
+        except OSError as exc:
+            # Reports are optional evidence, never a reason to strand the
+            # measurement entry/result screen when storage is unavailable.
+            log_event(
+                logger,
+                "correction_report_discovery_failed",
+                session=getattr(sess, "session_id", ""),
+                error_type=type(exc).__name__,
+                level=logging.WARNING,
+            )
+
+    envelope_kwargs: dict[str, Any] = {}
+    if screen == envelope.SCREEN_IDLE:
+        # Pass an explicit decision only when this read observed idle. If the
+        # session races from active back to idle before the pure builder reads
+        # it, the omitted argument takes the builder's fail-closed path rather
+        # than accidentally treating `None` as a positive readiness decision.
+        envelope_kwargs["readiness_blocker"] = readiness_blocker
+    relay_snapshot = _get_relay_capture_for("room_", "level_ramp:room")
+    relay_capture_pending = bool(
+        relay_snapshot
+        and relay_snapshot.get("status") in {"starting", "awaiting_phone"}
+    )
+    return envelope.build_envelope_logged(
+        sess,
+        capture_transport=capture_transport,
+        relay_capture_pending=relay_capture_pending,
+        reports_available=reports_available,
+        **envelope_kwargs,
+    )
 
 
 def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -2216,6 +3723,73 @@ def _read_wav_body(
     return raw
 
 
+def _handle_local_capture_setup(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /local-capture/setup: bind the realized browser input.
+
+    Local capture asks for microphone permission after the run is reserved.
+    This narrow setup write makes the selected device/calibration the live
+    session authority before any audio upload; relay setup remains owned by
+    its versioned capture binding.
+    """
+    from jasper.audio_measurement.calibration import load_calibration_record
+    from jasper.correction.session import SessionState
+
+    sess = _get_or_create_session()
+    if (
+        getattr(sess, "capture_transport", "local") != "local"
+        or sess.state != SessionState.NEEDS_NOISE_CAPTURE
+    ):
+        raise RequestConflict("local microphone setup is not available now")
+
+    body = _read_json_body(handler)
+    requested_session_id = str(body.get("session_id") or "")
+    if requested_session_id != sess.session_id:
+        raise RequestConflict("this room-correction run is no longer current")
+    input_device = _sanitize_input_device(body.get("input_device"))
+    if input_device is None:
+        raise ValueError("select a microphone before continuing")
+
+    calibration_id = str(body.get("calibration_id") or "").strip()
+    mic_calibration = (
+        load_calibration_record(calibration_id, root=_calibration_root())
+        if calibration_id
+        else None
+    )
+    mismatch = _calibration_device_mismatch(mic_calibration, input_device)
+    if mismatch is not None:
+        raise ValueError(mismatch)
+
+    try:
+        browser_report = _run_async(
+            sess.bind_local_capture_setup(
+                mic_calibration=mic_calibration,
+                input_device=input_device,
+            ),
+            timeout=3.0,
+        )
+    except RuntimeError as exc:
+        raise RequestConflict("local microphone setup is not available now") from exc
+
+    log_event(
+        logger,
+        "correction_local_capture_setup_bound",
+        session=sess.session_id,
+        calibrated=mic_calibration is not None,
+        browser_audio_level=str(browser_report.get("level") or ""),
+    )
+    return {
+        "session_id": sess.session_id,
+        "state": sess.state.value,
+        "input_device": sess.input_device,
+        "browser_audio_report": browser_report,
+        "mic_calibration": (
+            mic_calibration.public_metadata() if mic_calibration else None
+        ),
+    }
+
+
 def _handle_upload_noise(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
@@ -2229,7 +3803,25 @@ def _handle_upload_noise(
         raise RuntimeError(
             f"cannot accept noise capture from state {sess.state.value}"
         )
+    if (
+        getattr(sess, "capture_transport", "local") == "local"
+        and not bool(getattr(sess, "local_capture_setup_bound", False))
+    ):
+        raise RequestConflict(
+            "bind the local microphone setup before uploading room noise"
+        )
+    if getattr(sess, "capture_transport", "local") == "local":
+        from jasper.correction.session import AutolevelStatus
 
+        if (
+            sess.autolevel.status != AutolevelStatus.LOCKED
+            or bool(getattr(sess, "autolevel_run_in_progress", False))
+        ):
+            raise RequestConflict(
+                "complete and lock the measurement level check before measuring"
+            )
+
+    _run_async(sess.resume_capture_timeout_on_loop(), timeout=2.0)
     body = _read_wav_body(handler)
     captured_path = sess.noise_capture_path_for_position(sess.current_position)
     captured_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2320,41 +3912,15 @@ def _handle_upload_capture(
     else:
         _run_async(sess.on_capture_uploaded(captured_path), timeout=30.0)
 
+    # The upload response is a mechanism acknowledgement, not a second
+    # presentation contract. The browser refreshes the server envelope for
+    # curves, verdict, nudges, sections, and actions.
     return {
         "session_id": sess.session_id,
         "state": sess.state.value,
         "current_position": sess.current_position,
         "total_positions": sess.total_positions,
-        "measured": (
-            sess.measured_curve.__dict__ if sess.measured_curve else None
-        ),
-        "target": (
-            sess.target_curve.__dict__ if sess.target_curve else None
-        ),
-        "predicted": (
-            sess.predicted_curve.__dict__ if sess.predicted_curve else None
-        ),
-        "verify": (
-            sess.verify_curve.__dict__ if sess.verify_curve else None
-        ),
-        "verify_metrics": sess.verify_metrics,
-        "verify_before_after": sess.verify_before_after,
-        "acceptance": getattr(sess, "acceptance", None),
         "auto_reverted": auto_reverted,
-        "capture_quality": sess.capture_quality,
-        "noise_reports": sess.noise_reports,
-        "repeat": (
-            sess.repeat_curve.__dict__ if sess.repeat_curve else None
-        ),
-        "repeat_quality": sess.repeat_quality,
-        "repeatability_report": sess.repeatability_report,
-        "verify_quality": sess.verify_quality,
-        "browser_audio_report": sess.browser_audio_report,
-        "confidence_report": sess.confidence_report,
-        "runtime_integrity": _runtime_integrity_summary(sess),
-        "position_analysis": sess.position_analysis,
-        "peqs": [p.__dict__ for p in sess.peqs],
-        "design_report": sess.design_report,
     }
 
 
@@ -2363,15 +3929,15 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     phone runs the capture page on jasper.tech) instead of a same-origin browser
     upload.
 
-    GATED + DEFAULT-OFF. Inert unless an operator sets JASPER_CAPTURE_RELAY_BASE,
-    so the standard on-Pi /correction/ flow is byte-identical without it. When
-    enabled it mints a relay session, returns the phone tap-link, and runs the
-    capture in the background: when the phone is recording (it drops `armed`), the
-    Pi plays the sweep through the SAME measurement_window()/prepare_and_play_sweep
-    path the browser flow uses (loud-output safety + renderer/voice pause
-    preserved), then pulls + decrypts + verifies and feeds the WAV into
-    on_capture_uploaded — the identical 48 kHz / mono / 32 MB seam as a
-    same-origin upload.
+    The relay remains config-gated, but is the fresh-install Room default when
+    configured. It mints a relay session, returns the phone tap-link, and runs
+    the capture in the background: when the phone is recording (it drops
+    `armed`), the Pi first verifies the level-check microphone identity and then
+    plays the sweep through the SAME measurement_window()/
+    prepare_and_play_sweep path the browser flow uses (loud-output safety +
+    renderer/voice pause preserved). It then pulls + decrypts + verifies and
+    feeds the WAV into the normal position or same-seat repeat seam at the
+    identical 48 kHz / mono / 32 MB boundary as a same-origin upload.
 
     ON-DEVICE: the background sweep playback and the real measurement cannot be
     exercised hardware-free — only the config gate, the state guard, and the seam
@@ -2380,8 +3946,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     jasper-web -> jasper-voice cue bridge; until then failures surface on the
     capture page, on the jts.local status page (`relay.status`), and in
     `event=capture_relay.*` logs. This is the integration point the
-    docs/phone-mic-relay-plan.md adapter step describes, shipped gated so the
-    default flow is unaffected while it is validated on hardware.
+    docs/phone-mic-relay-plan.md adapter step describes.
     """
     from jasper.capture_relay import correction_adapter
     from jasper.correction.session import SessionState
@@ -2391,18 +3956,22 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sess = _get_or_create_session()
     if sess is None:
         raise RuntimeError("no session — POST /start first")
-    # A relay capture owns the sweep for one position (it plays on `armed`), so it
-    # starts from the pre-sweep state, not the post-sweep AWAITING_CAPTURE.
-    if sess.state != SessionState.NEEDS_NOISE_CAPTURE:
+    # A relay capture owns either the next distinct position or the automatic
+    # main-seat trust repeat. Freeze that mode before background work starts.
+    if sess.state not in {
+        SessionState.NEEDS_NOISE_CAPTURE,
+        SessionState.NEEDS_REPEAT_CAPTURE,
+    }:
         raise ValueError(
-            "relay capture starts a measurement position; expected state "
-            f"needs_noise_capture, got {sess.state.value}"
+            "relay capture starts a measurement position or trust repeat; got "
+            f"{sess.state.value}"
         )
+    is_repeat = sess.state == SessionState.NEEDS_REPEAT_CAPTURE
     level_identity = _relay_level_identity(sess)
-    setup_binding_id = str(sess.session_id)
-    # The mic-calibration / device check runs POST-capture (in _run_and_consume),
-    # not here: the phone's mic — its built-in, or a USB-C measurement mic plugged
-    # into it — isn't known until it records and reports its device.
+    if not level_identity.device_key:
+        raise ValueError(
+            "the level check did not identify its microphone; run it again"
+        )
 
     def _open(
         client: RelayClient,
@@ -2412,13 +3981,13 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     ) -> RelayCapture:
         return correction_adapter.open_room_sweep_capture(
             client,
-            position=sess.current_position + 1,
+            position=1 if is_repeat else sess.current_position + 1,
             total_positions=sess.total_positions,
             relay_base=base,
             capture_origin=capture_origin,
             return_url=return_url,
             guided_setup=False,
-            setup_binding_id=setup_binding_id,
+            presentation_variant="trust_repeat" if is_repeat else "",
         )
 
     async def _run_and_consume(
@@ -2429,16 +3998,26 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # (loud-output safety + renderer/voice pause preserved). run_capture's
         # default 120 s timeout is intentionally ~ the AWAITING_CAPTURE watchdog;
         # keep them aligned if either constant changes.
-        capture_path = sess.capture_path_for_position(sess.current_position)
+        capture_path = (
+            sess.repeat_capture_path_for_position(0)
+            if is_repeat
+            else sess.capture_path_for_position(sess.current_position)
+        )
 
         def _on_armed(state: Any) -> None:
             try:
-                _assert_relay_setup_binding(
+                device = state.device if isinstance(state.device, dict) else None
+                _assert_relay_level_identity(
                     sess,
-                    state.setup,
-                    expected_binding_id=setup_binding_id,
+                    level_identity,
+                    device=device,
                 )
-                _assert_relay_level_identity(sess, level_identity)
+                calibration_block = _relay_device_calibration_block(
+                    sess.mic_calibration,
+                    device,
+                )
+                if calibration_block is not None:
+                    raise ValueError(calibration_block)
                 if state.noise_floor:
                     try:
                         sess.noise_floor_db = float(
@@ -2449,12 +4028,16 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                             "relay noise_floor ignored: %r",
                             state.noise_floor,
                         )
-            except (RuntimeError, ValueError) as exc:
+            except (RuntimeError, ValueError):
                 try:
                     client.post_host_event(
                         pi_session.session_id,
                         pi_session.pull_token,
-                        {"phase": "sweep_failed", "error": str(exc)},
+                        {
+                            "phase": "sweep_failed",
+                            "error": _ROOM_SWEEP_PHONE_FAILURE,
+                            "error_code": "room_sweep_unavailable",
+                        },
                     )
                 except (RuntimeError, OSError, ValueError):
                     logger.debug("relay setup failure event failed", exc_info=True)
@@ -2464,6 +4047,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 _camilla(),
                 client=client,
                 pi_session=pi_session,
+                repeat=is_repeat,
             )
 
         try:
@@ -2496,7 +4080,10 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                         "relay noise_floor ignored: %r",
                         result.noise_floor,
                     )
-            await sess.on_capture_uploaded(capture_path)
+            if is_repeat:
+                await sess.on_repeat_capture_uploaded(capture_path)
+            else:
+                await sess.on_capture_uploaded(capture_path)
         finally:
             # Idempotent backstop for failures before the armed/sweep window.
             await sess.restore_level_match_volume(
@@ -2504,7 +4091,9 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             )
 
     kind = RelayCaptureKind(
-        label="room_sweep", open=_open, run_and_consume=_run_and_consume
+        label="room_repeat" if is_repeat else "room_sweep",
+        open=_open,
+        run_and_consume=_run_and_consume,
     )
     relay = _run_relay_capture(
         kind,
@@ -2532,7 +4121,10 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     ):
         raise ValueError("check the listening-position level before verification")
     level_identity = _relay_level_identity(sess)
-    setup_binding_id = str(sess.session_id)
+    if not level_identity.device_key:
+        raise ValueError(
+            "the level check did not identify its microphone; run it again"
+        )
 
     def _open(
         client: RelayClient,
@@ -2546,7 +4138,6 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 position=1,
                 total_positions=1,
                 guided_setup=False,
-                setup_binding_id=setup_binding_id,
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -2561,6 +4152,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         cam = _camilla()
         capture_path = sess.verify_capture_path()
+        control_client = _bounded_relay_control_client(client)
 
         async def _play_verify() -> None:
             async def _runtime_probe() -> dict[str, Any] | None:
@@ -2575,21 +4167,29 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                         "level check again"
                     )
                 try:
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {"phase": "sweep_started", "position": 1, "total_positions": 1},
+                    await _post_room_sweep_host_event(
+                        control_client,
+                        pi_session,
+                        {
+                            "phase": "sweep_started",
+                            "position": 1,
+                            "total_positions": 1,
+                            "capture_kind": "verify",
+                        },
                     )
                     await sess.start_verify_sweep(
                         playback.play_sweep,
                         runtime_probe_async=_runtime_probe,
                     )
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {"phase": "sweep_complete", "position": 1, "total_positions": 1},
+                    await _post_room_sweep_host_event(
+                        control_client,
+                        pi_session,
+                        {
+                            "phase": "sweep_complete",
+                            "position": 1,
+                            "total_positions": 1,
+                            "capture_kind": "verify",
+                        },
                     )
                 finally:
                     await sess.restore_level_match_volume(
@@ -2597,14 +4197,40 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                     )
 
         def _on_armed(state: Any) -> None:
-            setup = getattr(state, "setup", None)
-            _assert_relay_setup_binding(
-                sess,
-                setup if isinstance(setup, dict) else None,
-                expected_binding_id=setup_binding_id,
+            try:
+                device = state.device if isinstance(state.device, dict) else None
+                _assert_relay_level_identity(
+                    sess,
+                    level_identity,
+                    device=device,
+                )
+                calibration_block = _relay_device_calibration_block(
+                    sess.mic_calibration,
+                    device,
+                )
+                if calibration_block is not None:
+                    raise ValueError(calibration_block)
+            except (RuntimeError, ValueError):
+                try:
+                    client.post_host_event(
+                        pi_session.session_id,
+                        pi_session.pull_token,
+                        {
+                            "phase": "sweep_failed",
+                            "error": _ROOM_SWEEP_PHONE_FAILURE,
+                            "error_code": "room_sweep_unavailable",
+                        },
+                    )
+                except (RuntimeError, OSError, ValueError):
+                    logger.debug(
+                        "relay verify failure event failed",
+                        exc_info=True,
+                    )
+                raise
+            _run_async(
+                _run_session_background_audio(sess, _play_verify),
+                timeout=90.0,
             )
-            _assert_relay_level_identity(sess, level_identity)
-            _run_async(_play_verify(), timeout=90.0)
 
         try:
             result = await asyncio.to_thread(
@@ -2654,11 +4280,15 @@ async def _run_relay_level_match(
     geometry: str,
     run_token: str,
     setup_binding_id: str = "",
+    context_id: str | None = None,
     tone_frequency_hz: float = 1000.0,
     prepare_tone: Callable[[], Any] | None = None,
     restore_tone: Callable[[Any], Any] | None = None,
     expected_level_identity: _RelayLevelIdentity | None = None,
     reuse_noise_floor: bool = True,
+    stop_requested: Callable[[], bool] | None = None,
+    stop_lock: Any = None,
+    begin_commit: Callable[[], bool] | None = None,
 ) -> None:
     """Run one relay-fed level match without blocking the correction loop.
 
@@ -2668,14 +4298,30 @@ async def _run_relay_level_match(
     control loop and never gains a direct reference to the relay client.
     """
     from jasper.capture_relay.integrity import CaptureIntegrityError
-    from jasper.capture_relay.session import CaptureFailed, PhoneEventVerifier, purge
+    from jasper.capture_relay.session import (
+        CAPTURE_INCOMPATIBLE_USER_MESSAGE,
+        CaptureFailed,
+        CaptureStopped,
+        PhoneEventVerifier,
+        purge,
+    )
     from jasper.correction import coordinator, playback
+    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
 
     cached_status: dict[str, Any] = {}
     outbound: list[dict[str, Any]] = []
     stop_pump = asyncio.Event()
-    pump_error: list[RuntimeError] = []
+    pump_error: list[Exception] = []
+    level_task: asyncio.Task[Any] | None = None
+    stop_lock = stop_lock or threading.Lock()
     event_verifier = PhoneEventVerifier(pi_session)
+    from jasper.capture_relay.client import RelayClient
+
+    control_client = (
+        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
+        if isinstance(client, RelayClient)
+        else client  # injected deterministic test double
+    )
 
     def _read_status() -> dict[str, Any]:
         return dict(cached_status)
@@ -2685,20 +4331,65 @@ async def _run_relay_level_match(
 
     async def _pump() -> None:
         unhealthy = False
+        host_event_unconfirmed = False
         while not stop_pump.is_set():
+            if stop_requested is not None and stop_requested():
+                cancel_level_match = getattr(sess, "cancel_level_match", None)
+                try:
+                    cancelled = False
+                    if callable(cancel_level_match):
+                        cancelled = bool(await cancel_level_match())
+                    if not cancelled and level_task is not None:
+                        level_task.cancel()
+                except (OSError, RuntimeError, ValueError) as exc:
+                    pump_error.append(exc)
+                else:
+                    pump_error.append(CaptureStopped("capture stopped"))
+                stop_pump.set()
+                return
             try:
-                while outbound:
+                # Publish at most one queued event before refreshing status.
+                # Together with the narrow control client this keeps the real
+                # elapsed retry+status budget below feed_timeout_s.
+                if outbound:
                     payload = outbound.pop(0)
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        payload,
-                    )
-                fresh = await asyncio.to_thread(
-                    client.status,
+                    try:
+                        await _post_relay_host_event(
+                            control_client,
+                            pi_session,
+                            payload,
+                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
+                        )
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        # A response timeout is ambiguous: the ordered write may
+                        # already have committed. Status is the live microphone
+                        # feed, so it must still get its turn this iteration;
+                        # otherwise repeated slow acknowledgements alone can
+                        # manufacture an eight-second feed-loss failure.
+                        if not host_event_unconfirmed:
+                            log_event(
+                                logger,
+                                "capture_relay.level_host_event",
+                                level=logging.WARNING,
+                                session_id=pi_session.session_id,
+                                result="unconfirmed",
+                                reason=type(exc).__name__,
+                            )
+                        host_event_unconfirmed = True
+                    else:
+                        if host_event_unconfirmed:
+                            log_event(
+                                logger,
+                                "capture_relay.level_host_event",
+                                session_id=pi_session.session_id,
+                                result="recovered",
+                            )
+                        host_event_unconfirmed = False
+                fresh = await _run_relay_control_request(
+                    control_client.status,
                     pi_session.session_id,
                     pi_session.pull_token,
+                    hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                 )
                 if isinstance(fresh, dict):
                     verified_event = event_verifier.verify(fresh.get("event"))
@@ -2718,14 +4409,16 @@ async def _run_relay_level_match(
                     reason=str(exc),
                 )
                 try:
-                    await asyncio.to_thread(
-                        client.post_host_event,
-                        pi_session.session_id,
-                        pi_session.pull_token,
+                    await _post_relay_host_event(
+                        control_client,
+                        pi_session,
                         {
                             "phase": "capture_incompatible",
-                            "error": "capture control integrity check failed",
+                            # Friendly household-facing copy (W6.10 blocker #4e) —
+                            # the raw "integrity check failed" is developer jargon.
+                            "error": CAPTURE_INCOMPATIBLE_USER_MESSAGE,
                         },
+                        hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                     )
                 except (OSError, RuntimeError, ValueError):
                     logger.warning(
@@ -2864,11 +4557,11 @@ async def _run_relay_level_match(
                                 "phase": "setup_validated",
                                 "setup_token": setup_token,
                             }
-                        await asyncio.to_thread(
-                            client.post_host_event,
-                            pi_session.session_id,
-                            pi_session.pull_token,
+                        await _post_relay_host_event(
+                            control_client,
+                            pi_session,
                             response,
+                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
                         )
                         if response["phase"] == "setup_validation_failed":
                             raise ValueError(str(response["error"]))
@@ -2975,8 +4668,14 @@ async def _run_relay_level_match(
                 AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
             )
 
+            if stop_requested is not None and stop_requested():
+                raise CaptureStopped("capture stopped")
             prepared_tone = await prepare_tone() if prepare_tone is not None else None
             try:
+                if pump_error:
+                    raise pump_error[0]
+                if stop_requested is not None and stop_requested():
+                    raise CaptureStopped("capture stopped")
                 tone_wav = playback._ensure_tone_wav(
                     freq_hz=tone_frequency_hz,
                     duration_s=90.0,
@@ -3011,24 +4710,44 @@ async def _run_relay_level_match(
                             "CamillaDSP rejected the measurement volume"
                         )
 
-                outcome = await sess.run_level_match(
-                    geometry,
-                    get_main_volume_db=_get_volume,
-                    set_main_volume_db=_set_volume,
-                    play_continuous_tone=player.play,
-                    cancel_tone=player.cancel,
-                    read_status=_read_status,
-                    post_host_event=_queue_host_event,
-                    noise_floor_dbfs=initial_noise_floor,
-                    run_token=run_token,
-                )
+                with stop_lock:
+                    if stop_requested is not None and stop_requested():
+                        raise CaptureStopped("capture stopped")
+                    level_ports: dict[str, Any] = {}
+                    if context_id is not None:
+                        # CrossoverLevelLease owns a profile-scoped continuation;
+                        # Room's explicit session port does not accept this key.
+                        level_ports["context_id"] = context_id
+                    level_task = asyncio.create_task(
+                        sess.run_level_match(
+                            geometry,
+                            get_main_volume_db=_get_volume,
+                            set_main_volume_db=_set_volume,
+                            play_continuous_tone=player.play,
+                            cancel_tone=player.cancel,
+                            read_status=_read_status,
+                            post_host_event=_queue_host_event,
+                            noise_floor_dbfs=initial_noise_floor,
+                            run_token=run_token,
+                            **level_ports,
+                        )
+                    )
+                try:
+                    outcome = await level_task
+                except asyncio.CancelledError:
+                    if stop_requested is not None and stop_requested():
+                        raise CaptureStopped("capture stopped") from None
+                    raise
             finally:
                 if restore_tone is not None and prepared_tone is not None:
                     await restore_tone(prepared_tone)
 
+        if stop_requested is not None and stop_requested():
+            raise CaptureStopped("capture stopped")
         if not outcome.locked:
-            detail = outcome.ramp.error or "safe measurement level was not reached"
-            raise ValueError(detail)
+            raise LevelMatchRefused(
+                describe_ramp_refusal(outcome.ramp.error, outcome.ramp.error_detail)
+            )
         mismatch = _relay_device_calibration_block(
             getattr(sess, "mic_calibration", None),
             getattr(sess, "input_device", None),
@@ -3040,6 +4759,8 @@ async def _run_relay_level_match(
                     lambda db: cam.set_volume_db(db, best_effort=False)
                 )
             raise ValueError(mismatch)
+        if begin_commit is not None and not begin_commit():
+            raise CaptureStopped("capture stopped")
     except (
         OSError,
         RuntimeError,
@@ -3052,18 +4773,21 @@ async def _run_relay_level_match(
         # the same terminal shape as the ramp and leave a short observation
         # window before cleanup.
         try:
-            await asyncio.to_thread(
-                client.post_host_event,
-                pi_session.session_id,
-                pi_session.pull_token,
+            terminal_state = (
+                "cancelled" if isinstance(exc, CaptureStopped) else "error"
+            )
+            await _post_relay_host_event(
+                control_client,
+                pi_session,
                 {
                     "ramp": {
-                        "state": "error",
+                        "state": terminal_state,
                         "terminal": True,
                         "run_token": run_token,
-                        "error": str(exc),
+                        "error": _relay_failure_message(exc),
                     }
                 },
+                hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
             )
             await asyncio.sleep(0.75)
         except (OSError, RuntimeError, ValueError):
@@ -3131,7 +4855,8 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
                 ),
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
-                setup_collect_positions=True,
+                setup_collect_positions=False,
+                default_setup_calibration=_default_setup_calibration_for_spec(),
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -3147,13 +4872,16 @@ def _handle_relay_level_match(handler: BaseHTTPRequestHandler) -> dict[str, Any]
         # self-recovers without operator cleanup.
         sess.suspend_capture_timeout()
         try:
-            await _run_relay_level_match(
+            await _run_session_background_audio(
                 sess,
-                client,
-                pi_session,
-                geometry=MicGeometry.LISTENING_POSITION.value,
-                run_token=run_token,
-                setup_binding_id=setup_binding_id,
+                lambda: _run_relay_level_match(
+                    sess,
+                    client,
+                    pi_session,
+                    geometry=MicGeometry.LISTENING_POSITION.value,
+                    run_token=run_token,
+                    setup_binding_id=setup_binding_id,
+                ),
             )
         finally:
             sess.resume_capture_timeout()
@@ -3187,13 +4915,69 @@ def _open_commissioning_bundle_for_level_match(
     )
 
 
+def _activate_crossover_comparison_authorities(
+    topology: Any,
+    comparison_set: Mapping[str, Any],
+) -> None:
+    """Publish repeat and lifecycle authority as one fail-closed boundary."""
+
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker.measurement import clear_active_comparison_set
+    from . import correction_crossover_backend as backend
+
+    try:
+        repeat_admission.activate(comparison_set)
+        if comparison_set.get("bundle_session_id"):
+            backend.begin_commissioning_run(comparison_set)
+    except (OSError, RuntimeError, ValueError):
+        clear_active_comparison_set(topology)
+        repeat_admission.invalidate()
+        raise
+
+
+class ServerOwnedNextStepMismatch(ValueError):
+    """A wizard-initiated capture/level-check no longer matches what the
+    server's envelope would offer next.
+
+    Distinct from a plain ``ValueError`` so its refusal maps to an actionable
+    household sentence instead of leaking this programmer-facing string to a
+    household surface (hardware run 21). Carries ``code`` (stable log
+    ``reason=``) and ``user_message`` (the ONE household sentence) as class
+    attributes — the single source of truth both the async
+    ``_relay_failure_message`` surfacing AND the synchronous ``_dispatch_
+    crossover`` POST handler read, mirroring
+    ``jasper.correction.level_match.LevelMatchRefused``'s shape so the copy
+    can never drift between the two surfaces. Still a ``ValueError`` subclass
+    — every existing ``except ValueError`` / ``except (RuntimeError, OSError,
+    ValueError)`` catch upstream keeps working unchanged.
+    """
+
+    code = "server_owned_step_mismatch"
+    user_message = (
+        "This measurement step changed on the speaker before the phone "
+        "confirmed it. Reopen the phone link and try again."
+    )
+
+
 def _assert_crossover_reference_axis_level_action(
     status: Mapping[str, Any],
     *,
     speaker_group_id: str,
     role: str,
 ) -> None:
-    """Require one fixed-axis level request to equal the server next action."""
+    """Require one fixed-axis level request to equal the server next action.
+
+    Unlike ``_assert_crossover_driver_action``, this guard needs no
+    plan-admission exemption (the run-21 fix): the fixed-axis LEVEL CHECK
+    holds no ``repeat_admission`` reservation of its own — its handler
+    (`_handle_crossover_relay_level_match`) only ever calls
+    ``repeat_admission.invalidate()``, never ``reserve()`` — so there is no
+    in-flight reservation for this guard's ``build_crossover_envelope``
+    recompute to misread as orphaned. Reference-axis driver CAPTURES *do*
+    reserve (v3), but they are guarded by ``_assert_crossover_driver_action``
+    (which handles both ``near_field`` and ``reference_axis`` geometries) and
+    are therefore already covered by ``_plan_admission_matches``.
+    """
 
     from jasper.active_speaker.crossover_envelope import build_crossover_envelope
 
@@ -3213,7 +4997,7 @@ def _assert_crossover_reference_axis_level_action(
         or str(expected_body.get("speaker_group_id") or "") != speaker_group_id
         or str(expected_body.get("role") or "").lower() != role.lower()
     ):
-        raise ValueError(
+        raise ServerOwnedNextStepMismatch(
             "the requested fixed-axis level check is not the server-owned next step"
         )
 
@@ -3280,10 +5064,41 @@ def _handle_crossover_relay_level_match(
         raise ValueError("this speaker has no active crossover to measure")
     raw_setup = status.get("setup")
     setup = raw_setup if isinstance(raw_setup, dict) else {}
-    if setup.get("status") != "ready":
+    # Between capture attempts the persisted CamillaDSP path deliberately
+    # stays on the all-muted staged anchor (PR #1523), which reports setup as
+    # blocked. The shared predicate admits exactly that in-sequence state
+    # (blocked + commissioning-config-loaded reason + pending capture-entry
+    # stash) so lock 2..N of a running sequence isn't refused as an
+    # unfinished setup — hardware-observed on JTS3 blocking tweeter lock 2/2
+    # (run 10). Every other blocked reason refuses exactly as before.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
+    if setup.get("status") != "ready" and not (
+        setup_blocked_only_by_in_sequence_anchor(status)
+    ):
         raise ValueError(
             "finish and apply the protected active-speaker setup before measuring it"
         )
+    # Fail closed on the driver safety profile's own verdict before any level
+    # lease, relay, or repeat reservation is created -- mirrors the
+    # setup-readiness check above. Without this, a stale page (or a profile
+    # that went stale after this page loaded) could still start locks and
+    # burn acceptance repeats before the deep excitation admission refuses
+    # the eventual driver sweep. The key is always present from the real
+    # backend.status_payload() (None when unreadable, which also refuses
+    # here); it is only absent for legacy/test status doubles that predate
+    # this gate, which are not newly blocked.
+    if "driver_safety_profile_evaluation" in status:
+        raw_driver_safety = status.get("driver_safety_profile_evaluation")
+        driver_safety = (
+            raw_driver_safety if isinstance(raw_driver_safety, dict) else {}
+        )
+        if driver_safety.get("confirmed_and_current") is not True:
+            raise ValueError(
+                "confirm the driver safety details in speaker setup before measuring"
+            )
     blocking = _crossover_blocking_phase()
     if blocking is not None:
         raise ValueError(f"another measurement is in progress ({blocking})")
@@ -3443,6 +5258,12 @@ def _handle_crossover_relay_level_match(
         expected_level_identity = _relay_level_identity(lease) if continuing else None
     run_token = secrets.token_urlsafe(18)
     setup_binding_id = context_id
+    stop_event = threading.Event()
+    stop_lock = threading.Lock()
+
+    def _request_stop() -> None:
+        with stop_lock:
+            stop_event.set()
 
     def _open(
         client: RelayClient,
@@ -3456,9 +5277,11 @@ def _handle_crossover_relay_level_match(
                 geometry_label=f"{target['role']} measurement position",
                 placement_instruction=str(target["placement_instruction"]),
                 tone_frequency_hz=float(target["tone_frequency_hz"]),
+                hard_timeout_ms=lease.phone_hard_timeout_ms(str(target["geometry"])),
                 run_token=run_token,
                 setup_binding_id=setup_binding_id,
                 setup_collect_positions=False,
+                default_setup_calibration=_default_setup_calibration_for_spec(),
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -3499,6 +5322,8 @@ def _handle_crossover_relay_level_match(
         )
 
     async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
+        from jasper.capture_relay.session import CaptureStopped
+
         # `_run_relay_capture` has acquired the global relay slot before this
         # callback starts. A continuation preserves earlier driver locks; a
         # complete retune invalidates only after this run owns the slot.
@@ -3506,7 +5331,18 @@ def _handle_crossover_relay_level_match(
             from jasper.active_speaker import repeat_admission
 
             repeat_admission.invalidate()
-            lease.invalidate_comparison_context()
+            # BETWEEN-SET RESTART (W2.3, hardware run 19): this branch is
+            # the household's only mechanical path out of both the
+            # completed-insufficient terminal and the placement refusal
+            # (the fully-locked lease reads ready=True there, so
+            # `continuing` is False for exactly the restarts that carry a
+            # freshly-written solve correction). A plain invalidate here
+            # wiped that correction before the next solve ever read it --
+            # run 19's identical-solve loop. preserve_solve_corrections
+            # keeps non-exhausted per-target correction state and clears
+            # exhausted targets for a fresh evaluation; see
+            # CrossoverLevelLease.invalidate_comparison_context.
+            lease.invalidate_comparison_context(preserve_solve_corrections=True)
             clear_active_comparison_set(topology)
             log_event(
                 logger,
@@ -3525,73 +5361,87 @@ def _handle_crossover_relay_level_match(
             if fixed_axis_request
             else nullcontext()
         )
-        async with identity_guard:
-            await _run_relay_level_match(
-                lease,
-                client,
-                pi_session,
-                geometry=str(target["geometry"]),
-                run_token=run_token,
-                setup_binding_id=setup_binding_id,
-                tone_frequency_hz=float(target["tone_frequency_hz"]),
-                prepare_tone=_prepare_driver_tone,
-                restore_tone=_restore_driver_tone,
-                expected_level_identity=expected_level_identity,
-                reuse_noise_floor=False,
-            )
-            binding = getattr(lease, "relay_setup_binding", None)
-            identity = _relay_level_identity(lease)
-            if (
-                binding is None
-                or not getattr(binding, "sha256", "")
-                or not identity.device_key
-            ):
-                raise ValueError(
-                    "the level check did not produce a complete microphone binding; "
-                    "run it again"
+        try:
+            async with identity_guard:
+                await _run_relay_level_match(
+                    lease,
+                    client,
+                    pi_session,
+                    geometry=str(target["geometry"]),
+                    run_token=run_token,
+                    setup_binding_id=setup_binding_id,
+                    context_id=context_id,
+                    tone_frequency_hz=float(target["tone_frequency_hz"]),
+                    prepare_tone=_prepare_driver_tone,
+                    restore_tone=_restore_driver_tone,
+                    expected_level_identity=expected_level_identity,
+                    reuse_noise_floor=False,
+                    stop_requested=stop_event.is_set,
+                    stop_lock=stop_lock,
+                    begin_commit=lambda: _begin_relay_commit(
+                        "level_ramp:crossover"
+                    ),
                 )
-            if fixed_axis_request:
-                assert fixed_comparison_set is not None
-                actual_device_sha256 = hashlib.sha256(
-                    identity.device_key.encode("utf-8")
-                ).hexdigest()
-                expected_device_sha256 = str(
-                    fixed_comparison_set.get("device_sha256") or ""
-                )
-                expected_calibration_id = str(
-                    fixed_comparison_set.get("calibration_id") or ""
-                )
-                fixed_lock = lease.driver_sweep_locked_main_volume_db(
-                    str(target["speaker_group_id"]),
-                    str(target["role"]),
-                    capture_geometry="reference_axis",
-                )
+                binding = getattr(lease, "relay_setup_binding", None)
+                identity = _relay_level_identity(lease)
                 if (
-                    actual_device_sha256 != expected_device_sha256
-                    or identity.calibration_id != expected_calibration_id
-                    or fixed_lock is None
+                    binding is None
+                    or not getattr(binding, "sha256", "")
+                    or not identity.device_key
                 ):
                     raise ValueError(
-                        "the fixed-axis level check changed microphone identity, "
-                        "calibration, or failed to lock; use the comparison-set "
-                        "microphone and try again"
+                        "the level check did not produce a complete microphone binding; "
+                        "run it again"
                     )
-                lease.context_id = context_id
-                from jasper.audio_measurement.ramp import (
-                    LISTENING_POSITION_CAP_BUMP_DB,
-                    LISTENING_POSITION_CAP_CEIL_DB,
-                )
+                if fixed_axis_request:
+                    assert fixed_comparison_set is not None
+                    actual_device_sha256 = hashlib.sha256(
+                        identity.device_key.encode("utf-8")
+                    ).hexdigest()
+                    expected_device_sha256 = str(
+                        fixed_comparison_set.get("device_sha256") or ""
+                    )
+                    expected_calibration_id = str(
+                        fixed_comparison_set.get("calibration_id") or ""
+                    )
+                    fixed_lock = lease.driver_sweep_locked_main_volume_db(
+                        str(target["speaker_group_id"]),
+                        str(target["role"]),
+                        capture_geometry="reference_axis",
+                    )
+                    if (
+                        actual_device_sha256 != expected_device_sha256
+                        or identity.calibration_id != expected_calibration_id
+                        or fixed_lock is None
+                    ):
+                        raise ValueError(
+                            "the fixed-axis level check changed microphone identity, "
+                            "calibration, or failed to lock; use the comparison-set "
+                            "microphone and try again"
+                        )
+                    lease.context_id = context_id
+                    from jasper.audio_measurement.ramp import (
+                        LISTENING_POSITION_CAP_BUMP_DB,
+                        LISTENING_POSITION_CAP_CEIL_DB,
+                    )
 
-                log_event(
-                    logger,
-                    "correction.crossover_reference_axis_level_locked",
-                    topology_id=topology.topology_id,
-                    target_id=target["target_id"],
-                    locked_main_volume_db=f"{fixed_lock:.1f}",
-                    cap_bump_db=f"{LISTENING_POSITION_CAP_BUMP_DB:.1f}",
-                    cap_ceil_db=f"{LISTENING_POSITION_CAP_CEIL_DB:.1f}",
-                )
-                return
+                    log_event(
+                        logger,
+                        "correction.crossover_reference_axis_level_locked",
+                        topology_id=topology.topology_id,
+                        target_id=target["target_id"],
+                        locked_main_volume_db=f"{fixed_lock:.1f}",
+                        cap_bump_db=f"{LISTENING_POSITION_CAP_BUMP_DB:.1f}",
+                        cap_ceil_db=f"{LISTENING_POSITION_CAP_CEIL_DB:.1f}",
+                    )
+                    return
+        except CaptureStopped:
+            lease.discard_driver_level_outcome(
+                str(target["speaker_group_id"]),
+                str(target["role"]),
+                capture_geometry=requested_geometry,
+            )
+            raise
         lease.context_id = context_id
         level_snapshot = lease.level_match_snapshot(current_context_id=context_id)
         if level_snapshot.get("ready") is not True:
@@ -3635,14 +5485,7 @@ def _handle_crossover_relay_level_match(
             driver_level_locks=driver_level_locks,
             bundle_session_id=(bundle or {}).get("session_id"),
         )
-        from jasper.active_speaker import repeat_admission
-
-        try:
-            repeat_admission.activate(comparison_set)
-        except (OSError, RuntimeError, ValueError):
-            clear_active_comparison_set(topology)
-            repeat_admission.invalidate()
-            raise
+        _activate_crossover_comparison_authorities(topology, comparison_set)
         if bundle is not None:
             from jasper.active_speaker import bundles as active_speaker_bundles
 
@@ -3667,6 +5510,7 @@ def _handle_crossover_relay_level_match(
             label="level_ramp:crossover",
             open=_open,
             run_and_consume=_run,
+            request_stop=_request_stop,
         ),
         relay_base,
         return_url=_request_local_return_url(handler, "/correction/crossover/"),
@@ -3678,9 +5522,9 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
     """POST /sync/relay-capture: capture the sync markers via the cloud relay (the
     phone runs the capture page on jasper.tech) instead of a same-origin upload.
 
-    GATED + DEFAULT-OFF, like /relay/capture. The sync session window must already
-    be open (the /sync/ Start button → handle_start), exactly as the browser flow
-    requires before playing the marker. sync_flow owns the stimulus + analysis;
+    CONFIG-GATED. The sync session window must already be open (the /sync/ Start
+    button → handle_start), exactly as the browser flow requires before playing
+    the marker. sync_flow owns the stimulus + analysis;
     this just bridges the relay transport through the shared orchestrator. The
     second real caller of the RelayCaptureKind seam — a new kind is a descriptor,
     not a new handler. ON-DEVICE: the acoustic marker capture is not exercised
@@ -3769,24 +5613,392 @@ def _assert_crossover_driver_action(
         or str(expected_body.get("role") or "").lower() != role.lower()
         or expected_geometry != geometry
     ):
-        raise ValueError(
+        raise ServerOwnedNextStepMismatch(
             "the requested driver capture is not the server-owned next step"
         )
+
+
+def _plan_admission_matches(
+    plan_admission: Mapping[str, Any] | None,
+    *,
+    speaker_group_id: str,
+    role: str,
+    capture_geometry: str,
+    target_fingerprint: str,
+) -> bool:
+    """Whether ``plan_admission`` IS the live ``repeat_admission`` reservation
+    for exactly this (speaker_group_id, role, capture_geometry) capture.
+
+    A session-spanning capture plan's ``authorize_begin`` (SPEC W2.3) already
+    admitted this exact attempt through the durable ``repeat_admission``
+    ledger — budget, target identity, and ordering all enforced there. That
+    reservation IS the server-owned admission for the capture it covers.
+    Re-deriving "server-owned next step" a second time from
+    ``build_crossover_envelope`` (with the relay forced blank so the guard
+    cannot see its own session) is a second, weaker copy of the SAME fact —
+    and once the reservation itself is live, the two computations can
+    disagree: an in-flight ``repeat_admission`` entry makes the envelope's
+    own ``orphaned_inflight`` check treat the plan's own attempt as an
+    abandoned one (see ``jasper/active_speaker/crossover_envelope.py``), so
+    the envelope stops offering the very capture the plan just authorized.
+    Hardware run 21 (jts3 @ 62af5b206): every v3 driver capture failed this
+    way, deterministically, ~3s after ``authorize_begin`` admitted it.
+
+    Scoped narrowly: ``plan_admission`` must be the CURRENT, live
+    (``status == "active"`` and ``inflight`` truthy) reservation, and its
+    ``target_id``/``target_fingerprint`` must match the geometry-scoped
+    binding this exact request derives — a reservation for a different
+    role, group, or capture geometry (near_field vs. reference_axis are
+    bound to different ledger targets) never matches. A caller with no
+    admission of its own (``plan_admission=None`` — every wizard-initiated
+    v2/direct request) always falls through to the full envelope-derivation
+    guard, unchanged.
+    """
+    if not isinstance(plan_admission, Mapping):
+        return False
+    if plan_admission.get("status") != "active" or not plan_admission.get(
+        "inflight"
+    ):
+        return False
+    from jasper.active_speaker.capture_geometry import driver_repeat_binding
+
+    try:
+        expected_target_id, expected_target_fingerprint = driver_repeat_binding(
+            speaker_group_id=speaker_group_id,
+            role=role,
+            target_fingerprint=target_fingerprint,
+            capture_geometry=capture_geometry,
+        )
+    except ValueError:
+        return False
+    return (
+        str(plan_admission.get("target_id") or "") == expected_target_id
+        and str(plan_admission.get("target_fingerprint") or "")
+        == expected_target_fingerprint
+    )
+
+
+def _handle_crossover_region_geometry(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """Persist the explicit signed geometry for the server's current region."""
+
+    raw = _read_json_body(handler)
+    if set(raw) != {
+        "expected_target_fingerprint",
+        "signed_acoustic_path_difference_mm",
+    }:
+        raise ValueError("region geometry contains unsupported fields")
+    if _active_relay_phase() is not None:
+        raise ValueError("finish the current microphone capture first")
+    from . import correction_crossover_backend
+
+    return correction_crossover_backend.attest_commissioning_region_geometry(raw)
+
+
+def _handle_crossover_candidate(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """Resume candidate publication after a measured-to-ready interruption."""
+
+    if _read_json_body(handler):
+        raise ValueError("measured candidate preparation accepts no browser fields")
+    if _active_relay_phase() is not None:
+        raise ValueError("finish the current microphone capture first")
+    from . import correction_crossover_backend
+
+    return correction_crossover_backend.prepare_commissioning_candidate()
+
+
+def _post_crossover_relay_host_event(
+    relay_base: str,
+    session_id: str,
+    pull_token: str,
+    payload: dict[str, Any],
+) -> Any:
+    from jasper.capture_relay.client import RelayClient
+    from jasper.capture_relay.health import relay_registration_token_from_env
+
+    client = RelayClient(
+        relay_base,
+        timeout=_RELAY_REGISTER_TIMEOUT_S,
+        registration_token=relay_registration_token_from_env(),
+    )
+    return client.post_host_event(session_id, pull_token, payload)
+
+
+def _handle_crossover_summed_commissioning_relay(
+    handler: BaseHTTPRequestHandler,
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Register one recorder-only relay for the Active-owned summed host."""
+
+    if set(raw) != {"kind"}:
+        raise ValueError(
+            "summed commissioning accepts no browser region, polarity, or delay fields"
+        )
+    from jasper.capture_relay import correction_adapter
+    from jasper.capture_relay.spec import build_crossover_sweep_spec
+    from jasper.capture_relay.session import CaptureStopped
+    from jasper.audio_measurement.playback import PlaybackResult
+    from jasper.active_speaker.commissioning_capture_producer import RawCaptureResult
+    from jasper.active_speaker.test_signal_plan import (
+        CROSSOVER_AMBIENT_DURATION_S,
+        CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
+        CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+        SUMMED_SWEEP_DURATION_S,
+    )
+    from . import correction_crossover_backend, correction_crossover_flow
+
+    lease = correction_crossover_backend.level_lease()
+    if lease.unresolved_volume_safety is not None:
+        return _crossover_volume_safety_refusal()
+    calibration, expected_device_sha256 = (
+        correction_crossover_backend.commissioning_recorder_binding()
+    )
+    relay_base = _require_relay_base()
+    blocking = _crossover_blocking_phase()
+    if blocking is not None:
+        raise ValueError(
+            f"another measurement is in progress ({blocking}) — finish it "
+            "before measuring the combined crossover"
+        )
+    verification = raw.get("kind") == "verification"
+    expected = correction_crossover_backend.commissioning_region_status()
+    expected_verification = expected.get("verification")
+    next_capture = (
+        expected_verification.get("next_target")
+        if verification and isinstance(expected_verification, Mapping)
+        else expected.get("next_capture")
+    )
+    expected_status = "applied_unverified" if verification else "collecting"
+    if expected.get("status") != expected_status or not isinstance(
+        next_capture, Mapping
+    ):
+        raise ValueError(
+            str(
+                expected.get("detail")
+                or "the active commissioning run has no combined capture ready"
+            )
+        )
+    expected_context = {
+        "run_id": expected.get("run_id"),
+        "owner_generation": expected.get("owner_generation"),
+        "plan_fingerprint": expected.get("plan_fingerprint"),
+    }
+    driver_label = (
+        "post-apply combined-response verification"
+        if verification
+        else "next server-selected crossover capture"
+    )
+    acknowledgement_binding = secrets.token_urlsafe(24)
+
+    def _open(
+        client: RelayClient,
+        base: str,
+        capture_origin: str,
+        return_url: str,
+    ) -> RelayCapture:
+        return correction_adapter.open_capture(
+            client,
+            build_crossover_sweep_spec(
+                driver_label=driver_label,
+                driver_role="summed",
+                driver_capture_geometry="reference_axis",
+                acknowledgement_binding=acknowledgement_binding,
+                stimulus_duration_ms=int(round(SUMMED_SWEEP_DURATION_S * 1000)),
+                ambient_duration_ms=int(
+                    round(CROSSOVER_AMBIENT_DURATION_S * 1000)
+                ),
+                hard_timeout_ms=int(round(CROSSOVER_CAPTURE_HARD_TIMEOUT_S * 1000)),
+                max_upload_bytes=CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+            ),
+            relay_base=base,
+            capture_origin=capture_origin,
+            return_url=return_url,
+        )
+
+    stop_event = threading.Event()
+    stop_lock = threading.Lock()
+
+    def _request_stop() -> None:
+        with stop_lock:
+            stop_event.set()
+
+    async def _run_and_consume(client: Any, pi_session: Any) -> None:
+        import asyncio
+
+        acknowledgement_metadata: dict[str, Any] = {}
+
+        def _validate_current_context() -> None:
+            current = correction_crossover_backend.commissioning_region_status()
+            current_context = {
+                "run_id": current.get("run_id"),
+                "owner_generation": current.get("owner_generation"),
+                "plan_fingerprint": current.get("plan_fingerprint"),
+            }
+            current_verification = current.get("verification")
+            current_next = (
+                current_verification.get("next_target")
+                if verification and isinstance(current_verification, Mapping)
+                else current.get("next_capture")
+            )
+            if (
+                current.get("status") != expected_status
+                or current_context != expected_context
+                or current_next != next_capture
+            ):
+                raise ValueError(
+                    "the commissioning run or plan changed; create a new capture link"
+                )
+            current_calibration, current_device_sha256 = (
+                correction_crossover_backend.commissioning_recorder_binding()
+            )
+            if (
+                getattr(current_calibration, "calibration_id", None)
+                != getattr(calibration, "calibration_id", None)
+                or current_device_sha256 != expected_device_sha256
+            ):
+                raise ValueError(
+                    "the commissioning microphone binding changed; create a new capture link"
+                )
+
+        def _validate_capture(result: Any) -> None:
+            block = _relay_device_calibration_block(calibration, result.device)
+            if block is not None:
+                raise ValueError(block)
+            actual_device = _sanitize_input_device(result.device) or {}
+            actual_device_key = _relay_device_key(actual_device)
+            if (
+                not actual_device_key
+                or hashlib.sha256(actual_device_key.encode("utf-8")).hexdigest()
+                != expected_device_sha256
+            ):
+                raise ValueError(
+                    "the microphone differs from the fixed-axis comparison set; "
+                    "select the same microphone or restart driver measurement"
+                )
+
+        def _prepare_armed(state: Any, acknowledgement: Any) -> None:
+            _validate_current_context()
+            required = pi_session.spec.acknowledgement
+            assert required is not None
+            acknowledgement_metadata.clear()
+            acknowledgement_metadata.update(
+                {
+                    "policy_id": required.id,
+                    "acknowledgement_binding": required.binding_id,
+                    "relay_session_id": pi_session.session_id,
+                    "capture_page": state.capture_page,
+                    "acknowledgement": acknowledgement,
+                }
+            )
+
+        async def _raw_transport(play_once: Any) -> RawCaptureResult:
+            async def _play_sequence(on_sweep_ready: Callable[[], None]) -> Any:
+                await asyncio.sleep(CROSSOVER_AMBIENT_DURATION_S)
+                await asyncio.to_thread(on_sweep_ready)
+                return await play_once()
+
+            def _validate_playback(result: Any) -> None:
+                if not isinstance(result, PlaybackResult):
+                    raise RuntimeError("admitted summed playback did not complete")
+
+            try:
+                result, _playback = (
+                    await correction_crossover_flow.run_crossover_relay_transport(
+                        client,
+                        pi_session,
+                        run_async=_run_async,
+                        play_sequence=_play_sequence,
+                        validate_playback=_validate_playback,
+                        prepare_armed=_prepare_armed,
+                        validate_capture=_validate_capture,
+                        post_host_event=lambda session_id, pull_token, payload: (
+                            _post_crossover_relay_host_event(
+                                relay_base,
+                                session_id,
+                                pull_token,
+                                payload,
+                            )
+                        ),
+                        begin_finishing=lambda: _begin_relay_finishing(
+                            "crossover_sweep:summed"
+                        ),
+                        begin_commit=lambda: _begin_relay_commit(
+                            "crossover_sweep:summed"
+                        ),
+                        ambient_duration_s=CROSSOVER_AMBIENT_DURATION_S,
+                        stop_event=stop_event,
+                    )
+                )
+            except CaptureStopped as exc:
+                raise asyncio.CancelledError from exc
+            metadata = {
+                "relay_session_id": pi_session.session_id,
+                "device": result.device,
+                "noise_floor": result.noise_floor,
+                "setup": result.setup,
+                "fixed_axis_acknowledgement": acknowledgement_metadata,
+            }
+            return RawCaptureResult(result.wav, metadata)
+
+        from jasper.correction import coordinator
+
+        async with coordinator.measurement_window():
+            if verification:
+                recorded = (
+                    await correction_crossover_backend.capture_next_commissioning_verification(
+                        _raw_transport,
+                        camilla_factory=_camilla,
+                    )
+                )
+            else:
+                recorded = await correction_crossover_backend.capture_next_commissioning_region(
+                    _raw_transport,
+                    camilla_factory=_camilla,
+                )
+        log_event(
+            logger,
+            "correction.crossover_region_capture_recorded",
+            run_id=expected_context["run_id"],
+            plan_fingerprint=expected_context["plan_fingerprint"],
+            group=recorded.get("speaker_group_id"),
+            region=recorded.get("region_id"),
+            evidence_kind=recorded.get("evidence_kind"),
+            capture_fingerprint=recorded.get("capture_fingerprint"),
+        )
+
+    kind = RelayCaptureKind(
+        label="crossover_sweep:summed",
+        open=_open,
+        run_and_consume=_run_and_consume,
+        request_stop=_request_stop,
+    )
+    return {
+        "relay": _run_relay_capture(
+            kind,
+            relay_base,
+            return_url=_request_local_return_url(handler, "/correction/crossover/"),
+        )
+    }
 
 
 def _handle_crossover_relay_capture(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/relay-capture: capture one active-crossover driver/summed
-    sweep via the cloud relay (the phone runs the capture page on jasper.tech)
-    instead of a same-origin upload.
+    """POST /crossover/relay-capture: capture one active-crossover driver sweep.
+
+    Driver requests retain the production isolated-driver path. Summed requests
+    enter the strict Active-owned host, which chooses region, polarity, delay,
+    graph, attempt, and ordinal; post-apply verification reuses the summed
+    recorder path, and the browser supplies recorder bytes only.
 
     The third
     real caller of the RelayCaptureKind seam — a new kind is a descriptor, not a
     new orchestrator. The `crossover_sweep` spec + `correction_crossover_flow`'s
     relay run-and-consume own the stimulus + analysis; this bridges the relay
-    transport through the shared orchestrator. Body: `{kind: "driver"|"summed",
-    speaker_group_id, role (driver only), capture_geometry (server-envelope
+    transport through the shared orchestrator. Body:
+    `{kind: "driver"|"summed"|"verification", speaker_group_id, role (driver
+    only), capture_geometry (server-envelope
     driver action only)}`. ON-DEVICE: the acoustic capture is
     not exercised hardware-free (same status as the room/sync relay — H2).
 
@@ -3795,13 +6007,26 @@ def _handle_crossover_relay_capture(
     (mirrors sync's `relay_precheck`), and re-checked at armed time inside the
     run-and-consume (the phone can arm minutes later — a sweep played over
     another measurement silently corrupts both captures)."""
+    # The discriminator is the only browser input trusted far enough to select
+    # an ingress. The summed branch rejects every former browser-owned DSP field
+    # and delegates exact operation selection to the typed internal host.
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_flow
+
+    kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
+    if kind_id in {"summed", "verification"}:
+        return _handle_crossover_summed_commissioning_relay(handler, raw)
+
     from jasper.capture_relay import correction_adapter
     from jasper.capture_relay.spec import build_crossover_sweep_spec
     from jasper.output_topology import load_output_topology
 
-    from . import correction_crossover_flow
     from . import correction_crossover_backend
 
+    lease = correction_crossover_backend.level_lease()
+    if lease.unresolved_volume_safety is not None:
+        return _crossover_volume_safety_refusal()
     relay_base = _require_relay_base()  # gated off until configured; inert otherwise
     blocking = _crossover_blocking_phase()
     if blocking is not None:
@@ -3809,12 +6034,9 @@ def _handle_crossover_relay_capture(
             f"another measurement is in progress ({blocking}) — finish it "
             "before starting a crossover relay capture"
         )
-    raw = _read_json_body(handler)
-    kind_id = correction_crossover_flow.relay_kind_from_raw(raw)
     requested_geometry_hint = str(
         raw.get("capture_geometry") or "near_field"
     ).lower()
-    lease = correction_crossover_backend.level_lease()
     status = correction_crossover_backend.status_payload()
     applied_profile = status.get("applied_profile")
     if not isinstance(applied_profile, dict):
@@ -3824,10 +6046,23 @@ def _handle_crossover_relay_capture(
         )
     topology = load_output_topology()
     setup = status.get("setup") if isinstance(status, dict) else None
+    # Same in-sequence-anchor carve-out as the level-match endpoint and the
+    # envelope's _setup_ready: mid-sequence the persisted config is the
+    # all-muted staged anchor by design (PR #1523), so a blocked setup with
+    # that exact reason plus a pending capture-entry stash must not refuse
+    # the sweep the envelope itself is offering. All other blocked reasons
+    # refuse exactly as before.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
     if (
         not status.get("active")
         or not isinstance(setup, dict)
-        or setup.get("status") != "ready"
+        or (
+            setup.get("status") != "ready"
+            and not setup_blocked_only_by_in_sequence_anchor(status)
+        )
     ):
         raise ValueError(
             "protected speaker setup is no longer ready; finish it before "
@@ -3903,8 +6138,23 @@ def _handle_crossover_relay_capture(
 
     def _assert_server_owned_driver_action(
         current_status: Mapping[str, Any],
+        *,
+        plan_admission: Mapping[str, Any] | None = None,
     ) -> None:
         if kind_id != "driver":
+            return
+        # plan_admission is only ever non-None from the armed-time call inside
+        # _validate_current_context below (SPEC W2.3) -- by then
+        # target_fingerprint (closed over from the outer scope) is already
+        # assigned. The POST-time call above always passes none, so this
+        # branch short-circuits before ever touching target_fingerprint.
+        if plan_admission is not None and _plan_admission_matches(
+            plan_admission,
+            speaker_group_id=requested_group,
+            role=requested_role,
+            capture_geometry=requested_geometry,
+            target_fingerprint=target_fingerprint,
+        ):
             return
         _assert_crossover_driver_action(
             current_status,
@@ -3941,6 +6191,27 @@ def _handle_crossover_relay_capture(
     acknowledgement_binding = secrets.token_urlsafe(24)
     driver_label = correction_crossover_flow.relay_driver_label(raw)
 
+    # Session-spanning capture plan (protocol v3, SPEC W2.3) — driver-sweep
+    # specs ALWAYS carry one now (unconditional in code; the coordinator's
+    # deploy sequencing, not a flag here, protects it — see the PR body).
+    # capture_target/max_attempts mirror the SAME numbers the existing
+    # repeat_admission/commissioning_capture ledger already enforces
+    # (DEFAULT_REPEAT_TARGET=3 accepted repeats within MAX_ATTEMPTS=4 admitted
+    # attempts), so the plan's own bookkeeping and the durable ledger's
+    # bookkeeping can never drift out of lockstep. Summed/verification stay
+    # on the v2 per-capture path untouched.
+    capture_plan: Any = None
+    if kind_id == "driver":
+        from jasper.active_speaker.commissioning_capture import (
+            DEFAULT_REPEAT_TARGET,
+        )
+        from jasper.active_speaker.repeat_admission import MAX_ATTEMPTS
+        from jasper.capture_relay.spec import CapturePlan
+
+        capture_plan = CapturePlan(
+            capture_target=DEFAULT_REPEAT_TARGET, max_attempts=MAX_ATTEMPTS
+        )
+
     def _open(
         client: RelayClient,
         base: str,
@@ -3948,31 +6219,37 @@ def _handle_crossover_relay_capture(
         return_url: str,
     ) -> RelayCapture:
         from jasper.active_speaker.test_signal_plan import (
-            CROSSOVER_AMBIENT_DURATION_S,
             CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
             CROSSOVER_CAPTURE_MAX_WAV_BYTES,
             SUMMED_SWEEP_DURATION_S,
             driver_sweep_duration_s,
         )
 
+        role = str(raw.get("role") or "")
         sweep_duration_s = (
-            driver_sweep_duration_s(str(raw.get("role") or ""))
+            driver_sweep_duration_s(role)
             if kind_id == "driver"
             else SUMMED_SWEEP_DURATION_S
+        )
+        # Right-sized per driver (the sweep's own duration + margin) rather than
+        # a fixed worst-case pause — see correction_crossover_flow's
+        # crossover_ambient_duration_s, the SAME function the flow's own sleep
+        # default resolves so the spec and the actual pause can never drift.
+        ambient_duration_s = correction_crossover_flow.crossover_ambient_duration_s(
+            kind_id, role
         )
         return correction_adapter.open_capture(
             client,
             build_crossover_sweep_spec(
                 driver_label=driver_label,
-                driver_role=str(raw.get("role") or "summed"),
+                driver_role=role or "summed",
                 driver_capture_geometry=requested_geometry,
                 acknowledgement_binding=acknowledgement_binding,
                 stimulus_duration_ms=int(round(sweep_duration_s * 1000)),
-                ambient_duration_ms=int(
-                    round(CROSSOVER_AMBIENT_DURATION_S * 1000)
-                ),
+                ambient_duration_ms=int(round(ambient_duration_s * 1000)),
                 hard_timeout_ms=int(round(CROSSOVER_CAPTURE_HARD_TIMEOUT_S * 1000)),
                 max_upload_bytes=CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+                capture_plan=capture_plan,
             ),
             relay_base=base,
             capture_origin=capture_origin,
@@ -3980,17 +6257,12 @@ def _handle_crossover_relay_capture(
         )
 
     def _post_host_event(session_id: str, pull_token: str, payload: dict[str, Any]):
-        # Bind the relay client fresh per post so the closure needs no client
-        # capture; the orchestrator's client is the register client, reused here.
-        from jasper.capture_relay.client import RelayClient
-        from jasper.capture_relay.health import relay_registration_token_from_env
-
-        client = RelayClient(
+        return _post_crossover_relay_host_event(
             relay_base,
-            timeout=_RELAY_REGISTER_TIMEOUT_S,
-            registration_token=relay_registration_token_from_env(),
+            session_id,
+            pull_token,
+            payload,
         )
-        return client.post_host_event(session_id, pull_token, payload)
 
     def _validate_capture(result: Any) -> None:
         block = _relay_device_calibration_block(calibration, result.device)
@@ -4065,10 +6337,14 @@ def _handle_crossover_relay_capture(
             capture_geometry=requested_geometry,
         )
 
-    def _validate_current_context() -> None:
+    def _validate_current_context(
+        plan_admission: Mapping[str, Any] | None = None,
+    ) -> None:
         current_topology = load_output_topology()
         current_status = correction_crossover_backend.status_payload()
-        _assert_server_owned_driver_action(current_status)
+        _assert_server_owned_driver_action(
+            current_status, plan_admission=plan_admission
+        )
         correction_crossover_flow.validate_current_capture_context(
             current_status,
             current_topology_id=current_topology.topology_id,
@@ -4159,37 +6435,106 @@ def _handle_crossover_relay_capture(
             status=repeat_admission.failure_status(reservation.get("attempt")),
         )
 
-    base_run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
-        raw,
-        _run_async,
-        _camilla,
-        post_host_event=_post_host_event,
-        # Server-side probe, re-evaluated fresh when the phone actually arms.
-        blocking_phase=_crossover_blocking_phase,
-        validate_capture=_validate_capture,
-        prepare_play=_prepare_capture_play,
-        restore_play=_restore_capture_play,
-        driver_locked_main_volume_db=(
-            _driver_locked_main_volume_db if kind_id == "driver" else None
-        ),
-        comparison_set=comparison_set,
-        applied_profile=(
-            applied_profile if isinstance(applied_profile, dict) else None
-        ),
-        target_fingerprint=target_fingerprint,
-        validate_current_context=_validate_current_context,
-        reserve_repeat_attempt=(
-            _reserve_repeat_attempt if kind_id == "driver" else None
-        ),
-        finish_failed_repeat_attempt=(
-            _finish_failed_repeat_attempt if kind_id == "driver" else None
-        ),
-    )
+    stop_event = threading.Event()
+    stop_lock = threading.Lock()
+
+    def _request_stop() -> None:
+        with stop_lock:
+            stop_event.set()
+
+    if capture_plan is not None:
+        # Session-spanning capture plan (protocol v3, SPEC W2.3): one relay
+        # session drives the whole repeat SET. Same reservation seam
+        # (reserve_repeat_attempt/finish_failed_repeat_attempt) and the same
+        # per-capture analysis/record path (record_driver_capture, reached
+        # through build_crossover_relay_plan_run_and_consume's
+        # consume_capture) as the v2 branch below — see that function's
+        # docstring for the full reasoning.
+        driver_role = str(raw.get("role") or "driver")
+
+        def _publish_plan_progress(accepted_count: int) -> None:
+            assert capture_plan is not None
+            _publish_crossover_capture_plan_progress(
+                f"crossover_sweep:{kind_id}",
+                {
+                    "role": driver_role,
+                    "capture_target": capture_plan.capture_target,
+                    "accepted": accepted_count,
+                },
+            )
+
+        base_run_and_consume = (
+            correction_crossover_flow.build_crossover_relay_plan_run_and_consume(
+                raw,
+                _run_async,
+                _camilla,
+                post_host_event=_post_host_event,
+                blocking_phase=_crossover_blocking_phase,
+                validate_capture=_validate_capture,
+                prepare_play=_prepare_capture_play,
+                restore_play=_restore_capture_play,
+                driver_locked_main_volume_db=_driver_locked_main_volume_db,
+                comparison_set=comparison_set,
+                applied_profile=(
+                    applied_profile if isinstance(applied_profile, dict) else None
+                ),
+                target_fingerprint=target_fingerprint,
+                validate_current_context=_validate_current_context,
+                reserve_repeat_attempt=_reserve_repeat_attempt,
+                finish_failed_repeat_attempt=_finish_failed_repeat_attempt,
+                publish_progress=_publish_plan_progress,
+                stop_event=stop_event,
+                stop_lock=stop_lock,
+            )
+        )
+    else:
+        # Unreachable for driver captures (pre-existing): summed/verification
+        # already early-returned above, so kind_id is always "driver" here,
+        # and capture_plan is set unconditionally for driver — so the v2
+        # per-capture runner is dead for this endpoint. Retained as the
+        # documented v2 shape (still used by the summed/verification path via
+        # its own handler) and because relay_kind_from_raw's contract could
+        # grow a fourth non-driver kind.
+        base_run_and_consume = correction_crossover_flow.build_crossover_relay_run_and_consume(
+            raw,
+            _run_async,
+            _camilla,
+            post_host_event=_post_host_event,
+            # Server-side probe, re-evaluated fresh when the phone actually arms.
+            blocking_phase=_crossover_blocking_phase,
+            validate_capture=_validate_capture,
+            prepare_play=_prepare_capture_play,
+            restore_play=_restore_capture_play,
+            driver_locked_main_volume_db=(
+                _driver_locked_main_volume_db if kind_id == "driver" else None
+            ),
+            comparison_set=comparison_set,
+            applied_profile=(
+                applied_profile if isinstance(applied_profile, dict) else None
+            ),
+            target_fingerprint=target_fingerprint,
+            validate_current_context=_validate_current_context,
+            reserve_repeat_attempt=(
+                _reserve_repeat_attempt if kind_id == "driver" else None
+            ),
+            finish_failed_repeat_attempt=(
+                _finish_failed_repeat_attempt if kind_id == "driver" else None
+            ),
+            begin_finishing=lambda: _begin_relay_finishing(
+                f"crossover_sweep:{kind_id}"
+            ),
+            begin_commit=lambda: _begin_relay_commit(
+                f"crossover_sweep:{kind_id}"
+            ),
+            stop_event=stop_event,
+            stop_lock=stop_lock,
+        )
 
     kind = RelayCaptureKind(
         label=f"crossover_sweep:{kind_id}",
         open=_open,
         run_and_consume=base_run_and_consume,
+        request_stop=_request_stop,
     )
     return {
         "relay": _run_relay_capture(
@@ -4198,6 +6543,117 @@ def _handle_crossover_relay_capture(
             return_url=_request_local_return_url(handler, "/correction/crossover/"),
         )
     }
+
+
+def _handle_crossover_relay_cancel() -> dict[str, Any]:
+    """Stop Crossover relay work and keep its slot until cleanup completes.
+
+    The Stop button is already hidden once the rendered relay status turns
+    terminal (crossover/main.js's ``RELAY_STOPPABLE`` gate), but a poll-cycle
+    race can still let a click reach the server after the relay finished on
+    its own (the phone completed, or another tab already stopped it).
+    ``_request_relay_stop`` raises a diagnostic message for that case; map it
+    to a plain-language sentence here rather than leaking it to the page.
+    """
+
+    try:
+        relay = _request_relay_stop(
+            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
+        )
+    except ValueError:
+        raise ValueError(
+            "This measurement already stopped — nothing more to do here."
+        ) from None
+    return {"relay": relay}
+
+
+def _handle_crossover_v2_relay(
+    handler: BaseHTTPRequestHandler, *, verify_only: bool
+) -> dict[str, Any]:
+    """POST /crossover/v2/session | /crossover/v2/verify (Wave 5a).
+
+    Thin dispatch over :mod:`jasper.web.correction_crossover_v2` — the v2 host
+    module owns gating, conductor construction, seam bindings, and the plan
+    runner; this bridges it into the shared relay slot/lifecycle machinery
+    (``_run_relay_capture``) exactly as the legacy crossover kinds do. The
+    host refuses fail-closed when ``JASPER_CROSSOVER_FLOW`` is not ``v2``.
+    """
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_backend, correction_crossover_v2 as v2host
+
+    relay_base = _require_relay_base()
+    blocking = _crossover_blocking_phase()
+    if blocking is not None:
+        raise ValueError(
+            f"another measurement is in progress ({blocking}) — finish it "
+            "before starting a crossover measurement session"
+        )
+    status = correction_crossover_backend.status_payload()
+    prepare = v2host.prepare_v2_verify if verify_only else v2host.prepare_v2_session
+    prepared = prepare(
+        raw,
+        status=status,
+        run_async=_run_async,
+        camilla_factory=_camilla,
+    )
+    kind = RelayCaptureKind(
+        label=prepared.label,
+        open=prepared.open,
+        run_and_consume=prepared.run_and_consume,
+        request_stop=prepared.request_stop,
+    )
+    return {
+        "relay": _run_relay_capture(
+            kind,
+            relay_base,
+            return_url=_request_local_return_url(handler, "/correction/crossover/"),
+        )
+    }
+
+
+def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /crossover/v2/apply: apply the reviewed v2 measured candidate."""
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_v2 as v2host
+
+    return v2host.handle_v2_apply(raw, _run_async, _camilla)
+
+
+def _handle_crossover_v2_restore(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /crossover/v2/restore: the v2-aware Undo (W6 run-8 Blocker Q)."""
+    _read_json_body(handler)  # no fields consumed; drains the request body
+
+    from . import correction_crossover_v2 as v2host
+
+    return v2host.handle_v2_restore(_run_async, _camilla)
+
+
+def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
+    """POST /crossover/reset: in-flow "start over" for the crossover flow.
+
+    Unlike ``_handle_crossover_relay_cancel``, an unstarted relay is the
+    COMMON case here (most Start-over clicks happen between measurements,
+    not mid-capture), so a "nothing to stop" ``ValueError`` is swallowed
+    rather than surfaced. Any crossover-owned relay or level-match ramp is
+    requested to stop first; the actual state clear
+    (``correction_crossover_flow.handle_reset``) fails closed if that stop
+    has not finished draining yet, rather than racing it.
+    """
+
+    try:
+        _request_relay_stop(
+            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
+        )
+    except ValueError:
+        pass
+
+    from . import correction_crossover_flow
+
+    return correction_crossover_flow.handle_reset(
+        relay=_get_relay_capture_for("crossover_sweep:", "level_ramp:crossover"),
+    )
 
 
 def _maybe_restore_main_volume(sess, cam) -> None:
@@ -4276,6 +6732,17 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /apply: write YAML + reload CamillaDSP. Restores
     pre-autolevel main_volume if autolevel was used."""
     sess = _get_or_create_session()
+    from jasper.correction import failures
+
+    evidence_failure = failures.measurement_evidence_failure(
+        getattr(sess, "confidence_report", None),
+    )
+    if evidence_failure is not None:
+        raise RoomRequestFailure(
+            "measurement confidence contains blocking evidence",
+            evidence_failure,
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        )
     cam = _camilla()
 
     async def _set(path: str) -> bool:
@@ -4285,7 +6752,16 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.get_config_file_path(best_effort=True)
 
     try:
-        _run_async(sess.apply(_set, camilla_get_config=_get), timeout=15.0)
+        _run_graph_mutation(
+            sess.apply(
+                _set,
+                camilla_get_config=_get,
+                prepare_guard=lambda: _assert_room_authority_current(
+                    cam,
+                    sess.room_authority_binding,
+                ),
+            )
+        )
     finally:
         # Audio-safety: autolevel may have ramped main_volume well above the
         # listening level for measurement SNR. Restore it even if apply()
@@ -4306,314 +6782,21 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 # (no polling — the envelope's `tuning_llm` block gates the button, but
 # the paid call happens only here). The surface is hidden with a nudge
 # when no OpenAI key is configured; if a request still arrives without a
-# key, the advisor raises AdvisorModelError which surfaces as a 400.
+# key, the availability preflight returns the closed 409 setup-unavailable
+# failure. Provider/advisor request failures remain closed 400 responses.
 
 def _require_tuning_key() -> None:
     from jasper.calibration_agent.key_provisioning import tuning_llm_available
 
     if not tuning_llm_available():
-        raise RequestConflict(
+        raise TuningSetupUnavailable(
             "the tuning assistant needs an OpenAI key — add one at /voice"
         )
 
 
-# Monotonic timestamp of the last PAID tuning call attempt, shared across
-# the two paid handlers. A mutable single-slot list so tests can reset it;
-# guarded by a lock because the wizard is a ThreadingHTTPServer.
-_tuning_paid_call_lock = threading.Lock()
-_tuning_last_paid_call: list[float] = [0.0]
-
-
-def _tuning_paid_call_gate() -> None:
-    """Refuse a second PAID call within TUNING_LLM_MIN_INTERVAL_SEC.
-
-    Stamped at ATTEMPT time (before the provider call), so concurrent or
-    rapid-fire requests — a stuck client retry loop, a double-tap — cannot
-    silently burn spend while one call is already in flight. The refusal
-    is an honest 409 the panel shows, never a silent drop.
-    """
-    now = time.monotonic()
-    with _tuning_paid_call_lock:
-        since = now - _tuning_last_paid_call[0]
-        if since < TUNING_LLM_MIN_INTERVAL_SEC:
-            raise RequestConflict(
-                "the tuning assistant just made a paid call — wait a "
-                "moment and tap again"
-            )
-        _tuning_last_paid_call[0] = now
-
-
-# Writes to the tuning-surface spend ledger — jasper-correction-web is its
-# SOLE writer (never usage.db, which jasper-voice owns; a root-created file
-# there wedges the voice ledger — the 2026-06-19 outage class). Serialised
-# under this module lock, and each record opens a FRESH UsageStore
-# (open → record → close). A process-global store would silently die on every
-# handler thread except its creator's: this server is a ThreadingHTTPServer
-# (one thread per TCP connection) and sqlite3 connections default to
-# check_same_thread=True, so a store created on thread A raises
-# ProgrammingError from thread B — which open_session's fail-soft catch
-# swallows while the "recorded" event still logs (the review-proven
-# one-row-of-three shape). Per-call open also makes the 0644 perms
-# self-healing and removes any partial-init state.
-_tuning_usage_lock = threading.Lock()
-
-
-# Models already warned about as unpriced — once per process per model
-# (mirrors the voice surface's once-per-daemon-start pricing.unpriced posture;
-# this process is socket-activated with a 10-min idle exit, so the warning
-# re-arms regularly without spamming per tap). Mutated under
-# _tuning_usage_lock like the rest of the ledger state.
-_tuning_unpriced_warned: set[str] = set()
-
-
-def _warn_if_tuning_model_unpriced(model: str, overrides: dict[str, dict]) -> None:
-    """WARN (once per process per model) when the tuning model has no rate.
-
-    An operator ``JASPER_TUNING_LLM_MODEL`` override pointing at a model with
-    no row in the bundled pricing (nor the /voice override file) records $0 —
-    silently re-opening the exact hole this ledger closes. Mirror the voice
-    surface's ``pricing.unpriced`` event with ``surface="tuning"`` so the
-    journal carries the same signal. Caller MUST hold ``_tuning_usage_lock``
-    and pass the same ``overrides`` the record itself prices with, so the
-    warning and the recorded cost can never disagree."""
-    from jasper.usage import pricing_for_model
-
-    if not pricing_for_model(model, overrides=overrides).label.startswith(
-        "unpriced:"
-    ):
-        return
-    if model in _tuning_unpriced_warned:
-        return
-    _tuning_unpriced_warned.add(model)
-    log_event(
-        logger,
-        "pricing.unpriced",
-        model=model,
-        surface="tuning",
-        note=(
-            "no rate available for the tuning model; its paid calls record "
-            "$0 and the daily spend cap cannot bound tuning spend until a "
-            "rate is set at /voice"
-        ),
-        level=logging.WARNING,
-    )
-
-
-def _heal_tuning_ledger_mode(tuning_db: str) -> None:
-    """Ensure the ledger file is 0644 so the jasper-group readers
-    (jasper-voice, jasper-web, doctor) can open it read-only.
-
-    Self-healing on EVERY record, not just first create: a crash between
-    sqlite-create (0600 under the root unit's UMask=0077) and the chmod, or a
-    single failed chmod, must not permanently — and invisibly, since readers
-    count an unopenable member as zero at DEBUG — break household-spend
-    aggregation for the non-root surfaces. Root chmod'ing its own file is
-    trivially cheap. Failure logs at WARNING: a wrong mode means other
-    surfaces are under-counting household spend."""
-    try:
-        mode = os.stat(tuning_db).st_mode & 0o777
-        if mode != 0o644:
-            os.chmod(tuning_db, 0o644)
-    except OSError:
-        logger.warning(
-            "tuning ledger mode heal failed for %s", tuning_db, exc_info=True,
-        )
-
-
-def _record_tuning_spend(out: dict[str, Any], usage_db: str) -> None:
-    """Record one paid tuning call into the tuning ledger. FAIL-SOFT: any
-    OSError / sqlite error logs ``tuning_spend.record_failed`` and returns —
-    never raises, so a ledger problem cannot block the response the user is
-    waiting on.
-
-    The advisor's ``out["usage"]`` carries only aggregate token counts
-    (``input_tokens`` / ``output_tokens``); gpt-5.4 has ONLY text rates, so
-    pricing those aggregates as-is would charge the (absent) audio rate and
-    record $0. Synthesize text-modality details (the research idiom) so the
-    cost prices at the text rate — all-text with no cached refinement is the
-    decided, conservative (slight over-estimate) simplification.
-    """
-    from jasper.calibration_agent.key_provisioning import resolve_tuning_model
-
-    usage_in = out.get("usage") or {}
-    try:
-        input_tokens = int(usage_in.get("input_tokens") or 0)
-        output_tokens = int(usage_in.get("output_tokens") or 0)
-    except (TypeError, ValueError):
-        input_tokens = output_tokens = 0
-    # Text-modality details (note the SINGULAR "token" in the detail keys —
-    # that is what usage.py's breakdown reads).
-    usage = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "input_token_details": {"text_tokens": input_tokens},
-        "output_token_details": {"text_tokens": output_tokens},
-    }
-    model = resolve_tuning_model()
-    from jasper.usage import (
-        UsageStore,
-        load_pricing_overrides,
-        tuning_usage_db_path,
-    )
-
-    tuning_db = tuning_usage_db_path(usage_db)
-    # The /voice pricing editor's override file applies to tuning records too
-    # (an operator who priced a custom tuning model there must get that rate),
-    # and the unpriced warning below checks with the SAME overrides so the
-    # warning and the recorded cost can never disagree.
-    overrides = load_pricing_overrides()
-    try:
-        with _tuning_usage_lock:
-            _warn_if_tuning_model_unpriced(model, overrides)
-            # Fresh store per record — sqlite connections are thread-bound
-            # (see the lock's comment block) and each handler request runs on
-            # its own server thread. Open → record → close, all under the lock.
-            store = UsageStore(tuning_db, pricing_overrides=overrides)
-            try:
-                _heal_tuning_ledger_mode(tuning_db)
-                cost = store.record_background_usage(
-                    provider="openai",
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    usage=usage,
-                )
-                write_degraded = store.write_degraded
-            finally:
-                store._conn.close()
-    except (OSError, sqlite3.Error) as e:
-        log_event(
-            logger,
-            "tuning_spend.record_failed",
-            level=logging.WARNING,
-            error=type(e).__name__,
-        )
-        return
-    if write_degraded:
-        # The store's own fail-soft (open_session/close_session) swallowed a
-        # write error, so NO row was persisted — the store already WARN-logged
-        # the detail. Emit record_failed, never a "recorded" event for a row
-        # that does not exist (the observability-lies half of the review's
-        # Blocker 1).
-        log_event(
-            logger,
-            "tuning_spend.record_failed",
-            level=logging.WARNING,
-            error="write_degraded",
-        )
-        return
-    log_event(
-        logger,
-        "tuning_spend.recorded",
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cost_usd=round(cost, 6),
-    )
-
-
-def _spend_settings() -> tuple[str, float, float]:
-    """The three spend knobs (usage_db, daily cap, safety multiplier), read
-    FRESH per call: the wizard-owned SSOT file wins over ``os.environ``.
-
-    The /voice spend-cap form writes ``JASPER_DAILY_SPEND_CAP_USD`` /
-    ``_SAFETY_MULTIPLIER`` into ``/var/lib/jasper/voice_provider.env``.
-    jasper-voice sources that file LAST in its EnvironmentFile chain, but this
-    unit does not source it at all — and this socket-activated process is not
-    restarted on a save (it can outlive one by its 10-min idle window), so a
-    start-time env would go stale anyway. Overlaying the file's values over
-    ``os.environ`` per call is the :mod:`jasper.voice.provider_state` idiom
-    for exactly this stale-``os.environ`` trap, and matches what the running
-    jasper-voice sees (file wins).
-
-    Deliberately NOT ``Config.from_env()``: that hard-raises
-    ``VoiceProviderNotConfigured`` when no voice provider is set, which would
-    crash the tuning spend gate on an otherwise-valid box (OpenAI key + spend
-    cap configured, voice provider not yet picked). Defaults are shared with
-    ``Config`` via the ``jasper.usage`` constants (no mirrored literals);
-    malformed values fall back to those defaults — deliberately SOFTER than
-    ``Config.from_env``'s hard-raise, because a jasper.env typo must not 500
-    the tuning surface."""
-    from jasper.env_load import read_env_file_state
-    from jasper.usage import (
-        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
-        DEFAULT_DAILY_SPEND_CAP_USD,
-        DEFAULT_USAGE_DB,
-    )
-    from jasper.voice.provider_state import PROVIDER_FILE
-
-    # Path resolution mirrors provider_state._resolve_path: the path override
-    # is a static deploy constant, so reading it from os.environ once per call
-    # is fine — only the file's CONTENTS need the fresh read.
-    provider_file = os.environ.get("JASPER_VOICE_PROVIDER_FILE", PROVIDER_FILE)
-    file_state = read_env_file_state(provider_file)
-    file_values = file_state.values if file_state.loaded else {}
-
-    def _value(name: str) -> str:
-        return (file_values.get(name) or os.environ.get(name) or "").strip()
-
-    def _float(name: str, default: float) -> float:
-        raw = _value(name)
-        if not raw:
-            return default
-        try:
-            return float(raw)
-        except ValueError:
-            return default
-
-    usage_db = _value("JASPER_USAGE_DB") or DEFAULT_USAGE_DB
-    cap_usd = _float("JASPER_DAILY_SPEND_CAP_USD", DEFAULT_DAILY_SPEND_CAP_USD)
-    multiplier = _float(
-        "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
-        DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
-    )
-    return usage_db, cap_usd, multiplier
-
-
-def _spend_usage_db() -> str:
-    """The voice usage DB path (JASPER_USAGE_DB), so the tuning ledger sibling
-    lands in the same directory the voice daemon uses."""
-    return _spend_settings()[0]
-
-
-def _tuning_spend_cap_gate() -> None:
-    """Refuse a PAID tuning call when the household daily spend cap is reached.
-
-    Built fresh per call over ``household_usage_reader(usage_db)`` — so tuning
-    spend AND voice spend share one ceiling. When blocked, raise
-    ``SpendCapExceeded`` (→ 429) with a rollover-worded message.
-
-    Fail-OPEN on a read error, matching the rest of the spend accounting: if
-    the cap can't read (SpendCap's store returns zero on an unreadable DB),
-    ``allowed()`` is True — a ledger problem never blocks the user. We do NOT
-    invent fail-closed here."""
-    from jasper.usage import SpendCap, household_usage_reader
-
-    usage_db, cap_usd, multiplier = _spend_settings()
-    reader = household_usage_reader(usage_db)
-    cap = SpendCap(reader, cap_usd, multiplier)
-    if cap.allowed():
-        return
-    log_event(
-        logger,
-        "tuning_spend.cap_blocked",
-        level=logging.WARNING,
-        # Public surface only (no SpendCap._padded_spend): the raw summed
-        # spend plus the multiplier lets the journal reader recompute the
-        # padded comparison. One extra ledger read, blocked path only.
-        spend_last_24h_usd=round(reader.spend_last_24h_usd(), 6),
-        safety_multiplier=multiplier,
-        cap_usd=cap_usd,
-    )
-    raise SpendCapExceeded(
-        "daily spend cap reached — the tuning assistant will be "
-        "available again after the daily rollover"
-    )
-
-
 def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /interpret: one paid call. Read-only "explain my room"."""
-    from jasper.calibration_agent import correction_advisor, model_client
+    from jasper.calibration_agent import correction_advisor
 
     _require_tuning_key()
     body = _read_json_body(handler)
@@ -4621,19 +6804,28 @@ def _handle_interpret(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
-    _tuning_paid_call_gate()
-    _tuning_spend_cap_gate()
-    try:
-        out = correction_advisor.interpret(
+
+    def _advisor_call(
+        *,
+        user_message: str | None,
+        timeout_sec: float,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        return correction_advisor.interpret(
             sess,
             user_message=user_message,
-            timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
-            max_output_tokens=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
+            timeout_sec=timeout_sec,
+            max_output_tokens=max_output_tokens,
         )
-    except model_client.AdvisorModelError as e:
-        raise BadRequest(str(e)) from e
-    _record_tuning_spend(out, _spend_usage_db())
-    return out
+
+    try:
+        return correction_tuning.interpret(
+            _advisor_call, user_message=user_message,
+        )
+    except correction_tuning.TuningBusy as exc:
+        raise RequestConflict(str(exc)) from exc
+    except correction_tuning.TuningProviderError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -4643,7 +6835,7 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     simulated, and returned with their sim verdict for the UI to surface
     for user confirmation. Applying happens only via /propose/apply.
     """
-    from jasper.calibration_agent import correction_advisor, model_client
+    from jasper.calibration_agent import correction_advisor
 
     _require_tuning_key()
     body = _read_json_body(handler)
@@ -4651,19 +6843,28 @@ def _handle_propose(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if user_message is not None and not isinstance(user_message, str):
         raise BadRequest("message must be a string")
     sess = _get_or_create_session()
-    _tuning_paid_call_gate()
-    _tuning_spend_cap_gate()
-    try:
-        out = correction_advisor.propose(
+
+    def _advisor_call(
+        *,
+        user_message: str | None,
+        timeout_sec: float,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        return correction_advisor.propose(
             sess,
             user_message=user_message,
-            timeout_sec=float(TUNING_LLM_TIMEOUT_SEC),
-            max_output_tokens=model_client.TUNING_LLM_MAX_OUTPUT_TOKENS,
+            timeout_sec=timeout_sec,
+            max_output_tokens=max_output_tokens,
         )
-    except model_client.AdvisorModelError as e:
-        raise BadRequest(str(e)) from e
-    _record_tuning_spend(out, _spend_usage_db())
-    return out
+
+    try:
+        return correction_tuning.propose(
+            _advisor_call, user_message=user_message,
+        )
+    except correction_tuning.TuningBusy as exc:
+        raise RequestConflict(str(exc)) from exc
+    except correction_tuning.TuningProviderError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -4692,6 +6893,17 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise RequestConflict(
             f"cannot apply a proposal from state {sess.state.value}; "
             "the correction must be in the review (READY) state"
+        )
+    from jasper.correction import failures
+
+    evidence_failure = failures.measurement_evidence_failure(
+        getattr(sess, "confidence_report", None),
+    )
+    if evidence_failure is not None:
+        raise RoomRequestFailure(
+            "measurement confidence contains blocking evidence",
+            evidence_failure,
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
         )
 
     # Re-validate schema + bounds against the ACTIVE strategy caps.
@@ -4722,6 +6934,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not validation["accepted"]:
         return {
             "applied": False,
+            "failure": failures.public_failure(
+                failures.TUNING_PROPOSAL_REJECTED,
+            ),
             "reason": "proposal failed re-validation against strategy caps",
             "issues": validation["issues"],
             "session_id": sess.session_id,
@@ -4742,6 +6957,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     if not sim.accepted:
         return {
             "applied": False,
+            "failure": failures.public_failure(
+                failures.TUNING_PROPOSAL_REJECTED,
+            ),
             "reason": "proposal rejected by the deterministic simulation gate",
             "simulation": sim.to_dict(),
             "session_id": sess.session_id,
@@ -4755,6 +6973,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # only preview is honest there); applying without the judge is not.
         return {
             "applied": False,
+            "failure": failures.public_failure(
+                failures.TUNING_PROPOSAL_REJECTED,
+            ),
             "code": "missing_acceptance_basis",
             "reason": (
                 "proposal could not be judged against the room baseline "
@@ -4787,6 +7008,9 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     # kept its previous sound would be a dishonest success message.
     result["applied"] = result.get("state") == "applied"
     if not result["applied"]:
+        result["failure"] = failures.public_failure(
+            failures.CORRECTION_UPDATE_FAILED,
+        )
         result["reason"] = "couldn't apply — the speaker kept its previous sound"
     result["simulation"] = sim.to_dict()
     return result
@@ -4816,66 +7040,214 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sess = _get_or_create_session()
     cam = _camilla()
 
-    async def _set(path: str) -> bool:
-        return await cam.set_config_file_path(path, best_effort=False)
+    reset_intent = None
+    if hasattr(sess, "begin_autolevel_reset"):
+        reset_intent = _run_async(sess.begin_autolevel_reset(), timeout=45.0)
+    else:
+        # Duck-typed test/legacy sessions retain the old seam. Production
+        # MeasurementSession uses the atomic reset intent above.
+        autolevel_status = getattr(
+            getattr(sess, "autolevel", None), "status", None
+        )
+        autolevel_active = bool(
+            getattr(
+                sess,
+                "autolevel_run_in_progress",
+                getattr(autolevel_status, "value", None) == "ramping",
+            )
+        )
+        if autolevel_active:
+            _run_async(sess.cancel_autolevel_and_wait(), timeout=7.0)
 
     try:
-        target = _resolve_reset_target(sess, cam)
-        reset_kwargs = (
-            {"target_config_path": target}
-            if _accepts_target_config_path(sess.reset)
-            else {}
-        )
-        _run_async(sess.reset(_set, **reset_kwargs), timeout=15.0)
+        if hasattr(sess, "stop_background_audio_for_reset"):
+            _run_async(sess.stop_background_audio_for_reset(), timeout=45.0)
+        _run_graph_mutation(_run_locked_room_reset(sess, cam))
     finally:
         # Audio-safety: restore the pre-autolevel listening level even if
         # reset() raised (see _handle_apply).
-        _maybe_restore_main_volume(sess, cam)
+        try:
+            _maybe_restore_main_volume(sess, cam)
+        finally:
+            if reset_intent is not None:
+                _run_async(sess.end_autolevel_reset(reset_intent), timeout=2.0)
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
-def _pre_measurement_restore_target(sess: Any) -> Path | None:
-    """Prior graph to restore when reset is cancelling this measurement."""
+async def _pre_measurement_restore_target(sess: Any, cam: Any) -> Path | None:
+    """Prior graph to restore only while this measurement still owns Camilla."""
     state_value = getattr(getattr(sess, "state", None), "value", None)
     if state_value in {"idle", "applied", "verified"}:
         return None
     prior = getattr(sess, "pre_measurement_config_path", None)
-    return Path(prior) if prior else None
+    restore = getattr(sess, "pre_measurement_restore_path", None)
+    if not prior or not restore:
+        return None
+
+    current = await cam.get_config_file_path(best_effort=False)
+    if not current:
+        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    measurement = getattr(sess, "measurement_config_path", None)
+    owned_path = Path(measurement) if measurement else Path(prior)
+    prior_path = Path(prior)
+    restore_path = Path(restore)
+    if Path(current) in {owned_path, restore_path}:
+        return restore_path
+    if Path(current) == prior_path:
+        # A durable Active filename can be overwritten by a blocked candidate
+        # without CamillaDSP loading those new bytes. Compare the daemon's
+        # running graph with Start's immutable snapshot; filename equality by
+        # itself is not evidence that either the old or new content is active.
+        raw = await cam.get_active_config_raw(best_effort=False)
+        try:
+            saved = restore_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                "Room's immutable predecessor snapshot is unavailable"
+            ) from exc
+        if _running_graph_body(raw) == _running_graph_body(saved):
+            return restore_path
+
+    # A legal DSP writer may publish a newer Active graph after Room Start.
+    # The shared lock makes this read stable; never use Room's saved predecessor
+    # once Camilla has moved away from Room's own measurement graph. The caller
+    # will instead strip Room from the fresh current graph, preserving new A.
+    log_event(
+        logger,
+        "correction.pre_measurement_predecessor_superseded",
+        session=getattr(sess, "session_id", None),
+        current=str(current),
+        room_owned=str(owned_path),
+        saved_predecessor=str(prior),
+        immutable_restore=str(restore_path),
+        level=logging.WARNING,
+    )
+    return None
 
 
-def _resolve_reset_target(sess: Any, cam: Any) -> Path:
+async def _resolve_reset_target_async(sess: Any, cam: Any) -> Path:
     """Resolve the graph to restore for a reset / auto-revert.
 
     The single source of truth for "what should the speaker load when we undo
     room correction," shared by ``POST /reset`` (user-driven) and the P4
     confirmed-regression auto-revert (deterministic). If a measurement is
-    mid-flight, restore the pre-``/start`` graph; once a correction is applied
-    or verified, re-emit the current topology with room PEQs cleared (Layer B
-    removed, speaker DSP + preference EQ preserved). A re-emit failure falls
-    back to the safe base graph so an undo never strands the speaker.
+    mid-flight and Camilla still runs Room's measurement graph, restore the
+    pre-``/start`` graph. If another legal writer has since published a graph,
+    or once a correction is applied/verified, re-emit that current topology
+    with room PEQs cleared (Layer B removed, speaker DSP + preference EQ
+    preserved). A re-emit failure may retain only the observably managed,
+    no-Room graph captured from Camilla's active_raw before re-emit; otherwise
+    reversal fails loudly without claiming that Layer B was removed.
     """
-    from jasper.correction.runtime_safety import reset_config_path
-
     cfg = getattr(sess, "cfg", None)
     base_config_path = getattr(
         cfg,
         "base_config_path",
         Path("/etc/camilladsp/outputd-cutover.yml"),
     )
-    target = _pre_measurement_restore_target(sess)
+    target = await _pre_measurement_restore_target(sess, cam)
     if target is None:
+        (
+            _current,
+            current_snapshot,
+            bass_profile_summary,
+        ) = await _snapshot_running_room_graph(sess, cam)
         try:
-            target = _run_async(
-                _write_no_room_correction_config(sess, cam),
-                timeout=5.0,
+            target = await _write_no_room_correction_config(
+                sess,
+                cam,
+                current_snapshot_path=current_snapshot,
+                bass_profile_summary=bass_profile_summary,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "reset/auto-revert: no-room re-emit failed; falling back "
-                "to safe graph",
+                "reset/auto-revert: no-room re-emit failed; checking the "
+                "fresh current graph",
             )
-            target = reset_config_path(base_config_path)
+            from jasper.correction.status import describe_current_config
+
+            config_dir = Path(
+                getattr(cfg, "config_dir", None)
+                or "/var/lib/camilladsp/configs"
+            )
+            # This immutable snapshot was captured and safety-validated before
+            # the failed re-emit wrote its separate candidate. Never re-read a
+            # mutable current filename here: it may be the rejected output.
+            target = current_snapshot
+            descriptor = describe_current_config(
+                str(target),
+                config_dir=config_dir,
+                base_config_path=Path(base_config_path),
+            )
+            fallback_kind = descriptor.get("kind")
+            fallback_is_no_room = (
+                descriptor.get("managed") is True
+                and descriptor.get("current_correction") is None
+                and fallback_kind
+                in {"base", "active_speaker", "sound_preference"}
+            )
+            if not fallback_is_no_room:
+                log_event(
+                    logger,
+                    "correction.reset_fallback_rejected",
+                    session=getattr(sess, "session_id", None),
+                    target=str(target),
+                    kind=fallback_kind,
+                    managed=descriptor.get("managed"),
+                    room_correction_present=isinstance(
+                        descriptor.get("current_correction"),
+                        dict,
+                    ),
+                    level=logging.ERROR,
+                )
+                raise RuntimeError(
+                    "Room correction could not be removed because no verified "
+                    "no-Room graph is available; the current graph remains "
+                    "loaded"
+                ) from exc
+            log_event(
+                logger,
+                "correction.reset_fallback_selected",
+                session=getattr(sess, "session_id", None),
+                target=str(target),
+                kind=fallback_kind,
+                level=logging.WARNING,
+            )
     return target
+
+
+async def _run_locked_room_reset(
+    sess: Any,
+    cam: Any,
+    *,
+    automatic: bool = False,
+) -> Any:
+    """Resolve and load one Room reversal under the shared DSP-writer lock."""
+
+    from jasper.dsp_apply import dsp_writer_lock
+
+    cfg = getattr(sess, "cfg", None)
+    config_dir = getattr(cfg, "config_dir", None)
+    if config_dir is None:
+        raise RuntimeError("Room session has no CamillaDSP config directory")
+
+    async def _set(path: str) -> bool:
+        return await cam.set_config_file_path(path, best_effort=False)
+
+    operation = sess.auto_revert if automatic else sess.reset
+    source = "correction_auto_revert" if automatic else "correction_reset"
+    async with dsp_writer_lock(config_dir, source=source):
+        # Restoration must not depend on fresh Room authority: its purpose is
+        # to recover from a stale/failed Room session.  It does need to resolve
+        # the no-Room carrier after admission so a legal Active writer cannot
+        # swap Layer A between target construction and load.
+        target = await _resolve_reset_target_async(sess, cam)
+        kwargs = (
+            {"target_config_path": target}
+            if _accepts_target_config_path(operation)
+            else {}
+        )
+        return await operation(_set, **kwargs)
 
 
 def _maybe_auto_revert(sess: Any) -> bool:
@@ -4891,29 +7263,21 @@ def _maybe_auto_revert(sess: Any) -> bool:
     never silent.
 
     Failure honesty: when the attempt dies BEFORE the session could record an
-    outcome (target-resolution raise, the 15 s response timeout), a "failed"
-    outcome is stamped here so the result screen says the correction is STILL
-    APPLIED. The stamp never overwrites a recorded outcome, and on a response
-    timeout the still-running auto_revert coroutine records the real result
-    when reset() finishes — a later "ok" overwrites this "failed", so the
-    envelope converges on the truth.
+    outcome (for example, target-resolution failure), a "failed" outcome is
+    stamped here so the result screen says the correction is STILL APPLIED.
+    The stamp never overwrites a recorded outcome; after any shared writer
+    admission, graph mutation runs to a terminal result, so success is never
+    reported as a timeout-driven cancellation.
     """
     if getattr(sess, "acceptance_verdict", None) != "revert":
         return False
     cam = _camilla()
 
-    async def _set(path: str) -> bool:
-        return await cam.set_config_file_path(path, best_effort=False)
-
     try:
-        target = _resolve_reset_target(sess, cam)
-        revert_kwargs = (
-            {"target_config_path": target}
-            if _accepts_target_config_path(sess.auto_revert)
-            else {}
-        )
         return bool(
-            _run_async(sess.auto_revert(_set, **revert_kwargs), timeout=15.0)
+            _run_graph_mutation(
+                _run_locked_room_reset(sess, cam, automatic=True)
+            )
         )
     except Exception:  # noqa: BLE001
         logger.exception(
@@ -4924,17 +7288,23 @@ def _maybe_auto_revert(sess: Any) -> bool:
         return False
 
 
-async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
+async def _write_no_room_correction_config(
+    sess: Any,
+    cam: Any,
+    *,
+    current_snapshot_path: str | Path | None = None,
+    bass_profile_summary: Mapping[str, Any] | None = None,
+) -> Path:
     """Emit the current graph with room correction cleared.
 
-    For passive/full-range graphs this is the ordinary sound config. For active
-    baselines it is still an active graph; content-based status/carrier checks
-    keep that safe even though the durable filename is `sound_current.yml`.
+    For passive/full-range graphs this is an ordinary sound config. For active
+    baselines it remains an active graph. The candidate is session-unique so a
+    validation failure cannot alter the durable filename Camilla is running.
     """
 
     from jasper.correction.runtime_safety import assert_correction_graph_safe
+    from jasper.dsp_apply import validate_camilla_config
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
-    from jasper.sound.camilla_yaml import sound_config_path
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.profile import load_profile
 
@@ -4943,11 +7313,19 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
         getattr(cfg, "config_dir", Path("/var/lib/camilladsp/configs"))
     )
     config_dir.mkdir(parents=True, exist_ok=True)
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
-    out_path = sound_config_path(config_dir)
-    carrier = carrier_for_loaded_config(current_path, config_dir=config_dir)
+    if current_snapshot_path is None:
+        (
+            _current,
+            snapshot_path,
+            bass_profile_summary,
+        ) = await _snapshot_running_room_graph(sess, cam)
+    else:
+        snapshot_path = Path(current_snapshot_path)
+    # Never emit over Camilla's reported current filename. Some JTS writers use
+    # durable names such as sound_current.yml; post-write validation failure
+    # must leave that live predecessor's bytes untouched.
+    out_path = _room_graph_artifact_path(sess, "reset")
+    carrier = carrier_for_loaded_config(snapshot_path, config_dir=config_dir)
     profile = load_profile()
     result = carrier.reemit(
         profile,
@@ -4956,11 +7334,20 @@ async def _write_no_room_correction_config(sess: Any, cam: Any) -> Path:
         profile_id=f"correction-reset-{time.time_ns()}",
         fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
     )
-    assert_correction_graph_safe(result.yaml)
+    assert_correction_graph_safe(
+        result.yaml,
+        bass_profile_summary=bass_profile_summary,
+    )
+    validation = validate_camilla_config(out_path)
+    if not validation.ok_to_apply:
+        raise RuntimeError(
+            "the generated no-Room graph failed CamillaDSP validation: "
+            f"{validation.error or validation.status.value}"
+        )
     log_event(
         logger,
         "correction.reset_no_room_config",
-        current=str(current_path),
+        current_snapshot=str(snapshot_path),
         candidate=str(out_path),
         room_peqs=result.room_peq_count,
     )
@@ -5012,6 +7399,28 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self, message: str, *, status: int = 400,
         ) -> None:
             self._send_json({"error": message}, status=status)
+
+        def _send_room_failure(
+            self,
+            failure: Mapping[str, Any],
+            *,
+            diagnostic: str,
+            status: int,
+        ) -> None:
+            public = dict(failure)
+            log_event(
+                logger,
+                "correction_homeowner_failure",
+                code=str(public.get("code") or "unknown_failure"),
+                retryable=bool(public.get("retryable")),
+                status=int(status),
+                diagnostic=diagnostic,
+                level=logging.WARNING,
+            )
+            self._send_json(
+                {"failure": public},
+                status=status,
+            )
 
         def _dispatch_balance(self, path: str) -> None:
             """POST /balance/* — the pair-balance walkthrough
@@ -5114,18 +7523,177 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def _dispatch_crossover(self, path: str) -> None:
             """POST /crossover/* — secure active-crossover measurement."""
+
+            if path in {
+                "/crossover/summed-capture",
+                "/crossover/summed-capture-sweep",
+            }:
+                # These legacy raw surfaces have no production summed-capture
+                # authority. Refuse before importing the backend, obtaining its
+                # level lease, or reading attacker-controlled JSON/WAV bytes.
+                self._send_json(
+                    _summed_capture_unavailable(ingress=path),
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+
+            if path == "/crossover/relay-capture":
+                # One bounded discriminator selects the existing isolated path
+                # or the strict internal summed host. Neither accepts browser
+                # graph, region, polarity, delay, or admission authority.
+                try:
+                    payload = _handle_crossover_relay_capture(self)
+                    self._send_json(
+                        payload,
+                        status=(
+                            HTTPStatus.CONFLICT
+                            if payload.get("status") == "refused"
+                            else HTTPStatus.OK
+                        ),
+                    )
+                except ServerOwnedNextStepMismatch as e:
+                    # POST-time synchronous guard refusal (a stale wizard tab
+                    # re-POSTs a driver capture the server no longer offers).
+                    # The raw guard string is programmer-facing; keep it in the
+                    # structured log and return the mapped household copy so it
+                    # never reaches the wizard status line. Mirrors the async
+                    # armed-time surfacing in _run_relay_capture.
+                    log_event(
+                        logger,
+                        "capture_relay.server_owned_step_mismatch",
+                        level=logging.WARNING,
+                        route=path,
+                        reason=_relay_failure_reason(e),
+                        detail=str(e),
+                    )
+                    self._send_json(
+                        {"ok": False, "error": _relay_failure_message(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
+                # v2 conductor sessions (Wave 5a). ValueError covers both the
+                # host's typed CrossoverV2Refused (a subclass) and shared
+                # precondition refusals — same contract as relay-capture.
+                try:
+                    self._send_json(
+                        _handle_crossover_v2_relay(
+                            self,
+                            verify_only=(path == "/crossover/v2/verify"),
+                        )
+                    )
+                except ValueError as e:
+                    # W6 finding: a refused session start was previously
+                    # invisible in journalctl — the 400 reached the browser
+                    # but nothing landed in the journal to debug it from.
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_refused",
+                        level=logging.WARNING,
+                        route=path,
+                        reason=str(e),
+                    )
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/apply":
+                try:
+                    payload = _handle_crossover_v2_apply(self)
+                    # Finding N: a blocked apply must not read as success — the
+                    # same "compute status from payload contents" shape
+                    # /crossover/relay-capture already uses above.
+                    self._send_json(
+                        payload,
+                        status=(
+                            HTTPStatus.CONFLICT
+                            if payload.get("status") == "blocked"
+                            else HTTPStatus.OK
+                        ),
+                    )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/restore":
+                try:
+                    payload = _handle_crossover_v2_restore(self)
+                    # Mirrors /crossover/v2/apply: a refused/failed restore
+                    # must not read as success.
+                    self._send_json(
+                        payload,
+                        status=(
+                            HTTPStatus.OK
+                            if payload.get("status") == "restored"
+                            else HTTPStatus.CONFLICT
+                        ),
+                    )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/region-geometry":
+                try:
+                    self._send_json(_handle_crossover_region_geometry(self))
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/candidate":
+                try:
+                    self._send_json(_handle_crossover_candidate(self))
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
             from . import correction_crossover_flow
             from . import correction_crossover_backend as crossover_backend
 
             volume_sensitive_routes = {
                 "/crossover/level-match",
-                "/crossover/relay-capture",
                 "/crossover/apply",
                 "/crossover/driver-test",
                 "/crossover/summed-test",
                 "/crossover/driver-capture-sweep",
-                "/crossover/summed-capture-sweep",
-                "/crossover/summed-capture",
+                "/crossover/reset",
             }
             lease = crossover_backend.level_lease()
             if (
@@ -5133,14 +7701,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 and lease.unresolved_volume_safety is not None
             ):
                 self._send_json(
-                    {
-                        "status": "refused",
-                        "reason": "crossover_volume_safety_unresolved",
-                        "next_step": (
-                            "Use Recover safe listening volume before another "
-                            "crossover action."
-                        ),
-                    },
+                    _crossover_volume_safety_refusal(),
                     status=HTTPStatus.CONFLICT,
                 )
                 return
@@ -5148,6 +7709,35 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             try:
                 if path == "/crossover/recover-volume":
                     from jasper.camilla import CamillaUnavailable
+
+                    # W6.1 E2: when the v2 conductor owns the unresolved (or
+                    # crash-hydrated active) session volume, route to its plan's
+                    # recover_unresolved — the legacy lease holds no unresolved
+                    # state for a v2 session, so it 409'd
+                    # crossover_volume_recovery_not_required and the
+                    # volume_recovery screen's own button was dead.
+                    from . import correction_crossover_v2 as v2host
+
+                    if v2host.v2_volume_recovery_active():
+                        succeeded, recovery = v2host.recover_session_volume(
+                            _run_async, _camilla
+                        )
+                        self._send_json(
+                            {
+                                "status": "recovered" if succeeded else "refused",
+                                "recovery": recovery,
+                                "next_step": (
+                                    "Refresh and continue crossover commissioning."
+                                    if succeeded
+                                    else "Stop playback and retry recovery when "
+                                    "CamillaDSP is available."
+                                ),
+                            },
+                            status=(
+                                HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT
+                            ),
+                        )
+                        return
 
                     if lease.unresolved_volume_safety is None:
                         self._send_json(
@@ -5217,31 +7807,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                     return
 
-                if path in {
-                    "/crossover/summed-capture",
-                }:
-                    try:
-                        body = _read_wav_body(
-                            self,
-                            max_bytes=MAX_CROSSOVER_WAV_BODY_BYTES,
-                        )
-                    except BadRequest as e:
-                        self._send_json(
-                            {"ok": False, "error": str(e)},
-                            status=HTTPStatus.BAD_REQUEST,
-                        )
-                        return
-                    payload, status = correction_crossover_flow.handle_summed_capture(
-                        self,
-                        body,
-                    )
-                    self._send_json(payload, status=int(status))
+                if path == "/crossover/relay-cancel":
+                    self._send_json(_handle_crossover_relay_cancel())
                     return
 
-                if path == "/crossover/relay-capture":
-                    # The relay handler reads its own JSON body (mirrors the room
-                    # /relay/capture and /sync/relay-capture handlers).
-                    self._send_json(_handle_crossover_relay_capture(self))
+                if path == "/crossover/reset":
+                    payload, status = _handle_crossover_reset()
+                    self._send_json(payload, status=int(status))
                     return
 
                 if path == "/crossover/level-match":
@@ -5252,6 +7824,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     raw = _read_json_body(self)
                     payload, status = correction_crossover_flow.handle_apply(
                         raw,
+                        _run_async,
+                        _camilla,
+                        blocking_phase=_active_relay_phase(),
+                    )
+                    self._send_json(payload, status=int(status))
+                    return
+
+                if path == "/crossover/restore":
+                    payload, status = correction_crossover_flow.handle_restore(
                         _run_async,
                         _camilla,
                         blocking_phase=_active_relay_phase(),
@@ -5293,16 +7874,29 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         blocking_phase=_crossover_direct_audio_blocking_phase(),
                     )
                 else:
-                    payload, status = correction_crossover_flow.handle_summed_capture_sweep(
-                        raw,
-                        _run_async,
-                        _camilla,
-                        blocking_phase=_crossover_direct_audio_blocking_phase(),
-                    )
+                    raise ValueError(f"unknown crossover route: {path}")
                 self._send_json(payload, status=int(status))
             except BadRequest as e:
                 self._send_json(
                     {"ok": False, "error": str(e)},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            except ServerOwnedNextStepMismatch as e:
+                # POST-time synchronous guard refusal on the fixed-axis level
+                # check (/crossover/level-match calls
+                # _assert_crossover_reference_axis_level_action) — same
+                # stale-tab shape as the relay-capture branch above. Map to
+                # household copy; keep the raw string in the structured log.
+                log_event(
+                    logger,
+                    "capture_relay.server_owned_step_mismatch",
+                    level=logging.WARNING,
+                    route=path,
+                    reason=_relay_failure_reason(e),
+                    detail=str(e),
+                )
+                self._send_json(
+                    {"ok": False, "error": _relay_failure_message(e)},
                     status=HTTPStatus.BAD_REQUEST,
                 )
             except ValueError as e:
@@ -5323,6 +7917,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/room",
                 "/healthz",
                 "/status",
+                "/entry-status",
                 "/envelope",
                 "/sessions",
                 "/session-report",
@@ -5364,10 +7959,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/crossover/status":
                 from . import correction_crossover_flow
+                from . import correction_crossover_v2 as v2host
                 try:
+                    # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
+                    # a session volume that outlived its 1800 s ceiling is
+                    # force-drained here (cheap in-memory stale check first).
+                    v2host.enforce_session_volume_ceiling_if_stale(
+                        _run_async, _camilla
+                    )
                     payload, status = correction_crossover_flow.handle_status(
                         relay=_get_relay_capture_for(
-                            "crossover_sweep:", "level_ramp:crossover"
+                            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
                     )
                     self._send_json(payload, status=int(status))
@@ -5377,10 +7979,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/crossover/envelope":
                 from . import correction_crossover_flow
+                from . import correction_crossover_v2 as v2host
                 try:
+                    # W6.1 E3: lazy wall-clock-ceiling enforcement on read (see
+                    # /crossover/status) — the envelope is the wizard's poll, so
+                    # a walked-away session's volume is restored within a poll of
+                    # crossing the ceiling even if no other drain path fires.
+                    v2host.enforce_session_volume_ceiling_if_stale(
+                        _run_async, _camilla
+                    )
                     payload, status = correction_crossover_flow.handle_envelope(
                         relay=_get_relay_capture_for(
-                            "crossover_sweep:", "level_ramp:crossover"
+                            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
                         ),
                     )
                     self._send_json(payload, status=int(status))
@@ -5443,6 +8053,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/status":
                 self._serve_json_route("/status", _handle_status)
+                return
+            if path == "/entry-status":
+                self._serve_json_route("/entry-status", _handle_entry_status)
                 return
             if path == "/envelope":
                 self._serve_json_route("/envelope", _handle_envelope)
@@ -5509,21 +8122,51 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 if path == "/start":
+                    from jasper.correction import failures
                     from jasper.correction.runtime_safety import (
                         CorrectionRuntimeSafetyError,
                     )
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_start(self))
+                    except RoomRequestFailure as e:
+                        self._send_room_failure(
+                            e.failure,
+                            diagnostic=str(e),
+                            status=e.status,
+                        )
                     except (CorrectionRuntimeSafetyError, CarrierCannotHostEq) as e:
-                        self._send_client_error(
-                            str(e),
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.SPEAKER_MEASUREMENT_UNSAFE,
+                            ),
+                            diagnostic=str(e),
                             status=HTTPStatus.UNPROCESSABLE_ENTITY,
                         )
-                    except (FileNotFoundError, ValueError) as e:
-                        self._send_client_error(str(e))
+                    except FileNotFoundError as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.MICROPHONE_SETUP_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                    except ValueError as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.MEASUREMENT_SETUP_INVALID,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
                     except RequestConflict as e:
-                        self._send_client_error(str(e), status=409)
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.MEASUREMENT_IN_PROGRESS,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
+                        )
                     return
                 if path == "/next-position":
                     self._send_json(_handle_next_position(self))
@@ -5538,13 +8181,24 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_test_tone(self))
                     return
                 if path == "/autolevel/start":
-                    self._send_json(_handle_autolevel_start(self))
+                    try:
+                        self._send_json(_handle_autolevel_start(self))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/autolevel/lock":
                     self._send_json(_handle_autolevel_lock(self))
                     return
                 if path == "/autolevel/cancel":
                     self._send_json(_handle_autolevel_cancel(self))
+                    return
+                if path == "/local-capture/setup":
+                    try:
+                        self._send_json(_handle_local_capture_setup(self))
+                    except (FileNotFoundError, ValueError) as e:
+                        self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/upload-capture":
                     from jasper.audio_measurement import quality
@@ -5574,24 +8228,59 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_json(_handle_upload_noise(self))
                     except ValueError as e:
                         self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/relay/capture":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_relay_capture(self))
-                    except ValueError as e:
-                        self._send_client_error(str(e))
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.PHONE_CAPTURE_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=(
+                                HTTPStatus.CONFLICT
+                                if isinstance(e, ValueError)
+                                else HTTPStatus.SERVICE_UNAVAILABLE
+                            ),
+                        )
                     return
                 if path == "/relay/level-match":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_relay_level_match(self))
-                    except ValueError as e:
-                        self._send_client_error(str(e))
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.PHONE_CAPTURE_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=(
+                                HTTPStatus.CONFLICT
+                                if isinstance(e, ValueError)
+                                else HTTPStatus.SERVICE_UNAVAILABLE
+                            ),
+                        )
                     return
                 if path == "/relay/verify":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_relay_verify(self))
-                    except ValueError as e:
-                        self._send_client_error(str(e))
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.PHONE_CAPTURE_UNAVAILABLE,
+                            ),
+                            diagnostic=str(e),
+                            status=(
+                                HTTPStatus.CONFLICT
+                                if isinstance(e, ValueError)
+                                else HTTPStatus.SERVICE_UNAVAILABLE
+                            ),
+                        )
                     return
                 if path == "/calibration/fetch":
                     try:
@@ -5623,6 +8312,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_apply(self))
+                    except RoomRequestFailure as e:
+                        self._send_room_failure(
+                            e.failure,
+                            diagnostic=str(e),
+                            status=e.status,
+                        )
                     except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
                         self._send_client_error(
                             str(e),
@@ -5659,28 +8354,70 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_client_error(str(e), status=409)
                     return
                 if path == "/interpret":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_interpret(self))
                     except BadRequest as e:
-                        self._send_client_error(str(e))
-                    except SpendCapExceeded as e:
-                        self._send_client_error(
-                            str(e), status=HTTPStatus.TOO_MANY_REQUESTS,
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_REQUEST_FAILED,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                    except correction_tuning.SpendCapExceeded as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_SPEND_LIMIT,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.TOO_MANY_REQUESTS,
+                        )
+                    except TuningSetupUnavailable as e:
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_UNAVAILABLE),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
                         )
                     except RequestConflict as e:
-                        self._send_client_error(str(e), status=409)
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_BUSY),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
+                        )
                     return
                 if path == "/propose":
+                    from jasper.correction import failures
                     try:
                         self._send_json(_handle_propose(self))
                     except BadRequest as e:
-                        self._send_client_error(str(e))
-                    except SpendCapExceeded as e:
-                        self._send_client_error(
-                            str(e), status=HTTPStatus.TOO_MANY_REQUESTS,
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_REQUEST_FAILED,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.BAD_REQUEST,
+                        )
+                    except correction_tuning.SpendCapExceeded as e:
+                        self._send_room_failure(
+                            failures.public_failure(
+                                failures.TUNING_SPEND_LIMIT,
+                            ),
+                            diagnostic=str(e),
+                            status=HTTPStatus.TOO_MANY_REQUESTS,
+                        )
+                    except TuningSetupUnavailable as e:
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_UNAVAILABLE),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
                         )
                     except RequestConflict as e:
-                        self._send_client_error(str(e), status=409)
+                        self._send_room_failure(
+                            failures.public_failure(failures.TUNING_BUSY),
+                            diagnostic=str(e),
+                            status=HTTPStatus.CONFLICT,
+                        )
                     return
                 if path == "/propose/apply":
                     from jasper.correction.runtime_safety import (
@@ -5689,6 +8426,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_propose_apply(self))
+                    except RoomRequestFailure as e:
+                        self._send_room_failure(
+                            e.failure,
+                            diagnostic=str(e),
+                            status=e.status,
+                        )
                     except BadRequest as e:
                         self._send_client_error(str(e))
                     except RequestConflict as e:
@@ -5721,6 +8464,82 @@ def make_server(
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 
+def _restore_capture_entry() -> None:
+    """Converge an abandoned automatic capture sequence back to production.
+
+    An automatic capture sequence leaves the persisted CamillaDSP path on the
+    all-muted staged anchor between attempts; the production path is stashed
+    durably (capture_entry_anchor). This runs at both in-process lifecycle
+    exits — service start (`_claim_crossover_state_owners`, covering a
+    previous process that crashed/restarted mid-sequence) and this process's
+    own idle shutdown (`main`'s IdleShutdownTracker hook, covering the common
+    abandon: the user closes the tab, correction-web idles out minutes later).
+    Fail direction if it cannot run (CamillaDSP unreachable): the speaker
+    stays on the all-muted anchor — muted, never loud — and the stash is
+    retained for the next opportunity.
+    """
+
+    from jasper.active_speaker import web_commissioning
+
+    _run_async(
+        web_commissioning.restore_pending_capture_entry_config(
+            camilla_factory=_camilla,
+        ),
+        timeout=15.0,
+    )
+
+
+def _idle_exit_restore_capture_entry() -> None:
+    """Fail-soft idle-shutdown wrapper for :func:`_restore_capture_entry`."""
+
+    try:
+        _restore_capture_entry()
+    except (OSError, RuntimeError, ValueError) as exc:
+        log_event(
+            logger,
+            "correction.capture_entry_restore_unavailable",
+            level=logging.WARNING,
+            boundary="idle_exit",
+            reason=type(exc).__name__,
+        )
+
+
+def _claim_crossover_state_owners() -> None:
+    """Retire prior-process Active work before this service accepts requests."""
+
+    from jasper.active_speaker import repeat_admission
+    from . import correction_crossover_backend
+
+    claims = (
+        (
+            "correction.crossover_repeat_admission_unavailable",
+            repeat_admission.claim_owner,
+        ),
+        (
+            "correction.crossover_level_run_unavailable",
+            correction_crossover_backend.claim_level_run_owner,
+        ),
+        (
+            "correction.active_commissioning_run_unavailable",
+            correction_crossover_backend.claim_commissioning_run_owner,
+        ),
+        (
+            "correction.capture_entry_restore_unavailable",
+            _restore_capture_entry,
+        ),
+    )
+    for event, claim in claims:
+        try:
+            claim()
+        except (OSError, RuntimeError, ValueError) as exc:
+            log_event(
+                logger,
+                event,
+                level=logging.ERROR,
+                reason=type(exc).__name__,
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-correction-web",
@@ -5747,17 +8566,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Socket Accept=no + one service ExecStart make this the sole lifecycle
     # boundary that may retire unfinished work from a previous process.
-    from jasper.active_speaker import repeat_admission
-
-    try:
-        repeat_admission.claim_owner()
-    except (OSError, RuntimeError, ValueError) as exc:
-        log_event(
-            logger,
-            "correction.crossover_repeat_admission_unavailable",
-            level=logging.ERROR,
-            reason=type(exc).__name__,
-        )
+    _claim_crossover_state_owners()
 
     from . import _systemd
     sockets = _systemd.adopt_systemd_sockets()
@@ -5765,7 +8574,16 @@ def main(argv: list[str] | None = None) -> int:
     server = make_server(target, hostname=args.hostname)
 
     handler_cls = server.RequestHandlerClass
-    tracker = _systemd.IdleShutdownTracker()
+    # The idle exit is exactly the abandoned-sequence moment (user closed the
+    # tab, no requests for the threshold) — the daemon's last in-process
+    # chance to converge a capture sequence parked on the all-muted anchor
+    # back to production before the process goes away. The hook is bounded
+    # (_run_async timeout) and exception-guarded by the tracker; on a
+    # deferred/failed restore the durable stash survives for the next
+    # service-start claim boundary.
+    tracker = _systemd.IdleShutdownTracker(
+        on_idle_exit=_idle_exit_restore_capture_entry,
+    )
     _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
 

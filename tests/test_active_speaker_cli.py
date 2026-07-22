@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -18,6 +19,53 @@ from jasper.active_speaker import (
     requirements_payload,
 )
 from jasper.cli.active_speaker import main
+
+
+def test_persisted_candidate_source_is_owned_only_by_safe_graph_host() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    owners: set[tuple[str, str]] = set()
+
+    for path in (repo / "jasper").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+            name = (
+                call.func.id
+                if isinstance(call.func, ast.Name)
+                else call.func.attr
+                if isinstance(call.func, ast.Attribute)
+                else None
+            )
+            if name != "classify_bass_extension_graph":
+                continue
+            source = next(
+                (keyword.value for keyword in call.keywords if keyword.arg == "evidence_source"),
+                None,
+            )
+            if not isinstance(source, ast.Constant) or source.value != "persisted_candidate":
+                continue
+            enclosing = [
+                function
+                for function in functions
+                if function.lineno <= call.lineno <= (function.end_lineno or call.lineno)
+            ]
+            owner = min(
+                enclosing,
+                key=lambda function: (function.end_lineno or function.lineno)
+                - function.lineno,
+            )
+            owners.add((path.relative_to(repo).as_posix(), owner.name))
+
+    assert owners == {
+        (
+            "jasper/active_speaker/runtime_contract.py",
+            "safe_graph_for_current_topology",
+        )
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -596,9 +644,16 @@ def test_environment_probe_cli_json_reports_payload(monkeypatch, capsys):
     assert payload["camilla_config"]["classification"] == "jts_outputd_stereo"
 
 
+@pytest.mark.parametrize(
+    "explicit_staged_metadata",
+    [True, False],
+    ids=["explicit", "default"],
+)
 def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     tmp_path: Path,
     capsys,
+    monkeypatch,
+    explicit_staged_metadata: bool,
 ):
     from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import (
@@ -623,7 +678,7 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {flat}\n", encoding="utf-8")
 
-    code = main([
+    argv = [
         "runtime-safe-graph",
         "--topology",
         str(topology_path),
@@ -631,11 +686,17 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
         str(statefile),
         "--flat-config",
         str(flat),
-        "--staged-metadata",
-        str(metadata),
-        "--write-statefile",
-        "--json",
-    ])
+    ]
+    if explicit_staged_metadata:
+        argv.extend(["--staged-metadata", str(metadata)])
+    else:
+        monkeypatch.setenv(
+            "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+            str(metadata),
+        )
+    argv.extend(["--write-statefile", "--json"])
+
+    code = main(argv)
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0

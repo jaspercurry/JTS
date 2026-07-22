@@ -262,10 +262,17 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
     monkeypatch.setattr(
         speaker_setup,
         "_restart_units",
-        lambda units: events.append(("restart", tuple(units))),
+        lambda units, *, verb="restart", no_block=True, timeout=5.0: events.append(
+            (verb, tuple(units), no_block, timeout)
+        ),
+    )
+    monkeypatch.setattr(
+        speaker_setup,
+        "kick_source_reconcile",
+        lambda **_kwargs: events.append(("source-reconcile",)) or {"ok": True},
     )
 
-    speaker_setup._apply_name("Kitchen")
+    assert speaker_setup._apply_name("Kitchen") is True
 
     expected_units = tuple(
         [
@@ -278,7 +285,15 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
         ("bluez_conf", "Kitchen"),
         ("alias", "Kitchen"),
         ("advert", "Kitchen"),
-        ("restart", expected_units),
+        (
+            "try-restart",
+            tuple(speaker_setup.SOURCE_TRY_RESTART_UNITS),
+            False,
+            60.0,
+        ),
+        ("source-reconcile",),
+        ("source-reconcile",),
+        ("restart", expected_units, True, 5.0),
     ]
     assert speaker_setup.RESTART_UNITS == original_units
 
@@ -323,17 +338,33 @@ def test_apply_name_continues_after_bluez_alias_and_advert_failures(
     monkeypatch.setattr(
         speaker_setup,
         "_restart_units",
-        lambda units: events.append(("restart", tuple(units))),
+        lambda units, *, verb="restart", no_block=True, timeout=5.0: events.append(
+            (verb, tuple(units), no_block, timeout)
+        ),
+    )
+    monkeypatch.setattr(
+        speaker_setup,
+        "kick_source_reconcile",
+        lambda **_kwargs: events.append(("source-reconcile",)) or {"ok": True},
     )
 
     with caplog.at_level(logging.WARNING, logger=speaker_setup.__name__):
-        speaker_setup._apply_name("Kitchen")
+        assert speaker_setup._apply_name("Kitchen") is True
 
     assert events == [
         ("bluez_returned", "Kitchen"),
         ("alias", "Kitchen"),
         ("advert", "Kitchen"),
-        ("restart", tuple(speaker_setup.RESTART_UNITS)),
+        ("restart", ("bluetooth.service",), False, 60.0),
+        (
+            "try-restart",
+            tuple(speaker_setup.SOURCE_TRY_RESTART_UNITS),
+            False,
+            60.0,
+        ),
+        ("source-reconcile",),
+        ("source-reconcile",),
+        ("restart", tuple(speaker_setup.RESTART_UNITS), True, 5.0),
     ]
     assert conf.read_text(encoding="utf-8") == "[General]\nName = Old\n"
     assert "event=speaker_name.bluez_conf" in caplog.text
@@ -409,7 +440,7 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
     monkeypatch.setattr(
         speaker_setup,
         "_apply_name",
-        lambda name: calls["apply"].append(name),
+        lambda name: calls["apply"].append(name) or True,
     )
 
     handler = _handler_cls()
@@ -421,6 +452,33 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert calls["write"] == [("NewName", "Kitchen")]
     assert calls["apply"] == ["NewName"]
+
+
+def test_post_save_surfaces_source_reconcile_failure(monkeypatch):
+    token = "y" * 64
+    monkeypatch.setattr(speaker_setup, "validate_name", lambda n: n.strip())
+    monkeypatch.setattr(speaker_setup, "validate_room", lambda r: r.strip())
+    monkeypatch.setattr(
+        speaker_setup,
+        "read_state",
+        lambda path: types.SimpleNamespace(name="OldName", room=""),
+    )
+    monkeypatch.setattr(speaker_setup, "_find_conflicts", lambda name: [])
+    monkeypatch.setattr(
+        speaker_setup,
+        "write_state",
+        lambda name, room, path, mode=0o644: name,
+    )
+    monkeypatch.setattr(speaker_setup, "_apply_name", lambda name: False)
+
+    handler = _handler_cls()
+    body = ("csrf_token=" + token + "&name=NewName&room=Kitchen").encode()
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    handler.do_POST(h)
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    flash_cookie = "\n".join(h.header_values("Set-Cookie"))
+    assert "some%20audio%20sources%20could%20not%20restart" in flash_cookie
 
 
 def test_post_save_rejects_bad_csrf(monkeypatch):

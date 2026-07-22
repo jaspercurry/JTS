@@ -70,6 +70,20 @@ ANALYSIS_LO_HZ = 40.0
 ANALYSIS_HI_HZ = 18000.0
 DEFAULT_SMOOTHING_FRACTION = 24
 
+# How far before the located sweep arrival the equal-length quiet reference
+# begins, beyond the sweep's own length: ``_capture_to_magnitude`` selects
+# ``ambient_start = arrival - len(reference) - AMBIENT_CONTROLLED_LEAD_S`` and
+# refuses the capture when that start precedes the controlled (host-paused)
+# interval. This is therefore the analyzer's REAL minimum ambient requirement:
+# ambient_duration_s >= kernel sweep duration + this lead. The host-side quiet
+# window (``test_signal_plan.AMBIENT_DURATION_MARGIN_S``, 2.0 s over the
+# *requested* sweep) must stay above this lead plus the synchronized-sweep
+# kernel's phase-rounding growth (~0.09 s); the contract test in
+# tests/test_active_speaker_test_signal_plan.py imports this constant and
+# fails loudly if a future margin reduction would make the analyzer reject
+# every capture at runtime.
+AMBIENT_CONTROLLED_LEAD_S = 1.0
+
 # Verdict thresholds (all differential, so the unknown absolute calibration of
 # the deconvolved magnitude cancels out). The driver-specific ones are aliased
 # from the shared DRIVER QualityModel profile so the forked constant lives in
@@ -84,6 +98,9 @@ DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "p
 # module never auto-rewrites Fc/slope — it only surfaces the evidence; the
 # polarity proposal lives in crossover_alignment.py.
 FR_CURVE_MAX_POINTS = 72
+# A strict legacy replay is diagnostic, so retain substantially more shape than
+# the UI curve while keeping its serialized footprint bounded on the Pi.
+LEGACY_REPLAY_MAX_POINTS = 480
 
 # Overlap-band level (L1 phone level matching). For a per-driver near-field
 # capture taken THROUGH the production crossover, the level each driver produces
@@ -146,6 +163,18 @@ class DriverSweep:
             "target_channel": self.target_channel,
             "sweep_meta": self.sweep_meta,
         }
+
+
+@dataclass(frozen=True)
+class ReplayedDriverResponse:
+    """Calibrated, non-peak-normalized response replayed from immutable audio."""
+
+    freqs_hz: tuple[float, ...]
+    magnitude_db: tuple[float, ...]
+    quality: dict[str, Any]
+    gating: dict[str, Any]
+    calibration_support_hz: tuple[float, float]
+    replay_support_hz: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -434,7 +463,9 @@ def _capture_to_magnitude(
         tail = int(round(0.500 * sr))
         signal_start = arrival_sample - pre_guard
         signal_end = arrival_sample + len(reference) + tail
-        ambient_start = arrival_sample - len(reference) - int(round(1.000 * sr))
+        ambient_start = arrival_sample - len(reference) - int(
+            round(AMBIENT_CONTROLLED_LEAD_S * sr)
+        )
         ambient_end = arrival_sample - pre_guard
         controlled_start = arrival_sample - int(round(float(ambient_duration_s) * sr))
         if (
@@ -551,22 +582,24 @@ def _capture_to_magnitude(
             sr,
             percentile=50,
         )
-        robust_by_id = {item["band_id"]: item for item in robust["bands"]}
-        baseline_by_id = {item["band_id"]: item for item in baseline["bands"]}
-        adjusted = []
-        for item in noise_bands:
-            robust_item = robust_by_id.get(item["band_id"])
-            baseline_item = baseline_by_id.get(item["band_id"])
-            delta = (
-                float(robust_item["level_dbfs"])
-                - float(baseline_item["level_dbfs"])
-                if robust_item is not None and baseline_item is not None
-                else 0.0
-            )
-            adjusted.append({
-                **item,
-                "level_dbfs": round(float(item["level_dbfs"]) + delta, 2),
-            })
+        # A band the reference sweep never excited (or barely reaches, at its
+        # fade edges) is not safe to read from the deconvolved domain — see
+        # snr_policy.excitation_covered_bands. apply_noise_band_fallback
+        # substitutes the raw (non-deconvolved) robust ambient reading for
+        # those bands instead, since it does not depend on the reference
+        # spectrum at all and is grounded truth for what the room actually
+        # did.
+        covered = snr_policy.excitation_covered_bands(
+            snr_policy.CROSSOVER_SNR_BANDS_HZ,
+            f1_hz=float(sweep_meta["f1"]),
+            f2_hz=float(sweep_meta["f2"]),
+        )
+        adjusted = snr_policy.apply_noise_band_fallback(
+            noise_bands,
+            robust_bands=robust["bands"],
+            baseline_bands=baseline["bands"],
+            covered=covered,
+        )
         ambient_report = {
             "schema_version": 2,
             "domain": "deconvolved",
@@ -603,6 +636,83 @@ def _capture_to_magnitude(
             },
         }
     return report, freqs, smoothed, gating_block, ambient_report
+
+
+def replay_driver_response(
+    captured_wav: str | Path,
+    sweep_meta: Mapping[str, Any],
+    *,
+    calibration: "CalibrationCurve",
+    capture_geometry: str,
+    ambient_duration_s: float | None,
+    scalar_playback_gain_db: float,
+) -> ReplayedDriverResponse:
+    """Replay one calibrated winner without inventing a natural driver plant.
+
+    Deconvolution removes the generated sweep amplitude. The only additional
+    normalization is the verified scalar commissioning/main-volume gain. The
+    active electrical crossover, protection, driver response, and cabinet stay
+    in the measured magnitude. No peak normalization or phase synthesis occurs.
+    """
+
+    import numpy as np
+
+    if (
+        isinstance(scalar_playback_gain_db, bool)
+        or not isinstance(scalar_playback_gain_db, (int, float))
+        or not math.isfinite(float(scalar_playback_gain_db))
+        or float(scalar_playback_gain_db) > 0.0
+    ):
+        raise DriverAcousticsError(
+            "scalar playback gain must be finite and non-positive"
+        )
+    report, freqs, magnitude, gating_block, _ambient = _capture_to_magnitude(
+        captured_wav,
+        sweep_meta,
+        has_mic_calibration=True,
+        calibration=calibration,
+        capture_geometry=capture_geometry,
+        ambient_duration_s=ambient_duration_s,
+    )
+    if freqs is None or magnitude is None or not isinstance(gating_block, Mapping):
+        raise DriverAcousticsError("winner replay failed capture-quality analysis")
+    frequencies = np.asarray(freqs, dtype=np.float64)
+    magnitudes = np.asarray(magnitude, dtype=np.float64)
+    support_lo = float(calibration.freqs_hz[0])
+    support_hi = float(calibration.freqs_hz[-1])
+    sweep_lo = float(sweep_meta["f1"])
+    sweep_hi = float(sweep_meta["f2"])
+    replay_lo = max(support_lo, sweep_lo)
+    replay_hi = min(support_hi, sweep_hi)
+    inside = (frequencies >= replay_lo) & (frequencies <= replay_hi)
+    clipped_frequencies = frequencies[inside]
+    clipped_magnitude = magnitudes[inside] - float(scalar_playback_gain_db)
+    if (
+        clipped_frequencies.size < 2
+        or not bool(np.all(np.isfinite(clipped_frequencies)))
+        or not bool(np.all(np.isfinite(clipped_magnitude)))
+        or not bool(np.all(np.diff(clipped_frequencies) > 0.0))
+    ):
+        raise DriverAcousticsError(
+            "winner replay has no valid response inside sweep/calibration support"
+        )
+    from jasper.audio_measurement import analysis
+
+    bounded_frequencies, bounded_magnitude = analysis.resample_log(
+        clipped_frequencies,
+        clipped_magnitude,
+        f_min=float(clipped_frequencies[0]),
+        f_max=float(clipped_frequencies[-1]),
+        n_points=LEGACY_REPLAY_MAX_POINTS,
+    )
+    return ReplayedDriverResponse(
+        freqs_hz=tuple(float(item) for item in bounded_frequencies),
+        magnitude_db=tuple(float(item) for item in bounded_magnitude),
+        quality=report.to_dict(),
+        gating=dict(gating_block),
+        calibration_support_hz=(support_lo, support_hi),
+        replay_support_hz=(replay_lo, replay_hi),
+    )
 
 
 def _capture_band_levels(captured_wav: str | Path) -> list[dict[str, Any]]:

@@ -13,6 +13,13 @@ DSP math is unchanged.
 Modules:
   - :mod:`~jasper.audio_measurement.sweep` — synchronized swept-sine (ESS)
     generation + WAV I/O.
+  - :mod:`~jasper.audio_measurement.program` — the crossover conductor's
+    excitation-program model (pure-data schedule dataclasses), the CHECK /
+    MEASURE / VERIFY composers, and deterministic PCM rendering / WAV writing.
+  - :mod:`~jasper.audio_measurement.program_analysis` — the pure
+    ``(program, capture) → ProgramAnalysis`` analysis (locate + integrity +
+    clock-drift + per-driver response + GCC-PHAT alignment + candidate) for the
+    conductor flow.
   - :mod:`~jasper.audio_measurement.deconv` — regularized FFT deconvolution
     (impulse-response extraction) + magnitude response.
   - :mod:`~jasper.audio_measurement.gating` — impulse-response gating (first-
@@ -34,10 +41,23 @@ Modules:
   - :mod:`~jasper.audio_measurement.ramp` — the settle-based level-match
     ``RampController`` (muted-at-floor → audible gain ramp → audible-evidence
     confirmation) that drives main-volume-affecting playback.
+  - :mod:`~jasper.audio_measurement.excitation_admission` — the pure,
+    identity-bound allow/refuse contract for requested frequency band,
+    effective peak, duration, repeats, and current protection evidence.
+  - :mod:`~jasper.audio_measurement.excitation_artifacts` — fail-closed,
+    canonical admission persistence plus independent playback re-admission;
+    existing and historical evidence cannot be promoted into authority.
+  - :mod:`~jasper.audio_measurement.admitted_playback` — guarded composition of
+    a caller-issued fresh protection readback, playback-role re-admission, and
+    the policy-free WAV emitter.
+  - :mod:`~jasper.audio_measurement.bundles` — the neutral artifact-manifest
+    writer/reader shared by feature-owned Room and Active evidence bundles.
+  - :mod:`~jasper.audio_measurement.playback` — production WAV/tone emission,
+    cancellation, and process cleanup after feature-owned admission.
   - :mod:`~jasper.audio_measurement.null_walk` — the geometry-bounded,
-    timing-locked delay search contract shared by active-speaker and bass
-    alignment; it consumes repeated gated null depths, never browser arrival
-    times.
+    timing-locked delay search contract and bounded coarse-plus-refinement
+    schedule shared by active-speaker and bass alignment; it consumes repeated
+    gated null depths, never browser arrival times.
   - :mod:`~jasper.audio_measurement.delay_graph` — the pure, typed graph-content
     proof that a null-walk DSP candidate differs from a graph-proven,
     zero-relative predecessor by only one bounded delay lane; each host supplies

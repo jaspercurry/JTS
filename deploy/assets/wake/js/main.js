@@ -37,6 +37,8 @@ let lastServerThreshold = null;
 let profileChoices = {};
 let fusionToggles = {};
 let firmwareUpdateBusy = false;
+let usbMicBusy = false;
+let usbMicLegBusy = false;
 
 const el = (id) => document.getElementById(id);
 
@@ -167,6 +169,62 @@ function applyMicStatus(s) {
   }
 }
 
+function applyUsbMicStatus(s) {
+  const usbMic = s.usb_mic || {};
+  const input = el("usb-mic-toggle");
+  const row = el("usb-mic-row");
+  if (!input || !row) return;
+  if (!usbMicBusy) {
+    input.checked = !!usbMic.enabled;
+    input.disabled = !usbMic.toggle_enabled;
+  }
+  row.classList.toggle("is-disabled", input.disabled);
+  const state = usbMic.state ? usbMic.state.replaceAll("_", " ") : "unknown";
+  setText(
+    "usb-mic-status",
+    state.charAt(0).toUpperCase() + state.slice(1) + " · " + (usbMic.detail || "—"),
+  );
+  setText("usb-mic-notice", usbMic.notice || "—");
+
+  const source = usbMic.source_selection || {};
+  const select = el("usb-mic-leg-select");
+  const choices = Array.isArray(source.choices) ? source.choices : [];
+  const requested = typeof source.requested === "string" ? source.requested : "";
+  if (select && !usbMicLegBusy) {
+    select.replaceChildren();
+    choices.forEach((choice) => {
+      if (!choice || typeof choice.value !== "string") return;
+      const option = document.createElement("option");
+      option.value = choice.value;
+      option.textContent = choice.label || choice.value;
+      if (choice.description) option.title = choice.description;
+      select.appendChild(option);
+    });
+    if (requested && !choices.some((choice) => choice && choice.value === requested)) {
+      const unavailable = document.createElement("option");
+      unavailable.value = requested;
+      unavailable.textContent = requested + " (unavailable)";
+      unavailable.disabled = true;
+      select.appendChild(unavailable);
+    }
+    select.value = requested;
+    select.dataset.requested = requested;
+    select.disabled = choices.length === 0;
+  }
+  const requestedChoice = choices.find(
+    (choice) => choice && choice.value === requested,
+  );
+  const requestedLabel = (requestedChoice && requestedChoice.label) || requested || "—";
+  const applied = source.applied;
+  setText(
+    "usb-mic-leg-status",
+    applied
+      ? "Requested " + requestedLabel + " · Applied " +
+        (applied.effective_label || applied.leg || "—")
+      : "Requested " + requestedLabel + " · Waiting for the microphone bridge",
+  );
+}
+
 // Reconcile server state into the toggles + slider. Skips any control the user
 // is mid-interaction with (tracked via `dirty` / the slider's unsaved state).
 function applyState(s) {
@@ -180,6 +238,7 @@ function applyState(s) {
 
   applyProfileStatus(s);
   applyMicStatus(s);
+  applyUsbMicStatus(s);
   applyFirmwareUpdateStatus(s);
 
   setText("fusion-summary", fusion.summary || "—");
@@ -249,6 +308,14 @@ async function pollDetection() {
     setText("mic-status-session-source", "—");
     setText("mic-status-wake-legs", "—");
     setText("mic-status-wake-word", "—");
+    const usbMic = el("usb-mic-toggle");
+    if (usbMic) usbMic.disabled = true;
+    const usbMicRow = el("usb-mic-row");
+    if (usbMicRow) usbMicRow.classList.add("is-disabled");
+    setText("usb-mic-status", "Disconnected");
+    const usbMicLeg = el("usb-mic-leg-select");
+    if (usbMicLeg) usbMicLeg.disabled = true;
+    setText("usb-mic-leg-status", "Disconnected");
     const warning = el("mic-status-warning");
     if (warning) {
       warning.hidden = false;
@@ -299,6 +366,54 @@ async function postLayer(name, wanted) {
   }
 }
 
+async function postUsbMic(wanted) {
+  const input = el("usb-mic-toggle");
+  usbMicBusy = true;
+  input.disabled = true;
+  setText("usb-mic-status", wanted ? "Adding microphone…" : "Removing microphone…");
+  try {
+    const r = await fetch("usb-mic", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ enabled: wanted }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    usbMicBusy = false;
+    applyState(body);
+    // Re-enumeration may briefly take this page's USB network path down.
+    ignorePollUntil = Date.now() + 2500;
+  } catch (err) {
+    usbMicBusy = false;
+    input.checked = !wanted;
+    await jtsAlert("USB microphone change failed: " + err.message);
+    setTimeout(pollDetection, 500);
+  }
+}
+
+async function postUsbMicLeg(leg) {
+  const select = el("usb-mic-leg-select");
+  usbMicLegBusy = true;
+  select.disabled = true;
+  setText("usb-mic-leg-status", "Applying computer microphone source…");
+  try {
+    const r = await fetch("usb-mic-leg", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ leg }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    usbMicLegBusy = false;
+    applyState(body);
+    ignorePollUntil = Date.now() + 1500;
+  } catch (err) {
+    usbMicLegBusy = false;
+    await jtsAlert("Computer microphone source change failed: " + err.message);
+    setTimeout(pollDetection, 250);
+  }
+}
+
 profileInputs().forEach((input) => {
   const profile = input.value;
   if (!input) return;
@@ -336,6 +451,20 @@ LAYERS.forEach((name) => {
     postLayer(name, cb.checked);
   });
 });
+
+const usbMicToggle = el("usb-mic-toggle");
+if (usbMicToggle) {
+  usbMicToggle.addEventListener("change", () => {
+    postUsbMic(usbMicToggle.checked);
+  });
+}
+
+const usbMicLegSelect = el("usb-mic-leg-select");
+if (usbMicLegSelect) {
+  usbMicLegSelect.addEventListener("change", () => {
+    postUsbMicLeg(usbMicLegSelect.value);
+  });
+}
 
 // Sensitivity slider: track unsaved changes, save on explicit click.
 const slider = el("sensitivity-input");

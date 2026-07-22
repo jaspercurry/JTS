@@ -257,14 +257,13 @@ from . import usbsink as usbsink
 from .usbsink import (
     _systemd_is_active,
     _module_loaded,
-    check_usbsink_dtoverlay,
+    check_usb_data_role,
     check_usbsink_state,
     check_usbsink_card,
     check_usbsink_low_latency_contract,
     check_usbsink_name,
     check_usbsink_active_libcomposite,
     check_usbgadget_composition,
-    check_usbsink_env_drift,
 )
 from . import network as network
 from .network import (
@@ -577,14 +576,13 @@ __all__ = [
     "check_xvf_mixer_state",
     "_systemd_is_active",
     "_module_loaded",
-    "check_usbsink_dtoverlay",
+    "check_usb_data_role",
     "check_usbsink_state",
     "check_usbsink_card",
     "check_usbsink_low_latency_contract",
     "check_usbsink_name",
     "check_usbsink_active_libcomposite",
     "check_usbgadget_composition",
-    "check_usbsink_env_drift",
     "_parse_iw_regdom",
     "_format_phy_regdom_detail",
     "check_wifi_regdom",

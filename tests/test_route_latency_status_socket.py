@@ -121,7 +121,6 @@ def test_read_status_socket_or_none_fails_soft_when_absent(tmp_path, caplog):
 
 def test_canonical_socket_paths_match_daemon_conventions():
     # Pin the well-known control-socket paths so a daemon move updates one
-    # place. These mirror jasper-fanin / jasper-outputd / jasper-usbsink-audio.
+    # place. These mirror the two live route-health owners.
     assert status_socket.FANIN_STATUS_SOCKET == "/run/jasper-fanin/control.sock"
     assert status_socket.OUTPUTD_STATUS_SOCKET == "/run/jasper-outputd/control.sock"
-    assert status_socket.USBSINK_STATE_PATH == "/run/jasper-usbsink/state.json"

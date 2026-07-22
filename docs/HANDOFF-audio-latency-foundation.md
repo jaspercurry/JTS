@@ -269,7 +269,7 @@ deleted in the USB dead-pipeline sweep — see the callout below.)
 > `apply_lean_capture_config` / `restore_buffered_config`,
 > `lean_capture_kwargs`, `DEFAULT_LEAN_CAPTURE_FIFO`, and the `JASPER_LEAN_LANE`
 > env / the `fifo` value of `JASPER_USBSINK_OUTPUT_MODE`. The text below is
-> archaeology of the design. A 2026-07-13 residue sweep also deleted the
+> archaeology of the design. A 2026-07-15 residue sweep also deleted the
 > producerless `capture_pipe_path` / RawFile / async-resampler emitter plumbing
 > from the stereo and active-speaker config builders and graph-carrier
 > recomposition. `playback_pipe_path` remains live for the Snapcast leader sink.
@@ -291,14 +291,18 @@ references keep working. A File capture has no clock, so it requires
 **CamillaDSP schema gotcha:** the deployed runtime is **CamillaDSP v4.x**, whose
 resampler is an *object* — `resampler: {type: AsyncSinc, profile: Balanced}` —
 not the pre-v2 scalar `resampler_type: BalancedAsync` (the v4 parser rejects the
-scalar). The shared emitter helpers live in
+scalar). `file_capture_resampler_yaml`, `DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE`/
+`_PROFILE`, and `DEFAULT_LEAN_CAPTURE_FIFO` no longer exist (deleted with the
+producerless `capture_pipe_path` surface, 2026-07-15); `is_async_resampler`
+survives in
 [`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py)
-(`file_capture_resampler_yaml`, `is_async_resampler`,
-`DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE`/`_PROFILE`, `DEFAULT_LEAN_CAPTURE_FIFO`);
+for the snd-aloop rate_adjust/resampler oscillation guard (a test-only
+invariant guard — no runtime caller; `test_camilla_config_contract` feeds it
+every JTS-generated config). Neither
 the stereo ([`jasper/sound/camilla_yaml.py`](../jasper/sound/camilla_yaml.py))
-and active-speaker
+nor active-speaker
 ([`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py))
-emitters both use them — one definition, no copy-paste twin.
+emitter takes a File-capture path anymore.
 
 **CRITICAL — capture is `RawFile`, NOT `File` (the 2026-06-27 jts5 finding).**
 CamillaDSP v4 has **no `File` *capture* variant** (capture is one of
@@ -377,7 +381,7 @@ the path: `DEFAULT_LEAN_CAPTURE_FIFO` (`/run/jasper-usbsink/lean.pipe`).
 |---|---|---|
 | 0 | snapcast bond buffer routed via `--stream.buffer` (was an inert URL param; bonds silently ran the 1000 ms default) | shipped |
 | 2 | USB-bridge latency knobs (`JASPER_USBSINK_{QUEUE_MAXBLOCKS,LATENCY,BLOCK_FRAMES}`) | shipped, on-device tuning owed |
-| 4a | ~~File-capture CamillaDSP emitter + fail-loud guards (stereo + active)~~ | **REMOVED 2026-07-13** — last producer disappeared with `transport_pipe`; `playback_pipe_path` remains for Snapcast |
+| 4a | ~~File-capture CamillaDSP emitter + fail-loud guards (stereo + active)~~ | **REMOVED 2026-07-15** — last producer disappeared with `transport_pipe`; `playback_pipe_path` remains for Snapcast |
 | 4b-i | `decide_source_low_latency_route` shared source policy + `low_latency_feature_flags` opt-in parsing ([`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)); mux consumes the plan layer directly | shipped, wired to mux consumers |
 | 4b-ii | usbsink FIFO-output mode (`JASPER_USBSINK_OUTPUT_MODE=fifo`; env action owned by `jasper.audio_runtime_plan.usbsink_output_mode_action`) | shipped, default-OFF |
 | 4b-iii | stage + validate + classify the lean config (`jasper.sound.runtime.stage_lean_capture_config`) — emit + `--check` + `classify_camilla_graph`, **no live-load** | shipped, default-OFF |

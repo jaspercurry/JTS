@@ -58,10 +58,10 @@ APIs without authentication: changing volume (`POST /volume/set`,
 deliberate: the dial, Home Assistant, Shortcuts-style automations, and
 other household integrations use the same trusted-LAN posture. The
 highest-impact mutations — reboot / poweroff, voice/audio restart, the
-privacy mic mute, and multiroom rewiring — require an auto-generated
-control token (see "Control token" below). Browser-origin attacks are a
-different class and are blocked with Host / Origin / Fetch Metadata
-checks plus CSRF.
+voice-assistant pause, live USB microphone export, and multiroom rewiring —
+require an auto-generated control token (see "Control token" below).
+Browser-origin attacks are a different class and are blocked with Host / Origin
+/ Fetch Metadata checks plus CSRF.
 
 Setup wizards submit API keys, Home Assistant tokens, and Wi-Fi PSKs
 over plain HTTP on the LAN. nginx serves the management UI over HTTP;
@@ -105,8 +105,13 @@ automatically (embedded in each page behind the read guard, read by
 - `POST /system/poweroff` / `POST /system/reboot` — power off / reboot.
 - `POST /system/restart/voice` / `POST /system/restart/audio` — restart the
   assistant / the audio chain.
-- `POST /mic/mute` — the privacy mic mute, the one promise a household relies
-  on to know the mic is off.
+- `POST /mic/mute` — the legacy route behind the dashboard's Voice assistant
+  Pause/Resume control. It stops JTS wake detection and voice capture; it does
+  not stop an independently enabled USB microphone export.
+- `POST /aec/usb-mic` — exposes or removes the AEC-cleaned room microphone on
+  the attached USB host.
+- `POST /aec/usb-mic-leg` — chooses which live AEC-cleaned microphone stream
+  reaches the attached USB host.
 - `POST /grouping/set` — rewires multiroom output routing. This route
   **additionally** accepts a distinct **household credential**
   (`X-JTS-Household`) for the cross-device bond fan-out — a paired peer
@@ -116,10 +121,11 @@ automatically (embedded in each page behind the read guard, read by
 
 A gated request without a matching `X-JTS-Token` header gets a `403
 {"error":"control_token_required"}` (compared in constant time via
-`hmac.compare_digest`). **Volume, transport, source, and the AEC knobs stay
-ungated** — the dial's low-impact controls, which it relies on and which never
-call the gated routes. The XVF3800 firmware-update route is gated because it
-downloads and flashes microphone firmware.
+`hmac.compare_digest`). **Volume, transport, source, and ordinary AEC tuning
+knobs stay ungated** — the dial's low-impact controls, which it relies on and
+which never call the gated routes. USB microphone export/source selection and
+the XVF3800 firmware-update route are the privacy/hardware-sensitive exceptions
+under `/aec`.
 
 **What it does and does not protect.** Because the token is auto-delivered to
 the dashboard over the same LAN, a determined device on the LAN that fetches the

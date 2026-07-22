@@ -30,7 +30,8 @@ narrow question of *who may control grouping across devices*.
   origin*, not *caller identity*, and are the wrong primitive for
   machine-to-machine calls (industry-standard guidance, §4).
 - WS1 Phase 2 made that token **mandatory** on the six routes it shipped
-  with (a seventh, `/aec/firmware/update`, was added later — see §7),
+  with (a seventh, `/aec/firmware/update`, and an eighth,
+  `/aec/usb-mic`, were added later — see §7),
   including `/grouping/set`. That silently broke two flows that predate it:
   1. **Leader → follower `/grouping/set`** (multiroom): each speaker
      auto-generates its *own* token, so the leader has nothing the follower
@@ -366,13 +367,14 @@ audit (below) shows it is the *only* such client besides the M2M path.
   through `canonical_page()` instead of baking (trading the static page's
   daemon-independent resilience).
 
-**Audit result (June 2026, updated for the 2026-06-29 `/aec/firmware/update`
-addition):** across all seven token-gated routes, the *only*
+**Audit result (July 2026, updated for the `/aec/usb-mic` addition):** across
+all eight token-gated routes, the *only*
 clients missing the token are (a) this landing-page button and (b) the M2M
 grouping path (§6). Every ES-module wizard uses the shared `http.js`
 `csrfHeaders()`/`postControlAction()`; the balance/sync/rooms/system/wake
-server-side flows (the last covers `/aec/firmware/update`) forward the browser
-token via `forward_control_token_headers()` (#739);
+server-side flows (the last covers `/aec/firmware/update` and
+`/aec/usb-mic`) forward the browser token via
+`forward_control_token_headers()` (#739);
 internal restarts go through the WS1 restart broker (not the gated HTTP routes);
 the VK-01 accessory maps only to ungated routes (volume/transport).
 

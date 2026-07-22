@@ -83,6 +83,12 @@ from ..local_sources import (
     local_source_park_units,
 )
 from ..transit.state import read_state as read_transit_state
+from ..usb_mic import (
+    read_usb_mic_leg,
+    usb_mic_leg_choices,
+    write_usb_mic_enabled,
+    write_usb_mic_leg,
+)
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..audio_profile_state import (
     normalize_audio_input_profile,
@@ -118,6 +124,11 @@ _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
 _DIAGNOSTICS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
 _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_requested_at: dict[str, float] = {}
+_USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
+_AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
+_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
+_usb_mic_leg_apply_lock = threading.Lock()
+_usb_mic_leg_apply_pending: tuple[str, float] | None = None
 
 
 def _diagnostics_result_path() -> str:
@@ -346,14 +357,18 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
 # promise; grouping/set = hijacks output routing; restart/voice|audio =
 # disrupt playback + the assistant; aec/firmware/update downloads and flashes
-# microphone firmware. WS1 Phase 2 added the two restart routes and made the
-# gate mandatory (control_token.ensure_token() at startup, below).
+# microphone firmware; aec/usb-mic = starts or stops live room-audio export;
+# aec/usb-mic-leg = changes which live room-audio stream reaches the computer.
+# WS1 Phase 2 added the two restart routes and made the gate mandatory
+# (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
     "/system/poweroff",
     "/system/reboot",
     "/system/restart/voice",
     "/system/restart/audio",
     "/mic/mute",
+    "/aec/usb-mic",
+    "/aec/usb-mic-leg",
     "/grouping/set",
     "/aec/firmware/update",
 })
@@ -547,6 +562,68 @@ def _aec_full_status() -> dict:
     return _aec_endpoints._aec_full_status()
 
 
+def _schedule_usb_gadget_recompose() -> bool:
+    """Hand delayed, debounced apply to systemd before returning to the client.
+
+    Restarting an already-running oneshot cancels its 350 ms grace sleep and
+    begins it again, so rapid switch changes naturally debounce.  Unlike an
+    in-process Timer, the durable intent's apply job survives jasper-control
+    exiting after this request.  Reset the unit's failure/start-rate state so
+    each explicit user action gets a fresh, bounded retry budget.
+    """
+
+    commands = (
+        (
+            "retry_budget_reset",
+            ["systemctl", "reset-failed", _USB_MIC_APPLY_UNIT],
+        ),
+        (
+            "enqueue",
+            ["systemctl", "restart", "--no-block", _USB_MIC_APPLY_UNIT],
+        ),
+    )
+    for phase, command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log_event(
+                logger,
+                "usb_mic.recompose_failed",
+                unit=_USB_MIC_APPLY_UNIT,
+                phase=phase,
+                error=str(exc),
+                level=logging.ERROR,
+            )
+            return False
+        if result.returncode != 0:
+            log_event(
+                logger,
+                "usb_mic.recompose_failed",
+                unit=_USB_MIC_APPLY_UNIT,
+                phase=phase,
+                returncode=result.returncode,
+                detail=(result.stderr or result.stdout).strip().replace(
+                    "\n", " | ",
+                ),
+                level=logging.ERROR,
+            )
+            return False
+    log_event(
+        logger,
+        "usb_mic.recompose_scheduled",
+        unit=_USB_MIC_APPLY_UNIT,
+        grace_ms=350,
+        max_attempts=4,
+    )
+    return True
+
+
 def _load_dial_heartbeat() -> dict[str, Any]:
     return _dial._load_dial_heartbeat()
 
@@ -729,7 +806,9 @@ def stop_peering_daemon(*, timeout: float = 5.0) -> None:
 # Forwarded pair action requests carry this header; its presence stops a
 # second hop (see _maybe_forward_pair_action_to_leader's loop breaker).
 _PAIR_FORWARD_HEADER = "X-JTS-Pair-Forwarded"
-_GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
+_GROUPING_RECONCILE_KICK_HELPER = (
+    "/usr/local/sbin/jasper-grouping-reconcile-kick"
+)
 _GROUPING_RECONCILE_TRAILING_UNIT = "jasper-grouping-reconcile-trailing.service"
 _GROUPING_RECONCILE_TRAILING_DELAY_FILE = (
     "/run/jasper-control/grouping-reconcile-trailing-delay"
@@ -754,10 +833,12 @@ def _pair_follower_leader_addr() -> str | None:
     else None. One tiny env-file read per call (multiroom.config.load_config
     — never the runtime derive with its systemctl/RPC probes: this gates
     every /volume request). The predicate itself is the shared
-    follower_leader_addr, so bond-validity semantics live in one place."""
-    from ..multiroom.config import follower_leader_addr, load_config
+    effective-role reader, so a refused bond that safely landed solo does not
+    forward local controls to the requested leader."""
+    from ..multiroom.config import load_config
+    from ..multiroom.effective_role import effective_follower_leader_addr
 
-    return follower_leader_addr(load_config())
+    return effective_follower_leader_addr(load_config())
 
 
 def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
@@ -854,7 +935,7 @@ def _launch_grouping_reconciler_kick(reason: str) -> None:
         reason=reason,
     )
     subprocess.Popen(
-        ["systemctl", "restart", "--no-block", _GROUPING_RECONCILE_UNIT],
+        [_GROUPING_RECONCILE_KICK_HELPER],
     )
 
 
@@ -1088,13 +1169,12 @@ def _reset_grouping_reconciler_kick_coalescer_for_tests() -> None:
 def _kick_grouping_reconciler() -> None:
     """Apply a persisted grouping change through jasper-grouping-reconcile.
 
-    Mirror of _kick_aec_reconciler: `restart` (not `start`) the Type=oneshot
-    reconciler so a change written while a previous reconcile is still active
-    is not a no-op. The reconciler is the single applier of snapcast state and
-    outputd grouping env. This nudges it to re-read grouping.env, but coalesces
-    rapid /grouping/set bursts so trim/delay/crossover sweeps do not tear down
-    outputd on every intermediate value. A skipped kick always arms one trailing
-    retry; the final grouping.env write is therefore applied.
+    The reconciler is the single applier of snapcast state and outputd grouping
+    env. A fixed helper performs a blocking ``systemctl start`` so an active
+    Type=oneshot pass drains before it launches one fresh pass. This caller also
+    coalesces rapid /grouping/set bursts so trim/delay/crossover sweeps do not tear
+    down outputd on every intermediate value. A skipped kick always arms one
+    trailing retry; the final grouping.env write is therefore applied.
     """
     _grouping_reconciler_kick_coalescer.kick()
 
@@ -1288,6 +1368,7 @@ def _make_handler(
     voice_socket_path: str,
     sampler: Any = None,
     airplay_health_sampler: Any = None,
+    audio_health_sampler: Any = None,
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
@@ -1794,6 +1875,24 @@ def _make_handler(
                         ha_status_snapshot=ha_status_cache.snapshot,
                     )),
                 )
+                # The audio-health sampler is the single normalized health
+                # contract shared by /state and /system/snapshot. Copy the
+                # cached aggregate before attaching it so the cross-request
+                # state cache never retains a stale health object.
+                if audio_health_sampler is not None:
+                    state = dict(state)
+                    try:
+                        state["audio_health"] = audio_health_sampler.snapshot()
+                    except (
+                        AttributeError,
+                        KeyError,
+                        OSError,
+                        RuntimeError,
+                        TypeError,
+                        ValueError,
+                    ):
+                        logger.exception("/state audio health snapshot failed")
+                        state["audio_health"] = None
             except Exception as e:  # noqa: BLE001
                 logger.exception("/state aggregation failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -1813,7 +1912,14 @@ def _make_handler(
             # a broken read returns 200 with null rather than 500.
             try:
                 grouping = read_grouping_state()
-            except Exception:  # noqa: BLE001
+            except (
+                AttributeError,
+                KeyError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ):
                 logger.exception("grouping state read failed")
                 grouping = None
             # grouping_response is the ONE home for the envelope shape; the
@@ -1857,10 +1963,13 @@ def _make_handler(
                 }
 
             try:
-                airplay_health = (
-                    airplay_health_sampler.snapshot()
-                    if airplay_health_sampler is not None else None
-                )
+                if audio_health_sampler is not None:
+                    airplay_health = audio_health_sampler.airplay_snapshot()
+                else:
+                    airplay_health = (
+                        airplay_health_sampler.snapshot()
+                        if airplay_health_sampler is not None else None
+                    )
             except Exception:  # noqa: BLE001
                 logger.exception("airplay health snapshot failed")
                 airplay_health = {
@@ -1869,10 +1978,22 @@ def _make_handler(
                 }
 
             try:
-                outputd_status = asyncio.run(_outputd_status())
+                if audio_health_sampler is not None:
+                    outputd_status = audio_health_sampler.outputd_snapshot()
+                else:
+                    outputd_status = asyncio.run(_outputd_status())
             except Exception:  # noqa: BLE001
                 logger.exception("outputd status snapshot failed")
                 outputd_status = None
+
+            try:
+                audio_health = (
+                    audio_health_sampler.snapshot()
+                    if audio_health_sampler is not None else None
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("audio health snapshot failed")
+                audio_health = None
 
             install_profile = _control_install_profile()
             payload: dict[str, Any] = {
@@ -1881,6 +2002,7 @@ def _make_handler(
                     sampler.snapshot() if sampler is not None else None
                 ),
                 "airplay_health": airplay_health,
+                "audio_health": audio_health,
                 "active_speaker_output_safety": (
                     _active_speaker_output_safety_snapshot(airplay_health)
                 ),
@@ -2774,6 +2896,195 @@ def _make_handler(
             self._send_json(_aec_full_status())
             return
 
+        def _post_aec_usb_mic(self) -> None:
+            # Persist intent before descriptor mutation. The gadget restart is
+            # delayed very slightly so a request arriving over its own USB-NCM
+            # link can receive this response before re-enumeration drops that
+            # link for a few seconds.
+            body = self._read_json()
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                self._send_json(
+                    {"error": "enabled must be a boolean"}, status=400,
+                )
+                return
+            current = _aec_full_status()
+            usb_mic = current.get("usb_mic") or {}
+            if enabled and not bool(usb_mic.get("toggle_enabled")):
+                self._send_json(
+                    {
+                        "error": usb_mic.get("detail")
+                        or "USB microphone is not available in the current audio setup.",
+                        "usb_mic": usb_mic,
+                    },
+                    status=409,
+                )
+                return
+            try:
+                write_usb_mic_enabled(enabled)
+            except OSError as exc:
+                self._send_json(
+                    {"error": f"write usb_mic.env failed: {exc}"}, status=502,
+                )
+                return
+            log_event(
+                logger,
+                "usb_mic.set",
+                enabled=enabled,
+                client=self.address_string(),
+            )
+            if not _schedule_usb_gadget_recompose():
+                failed_status = _aec_full_status()
+                self._send_json(
+                    {
+                        "error": (
+                            "USB microphone preference was saved, but its "
+                            "hardware update could not be scheduled."
+                        ),
+                        "code": "usb_mic_recompose_schedule_failed",
+                        "intent_saved": True,
+                        "requested_enabled": enabled,
+                        "usb_mic": failed_status.get("usb_mic") or {},
+                    },
+                    status=502,
+                )
+                return
+            self._send_json(_aec_full_status())
+            return
+
+        def _post_aec_usb_mic_leg(self) -> None:
+            """Persist the computer-mic source, then restart its producer only."""
+
+            global _usb_mic_leg_apply_pending
+
+            body = self._read_json()
+            leg = body.get("leg")
+            if not isinstance(leg, str) or not leg.strip():
+                self._send_json(
+                    {"error": "leg must be a non-empty string"}, status=400,
+                )
+                return
+            leg = leg.strip()
+            # Match GET /aec's fresh reconciler-owned view. jasper-control is
+            # long-lived, so its process environment can lag a mic hotplug.
+            choices = usb_mic_leg_choices(_aec_endpoints._fresh_jasper_env())
+            allowed = {
+                str(choice.get("value") or "")
+                for choice in choices
+                if isinstance(choice, dict)
+            }
+            if leg not in allowed:
+                self._send_json(
+                    {
+                        "error": (
+                            "leg is not available for the current microphone "
+                            "profile"
+                        ),
+                        "requested_leg": leg,
+                        "choices": choices,
+                    },
+                    status=409,
+                )
+                return
+            # Serialize the read/write/apply decision across ThreadingHTTPServer
+            # workers. Same-value saves are true no-ops. A deliberate changed
+            # value clears systemd's crash-loop counter before restart so rapid
+            # authenticated changes cannot spend StartLimitAction=reboot's
+            # recovery budget (the reconciler uses the same safety contract).
+            with _usb_mic_leg_apply_lock:
+                persisted_matches = read_usb_mic_leg() == leg
+                if persisted_matches:
+                    current_status = _aec_full_status()
+                    selection = (
+                        (current_status.get("usb_mic") or {})
+                        .get("source_selection") or {}
+                    )
+                    applied = selection.get("applied") or {}
+                    if applied.get("value") == leg:
+                        _usb_mic_leg_apply_pending = None
+                        log_event(
+                            logger,
+                            "usb_mic.leg_unchanged",
+                            leg=leg,
+                            client=self.address_string(),
+                        )
+                        self._send_json(current_status)
+                        return
+                    pending = _usb_mic_leg_apply_pending
+                    if (
+                        pending is not None
+                        and pending[0] == leg
+                        and time.monotonic() - pending[1]
+                        < _USB_MIC_LEG_APPLY_COALESCE_SECONDS
+                    ):
+                        log_event(
+                            logger,
+                            "usb_mic.leg_apply_pending",
+                            leg=leg,
+                            client=self.address_string(),
+                        )
+                        self._send_json(current_status)
+                        return
+                else:
+                    try:
+                        write_usb_mic_leg(leg)
+                    except ValueError as exc:
+                        self._send_json({"error": str(exc)}, status=400)
+                        return
+                    except OSError as exc:
+                        self._send_json(
+                            {"error": f"write usb_mic.env failed: {exc}"},
+                            status=502,
+                        )
+                        return
+                log_event(
+                    logger,
+                    (
+                        "usb_mic.leg_reapply"
+                        if persisted_matches
+                        else "usb_mic.leg_set"
+                    ),
+                    leg=leg,
+                    client=self.address_string(),
+                )
+                reset = restart_broker.manage_units(
+                    _AEC_BRIDGE_UNIT,
+                    verb="reset-failed",
+                    reason="usb_mic_leg",
+                    no_block=False,
+                    timeout=5.0,
+                )
+                restart = (
+                    restart_broker.manage_units(
+                        _AEC_BRIDGE_UNIT,
+                        verb="restart",
+                        reason="usb_mic_leg",
+                        no_block=True,
+                        timeout=5.0,
+                    )
+                    if reset.get("ok")
+                    else {"ok": False}
+                )
+                if not reset.get("ok") or not restart.get("ok"):
+                    failed_status = _aec_full_status()
+                    self._send_json(
+                        {
+                            "error": (
+                                "Computer microphone source was saved, but the "
+                                "microphone bridge restart could not be scheduled."
+                            ),
+                            "code": "usb_mic_leg_restart_failed",
+                            "intent_saved": True,
+                            "requested_leg": leg,
+                            "usb_mic": failed_status.get("usb_mic") or {},
+                        },
+                        status=502,
+                    )
+                    return
+                _usb_mic_leg_apply_pending = (leg, time.monotonic())
+            self._send_json(_aec_full_status())
+            return
+
         def _post_aec_threshold(self) -> None:
             # Sensitivity slider on the /wake/ page. Writes
             # JASPER_WAKE_THRESHOLD into wake_model.env (same
@@ -3091,6 +3402,8 @@ def _make_handler(
             "/aec/toggle": "_post_aec_toggle",
             "/aec/leg": "_post_aec_leg",
             "/aec/profile": "_post_aec_profile",
+            "/aec/usb-mic": "_post_aec_usb_mic",
+            "/aec/usb-mic-leg": "_post_aec_usb_mic_leg",
             "/aec/threshold": "_post_aec_threshold",
             "/aec/firmware/update": "_post_aec_firmware_update",
             "/debug": "_post_debug",
@@ -3235,6 +3548,7 @@ def build_server(
     voice_socket_path: str = "/run/jasper/voice.sock",
     sampler: Any = None,
     airplay_health_sampler: Any = None,
+    audio_health_sampler: Any = None,
 ) -> ControlHTTPServer:
     return ControlHTTPServer(
         (host, port),
@@ -3244,6 +3558,7 @@ def build_server(
             voice_socket_path,
             sampler,
             airplay_health_sampler,
+            audio_health_sampler,
         ),
     )
 
@@ -3328,21 +3643,25 @@ def main(argv: list[str] | None = None) -> int:
     from .system_metrics import SystemSampler
     sampler = SystemSampler()
     sampler.start()
-    # AirPlay health sampler — cheap fan-in counters at 5 s, slower
-    # journal/MPRIS/Camilla probes for the /system AirPlay card.
-    from .airplay_health import AirPlayHealthSampler
-    airplay_health_sampler = AirPlayHealthSampler(
+    # One audio-health sampler — composes the existing AirPlay probes with
+    # cheap outputd state + slow route certification reads. It is the only
+    # resident audio-monitor thread.
+    from .audio_health import AudioHealthSampler
+    from .audio_incidents import IncidentStore
+    audio_health_sampler = AudioHealthSampler(
         camilla_host=args.camilla_host,
         camilla_port=args.camilla_port,
+        service_probe=sampler.service_states_snapshot,
+        incident_store=IncidentStore(),
     )
-    airplay_health_sampler.start()
+    audio_health_sampler.start()
 
     server = build_server(
         args.host, args.port,
         args.camilla_host, args.camilla_port,
         args.voice_socket,
         sampler=sampler,
-        airplay_health_sampler=airplay_health_sampler,
+        audio_health_sampler=audio_health_sampler,
     )
     # WS1 Phase 2: arm the control-token gate before serving. ensure_token()
     # auto-generates the token (0640 group jasper) if absent, so the destructive

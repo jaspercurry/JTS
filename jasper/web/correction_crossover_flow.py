@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import html
+import inspect
 import logging
 import math
+import threading
 from http import HTTPStatus
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
@@ -27,7 +29,10 @@ CamillaFactory = Callable[[], Any]
 # seam the room and sync flows use — so a phone can carry a driver or summed
 # crossover sweep in place of a same-origin `postWav`. Kind-specific behaviour is
 # only which play/record pair runs; the transport is identical.
-CROSSOVER_RELAY_KINDS = ("driver", "summed")
+CROSSOVER_RELAY_KINDS = ("driver", "summed", "verification")
+# The capture page polls host progress every 250 ms by default. Keep a stopped
+# session readable for several polls before deleting its one-time relay state.
+CROSSOVER_CANCEL_OBSERVATION_GRACE_S = 1.0
 
 
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
@@ -44,6 +49,14 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <p class="eyebrow">Speaker layer</p>
     <h2 class="section__title">Calibrate the active crossover</h2>
     <p id="crossover-verdict" class="form-hint">Checking the speaker…</p>
+    <span id="crossover-applied" class="applied-chip" hidden></span>
+    <div class="crossover-card__footer">
+      <button id="crossover-start-over" class="btn btn--ghost" type="button">Start over</button>
+      <p class="form-hint">
+        <a href="http://{html.escape(hostname, quote=True)}/sound/">Remove the active crossover entirely</a>
+        — this returns the speaker to a plain stereo crossover.
+      </p>
+    </div>
   </section>
 
   <section class="info-card" aria-label="Crossover calibration progress">
@@ -51,11 +64,19 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-nudges" aria-live="polite"></div>
   </section>
 
+  <section id="crossover-review" class="info-card" aria-label="Measured crossover details" hidden>
+    <p class="eyebrow">What was measured</p>
+    <h2 class="section__title">Measured crossover</h2>
+    <div id="crossover-review-body"></div>
+  </section>
+
   <section class="info-card" aria-live="polite">
     <div id="crossover-action" class="measurement-row__actions"></div>
-    <div id="crossover-relay" class="hidden">
+    <div id="crossover-relay" hidden>
       <p id="crossover-relay-status" class="form-hint"></p>
-      <a id="crossover-relay-link" class="btn btn--primary hidden" href="#">Open phone capture</a>
+      <a id="crossover-relay-link" class="btn btn--primary" href="#" target="_blank" rel="noopener" hidden>Open phone capture</a>
+      <div id="crossover-relay-qr" class="relay-qr"></div>
+      <button id="crossover-relay-stop" class="btn btn--danger" type="button" hidden>Stop measurement</button>
     </div>
     <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
   </section>
@@ -131,6 +152,34 @@ def handle_status(
     return payload, HTTPStatus.OK
 
 
+def _active_group_member() -> bool:
+    """True when this speaker is an active multi-room group member.
+
+    Read fresh from ``grouping.env`` via the pure declared-config predicates
+    (``is_active_leader`` / ``is_bonded_follower``) — no cross-origin HTTP,
+    so it is cheap to compute on the correction daemon. Fail-open to ``False``
+    (a read failure must never over-warn a solo household). The "Start over"
+    confirm copy uses this: a bonded speaker's group crossover is rebuilt from
+    the CLEARED measurement evidence, so it needs re-measurement after a scoped
+    reset (fail-safe to solo) — see ``jasper.active_speaker.reset`` and
+    ``jasper.web.correction_crossover_backend.reset_measurement_journey``.
+    """
+    try:
+        from jasper.multiroom.config import (
+            is_active_leader,
+            is_bonded_follower,
+            load_config,
+        )
+    except ImportError:
+        # Fail-open to the solo copy if the multiroom module is unavailable.
+        return False
+    # load_config is total (documented never-raises: a missing/unreadable
+    # grouping.env resolves to the all-off config), and the two predicates are
+    # pure, so no broad catch is warranted here.
+    cfg = load_config()
+    return is_active_leader(cfg) or is_bonded_follower(cfg)
+
+
 def handle_envelope(
     *, relay: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
@@ -143,7 +192,74 @@ def handle_envelope(
     )
 
     status, _ = handle_status(relay=relay)
-    return build_crossover_envelope_logged(status), HTTPStatus.OK
+    envelope = build_crossover_envelope_logged(status)
+    # The "Start over" confirm copy is grouping-aware; carry the (cheap,
+    # fail-open) member flag on every polled envelope so the button that is
+    # always visible confirms with copy that is true in the current state.
+    envelope["grouping_member"] = _active_group_member()
+    return envelope, HTTPStatus.OK
+
+
+def handle_reset(
+    *, relay: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """POST /crossover/reset: scoped "start over" for the measurement journey.
+
+    Clears comparison-set/level-lock state and the driver/summed/staged
+    measurement evidence, then returns the same envelope shape
+    :func:`handle_envelope` does so the page can re-render from a clean
+    start screen in one round trip. Driver research and whatever crossover
+    is currently applied/loaded are untouched — see
+    ``jasper.web.correction_crossover_backend.reset_measurement_journey``.
+
+    The caller (``correction_setup._handle_crossover_reset``) has already
+    requested a stop of any crossover-owned relay before this runs; ``relay``
+    here is only the freshest relay snapshot for the response, matching
+    :func:`handle_status`/:func:`handle_envelope`.
+    """
+    from . import correction_crossover_backend as backend
+    from jasper.active_speaker.crossover_envelope import (
+        build_crossover_envelope_logged,
+    )
+
+    try:
+        reset_result = backend.reset_measurement_journey()
+    except backend.MeasurementJourneyResetRefused as exc:
+        return {
+            "status": "refused",
+            "reason": exc.reason,
+            "error": str(exc),
+        }, HTTPStatus.CONFLICT
+
+    # Reset the durable v2 conductor JOURNEY too (W6.10 fold-in). Without this,
+    # Start-over left the stale v2 candidate/verify/failure in place, so the v2
+    # envelope re-rendered "Ready to start again" with stale verify-fail actions
+    # and no start button instead of the clean microphone_check start screen
+    # (round-1 finding #4). Start-over means "restart the measurement" — the
+    # applied crossover keeps playing via the legacy applied-crossover contract,
+    # so this only resets the guided journey, not what the speaker is emitting.
+    # SELECTIVE (gate ruling): while a candidate is applied, the reset preserves
+    # `applied` + `pre_apply_profile` so W6.8's Undo (handle_v2_restore) stays
+    # reachable — a full clear would strand the household on the applied graph.
+    from .correction_crossover_v2 import reset_v2_journey_state, v2_flow_active
+
+    if v2_flow_active():
+        reset_v2_journey_state()
+
+    status, _ = handle_status(relay=relay)
+    envelope = build_crossover_envelope_logged(status)
+    envelope["grouping_member"] = _active_group_member()
+    # Surface the honest outcome, not the static intent: ``status`` is
+    # ``partial`` when any file failed to unlink, and ``errors`` names them —
+    # the page branches its message on this rather than always painting green.
+    envelope["reset"] = {
+        "status": reset_result.get("status"),
+        "cleared": reset_result.get("cleared_ids"),
+        "missing": reset_result.get("missing_ids"),
+        "errors": reset_result.get("error_ids"),
+        "kept": reset_result.get("kept_ids"),
+    }
+    return envelope, HTTPStatus.OK
 
 
 def handle_apply(
@@ -166,11 +282,17 @@ def handle_apply(
             "error": "Choose manual or automatic crossover tuning before applying.",
         }, HTTPStatus.BAD_REQUEST
     if blocking_phase is not None:
+        next_step = "Finish the active measurement before applying the crossover."
         return {
             "status": "refused",
             "reason": "measurement_in_progress",
             "blocking_phase": blocking_phase,
-            "next_step": "Finish the active measurement before applying the crossover.",
+            "next_step": next_step,
+            # The shared JS error parser (assets/shared/js/http.js) reads only
+            # a top-level `error`, falling back to "HTTP <status>" when it's
+            # absent — this refusal previously had none, so the apply page
+            # surfaced the raw "HTTP 409" instead of an actionable sentence.
+            "error": next_step,
         }, HTTPStatus.CONFLICT
     payload = run_async(
         backend.apply_profile(
@@ -180,7 +302,7 @@ def handle_apply(
         ),
         timeout=30.0,
     )
-    if payload.get("status") != "applied":
+    if payload.get("status") not in {"applied", "applied_unverified"}:
         return payload, HTTPStatus.CONFLICT
 
     # This explicit user action is the terminal owner of commissioning.  The
@@ -231,6 +353,33 @@ def handle_apply(
         session_id=payload["commissioning_session"]["session_id"],
     )
     return payload, HTTPStatus.OK
+
+
+def handle_restore(
+    run_async: AsyncRunner,
+    camilla_factory: CamillaFactory,
+    *,
+    blocking_phase: str | None = None,
+) -> tuple[dict[str, Any], HTTPStatus]:
+    """Restore one crash-interrupted strict candidate apply."""
+
+    from . import correction_crossover_backend as backend
+
+    if blocking_phase is not None:
+        return {
+            "status": "refused",
+            "reason": "measurement_in_progress",
+            "blocking_phase": blocking_phase,
+        }, HTTPStatus.CONFLICT
+    payload = run_async(
+        backend.restore_commissioning_candidate(camilla_factory=camilla_factory),
+        timeout=30.0,
+    )
+    return payload, (
+        HTTPStatus.OK
+        if payload.get("status") == "rolled_back"
+        else HTTPStatus.CONFLICT
+    )
 
 
 def handle_driver_test(
@@ -371,11 +520,33 @@ def handle_summed_capture(
 # ----------------------------------------------------------------------
 
 
+def crossover_ambient_duration_s(kind: str, role: str) -> float:
+    """Right-sized quiet-reference window for one crossover relay sweep.
+
+    A driver sweep's own protected duration decides its ambient window
+    (:func:`jasper.active_speaker.test_signal_plan.driver_ambient_duration_s`)
+    so a short tweeter sweep does not inherit the longest driver's ~14 s pause.
+    Summed/verification sweeps keep the historical worst-case window — there is
+    no single driver role to size them against. This ONE function backs both
+    the capture spec's ``ambient_duration_ms`` (``correction_setup._open``) and
+    this module's own sleep default (``build_crossover_relay_run_and_consume``),
+    so the two can never drift apart.
+    """
+    from jasper.active_speaker.test_signal_plan import (
+        CROSSOVER_AMBIENT_DURATION_S,
+        driver_ambient_duration_s,
+    )
+
+    if kind == "driver" and role:
+        return driver_ambient_duration_s(role)
+    return CROSSOVER_AMBIENT_DURATION_S
+
+
 def relay_kind_from_raw(raw: dict[str, Any]) -> str:
-    """The crossover relay capture kind (``driver`` | ``summed``), validated.
+    """The crossover relay capture kind, validated at the thin HTTP boundary.
 
     Kept small + strict at the boundary (extensibility doctrine): an unknown
-    kind fails loud rather than silently defaulting to one of the two paths."""
+    kind fails loud rather than silently defaulting to a known path."""
     kind = str((raw or {}).get("kind") or "").strip().lower()
     if kind not in CROSSOVER_RELAY_KINDS:
         raise ValueError(
@@ -422,6 +593,30 @@ def playback_issue_text(payload: Any, fallback: str) -> str:
         if value:
             return str(value)
     return fallback
+
+
+def _phone_failure_text(exc: BaseException) -> str:
+    """Household-safe text for a ``sweep_failed`` host event sent to the phone.
+
+    ``on_armed``'s ``validate_current_context()`` can raise
+    ``correction_setup.ServerOwnedNextStepMismatch`` (the envelope-derivation
+    guard's refusal). Its raw ``str(exc)`` is programmer jargon; the phone
+    capture page renders the ``error`` field verbatim, so route that ONE
+    exception through the same single-source household copy the wizard status
+    line uses (the exception's own ``user_message``). Every other exception
+    keeps ``str(exc)`` unchanged — scope stays on the observed-broken path.
+
+    Lazy import: ``correction_setup`` imports THIS module at call time (never
+    at its own module top level), and this module never imports
+    ``correction_setup`` at top level, so resolving the type here — only on
+    the error path, well after both modules are loaded — cannot form an
+    import cycle.
+    """
+    from . import correction_setup
+
+    if isinstance(exc, correction_setup.ServerOwnedNextStepMismatch):
+        return exc.user_message
+    return str(exc)
 
 
 def capture_sweep_played(payload: Any) -> bool:
@@ -524,6 +719,13 @@ def ensure_automatic_measurement_profile(
             owner=applied.get("owner"),
         )
 
+    # in-sequence-anchor-exempt: this gate is unreachable mid-sequence — a
+    # running sequence has applied_crossover.valid True and early-returns
+    # above before the legacy migration runs. It fires only immediately
+    # after the legacy apply_profile this function just performed, which
+    # repoints production itself (superseding any capture-entry stash), so
+    # full "ready" is the correct proof that the fresh apply produced a
+    # ready production graph. Do not admit the staged anchor here.
     if setup.get("status") != "ready":
         raise ValueError(
             str(
@@ -573,8 +775,20 @@ def validate_current_capture_context(
     applied = applied if isinstance(applied, Mapping) else {}
     protected = setup.get("protected_profile")
     protected = protected if isinstance(protected, Mapping) else {}
+    # Arm-time runs mid-sequence by design: between capture attempts the
+    # persisted config is the all-muted staged anchor (PR #1523), so setup
+    # reads blocked. Admit exactly that in-sequence state via the shared
+    # predicate; the fingerprint and applied checks below still catch a
+    # setup that genuinely changed underneath the link.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
     if (
-        setup.get("status") != "ready"
+        (
+            setup.get("status") != "ready"
+            and not setup_blocked_only_by_in_sequence_anchor(status)
+        )
         or applied.get("valid") is not True
         or str(protected.get("candidate_fingerprint") or "")
         != expected_profile_context_id
@@ -677,8 +891,21 @@ def validate_current_level_target_context(
     protected = protected if isinstance(protected, Mapping) else {}
     applied = setup.get("applied_crossover")
     applied = applied if isinstance(applied, Mapping) else {}
+    # Tone-prep for lock 2..N runs while the persisted config is the
+    # all-muted staged anchor (PR #1523), so a raw ready requirement here
+    # wedged the tweeter tone (run 11). Admit exactly the in-sequence state;
+    # every remaining trigger of this error is a genuine changed-underneath
+    # case (fingerprint/applied/other-blocked regression after the link was
+    # created), so the copy stays accurate.
+    from jasper.active_speaker.setup_status import (
+        setup_blocked_only_by_in_sequence_anchor,
+    )
+
     if (
-        setup.get("status") != "ready"
+        (
+            setup.get("status") != "ready"
+            and not setup_blocked_only_by_in_sequence_anchor(status)
+        )
         or applied.get("valid") is not True
         or str(protected.get("candidate_fingerprint") or "")
         != expected_profile_context_id
@@ -713,6 +940,254 @@ def validate_current_level_target_context(
         )
 
 
+def _play_sequence_accepts_ambient_ready(play_sequence: Callable[..., Any]) -> bool:
+    """Whether a crossover ``play_sequence`` accepts ``on_ambient_ready``.
+
+    W2.6 countdown-accuracy fix (SPEC W2.3): ``ambient_started`` used to post
+    synchronously in ``on_armed``, before ``play_sequence`` (hence
+    ``prepare_play``'s solve/volume-acquire work) ever ran — so the phone's
+    countdown started ticking before the real quiet window began (see
+    ``test_ambient_started_host_event_still_carries_duration_s``'s docstring
+    and PR #1552's "Countdown finding"). The fix threads the post through as a
+    callback ``play_sequence`` itself fires right before the real
+    ``asyncio.sleep(ambient_duration_s)``. Mirrors
+    ``jasper.capture_relay.session._call_state_callback``'s existing
+    signature-introspection pattern: a ``play_sequence`` written before this
+    fix (today, only the summed-commissioning host's ``_play_sequence`` in
+    ``jasper/web/correction_setup.py``, which has no ``prepare_play`` phase to
+    fire it from) keeps its original ordering rather than raising a
+    ``TypeError`` for an unexpected keyword.
+    """
+    try:
+        sig = inspect.signature(play_sequence)
+    except (TypeError, ValueError):
+        return False
+    if "on_ambient_ready" in sig.parameters:
+        return True
+    return any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in sig.parameters.values()
+    )
+
+
+async def run_crossover_relay_transport(
+    client: Any,
+    pi_session: Any,
+    *,
+    run_async: AsyncRunner,
+    play_sequence: Callable[[Callable[[], None]], Any],
+    validate_playback: Callable[[Any], None],
+    prepare_armed: Callable[[Any, Any], None],
+    validate_capture: Callable[[Any], None] | None = None,
+    post_host_event: Callable[[str, str, dict[str, Any]], Any] | None = None,
+    begin_finishing: Callable[[], bool] | None = None,
+    begin_commit: Callable[[], bool] | None = None,
+    on_failure: Callable[[BaseException], None] | None = None,
+    ambient_duration_s: float = 0.0,
+    stop_event: threading.Event | None = None,
+) -> tuple[Any, Any]:
+    """Capture one relay WAV around one bounded host-owned play sequence.
+
+    This is the single crossover relay transport for both the existing isolated
+    driver path and the strict summed-region host.  It owns phone liveness,
+    progress events, Stop/drain/purge, and the transition from recorder close to
+    evidence commit.  The injected play sequence owns all DSP and safety policy.
+    """
+
+    import asyncio
+
+    from jasper.capture_relay.session import (
+        CaptureActivityProbe,
+        CaptureStopped,
+        purge,
+        run_capture,
+        validate_capture_acknowledgement,
+    )
+    from jasper.active_speaker.test_signal_plan import (
+        CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
+        CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
+    )
+
+    stop_event = stop_event or threading.Event()
+    ambient_duration_s = max(0.0, float(ambient_duration_s))
+
+    def raise_if_stopped() -> None:
+        if stop_event.is_set():
+            raise CaptureStopped("capture stopped")
+
+    def post_phase(phase: str, **extra: Any) -> None:
+        if post_host_event is not None:
+            post_host_event(
+                pi_session.session_id,
+                pi_session.pull_token,
+                {"phase": phase, **extra},
+            )
+
+    def post_terminal_best_effort(phase: str, **extra: Any) -> None:
+        if post_host_event is None:
+            return
+        try:
+            post_phase(phase, **extra)
+        except (RuntimeError, OSError, ValueError):
+            logger.warning(
+                "crossover relay terminal host-event post failed",
+                exc_info=True,
+            )
+
+    async def publish_cancelled_then_purge() -> None:
+        await asyncio.to_thread(post_terminal_best_effort, "sweep_cancelled")
+        if post_host_event is not None:
+            await asyncio.sleep(CROSSOVER_CANCEL_OBSERVATION_GRACE_S)
+        await asyncio.to_thread(purge, client, pi_session)
+
+    async def play_while_phone_active(
+        activity: Any,
+        on_sweep_ready: Callable[[], None],
+        *,
+        on_ambient_ready: Callable[[], None] | None = None,
+    ) -> Any:
+        async def watch_phone() -> None:
+            while True:
+                raise_if_stopped()
+                await asyncio.to_thread(activity.assert_active)
+                raise_if_stopped()
+                await asyncio.sleep(0.2)
+
+        play_kwargs: dict[str, Any] = {}
+        if on_ambient_ready is not None:
+            if _play_sequence_accepts_ambient_ready(play_sequence):
+                play_kwargs["on_ambient_ready"] = on_ambient_ready
+            else:
+                # Backward-compat fallback — see
+                # _play_sequence_accepts_ambient_ready's docstring.
+                on_ambient_ready()
+        play_task = asyncio.create_task(play_sequence(on_sweep_ready, **play_kwargs))
+        watch_task = asyncio.create_task(watch_phone())
+        try:
+            done, _pending = await asyncio.wait(
+                {play_task, watch_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if watch_task in done:
+                error = watch_task.exception()
+                if error is None:
+                    raise RuntimeError(
+                        "phone capture activity watchdog stopped unexpectedly"
+                    )
+                raise error
+            return await play_task
+        finally:
+            for task in (play_task, watch_task):
+                if not task.done():
+                    task.cancel()
+            settled: list[Any] = list(
+                await asyncio.gather(
+                    play_task, watch_task, return_exceptions=True
+                )
+            )
+            play_result = settled[0]
+            if isinstance(play_result, BaseException) and not isinstance(
+                play_result, asyncio.CancelledError
+            ):
+                raise play_result
+
+    played: dict[str, Any] = {}
+
+    def on_armed(state: Any) -> None:
+        try:
+            raise_if_stopped()
+            acknowledgement = validate_capture_acknowledgement(
+                state, pi_session.spec
+            )
+            required = pi_session.spec.acknowledgement
+            if acknowledgement is None or required is None:
+                raise ValueError(
+                    "confirm the microphone placement before starting the sweep"
+                )
+            prepare_armed(state, acknowledgement)
+            activity = CaptureActivityProbe(client, pi_session)
+
+            def confirm_ambient_ready() -> None:
+                # W2.6: fired by play_sequence itself, right before the real
+                # quiet-window sleep — see
+                # _play_sequence_accepts_ambient_ready's docstring.
+                raise_if_stopped()
+                if ambient_duration_s > 0.0:
+                    post_phase("ambient_started", duration_s=ambient_duration_s)
+
+            def confirm_active_and_post_started() -> None:
+                raise_if_stopped()
+                activity.assert_active()
+                raise_if_stopped()
+                post_phase("sweep_started")
+
+            payload = run_async(
+                asyncio.wait_for(
+                    play_while_phone_active(
+                        activity,
+                        confirm_active_and_post_started,
+                        on_ambient_ready=confirm_ambient_ready,
+                    ),
+                    timeout=CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
+                ),
+                timeout=CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 2.0,
+            )
+            validate_playback(payload)
+            played["payload"] = payload
+            if begin_finishing is not None and not begin_finishing():
+                raise CaptureStopped("capture stopped")
+            post_phase("sweep_complete")
+        except (RuntimeError, OSError, ValueError) as exc:
+            if not isinstance(exc, CaptureStopped):
+                post_terminal_best_effort(
+                    "sweep_failed", error=_phone_failure_text(exc)
+                )
+            raise
+
+    capture_task = asyncio.create_task(
+        asyncio.to_thread(
+            run_capture,
+            client,
+            pi_session,
+            on_armed=on_armed,
+            stop_requested=stop_event.is_set,
+        )
+    )
+    capture_received = False
+    try:
+        try:
+            result = await asyncio.shield(capture_task)
+        except asyncio.CancelledError:
+            stop_event.set()
+            while not capture_task.done():
+                try:
+                    await asyncio.shield(capture_task)
+                except asyncio.CancelledError:
+                    continue
+                except (OSError, RuntimeError, ValueError):
+                    break
+            if capture_task.done() and not capture_task.cancelled():
+                capture_task.exception()
+            await publish_cancelled_then_purge()
+            raise
+        capture_received = True
+        raise_if_stopped()
+        if validate_capture is not None:
+            validate_capture(result)
+        raise_if_stopped()
+        if begin_commit is not None and not begin_commit():
+            raise CaptureStopped("capture stopped")
+        await asyncio.to_thread(purge, client, pi_session)
+        return result, played.get("payload")
+    except (RuntimeError, OSError, ValueError) as exc:
+        if on_failure is not None:
+            on_failure(exc)
+        if isinstance(exc, CaptureStopped):
+            await publish_cancelled_then_purge()
+        elif capture_received:
+            await asyncio.to_thread(purge, client, pi_session)
+        raise
+
+
 def build_crossover_relay_run_and_consume(
     raw: dict[str, Any],
     run_async: AsyncRunner,
@@ -731,7 +1206,11 @@ def build_crossover_relay_run_and_consume(
     validate_current_context: Callable[[], None] | None = None,
     reserve_repeat_attempt: Callable[[], Mapping[str, Any]] | None = None,
     finish_failed_repeat_attempt: Callable[[Mapping[str, Any], str], None] | None = None,
+    begin_finishing: Callable[[], bool] | None = None,
+    begin_commit: Callable[[], bool] | None = None,
     ambient_duration_s: float | None = None,
+    stop_event: threading.Event | None = None,
+    stop_lock: Any = None,
 ) -> Callable[[Any, Any], Any]:
     """Return the relay ``run_and_consume(client, pi_session)`` coroutine.
 
@@ -755,9 +1234,12 @@ def build_crossover_relay_run_and_consume(
     """
     from . import correction_crossover_backend as backend
 
+    stop_event = stop_event or threading.Event()
+    stop_lock = stop_lock or threading.Lock()
     kind = relay_kind_from_raw(raw)
     group_id = str((raw or {}).get("speaker_group_id") or "").strip()
     role = str((raw or {}).get("role") or "").strip().lower()
+    capture_geometry = str((raw or {}).get("capture_geometry") or "near_field").strip().lower()
     # Stash the play response between on_armed (poll thread) and the post-capture
     # record so the record carries the exact sweep the Pi played.
     played: dict[str, Any] = {}
@@ -782,18 +1264,27 @@ def build_crossover_relay_run_and_consume(
         finish_failed_repeat_attempt(reservation, failure_type)
 
     if ambient_duration_s is None:
-        from jasper.active_speaker.test_signal_plan import (
-            CROSSOVER_AMBIENT_DURATION_S,
-        )
-
-        ambient_duration_s = CROSSOVER_AMBIENT_DURATION_S
+        ambient_duration_s = crossover_ambient_duration_s(kind, role)
     ambient_duration_s = max(0.0, float(ambient_duration_s))
 
     async def _play(
         on_sweep_ready: Callable[[], None] | None = None,
+        on_ambient_ready: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        from jasper.active_speaker.web_commissioning import FaninGateContext
         from jasper.correction import coordinator
         import asyncio
+
+        # This sweep runs inside the measurement window's own held gate
+        # (owner=coordinator.MEASUREMENT_GATE_OWNER). The tone/sweep must
+        # select under that SAME owner rather than claiming its own
+        # standalone gate — a second owner is refused outright — and must
+        # restore the window's label (not release) when it ends. See
+        # FaninGateContext.
+        fanin_gate_context = FaninGateContext(
+            owner=coordinator.MEASUREMENT_GATE_OWNER,
+            restore_label=coordinator.MEASUREMENT_FANIN_LABEL,
+        )
 
         # Re-evaluate the mutual-exclusion probe NOW (at play time, not POST
         # time) — the play functions refuse with reason=measurement_in_progress
@@ -807,6 +1298,12 @@ def build_crossover_relay_run_and_consume(
                             "could not reassert the locked crossover measurement level"
                         )
                 phase = blocking_phase() if blocking_phase is not None else None
+                # W2.6: ambient_started now fires HERE — after prepare_play's
+                # solve/volume-acquire work, immediately before the real
+                # quiet-window sleep — so the phone's countdown matches
+                # reality instead of ticking down during prepare_play's work.
+                if on_ambient_ready is not None:
+                    await asyncio.to_thread(on_ambient_ready)
                 # Household audio stays paused for the whole controlled quiet
                 # interval. The probe has locked a safe volume but contributes
                 # no SNR verdict; only signal-bounded quiet evidence vs the
@@ -828,7 +1325,11 @@ def build_crossover_relay_run_and_consume(
                             "the geometry-scoped driver level lock is unavailable"
                         )
                     return await backend.play_driver_capture_sweep(
-                        {"speaker_group_id": group_id, "role": role},
+                        {
+                            "speaker_group_id": group_id,
+                            "role": role,
+                            "capture_geometry": capture_geometry,
+                        },
                         camilla_factory=camilla_factory,
                         blocking_phase=phase,
                         applied_profile=(
@@ -838,6 +1339,7 @@ def build_crossover_relay_run_and_consume(
                         ),
                         locked_main_volume_db=locked_main_volume_db,
                         volume_lease_prepared=prepare_play is not None,
+                        fanin_gate_context=fanin_gate_context,
                     )
                 summed_play_raw = {"speaker_group_id": group_id}
                 for key in (
@@ -878,222 +1380,72 @@ def build_crossover_relay_run_and_consume(
                     if cancelled:
                         raise asyncio.CancelledError
 
-    def _post_phase(session_id: str, pull_token: str, phase: str, **extra: Any) -> None:
-        """Post a REQUIRED progress event; failures propagate.
-
-        The phone deadline-waits on ``sweep_complete`` — a swallowed post
-        failure would leave it recording to its hard timeout with no
-        breadcrumb. Mirrors the room path (`_run_relay_measurement_sweep`),
-        where a failed ``sweep_started``/``sweep_complete`` post fails the
-        capture."""
-        if post_host_event is None:
-            return
-        post_host_event(session_id, pull_token, {"phase": phase, **extra})
-
-    def _post_failed(session_id: str, pull_token: str, error: str) -> None:
-        """Post the terminal ``sweep_failed`` best-effort — we are already on
-        the failure path, so a post failure is logged at WARNING, not raised."""
-        if post_host_event is None:
-            return
-        try:
-            post_host_event(
-                session_id, pull_token, {"phase": "sweep_failed", "error": error}
-            )
-        except (RuntimeError, OSError, ValueError):
-            logger.warning(
-                "crossover relay sweep_failed host-event post failed",
-                exc_info=True,
-            )
-
     async def _run_and_consume(client: Any, pi_session: Any) -> None:
-        import asyncio
-
-        from jasper.capture_relay.session import (
-            CaptureActivityProbe,
-            purge,
-            run_capture,
-            validate_capture_acknowledgement,
+        from jasper.capture_relay.session import CaptureStopped
+        from jasper.active_speaker.capture_geometry import (
+            normalized_placement_proof,
         )
 
-        async def _play_while_phone_active(
-            activity: CaptureActivityProbe,
-            on_sweep_ready: Callable[[], None],
-        ) -> dict[str, Any]:
-            """Cancel the protected stimulus if the authenticated phone dies."""
-
-            async def watch_phone() -> None:
-                while True:
-                    await asyncio.to_thread(activity.assert_active)
-                    await asyncio.sleep(0.2)
-
-            play_task = asyncio.create_task(_play(on_sweep_ready))
-            watch_task = asyncio.create_task(watch_phone())
-            try:
-                done, _pending = await asyncio.wait(
-                    {play_task, watch_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if watch_task in done:
-                    error = watch_task.exception()
-                    if error is None:
-                        raise RuntimeError(
-                            "phone capture activity watchdog stopped unexpectedly"
-                        )
-                    raise error
-                return await play_task
-            finally:
-                for task in (play_task, watch_task):
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(play_task, watch_task, return_exceptions=True)
-
-        def _on_armed(state: Any) -> None:
-            # Called from run_capture's poll thread. `run_async` posts the play
-            # coroutine back to the correction event loop (run_coroutine_threadsafe)
-            # and blocks THIS thread — never the loop — until the sweep finishes.
-            try:
-                if validate_current_context is not None:
-                    validate_current_context()
-                elif current_comparison_set is not None:
-                    current = current_comparison_set()
-                    expected = comparison_set or {}
-                    if (
-                        current.get("comparison_set_id")
-                        != expected.get("comparison_set_id")
-                        or current.get("fingerprint")
-                        != expected.get("fingerprint")
-                    ):
-                        raise ValueError(
-                            "the crossover measurement level changed after this "
-                            "link was created; run the level check again"
-                        )
-                acknowledgement = validate_capture_acknowledgement(
-                    state,
-                    pi_session.spec,
-                )
-                required = pi_session.spec.acknowledgement
-                if acknowledgement is None or required is None:
+        def _prepare_armed(state: Any, _acknowledgement: Any) -> None:
+            if validate_current_context is not None:
+                validate_current_context()
+            elif current_comparison_set is not None:
+                current = current_comparison_set()
+                expected = comparison_set or {}
+                if (
+                    current.get("comparison_set_id")
+                    != expected.get("comparison_set_id")
+                    or current.get("fingerprint") != expected.get("fingerprint")
+                ):
                     raise ValueError(
-                        "confirm the microphone placement before starting the sweep"
+                        "the crossover measurement level changed after this "
+                        "link was created; run the level check again"
                     )
-                from jasper.active_speaker.capture_geometry import (
-                    normalized_placement_proof,
+            required = pi_session.spec.acknowledgement
+            assert required is not None
+            placement_proof.clear()
+            placement_proof.update(
+                normalized_placement_proof(
+                    policy_id=required.id,
+                    acknowledgement_binding=required.binding_id,
+                    relay_session_id=pi_session.session_id,
+                    capture_page=state.capture_page,
+                    speaker_group_id=group_id,
+                    role=role if kind == "driver" else "summed",
+                    target_fingerprint=target_fingerprint,
+                    comparison_set=comparison_set or {},
                 )
-
-                placement_proof.clear()
-                placement_proof.update(
-                    normalized_placement_proof(
-                        policy_id=required.id,
-                        acknowledgement_binding=required.binding_id,
-                        relay_session_id=pi_session.session_id,
-                        capture_page=state.capture_page,
-                        speaker_group_id=group_id,
-                        role=role if kind == "driver" else "summed",
-                        target_fingerprint=target_fingerprint,
-                        comparison_set=comparison_set or {},
-                    )
-                )
-                if kind == "driver" and reserve_repeat_attempt is not None:
-                    repeat_reservation.clear()
-                    try:
-                        repeat_reservation.update(reserve_repeat_attempt())
-                    except (OSError, RuntimeError, ValueError) as exc:
-                        log_event(
-                            logger,
-                            "correction.crossover_repeat_persistence_failed",
-                            level=logging.ERROR,
-                            reason=type(exc).__name__,
-                            op="reserve",
-                        )
-                        raise
-                if ambient_duration_s > 0:
-                    _post_phase(
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        "ambient_started",
-                        duration_s=ambient_duration_s,
-                    )
-                from jasper.active_speaker.test_signal_plan import (
-                    CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
-                )
-
-                # Finish and publish sweep_complete with margin before the
-                # phone's own recorder deadline. asyncio.wait_for cancellation
-                # reaches play_sweep, which kills/reaps aplay.
-                play_deadline_s = CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 5.0
-                runner_deadline_s = CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 2.0
-                activity = CaptureActivityProbe(client, pi_session)
-
-                def _confirm_active_and_post_started() -> None:
-                    # The watchdog may itself be waiting on a slow relay
-                    # request. This synchronous pre-audio proof prevents the
-                    # backend from starting until one fresh authenticated armed
-                    # event has actually returned.
-                    activity.assert_active()
-                    _post_phase(
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        "sweep_started",
-                    )
-
-                payload = run_async(
-                    asyncio.wait_for(
-                        _play_while_phone_active(
-                            activity,
-                            _confirm_active_and_post_started,
-                        ),
-                        timeout=play_deadline_s,
-                    ),
-                    timeout=runner_deadline_s,
-                )
-                if not capture_sweep_played(payload):
-                    raise ValueError(playback_issue_text(
-                        payload,
-                        "the crossover capture sweep did not play — "
-                        "confirm the driver first",
-                    ))
-                played.clear()
-                played.update(payload)
-                if repeat_reservation:
-                    played["repeat_reservation"] = dict(repeat_reservation)
-                _post_phase(
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    "sweep_complete",
-                )
-            except (RuntimeError, OSError, ValueError) as exc:
+            )
+            if kind == "driver" and reserve_repeat_attempt is not None:
+                repeat_reservation.clear()
                 try:
-                    _finish_reservation_failure(exc)
-                except (RuntimeError, OSError, ValueError) as persist_exc:
+                    with stop_lock:
+                        if stop_event.is_set():
+                            raise CaptureStopped("capture stopped")
+                        repeat_reservation.update(reserve_repeat_attempt())
+                except (OSError, RuntimeError, ValueError) as exc:
                     log_event(
                         logger,
                         "correction.crossover_repeat_persistence_failed",
                         level=logging.ERROR,
-                        exc_info=True,
-                        reason=type(persist_exc).__name__,
+                        reason=type(exc).__name__,
+                        op="reserve",
                     )
-                _post_failed(
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    str(exc),
+                    raise
+
+        def _validate_playback(payload: Any) -> None:
+            if not capture_sweep_played(payload):
+                raise ValueError(
+                    playback_issue_text(
+                        payload,
+                        "the crossover capture sweep did not play — "
+                        "confirm the driver first",
+                    )
                 )
-                raise
 
-        # run_capture blocks until the phone finishes recording, so it MUST run
-        # off the correction event loop (mirrors the room flow's
-        # `await asyncio.to_thread(run_and_store, ...)`) — otherwise the whole
-        # capture window would freeze the loop the play coroutine schedules onto.
-        try:
-            result = await asyncio.to_thread(
-                run_capture, client, pi_session, on_armed=_on_armed
-            )
-            purge(client, pi_session)
-
-            if validate_capture is not None:
-                validate_capture(result)
-        except (RuntimeError, OSError, ValueError) as exc:
+        def _record_failure(error: BaseException) -> None:
             try:
-                _finish_reservation_failure(exc)
+                _finish_reservation_failure(error)
             except (RuntimeError, OSError, ValueError) as persist_exc:
                 log_event(
                     logger,
@@ -1102,7 +1454,27 @@ def build_crossover_relay_run_and_consume(
                     exc_info=True,
                     reason=type(persist_exc).__name__,
                 )
-            raise
+
+        result, play_payload = await run_crossover_relay_transport(
+            client,
+            pi_session,
+            run_async=run_async,
+            play_sequence=_play,
+            validate_playback=_validate_playback,
+            prepare_armed=_prepare_armed,
+            validate_capture=validate_capture,
+            post_host_event=post_host_event,
+            begin_finishing=begin_finishing,
+            begin_commit=begin_commit,
+            on_failure=_record_failure,
+            ambient_duration_s=ambient_duration_s,
+            stop_event=stop_event,
+        )
+        played.clear()
+        if isinstance(play_payload, Mapping):
+            played.update(play_payload)
+        if repeat_reservation:
+            played["repeat_reservation"] = dict(repeat_reservation)
 
         # Calibration identity and measurement mode are injected by the host
         # from the level-check setup. ``validate_capture`` verifies that the
@@ -1135,6 +1507,7 @@ def build_crossover_relay_run_and_consume(
             record_kwargs: dict[str, Any] = {
                 "placement_proof": placement_proof,
                 "repeat_store": backend.level_lease(),
+                "admission_handoff": played.get("capture_admission"),
             }
             if frozen_capture_preset is not None:
                 record_kwargs["preset"] = frozen_capture_preset
@@ -1202,5 +1575,537 @@ def build_crossover_relay_run_and_consume(
             placement_policy=placement_proof.get("policy_id"),
             comparison_set_id=placement_proof.get("comparison_set_id"),
         )
+
+    return _run_and_consume
+
+
+def _driver_capture_plan_accepted(payload: Mapping[str, Any]) -> bool:
+    """Whether one captured WAV advances a v3 driver repeat SET (SPEC W2.3).
+
+    Maps ``record_driver_capture``'s three return shapes onto the single
+    accepted/not-accepted signal ``session.run_capture_plan`` needs to decide
+    whether to keep asking the phone for more captures or stop the session:
+
+    - a mid-set repeat (``recorded=False``, ``repeat_progress`` present) —
+      accepted iff this attempt's own acoustic verdict was not rejected
+      (``repeat_progress.latest_rejection is None``);
+    - a terminal refusal (``status="refused"``) — never accepted;
+    - a finalized set (``recorded=True``) — always accepted, even on the rare
+      terminal-fallback path where the FINALIZING attempt was itself
+      rejected but two earlier accepted repeats already cleared
+      ``repeat_admission``'s floor. This is deliberately NOT "was this exact
+      attempt acoustically accepted" — it is "did the domain just reach a
+      TERMINAL state" — so the session ends cleanly
+      (``capture_set_complete``) instead of one more ``begin_capture``
+      hitting a ``repeat_admission`` refusal the phone has no recovery for.
+    """
+    if payload.get("recorded") is True:
+        return True
+    if payload.get("status") == "refused":
+        return False
+    repeat_progress = payload.get("repeat_progress")
+    if isinstance(repeat_progress, Mapping):
+        return repeat_progress.get("latest_rejection") is None
+    return False
+
+
+def build_crossover_relay_plan_run_and_consume(
+    raw: dict[str, Any],
+    run_async: AsyncRunner,
+    camilla_factory: CamillaFactory,
+    *,
+    post_host_event: Callable[[str, str, dict[str, Any]], Any] | None = None,
+    blocking_phase: Callable[[], str | None] | None = None,
+    validate_capture: Callable[[Any], None] | None = None,
+    prepare_play: Callable[[], Any] | None = None,
+    restore_play: Callable[[], Any] | None = None,
+    driver_locked_main_volume_db: Callable[[], float | None] | None = None,
+    comparison_set: Mapping[str, Any] | None = None,
+    applied_profile: Mapping[str, Any] | None = None,
+    target_fingerprint: str = "",
+    validate_current_context: (
+        Callable[[Mapping[str, Any] | None], None] | None
+    ) = None,
+    reserve_repeat_attempt: Callable[[], Mapping[str, Any]],
+    finish_failed_repeat_attempt: Callable[[Mapping[str, Any], str], None] | None = None,
+    publish_progress: Callable[[int], None] | None = None,
+    ambient_duration_s: float | None = None,
+    stop_event: threading.Event | None = None,
+    stop_lock: Any = None,
+) -> Callable[[Any, Any], Any]:
+    """Return the v3 relay ``run_and_consume(client, pi_session)`` for a
+    driver's whole repeat SET (capture protocol 3, SPEC W2.3).
+
+    One relay session now carries the driver's entire ``capture_plan``
+    (``capture_target``/``max_attempts``) instead of one relay session per
+    repeat — the household opens ONE phone link and the phone drives every
+    capture in the set itself. Driver-only: summed/verification captures stay
+    on ``build_crossover_relay_run_and_consume`` (protocol v2), untouched.
+
+    Reuses the exact safety-critical playback shape
+    ``build_crossover_relay_run_and_consume`` uses for a single driver
+    capture (measurement_window → ``prepare_play`` (solve + volume acquire)
+    → ambient quiet window → sweep → ``play_driver_capture_sweep``, with the
+    same ``CaptureActivityProbe`` watchdog racing the stimulus playback), just
+    invoked once per capture inside ONE
+    :func:`jasper.capture_relay.session.run_capture_plan` call instead of
+    once per HTTP POST.
+
+    - ``authorize_begin(index, attempt)`` wraps the SAME
+      ``reserve_repeat_attempt`` seam the v2 single-capture path uses —
+      admission budget stays exactly where it was (Pi-owned,
+      ``jasper.active_speaker.repeat_admission``). A refusal raises
+      ``CaptureBeginRefused`` so the phone gets a named refusal event
+      instead of a silent hang.
+    - ``consume_capture(index, attempt, result)`` calls the SAME
+      ``correction_crossover_backend.record_driver_capture`` analysis/record
+      path v2 uses — every accepted capture lands in the durable ledger
+      exactly as today, and the completion-time correction (#1555) and
+      closed-loop level solver (#1543/#1552) run unchanged per capture
+      index: solve/correction/escalation behavior is identical to v2
+      because it is the identical function call.
+    - ``publish_progress(accepted_count)``, when supplied, is called once at
+      session start and again after every capture so the wizard envelope's
+      passive progress mirror (``crossover_envelope._plan_measuring_verdict``)
+      shows live "N of {target} done" — see
+      ``jasper.web.correction_setup._publish_crossover_capture_plan_progress``.
+
+    Stop semantics rely entirely on ``run_capture_plan``'s own
+    ``stop_requested`` polling (it already checks before every capture-plan
+    transition, including immediately before pulling/consuming a ready
+    blob) — no separate ``begin_finishing``/``begin_commit`` gate is layered
+    on top the way the v2 single-capture path does; the global relay-status
+    slot's "committing" transition is a single-shot-session concept that
+    does not fit a multi-capture session cleanly, and it is not needed for
+    correctness here (see the PR body for the full reasoning).
+    """
+    from . import correction_crossover_backend as backend
+
+    stop_event = stop_event or threading.Event()
+    stop_lock = stop_lock or threading.Lock()
+    kind = relay_kind_from_raw(raw)
+    if kind != "driver":
+        raise ValueError("session-spanning capture plans are driver-only")
+    group_id = str((raw or {}).get("speaker_group_id") or "").strip()
+    role = str((raw or {}).get("role") or "").strip().lower()
+    capture_geometry = str(
+        (raw or {}).get("capture_geometry") or "near_field"
+    ).strip().lower()
+    repeat_reservation: dict[str, Any] = {}
+    placement_proof: dict[str, Any] = {}
+    frozen_capture_preset: Any = None
+    if isinstance(applied_profile, Mapping):
+        snapshot = applied_profile.get("recomposition_snapshot")
+        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+        preset_raw = snapshot.get("preset")
+        if isinstance(preset_raw, dict):
+            from jasper.active_speaker.profile import ActiveSpeakerPreset
+
+            frozen_capture_preset = ActiveSpeakerPreset.from_mapping(preset_raw)
+
+    if ambient_duration_s is None:
+        ambient_duration_s = crossover_ambient_duration_s(kind, role)
+    ambient_duration_s = max(0.0, float(ambient_duration_s))
+
+    def _finish_reservation_failure(error: BaseException) -> None:
+        if not repeat_reservation or finish_failed_repeat_attempt is None:
+            return
+        reservation = dict(repeat_reservation)
+        repeat_reservation.clear()
+        finish_failed_repeat_attempt(reservation, type(error).__name__)
+
+    async def _play(
+        on_sweep_ready: Callable[[], None] | None = None,
+        on_ambient_ready: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        from jasper.active_speaker.web_commissioning import FaninGateContext
+        from jasper.correction import coordinator
+        import asyncio
+
+        fanin_gate_context = FaninGateContext(
+            owner=coordinator.MEASUREMENT_GATE_OWNER,
+            restore_label=coordinator.MEASUREMENT_FANIN_LABEL,
+        )
+        async with coordinator.measurement_window():
+            try:
+                if prepare_play is not None:
+                    prepared = await prepare_play()
+                    if prepared is False:
+                        raise RuntimeError(
+                            "could not reassert the locked crossover "
+                            "measurement level"
+                        )
+                phase = blocking_phase() if blocking_phase is not None else None
+                if on_ambient_ready is not None:
+                    await asyncio.to_thread(on_ambient_ready)
+                await asyncio.sleep(ambient_duration_s)
+                if on_sweep_ready is not None:
+                    await asyncio.to_thread(on_sweep_ready)
+                locked_main_volume_db = (
+                    driver_locked_main_volume_db()
+                    if driver_locked_main_volume_db is not None
+                    else None
+                )
+                if (
+                    driver_locked_main_volume_db is not None
+                    and locked_main_volume_db is None
+                ):
+                    raise RuntimeError(
+                        "the geometry-scoped driver level lock is unavailable"
+                    )
+                return await backend.play_driver_capture_sweep(
+                    {
+                        "speaker_group_id": group_id,
+                        "role": role,
+                        "capture_geometry": capture_geometry,
+                    },
+                    camilla_factory=camilla_factory,
+                    blocking_phase=phase,
+                    applied_profile=(
+                        dict(applied_profile)
+                        if isinstance(applied_profile, Mapping)
+                        else None
+                    ),
+                    locked_main_volume_db=locked_main_volume_db,
+                    volume_lease_prepared=prepare_play is not None,
+                    fanin_gate_context=fanin_gate_context,
+                )
+            finally:
+                if restore_play is not None:
+                    cleanup = asyncio.create_task(restore_play())
+                    cancelled = False
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                    restored = cleanup.result()
+                    if restored is False:
+                        raise RuntimeError(
+                            "the crossover measurement volume was not restored"
+                        )
+                    if cancelled:
+                        raise asyncio.CancelledError
+
+    def _validate_playback(payload: Any) -> None:
+        if not capture_sweep_played(payload):
+            raise ValueError(
+                playback_issue_text(
+                    payload,
+                    "the crossover capture sweep did not play — "
+                    "confirm the driver first",
+                )
+            )
+
+    async def _run_and_consume(client: Any, pi_session: Any) -> None:
+        import asyncio
+
+        from jasper.active_speaker.capture_geometry import (
+            normalized_placement_proof,
+        )
+        from jasper.active_speaker.test_signal_plan import (
+            CROSSOVER_CAPTURE_HARD_TIMEOUT_S,
+            CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
+        )
+        from jasper.capture_relay.session import (
+            CaptureActivityProbe,
+            CaptureBeginRefused,
+            CaptureStopped,
+            purge,
+            run_capture_plan,
+            validate_capture_acknowledgement,
+        )
+
+        plan = pi_session.spec.capture_plan
+        if plan is None:
+            raise ValueError(
+                "session-spanning capture plans require a capture_plan spec"
+            )
+
+        def raise_if_stopped() -> None:
+            if stop_event.is_set():
+                raise CaptureStopped("capture stopped")
+
+        def post_phase(phase: str, **extra: Any) -> None:
+            if post_host_event is not None:
+                post_host_event(
+                    pi_session.session_id,
+                    pi_session.pull_token,
+                    {"phase": phase, **extra},
+                )
+
+        def post_terminal_best_effort(phase: str, **extra: Any) -> None:
+            if post_host_event is None:
+                return
+            try:
+                post_phase(phase, **extra)
+            except (RuntimeError, OSError, ValueError):
+                logger.warning(
+                    "crossover relay-plan terminal host-event post failed",
+                    exc_info=True,
+                )
+
+        async def publish_cancelled_then_purge() -> None:
+            await asyncio.to_thread(post_terminal_best_effort, "sweep_cancelled")
+            if post_host_event is not None:
+                await asyncio.sleep(CROSSOVER_CANCEL_OBSERVATION_GRACE_S)
+            await asyncio.to_thread(purge, client, pi_session)
+
+        played: dict[str, Any] = {}
+        accepted_count = 0
+        if publish_progress is not None:
+            publish_progress(accepted_count)
+
+        def authorize_begin(_index: int, _attempt: int) -> None:
+            with stop_lock:
+                raise_if_stopped()
+                try:
+                    reservation = reserve_repeat_attempt()
+                except ValueError as exc:
+                    raise CaptureBeginRefused(
+                        "repeat_admission_refused", str(exc)
+                    ) from exc
+            repeat_reservation.clear()
+            repeat_reservation.update(reservation)
+
+        def on_armed(state: Any) -> None:
+            try:
+                raise_if_stopped()
+                acknowledgement = validate_capture_acknowledgement(
+                    state, pi_session.spec
+                )
+                required = pi_session.spec.acknowledgement
+                if acknowledgement is None or required is None:
+                    raise ValueError(
+                        "confirm the microphone placement before starting "
+                        "the sweep"
+                    )
+                if validate_current_context is not None:
+                    # repeat_reservation is populated by authorize_begin
+                    # (above) before on_armed ever fires -- that reservation
+                    # IS this capture's server-owned admission (SPEC W2.3).
+                    # See _plan_admission_matches in correction_setup.py.
+                    validate_current_context(
+                        dict(repeat_reservation) if repeat_reservation else None
+                    )
+                placement_proof.clear()
+                placement_proof.update(
+                    normalized_placement_proof(
+                        policy_id=required.id,
+                        acknowledgement_binding=required.binding_id,
+                        relay_session_id=pi_session.session_id,
+                        capture_page=state.capture_page,
+                        speaker_group_id=group_id,
+                        role=role,
+                        target_fingerprint=target_fingerprint,
+                        comparison_set=comparison_set or {},
+                    )
+                )
+                begin = (
+                    state.begin_capture
+                    if isinstance(state.begin_capture, Mapping)
+                    else {}
+                )
+                attempt = begin.get("attempt")
+                capture_index = (
+                    int(attempt) - 1
+                    if isinstance(attempt, int) and not isinstance(attempt, bool)
+                    else None
+                )
+                activity = CaptureActivityProbe(
+                    client, pi_session, capture_index=capture_index
+                )
+
+                async def watch_phone() -> None:
+                    while True:
+                        raise_if_stopped()
+                        await asyncio.to_thread(activity.assert_active)
+                        raise_if_stopped()
+                        await asyncio.sleep(0.2)
+
+                def confirm_ambient_ready() -> None:
+                    raise_if_stopped()
+                    if ambient_duration_s > 0.0:
+                        post_phase(
+                            "ambient_started", duration_s=ambient_duration_s
+                        )
+
+                def confirm_active_and_post_started() -> None:
+                    raise_if_stopped()
+                    activity.assert_active()
+                    raise_if_stopped()
+                    post_phase("sweep_started")
+
+                async def play_while_phone_active() -> Any:
+                    play_task = asyncio.create_task(
+                        _play(
+                            confirm_active_and_post_started,
+                            on_ambient_ready=confirm_ambient_ready,
+                        )
+                    )
+                    watch_task = asyncio.create_task(watch_phone())
+                    try:
+                        done, _pending = await asyncio.wait(
+                            {play_task, watch_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if watch_task in done:
+                            error = watch_task.exception()
+                            if error is None:
+                                raise RuntimeError(
+                                    "phone capture activity watchdog "
+                                    "stopped unexpectedly"
+                                )
+                            raise error
+                        return await play_task
+                    finally:
+                        for task in (play_task, watch_task):
+                            if not task.done():
+                                task.cancel()
+                        settled: list[Any] = list(
+                            await asyncio.gather(
+                                play_task, watch_task, return_exceptions=True
+                            )
+                        )
+                        play_result = settled[0]
+                        if isinstance(
+                            play_result, BaseException
+                        ) and not isinstance(play_result, asyncio.CancelledError):
+                            raise play_result
+
+                payload = run_async(
+                    asyncio.wait_for(
+                        play_while_phone_active(),
+                        timeout=CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
+                    ),
+                    timeout=CROSSOVER_CAPTURE_HARD_TIMEOUT_S - 2.0,
+                )
+                _validate_playback(payload)
+                played.clear()
+                if isinstance(payload, Mapping):
+                    played.update(payload)
+                if repeat_reservation:
+                    played["repeat_reservation"] = dict(repeat_reservation)
+                post_phase("sweep_complete")
+            except (RuntimeError, OSError, ValueError) as exc:
+                if not isinstance(exc, CaptureStopped):
+                    post_terminal_best_effort(
+                        "sweep_failed", error=_phone_failure_text(exc)
+                    )
+                raise
+
+        def consume_capture(
+            _index: int, _attempt: int, result: Any
+        ) -> Mapping[str, Any]:
+            if validate_capture is not None:
+                validate_capture(result)
+            record_raw: dict[str, Any] = {
+                "speaker_group_id": group_id,
+                "role": role,
+                "sweep_meta": played.get("sweep_meta"),
+                "playback_id": played.get("playback_id"),
+                "excitation": played.get("excitation"),
+                "ambient_duration_s": ambient_duration_s,
+                "repeat_reservation": played.get("repeat_reservation"),
+                "test_level_dbfs": played.get("test_level_dbfs"),
+            }
+            noise_floor = getattr(result, "noise_floor", None)
+            if isinstance(noise_floor, Mapping):
+                noise_floor_dbfs = noise_floor.get("rms_dbfs")
+                if isinstance(noise_floor_dbfs, (int, float)):
+                    record_raw["noise_floor_dbfs"] = float(noise_floor_dbfs)
+            for key in ("calibration_id", "measurement_mode"):
+                value = raw.get(key)
+                if value:
+                    record_raw[key] = value
+            record_kwargs: dict[str, Any] = {
+                "placement_proof": placement_proof,
+                "repeat_store": backend.level_lease(),
+                "admission_handoff": played.get("capture_admission"),
+            }
+            if frozen_capture_preset is not None:
+                record_kwargs["preset"] = frozen_capture_preset
+            record_payload = backend.record_driver_capture(
+                record_raw, result.wav, **record_kwargs
+            )
+            repeat_reservation.clear()
+            accepted = _driver_capture_plan_accepted(record_payload)
+            log_event(
+                logger,
+                "correction.crossover_relay_recorded",
+                kind=kind,
+                group_id=group_id,
+                role=role or None,
+                recorded=bool(record_payload.get("recorded")),
+                snr_verdict=(
+                    (record_payload.get("acoustic") or {}).get("snr") or {}
+                ).get("verdict"),
+                repeat_attempts=(record_payload.get("repeat_progress") or {}).get(
+                    "attempts"
+                ),
+                excitation_source=(record_raw.get("excitation") or {}).get(
+                    "gain_source"
+                ),
+                effective_peak_dbfs=(record_raw.get("excitation") or {}).get(
+                    "effective_peak_dbfs"
+                ),
+                placement_schema=placement_proof.get("schema_version"),
+                placement_policy=placement_proof.get("policy_id"),
+                comparison_set_id=placement_proof.get("comparison_set_id"),
+                plan_accepted=accepted,
+            )
+            return {
+                "accepted": accepted,
+                "verdict": record_payload.get("verdict"),
+            }
+
+        def _consume_capture_and_publish(
+            index: int, attempt: int, result: Any
+        ) -> Mapping[str, Any]:
+            nonlocal accepted_count
+            verdict = consume_capture(index, attempt, result)
+            if verdict.get("accepted") is True:
+                accepted_count += 1
+            if publish_progress is not None:
+                publish_progress(accepted_count)
+            return verdict
+
+        capture_task = asyncio.create_task(
+            asyncio.to_thread(
+                run_capture_plan,
+                client,
+                pi_session,
+                authorize_begin=authorize_begin,
+                on_armed=on_armed,
+                consume_capture=_consume_capture_and_publish,
+                stop_requested=stop_event.is_set,
+            )
+        )
+        capture_received = False
+        try:
+            try:
+                await asyncio.shield(capture_task)
+            except asyncio.CancelledError:
+                stop_event.set()
+                while not capture_task.done():
+                    try:
+                        await asyncio.shield(capture_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except (OSError, RuntimeError, ValueError):
+                        break
+                if capture_task.done() and not capture_task.cancelled():
+                    capture_task.exception()
+                await publish_cancelled_then_purge()
+                raise
+            capture_received = True
+            await asyncio.to_thread(purge, client, pi_session)
+        except (RuntimeError, OSError, ValueError) as exc:
+            _finish_reservation_failure(exc)
+            if isinstance(exc, CaptureStopped):
+                await publish_cancelled_then_purge()
+            elif capture_received:
+                await asyncio.to_thread(purge, client, pi_session)
+            raise
 
     return _run_and_consume

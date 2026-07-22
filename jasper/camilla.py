@@ -103,6 +103,44 @@ class CamillaUnavailable(Exception):
     """
 
 
+class CamillaConfigRejected(CamillaUnavailable):
+    """CamillaDSP was reachable and answered, but refused the config itself.
+
+    A ``CamillaUnavailable`` subclass (not a bare sibling) so every existing
+    ``except CamillaUnavailable`` call site keeps working unchanged — this is
+    a journal-honesty distinction, not a new control-flow branch (W6 hardware
+    run 4 finding J). Before this class existed, ``_call`` folded pycamilladsp's
+    ``camilladsp.exceptions.ConfigValidationError`` (raised by a live, healthy
+    CamillaDSP daemon that parsed ``SetConfig``'s payload and rejected it —
+    e.g. "Use of missing mixer 'split_active_2way'") into the same
+    ``CamillaUnavailable`` a dead/unreachable daemon raises, so the journal
+    logged ``reason=CamillaUnavailable`` while Camilla was up and answering.
+    Both generic failure loggers key off ``reason=type(exc).__name__``
+    (``jasper.capture_relay.session._run_with_failure_cues`` and
+    ``jasper.web.correction_setup._relay_failure_reason``), so this class name
+    alone gets an honest ``reason=CamillaConfigRejected`` in both places — no
+    call site needed to change.
+    """
+
+
+def _is_config_validation_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is pycamilladsp's ``ConfigValidationError``.
+
+    Lazy, defensive import mirroring ``CamillaController._ensure``'s own
+    lazy ``camilladsp`` import: by the time this runs, a call reached
+    ``fn(client)`` (or failed inside ``_ensure`` after already importing
+    ``camilladsp``), so the module is already loaded in every real failure
+    path. The ``ImportError`` guard only protects a dev machine without
+    ``camilladsp`` installed at all, where ``exc`` could never legitimately be
+    this type anyway.
+    """
+    try:
+        from camilladsp.exceptions import ConfigValidationError
+    except ImportError:
+        return False
+    return isinstance(exc, ConfigValidationError)
+
+
 class CamillaController:
     """Thin wrapper around pycamilladsp for ducking + volume tools.
 
@@ -111,10 +149,15 @@ class CamillaController:
     """
 
     def __init__(self, host: str, port: int) -> None:
+        from jasper.dsp_apply import CANONICAL_DSP_WRITER_LOCK_PATH
+
         self._host = host
         self._port = port
         self._client: CamillaClient | None = None
         self._lock = asyncio.Lock()
+        # One fixed production lock; tests may replace this instance attribute
+        # with a temporary path (there is intentionally no env/config override).
+        self._graph_mutation_lock_path = CANONICAL_DSP_WRITER_LOCK_PATH
 
     def _ensure(
         self,
@@ -329,6 +372,12 @@ class CamillaController:
                     return await self._run_attempt(fn)
                 except Exception as e2:  # noqa: BLE001
                     self._client = None
+                    if _is_config_validation_error(e2):
+                        # Camilla answered and rejected the config itself
+                        # (e.g. "Use of missing mixer '...'") — a distinct
+                        # failure from an unreachable/dead daemon (W6
+                        # hardware run 4 finding J). See CamillaConfigRejected.
+                        raise CamillaConfigRejected(str(e2)) from e2
                     raise CamillaUnavailable(str(e2)) from e2
 
     async def get_volume_db(
@@ -558,8 +607,14 @@ class CamillaController:
             c.config.set_file_path(path)
             c.general.reload()
             return True
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            return bool(await self._call(write_and_reload))
+            async with camilla_graph_mutation(
+                source="camilla.set_config_file_path",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                return bool(await self._call(write_and_reload))
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning(
@@ -587,9 +642,15 @@ class CamillaController:
                 logger.warning("camilla active config rejected: empty config")
                 return False
             raise ValueError("config must be a non-empty YAML string")
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            await self._call(lambda c: c.config.set_active_raw(config))
-            return True
+            async with camilla_graph_mutation(
+                source="camilla.set_active_config_raw",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                await self._call(lambda c: c.config.set_active_raw(config))
+                return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning(
@@ -640,9 +701,15 @@ class CamillaController:
                 logger.warning("camilla config patch rejected: empty patch")
                 return False
             raise ValueError("patch must be a non-empty mapping")
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            await self._call(lambda c: c.query("PatchConfig", arg=patch))
-            return True
+            async with camilla_graph_mutation(
+                source="camilla.patch_config",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                await self._call(lambda c: c.query("PatchConfig", arg=patch))
+                return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning("camilla unavailable; patch_config skipped: %s", e)
@@ -654,9 +721,15 @@ class CamillaController:
         room-correction wizard's 'Reset to flat' action when the path
         is already pointed at the branch's flat base config — saves a
         redundant set_file_path call."""
+        from jasper.dsp_apply import camilla_graph_mutation
+
         try:
-            await self._call(lambda c: c.general.reload())
-            return True
+            async with camilla_graph_mutation(
+                source="camilla.reload",
+                lock_path=self._graph_mutation_lock_path,
+            ):
+                await self._call(lambda c: c.general.reload())
+                return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning("camilla unavailable; reload skipped: %s", e)
@@ -772,8 +845,13 @@ class Ducker:
         canonical listening_level target by this Ducker. Read by
         WakeLoop.session_status() so jasper-control can authoritatively
         gate its own camilla writes during a voice session — see
-        docs/HANDOFF-volume.md "Cross-daemon defer signal"."""
+        docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal"."""
         return self._ducked
+
+    @property
+    def locks_camilla_volume(self) -> bool:
+        """This transport temporarily owns Camilla's main volume."""
+        return True
 
     async def duck(self) -> None:
         if self._ducked:

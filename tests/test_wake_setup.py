@@ -434,6 +434,8 @@ def test_index_html_renders_all_registry_entries():
     for entry in wake_models.REGISTRY:
         assert entry.label in html, f"{entry.label!r} missing from rendered page"
         assert f'value="{entry.key}"' in html
+    assert "Use JTS as a computer microphone" in html
+    assert "Use JTS as a Mac microphone" not in html
 
 
 def test_index_html_marks_active_row(monkeypatch):
@@ -651,6 +653,21 @@ def fake_control():
             "threshold": 0.5,
         },
         "/aec/threshold": {"threshold": 0.42},
+        "/aec/usb-mic": {
+            "usb_mic": {"enabled": True, "state": "starting"},
+        },
+        "/aec/usb-mic-leg": {
+            "usb_mic": {
+                "source_selection": {
+                    "requested": "primary",
+                    "choices": [{
+                        "value": "primary",
+                        "label": "Same as JTS voice",
+                    }],
+                    "applied": None,
+                },
+            },
+        },
         "/aec/firmware/update": {
             "firmware_update": {
                 "state": "updating",
@@ -686,7 +703,11 @@ def fake_control():
                 parsed = json.loads(raw.decode()) if raw else None
             except (UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
-            if self.path == "/aec/firmware/update":
+            if self.path in (
+                "/aec/firmware/update",
+                "/aec/usb-mic",
+                "/aec/usb-mic-leg",
+            ):
                 received.append((
                     "POST", self.path, parsed, self.headers.get("X-JTS-Token"),
                 ))
@@ -931,6 +952,57 @@ def test_layer_chip_aec_150_posts_aec_leg_with_body(wired_server):
     )
 
 
+def test_usb_mic_posts_boolean_to_control(wired_server):
+    base, received, _, _ = wired_server
+
+    status, body = _json_post_with_csrf(
+        base,
+        "/usb-mic",
+        {"enabled": True},
+    )
+
+    assert status == 200
+    assert body["usb_mic"] == {"enabled": True, "state": "starting"}
+    assert ("POST", "/aec/usb-mic", {"enabled": True}, None) in received
+
+
+def test_usb_mic_forwards_control_token(wired_server):
+    base, received, _, _ = wired_server
+
+    status, body = _json_post_with_csrf(
+        base,
+        "/usb-mic",
+        {"enabled": True},
+        headers={"X-JTS-Token": "control-token"},
+    )
+
+    assert status == 200
+    assert body["usb_mic"] == {"enabled": True, "state": "starting"}
+    assert (
+        "POST", "/aec/usb-mic", {"enabled": True}, "control-token",
+    ) in received
+
+
+def test_usb_mic_leg_posts_choice_and_forwards_control_token(wired_server):
+    base, received, _, _ = wired_server
+
+    status, body = _json_post_with_csrf(
+        base,
+        "/usb-mic-leg",
+        {"leg": "primary"},
+        headers={"X-JTS-Token": "control-token"},
+    )
+
+    assert status == 200
+    assert body["usb_mic"]["source_selection"]["requested"] == "primary"
+    assert (
+        "POST",
+        "/aec/usb-mic-leg",
+        {"leg": "primary"},
+        "control-token",
+    ) in received
+
+
 def test_legacy_layer_chip_aec_posts_both_beam_legs(wired_server):
     base, received, _, _ = wired_server
     _json_post_with_csrf(base, "/layer/chip_aec", {"enabled": True})
@@ -972,11 +1044,32 @@ def test_sensitivity_posts_aec_threshold(wired_server):
     assert parsed == {"threshold": 0.42}
 
 
-def test_layer_rejects_unknown_name(wired_server):
-    base, _, _, _ = wired_server
-    status, body = _json_post_with_csrf(base, "/layer/garbage", {"enabled": True})
-    assert status == 400
-    assert "unknown layer" in body["error"]
+@pytest.mark.parametrize("with_csrf", [False, True])
+def test_unknown_layer_returns_404_before_csrf(wired_server, with_csrf):
+    """Unknown routes must not reveal whether the CSRF token was valid."""
+    base, received, _, _ = wired_server
+    headers = {"Content-Type": "application/json"}
+    opener = urllib.request.build_opener()
+    if with_csrf:
+        from ._web_test_helpers import make_csrf_session
+
+        session = make_csrf_session(base, page_path="/")
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(session["jar"]),
+        )
+        headers["X-CSRF-Token"] = session["token"]
+    request = urllib.request.Request(
+        base + "/layer/garbage",
+        data=b'{"enabled":true}',
+        method="POST",
+        headers=headers,
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener.open(request, timeout=2)
+
+    assert exc_info.value.code == 404
+    assert not [entry for entry in received if entry[0] == "POST"]
 
 
 def test_layer_rejects_non_boolean_enabled(wired_server):

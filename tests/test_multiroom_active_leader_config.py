@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ import pytest
 import yaml
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
+import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
@@ -30,6 +32,7 @@ from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
 from jasper.sound.profile import SoundProfile
+from tests.test_bass_extension_profile import _profile
 
 # Reuse the commissioning-evidence fixtures from the baseline-profile tests so
 # the leader's camilla#2 arm is exercised against the SAME evidence shape the
@@ -42,6 +45,30 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
+
+
+@pytest.fixture(autouse=True)
+def _stable_live_graph_authority(monkeypatch):
+    async def prove(
+        cam,
+        *,
+        expected_config_path,
+        expected_classification,
+        **_kwargs,
+    ):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        assert await cam.get_config_file_path() == str(expected_config_path)
+        assert expected_classification in {
+            runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+        }
+        return runtime_contract_mod.GraphSafety(
+            classification=expected_classification,
+            allowed=True,
+            config_path=str(expected_config_path),
+        )
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
 
 
 def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
@@ -112,7 +139,9 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
 
 
 def _fake_apply_dsp_config():
-    async def _apply(*, load_config, candidate_path, **_kw):
+    async def _apply(*, load_config, candidate_path, acquire_lock, **_kw):
+        assert acquire_lock is False
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         await load_config(str(candidate_path))
         return SimpleNamespace(to_dict=lambda: {"result": "applied"})
 
@@ -135,6 +164,15 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    sealed = replace(
+        _profile(topology=topology),
+        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
+    )
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "evaluate_bass_extension_profile",
+        lambda **_kwargs: SimpleNamespace(status="accepted", profile=sealed),
+    )
 
     bake_path, crossover_path = asyncio.run(
         alc.precheck_active_leader(_cfg("left"), validate=_valid_config)
@@ -149,6 +187,15 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     assert "# program_channel=left" in crossover_yaml
     assert f'device: "{GROUPING_LOOPBACK_CAPTURE}"' in crossover_yaml
     assert "active_baseline_headroom" not in crossover_yaml  # leader bakes B/C
+    crossover_doc = yaml.safe_load(crossover_yaml)
+    woofer_chain = next(
+        step["names"]
+        for step in crossover_doc["pipeline"]
+        if step.get("type") == "Filter" and step.get("channels") == [0]
+    )
+    assert woofer_chain.index("bass_ext_lt") < woofer_chain.index(
+        "bass_ext_subsonic"
+    ) < woofer_chain.index("as_woofer_delay")
 
     # camilla#1 program bake: File sink writing the snapfifo, NO Layer A.
     bake_doc = yaml.safe_load(Path(bake_path).read_text(encoding="utf-8"))
@@ -223,11 +270,18 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    original = camilla_yaml._driver_baseline_filter_chain
+
+    def omit_woofer_crossover(preset, role, *args, **kwargs):
+        names = original(preset, role, *args, **kwargs)
+        if role == "woofer":
+            return [name for name in names if not name.endswith("_lp")]
+        return names
+
     monkeypatch.setattr(
-        runtime_contract_mod, "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=False, classification="unsafe", issues=[{"code": "forced"}],
-        ),
+        camilla_yaml, "_driver_baseline_filter_chain", omit_woofer_crossover
     )
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
@@ -280,7 +334,11 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
         ok = str(config_path) == alc.CROSSOVER_CONFIG_PATH
         return SimpleNamespace(
             allowed=ok,
-            classification="driver_domain" if ok else "unsafe",
+            classification=(
+                runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                if ok
+                else "unsafe"
+            ),
             issues=[] if ok else [{"code": "forced_bake"}],
         )
 
@@ -360,6 +418,14 @@ def test_apply_bake_loads_camilla1_and_stashes(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(alc, "LEADER_BAKE_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    real_atomic_write = alc.atomic_io.atomic_write_text
+
+    def atomic_write_while_locked(path, text, *, mode):
+        assert path == alc.LEADER_BAKE_PRIOR_STASH
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        real_atomic_write(path, text, mode=mode)
+
+    monkeypatch.setattr(alc.atomic_io, "atomic_write_text", atomic_write_while_locked)
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     applied = asyncio.run(alc.apply_active_leader_bake(camilla_factory=lambda: cam))
@@ -369,6 +435,47 @@ def test_apply_bake_loads_camilla1_and_stashes(monkeypatch, tmp_path) -> None:
     assert fc.read_stash(alc.LEADER_BAKE_PRIOR_STASH) == (
         "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
     )
+
+
+def test_apply_bake_live_proof_failure_rolls_back_before_unlock(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        alc,
+        "LEADER_BAKE_CONFIG_PATH",
+        str(tmp_path / "grouping_active_leader_bake.yml"),
+    )
+    monkeypatch.setattr(alc, "LEADER_BAKE_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    prior = str(tmp_path / "active_speaker_baseline.yml")
+
+    async def refuse(
+        cam,
+        *,
+        expected_config_path,
+        expected_classification,
+        **_kwargs,
+    ):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        assert expected_config_path == alc.LEADER_BAKE_CONFIG_PATH
+        assert (
+            expected_classification
+            == runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE
+        )
+        assert await cam.get_config_file_path() == alc.LEADER_BAKE_CONFIG_PATH
+        raise RuntimeError("candidate proof refused")
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    cam = _FakeCamilla(current=prior)
+
+    with pytest.raises(alc.ActiveLeaderError) as exc:
+        asyncio.run(alc.apply_active_leader_bake(camilla_factory=lambda: cam))
+
+    assert exc.value.reason == "bake_graph_unprovable"
+    assert cam.loaded == [alc.LEADER_BAKE_CONFIG_PATH, prior]
+    assert fc.read_stash(alc.LEADER_BAKE_PRIOR_STASH) is None
+    assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is None
 
 
 def test_apply_bake_does_not_stash_itself(monkeypatch, tmp_path) -> None:
@@ -411,11 +518,21 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
     )
+
+    def decide(_topology, *, current_config_path=None, **_kwargs):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        graph = SimpleNamespace(
+            allowed=allowed,
+            classification="x" if allowed else "unsafe",
+            issues=[],
+        )
+        return SimpleNamespace(
+            current_graph=graph,
+            selected_config_path=(str(current_config_path) if allowed else None),
+        )
+
     monkeypatch.setattr(
-        runtime_contract_mod, "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=allowed, classification="x" if allowed else "unsafe", issues=[],
-        ),
+        runtime_contract_mod, "safe_graph_for_current_topology", decide
     )
 
 
@@ -431,6 +548,13 @@ def test_restore_prefers_leader_stash(monkeypatch, tmp_path) -> None:
     solo = tmp_path / "active_speaker_baseline.yml"
     solo.write_text("# solo active baseline\n", encoding="utf-8")
     fc._write_stash(str(solo), path=alc.LEADER_BAKE_PRIOR_STASH)
+    real_clear_stash = fc._clear_stash
+
+    def clear_stash_while_locked(path):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        real_clear_stash(path)
+
+    monkeypatch.setattr(fc, "_clear_stash", clear_stash_while_locked)
 
     cam = _FakeCamilla(current=alc.LEADER_BAKE_CONFIG_PATH)
     restored = asyncio.run(alc.restore_active_leader_solo(camilla_factory=lambda: cam))

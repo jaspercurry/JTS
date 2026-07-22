@@ -21,12 +21,24 @@ non-finite/unconvertible value), and `driver_protection.py`'s version is the
 same logic with an if/return instead of a ternary — that cluster is
 duplicated, not distinct, and a candidate for future consolidation.
 
+`require_sha256_hex` replaces the module-local `_sha256(value, field_name)`
+hex-fingerprint checks — a regex `fullmatch` in some modules, an equivalent
+char-loop in others, always the same 64-lowercase-hex-digit rule — with one
+validator. Callers keep their own exception type and exact message wording
+via `exc_type`/`message`, so every call site raises byte-for-byte what it did
+before. `commissioning_host.py`'s `_sha256` is deliberately NOT migrated
+here: `CommissioningHostError` takes two required positional args (`code`,
+`detail`), not the single message string every other call site's exception
+takes, so routing it through this helper would mean growing the shared
+signature to serve one outlier.
+
 This module is import-cheap (stdlib only), preserving the package's IO-free,
 import-light contract.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -40,6 +52,8 @@ ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
     "active_2_way": (("woofer", "tweeter"),),
     "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
 }
+
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def issue(severity: str, code: str, message: str) -> dict[str, str]:
@@ -57,6 +71,33 @@ def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, A
         "passed": bool(passed),
         "message": message,
     }
+
+
+def require_sha256_hex(
+    value: Any,
+    field_name: str,
+    exc_type: type[BaseException],
+    *,
+    message: str | None = None,
+) -> str:
+    """Validate ``value`` is a 64-character lowercase-hex SHA-256 fingerprint.
+
+    Returns ``value`` unchanged when it validates. Otherwise raises
+    ``exc_type(message)``, defaulting ``message`` to
+    ``"<field_name> must be a lowercase SHA-256 fingerprint"`` — the wording
+    most call sites already used — so most callers only need to pass their
+    own exception type. A call site whose historical wording differs (no
+    "fingerprint" suffix) passes ``message`` explicitly to keep raising
+    exactly what it did before consolidation.
+    """
+
+    if isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None:
+        return value
+    raise exc_type(
+        message
+        if message is not None
+        else f"{field_name} must be a lowercase SHA-256 fingerprint"
+    )
 
 
 def region_key(lower_role: str, upper_role: str) -> str:

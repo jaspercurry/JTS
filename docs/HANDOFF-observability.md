@@ -109,12 +109,16 @@ shared chokepoint both the relay flow and `web_measurement` call), and
 name; there is no separate `apply_failed`). Common fields, included when
 available and omitted otherwise: `session`, `group`, `role`, `verdict`,
 `outcome`, `reason`, `snr_db`, `floor_hz`, `graph_fingerprint`,
-`candidate_fingerprint`, `applied_fingerprint`. Five more names are
+`candidate_fingerprint`, `applied_fingerprint`. Post-apply commissioning now
+emits `correction.crossover_verification_passed` or
+`correction.crossover_verification_failed` exactly once from
+[`commissioning_verification.py`](../jasper/active_speaker/commissioning_verification.py),
+with the exact run, target/applied authority, and receipt or failure artifact
+identity as relevant. Three more names are
 **reserved but never emitted yet** — declared in
 `commissioning_capture.RESERVED_CROSSOVER_EVENTS` with a docstring naming which
-future slice/phase emits each: `correction.crossover_proposal_ready` (Slice 3),
-`correction.crossover_verification_passed` / `_verification_failed` (Phase 2
-post-apply verification), and `correction.crossover_level_locked` /
+future slice/phase emits each: `correction.crossover_proposal_ready` (Slice 3)
+and `correction.crossover_level_locked` /
 `_level_failed` (level locking already ships under
 `correction.crossover_driver_level_*` names; renaming it onto this namespace is
 a deliberate future migration, not something that happens silently). A static
@@ -287,6 +291,51 @@ convergence pass. `/state.audio.output_hardware`, `/sound/output-topology`,
 and `jasper-doctor` read that same artifact so output hardware diagnostics can
 distinguish the active runtime role from the best observed physical shape.
 
+**Audio health is one normalized, cached production surface.**
+[`jasper/control/audio_health.py`](../jasper/control/audio_health.py) composes
+the existing bounded AirPlay collector, one local outputd `STATUS` read, and a
+slow route/artifact assessment into `/state.audio_health` and
+`/system/snapshot.audio_health`. The browser renders those conclusions; it
+does not run probes or classify raw counters. Production starts one
+`AudioHealthSampler` thread in place of the former standalone AirPlay sampler
+thread, so opening `/system/audio/` adds no resident worker and no probe work.
+The fast cadence is fixed-shape local UDS state; journal, MPRIS, Camilla, and
+route-artifact work stays on slower bounded cadences; the route check reads one
+atomic, route-specific latest pointer rather than scanning accumulated history
+(with one constant-work `latest.json` fallback for pre-upgrade evidence).
+Source readiness reuses the System sampler's cached 30-second systemd snapshot
+and the local-source registry's explicit health-unit set to distinguish Ready,
+Not running, and failed without treating pairing/advertising helpers as the
+renderer. The selected lane becomes a current stream only when
+`jasper-mux STATUS.sources[<id>].playing` agrees. Mux is the single owner of
+AirPlay, USB, Spotify, and Bluetooth activity predicates, so free-running
+silent lanes do not become fake sessions and audio health adds no duplicate
+per-source probe cadence. Missing or unreadable mux state fails closed as
+"Playback activity unavailable" and preserves an already-observed session;
+it is never presented as healthy idle. Audio health does not spawn a second
+`systemctl` cadence.
+
+The contract separates playback continuity from timing. A USB `l2_fallback`
+is a latency warning while playback remains protected; `l0_locked` is runtime
+clock state, not an end-to-end measurement. Stale, missing, mismatched, or
+historical route artifacts remain technical evidence instead of creating a
+household warning. AirPlay synchronization remains source-specific rather than
+becoming a USB low-latency claim.
+
+`AudioHealthSampler` owns the current-stream projection and feeds observations
+to [`jasper/control/audio_incidents.py`](../jasper/control/audio_incidents.py),
+which owns the incident lifecycle, current-session rollup, and bounded store.
+Ongoing conditions cannot be evicted by recovered blips, recovered entries
+coalesce, and the browser shows at most five recent rows. A normalized,
+allowlisted freeze frame is captured only at an incident transition and
+persisted atomically in the bounded
+`/var/lib/jasper/audio_health_incidents.json` ring (20 records, 128 KiB read
+cap); corrupt, oversized, symlinked, or newer-schema input fails soft. The
+sampler does not write on ordinary 5-second observations. Known-inaudible
+Camilla short reads remain collapsed technical evidence unless an audible
+boundary also fails. The legacy `airplay_health` block is retained for existing
+consumers and deeper AirPlay forensics.
+
 ---
 
 ## Built tiers and removed surfaces
@@ -336,7 +385,7 @@ DEBUG. As built:
   + the timer). (WS1 Phase 3b-2: `jasper-control` runs as a non-root
   user, so the `systemctl restart <unit>` this issues is now
   **polkit-authorized** against the `MANAGED_UNITS` allowlist —
-  `jasper-voice`/`jasper-aec-bridge`/`jasper-usbsink` are all in it —
+  `jasper-voice`/`jasper-aec-bridge` are in it —
   rather than a uid-0 bypass. See
   [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
 - **Endpoints:** `GET`/`POST /debug` on jasper-control (:8780),
@@ -369,10 +418,8 @@ by `tests/test_debug_mode.py` + `tests/test_debug_control.py`.
 and its toggles trigger real daemon restarts, so after a deploy open
 `http://jts.local/system/`, toggle **voice**, and confirm
 `journalctl -u jasper-voice` shows DEBUG lines + the countdown and
-auto-quiet fire. Also verify USB input while inactive: toggling debug
-must leave `jasper-usbsink.service` stopped and log
-`event=debug.apply_deferred`; with USB input active, the toggle should
-restart `jasper-usbsink.service` normally.
+auto-quiet fire. USB input is not a debug subsystem: its readiness unit has no
+resident process; inspect fan-in STATUS and the usbsink doctor group instead.
 
 **Tier C — flight recorder (built 2026-05-30; pending on-device
 verification).** A bounded in-RAM verbose ring per daemon,
@@ -423,7 +470,7 @@ class RingFlushHandler(logging.Handler):                   # level = DEBUG
   hazard if the handler were ever missing. The SIGUSR1 handler is
   installed *unconditionally* so an unhandled signal can't terminate
   a daemon.)
-- **Scope (v1):** voice + aec + control + usbsink.
+- **Scope (v1):** voice + aec + control.
 
 *Tier-B integration (done).* `apply_for` now also flips the journal
 *handler* level via `set_console_debug` (the logger is held at DEBUG
@@ -442,7 +489,7 @@ unless they become steady-state spam.
 *Cost (measured).* The ring stores **formatted strings**, not
 `LogRecord` objects, so RAM is bounded by line length and never pins a
 large object passed as a log arg. At the default N=1000: ~0.3 MB/daemon,
-~1.2 MB across voice + aec + control + usbsink — around 0.1% of a
+~0.9 MB across voice + aec + control — around 0.1% of a
 1 GB Pi. Tunable (capacity) and off-switchable
 (`JASPER_FLIGHT_RECORDER=disabled`). (An
 earlier draft stored `LogRecord` objects — ~1.3 MB/daemon and an
@@ -471,7 +518,7 @@ it to logs.
 
 *As built.* [`jasper/flight_recorder.py`](../jasper/flight_recorder.py)
 (`RingFlushHandler` + `install()` + `dump()` + a SIGUSR1 handler)
-wired into voice, AEC, control, and usbsink startup;
+wired into voice, AEC, and control startup;
 `debug_mode.apply_for` gained `set_console_debug` so the toggle moves
 the journal handler; explicit
 `dump()` from the `flag_recent_issue` voice tool, plus a manual
@@ -545,7 +592,13 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-12 (full operational pass; structured event values with
+Last verified: 2026-07-15 (normalized audio-health ownership, cadence,
+current-stream/session projection, continuity-vs-timing semantics, bounded
+persistent incident lifecycle, and legacy AirPlay compatibility rechecked
+against `jasper/control/audio_health.py`,
+`jasper/control/audio_incidents.py`,
+`jasper/control/airplay_health.py`, `jasper/control/server.py`, and their
+contract tests). Prior full operational pass 2026-07-12 (structured event values with
 backslashes, every ASCII control, NEL, and Unicode line/paragraph separators
 rechecked against the one-physical-line logfmt and JSON contracts; the 13-file
 deferred inventory was cross-checked against the machine-enforced allowlist,

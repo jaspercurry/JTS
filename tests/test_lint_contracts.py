@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import re
 import tomllib
+from io import StringIO
 from pathlib import Path
+from tokenize import COMMENT, generate_tokens
 
 REPO = Path(__file__).resolve().parent.parent
 SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
@@ -109,7 +111,7 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # MeasurementSession._evaluate_acceptance deliberately carries NO such
 # suppression — it catches the named RECOVERABLE_ERRORS family from
 # jasper.audio_measurement.ramp (P2's precedent). The relocated catch in
-# _resolve_reset_target moved verbatim out of _handle_reset (net-zero). Net
+# _resolve_reset_target_async moved verbatim out of _handle_reset (net-zero). Net
 # effect on the ceilings: suppression-marker count +0, blind-except count +1.
 # (Marker strings spelled out, not literal, so this comment does not inflate
 # the counts it documents.)
@@ -122,8 +124,29 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # (630 -> 628) so the reclaimed slack is not silently reusable; MAX_NOQA_MARKERS
 # is left alone this round even though the same two markers also counted
 # against it, since the noqa ceiling already carries slack from other sources.
-MAX_NOQA_MARKERS = 813
-MAX_BLE001_MARKERS = 628
+# 2026-07-14 (-7 broad-except suppressions): the summed commissioning runtime
+# consolidates eight identical transaction-edge handlers into one explicit
+# capture helper. The ratchet now counts suppression comment tokens instead of
+# unrelated prose/string mentions of the rule name, so its value is the
+# auditable live marker count after that consolidation (627 -> 620).
+# 2026-07-18 (+1 suppression marker): the v2 crossover session runner's
+# catch-all cleanup arm (correction_crossover_v2.build_v2_run_and_consume) —
+# the W6.1 gate ruling. The play/analyze seams raise open-endedly
+# (CamillaUnavailable is a bare Exception; the reviewer proved by probe it
+# escaped the enumerated arms, leaving the measurement volume active, the
+# relay session leaked, and the phone frozen). The arm is cleanup-and-reraise
+# only: terminal host event + persisted failure + volume drain + purge, then
+# the original exception propagates to the outer relay net unchanged. Never a
+# silent path. Ceilings 620 -> 621 / 813 -> 814.
+#
+# 2026-07-20: +1 BLE001 for the crossover auto-apply background worker's
+# last-resort arm (correction_crossover_v2): a thread with no caller to
+# reraise to, where an escaped exception would strand the phone on the
+# deferred hold and dishonestly time out as relay_timeout. Logs
+# event=correction.crossover_v2_auto_apply_error + persists the failure —
+# never a silent path. Ceilings 621 -> 622 / 814 -> 815.
+MAX_NOQA_MARKERS = 815
+MAX_BLE001_MARKERS = 622
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
 
@@ -164,7 +187,13 @@ def test_broad_exception_suppressions_are_explicit() -> None:
 
 
 def test_noqa_debt_does_not_grow() -> None:
-    text = "\n".join(path.read_text(encoding="utf-8") for path in _python_files())
+    sources = [path.read_text(encoding="utf-8") for path in _python_files()]
+    text = "\n".join(sources)
+    ble_markers = sum(
+        token.type == COMMENT and token.string.startswith("# noqa: BLE001")
+        for source in sources
+        for token in generate_tokens(StringIO(source).readline)
+    )
 
     assert text.count("# noqa") <= MAX_NOQA_MARKERS
-    assert text.count("BLE001") <= MAX_BLE001_MARKERS
+    assert ble_markers <= MAX_BLE001_MARKERS

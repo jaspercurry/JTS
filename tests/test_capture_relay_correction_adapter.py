@@ -243,6 +243,42 @@ def test_pi_setup_binding_accepts_only_the_validated_compact_identity():
         )
 
 
+def test_pi_setup_binding_accepts_the_stored_calibration_mode():
+    """The sha256 binding hashes `setup` generically — it has no opinion on
+    `calibration.mode`, so the one-tap "stored" confirm payload (Wave-2
+    addendum) validates identically to `serial`/`upload`/`none`."""
+    from jasper.web import correction_setup
+
+    owner = SimpleNamespace()
+    setup = {
+        "total_positions": 1,
+        "calibration": {
+            "mode": "stored",
+            "calibration_id": "minidsp-minidsp_umik2-abc123456789",
+            "model": "minidsp_umik2",
+        },
+    }
+    binding_id = "room-session-98765"
+    digest = correction_setup._setup_digest(setup)
+    identity = {"schema": 1, "binding_id": binding_id, "sha256": digest}
+
+    correction_setup._bind_relay_setup(
+        owner, setup, identity, expected_binding_id=binding_id,
+    )
+    correction_setup._assert_relay_setup_binding(
+        owner, {"binding": identity}, expected_binding_id=binding_id,
+    )
+
+    # A mutated calibration_id after binding is caught exactly like any other
+    # tampered field — the digest is over the whole setup, not just mode.
+    tampered = dict(setup)
+    tampered["calibration"] = {**setup["calibration"], "calibration_id": "different"}
+    with pytest.raises(ValueError, match="setup identity does not match"):
+        correction_setup._validated_relay_setup_binding(
+            tampered, identity, expected_binding_id=binding_id,
+        )
+
+
 def test_run_and_store_feeds_the_verified_wav(tmp_path):
     backend = FakeRelayBackend()
     client = RelayClient("https://relay.test", transport=backend)
@@ -308,7 +344,7 @@ def test_endpoint_state_guard_rejects_wrong_state(monkeypatch):
     # capture owns — reject before any network call.
     fake = types.SimpleNamespace(state=SessionState.IDLE, session_id="cap_x")
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: fake)
-    with pytest.raises(ValueError, match="needs_noise_capture"):
+    with pytest.raises(ValueError, match="measurement position or trust repeat"):
         correction_setup._handle_relay_capture(None)
 
 
@@ -472,13 +508,17 @@ def test_relay_capture_reentrancy_guard():
     from jasper.web import correction_setup
 
     correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture() is True  # first claims it
-    assert correction_setup._begin_relay_capture() is False  # second refused
+    assert correction_setup._begin_relay_capture("room_sweep") is True
+    assert correction_setup._get_relay_capture() == {
+        "status": "starting",
+        "kind": "room_sweep",
+    }
+    assert correction_setup._begin_relay_capture("room_repeat") is False
     correction_setup._set_relay_capture({"tap_link": "x", "status": "awaiting_phone"})
-    assert correction_setup._begin_relay_capture() is False  # still in flight
+    assert correction_setup._begin_relay_capture("room_repeat") is False
     # A finished (complete/failed) holder does not block a new capture.
     correction_setup._set_relay_capture({"tap_link": "x", "status": "complete"})
-    assert correction_setup._begin_relay_capture() is True
+    assert correction_setup._begin_relay_capture("room_repeat") is True
     correction_setup._set_relay_capture(None)  # reset
 
 
@@ -546,10 +586,82 @@ def test_room_relay_gain_is_restored_before_measurement_window_exits(monkeypatch
     ]
 
 
+def test_relay_repeat_sweep_uses_repeat_state_machine_and_progress(monkeypatch):
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    calls = []
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    async def play_sweep(_path):
+        calls.append("play")
+
+    class Session:
+        current_position = 1
+        total_positions = 6
+
+        async def ensure_level_match_volume(self, _setter):
+            return True
+
+        async def prepare_and_play_repeat_sweep(
+            self,
+            player,
+            *,
+            runtime_probe_async,
+        ):
+            calls.append("repeat")
+            await player("sweep.wav")
+
+        async def restore_level_match_volume(self, _setter):
+            return True
+
+    class Cam:
+        async def get_runtime_status(self, *, best_effort):
+            return {"state": "Running"}
+
+        async def set_volume_db(self, _db, *, best_effort):
+            return True
+
+    class Client:
+        def post_host_event(self, _sid, _token, payload):
+            calls.append(
+                (
+                    payload["phase"],
+                    payload["position"],
+                    payload["total_positions"],
+                    payload["capture_kind"],
+                )
+            )
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "play_sweep", play_sweep)
+
+    correction_setup._run_relay_measurement_sweep(
+        Session(),
+        Cam(),
+        client=Client(),
+        pi_session=SimpleNamespace(session_id="sid", pull_token="pull"),
+        repeat=True,
+    )
+
+    assert calls == [
+        ("sweep_started", 1, 6, "repeat"),
+        "repeat",
+        "play",
+        ("sweep_complete", 1, 6, "repeat"),
+    ]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("post_ramp_mismatch", (False, True))
+@pytest.mark.parametrize(
+    ("post_ramp_mismatch", "commit_allowed"),
+    ((False, True), (True, True), (False, False)),
+)
 async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
-    monkeypatch, post_ramp_mismatch,
+    monkeypatch, post_ramp_mismatch, commit_allowed,
 ):
     """The transport adapter binds setup/noise before asking the kernel to ramp."""
     from jasper.capture_relay import session as relay_session
@@ -683,6 +795,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         current_position = 0
 
         async def run_level_match(self, _geometry, **ports):
+            assert "context_id" not in ports
             assert ports["noise_floor_dbfs"] == -52.0
             await ports["set_main_volume_db"](-41.0)
             if post_ramp_mismatch:
@@ -700,11 +813,16 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         setup_binding_id=setup_binding_id,
         tone_frequency_hz=875.0,
         reuse_noise_floor=False,
+        begin_commit=lambda: commit_allowed,
     )
     if post_ramp_mismatch:
         with pytest.raises(ValueError, match="calibration is loaded"):
             await operation
         assert terminal_events[-1]["state"] == "error"
+    elif not commit_allowed:
+        with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+            await operation
+        assert terminal_events[-1]["state"] == "cancelled"
     else:
         await operation
 
@@ -712,7 +830,7 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     assert set(ambient_reads) == set(range(1, 11))
     assert all(ambient_reads[seq] >= 2 for seq in range(1, 10))
     assert ambient_reads[10] >= 1
-    assert sess.total_positions == 3
+    assert sess.total_positions == 1
     assert sess.noise_floor_db == -52.0
     if post_ramp_mismatch:
         assert sess.input_device is None
@@ -803,6 +921,100 @@ async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
         )
 
     assert sess.noise_floor_db is None
+
+
+@pytest.mark.asyncio
+async def test_relay_level_stop_during_prepare_never_starts_ramp(monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+    import threading
+
+    from jasper.capture_relay import session as relay_session
+    from jasper.correction import coordinator, playback
+    from jasper.web import correction_setup
+
+    stop_event = threading.Event()
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+    ramp_calls = []
+    restores = []
+    status = {
+        "event": {
+            "capture_page": dict(_CAPTURE_PAGE),
+            "level_batch": {
+                "schema": 1,
+                "run_token": "run-stop-prepare",
+                "armed": True,
+                "samples": [
+                    {
+                        "seq": 1,
+                        "t_client_ms": 200,
+                        "rms_dbfs": -50.0,
+                        "peak_dbfs": -45.0,
+                    }
+                ],
+            },
+        }
+    }
+
+    class Client:
+        def status(self, *_args):
+            return status
+
+        def post_host_event(self, *_args):
+            return None
+
+    class Session:
+        session_id = "active-crossover"
+        noise_floor_db = -55.0
+        mic_calibration = None
+        input_device = None
+
+        async def cancel_level_match(self):
+            return False
+
+        async def run_level_match(self, *_args, **_kwargs):
+            ramp_calls.append(True)
+            return SimpleNamespace(locked=True, ramp=SimpleNamespace(error=None))
+
+    @asynccontextmanager
+    async def window():
+        yield
+
+    async def prepare():
+        prepare_started.set()
+        await release_prepare.wait()
+        return object()
+
+    async def restore(_prepared):
+        restores.append(True)
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
+    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
+
+    task = asyncio.create_task(
+        correction_setup._run_relay_level_match(
+            Session(),
+            Client(),
+            _level_pi_session(),
+            geometry="near_field_driver:mono:woofer",
+            run_token="run-stop-prepare",
+            prepare_tone=prepare,
+            restore_tone=restore,
+            stop_requested=stop_event.is_set,
+        )
+    )
+    assert await asyncio.wait_for(prepare_started.wait(), timeout=2)
+    stop_event.set()
+    await asyncio.sleep(0.3)
+    release_prepare.set()
+
+    with pytest.raises(relay_session.CaptureStopped, match="capture stopped"):
+        await task
+    assert ramp_calls == []
+    assert restores == [True]
 
 
 @pytest.mark.asyncio
@@ -1068,7 +1280,14 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
 
     terminal = host_events[-1]["ramp"]
     assert terminal["state"] == "error"
-    assert "incompatible" in terminal["error"]
+    # The phone shows the mapped household copy (see
+    # correction_setup._relay_failure_message), never the raw
+    # "capture page is incompatible ... (expected protocol N ...)"
+    # diagnostic — that stays in the journal.
+    assert terminal["error"] == (
+        "The phone page is out of date for this speaker. "
+        "Close the phone tab and open a fresh link from this page."
+    )
 
 
 @pytest.mark.asyncio
@@ -1296,7 +1515,11 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         backend,
         "level_lease",
         lambda: SimpleNamespace(
-            level_match_snapshot=lambda **_kwargs: {"running": False}
+            level_match_snapshot=lambda **_kwargs: {"running": False},
+            # Pinned so `_open` demonstrably derives the phone's hard capture
+            # deadline from the lease (never a flat, disconnected constant
+            # that could undercut the server's real ramp safety timeout).
+            phone_hard_timeout_ms=lambda _geometry: 91234,
         ),
     )
     monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
@@ -1349,6 +1572,9 @@ def test_crossover_level_start_preserves_legacy_manual_then_registers_relay(
         "Move the microphone capsule to 3 cm"
     )
     assert "woofer cone" in spec.screen[1]["items"][0]
+    # The phone's hard capture deadline comes from the lease's own derived
+    # timeout, not a flat constant decoupled from the server's ramp config.
+    assert spec.duration_ms == 91234
     assert load_measurement_state(topology)["active_comparison_set"] == prior_set
     assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
 
@@ -1382,6 +1608,512 @@ def test_crossover_level_start_refuses_unsafe_legacy_preservation(monkeypatch):
             rfile=io.BytesIO(body),
         )
         correction_setup._handle_crossover_relay_level_match(handler)
+
+
+def test_crossover_level_start_refuses_unauthorized_driver_safety_profile(
+    monkeypatch,
+):
+    """JTS3 evidence: level-match must fail closed on the driver safety
+    profile's own verdict, mirroring the setup-readiness check right above
+    it, so a stale page cannot start locks -- or consume an acceptance
+    repeat -- for a profile the deep excitation admission would refuse
+    anyway once a driver sweep actually ran."""
+    from jasper.active_speaker import repeat_admission
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    status = _legacy_crossover_level_status(preservation_ready=True)
+    status["driver_safety_profile_evaluation"] = {
+        "status": "incomplete",
+        "confirmed_and_current": False,
+        "profile_fingerprint": "9" * 64,
+        "reasons": ["woofer:hard_excitation_band_missing"],
+        "authorizes_playback": False,
+    }
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(
+        correction_setup,
+        "_crossover_blocking_phase",
+        lambda: pytest.fail("must fail before checking for a blocking phase"),
+    )
+    monkeypatch.setattr(
+        backend,
+        "apply_profile",
+        lambda **_kwargs: pytest.fail("an unauthorized profile must not apply"),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_capture",
+        lambda *_args, **_kwargs: pytest.fail("must fail before relay registration"),
+    )
+    monkeypatch.setattr(
+        repeat_admission,
+        "activate",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an unauthorized profile must not reach repeat reservation"
+        ),
+    )
+
+    with pytest.raises(
+        ValueError, match="confirm the driver safety details in speaker setup"
+    ):
+        body = json.dumps({"capture_geometry": "near_field"}).encode()
+        handler = SimpleNamespace(
+            headers={"Content-Length": str(len(body))},
+            rfile=io.BytesIO(body),
+        )
+        correction_setup._handle_crossover_relay_level_match(handler)
+
+
+def _mid_sequence_crossover_level_status(topology) -> dict:
+    """Composed status mid-sequence: anchored (blocked) + stash pending.
+
+    PR #1523 keeps the persisted CamillaDSP path on the all-muted staged
+    anchor BETWEEN capture attempts, so the live setup status reads
+    blocked/active_speaker_commissioning_config_loaded while the sequence is
+    running; backend.status_payload() composes capture_entry_pending=True
+    from the capture-entry stash. applied_crossover stays valid — the
+    sequence started from an applied profile, so the legacy-preservation
+    migration must be a no-op here.
+    """
+    from jasper.active_speaker.measurement import active_driver_targets
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    return {
+        "active": True,
+        "capture_entry_pending": True,
+        "setup": {
+            "status": "blocked",
+            "reason": "active_speaker_commissioning_config_loaded",
+            "baseline_profile": {"candidate_fingerprint": "candidate-1"},
+            "protected_profile": {
+                "source_fingerprint": "c" * 64,
+                "candidate_fingerprint": "c" * 64,
+            },
+            "applied_crossover": {
+                "valid": True,
+                "owner": "manual",
+                "reason": None,
+            },
+        },
+        "applied_profile": {
+            "recomposition_snapshot": {"preset": _two_way_preset("mono")},
+        },
+        "targets": {"drivers": active_driver_targets(topology)},
+    }
+
+
+def test_crossover_level_start_mid_sequence_anchor_mints_relay(monkeypatch):
+    """Run-10 repro (JTS3, tweeter lock 2/2 blocked at 05:32): a level-match
+    POST mid-sequence — persisted config anchored on the staged all-muted
+    config (setup blocked, reason active_speaker_commissioning_config_loaded)
+    with the capture-entry stash pending — must mint a relay, not 400 with
+    "finish and apply the protected active-speaker setup". Lock 1 predates
+    the anchor (production still loaded), so only lock 2+ hit this.
+
+    Confirmed FAILING pre-fix: without the shared in-sequence-anchor
+    predicate at the endpoint gate, this raises that exact ValueError
+    (verified by running this test against the pre-fix gate)."""
+    import asyncio
+
+    from jasper.active_speaker import web_commissioning
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    topology = _topology()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    status = _mid_sequence_crossover_level_status(topology)
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(
+        backend,
+        "apply_profile",
+        lambda **_kwargs: pytest.fail(
+            "a mid-sequence level match must not re-apply any profile"
+        ),
+    )
+    monkeypatch.setattr(
+        web_commissioning,
+        "automatic_driver_excitation",
+        lambda _topology, role, **_kwargs: {
+            "status": "ready",
+            "commissioning_gain_db": -3.0 if role == "woofer" else -18.0,
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "level_lease",
+        lambda: SimpleNamespace(
+            level_match_snapshot=lambda **_kwargs: {"running": False},
+            phone_hard_timeout_ms=lambda _geometry: 91234,
+        ),
+    )
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda coro, *, timeout: asyncio.run(coro),
+    )
+    registered = {}
+
+    def open_capture(_client, spec, **_kwargs):
+        registered["spec"] = spec
+        return object()
+
+    monkeypatch.setattr(adapter, "open_capture", open_capture)
+
+    def run_relay(kind, relay_base, *, return_url):
+        registered.update(label=kind.label, relay_base=relay_base)
+        kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
+        return {"url": "https://capture.jasper.tech/session"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+    monkeypatch.setattr(
+        correction_setup,
+        "_request_local_return_url",
+        lambda *_args: "https://jts.local/correction/crossover/",
+    )
+
+    body = json.dumps({"capture_geometry": "near_field"}).encode()
+    handler = SimpleNamespace(
+        headers={"Content-Length": str(len(body))},
+        rfile=io.BytesIO(body),
+    )
+    payload = correction_setup._handle_crossover_relay_level_match(handler)
+
+    assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
+    assert registered["label"] == "level_ramp:crossover"
+    assert registered["spec"].stimulus.label.endswith("level-match tone")
+
+
+@pytest.mark.parametrize(
+    ("reason", "capture_entry_pending"),
+    (
+        # Any other blocked reason refuses even with the stash pending — a
+        # pending stash must never paper over a genuinely-unfinished setup.
+        ("active_baseline_profile_unreadable", True),
+        # The exact in-sequence reason WITHOUT a pending stash refuses too:
+        # nothing proves a capture sequence still owns the anchor.
+        ("active_speaker_commissioning_config_loaded", False),
+    ),
+)
+def test_crossover_level_start_refuses_other_blocked_setups(
+    monkeypatch, reason, capture_entry_pending
+):
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+
+    topology = _topology()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    status = _mid_sequence_crossover_level_status(topology)
+    status["setup"]["reason"] = reason
+    status["capture_entry_pending"] = capture_entry_pending
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(
+        correction_setup,
+        "_crossover_blocking_phase",
+        lambda: pytest.fail("must fail before checking for a blocking phase"),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_relay_capture",
+        lambda *_args, **_kwargs: pytest.fail("must fail before relay registration"),
+    )
+
+    with pytest.raises(
+        ValueError, match="finish and apply the protected active-speaker setup"
+    ):
+        body = json.dumps({"capture_geometry": "near_field"}).encode()
+        handler = SimpleNamespace(
+            headers={"Content-Length": str(len(body))},
+            rfile=io.BytesIO(body),
+        )
+        correction_setup._handle_crossover_relay_level_match(handler)
+
+
+def _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease):
+    """Drive the REAL ``_handle_crossover_relay_level_match`` restart.
+
+    Reproduces the run-19 household path: the completed-insufficient (or
+    refusal) terminal offers exactly one action — POST /crossover/level-match
+    with an empty body — while the lease is fully locked (``ready=True``), so
+    the endpoint's ``continuing`` gate is False and its ``_run`` closure hits
+    the invalidate seam BEFORE the ramp runs. The ramp itself is stubbed to a
+    no-op that snapshots the lease's solve-correction state at ramp time —
+    i.e. exactly what the NEXT solve would see — and the relay runner executes
+    the real ``run_and_consume`` closure synchronously (production spawns it
+    on the background loop; the seam under test is identical).
+    """
+    import asyncio
+
+    from jasper.active_speaker import web_commissioning
+    from jasper.active_speaker.measurement import active_driver_targets
+    import jasper.output_topology as output_topology
+    from jasper.web import correction_crossover_backend as backend
+    from jasper.web import correction_setup
+    from tests.test_active_speaker_profile import _two_way_preset
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+        str(tmp_path / "measurements.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE",
+        str(tmp_path / "repeat-admission.json"),
+    )
+    topology = _topology()
+    monkeypatch.setattr(output_topology, "load_output_topology", lambda: topology)
+    legacy = _legacy_crossover_level_status(preservation_ready=True)
+    status = {
+        **legacy,
+        "setup": {
+            **legacy["setup"],
+            "protected_profile": {
+                "source_fingerprint": "c" * 64,
+                "candidate_fingerprint": "c" * 64,
+            },
+            "applied_crossover": {"valid": True, "owner": "manual", "reason": None},
+        },
+        "applied_profile": {
+            "recomposition_snapshot": {"preset": _two_way_preset("mono")},
+        },
+        "targets": {"drivers": active_driver_targets(topology)},
+    }
+    monkeypatch.setattr(backend, "status_payload", lambda: status)
+    monkeypatch.setattr(backend, "level_lease", lambda: lease)
+    monkeypatch.setattr(
+        web_commissioning,
+        "automatic_driver_excitation",
+        lambda _topology, role, **_kwargs: {
+            "status": "ready",
+            "commissioning_gain_db": -3.0 if role == "woofer" else -18.0,
+        },
+    )
+    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "relay")
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda coro, *, timeout: asyncio.run(coro),
+    )
+    monkeypatch.setattr(adapter, "open_capture", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        correction_setup,
+        "_request_local_return_url",
+        lambda *_args: "https://jts.local/correction/crossover/",
+    )
+
+    seen: dict = {}
+
+    async def fake_run_relay_level_match(lease_arg, *_args, **_kwargs):
+        # What the next solve for this target would observe.
+        seen["adjustment_db"] = dict(lease_arg._solve_adjustment_db)
+        seen["writes"] = dict(lease_arg._solve_correction_writes)
+        seen["measured_gain_db"] = dict(lease_arg._solve_measured_gain_db)
+
+    monkeypatch.setattr(
+        correction_setup, "_run_relay_level_match", fake_run_relay_level_match
+    )
+
+    def run_relay(kind, relay_base, *, return_url):
+        kind.open(object(), relay_base, "https://capture.jasper.tech", return_url)
+
+        async def _drive():
+            try:
+                await kind.run_and_consume(object(), object())
+            except ValueError:
+                # The stubbed ramp produces no mic binding, so _run raises
+                # after the invalidate seam under test has executed --
+                # production's _run_relay_capture wrapper catches exactly
+                # this (flips /status.relay to failed) without propagating.
+                pass
+
+        asyncio.run(_drive())
+        return {"url": "https://capture.jasper.tech/session"}
+
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", run_relay)
+
+    body = json.dumps({"capture_geometry": "near_field"}).encode()
+    handler = SimpleNamespace(
+        headers={"Content-Length": str(len(body))},
+        rfile=io.BytesIO(body),
+    )
+    payload = correction_setup._handle_crossover_relay_level_match(handler)
+    assert payload["relay"]["url"].startswith("https://capture.jasper.tech/")
+    assert seen, "the stubbed ramp never ran -- the restart did not reach _run"
+    return seen
+
+
+def _completed_insufficient_lease(*, correction_writes: int):
+    """A real CrossoverLevelLease in run 19's terminal state.
+
+    Every target locked (``ready=True`` -- the completed-insufficient and
+    refusal terminals both sit on a fully-locked lease, which is exactly why
+    the endpoint's ``continuing`` gate reads False on restart), with
+    ``correction_writes`` solve corrections recorded for the woofer.
+    """
+    from types import SimpleNamespace as NS
+
+    from jasper.audio_measurement.ramp import RampLockKind, RampState
+    from jasper.web import correction_crossover_backend as backend
+
+    lease = backend.CrossoverLevelLease()
+    lease.context_id = "c" * 64
+    lease.configure_targets(
+        [
+            {
+                "target_id": f"mono:{role}",
+                "speaker_group_id": "mono",
+                "role": role,
+                "geometry": f"near_field_driver:mono:{role}",
+                "tone_frequency_hz": 250.0 if role == "woofer" else 6250.0,
+                "commissioning_gain_db": -3.0 if role == "woofer" else -18.0,
+                "target_fingerprint": ("6" if role == "woofer" else "7") * 64,
+            }
+            for role in ("woofer", "tweeter")
+        ]
+    )
+    for role, locked in (("woofer", -14.2), ("tweeter", -4.0)):
+        lease._outcomes[f"near_field_driver:mono:{role}"] = NS(
+            ramp=NS(
+                state=RampState.LOCKED,
+                locked_main_volume_db=locked,
+                gain_map_db=1.9,
+                cap_db=-3.0,
+                noise_floor_dbfs=-42.3,
+                lock_kind=RampLockKind.IN_WINDOW,
+            ),
+        )
+    for _ in range(correction_writes):
+        lease.record_solve_correction(
+            "mono", "woofer", trigger="completed_insufficient", shortfall_db=12.3
+        )
+    snapshot = lease.level_match_snapshot(current_context_id="c" * 64)
+    assert snapshot["ready"] is True  # the terminal state's defining property
+    return lease
+
+
+def test_level_match_restart_from_completed_insufficient_preserves_correction(
+    monkeypatch, tmp_path
+):
+    """Run-19 endpoint repro (adversarial-review BLOCKER on PR #1555): the
+    completed-insufficient terminal's only action is restarting the level
+    check, and that restart goes through the REAL
+    ``_handle_crossover_relay_level_match`` -- whose ``continuing`` gate is
+    False on a fully-locked lease, so its ``_run`` closure invalidates the
+    comparison context BEFORE the next solve ever reads the just-written
+    completion-time correction. Pre-fix (lease-level persistence only), the
+    endpoint's plain ``invalidate_comparison_context()`` wiped the
+    correction here and run 19's identical-solve loop persisted; the
+    between-set restart must preserve a NON-exhausted target's correction
+    so "JTS will play the next measurement louder" comes true.
+
+    Confirmed FAILING pre-fix: seen adjustment == {} (correction cleared by
+    the endpoint restart) against the expected {'mono:woofer': 12.3}."""
+
+    lease = _completed_insufficient_lease(correction_writes=1)
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(12.3)}
+
+    seen = _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease)
+
+    assert seen["adjustment_db"] == {"mono:woofer": pytest.approx(12.3)}
+    assert seen["writes"] == {"mono:woofer": 1}
+
+
+def test_level_match_restart_with_exhausted_budget_clears_for_fresh_evaluation(
+    monkeypatch, tmp_path
+):
+    """The other half of the between-set-restart semantics: once a target's
+    bounded correction budget is exhausted (the refusal terminal was showing
+    -- the user was told to move the phone), restarting the level check is a
+    FRESH EVALUATION: that target's correction state clears at the endpoint.
+    This also pins the no-deadlock property -- the synthesized
+    ``measurement_window_unreachable`` refusal (which keys off the same
+    exhausted flag) cannot latch across the restart, so the offered "Redo
+    the quick level check" action is a genuine escape hatch; if the physics
+    truly didn't change, the machinery re-converges to the refusal within
+    the bounded write budget instead of looping on one identical solve."""
+
+    # Three writes: two applied + one exhausted bump -- the state in which
+    # the pre-flight solve refuses and the envelope synthesizes the
+    # placement-lever refusal.
+    lease = _completed_insufficient_lease(correction_writes=3)
+    assert lease._correction_budget_exhausted("mono:woofer") is True
+
+    seen = _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease)
+
+    assert seen["adjustment_db"] == {}
+    assert seen["writes"] == {}
+    assert seen["measured_gain_db"] == {}
+    assert lease._correction_budget_exhausted("mono:woofer") is False
+
+
+def _refused_lease(*, correction_writes: int = 1):
+    """Run-20's exact starting state (hardware, jts3, 2026-07-17): a genuine
+    PRE-FLIGHT solve refusal for the woofer at a write count BELOW the
+    exhausted bound.
+
+    Builds on ``_completed_insufficient_lease`` (same fully-locked,
+    ``ready=True`` shape the restart's ``continuing`` gate needs) and
+    additionally marks the lease's own most recent solve as having refused
+    for this target -- exactly what a real ``_solve_driver_level`` call
+    leaves on ``self._solve_refusal`` right before ``LevelSolveRefused``
+    propagates (see ``test_refusal_surfaces_on_level_match_snapshot`` in
+    tests/test_correction_crossover_backend_level_solve.py). The correction
+    writes model set 1's insufficient finalization (#1555's own
+    "completed_insufficient" trigger); the refusal models set 2's solve --
+    now louder from that correction -- still coming up short against the
+    room.
+    """
+
+    lease = _completed_insufficient_lease(correction_writes=correction_writes)
+    lease._solve_refusal = {
+        "target_id": "mono:woofer",
+        "role": "woofer",
+        "code": "room_too_noisy_for_safe_measurement",
+        "failing_band_hz": [60.0, 171.0],
+        "required_db": 20.0,
+        "available_db": 14.5,
+    }
+    return lease
+
+
+def test_level_match_restart_after_refusal_at_writes_one_clears_correction(
+    monkeypatch, tmp_path
+):
+    """Run-20 endpoint repro (hardware, jts3, 2026-07-17) -- the dead-loop
+    #1555 left behind. #1555's own fix worked: set 1 (insufficient) wrote
+    +shortfall (writes=1), set 2 solved louder, and THEN genuinely refused
+    ``room_too_noisy_for_safe_measurement`` -- one write below the exhausted
+    bound, so the OLD (exhausted-only) discriminator preserved the
+    correction across the restart. The household followed the refusal
+    screen's own "Redo the quick level check" action, relocked both drivers
+    cleanly, tapped measure -- and got the IDENTICAL refusal back in ~5
+    seconds, no pre-roll, no tone: the preserved (writes=1, not exhausted)
+    adjustment fed straight back into the next solve against a freshly
+    re-measured (near-identical) room. This test drives the REAL restart
+    endpoint and pins that the correction now CLEARS, so the next solve
+    starts from a clean baseline instead of replaying the doomed level.
+
+    Confirmed FAILING pre-fix: seen adjustment == {'mono:woofer': 12.3}
+    (preserved) against the expected {} (cleared) -- see the PR description
+    for the actual pre-fix pytest output."""
+
+    lease = _refused_lease(correction_writes=1)
+    assert lease._correction_budget_exhausted("mono:woofer") is False
+    assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(12.3)}
+
+    seen = _drive_between_set_level_match_restart(monkeypatch, tmp_path, lease)
+
+    assert seen["adjustment_db"] == {}
+    assert seen["writes"] == {}
+    assert seen["measured_gain_db"] == {}
 
 
 def test_open_commissioning_bundle_for_level_match_forwards_calibration_id(

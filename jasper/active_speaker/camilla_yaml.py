@@ -15,7 +15,9 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Any, Sequence
+
+import yaml
 
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import (
@@ -33,9 +35,11 @@ from jasper.camilla_config_contract import (
 )
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
+    emit_butterworth_highpass,
     emit_channel_select_mixer,
     emit_gain_filter,
     emit_linkwitz_riley,
+    emit_linkwitz_transform_biquad,
     emit_mixer,
     emit_peaking_biquad,
     fmt,
@@ -47,6 +51,12 @@ from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
 from .graph_safety import (
+    TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
+    bass_extension_block_valid,
+    filter_param_matches,
+    output_highpass_protected,
+    pipeline_reference_closure_errors,
+    tweeter_guard_present,
     unprotected_tweeter_outputs,
     view_from_emitted_text,
 )
@@ -65,6 +75,9 @@ from .test_signal_plan import (
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from jasper.bass_extension.profile import BassExtensionProfile
+
 ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
 STARTUP_HEADROOM_DB = 40.0
 COMMISSIONING_HEADROOM_DB = 0.0
@@ -74,6 +87,8 @@ COMMISSIONING_FILTER_MODE = "protected_startup"
 APPLIED_RESPONSE_FILTER_MODE = "applied_crossover_response"
 BASELINE_HEADROOM_DB = 0.0
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
+BASS_EXTENSION_LT_FILTER = "bass_ext_lt"
+BASS_EXTENSION_SUBSONIC_FILTER = "bass_ext_subsonic"
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     DEFAULT_PLAYBACK_DEVICE,
     "jasper_out",
@@ -211,6 +226,169 @@ def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
         output.index
         for output in preset.channel_map.outputs
         if output.driver_role == role
+    )
+
+
+def _bass_extension_emission(
+    preset: ActiveSpeakerPreset,
+    profile: BassExtensionProfile | None,
+) -> dict[str, Any] | None:
+    """Return the already-evaluated sealed natural block, or no block."""
+
+    if profile is None or profile.status != "accepted":
+        return None
+    adapter_id = str(profile.enclosure["adapter_id"])
+    if adapter_id != "sealed_v1":
+        return None
+    if any(target.subsonic is None for target in profile.targets):
+        raise ActiveSpeakerConfigError(
+            "sealed bass-extension profile requires subsonic protection on every target"
+        )
+    natural = profile.targets[-1]
+    if natural.target_id != "natural" or natural.qp is None:
+        raise ActiveSpeakerConfigError("sealed bass-extension natural target is invalid")
+    owner = profile.bass_owner
+    roles = tuple(str(role) for role in owner["roles"])
+    channels = tuple(int(channel) for channel in owner["channels"])
+    kind = str(owner["kind"])
+    if kind == "woofer_way" and len(roles) == 1:
+        expected = tuple(_channels_for_role(preset, roles[0]))
+    elif kind == "local_sub" and roles == ("subwoofer",):
+        sub = preset.local_subwoofer
+        expected = () if sub is None else (sub.physical_output_index,)
+    else:
+        expected = ()
+    if not expected or channels != expected:
+        raise ActiveSpeakerConfigError(
+            "bass-extension owner does not match the emitted active-speaker graph"
+        )
+    subsonic = dict(natural.subsonic or {})
+    if (
+        subsonic.get("type") != "ButterworthHighpass"
+        or type(subsonic.get("order")) is not int
+    ):
+        raise ActiveSpeakerConfigError("bass-extension subsonic filter is unsupported")
+    return {
+        "kind": kind,
+        "roles": roles,
+        "channels": channels,
+        "natural": natural,
+        "subsonic": subsonic,
+    }
+
+
+def _bass_extension_profile_summary(
+    block: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if block is None:
+        return {"runtime_block_required": False}
+    natural = block["natural"]
+    return {
+        "runtime_block_required": True,
+        "bass_owner_channels": list(block["channels"]),
+        "natural": {
+            "fp_hz": natural.fp_hz,
+            "qp": natural.qp,
+            "boost_headroom_db": natural.boost_headroom_db,
+            "subsonic": dict(block["subsonic"]),
+        },
+    }
+
+
+def _emit_bass_extension_definitions(block: dict[str, Any] | None) -> list[str]:
+    if block is None:
+        return []
+    natural = block["natural"]
+    subsonic = block["subsonic"]
+    return [
+        *emit_linkwitz_transform_biquad(
+            BASS_EXTENSION_LT_FILTER,
+            freq_act=natural.fp_hz,
+            q_act=natural.qp,
+            freq_target=natural.fp_hz,
+            q_target=natural.qp,
+        ),
+        *emit_butterworth_highpass(
+            BASS_EXTENSION_SUBSONIC_FILTER,
+            freq=float(subsonic["freq"]),
+            order=subsonic["order"],
+        ),
+    ]
+
+
+def _bass_extension_chain_names(
+    block: dict[str, Any] | None,
+    *,
+    role: str | None = None,
+    local_sub: bool = False,
+) -> list[str]:
+    if block is None:
+        return []
+    owns = (
+        block["kind"] == "local_sub"
+        if local_sub
+        else block["kind"] == "woofer_way" and role in block["roles"]
+    )
+    return (
+        [BASS_EXTENSION_LT_FILTER, BASS_EXTENSION_SUBSONIC_FILTER]
+        if owns
+        else []
+    )
+
+
+def _assert_bass_extension_safe(
+    yaml_text: str,
+    preset: ActiveSpeakerPreset,
+    block: dict[str, Any] | None,
+) -> None:
+    view = view_from_emitted_text(yaml_text)
+    evidence = bass_extension_block_valid(
+        view, _bass_extension_profile_summary(block)
+    )
+    limiter_ok = True
+    if block is not None:
+        channels = frozenset(block["channels"])
+        if block["kind"] == "local_sub":
+            limiter_name = _sub_baseline_limiter_name()
+        else:
+            limiter_name = _driver_baseline_limiter_name(block["roles"][0])
+        limiter_ok = filter_param_matches(
+            view,
+            limiter_name,
+            filter_type="Limiter",
+            params={
+                "clip_limit": BASELINE_LIMITER_CLIP_LIMIT_DB,
+                "soft_clip": True,
+            },
+        )
+        owner_steps = [step for step in view.pipeline_steps if step.channels == channels]
+        limiter_ok = limiter_ok and len(owner_steps) == 1
+        if limiter_ok:
+            names = owner_steps[0].names
+            required = (
+                BASS_EXTENSION_LT_FILTER,
+                BASS_EXTENSION_SUBSONIC_FILTER,
+                limiter_name,
+            )
+            limiter_ok = all(name in names for name in required)
+            if limiter_ok:
+                limiter_ok = (
+                    names.index(BASS_EXTENSION_LT_FILTER)
+                    < names.index(BASS_EXTENSION_SUBSONIC_FILTER)
+                    < names.index(limiter_name)
+                )
+    if evidence.valid and limiter_ok:
+        return
+    log_event(
+        logger,
+        "active_speaker.emit_gate",
+        level=logging.ERROR,
+        result="blocked_bass_extension",
+        preset_id=preset.preset_id,
+        reason=evidence.reason or "baseline_limiter_invalid",
+    )
+    raise ActiveSpeakerConfigError(
+        "emitted bass-extension block failed independent safety proof"
     )
 
 
@@ -417,6 +595,7 @@ def _bass_management_hp_name(role: str) -> str:
 # emitter's own call sites — and its emission behaviour — completely untouched.
 driver_mute_name = _driver_mute_name
 driver_limiter_name = _driver_limiter_name
+driver_delay_name = _driver_delay_name
 driver_baseline_gain_name = _driver_baseline_gain_name
 driver_baseline_limiter_name = _driver_baseline_limiter_name
 protective_tweeter_hp_name = _protective_tweeter_hp_name
@@ -488,7 +667,11 @@ def _bass_management_active(preset: ActiveSpeakerPreset, role: str) -> bool:
     )
 
 
-def _driver_baseline_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
+def _driver_baseline_filter_chain(
+    preset: ActiveSpeakerPreset,
+    role: str,
+    bass_extension: dict[str, Any] | None = None,
+) -> list[str]:
     names: list[str] = []
     # Bass-management high-pass FIRST: the lowest driver's program is high-passed
     # at the sub crossover corner before its own crossover/delay/gain/limiter. The
@@ -501,17 +684,21 @@ def _driver_baseline_filter_chain(preset: ActiveSpeakerPreset, role: str) -> lis
             names.append(_crossover_filter_name(role, region, highpass=False))
         if region.upper_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=True))
+    names.extend(_bass_extension_chain_names(bass_extension, role=role))
     names.append(_driver_delay_name(role))
     names.append(_driver_baseline_gain_name(role))
     names.append(_driver_baseline_limiter_name(role))
     return names
 
 
-def _sub_baseline_filter_chain() -> list[str]:
+def _sub_baseline_filter_chain(
+    bass_extension: dict[str, Any] | None = None,
+) -> list[str]:
     """The local-sub baseline lane: band-limit (LR4 low-pass), then the same
     per-driver protection a main gets (non-positive gain + soft-clip limiter)."""
     return [
         _sub_lowpass_name(),
+        *_bass_extension_chain_names(bass_extension, local_sub=True),
         _sub_baseline_gain_name(),
         _sub_baseline_limiter_name(),
     ]
@@ -626,6 +813,7 @@ def _emit_baseline_driver_definitions(
     *,
     limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
+    bass_extension: dict[str, Any] | None = None,
 ) -> list[str]:
     """The driver-domain (Layer A) filter definitions shared by the solo/leader
     baseline and the follower's driver-domain-only graph.
@@ -655,6 +843,7 @@ def _emit_baseline_driver_definitions(
     # of the single sub crossover). Emitted only when a local sub is present.
     sub = preset.local_subwoofer
     lines.extend(_emit_bass_management_hp_definition(preset))
+    lines.extend(_emit_bass_extension_definitions(bass_extension))
     for role in required_driver_roles(preset.way_count):
         delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
         gain_db = _correction_value(corrections, role, "gain_db", 0.0)
@@ -812,6 +1001,7 @@ def _emit_baseline_filter_definitions(
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
+    bass_extension: dict[str, Any] | None = None,
 ) -> str:
     lines: list[str] = []
     room_peqs = tuple(room_peqs)
@@ -850,6 +1040,7 @@ def _emit_baseline_filter_definitions(
         preset,
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=corrections,
+        bass_extension=bass_extension,
     ))
     # Program-domain preference EQ (Layer C) definitions. Emitted via the shared
     # leaf emit_filter_spec (the same one emit_sound_config uses), so the active
@@ -892,6 +1083,7 @@ def _emit_baseline_pipeline(
     *,
     room_peq_names: Sequence[str] = (),
     preference_filter_names: Sequence[str] = (),
+    bass_extension: dict[str, Any] | None = None,
 ) -> str:
     lines: list[str] = []
     # Room PEQs (Layer B) run on the stereo program bus before the common
@@ -928,22 +1120,29 @@ def _emit_baseline_pipeline(
     ])
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
-        chain = ", ".join(_driver_baseline_filter_chain(preset, role))
+        chain = ", ".join(
+            _driver_baseline_filter_chain(preset, role)
+            if bass_extension is None
+            else _driver_baseline_filter_chain(preset, role, bass_extension)
+        )
         lines.extend([
             "  - type: Filter",
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
             f"    names: [{chain}]",
         ])
-    lines.extend(_sub_baseline_pipeline_lines(preset))
+    lines.extend(_sub_baseline_pipeline_lines(preset, bass_extension))
     return "\n".join(lines)
 
 
-def _sub_baseline_pipeline_lines(preset: ActiveSpeakerPreset) -> list[str]:
+def _sub_baseline_pipeline_lines(
+    preset: ActiveSpeakerPreset,
+    bass_extension: dict[str, Any] | None = None,
+) -> list[str]:
     """The sub's baseline pipeline Filter step (its own output channel), or []."""
     sub = preset.local_subwoofer
     if sub is None:
         return []
-    chain = ", ".join(_sub_baseline_filter_chain())
+    chain = ", ".join(_sub_baseline_filter_chain(bass_extension))
     return [
         "  - type: Filter",
         f"    channels: [{sub.physical_output_index}]",
@@ -952,7 +1151,10 @@ def _sub_baseline_pipeline_lines(preset: ActiveSpeakerPreset) -> list[str]:
 
 
 def _emit_driver_domain_pipeline(
-    preset: ActiveSpeakerPreset, *, pair_trim_db: float = 0.0,
+    preset: ActiveSpeakerPreset,
+    *,
+    pair_trim_db: float = 0.0,
+    bass_extension: dict[str, Any] | None = None,
 ) -> str:
     # Driver-domain-only (follower) pipeline. The inter-speaker channel-select
     # runs FIRST (a 2->2 Mixer that picks L/R/mono from the leader's corrected
@@ -976,13 +1178,17 @@ def _emit_driver_domain_pipeline(
     ])
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
-        chain = ", ".join(_driver_baseline_filter_chain(preset, role))
+        chain = ", ".join(
+            _driver_baseline_filter_chain(preset, role)
+            if bass_extension is None
+            else _driver_baseline_filter_chain(preset, role, bass_extension)
+        )
         lines.extend([
             "  - type: Filter",
             f"    channels: [{', '.join(str(ch) for ch in channels)}]",
             f"    names: [{chain}]",
         ])
-    lines.extend(_sub_baseline_pipeline_lines(preset))
+    lines.extend(_sub_baseline_pipeline_lines(preset, bass_extension))
     return "\n".join(lines)
 
 
@@ -1074,14 +1280,15 @@ def emit_active_speaker_startup_config(
 {metadata_yaml}
 # DO NOT HAND-EDIT or load automatically. This template is for hardware
 # bring-up only: all per-driver outputs start muted, tweeter paths include
-# an extra protective high-pass, and the software volume ceiling remains 0 dB.
+# an extra protective high-pass, and the software volume ceiling remains
+# non-positive.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true
   capture:
     type: Alsa
@@ -1414,14 +1621,14 @@ def emit_active_speaker_commissioning_config(
 # per-output mute mask so one driver at a time is tested through its real
 # crossover/limiter chain. Bring-up uses the extra protective high-pass;
 # automatic response measurement uses the applied crossover high-pass instead.
-# The software volume ceiling stays 0 dB in both modes.
+# The software volume ceiling remains non-positive in both modes.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true
   capture:
     type: Alsa
@@ -1469,6 +1676,492 @@ pipeline:
     return yaml
 
 
+# --- channel-routed program graph (crossover measurement conductor, W2) ------
+# The v2 crossover measurement flow plays ONE continuous 2-channel program WAV
+# (docs/crossover-measurement-productization-design.md §5.4): program capture
+# ch0 carries the woofer stimulus, ch1 the tweeter stimulus, sequenced in the
+# WAV so the CamillaDSP graph stays static (no reload mid-program). This graph
+# maps each program capture channel to its driver's PHYSICAL output path so the
+# per-driver crossover / limiter / protective chain — the positions
+# graph_safety's proofs inspect — stays exactly where the proven commissioning
+# graph puts it (on the output channels, POST-mixer). The filter definitions and
+# per-output pipeline are the APPLIED_RESPONSE commissioning graph's, reused
+# verbatim; only the routing MIXER differs (role-routed, not stereo-side-routed)
+# and every output is audible (a program never mutes a driver — the WAV silences
+# it by channel). Measuring the as-crossed branches makes the two driver
+# responses directly summable and keeps every tweeter output behind its final
+# crossover high-pass throughout.
+
+# LR4 is the shipped crossover slope; 24 dB/oct is the protective-HP floor slope
+# a tweeter crossover high-pass must meet by construction (design §5.4).
+PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
+
+
+def _emit_role_routed_mixer(
+    preset: ActiveSpeakerPreset,
+    role_channels: dict[str, int],
+    *,
+    apply_region_polarity: bool = True,
+) -> str:
+    """Emit the program graph's role-routed split mixer.
+
+    Unlike :func:`_emit_split_mixer` (which routes a stereo program bus by output
+    *side*), this routes by driver *role*: every physical output of role ``r``
+    takes its single source from ``role_channels[r]`` — the program-WAV channel
+    carrying that driver's stimulus (ch0 → woofer, ch1 → tweeter, per design
+    §5.4). ``channels_in`` is the program channel count (max mapped channel + 1).
+    Region polarity is carried exactly as the commissioning mixer carries it, so
+    the routed graph differs from the commissioning graph ONLY in its source
+    selection, never in polarity or level.
+
+    The emitted mixer is named ``split_active_{way_count}way`` — the SAME name
+    :func:`_emit_split_mixer` uses — for two independent reasons that both land
+    on the identical spelling: (1) :func:`_emit_commissioning_pipeline`, reused
+    verbatim by the program graph, hardcodes a ``Mixer`` pipeline step under
+    that exact name (CamillaDSP's ``SetConfig`` refuses to load a pipeline step
+    referencing an undefined mixer — W6 hardware run 4 finding I: the program
+    graph shipped as ``program_route_{way}way`` here while the pipeline pointed
+    at ``split_active_{way}way``, and every program-graph load was rejected);
+    (2) ``jasper.active_speaker.environment``'s ``_ACTIVE_SPLIT_RE`` — the
+    runtime ecosystem's active-config classifier — recognizes an active-speaker
+    config by the presence of a ``split_active_Nway`` mixer name. It is ecosystem
+    vocabulary, not a routing claim: this mixer's ROUTING stays role-routed
+    (see above), never side-routed like the commissioning/baseline/startup
+    split — only the NAME is shared.
+    """
+    region_polarity = _role_polarity(preset)
+    polarity = (
+        region_polarity
+        if apply_region_polarity
+        else {role: False for role in region_polarity}
+    )
+    outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
+    output_count = _output_count(preset)
+    channels_in = 1 + max(role_channels.values())
+    mapping: list[tuple[int, list[tuple[int, float, bool]]]] = [
+        (
+            output.index,
+            [(role_channels[output.driver_role], 0.0, polarity[output.driver_role])],
+        )
+        for output in outputs
+    ]
+    labels = [output.label for output in outputs]
+    return emit_mixer(
+        f"split_active_{preset.way_count}way",
+        channels_in=channels_in,
+        channels_out=output_count,
+        mapping=mapping,
+        description=(
+            f"program channels -> {output_count} role-routed active outputs"
+        ),
+        labels=labels,
+    )
+
+
+def _validate_program_role_channels(
+    preset: ActiveSpeakerPreset,
+    role_channels: dict[str, int],
+) -> dict[str, int]:
+    """Fail-closed check that every output's role owns one distinct program channel."""
+
+    if preset.local_subwoofer is not None:
+        raise ActiveSpeakerConfigError(
+            "program graph does not support a local subwoofer (2-way crossover "
+            "measurement is out of scope for bass management)"
+        )
+    normalized: dict[str, int] = {}
+    for role, channel in role_channels.items():
+        if type(channel) is not int or channel < 0:
+            raise ActiveSpeakerConfigError(
+                f"program channel for role {role!r} must be a non-negative integer"
+            )
+        normalized[role] = channel
+    required = set(required_driver_roles(preset.way_count))
+    output_roles = {output.driver_role for output in preset.channel_map.outputs}
+    missing = (output_roles | required) - set(normalized)
+    if missing:
+        raise ActiveSpeakerConfigError(
+            "program role_channels is missing a channel for role(s) "
+            + ", ".join(sorted(missing))
+        )
+    if len(set(normalized.values())) != len(normalized):
+        raise ActiveSpeakerConfigError(
+            "each driver role must own a distinct program channel"
+        )
+    channels = sorted(normalized.values())
+    if channels != list(range(len(channels))):
+        raise ActiveSpeakerConfigError(
+            "program channels must be contiguous from 0"
+        )
+    return normalized
+
+
+def _assert_tweeter_crossover_hp_satisfies_floor(
+    preset: ActiveSpeakerPreset,
+    *,
+    min_corner_hz: float,
+    min_slope_db_per_octave: float,
+) -> None:
+    """Refuse a preset whose tweeter crossover HP would violate the protective floor.
+
+    In the program graph the tweeter is protected by its TARGET crossover
+    high-pass alone (the extra bring-up protective HP is dropped so the measured
+    branch is the applied crossover shoulder — design §5.4). That is only safe
+    when the crossover Fc / slope already satisfies the declared protective-HP
+    floor. This build-time gate proves it from the preset BEFORE any YAML is
+    emitted, so a preset that crosses the tweeter too low (or too gently) is
+    refused loudly rather than measured behind an under-protective high-pass.
+    """
+    for role in required_driver_roles(preset.way_count):
+        if role != "tweeter":
+            continue
+        crossover = crossover_highpass_for_role(preset, role)
+        if crossover is None:
+            raise ActiveSpeakerConfigError(
+                "program graph requires a tweeter crossover high-pass; the "
+                f"preset declares none for role {role!r}"
+            )
+        _name, fc_hz, order = crossover
+        if fc_hz < min_corner_hz:
+            log_event(
+                logger,
+                "active_speaker.program_emit_gate",
+                level=logging.ERROR,
+                result="blocked_tweeter_hp_below_floor",
+                preset_id=preset.preset_id,
+                fc_hz=f"{fc_hz:g}",
+                min_corner_hz=f"{min_corner_hz:g}",
+            )
+            raise ActiveSpeakerConfigError(
+                f"tweeter crossover high-pass corner {fc_hz:g} Hz is below the "
+                f"declared protective floor {min_corner_hz:g} Hz"
+            )
+        if order * 6.0 < min_slope_db_per_octave:
+            log_event(
+                logger,
+                "active_speaker.program_emit_gate",
+                level=logging.ERROR,
+                result="blocked_tweeter_hp_slope_below_floor",
+                preset_id=preset.preset_id,
+                order=order,
+                min_slope_db_per_octave=f"{min_slope_db_per_octave:g}",
+            )
+            raise ActiveSpeakerConfigError(
+                f"tweeter crossover high-pass slope {order * 6.0:g} dB/oct is "
+                f"below the declared protective floor "
+                f"{min_slope_db_per_octave:g} dB/oct"
+            )
+
+
+def _assert_pipeline_references_closed(
+    yaml_text: str, preset: ActiveSpeakerPreset
+) -> None:
+    """Fail-closed L0 emit gate: refuse a graph whose pipeline points at an
+    undefined mixer or filter name.
+
+    Runs on every active-speaker graph THIS module emits, right before it is
+    returned or written — the same "prove it against the emitted text" shape as
+    :func:`_assert_tweeter_outputs_protected`, but a structural check rather
+    than a protection one: it does not reason about channels or filter
+    parameters, only whether every ``Mixer.name``/``Filter.names`` entry the
+    pipeline references resolves against the graph's own ``mixers:``/
+    ``filters:`` sections.
+
+    This closes the W6 hardware run 4 finding I hole: the program graph's
+    pipeline (reused verbatim from ``_emit_commissioning_pipeline``) named its
+    routing mixer ``split_active_2way`` while the graph's own ``mixers:``
+    section defined ``program_route_2way`` — a mismatch CamillaDSP's
+    ``SetConfig`` only caught at LOAD time on real hardware ("Use of missing
+    mixer 'split_active_2way'"), and even then reported only the first
+    dangling reference. Every emitter in this module composes its filter
+    definitions, mixer, and pipeline from independent helper calls
+    (see ``emit_active_speaker_program_config`` and
+    ``emit_active_speaker_baseline_config``); nothing upstream of this gate
+    proves the three pieces agree.
+    """
+    try:
+        payload = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        raise ActiveSpeakerConfigError(
+            f"emitted active-speaker config did not parse as YAML: {e}"
+        ) from e
+    errors = pipeline_reference_closure_errors(payload)
+    if not errors:
+        return
+    log_event(
+        logger,
+        "active_speaker.emit_gate",
+        level=logging.ERROR,
+        result="blocked_dangling_pipeline_reference",
+        preset_id=preset.preset_id,
+        detail="; ".join(errors),
+    )
+    raise ActiveSpeakerConfigError(
+        "refusing to emit an active-speaker config whose pipeline references "
+        "undefined mixer/filter name(s): " + "; ".join(errors)
+    )
+
+
+def _assert_program_graph_proven(
+    yaml_text: str,
+    preset: ActiveSpeakerPreset,
+    *,
+    min_corner_hz: float,
+) -> None:
+    """Build-and-prove the emitted program graph against graph_safety (fail-closed).
+
+    Runs the reference-closure gate (:func:`_assert_pipeline_references_closed`)
+    plus the three L0 tweeter proofs on the EMITTED text — the same evidence a
+    later readback would inspect — and refuses to return a graph that does not
+    prove all four. This is the program builder's return contract: it cannot
+    emit a graph whose pipeline points at an undefined mixer/filter name, nor
+    one whose tweeter output is not high-pass protected (against the declared
+    floor) AND wrapped by its crossover high-pass + soft-clip limiter in one
+    post-mixer step. A pre-split per-channel high-pass (which
+    ``output_highpass_protected`` alone could false-PASS on the 2-way preset,
+    where program ch1 numerically coincides with tweeter output 1) is rejected
+    here because ``tweeter_guard_present`` requires the high-pass AND the limiter
+    together on exactly the tweeter output channels.
+    """
+    _assert_pipeline_references_closed(yaml_text, preset)
+    tweeter_channels = _channels_for_role(preset, "tweeter")
+    if not tweeter_channels:
+        return
+    view = view_from_emitted_text(yaml_text)
+    tweeter_set = set(tweeter_channels)
+    unprotected = unprotected_tweeter_outputs(
+        view, tweeter_channels=tweeter_set, min_corner_hz=min_corner_hz
+    )
+    highpass_ok = all(
+        output_highpass_protected(
+            view,
+            channel=channel,
+            allowed_channels=tweeter_set,
+            min_corner_hz=min_corner_hz,
+        )
+        for channel in tweeter_channels
+    )
+    crossover = crossover_highpass_for_role(preset, "tweeter")
+    guard_ok = crossover is not None and tweeter_guard_present(
+        view,
+        channels=tweeter_set,
+        hp_name=crossover[0],
+        limiter_name=_driver_limiter_name("tweeter"),
+        limiter_clip_ceiling_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
+    )
+    if unprotected or not highpass_ok or not guard_ok:
+        log_event(
+            logger,
+            "active_speaker.program_emit_gate",
+            level=logging.ERROR,
+            result="blocked_unproven_program_graph",
+            preset_id=preset.preset_id,
+            unprotected=",".join(str(index + 1) for index in unprotected),
+            highpass_ok=highpass_ok,
+            guard_ok=guard_ok,
+        )
+        raise ActiveSpeakerConfigError(
+            "refusing to emit a program graph whose tweeter output(s) are not "
+            "provably high-pass protected and limiter-wrapped on the physical "
+            "output channels"
+        )
+
+
+def emit_active_speaker_program_config(
+    preset: ActiveSpeakerPreset,
+    *,
+    role_channels: dict[str, int],
+    playback_device: str,
+    protective_hp_min_corner_hz: float = TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
+    protective_hp_min_slope_db_per_octave: float = (
+        PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE
+    ),
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    chunksize: int | None = None,
+    target_level: int | None = None,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
+    limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
+    out_path: str | Path | None = None,
+    baseline_id: str | None = None,
+) -> str:
+    """Emit the static channel-routed program graph for CHECK/MEASURE playback.
+
+    The v2 crossover conductor plays one 2-channel program WAV
+    (``jasper.audio_measurement.program``) once through ``correction_substream``;
+    ``role_channels`` maps each driver role to the program-WAV channel carrying
+    its stimulus (ch0 → woofer, ch1 → tweeter — design §5.4). This graph:
+
+    * routes each program channel to its driver's PHYSICAL output path via a
+      role-routed mixer (:func:`_emit_role_routed_mixer`);
+    * carries the TARGET crossover filter for each driver on its output channel
+      (the LR low-pass for the woofer, the LR high-pass for the tweeter) plus the
+      per-driver soft-clip limiter — the APPLIED_RESPONSE commissioning filter
+      set, reused verbatim so the measured branch is the applied crossover
+      shoulder and every tweeter output stays behind its high-pass;
+    * keeps the software volume ceiling non-positive and stays static (no reload
+      mid-program).
+
+    Two fail-closed gates run before the graph can leave this function: a
+    build-time proof that the tweeter crossover Fc/slope satisfies the declared
+    protective floor (:func:`_assert_tweeter_crossover_hp_satisfies_floor`), and
+    a build-and-prove of the emitted text against ``graph_safety``'s three L0
+    tweeter proofs (:func:`_assert_program_graph_proven`). Like the sibling
+    emitters it does not load or reload CamillaDSP and refuses the stereo outputd
+    lane as a playback device.
+    """
+
+    preset.validate()
+    # W2 scope gate: the conductor's program topology (2 program channels,
+    # woofer/tweeter role routing, the repeat-pair drift estimator) is designed
+    # for a 2-way crossover. A 3-way needs a designed reshape (program channel
+    # count, mid-band MESM schedule, per-region alignment), not a silent
+    # generalization of this emitter.
+    if preset.way_count != 2:
+        raise ActiveSpeakerConfigError(
+            "the crossover-measurement program graph is scoped to 2-way presets; "
+            f"way_count={preset.way_count} requires a designed program reshape"
+        )
+    role_channels = _validate_program_role_channels(preset, role_channels)
+    playback_device = _yaml_string(playback_device, "playback_device")
+    forbidden_token = _forbidden_playback_token(playback_device)
+    if forbidden_token:
+        raise ActiveSpeakerConfigError(
+            "active-speaker templates require an explicit active playback "
+            f"device, not the existing {forbidden_token} lane"
+        )
+    capture_device = _yaml_string(capture_device, "capture_device")
+    capture_format = _yaml_string(capture_format, "capture_format")
+    playback_format = _yaml_string(playback_format, "playback_format")
+    sample_rate = _positive_int(sample_rate, "sample_rate")
+    if chunksize is None:
+        chunksize = resolve_camilla_chunksize()
+    if target_level is None:
+        target_level = resolve_camilla_target_level()
+    chunksize = _positive_int(chunksize, "chunksize")
+    target_level = _positive_int(target_level, "target_level")
+    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
+    limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
+    protective_hp_min_corner_hz = _finite_float(
+        protective_hp_min_corner_hz, "protective_hp_min_corner_hz"
+    )
+    protective_hp_min_slope_db_per_octave = _finite_float(
+        protective_hp_min_slope_db_per_octave,
+        "protective_hp_min_slope_db_per_octave",
+    )
+    if volume_limit_db > 0:
+        raise ActiveSpeakerConfigError("volume_limit_db must not exceed 0 dB")
+    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
+        raise ActiveSpeakerConfigError(
+            "limiter_clip_limit_db must be between -120 and 0 dB"
+        )
+
+    # Build-time proof: the tweeter's crossover HP alone protects it, so its
+    # Fc/slope MUST satisfy the declared protective floor before we emit.
+    _assert_tweeter_crossover_hp_satisfies_floor(
+        preset,
+        min_corner_hz=protective_hp_min_corner_hz,
+        min_slope_db_per_octave=protective_hp_min_slope_db_per_octave,
+    )
+
+    output_count = _output_count(preset)
+    program_channels = 1 + max(role_channels.values())
+    # Every output is audible: a program never mutes a driver (the WAV silences
+    # it by channel), so the per-output commission mask is all-unmuted at 0 dB.
+    # Program headroom is the commissioning headroom (0 dB) so the effective-peak
+    # ledger the session-volume plan / admission share is main_volume + program
+    # peak with no hidden graph attenuation.
+    audible = frozenset(range(output_count))
+    filter_yaml = _emit_commissioning_filter_definitions(
+        preset,
+        startup_headroom_db=COMMISSIONING_HEADROOM_DB,
+        limiter_clip_limit_db=limiter_clip_limit_db,
+        audible_outputs=audible,
+        audible_gain_db=0.0,
+        filter_mode=APPLIED_RESPONSE_FILTER_MODE,
+    )
+    mixer_yaml = _emit_role_routed_mixer(preset, role_channels)
+    pipeline_yaml = _emit_commissioning_pipeline(
+        preset,
+        filter_mode=APPLIED_RESPONSE_FILTER_MODE,
+    )
+    metadata_comments = [
+        f"# preset_id={preset.preset_id}",
+        f"# role_channels={dict(sorted(role_channels.items()))}",
+        f"# program_channels={program_channels}",
+        f"# filter_mode={APPLIED_RESPONSE_FILTER_MODE}",
+    ]
+    if baseline_id:
+        baseline_id = _yaml_string(baseline_id, "baseline_id")
+        metadata_comments.append(f"# baseline_id={baseline_id}")
+    metadata_yaml = "\n".join(metadata_comments)
+
+    yaml = f"""---
+# Auto-generated active-speaker crossover-measurement program config.
+# Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_program_config
+{metadata_yaml}
+# DO NOT HAND-EDIT. Static channel-routed program graph: program capture channel
+# c is routed to every physical output of role role_channels^-1(c), each carrying
+# its TARGET crossover filter + soft-clip limiter. Played once (no reload
+# mid-program) while a 2-channel program WAV sequences the driver stimuli by
+# channel. The software volume ceiling remains non-positive.
+
+devices:
+  samplerate: {sample_rate}
+  chunksize: {chunksize}
+  queuelimit: 4
+  target_level: {target_level}
+  volume_limit: {volume_limit_db!r}
+  enable_rate_adjust: true
+  capture:
+    type: Alsa
+    channels: {program_channels}
+    device: "{capture_device}"
+    format: {capture_format}
+  playback:
+    type: Alsa
+    channels: {output_count}
+    device: "{playback_device}"
+    format: {playback_format}
+
+filters:
+{filter_yaml}
+
+mixers:
+{mixer_yaml}
+
+pipeline:
+{pipeline_yaml}
+"""
+
+    # L0 emit gate (fail-closed): the shared per-output tweeter-protection re-proof.
+    _assert_tweeter_outputs_protected(yaml, preset)
+    # Build-and-prove the program graph's return contract against graph_safety.
+    _assert_program_graph_proven(
+        yaml, preset, min_corner_hz=protective_hp_min_corner_hz
+    )
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        if not out_path.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {out_path.parent}"
+            )
+        _atomic_write_text(out_path, yaml)
+        logger.info(
+            "event=active_speaker_program_config_written "
+            "path=%s preset_id=%s way_count=%d outputs=%d channels=%d",
+            out_path,
+            preset.preset_id,
+            preset.way_count,
+            output_count,
+            program_channels,
+        )
+    return yaml
+
+
 def emit_active_speaker_baseline_config(
     preset: ActiveSpeakerPreset,
     *,
@@ -1488,6 +2181,7 @@ def emit_active_speaker_baseline_config(
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
+    bass_extension_profile: BassExtensionProfile | None = None,
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -1557,6 +2251,7 @@ def emit_active_speaker_baseline_config(
         )
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
+    bass_extension = _bass_extension_emission(preset, bass_extension_profile)
 
     # Drop inactive bands (a near-zero gain rounds to a no-op) exactly like the
     # stereo emitter's build_sound_filters does, so an "all flat" preference
@@ -1575,6 +2270,7 @@ def emit_active_speaker_baseline_config(
         room_peqs=room_peqs,
         preference_filters=active_preference_filters,
         output_trim_db=output_trim_db,
+        bass_extension=bass_extension,
     )
     # apply_region_polarity=False: this graph carries polarity through
     # ``safe_corrections`` (a per-driver Gain filter below), so the mixer must
@@ -1584,6 +2280,7 @@ def emit_active_speaker_baseline_config(
         preset,
         room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
         preference_filter_names=[spec.name for spec in active_preference_filters],
+        bass_extension=bass_extension,
     )
     metadata_comments = [f"# preset_id={preset.preset_id}"]
     if baseline_id:
@@ -1602,14 +2299,14 @@ def emit_active_speaker_baseline_config(
 {metadata_yaml}
 # This is a candidate speaker baseline: crossover filters are active, outputs
 # are not startup-muted, per-driver correction gain is non-positive, and the
-# software volume ceiling remains 0 dB.
+# software volume ceiling remains non-positive.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true
 {capture_yaml}
   playback:
@@ -1633,6 +2330,14 @@ pipeline:
     # its crossover / protective high-pass before it can leave the emitter — a
     # flat/unprotected tweeter baseline is the shrill hot-tweeter hazard.
     _assert_tweeter_outputs_protected(yaml, preset)
+    _assert_bass_extension_safe(yaml, preset, bass_extension)
+    # Reference-closure gate (fail-closed): the durable baseline shares the
+    # same "filters/mixer/pipeline assembled from independent helper calls"
+    # shape the program graph does (see the W6 finding I comment on
+    # _assert_pipeline_references_closed) — cheap enough to run on every
+    # baseline build, and it is what would have caught a dangling mixer/filter
+    # name here before it ever reached a live CamillaDSP load.
+    _assert_pipeline_references_closed(yaml, preset)
 
     if out_path is not None:
         out_path = Path(out_path)
@@ -1669,6 +2374,7 @@ def emit_active_speaker_driver_domain_config(
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
+    bass_extension_profile: BassExtensionProfile | None = None,
 ) -> str:
     """Build a **driver-domain-only** active-speaker graph for a wireless follower.
 
@@ -1749,12 +2455,14 @@ def emit_active_speaker_driver_domain_config(
         )
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
+    bass_extension = _bass_extension_emission(preset, bass_extension_profile)
 
     output_count = _output_count(preset)
     filter_lines = _emit_baseline_driver_definitions(
         preset,
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=safe_corrections,
+        bass_extension=bass_extension,
     )
     filter_lines.extend(emit_gain_filter("pair_balance_trim", -pair_trim_db))
     filter_yaml = "\n".join(filter_lines)
@@ -1767,7 +2475,9 @@ def emit_active_speaker_driver_domain_config(
         _emit_split_mixer(preset, apply_region_polarity=False),
     ))
     pipeline_yaml = _emit_driver_domain_pipeline(
-        preset, pair_trim_db=pair_trim_db,
+        preset,
+        pair_trim_db=pair_trim_db,
+        bass_extension=bass_extension,
     )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
@@ -1788,14 +2498,14 @@ def emit_active_speaker_driver_domain_config(
 # runs the per-driver crossover/limiter chain. There is no program-domain
 # headroom or preference EQ (the leader baked Layer B/C); outputs are not
 # startup-muted, per-driver correction gain is non-positive, and the software
-# volume ceiling remains 0 dB.
+# volume ceiling remains non-positive.
 
 devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
+  volume_limit: {volume_limit_db!r}
   enable_rate_adjust: true
   capture:
     type: Alsa
@@ -1823,6 +2533,7 @@ pipeline:
     # must still carry the crossover / protective high-pass — re-prove it before
     # the graph leaves the emitter.
     _assert_tweeter_outputs_protected(yaml, preset)
+    _assert_bass_extension_safe(yaml, preset, bass_extension)
 
     if out_path is not None:
         out_path = Path(out_path)

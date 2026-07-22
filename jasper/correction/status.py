@@ -17,7 +17,10 @@ _CORRECTION_FILENAME_RE = re.compile(
 _MEASUREMENT_FILENAME_RE = re.compile(
     r"^correction_measurement_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
 )
-_SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
+_SOUND_FILENAME_RE = re.compile(
+    r"^sound_(?:current|audition|snapshot_[A-Za-z0-9]+_\d+"
+    r"|reset_[A-Za-z0-9]+_\d+)\.yml$"
+)
 _ACTIVE_SPEAKER_FILENAME_RE = re.compile(r"^active_speaker_.*\.yml$")
 _PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
 
@@ -49,6 +52,48 @@ def parse_current_correction(
     descriptor = describe_current_config(path, config_dir=config_dir)
     correction = descriptor.get("current_correction")
     return correction if isinstance(correction, dict) else None
+
+
+def current_correction_presentation(
+    descriptor: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the homeowner banner contract for one config descriptor.
+
+    The browser may localize the timestamp, but the server owns the sentence,
+    tone, and reset authority. Keeping this beside ``describe_current_config``
+    prevents presentation copy from drifting away from config classification.
+    """
+
+    correction = descriptor.get("current_correction")
+    if isinstance(correction, dict) and correction.get("applied_at_epoch"):
+        try:
+            count = max(0, int(correction.get("peq_count") or 0))
+            applied_at_epoch = int(correction["applied_at_epoch"])
+        except (TypeError, ValueError):
+            count = 0
+            applied_at_epoch = 0
+        noun = "adjustment" if count == 1 else "adjustments"
+        return {
+            "tone": "applied",
+            "message_template": (
+                f"Room correction on — {count} {noun} applied {{applied_at}}"
+            ),
+            "applied_at_epoch": applied_at_epoch,
+            "reset_allowed": True,
+        }
+
+    kind = str(descriptor.get("kind") or "unknown")
+    message = str(
+        descriptor.get("message")
+        or descriptor.get("label")
+        or "The current correction could not be described."
+    )
+    return {
+        "tone": "custom" if kind in {"custom", "unknown"} else "flat",
+        "message_template": message,
+        "applied_at_epoch": None,
+        "reset_allowed": kind == "custom",
+    }
 
 
 def describe_current_config(
@@ -306,6 +351,9 @@ def session_snapshot(session: Any) -> dict[str, Any]:
         "correction_strategy": _correction_strategy_payload(session),
         "input_device": session.input_device,
         "capture_transport": getattr(session, "capture_transport", "local"),
+        "local_capture_setup_bound": bool(
+            getattr(session, "local_capture_setup_bound", False)
+        ),
         "mic_calibration": _mic_calibration_payload(session),
         "browser_audio_report": session.browser_audio_report,
         # Point-in-time copies: these containers can mutate while a

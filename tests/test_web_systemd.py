@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 import time
 from http.server import BaseHTTPRequestHandler
 
@@ -174,6 +175,94 @@ def test_install_request_idle_bump_patches_log_request() -> None:
     h.log_request(200, 12)
     assert tracker._last_request > t0
     assert bumps_before == 1  # original was called
+
+
+def test_long_inflight_request_cannot_trigger_idle_exit() -> None:
+    """A legal slow POST remains active beyond the ordinary idle threshold."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _H:
+        def parse_request(self) -> bool:
+            return True
+
+        def handle_one_request(self) -> None:
+            assert self.parse_request()
+            entered.set()
+            assert release.wait(timeout=2)
+
+        def log_request(self, code="-", size="-") -> None:
+            pass
+
+    tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
+    _systemd.install_request_idle_bump(_H, tracker)
+    handler = _H()
+    worker = threading.Thread(target=handler.handle_one_request)
+    worker.start()
+    assert entered.wait(timeout=1)
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 10
+    expired, _idle, active = tracker._idle_status()
+    assert active == 1
+    assert expired is False
+
+    release.set()
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    with tracker._lock:
+        tracker._last_request = time.monotonic() - 10
+    expired, _idle, active = tracker._idle_status()
+    assert active == 0
+    assert expired is True
+
+
+def test_idle_exit_hook_runs_before_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """on_idle_exit runs once, before os._exit; a failing hook never blocks exit.
+
+    correction-web hangs its abandoned-capture production restore on this hook
+    (the user closed the tab; idle shutdown is the daemon's last in-process
+    chance to converge the speaker off the all-muted staged anchor).
+    """
+
+    class _Exit(Exception):
+        pass
+
+    events: list[str] = []
+    monkeypatch.setattr(_systemd, "notify_watchdog", lambda: None)
+    monkeypatch.setattr(
+        _systemd, "notify_stopping", lambda: events.append("stopping")
+    )
+    monkeypatch.setattr(
+        _systemd.os,
+        "_exit",
+        lambda _code: (_ for _ in ()).throw(_Exit()),
+    )
+
+    tracker = _systemd.IdleShutdownTracker(
+        idle_threshold_sec=0.0,
+        watchdog_period_sec=0.001,
+        on_idle_exit=lambda: events.append("hook"),
+    )
+    with pytest.raises(_Exit):
+        tracker._run()
+    assert events == ["hook", "stopping"]
+
+    # A raising hook must not block the exit (the process is going away).
+    def broken_hook() -> None:
+        events.append("broken-hook")
+        raise RuntimeError("hook blew up")
+
+    events.clear()
+    tracker_broken = _systemd.IdleShutdownTracker(
+        idle_threshold_sec=0.0,
+        watchdog_period_sec=0.001,
+        on_idle_exit=broken_hook,
+    )
+    with pytest.raises(_Exit):
+        tracker_broken._run()
+    assert events == ["broken-hook", "stopping"]
 
 
 def test_notify_with_no_socket_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:

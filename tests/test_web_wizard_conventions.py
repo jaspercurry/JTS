@@ -791,6 +791,75 @@ def test_wizard_python_strings_do_not_inline_dialog_helper_calls():
     )
 
 
+# app.css's only hiding rule is the native ATTRIBUTE selector,
+# `[hidden] { display: none !important; }` — there is no `.hidden` CLASS
+# rule in the shared stylesheet. A page that hides an element with
+# `class="... hidden ..."` or `classList.add('hidden')` instead of the
+# `hidden` attribute renders the control fully visible; app.css never wires
+# a class named "hidden" to anything. This shipped invisibly on the
+# crossover page (hardware-confirmed 2026-07-16): the retired "Open phone
+# capture" / "Stop measurement" controls stayed on screen on every step
+# because crossover.css carries no local `.hidden` rule either. The one
+# legitimate exception is the room measurement page, which DOES define its
+# own local `.hidden` rule in its page CSS — every other page must use the
+# attribute, which is the only mechanism the shared stylesheet implements.
+_LEGACY_HIDDEN_CLASS_PAGES = {
+    "jasper/web/correction_setup.py": "deploy/assets/correction/correction.css",
+    "deploy/assets/correction/js/main.js": "deploy/assets/correction/correction.css",
+}
+_HIDDEN_CLASSLIST_RE = re.compile(
+    r"classList\.(?:add|remove|toggle)\(\s*['\"]hidden['\"]"
+)
+_CLASS_ATTR_RE = re.compile(r"""class=(["'])(.*?)\1""")
+
+
+def test_legacy_hidden_class_pages_still_carry_their_local_rule():
+    """The allowlist above is only honest while its pages truly own a
+    `.hidden` rule — if that rule is ever removed, the page must move to
+    the native attribute (and its entry must come out of the allowlist)."""
+    for page, css_path in _LEGACY_HIDDEN_CLASS_PAGES.items():
+        css = Path(css_path).read_text()
+        assert re.search(r"\.hidden\b", css), (
+            f"{page} is allowlisted as having a local `.hidden` rule in "
+            f"{css_path}, but that rule is gone — convert {page} to the "
+            "native `hidden` attribute and drop it from "
+            "_LEGACY_HIDDEN_CLASS_PAGES"
+        )
+
+
+def test_static_modules_hide_elements_with_the_attribute_not_a_class():
+    assert WEB_MODULE_FILES, "expected web ES modules to scan"
+    offenders = []
+    for path in WEB_MODULE_FILES:
+        if str(path) in _LEGACY_HIDDEN_CLASS_PAGES:
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if _HIDDEN_CLASSLIST_RE.search(line):
+                offenders.append(f"{path}:{lineno}: {line.strip()}")
+    assert offenders == [], (
+        "classList('hidden') with no local `.hidden` CSS rule for this page "
+        "— app.css only implements the native `hidden` attribute; use "
+        "`el.hidden = true/false` instead:\n" + "\n".join(offenders)
+    )
+
+
+def test_wizard_markup_hides_elements_with_the_attribute_not_a_class():
+    offenders = []
+    for path in WEB_PY_FILES:
+        if str(path) in _LEGACY_HIDDEN_CLASS_PAGES:
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            for _quote, class_value in _CLASS_ATTR_RE.findall(line):
+                if "hidden" in class_value.split():
+                    offenders.append(f"{path}:{lineno}: {line.strip()}")
+                    break
+    assert offenders == [], (
+        'class="...hidden..." with no local `.hidden` CSS rule for this '
+        "page — app.css only implements the native `hidden` attribute; "
+        "render a bare `hidden` attribute instead:\n" + "\n".join(offenders)
+    )
+
+
 # The HTML-entity escaper (the five-char & < > " ' table) was copied across the
 # wifi/bluetooth/dial/sound-profile/correction modules under two names
 # (escapeHtml / escapeText) before it was promoted to the shared module at

@@ -24,9 +24,8 @@ jasper-resampler = { path = "../jasper-resampler" }
 # JASPER_FANIN_CAMILLA_COUPLING=shm_ring) uses its production RingWriter as the
 # Output::Ring publish half; CamillaDSP reads it via a capture-direction ioplug.
 jasper-ring = { path = "../jasper-ring" }
-# The shared host-slaved USB clock ladder + servo + ALSA pitch actuator (the
-# same crate jasper-usbsink-audio consumes for solo mode). In combo mode
-# (JASPER_FANIN_USB_DIRECT=enabled) fan-in owns the gadget capture, so the
+# The shared host-slaved USB clock ladder + servo + ALSA pitch actuator. When
+# JASPER_FANIN_USB_DIRECT=enabled fan-in owns the gadget capture, so the
 # `fanin-host-clock` thread drives this to steer the host's Capture Pitch ctl
 # toward the DAC clock. The `alsa` feature enables the real `AlsaPitchCtl`;
 # fan-in always links libasound so it is enabled unconditionally here. Default

@@ -146,7 +146,7 @@ def notify_watchdog() -> None:
 
 
 class IdleShutdownTracker:
-    """Tracks last-request timestamp; exits the process after idle.
+    """Tracks completed activity and exits only when no request is in flight.
 
     Usage::
 
@@ -155,10 +155,11 @@ class IdleShutdownTracker:
         tracker.start()
         # ... server.serve_forever()
 
-    Every request calls handler.log_request() (stdlib http.server
-    invokes it after sending the response), which bumps the
-    timestamp. The background thread polls every WATCHDOG_NOTIFY_SEC,
-    sends WATCHDOG=1, and `os._exit(0)`'s when idle exceeds threshold.
+    The installed handler hooks mark a parsed request active before dispatch
+    and inactive in ``handle_one_request``'s ``finally`` block. ``log_request``
+    also bumps the timestamp for every response. The background thread polls
+    every WATCHDOG_NOTIFY_SEC, sends WATCHDOG=1, and `os._exit(0)`'s only when
+    no request is active and completed activity exceeds the threshold.
 
     `os._exit` rather than `sys.exit` because the latter raises
     SystemExit which serve_forever() catches and resumes. We need
@@ -169,12 +170,20 @@ class IdleShutdownTracker:
         self,
         idle_threshold_sec: float = DEFAULT_IDLE_SHUTDOWN_SEC,
         watchdog_period_sec: float = DEFAULT_WATCHDOG_NOTIFY_SEC,
+        on_idle_exit=None,
     ) -> None:
         self._lock = threading.Lock()
         self._last_request = time.monotonic()
+        self._active_requests = 0
         self._idle_threshold = idle_threshold_sec
         self._watchdog_period = watchdog_period_sec
         self._stopped = False
+        # Optional zero-arg callable run once, exception-guarded, after the
+        # idle decision and before os._exit — the wizard's last in-process
+        # chance to converge state it left mid-flow (e.g. correction-web's
+        # abandoned-capture production restore). Keep hooks bounded: the
+        # process is exiting and a slow hook delays the socket rearm.
+        self._on_idle_exit = on_idle_exit
         self._thread = threading.Thread(
             target=self._run, name="jasper-web-idle", daemon=True,
         )
@@ -189,6 +198,25 @@ class IdleShutdownTracker:
         with self._lock:
             self._last_request = time.monotonic()
 
+    def request_started(self) -> None:
+        """Mark one parsed request active before its route handler runs."""
+        with self._lock:
+            self._active_requests += 1
+            self._last_request = time.monotonic()
+
+    def request_finished(self) -> None:
+        """Release one active request and begin a fresh idle interval."""
+        with self._lock:
+            self._active_requests = max(0, self._active_requests - 1)
+            self._last_request = time.monotonic()
+
+    def _idle_status(self) -> tuple[bool, float, int]:
+        """Return ``(expired, idle_seconds, active_requests)`` atomically."""
+        with self._lock:
+            active = self._active_requests
+            idle = time.monotonic() - self._last_request
+        return active == 0 and idle >= self._idle_threshold, idle, active
+
     def stop(self) -> None:
         """Stop the timer without exiting. For tests."""
         self._stopped = True
@@ -200,27 +228,60 @@ class IdleShutdownTracker:
             if self._stopped:
                 return
             notify_watchdog()
-            with self._lock:
-                idle = time.monotonic() - self._last_request
-            if idle >= self._idle_threshold:
+            expired, idle, _active = self._idle_status()
+            if expired:
                 log.info(
                     "systemd idle-exit: no requests for %.0fs (threshold %.0fs)",
                     idle, self._idle_threshold,
                 )
+                if self._on_idle_exit is not None:
+                    # Same specific tuple the service-start claim boundary
+                    # catches around this hook's restore (correction_setup):
+                    # _run_async timeouts are TimeoutError (an OSError), and
+                    # CamillaUnavailable is a RuntimeError. Hooks are expected
+                    # to be fail-soft themselves; os._exit below still runs.
+                    try:
+                        self._on_idle_exit()
+                    except (OSError, RuntimeError, ValueError):
+                        log.exception("idle-exit hook failed; exiting anyway")
                 notify_stopping()
                 # os._exit, not sys.exit — see class docstring.
                 os._exit(0)
 
 
 def install_request_idle_bump(handler_cls, tracker: IdleShutdownTracker) -> None:
-    """Patch handler_cls.log_request to bump the idle tracker on every
-    response. stdlib http.server's BaseHTTPRequestHandler calls
-    log_request() in send_response() — so any request that returned
-    a status counts as activity (404s and 500s included)."""
-    original = handler_cls.log_request
+    """Track parsed requests from dispatch start through handler completion.
+
+    ``BaseHTTPRequestHandler`` calls ``parse_request`` only after it has read a
+    request line, so an idle keep-alive connection does not count as active.
+    The ``handle_one_request`` finally hook covers exceptions and responses
+    that never reach ``send_response``. ``log_request`` retains the historical
+    activity bump for every emitted status, including 404 and 500.
+    """
+    original_log_request = handler_cls.log_request
+    original_parse_request = handler_cls.parse_request
+    original_handle_one_request = handler_cls.handle_one_request
+    marker = "_jts_idle_request_active"
 
     def log_and_bump(self, code="-", size="-"):
         tracker.bump()
-        return original(self, code, size)
+        return original_log_request(self, code, size)
+
+    def parse_and_track(self):
+        parsed = original_parse_request(self)
+        if parsed:
+            tracker.request_started()
+            setattr(self, marker, True)
+        return parsed
+
+    def handle_and_release(self):
+        try:
+            return original_handle_one_request(self)
+        finally:
+            if getattr(self, marker, False):
+                setattr(self, marker, False)
+                tracker.request_finished()
 
     handler_cls.log_request = log_and_bump
+    handler_cls.parse_request = parse_and_track
+    handler_cls.handle_one_request = handle_and_release

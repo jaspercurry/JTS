@@ -1027,22 +1027,23 @@ def _read_status_socket(socket_path: str) -> dict[str, object]:
     return parsed
 
 
-def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
+def _route_live_state_issues_for_doctor(
+    plan: object,
+    *,
+    negotiated_buffer_frames: int | None = None,
+) -> tuple[str, ...]:
     from jasper.audio_validation import route_live_state_issues
 
     identity = plan.route_latency_identity()
+    if negotiated_buffer_frames is not None:
+        direct = identity.get("fanin_direct_config")
+        if isinstance(direct, dict):
+            identity["fanin_direct_config"] = {
+                **direct,
+                "negotiated_buffer_frames": negotiated_buffer_frames,
+            }
     issues: list[str] = []
-    usbsink_state: dict[str, object] | None = None
     fanin_status: dict[str, object] | None = None
-
-    try:
-        parsed = json.loads(Path("/run/jasper-usbsink/state.json").read_text())
-        if isinstance(parsed, dict):
-            usbsink_state = parsed
-        else:
-            issues.append("live_usbsink_state_malformed")
-    except (OSError, json.JSONDecodeError) as e:
-        issues.append(f"live_usbsink_state_unreadable:{type(e).__name__}")
 
     try:
         fanin_status = _read_status_socket(_FANIN_STATUS_SOCKET)
@@ -1055,7 +1056,6 @@ def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
                 *issues,
                 *route_live_state_issues(
                     identity,
-                    usbsink_state=usbsink_state,
                     fanin_status=fanin_status,
                     # A valid promotion artifact certifies the installed route,
                     # not a promise that an idle USB host keeps the activity-
@@ -1064,7 +1064,7 @@ def _route_live_state_issues_for_doctor(plan: object) -> tuple[str, ...]:
                     # classifier; the shared helper remains fail-closed unless
                     # that field says exactly "idle". The artifact writer does
                     # not opt in and therefore stays strict mid-stream.
-                    allow_idle_resampler_unlocked=True,
+                    allow_idle_direct_lane=True,
                 ),
             )
         )
@@ -1550,6 +1550,100 @@ def check_fanin_service() -> CheckResult:
         f"{tts_detail}",
     )
 
+
+def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
+    """Classify fan-in's additive host-clock state without touching hardware."""
+    label = "USB host clock"
+    host_clock = data.get("host_clock")
+    if not isinstance(host_clock, dict):
+        return CheckResult(
+            label,
+            "warn",
+            "fan-in STATUS has no host_clock object; deploy current jasper-fanin",
+        )
+    if host_clock.get("enabled") is not True:
+        return CheckResult(label, "ok", "disabled (no host-clock health claim)")
+
+    ladder = str(host_clock.get("ladder") or "unknown")
+    reason_value = host_clock.get("fallback_reason")
+    reason = str(reason_value) if reason_value is not None else "none"
+    actuator = host_clock.get("actuator")
+    probe = host_clock.get("probe")
+    if not isinstance(actuator, dict):
+        return CheckResult(label, "warn", "enabled but actuator telemetry is missing")
+    if not isinstance(probe, dict):
+        return CheckResult(label, "warn", "enabled but probe telemetry is missing")
+
+    ready = actuator.get("ready") is True
+    capture_generation = actuator.get("capture_generation")
+    control_generation = actuator.get("control_generation")
+    generations_match = (
+        isinstance(capture_generation, int)
+        and capture_generation > 0
+        and control_generation == capture_generation
+    )
+    counters = (
+        f"refreshes={actuator.get('refreshes', '?')}, "
+        f"open_failures={actuator.get('open_failures', '?')}, "
+        f"write_failures={actuator.get('write_failures', '?')}"
+    )
+
+    if not ready or not generations_match:
+        return CheckResult(
+            label,
+            "warn",
+            f"actuator unavailable/mismatched: ladder={ladder}, "
+            f"fallback_reason={reason}, capture_generation={capture_generation}, "
+            f"control_generation={control_generation}, ready={ready}; {counters}. "
+            "Audio remains on the direct resampler fallback; check "
+            "`journalctl -u jasper-fanin | grep host_clock_control` and the UAC2 gadget.",
+        )
+
+    if ladder == "l2_fallback":
+        return CheckResult(
+            label,
+            "warn",
+            f"persistent L2 fallback: fallback_reason={reason}, "
+            f"capture_generation={capture_generation}, control_generation={control_generation}; "
+            f"{counters}. Stop/start creates a new session; a gadget generation "
+            "change self-heals automatically.",
+        )
+
+    phase = probe.get("phase")
+    attempt = probe.get("attempt")
+    max_attempts = probe.get("max_attempts")
+    if ladder == "probing":
+        # Await-lock, baseline, step, and the single retry wait are expected,
+        # bounded acquisition states—not permanent doctor failures.
+        return CheckResult(
+            label,
+            "ok",
+            f"recovering: phase={phase}, attempt={attempt}/{max_attempts}, "
+            f"generations={capture_generation}/{control_generation}; {counters}",
+        )
+
+    return CheckResult(
+        label,
+        "ok",
+        f"ladder={ladder}, generations={capture_generation}/{control_generation}, "
+        f"probe_final={probe.get('final_result')}, retries={probe.get('retries')}; {counters}",
+    )
+
+
+@doctor_check(order=51.52, group="audio")
+def check_fanin_host_clock() -> CheckResult:
+    """Report persistent USB host-clock recovery/fallback with exact cause."""
+    try:
+        data = _read_status_socket(_FANIN_STATUS_SOCKET)
+    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
+        # Reachability belongs to the preceding mandatory fan-in service check.
+        return CheckResult(
+            "USB host clock",
+            "ok",
+            f"not probed ({type(e).__name__}); see jasper-fanin service check",
+        )
+    return _host_clock_health_from_status(data)
+
 @doctor_check(order=51.5, group="audio")
 def check_fanin_tts_drops() -> CheckResult:
     """Dropped TTS audio at fan-in's pending budget means garbled replies.
@@ -1751,7 +1845,24 @@ def check_route_latency_evidence() -> CheckResult:
     )
     status = str(summary.get("status") or "fail")
     if status in {"pass", "warn"}:
-        live_issues = _route_live_state_issues_for_doctor(plan)
+        negotiated_buffer_frames: int | None = None
+        if result.artifact is not None:
+            artifact_identity = result.artifact.checks.get("identity")
+            if isinstance(artifact_identity, dict):
+                raw_buffer = artifact_identity.get(
+                    "fanin_direct_negotiated_buffer_frames"
+                )
+                if not isinstance(raw_buffer, bool):
+                    try:
+                        parsed_buffer = int(raw_buffer)
+                    except (TypeError, ValueError):
+                        parsed_buffer = 0
+                    if parsed_buffer > 0:
+                        negotiated_buffer_frames = parsed_buffer
+        live_issues = _route_live_state_issues_for_doctor(
+            plan,
+            negotiated_buffer_frames=negotiated_buffer_frames,
+        )
         if live_issues:
             status = "fail"
             detail += f", live_issues={list(live_issues)}"
@@ -2977,10 +3088,9 @@ def check_camilla_volume_limit() -> CheckResult:
 def check_active_speaker_runtime_graph() -> CheckResult:
     """Fail closed if a roleful/protected topology is running flat stereo."""
     from jasper.active_speaker.runtime_contract import (
-        classify_camilla_graph,
+        classify_bass_extension_graph,
         classify_output_contract,
     )
-    from jasper.active_speaker.staging import load_staged_startup_config
     from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
     try:
@@ -3016,10 +3126,19 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             "fail",
             f"statefile points at missing config {config_path}",
         )
-    graph = classify_camilla_graph(
-        path,
+    from ...active_speaker.baseline_profile import baseline_profile_state_path
+    from ...active_speaker.staging import staged_metadata_path
+    from ...bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from ...bass_extension.profile import DEFAULT_PROFILE_PATH
+
+    graph = classify_bass_extension_graph(
         topology,
-        staged_config=load_staged_startup_config(),
+        evidence_source="persisted_boot",
+        statefile_path=Path(statefile),
+        applied_baseline_path=baseline_profile_state_path(),
+        profile_path=DEFAULT_PROFILE_PATH,
+        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+        staged_metadata_path=staged_metadata_path(),
     )
     if graph.allowed:
         return CheckResult(
@@ -3089,6 +3208,46 @@ def check_sound_profile() -> CheckResult:
         f"output_trim={trim:.1f}dB{drift}"
     )
     return CheckResult("sound profile", status, detail)
+
+@doctor_check(order=30.5, group="audio")
+def check_bass_extension_profile() -> CheckResult:
+    from jasper.active_speaker.baseline_profile import (
+        load_applied_baseline_profile_state,
+    )
+    from jasper.bass_extension.profile import evaluate_bass_extension_profile
+    from jasper.output_topology import load_output_topology
+
+    evaluation = evaluate_bass_extension_profile(
+        topology=load_output_topology(),
+        applied_baseline_state=load_applied_baseline_profile_state(),
+    )
+    if evaluation.status == "missing":
+        return CheckResult(
+            "bass extension profile", "ok", "bass extension: not commissioned"
+        )
+    if evaluation.status == "malformed":
+        return CheckResult(
+            "bass extension profile",
+            "fail",
+            f"bass extension profile is malformed: {evaluation.detail}",
+        )
+    if evaluation.status == "stale":
+        return CheckResult(
+            "bass extension profile",
+            "warn",
+            f"bass extension profile is stale: {evaluation.detail}",
+        )
+    if evaluation.status == "bypassed":
+        return CheckResult(
+            "bass extension profile", "ok", "bass extension profile is bypassed"
+        )
+    assert evaluation.profile is not None
+    return CheckResult(
+        "bass extension profile",
+        "ok",
+        f"accepted; deepest={evaluation.profile.targets[0].fp_hz:g}Hz "
+        f"natural={evaluation.profile.targets[-1].fp_hz:g}Hz",
+    )
 
 @doctor_check(order=31, group="audio")
 def check_dsp_apply_state() -> CheckResult:

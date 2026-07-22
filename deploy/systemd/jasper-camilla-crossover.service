@@ -83,8 +83,8 @@ OOMScoreAdjust=-500
 # [Install] present but the unit is not globally enabled by install. This
 # mirrors the established reconciler/wizard-gated pattern in this repo:
 # jasper-aec-bridge.service (enabled by jasper-aec-reconcile, not
-# install.sh) and jasper-usbsink.service (enabled by the /sources/
-# wizard) both keep WantedBy=multi-user.target yet ship disabled. A
+# install.sh) and jasper-usbsink.service (derived by the source coordinator
+# from the /sources/ choice) both keep WantedBy=multi-user.target yet ship disabled. A
 # grouping reconciler uses `systemctl enable --now` only while the box is a
 # bonded active leader and disables the unit on unbond. WantedBy here arms it
 # only after that explicit reconcile decision.

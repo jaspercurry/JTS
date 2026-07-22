@@ -7,7 +7,7 @@ them, and the host/bench setup to reproduce it. For the *design* narrative
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) — this doc links to it
 rather than restating it.
 
-`Last verified: 2026-07-11` (§1 gained the 2026-07-11 certified promotion
+Verification history through 2026-07-11 (§1 gained the certified promotion
 result — p50 36.35 / p95 37.93 / p99 38.29 ms, 1094 impulses — as current
 truth, and the cert budget was tightened to p95<=40ms/p99<=42ms in
 `jasper/audio_runtime_plan.py`; §7's "aspirational ~40 ms gated on leads"
@@ -318,7 +318,9 @@ ssh pi@jts.local 'G=/sys/kernel/config/usb_gadget/jts-usb-audio; U=$(ls /sys/cla
 ```
 
 **Source selection sanity check** — combo-aware mux builds promote USB in auto
-mode when fan-in's direct-lane `resampler.input_frames` advances. Before
+mode from fan-in's 20 Hz frame-flow edge (`direct.streaming:true` +
+`NOTIFY usbsink`), with advancing `resampler.input_frames` as the rolling-upgrade
+fallback. Before
 measuring, confirm `/source/state` shows `active_source: "usbsink"`. On an
 older pre-fix build, or if you need to force the measurement lane explicitly:
 ```sh
@@ -365,13 +367,15 @@ floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
 - **`WARMUP_CUSHION_FRAMES`** on jts.local is `1536`; the code default is `2048`.
   This affects only the cold-start descent shape, not the steady-state floor or
   the measured numbers above.
-- **Combo auto-selection fixed in current code**: in combo mode `jasper-mux`
-  treats USB as live when fan-in's direct-lane `resampler.input_frames` advances
-  across ticks, with lane-level `frames_read` as a fallback for older snapshots.
+- **Combo auto-selection fixed in current code**: in combo mode `jasper-fanin`
+  derives `direct.streaming` from its host-input counter every 50 ms and wakes
+  mux on each edge. Mux retains cross-patrol `resampler.input_frames` deltas,
+  with lane-level `frames_read` as a fallback for older snapshots.
   If auto mode fails to promote USB, capture `/source/state` plus fan-in
   `STATUS` before forcing `/source/select`; the expected shape is
   `/source/state.usbsink.combo: true` and an advancing
-  `inputs[label=usbsink].resampler.input_frames`.
+  `inputs[label=usbsink].resampler.input_frames` plus
+  `inputs[label=usbsink].direct.streaming: true` on current builds.
 
 ---
 
@@ -483,18 +487,11 @@ they're queued:
   first Windows validation session (below) forces feedback-endpoint work
   anyway (`usbaudio2.sys` is feedback-driven) — do both in one design pass
   rather than twice.
-- **Retire `jasper-usbsink-audio`'s duplicated state surface.** The
-  standby-only bridge still publishes a `state.json` whose `playing` /
-  `rms_dbfs` are frozen idle values (see AGENTS.md's USB Audio Input
-  section); live USB truth already comes from fan-in STATUS
-  (`usbsink_direct_frames_read` / `usbsink_direct_rms_dbfs`). Deriving
-  `/state.renderers.usbsink` fully from fan-in + sysfs `host_connected`, and
-  dropping the coupling reconciler's self-described "possibly droppable"
-  standby-env restart of the bridge (`_restart_usbsink` in
-  `jasper/fanin/coupling_reconcile.py`), would leave one USB state surface
-  instead of two. **Pickup trigger:** ride along the next time `/state`, the
-  `/sources/` wizard, or a doctor usbsink check is touched anyway — not
-  standalone urgency.
+- **Retired 2026-07-14: duplicated USB bridge/state surface.** The Rust helper
+  crate/binary and its frozen `state.json` are gone. `/state.renderers.usbsink`
+  now derives activity/level/mute from the identity-bound fan-in DIRECT lane and
+  `host_connected` from kernel UDC sysfs. `jasper-usbsink.service` remains only
+  as a process-free readiness/lifecycle marker.
 
 ### Rejected paths (do not re-chase)
 
@@ -561,7 +558,9 @@ conditions"; that section is the single source of truth, this is a pointer.
 
 ---
 
-Last verified: 2026-07-11 (§1 gained the 2026-07-11 certified promotion result
+Last verified: 2026-07-14 (the duplicated USB bridge/state retirement is marked
+complete and rechecked against fan-in STATUS + UDC sysfs ownership. Prior
+2026-07-11: §1 gained the certified promotion result
 as current truth and the cert budget was tightened to p95<=40ms/p99<=42ms in
 `jasper/audio_runtime_plan.py`; §7's aspirational-~40ms framing rewritten to
 "met at the electrical plane". Re-verified against `jasper/audio_runtime_plan.py`

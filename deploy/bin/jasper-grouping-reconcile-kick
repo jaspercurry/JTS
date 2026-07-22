@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+unit="jasper-grouping-reconcile.service"
+drain_timeout="2536s"
+
+# Never interrupt the ordered grouping/source transaction. The blocking start
+# either runs or joins the current pass; the second start then guarantees one
+# fresh pass that reads the newest grouping.env. Concurrent helpers coalesce in
+# systemd, so a burst produces bounded passes rather than parallel reconcilers.
+set +e
+systemctl reset-failed "${unit}"
+reset_rc=$?
+timeout "${drain_timeout}" systemctl start "${unit}"
+drain_rc=$?
+systemctl --no-block start "${unit}"
+queue_rc=$?
+set -e
+
+if (( reset_rc != 0 )); then
+    logger -p daemon.warning -t jasper-grouping-reconcile-kick \
+        "event=grouping.reconcile_kick_reset_failed rc=${reset_rc}"
+fi
+if (( drain_rc != 0 )); then
+    logger -p daemon.warning -t jasper-grouping-reconcile-kick \
+        "event=grouping.reconcile_kick_drain_failed rc=${drain_rc}"
+fi
+if (( queue_rc != 0 )); then
+    logger -p daemon.err -t jasper-grouping-reconcile-kick \
+        "event=grouping.reconcile_kick_queue_failed rc=${queue_rc}"
+fi
+exit "${queue_rc}"

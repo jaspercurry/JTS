@@ -115,10 +115,26 @@ export function collapsible({ title, open = true, body }) {
   return root;
 }
 
-// Sticky page header: back affordance + centred title. Uses the shared icon
-// sprite (#icon-back) that canonical_page() emits into the document.
-export function header({ title = "System", backHref = "/" } = {}) {
-  return h("header.app-header", null,
+// Sticky page header: back affordance + centred title plus the shared
+// System/Audio status navigation. Real links preserve direct URLs and modified
+// clicks; main.js intercepts ordinary clicks so changing
+// views is as smooth as Sound's same-document segmented control.
+export function header({
+  title = "Status", backHref = "/", activeView = "system", onViewClick,
+} = {}) {
+  const viewLink = (id, label, href) => h("a.segmented__btn", {
+    href,
+    "attr:aria-current": activeView === id ? "page" : null,
+    onclick: (event) => onViewClick && onViewClick(id, event),
+  }, label);
+  const links = {
+    system: viewLink("system", "System", "/system/"),
+    audio: viewLink("audio", "Audio", "/system/audio/"),
+  };
+  const announcement = h("p.sr-only", {
+    "attr:role": "status", "attr:aria-live": "polite",
+  });
+  const el = h("header.app-header", null,
     h("div.app-header__row", null,
       h("a.icon-button", { href: backHref, "attr:aria-label": "Home" },
         svg("svg.ico", { "aria-hidden": "true" },
@@ -126,7 +142,26 @@ export function header({ title = "System", backHref = "/" } = {}) {
       h("h1.app-header__title", null, title),
       h("span"),
     ),
+    h("div.app-header__tabs", null,
+      h("div", null,
+        h("nav.segmented", { "attr:aria-label": "Status views" },
+          links.system,
+          links.audio,
+        ),
+      ),
+    ),
+    announcement,
   );
+  return {
+    el,
+    setActive(view, { announce = false } = {}) {
+      Object.entries(links).forEach(([id, link]) => {
+        if (id === view) link.setAttribute("aria-current", "page");
+        else link.removeAttribute("aria-current");
+      });
+      if (announce) announcement.textContent = `${view === "audio" ? "Audio" : "System"} view selected`;
+    },
+  };
 }
 
 // Pulsing "Live · …" indicator. Returns the element plus its label node so
@@ -138,4 +173,24 @@ export function livePill(initial = "Loading…") {
     label,
   );
   return { el, label };
+}
+
+// Refresh one poll-driven section without letting a malformed optional block
+// blank the page. The JSON memo avoids DOM churn (and preserves text
+// selection) when a slice is unchanged. Both Status views use this seam.
+export function renderSection(refs, key, container, data, build) {
+  let json = null;
+  try { json = JSON.stringify(data); } catch { /* unserialisable -> always render */ }
+  if (json === undefined) json = null;
+  if (json !== null && refs._memo[key] === json) return;
+  try {
+    const out = build();
+    container.replaceChildren(...(Array.isArray(out) ? out : [out]));
+    refs._memo[key] = json;
+  } catch (e) {
+    console.error(`status: rendering section '${key}' failed`, e);
+    refs._memo[key] = null;
+    container.replaceChildren(
+      h("p.info-card__note", null, "Couldn't render this section — see the console."));
+  }
 }

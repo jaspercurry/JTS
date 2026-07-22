@@ -3,11 +3,11 @@
 #
 # Writing to ConfigFS/UDC returns before the kernel finishes
 # registering the ALSA card — typically <500 ms on a Pi 5, but with
-# enough jitter that jasper-usbsink can race the card's existence and
-# fail to open the capture device. Runs as jasper-usbsink.service's
-# ExecStartPre so the audio bridge blocks until ALSA is genuinely ready.
+# enough jitter that fan-in can race the card's existence and fail to open its
+# direct capture device. Runs as jasper-usbsink.service's ExecStartPre so the
+# lifecycle readiness marker becomes active only after ALSA is genuinely ready.
 # (It moved here from the retired jasper-usbsink-init unit: the composite
-# gadget owner now also carries the always-on USB network and must not
+# gadget owner may also carry the hardware-permitted USB network and must not
 # block on a card that only exists when the uac2 audio function is composed.)
 #
 # Argument: timeout in seconds (default 30). Returns 0 if the card
@@ -16,7 +16,7 @@
 # PiCorrect uses the same pattern in setup.sh — 30 s is more than
 # enough; failure here usually indicates libcomposite didn't load or
 # the UDC bind failed silently, and we want a clear timeout rather
-# than the daemon racing into "no such card" errors.
+# than publishing readiness before fan-in can capture the card.
 set -euo pipefail
 
 TIMEOUT="${1:-30}"

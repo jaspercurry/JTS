@@ -32,9 +32,8 @@ Four steps, run separately or via `run`:
               jasper-route-latency-artifact.
 
 Route-health honesty: this CLI NEVER asserts --route-health-ok on the
-operator's behalf. It prints the before/after counter deltas from the three
-route status surfaces (usbsink — the Rust ingress daemon — plus fan-in and
-outputd) and states whether the
+operator's behalf. It prints the before/after counter deltas from the two live
+route status surfaces (fan-in DIRECT ingress plus outputd) and states whether the
 declaration WOULD be justified; the operator makes the actual call by passing
 --confirm-route-health-ok (alongside --invoke-artifact), which is only honored
 when the printed health diff would itself justify it.
@@ -44,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import subprocess
 import sys
 import time
@@ -81,7 +81,6 @@ from jasper.route_latency.pairing import (
 from jasper.route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
-    USBSINK_STATE_PATH,
     read_status_socket_or_none,
 )
 from jasper.route_latency.tap_client import (
@@ -137,8 +136,7 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 #
 # The set encodes the same "clean window" contract the HANDOFF names (see
 # docs/HANDOFF-usb-low-latency.md "Only pass `--route-health-ok` when…"): no
-# usbsink capture/playback xruns or underflow/overflow/drops, no fan-in USB
-# resampler unlock/silence/overrun, and no outputd/fan-in xruns. The names are
+# fan-in USB resampler unlock/silence/overrun and no outputd/fan-in xruns. The names are
 # cross-checked against the Rust status serializers by
 # `test_known_health_counter_names_exist_in_rust_status_json`, so a Rust-side
 # rename fails loudly rather than silently degrading the verdict to
@@ -146,8 +144,7 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 #
 # Two shapes, because the route's counters live at two kinds of location:
 #   * KNOWN_HEALTH_COUNTER_PATHS — counters at a STABLE dict path (navigated to
-#     a single dotted key). usbsink counters + the fan-in OUTPUT xrun + the
-#     outputd content/DAC xruns.
+#     a single dotted key): the fan-in OUTPUT xrun + outputd content/DAC xruns.
 #   * KNOWN_HEALTH_COUNTER_SUFFIXES — counters that live inside the fan-in
 #     `inputs` ARRAY (per-lane xruns and the per-lane USB-resampler
 #     unlock/silence/overrun). Their dotted path carries a lane INDEX
@@ -156,11 +153,6 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 #     any lane's xrun/unlock/silence/overrun disqualifies. `_numeric_deltas`
 #     recurses into lists so these are visible in `all_deltas`.
 KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
-    ("usbsink", "counters", "capture_xruns"),
-    ("usbsink", "counters", "playback_xruns"),
-    ("usbsink", "counters", "underflow_periods"),
-    ("usbsink", "counters", "overflow_events"),
-    ("usbsink", "counters", "dropped_periods"),
     # fan-in output (post-mix ALSA loopback) xruns — a stable dict path.
     ("fanin", "output", "xrun_count"),
     # outputd content-capture and final-DAC xruns — stable dict paths.
@@ -185,41 +177,22 @@ KNOWN_HEALTH_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (
 
 
 # --------------------------------------------------------------------------
-# Route-health snapshot (usbsink/fan-in/outputd) — honesty, not gate
+# Route-health snapshot (fan-in/outputd) — honesty, not gate
 # --------------------------------------------------------------------------
 
 
-def _read_json_file(path: Path) -> dict[str, Any] | None:
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        log_event(
-            logger,
-            "route_latency_harness.health_snapshot_unavailable",
-            source=str(path),
-            error=str(e),
-            level=logging.DEBUG,
-        )
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
 def snapshot_route_health() -> dict[str, Any]:
-    """Best-effort snapshot of the three route surfaces: usbsink (the Rust
-    ingress daemon — its state.json also carries the impulse tap's counters),
-    fan-in, and outputd.
+    """Best-effort snapshot of the two live route surfaces: fan-in + outputd.
 
     Fails soft per-surface: an unreachable daemon records `null` for that
     key rather than raising, so a snapshot taken before a daemon is up (or
     after it's gone) still captures whatever IS available. The fan-in/outputd
     `STATUS\n` sockets are read through the shared
-    `jasper.route_latency.status_socket` helper (one owner of that protocol);
-    the usbsink surface is a `state.json` FILE, read locally.
+    `jasper.route_latency.status_socket` helper (one owner of that protocol).
     """
 
     return {
         "captured_at_monotonic_ns": time.monotonic_ns(),
-        "usbsink": _read_json_file(Path(USBSINK_STATE_PATH)),
         "fanin": read_status_socket_or_none(
             FANIN_STATUS_SOCKET, event="route_latency_harness.health_snapshot_unavailable"
         ),
@@ -237,8 +210,9 @@ def snapshot_route_health() -> dict[str, Any]:
 _IGNORED_DELTA_LEAF_KEYS = frozenset(
     {
         "captured_at_monotonic_ns",  # this harness's own snapshot timestamp
-        "last_progress_epoch_ms",  # usbsink liveness heartbeat
-        "updated_at",  # usbsink state.json write time (string, but guard anyway)
+        # Process continuity is validated directly by the clean-window verdict;
+        # the expected increase is not an error-counter delta worth printing.
+        "uptime_seconds",
     }
 )
 
@@ -247,7 +221,7 @@ def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) ->
     """Recursively diff two JSON-like trees, returning {"a.b.c": after-before}
     for every leaf where both sides are numeric and the value changed.
 
-    Generic on purpose: the usbsink/fan-in/outputd counter surfaces
+    Generic on purpose: the fan-in/outputd counter surfaces
     evolve independently of this harness, so hardcoding a fixed field list
     would silently stop reporting new counters. New/removed keys (a daemon
     added or removed a counter between snapshots) are skipped rather than
@@ -284,6 +258,80 @@ def _numeric_deltas(before: Any, after: Any, *, prefix: tuple[str, ...] = ()) ->
     return deltas
 
 
+def _finite_nonnegative_number_at(
+    root: Mapping[str, Any],
+    path: tuple[str, ...],
+) -> float | None:
+    """Read one counter from ``root`` without accepting bool/missing/bad data."""
+
+    value: Any = root
+    for part in path:
+        if not isinstance(value, Mapping) or part not in value:
+            return None
+        value = value[part]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _fanin_topology(snapshot: Mapping[str, Any]) -> tuple[tuple[str, str], ...] | None:
+    """Stable healthy ``(label, source)`` identity for every fan-in lane."""
+
+    fanin = snapshot.get("fanin")
+    inputs = fanin.get("inputs") if isinstance(fanin, Mapping) else None
+    if not isinstance(inputs, list):
+        return None
+    topology: list[tuple[str, str]] = []
+    for lane in inputs:
+        if not isinstance(lane, Mapping):
+            return None
+        label = lane.get("label")
+        source = lane.get("source")
+        if not isinstance(label, str) or not isinstance(source, str):
+            return None
+        if _finite_nonnegative_number_at(lane, ("xrun_count",)) is None:
+            return None
+        topology.append((label, source))
+    return tuple(topology)
+
+
+_USB_DIRECT_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
+    ("xrun_count",),
+    ("resampler", "unlock_count"),
+    ("resampler", "silence_frames"),
+    ("resampler", "overrun_frames"),
+)
+
+
+def _usb_direct_health_counters(
+    snapshot: Mapping[str, Any],
+) -> tuple[float, ...] | None:
+    """Identity-bound health counters for the unique USB DIRECT lane."""
+
+    fanin = snapshot.get("fanin")
+    inputs = fanin.get("inputs") if isinstance(fanin, Mapping) else None
+    if not isinstance(inputs, list):
+        return None
+    matches = [
+        lane
+        for lane in inputs
+        if isinstance(lane, Mapping)
+        and lane.get("label") == "usbsink"
+        and lane.get("source") == "direct"
+    ]
+    if len(matches) != 1:
+        return None
+    lane = matches[0]
+    values = tuple(
+        _finite_nonnegative_number_at(lane, path)
+        for path in _USB_DIRECT_COUNTER_PATHS
+    )
+    if any(value is None for value in values):
+        return None
+    return tuple(value for value in values if value is not None)
+
+
 @dataclass(frozen=True)
 class RouteHealthReport:
     """Honest before/after route-health comparison. Never asserts
@@ -296,8 +344,14 @@ class RouteHealthReport:
 
     @property
     def would_justify_route_health_ok(self) -> bool:
-        """True iff every KNOWN_HEALTH_COUNTER_PATHS delta is EXACTLY 0 AND
-        every surface answered in both snapshots.
+        """True iff the complete, stable USB route stayed healthy throughout.
+
+        Every stable counter must be present and numeric in both snapshots;
+        fan-in topology must remain identical; and one identity-matched
+        ``usbsink`` DIRECT lane must expose unchanged xrun/resampler counters.
+        Both daemon uptimes must increase, proving process continuity across
+        the window. Missing or malformed telemetry is unknown, never proof of
+        health.
 
         Any nonzero delta on a known counter disqualifies — including a
         NEGATIVE one. These counters are per-process monotonic, so a delta
@@ -315,7 +369,28 @@ class RouteHealthReport:
         architecture brief and `route_latency_artifact` explicitly refuse.
         """
 
-        if any(self.before.get(k) is None or self.after.get(k) is None for k in ("usbsink", "fanin", "outputd")):
+        if any(
+            _finite_nonnegative_number_at(snapshot, path) is None
+            for snapshot in (self.before, self.after)
+            for path in KNOWN_HEALTH_COUNTER_PATHS
+        ):
+            return False
+        for path in (("fanin", "uptime_seconds"), ("outputd", "uptime_seconds")):
+            before_uptime = _finite_nonnegative_number_at(self.before, path)
+            after_uptime = _finite_nonnegative_number_at(self.after, path)
+            if (
+                before_uptime is None
+                or after_uptime is None
+                or after_uptime <= before_uptime
+            ):
+                return False
+        before_topology = _fanin_topology(self.before)
+        after_topology = _fanin_topology(self.after)
+        if before_topology is None or before_topology != after_topology:
+            return False
+        before_usb = _usb_direct_health_counters(self.before)
+        after_usb = _usb_direct_health_counters(self.after)
+        if before_usb is None or after_usb is None or before_usb != after_usb:
             return False
         return all(delta == 0 for delta in self.known_counter_deltas.values())
 

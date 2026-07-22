@@ -15,9 +15,20 @@
 # hw-validation runbooks there).
 session_artifacts = [
   "docs/AEC-DIAG-01-baseline.md",
+  # Working plan + decision log for the crossover-measurement reproducibility
+  # effort. PROPOSED/active across sessions; folds into
+  # HANDOFF-crossover-measurement-v2.md and is archived once the fix lands.
+  "docs/crossover-measurement-reproducibility-plan.md",
+  # Verbatim point-in-time implementation plan retained as an execution record;
+  # current relay truth lives in HANDOFF-usb-gadget.md and HANDOFF-aec.md.
+  "docs/PLAN-usb-mic-export-latency-fix.md",
   # Execution artifact: per-window build prompts for the barge-in plan in
   # HANDOFF-barge-in.md. Not a canonical scan target; retire when barge-in ships.
   "docs/barge-in-build-prompts.md",
+  # Living on-hardware validation log of the JTS3 crossover+room e2e run. Records
+  # what was exercised and the UX findings; the synthesized plan those findings
+  # fed lives in docs/crossover-measurement-productization-design.md.
+  "docs/crossover-room-e2e-validation-log.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.
@@ -25,6 +36,10 @@ session_artifacts = [
 # to them as current operational truth.
 research = [
   "docs/RESEARCH-pipewire-low-latency.md",
+  # Verbatim first-principles deep-research report behind the crossover
+  # measurement productization design; the synthesized decisions live in
+  # docs/crossover-measurement-productization-design.md (a subsystem scan target).
+  "docs/crossover-measurement-deep-research-2026-07-18.md",
 ]
 
 [[subsystem]]
@@ -168,6 +183,7 @@ code = [
 docs = [
   "docs/PROPOSAL-dac-profile-registry.md",
   "docs/audio-paths.md",
+  "docs/HANDOFF-audio-capability-platform.md",
   "docs/HANDOFF-speaker-output-reference.md",
   "docs/HANDOFF-active-speaker-dsp.md",
 ]
@@ -190,7 +206,7 @@ code = [
   "jasper/local_sources/**",
   "jasper/mux.py",
   "jasper/renderer.py",
-  "jasper/source_state.py",
+  "jasper/source_[es]*.py",
   "jasper/camilla.py",
   "jasper/camilla_config_contract.py",
   "jasper/output_hardware.py",
@@ -521,7 +537,7 @@ requires_docs_when = [
   "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
 ]
 verification = [
-  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
+  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_assistant_loudness.py tests/test_audio_io.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py tests/test_dsp_apply.py",
 ]
 
 [[subsystem]]
@@ -555,20 +571,92 @@ verification = [
 ]
 
 [[subsystem]]
+id = "local-source-lifecycle"
+title = "Local source intent and lifecycle convergence"
+safety = "boot-risk"
+code = [
+  "jasper/source_intent.py",
+  "jasper/bluetooth/availability.py",
+  "jasper/local_sources/registry.py",
+  "jasper/local_sources/guard.py",
+  "jasper/mux.py",
+  "jasper/control/shairport_supervisor.py",
+  "jasper/control/restart_broker.py",
+  "jasper/multiroom/reconcile.py",
+  "jasper/multiroom/effective_role.py",
+  "jasper/control/server.py",
+  "jasper/tools/audio.py",
+  "jasper/web/_common.py",
+  "jasper/web/sources_setup.py",
+  "jasper/web/bluetooth_setup.py",
+  "jasper/web/airplay_setup.py",
+  "jasper/web/speaker_setup.py",
+  "jasper/cli/airplay_mode.py",
+  "jasper/cli/doctor/renderers.py",
+  "jasper/cli/doctor/usbsink.py",
+  "jasper/control/audio_health.py",
+  "jasper/correction/coordinator.py",
+  "jasper/fanin/coupling_auto.py",
+  "jasper/accessories/reconcile.py",
+  "scripts/claim-librespot.sh",
+  "deploy/assets/sources/js/main.js",
+  "deploy/assets/bluetooth/js/main.js",
+  "deploy/systemd/jasper-source-intent-reconcile.service",
+  "deploy/systemd/jasper-fanin-coupling-auto.service",
+  "deploy/systemd/jasper-usbgadget.service",
+  "deploy/systemd/jasper-mux.service",
+  "deploy/systemd/jasper-accessory-reconcile.service",
+  "deploy/systemd/jasper-wiim-remote-mic.service",
+  "deploy/systemd/shairport-sync.service",
+  "deploy/systemd/nqptp.service",
+  "deploy/systemd/librespot.service",
+  "deploy/systemd/bt-agent.service",
+  "deploy/systemd/jasper-usbsink*.service",
+  "deploy/systemd/bluealsa*.service.d/**",
+  "deploy/systemd/bluetooth.service.d/**",
+  "deploy/usbsink/jasper-usbgadget-wanted",
+  "deploy/usbsink/jasper-usbgadget-up",
+  "deploy/nginx-jasper.conf",
+  "deploy/nginx-jasper-streambox.conf",
+  "deploy/lib/install/systemd-units.sh",
+  "deploy/lib/install/env-migrations.sh",
+  "deploy/lib/install/renderers.sh",
+  "deploy/bin/jasper-deploy-health",
+]
+docs = [
+  "docs/HANDOFF-source-lifecycle.md",
+]
+requires_docs_when = [
+  "A source intent key/default, desired-versus-effective state, source resource declaration, AirPlay/Spotify unit convergence, Bluetooth RF-kill/BlueZ/accessory ordering, USB transition ordering, follower parking interaction, any maintenance path that can restart a source, boot/deploy replay, or source-aware health behavior changes.",
+]
+verification = [
+  "pytest tests/test_source_intent_reconcile.py tests/test_web_sources_setup.py tests/test_web_bluetooth_setup.py tests/test_bluetooth_setup_ui.py tests/test_local_sources_registry.py tests/test_multiroom_reconcile.py tests/test_deploy_health_script.py tests/test_source_intent_systemd.py tests/test_install_core_audio_graph_loop.py",
+]
+
+[[subsystem]]
 id = "usb-audio-input"
 title = "USB Audio Input"
 safety = "boot-risk"
 code = [
+  "jasper/audio_hardware/usb_port_role.py",
+  "jasper/output_hardware.py",
   "jasper/usbsink/**",
+  "jasper/*usb*.py",
+  "jasper/cli/usb*.py",
+  "jasper/fanin/status.py",
   "jasper/local_sources/**",
   "jasper/web/sources_setup.py",
   "deploy/usbsink/**",
-  "deploy/systemd/jasper-usbsink*.service",
+  "deploy/bin/jasper-audio-hardware-reconcile",
+  "deploy/lib/install/renderers.sh",
+  "deploy/systemd/jasper-usb*.service",
   "deploy/systemd/bluealsa*.service.d/**",
 ]
 docs = [
   "docs/HANDOFF-usb-gadget.md",
   "docs/HANDOFF-usbsink.md",
+  "docs/HANDOFF-aec.md",
+  "PRIVACY.md",
   "docs/audio-paths.md",
   "docs/HANDOFF-fan-in-daemon.md",
   "docs/HANDOFF-volume.md",
@@ -576,7 +664,7 @@ docs = [
 ]
 
 requires_docs_when = [
-  "Gadget enablement, reboot requirements, USB source state, host volume observation, preemption, or source-lane wiring changes.",
+  "Gadget enablement, reboot requirements, USB source state, USB host-microphone export/privacy, host volume observation, preemption, or source-lane wiring changes.",
   "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes — see HANDOFF-usb-gadget.md.",
 ]
 verification = [
@@ -588,10 +676,15 @@ id = "usb-management-network"
 title = "USB management network (composite gadget)"
 safety = "boot-risk"
 code = [
+  "jasper/audio_hardware/usb_port_role.py",
+  "jasper/output_hardware.py",
+  "deploy/bin/jasper-audio-hardware-reconcile",
+  "deploy/lib/install/renderers.sh",
   "deploy/usbsink/jasper-usbgadget-*",
   "deploy/systemd/jasper-usbgadget.service",
   "deploy/systemd/jasper-usbnet-dhcp.service",
   "deploy/usb-network/**",
+  "jasper/usbgadget.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/cli/doctor/network.py",
   # NOTE: jasper/control/state_aggregate.py is deliberately NOT routed here.
@@ -609,7 +702,7 @@ docs = [
   "docs/HANDOFF-usbsink.md",
 ]
 requires_docs_when = [
-  "The always-on USB NCM network function, its NetworkManager keyfile or dnsmasq conf, the `10.12.194.1/24` address, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
+  "The hardware-conditional USB NCM network function, its NetworkManager keyfile or dnsmasq conf, the `10.12.194.1/24` address, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
 ]
 verification = [
   "pytest tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
@@ -628,7 +721,6 @@ code = [
   "jasper/cli/route_latency_artifact.py",
   "jasper/cli/route_latency_harness.py",
   "jasper/route_latency/**",
-  "rust/jasper-usbsink-audio/**",
   "rust/jasper-host-clock/**",
 ]
 docs = [
@@ -642,7 +734,7 @@ requires_docs_when = [
   "The lean File-capture lane topology, the CamillaDSP resampler schema/vocabulary, the FIFO format/path contract, the lean-lane feature flag, the chip/software AEC optionality, or the no-re-architect rules change.",
   "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes (see HANDOFF-usb-low-latency.md).",
   "The route-latency artifact schema/gate thresholds, the click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see HANDOFF-usb-low-latency.md and testing-tooling.md's harness section).",
-  "The host-slaved USB clock's env keys/defaults, ladder states, state.json `host_clock` block shape, servo constants, or bandwidth-separation derivation change (see HANDOFF-usb-low-latency.md 'Host-slaved USB clock (Stage 1)').",
+  "The host-slaved USB clock's env keys/defaults, ladder states, fan-in STATUS and `/state.audio_graph.fanin.host_clock` shape, servo constants, or bandwidth-separation derivation change (see HANDOFF-usb-low-latency.md 'Host-slaved USB clock in combo mode').",
   "The USB-input ring geometry, cushion-decay floor, or the productized fresh-install combo defaults change — re-verify the measured latency numbers and the fresh-install settings table (see HANDOFF-usb-latency-measurement.md).",
 ]
 verification = [
@@ -659,33 +751,49 @@ code = [
   "jasper/measurement/**",
   "jasper/audio_measurement/**",
   "jasper/calibration_agent/**",
-  "jasper/web/correction_setup.py",
+  "jasper/web/correction_*.py",
   "jasper/web/balance_flow.py",
   "jasper/web/sync_flow.py",
   "jasper/web/pair_flow.py",
+  "deploy/assets/correction/js/**",
+  "deploy/assets/correction/correction.css",
+  "deploy/assets/correction/crossover.css",
   "deploy/jasper-correction-web.*",
+  "docs/room-correction-information-design.md",
   "docs/active-crossover-information-design.md",
   "docs/calibration-agent/**",
 ]
 docs = [
   "docs/HANDOFF-audio-measurement-core.md",
   "docs/HANDOFF-correction.md",
+  "docs/HANDOFF-crossover-measurement-v2.md",
+  "docs/correction-journey-design.md",
+  "docs/room-correction-information-design.md",
   "docs/HANDOFF-multiroom.md",
   "docs/HANDOFF-correction-revision-plan.md",
+  "docs/HANDOFF-bass-extension-plan.md",
   "docs/HANDOFF-calibration-agent.md",
   "docs/HANDOFF-active-speaker-dsp.md",
   "docs/HANDOFF-dsp-graph-carrier.md",
   "docs/HANDOFF-distributed-active.md",
   "docs/active-crossover-information-design.md",
+  "docs/crossover-measurement-productization-design.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
 ]
 requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
+  "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
+  "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
+  "The v2 crossover conductor flow (excitation program, phase state machine, session volume plan, JASPER_CROSSOVER_FLOW selector, or the v2 apply/verify/restore endpoints) changes — scan HANDOFF-crossover-measurement-v2.md.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
+  "pytest tests/test_web_correction_setup.py",
+  "pytest tests/test_web_correction_tuning.py",
+  "bash scripts/check-js-syntax.sh",
   "pytest tests/test_measurement_volume_guard.py tests/test_web_balance_flow.py tests/test_web_sync_flow.py",
+  "pytest tests/test_audio_measurement_excitation_admission.py tests/test_audio_measurement_excitation_artifacts.py tests/test_audio_measurement_evidence_identity.py tests/test_active_speaker_driver_safety.py tests/test_active_speaker_commissioning_lifecycle.py tests/test_active_speaker_commissioning_receipt.py tests/test_active_speaker_commissioning_evidence.py",
 ]
 
 [[subsystem]]
@@ -959,6 +1067,7 @@ code = [
   "jasper/control/ha_status_cache.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/airplay_health.py",
+  "jasper/control/audio_health.py",
   "jasper/control/bootloop_guard_state.py",
   "jasper/web/system_setup.py",
   "jasper/web/airplay_setup.py",
@@ -1101,9 +1210,12 @@ code = [
 ]
 docs = [
   "docs/phone-mic-relay-plan.md",
+  "docs/room-correction-information-design.md",
+  "docs/HANDOFF-crossover-measurement-v2.md",
 ]
 requires_docs_when = [
   "The relay API contract, the opaque-spec/blob invariant, the E2E wire format (AES-256-GCM, IV-prepended, plaintext SHA-256), the DATA-only renderer's component/theme allowlist, the capture-page CSP, a measurement-validity gate (realized-constraints / alignment-confidence / clock-drift), a failure cue, or the deploy steps change.",
+  "The heterogeneous per-capture plan (CapturePlanEntry), the deferred begin/hold (CaptureBeginDeferred / REVIEW_HOLD_BUDGET_S), the first-begin timeout, or the capture page's v3 session loop / per-begin setup piggyback changes — scan HANDOFF-crossover-measurement-v2.md.",
 ]
 verification = [
   "python3 scripts/docs-impact.py --validate-only",

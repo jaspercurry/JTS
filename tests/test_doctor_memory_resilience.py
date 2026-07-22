@@ -478,7 +478,6 @@ _PID_MAP = {
     "jasper-fanin": "1003",
     "jasper-aec-bridge": "1004",
     "jasper-control": "1005",
-    "jasper-usbsink": "1006",
     "jasper-voice": "1007",
     "jasper-camilla-crossover": "1008",
     "nginx": "1009",
@@ -489,6 +488,7 @@ _PID_MAP = {
     "jasper-snapserver": "1014",
     "ssh": "1015",
     "jasper-usbsink-volume": "1016",
+    "jasper-usbmic": "1017",
 }
 
 _EXPECTED_CONFIG = {
@@ -497,7 +497,6 @@ _EXPECTED_CONFIG = {
     "jasper-fanin": "-800",
     "jasper-aec-bridge": "-700",
     "jasper-control": "-600",
-    "jasper-usbsink": "-600",
     "jasper-voice": "-500",
     "jasper-camilla-crossover": "-500",
     "nginx": "-450",
@@ -508,6 +507,7 @@ _EXPECTED_CONFIG = {
     "jasper-snapserver": "-300",
     "ssh": "-250",
     "jasper-usbsink-volume": "100",
+    "jasper-usbmic": "-300",
 }
 
 
@@ -611,12 +611,13 @@ def test_oom_score_adj_warns_on_present_drift_with_others_absent():
 
 _LIVE_OK = {
     "1001": "-950", "1002": "-900", "1003": "-800",
-    "1004": "-700", "1005": "-600", "1006": "-600",
+    "1004": "-700", "1005": "-600",
     "1007": "-500", "1008": "-500", "1009": "-450",
     "1010": "-300", "1011": "-300", "1012": "-300",
     "1013": "-300", "1014": "-300",
     "1015": "-250",   # ssh recovery path, still killable
     "1016": "100",
+    "1017": "-300",
 }
 
 

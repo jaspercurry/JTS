@@ -33,6 +33,9 @@ MAX_STEP_US = 100.0
 MAX_REPEAT_SPREAD_DB = 2.0
 DEFAULT_SOUND_SPEED_M_S = 343.0
 MAX_EXHAUSTIVE_CANDIDATES = 25
+MAX_COARSE_CANDIDATES = MAX_EXHAUSTIVE_CANDIDATES
+MAX_REFINEMENT_CANDIDATES = 2
+MAX_SCHEDULED_CANDIDATES = MAX_COARSE_CANDIDATES + MAX_REFINEMENT_CANDIDATES
 MAX_DSP_DELAY_US = 20_000.0
 DEFAULT_RESTORE_TIMEOUT_S = 15.0
 MIN_RESTORE_TIMEOUT_S = 1.0
@@ -50,6 +53,13 @@ _FailureCode: TypeAlias = Literal[
 ]
 
 logger = logging.getLogger(__name__)
+
+_SPEC_KIND = "jts_null_walk_spec"
+_SPEC_SCHEMA_VERSION = 2
+_SCHEDULE_KIND = "jts_bounded_null_walk_schedule"
+_SCHEDULE_SCHEMA_VERSION = 1
+_SCHEDULE_ALGORITHM_ID = "symmetric_coarse_plus_adjacent_refinement"
+_SCHEDULE_ALGORITHM_VERSION = "1"
 
 
 class NullWalkError(ValueError):
@@ -196,6 +206,25 @@ def _finite(value: Any, *, field: str) -> float:
     return out
 
 
+def _canonical_payload(payload: Mapping[str, Any]) -> str:
+    """Serialize one already-validated JSON payload for strict identity."""
+
+    try:
+        return json.dumps(
+            dict(payload),
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise NullWalkError("null-walk payload is not canonical JSON data") from exc
+
+
+def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
+    return hashlib.sha256(_canonical_payload(payload).encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class NullWalkSpec:
     """A geometry-seeded, single-cycle-safe relative-delay search."""
@@ -244,10 +273,81 @@ class NullWalkSpec:
     def candidate_count(self) -> int:
         """Return the grid size without allocating the grid."""
 
-        steps_each_side = math.floor(
-            (self.half_period_us + self.step_us * 1e-9) / self.step_us
-        )
-        return 1 + 2 * steps_each_side
+        return 1 + 2 * self.steps_each_side
+
+    @property
+    def steps_each_side(self) -> int:
+        """Return the number of aligned fine-grid steps on either side."""
+
+        return math.floor((self.half_period_us + self.step_us * 1e-9) / self.step_us)
+
+    @property
+    def fine_grid_index_min(self) -> int:
+        return -self.steps_each_side
+
+    @property
+    def fine_grid_index_max(self) -> int:
+        return self.steps_each_side
+
+    @property
+    def fingerprint(self) -> str:
+        return _payload_fingerprint(self._core())
+
+    def fine_grid_coordinate(self, index: Any) -> float:
+        """Return one canonical aligned coordinate without allocating the grid."""
+
+        if type(index) is not int:
+            raise NullWalkError("fine-grid index must be an integer")
+        if not self.fine_grid_index_min <= index <= self.fine_grid_index_max:
+            raise NullWalkError("fine-grid index is outside the physical half-period")
+        coordinate = round(self.geometry_seed_us + index * self.step_us, 6)
+        if abs(coordinate) > MAX_DSP_DELAY_US:
+            raise NullWalkError(
+                "bounded null walk exceeds the CamillaDSP 20 ms delay ceiling"
+            )
+        return coordinate
+
+    def fine_grid_index(self, relative_delay_us: Any) -> int:
+        """Return the exact aligned index for one bounded coordinate.
+
+        This is the non-allocating membership gate used by resumable host
+        schedulers. It deliberately does not relax the exhaustive runner's
+        separate 25-candidate budget.
+        """
+
+        if isinstance(relative_delay_us, bool):
+            raise NullWalkError("relative_delay_us must be numeric")
+        relative = _finite(relative_delay_us, field="relative_delay_us")
+        raw_index = (relative - self.geometry_seed_us) / self.step_us
+        nearest = round(raw_index)
+        if not math.isclose(raw_index, nearest, rel_tol=0.0, abs_tol=1e-8):
+            raise NullWalkError("relative delay is outside the bounded fine grid")
+        index = int(nearest)
+        coordinate = self.fine_grid_coordinate(index)
+        if not math.isclose(relative, coordinate, rel_tol=0.0, abs_tol=1e-6):
+            raise NullWalkError("relative delay is outside the bounded fine grid")
+        return index
+
+    def coarse_candidate_delays_us(self) -> tuple[float, ...]:
+        """Return the deterministic bounded first phase of a host schedule.
+
+        Coordinates are symmetric about the geometry seed, retain the seed and
+        both aligned fine-grid endpoints, and never exceed the existing
+        25-coordinate exhaustive budget. A later explicit refinement anchor may
+        add only its immediate fine-grid neighbours.
+        """
+
+        steps = self.steps_each_side
+        if steps == 0:
+            return (self.fine_grid_coordinate(0),)
+        slots_each_side = (MAX_COARSE_CANDIDATES - 1) // 2
+        stride = max(1, math.ceil(steps / slots_each_side))
+        positive = set(range(stride, steps + 1, stride))
+        positive.add(steps)
+        indexes = tuple(sorted({0, *positive, *(-index for index in positive)}))
+        if len(indexes) > MAX_COARSE_CANDIDATES:
+            raise AssertionError("coarse null-walk schedule exceeded its hard bound")
+        return tuple(self.fine_grid_coordinate(index) for index in indexes)
 
     def candidate_delays_us(self) -> tuple[float, ...]:
         """Return a deterministic grid containing the exact geometry seed.
@@ -263,26 +363,20 @@ class NullWalkSpec:
                 "exhaustive null walk exceeds the bounded candidate budget; "
                 "use a reviewed adaptive host scheduler"
             )
-        steps_each_side = (self.candidate_count - 1) // 2
         candidates = tuple(
-            round(self.geometry_seed_us + index * self.step_us, 6)
-            for index in range(-steps_each_side, steps_each_side + 1)
-        )
-        if any(abs(candidate) > MAX_DSP_DELAY_US for candidate in candidates):
-            raise NullWalkError(
-                "bounded null walk exceeds the CamillaDSP 20 ms delay ceiling"
+            self.fine_grid_coordinate(index)
+            for index in range(
+                self.fine_grid_index_min,
+                self.fine_grid_index_max + 1,
             )
+        )
         return candidates
 
     def dsp_candidate(self, relative_delay_us: Any) -> DelayCandidate:
         """Map one signed grid coordinate to a non-negative DSP operation."""
 
-        relative = _finite(relative_delay_us, field="relative_delay_us")
-        if not any(
-            math.isclose(relative, candidate, abs_tol=1e-6)
-            for candidate in self.candidate_delays_us()
-        ):
-            raise NullWalkError("relative delay is outside the bounded candidate grid")
+        index = self.fine_grid_index(relative_delay_us)
+        relative = self.fine_grid_coordinate(index)
         target = None
         if relative > 0.0:
             target = self.positive_delay_target
@@ -296,9 +390,10 @@ class NullWalkSpec:
             delay_us=abs(relative),
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": _SPEC_SCHEMA_VERSION,
+            "kind": _SPEC_KIND,
             "crossover_fc_hz": self.crossover_fc_hz,
             "geometry_seed_us": self.geometry_seed_us,
             "positive_delay_target": self.positive_delay_target,
@@ -308,8 +403,212 @@ class NullWalkSpec:
             "upper_bound_us": self.upper_bound_us,
             "step_us": self.step_us,
             "candidate_count": self.candidate_count,
-            "candidate_delays_us": list(self.candidate_delays_us()),
+            "fine_grid_index_min": self.fine_grid_index_min,
+            "fine_grid_index_max": self.fine_grid_index_max,
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> NullWalkSpec:
+        """Strictly reconstruct the bounded schema-v2 spec projection."""
+
+        expected = {
+            "schema_version",
+            "kind",
+            "crossover_fc_hz",
+            "geometry_seed_us",
+            "positive_delay_target",
+            "negative_delay_target",
+            "half_period_us",
+            "lower_bound_us",
+            "upper_bound_us",
+            "step_us",
+            "candidate_count",
+            "fine_grid_index_min",
+            "fine_grid_index_max",
+            "fingerprint",
+        }
+        if not isinstance(raw, Mapping) or set(raw) != expected:
+            raise NullWalkError("null-walk spec fields are invalid")
+        if raw["schema_version"] != _SPEC_SCHEMA_VERSION or raw["kind"] != _SPEC_KIND:
+            raise NullWalkError("null-walk spec schema is unsupported")
+        result = cls(
+            crossover_fc_hz=raw["crossover_fc_hz"],
+            geometry_seed_us=raw["geometry_seed_us"],
+            positive_delay_target=raw["positive_delay_target"],
+            negative_delay_target=raw["negative_delay_target"],
+            step_us=raw["step_us"],
+        )
+        if _canonical_payload(dict(raw)) != _canonical_payload(result.to_dict()):
+            raise NullWalkError("null-walk spec is not the exact canonical grid")
+        return result
+
+
+@dataclass(frozen=True, init=False)
+class BoundedNullWalkSchedule:
+    """Deterministic coarse scan plus explicit local fine-grid refinement.
+
+    The schedule describes only which coordinates a host may measure. It does
+    not evaluate evidence or claim a selected delay; the exhaustive shared
+    runner and selector remain deliberately separate and capped at 25 points.
+    """
+
+    spec_fingerprint: str
+    coarse_delays_us: tuple[float, ...]
+    refinement_anchor_us: float
+    refinement_delays_us: tuple[float, ...]
+    scheduled_delays_us: tuple[float, ...]
+    fingerprint: str
+
+    def __init__(
+        self,
+        spec: NullWalkSpec,
+        *,
+        refinement_anchor_us: Any,
+    ) -> None:
+        if not isinstance(spec, NullWalkSpec):
+            raise NullWalkError("schedule spec must be NullWalkSpec")
+        coarse = spec.coarse_candidate_delays_us()
+        anchor_index = spec.fine_grid_index(refinement_anchor_us)
+        anchor = spec.fine_grid_coordinate(anchor_index)
+        if anchor not in coarse:
+            raise NullWalkError(
+                "refinement anchor must be an exact coarse schedule coordinate"
+            )
+        refinement: list[float] = []
+        for index in (anchor_index - 1, anchor_index + 1):
+            if not spec.fine_grid_index_min <= index <= spec.fine_grid_index_max:
+                continue
+            coordinate = spec.fine_grid_coordinate(index)
+            if coordinate not in coarse:
+                refinement.append(coordinate)
+        refinement_delays = tuple(sorted(refinement))
+        if len(refinement_delays) > MAX_REFINEMENT_CANDIDATES:
+            raise AssertionError("null-walk refinement exceeded its hard bound")
+        scheduled = tuple(sorted({*coarse, *refinement_delays}))
+        if len(scheduled) > MAX_SCHEDULED_CANDIDATES:
+            raise AssertionError("null-walk schedule exceeded its hard bound")
+        object.__setattr__(self, "spec_fingerprint", spec.fingerprint)
+        object.__setattr__(self, "coarse_delays_us", coarse)
+        object.__setattr__(self, "refinement_anchor_us", anchor)
+        object.__setattr__(self, "refinement_delays_us", refinement_delays)
+        object.__setattr__(self, "scheduled_delays_us", scheduled)
+        object.__setattr__(self, "fingerprint", _payload_fingerprint(self._core()))
+
+    @classmethod
+    def from_coarse_evidence(
+        cls,
+        spec: NullWalkSpec,
+        evidence_by_delay: Mapping[Any, Sequence[Mapping[str, Any]]],
+    ) -> BoundedNullWalkSchedule:
+        """Choose the deepest repeatable coarse anchor deterministically.
+
+        This selects only where the bounded host measures its two optional fine
+        neighbors. It does not select or authorize a final delay. Every coarse
+        coordinate must have a complete repeatable capture set before the
+        refinement phase can begin.
+        """
+
+        if not isinstance(spec, NullWalkSpec):
+            raise NullWalkError("schedule spec must be NullWalkSpec")
+        if not isinstance(evidence_by_delay, Mapping):
+            raise NullWalkError("coarse evidence must be a mapping")
+        coarse = spec.coarse_candidate_delays_us()
+        evidence: dict[float, Sequence[Mapping[str, Any]]] = {}
+        for raw_delay, captures in evidence_by_delay.items():
+            index = spec.fine_grid_index(raw_delay)
+            coordinate = spec.fine_grid_coordinate(index)
+            if coordinate not in coarse:
+                raise NullWalkError(
+                    "coarse evidence contains a coordinate outside the coarse schedule"
+                )
+            if coordinate in evidence:
+                raise NullWalkError("coarse evidence contains a duplicate coordinate")
+            evidence[coordinate] = captures
+        if set(evidence) != set(coarse):
+            raise NullWalkError("coarse evidence must cover the exact coarse schedule")
+
+        summarized = [
+            summarize_candidate(spec, coordinate, evidence[coordinate])
+            for coordinate in coarse
+        ]
+        if any(item["repeatable"] is not True for item in summarized):
+            raise NullWalkError(
+                "every coarse coordinate requires complete repeatable evidence"
+            )
+        anchor = min(
+            summarized,
+            key=lambda item: (
+                -float(item["median_null_depth_db"]),
+                abs(float(item["relative_delay_us"]) - spec.geometry_seed_us),
+                float(item["relative_delay_us"]),
+            ),
+        )
+        return cls(
+            spec,
+            refinement_anchor_us=anchor["relative_delay_us"],
+        )
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": _SCHEDULE_SCHEMA_VERSION,
+            "kind": _SCHEDULE_KIND,
+            "algorithm_id": _SCHEDULE_ALGORITHM_ID,
+            "algorithm_version": _SCHEDULE_ALGORITHM_VERSION,
+            "spec_fingerprint": self.spec_fingerprint,
+            "maximum_coarse_candidates": MAX_COARSE_CANDIDATES,
+            "maximum_refinement_candidates": MAX_REFINEMENT_CANDIDATES,
+            "maximum_scheduled_candidates": MAX_SCHEDULED_CANDIDATES,
+            "coarse_delays_us": list(self.coarse_delays_us),
+            "refinement_anchor_us": self.refinement_anchor_us,
+            "refinement_delays_us": list(self.refinement_delays_us),
+            "scheduled_delays_us": list(self.scheduled_delays_us),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw: Any,
+        *,
+        spec: NullWalkSpec,
+    ) -> BoundedNullWalkSchedule:
+        expected = {
+            "schema_version",
+            "kind",
+            "algorithm_id",
+            "algorithm_version",
+            "spec_fingerprint",
+            "maximum_coarse_candidates",
+            "maximum_refinement_candidates",
+            "maximum_scheduled_candidates",
+            "coarse_delays_us",
+            "refinement_anchor_us",
+            "refinement_delays_us",
+            "scheduled_delays_us",
+            "fingerprint",
+        }
+        if not isinstance(raw, Mapping) or set(raw) != expected:
+            raise NullWalkError("bounded null-walk schedule fields are invalid")
+        for field_name in (
+            "coarse_delays_us",
+            "refinement_delays_us",
+            "scheduled_delays_us",
+        ):
+            if type(raw[field_name]) is not list:
+                raise NullWalkError(
+                    "bounded null-walk schedule coordinate fields must be lists"
+                )
+        result = cls(spec, refinement_anchor_us=raw["refinement_anchor_us"])
+        if _canonical_payload(dict(raw)) != _canonical_payload(result.to_dict()):
+            raise NullWalkError(
+                "bounded null-walk schedule is not the exact canonical schedule"
+            )
+        return result
 
 
 @dataclass(frozen=True)
@@ -491,9 +790,19 @@ def select_delay(
         )
         summarized.append(summarize_candidate(spec, candidate, captures))
 
+    return _select_summarized_delay(spec, summarized)
+
+
+def _select_summarized_delay(
+    spec: NullWalkSpec,
+    summarized: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Apply the one repeatability, plateau, and tie policy to candidates."""
+
+    candidates = [dict(item) for item in summarized]
     incomplete = [
         item
-        for item in summarized
+        for item in candidates
         if item["capture_count"] < MIN_CAPTURE_COUNT
         or item["accepted_capture_count"] != item["capture_count"]
     ]
@@ -506,10 +815,10 @@ def select_delay(
             "selected_relative_delay_us": None,
             "selected_delay_target": None,
             "spec": spec.to_dict(),
-            "candidates": summarized,
+            "candidates": candidates,
         }
-    eligible = [item for item in summarized if item["repeatable"]]
-    if len(eligible) != len(summarized):
+    eligible = [item for item in candidates if item["repeatable"]]
+    if len(eligible) != len(candidates):
         return {
             "schema_version": 1,
             "status": "refused",
@@ -518,7 +827,7 @@ def select_delay(
             "selected_relative_delay_us": None,
             "selected_delay_target": None,
             "spec": spec.to_dict(),
-            "candidates": summarized,
+            "candidates": candidates,
         }
     deepest = max(float(item["median_null_depth_db"]) for item in eligible)
     # Candidate-to-candidate differences inside the measured repeat spread are
@@ -556,8 +865,69 @@ def select_delay(
         "best_measured_null_depth_db": deepest,
         "indistinguishable_delays_us": [item["relative_delay_us"] for item in plateau],
         "spec": spec.to_dict(),
-        "candidates": summarized,
+        "candidates": candidates,
     }
+
+
+def select_scheduled_delay(
+    spec: NullWalkSpec,
+    schedule: BoundedNullWalkSchedule,
+    evidence_by_delay: Mapping[Any, Sequence[Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Select from one exact bounded coarse-plus-refinement schedule.
+
+    This is the final evaluator for low-frequency grids whose exhaustive fine
+    grid exceeds :data:`MAX_EXHAUSTIVE_CANDIDATES`.  It changes only which
+    coordinates are eligible: evidence must cover the persisted schedule
+    exactly, while candidate quality, repeatability, plateau handling, and tie
+    breaking remain owned by :func:`_select_summarized_delay`.
+    """
+
+    if not isinstance(spec, NullWalkSpec):
+        raise NullWalkError("scheduled selection spec must be NullWalkSpec")
+    if not isinstance(schedule, BoundedNullWalkSchedule):
+        raise NullWalkError(
+            "scheduled selection schedule must be BoundedNullWalkSchedule"
+        )
+    if schedule.spec_fingerprint != spec.fingerprint:
+        raise NullWalkError("bounded schedule belongs to a different null-walk spec")
+    if not isinstance(evidence_by_delay, Mapping):
+        raise NullWalkError("scheduled evidence must be a mapping")
+
+    evidence: dict[float, Sequence[Mapping[str, Any]]] = {}
+    allowed = set(schedule.scheduled_delays_us)
+    for raw_delay, captures in evidence_by_delay.items():
+        index = spec.fine_grid_index(raw_delay)
+        coordinate = spec.fine_grid_coordinate(index)
+        if coordinate not in allowed:
+            raise NullWalkError(
+                "scheduled evidence contains a coordinate outside the exact schedule"
+            )
+        if coordinate in evidence:
+            raise NullWalkError("scheduled evidence contains a duplicate coordinate")
+        evidence[coordinate] = captures
+    if set(evidence) != allowed:
+        raise NullWalkError("scheduled evidence must cover the exact schedule")
+    expected_schedule = BoundedNullWalkSchedule.from_coarse_evidence(
+        spec,
+        {
+            coordinate: evidence[coordinate]
+            for coordinate in schedule.coarse_delays_us
+        },
+    )
+    if expected_schedule.fingerprint != schedule.fingerprint:
+        raise NullWalkError(
+            "bounded schedule refinement does not match its coarse evidence"
+        )
+
+    result = _select_summarized_delay(
+        spec,
+        [
+            summarize_candidate(spec, coordinate, evidence[coordinate])
+            for coordinate in schedule.scheduled_delays_us
+        ],
+    )
+    return {**result, "schedule": schedule.to_dict()}
 
 
 async def _resolve(value: Any) -> Any:

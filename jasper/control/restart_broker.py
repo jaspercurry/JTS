@@ -123,11 +123,14 @@ MANAGED_UNITS = frozenset({
     "nqptp.service",
     "librespot.service",
     "jasper-usbsink.service",
-    # jasper-usbgadget owns the composite ConfigFS gadget (always-on USB
-    # network + wizard-toggled USB audio). /sources/ restarts it to recompose
-    # the audio function on/off; /speaker restarts it so the name-patch reruns;
-    # the grouping reconciler restarts it to park a bonded follower's host-
-    # visible audio device while keeping the network. Replaces the deleted
+    # Durable, naturally-debounced USB microphone descriptor/producer apply.
+    # jasper-control restarts it after persisting intent; the root oneshot owns
+    # the delayed recompose so an in-process timer cannot be lost on exit.
+    "jasper-usbmic-apply.service",
+    # jasper-usbgadget owns the hardware-gated composite ConfigFS gadget
+    # (default-on USB network + wizard-toggled USB audio). The root coordinator restarts
+    # it to recompose the audio function after source/role changes; /speaker
+    # restarts it so the name-patch reruns. Replaces the deleted
     # jasper-usbsink-init.service.
     "jasper-usbgadget.service",
     # Bluetooth stack (/speaker rename restarts the whole BT chain)
@@ -196,17 +199,42 @@ ALLOWED_VERBS = frozenset(_VERB_ARGV)
 # verdict before the client gives up (no racing-deadlines truncation of a
 # legitimate blocking restart). --no-block calls return in ms regardless.
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
-_EXEC_TIMEOUT_CEILING_SEC = 120.0  # hard max — a client can't pin a thread forever
+# Ordinary broker actions retain the original hard ceiling.  The sole extended
+# shape is a blocking start of exactly the source-intent coordinator: its finite
+# 783-second systemd bound covers all four sources, bounded owner barriers,
+# failed-unit resets, and fail-closed cleanup; its caller allows 793 seconds for
+# PID 1 to return.
+# Derive that exception from the already-normalized, validated request on the
+# server; a client-supplied number alone never grants a longer broker thread.
+_EXEC_TIMEOUT_CEILING_SEC = 120.0
+_SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
+_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 793.0
 _CLIENT_SOCKET_MARGIN_SEC = 5.0    # client waits this much past the exec bound
 _MAX_REQUEST_BYTES = 4096
 
 
-def _clamp_exec_timeout(raw: Any) -> float:
+def _clamp_exec_timeout(
+    raw: Any,
+    *,
+    verb: str,
+    units: list[str],
+    no_block: bool,
+) -> float:
+    extended_source_start = (
+        verb == "start"
+        and not no_block
+        and units == [_SOURCE_INTENT_RECONCILE_UNIT]
+    )
+    ceiling = (
+        _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC
+        if extended_source_start
+        else _EXEC_TIMEOUT_CEILING_SEC
+    )
     try:
         value = float(raw)
     except (TypeError, ValueError):
         return _DEFAULT_EXEC_TIMEOUT_SEC
-    return min(max(value, 1.0), _EXEC_TIMEOUT_CEILING_SEC)
+    return min(max(value, 1.0), ceiling)
 
 
 class BrokerUnavailable(RuntimeError):
@@ -390,11 +418,17 @@ class _BrokerHandler(StreamRequestHandler):
 
         reason = str(req.get("reason") or "")
         no_block = bool(req.get("no_block", True))
-        exec_timeout = _clamp_exec_timeout(req.get("exec_timeout"))
+        exec_timeout = _clamp_exec_timeout(
+            req.get("exec_timeout"),
+            verb=verb,
+            units=units,
+            no_block=no_block,
+        )
         log_event(
             logger, "restart_broker.request", verb=verb,
             units=",".join(units), reason=reason or "-",
             peer_uid=uid, peer_pid=pid, no_block=no_block,
+            exec_timeout=exec_timeout,
         )
         try:
             rc, err, self_deferred = _run_systemctl_request(
@@ -581,8 +615,18 @@ def manage_units(
                 logger, "restart_broker.fallback_direct", verb=verb,
                 units=label, error=str(exc), level=logging.WARNING,
             )
+            normalized_units = [_normalize_unit(unit) for unit in units]
+            direct_timeout = _clamp_exec_timeout(
+                timeout,
+                verb=verb,
+                units=normalized_units,
+                no_block=no_block,
+            )
             return _direct_systemctl(
-                verb, list(units), no_block=no_block, timeout=timeout,
+                verb,
+                normalized_units,
+                no_block=no_block,
+                timeout=direct_timeout,
             )
         log_event(
             logger, "restart_broker.unavailable", verb=verb, units=label,

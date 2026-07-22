@@ -10,8 +10,8 @@ There is ONE USB ingress tap now: **fan-in DIRECT capture**. jasper-fanin opens
 (``TAP_ARM`` verb) writing ``/run/jasper-fanin/impulse-tap.jsonl``.
 
 The historical usbsink-bridge tap (armed over ``127.0.0.1:8781``) was removed with
-the aloop solo capture path (2026-07-10): the jasper-usbsink daemon is standby-only
-and opens no capture, so it has no tap to arm. ``--tap-transport`` is retained
+the aloop solo capture path; the bridge process itself has now been retired.
+``--tap-transport`` is retained
 (``auto`` == ``fanin``) only so existing invocations keep working.
 
 This module is deliberately a thin resolver (no I/O) plus a client constructor,

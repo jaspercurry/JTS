@@ -50,6 +50,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
+from .assistant_volume import (
+    EffectiveVolumeContext,
+    VolumeContextPublisher,
+    volume_context_stamp_boot_ns,
+)
+from .assistant_loudness import tts_envelope_lufs_for_level
 from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode
 from . import bluealsa_probe
@@ -125,13 +131,11 @@ ECHO_WINDOW_SEC = 0.5
 PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 
 
-# Type alias for the cross-daemon duck-active probe. Returns True iff a
-# Ducker is currently holding camilla.main_volume below the canonical
-# listening_level target; False or None means safe to write camilla
-# directly. None is the "unknown / probe failed" fallback — `_set_camilla`
-# treats it as False (fail-open), so a wedged jasper-voice never freezes
-# the dial. See docs/HANDOFF-volume.md "Cross-daemon defer signal".
-DuckActiveProbe = Callable[[], Awaitable[Optional[bool]]]
+# Type alias for the cross-daemon Camilla-ownership probe. The constructor
+# parameter retains its older ``duck_active_probe`` spelling for call-site
+# compatibility. None fails open, so a wedged jasper-voice cannot freeze the
+# dial. See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
+CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
 # Reconciler thresholds. `maybe_reconcile_camilla` is the self-healing
@@ -212,7 +216,8 @@ class VolumeCoordinator:
         backend: "RendererClient",
         spotify_router: Any | None = None,
         spotify_device_name: str = "JTS",
-        duck_active_probe: DuckActiveProbe | None = None,
+        duck_active_probe: CamillaLockProbe | None = None,
+        volume_context_publisher: VolumeContextPublisher | None = None,
         handoff_settle_sec: float = 0.45,
         push_settle_sec: float = 0.75,
     ) -> None:
@@ -248,6 +253,11 @@ class VolumeCoordinator:
         # request coordinators in jasper-control always read False
         # and rely on `_duck_active_probe` instead.
         self._voice_session_active: bool = False
+        # A voice session does not necessarily lock Camilla. Current production
+        # ducks renderer/program audio inside fan-in, leaving Camilla as a safe
+        # user-volume surface for the final music+TTS mix. The legacy Camilla
+        # ducker is the only transport that sets this flag.
+        self._camilla_volume_locked: bool = False
         # Correction-measurement gate for the voice daemon's own 1 Hz
         # reconciler. This is intentionally narrow: it does not turn this
         # process-local flag into a cross-daemon Camilla lock or block an
@@ -258,14 +268,14 @@ class VolumeCoordinator:
         # Pause does not acknowledge until an already-started write has landed;
         # after the flag flips, no new reconcile write may enter this lock.
         self._reconcile_write_lock = asyncio.Lock()
-        # Cross-daemon duck-active signal. jasper-control's per-
+        # Cross-daemon Camilla-ownership signal. jasper-control's per-
         # request coordinators set this to a UDS-probing callable
         # that asks jasper-voice's `session_status` whether the
-        # Ducker is currently engaged. jasper-voice's own coordinator
-        # leaves it None — `_voice_session_active` is the in-process
-        # signal there. See docs/HANDOFF-volume.md "Cross-daemon
-        # defer signal".
-        self._duck_active_probe: DuckActiveProbe | None = duck_active_probe
+        # selected Ducker owns Camilla. jasper-voice's own coordinator
+        # leaves it None and uses `_camilla_volume_locked` in-process.
+        # See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
+        self._duck_active_probe: CamillaLockProbe | None = duck_active_probe
+        self._volume_context_publisher = volume_context_publisher
         # CamillaDSP's default main-volume ramp is 400 ms. Mux source
         # handoff waits slightly beyond that after lowering camilla
         # before exposing a camilla-master lane.
@@ -366,6 +376,7 @@ class VolumeCoordinator:
             self._persistence.save_listening_level(
                 target_level, mark_user_change=False,
             )
+        await self.publish_volume_context()
         return target_level, reason
 
     # ------------------------------------------------------------------
@@ -382,7 +393,16 @@ class VolumeCoordinator:
             self._level = target
             self._pre_mute_level = None  # any explicit set clears mute state
             self._persistence.save_pre_mute_level(None)
-            await self._dispatch(target, persist=True)
+            source = await self._active_source()
+            await self._publish_user_intent_context(
+                source, target, muted=self._main_mute_for_level(target),
+            )
+            if self._main_mute_for_level(target):
+                await self._set_camilla_main_mute(
+                    True, context="set_listening_level_intent",
+                )
+            await self._dispatch(target, persist=True, source=source)
+        await self.publish_volume_context(phase="converged")
         return target
 
     async def adjust_listening_level(self, delta: int) -> int:
@@ -397,7 +417,16 @@ class VolumeCoordinator:
             self._level = target
             self._pre_mute_level = None
             self._persistence.save_pre_mute_level(None)
-            await self._dispatch(target, persist=True)
+            source = await self._active_source()
+            await self._publish_user_intent_context(
+                source, target, muted=self._main_mute_for_level(target),
+            )
+            if self._main_mute_for_level(target):
+                await self._set_camilla_main_mute(
+                    True, context="adjust_listening_level_intent",
+                )
+            await self._dispatch(target, persist=True, source=source)
+        await self.publish_volume_context(phase="converged")
         return target
 
     async def mute(self) -> int:
@@ -412,8 +441,18 @@ class VolumeCoordinator:
             saved = self._pre_mute_level or 0
             self._level = 0
             self._persistence.save_pre_mute_level(self._pre_mute_level)
-            await self._dispatch(0, persist=False)
-            return saved
+            source = await self._active_source()
+            # Fan-in is the immediate TTS stop and does not depend on Camilla
+            # being healthy. Publish before touching the final-output backstop.
+            await self._publish_user_intent_context(source, saved, muted=True)
+            # Final-output mute is local and safety-critical; never wait for a
+            # Spotify/BT cloud or protocol round trip before asserting it.
+            await self._set_camilla_main_mute(
+                True, context="mute_intent",
+            )
+            await self._dispatch(0, persist=False, source=source)
+        await self.publish_volume_context(phase="converged")
+        return saved
 
     async def unmute(self, fallback_level: int = 50) -> int:
         """Restore pre-mute level (or fallback if no prior mute).
@@ -425,8 +464,17 @@ class VolumeCoordinator:
             self._pre_mute_level = None
             self._persistence.save_pre_mute_level(None)
             self._level = target
-            await self._dispatch(target, persist=True)
-            return target
+            source = await self._active_source()
+            await self._publish_user_intent_context(
+                source, target, muted=self._main_mute_for_level(target),
+            )
+            if self._main_mute_for_level(target):
+                await self._set_camilla_main_mute(
+                    True, context="unmute_intent",
+                )
+            await self._dispatch(target, persist=True, source=source)
+        await self.publish_volume_context(phase="converged")
+        return target
 
     def _refresh_from_disk(self) -> None:
         """Sync in-memory state with the persistence file. Cheap (~1ms
@@ -500,6 +548,7 @@ class VolumeCoordinator:
                 source.value, level,
             )
             return
+        publish_needed = False
         async with self._lock:
             if self._is_recent_cross_process_write(level):
                 self._refresh_from_disk()
@@ -511,6 +560,30 @@ class VolumeCoordinator:
                 return
             if level == self._level:
                 if await self._camilla_carries_level(source):
+                    publish_needed = await self._sync_camilla_observed_level(
+                        source, level,
+                    )
+                else:
+                    carrier_ok, publish_needed = (
+                        await self._confirm_push_mode_carrier_with_mutation(
+                        source,
+                        level,
+                        context=f"observe_{source.value}_push_confirmed",
+                        include_live_guard=True,
+                    )
+                    )
+                    if not carrier_ok:
+                        publish_needed = False
+            else:
+                logger.info(
+                    "observe %s: user-side change %d%% → %d%%",
+                    source.value, self._level, level,
+                )
+                self._level = level
+                self._pre_mute_level = None
+                self._persistence.save_pre_mute_level(None)
+                self._persistence.save_listening_level(level)
+                if await self._camilla_carries_level(source):
                     await self._sync_camilla_observed_level(source, level)
                 else:
                     await self._confirm_push_mode_carrier(
@@ -519,24 +592,11 @@ class VolumeCoordinator:
                         context=f"observe_{source.value}_push_confirmed",
                         include_live_guard=True,
                     )
-                return  # no-op; nothing to update
-            logger.info(
-                "observe %s: user-side change %d%% → %d%%",
-                source.value, self._level, level,
-            )
-            self._level = level
-            self._pre_mute_level = None
-            self._persistence.save_pre_mute_level(None)
-            self._persistence.save_listening_level(level)
-            if await self._camilla_carries_level(source):
-                await self._sync_camilla_observed_level(source, level)
-            else:
-                await self._confirm_push_mode_carrier(
-                    source,
-                    level,
-                    context=f"observe_{source.value}_push_confirmed",
-                    include_live_guard=True,
-                )
+                publish_needed = True
+        if publish_needed:
+            # Camilla/socket reads and IPC happen after releasing the mutation
+            # lock; volume commands must not queue behind observability work.
+            await self.publish_volume_context()
 
     async def _sync_camilla_observed_level(
         self, source: Source, level: int,
@@ -636,10 +696,17 @@ class VolumeCoordinator:
         return bool(guarded)
 
     async def _dispatch(
-        self, level: int, *, persist: bool, user_change: bool = True,
+        self,
+        level: int,
+        *,
+        persist: bool,
+        user_change: bool = True,
+        source: Source | None = None,
     ) -> None:
         """Push `level` to the active source (or camilla if idle)
-        and (optionally) persist. Caller holds the lock.
+        and (optionally) persist. Caller holds the mutation lock. Live user
+        calls persist and publish push-mode intent before entering this slow
+        actuator path; ``source`` avoids probing the same routing fact twice.
 
         `user_change` is forwarded to `save_listening_level` —
         determines whether `last_used_at` is bumped. Default True
@@ -654,7 +721,7 @@ class VolumeCoordinator:
         receiver-originated AirPlay 2 volume back to iOS/macOS, so JTS
         uses CamillaDSP as the AirPlay speaker-volume surface.
         """
-        source = await self._active_source()
+        source = source if source is not None else await self._active_source()
         try:
             if source == Source.AIRPLAY:
                 await self._set_airplay(level)
@@ -1203,18 +1270,246 @@ class VolumeCoordinator:
                     "active source: %s → %s (no camilla change)",
                     prev_source.value, current_source.value,
                 )
+        # Carrier handoffs change the downstream attenuation algebra even when
+        # the canonical level is unchanged. Publish after releasing the
+        # mutation lock; snapshotting re-acquires it, while socket IPC does not.
+        await self.publish_volume_context()
 
-    def note_voice_session(self, active: bool) -> None:
+    def note_voice_session(
+        self,
+        active: bool,
+        *,
+        camilla_volume_locked: bool | None = None,
+    ) -> None:
         """Called by voice_daemon's WakeLoop on session start/end.
-        While a session is active, this coordinator suppresses its
-        own writes to camilla — the Ducker has exclusive control,
+        While a session is active, this coordinator suppresses source
+        handoffs. It suppresses Camilla writes only when the selected
+        duck transport actually owns Camilla (the legacy Ducker),
         and `Ducker.restore()` reads back the canonical target via
         `get_camilla_target_db()` to land at the right value
         regardless of interleaved listening_level changes during
         the duck. Affected paths: `apply_active_source_transition`
-        (no-ops mid-session) and `_set_camilla` (defers the camilla
-        write; listening_level still persists)."""
+        (no-ops mid-session) and `_set_camilla` (defers only while
+        ``camilla_volume_locked``; listening_level still persists)."""
         self._voice_session_active = bool(active)
+        self._camilla_volume_locked = bool(
+            active and (
+                True if camilla_volume_locked is None else camilla_volume_locked
+            )
+        )
+
+    async def effective_volume_context(self) -> EffectiveVolumeContext:
+        """Return one mutation-coherent snapshot without holding IPC open."""
+        return await self._effective_volume_context()
+
+    async def _effective_volume_context(self) -> EffectiveVolumeContext:
+        """Return the absolute volume facts consumed by fan-in.
+
+        The canonical dB value represents user intent. ``downstream_db`` is
+        Camilla's actual gain when readable, with the coordinator's safe target
+        as a fail-soft fallback. During the legacy Camilla ducker's exclusive
+        window, use that unducked target rather than publishing the temporary
+        duck attenuation as though it were user intent.
+        """
+        for _attempt in range(3):
+            # The short lock sections serialize this process's mutations. Slow
+            # Camilla/source probes remain outside the lock; the second read
+            # detects a mutation and retries the whole absolute snapshot.
+            async with self._lock:
+                # This is the snapshot's ordering point. Keep it with the
+                # immutable context so delayed IPC cannot make old truth look
+                # newer than a later snapshot.
+                stamp_boot_ns = volume_context_stamp_boot_ns()
+                before = self._persistence.load()
+                level = (
+                    int(before.listening_level)
+                    if before is not None and before.listening_level is not None
+                    else self._level
+                )
+                pre_mute = (
+                    before.pre_mute_level
+                    if before is not None
+                    else self._pre_mute_level
+                )
+            canonical_db = percent_to_db(level)
+            # Persisted pre-mute is user intent and must win over a lagging or
+            # unreadable Camilla observation. A false hardware read may never
+            # lower an already-known mute assertion.
+            muted = pre_mute is not None or self._main_mute_for_level(level)
+            current_db: float | None = None
+            current_mute: bool | None = None
+            if not self._camilla_volume_locked:
+                current_db, current_mute = (
+                    await self._read_camilla_volume_and_mute()
+                )
+            if current_db is None:
+                source = await self._active_source()
+                if await self._camilla_carries_level(source):
+                    downstream_db = percent_to_db(level)
+                elif muted:
+                    downstream_db = percent_to_db(0)
+                elif (
+                    before is not None
+                    and before.main_volume_db < -RECONCILE_DRIFT_DB
+                ):
+                    downstream_db = before.main_volume_db
+                else:
+                    downstream_db = 0.0
+            else:
+                downstream_db = current_db
+            if current_mute is not None:
+                muted = muted or current_mute
+
+            async with self._lock:
+                after = self._persistence.load()
+            before_key = (
+                None if before is None else before.listening_level,
+                None if before is None else before.pre_mute_level,
+                None if before is None else before.main_volume_db,
+            )
+            after_key = (
+                None if after is None else after.listening_level,
+                None if after is None else after.pre_mute_level,
+                None if after is None else after.main_volume_db,
+            )
+            if before_key == after_key:
+                return EffectiveVolumeContext(
+                    canonical_db=float(canonical_db),
+                    downstream_db=float(downstream_db),
+                    tts_envelope_lufs=tts_envelope_lufs_for_level(level),
+                    muted=bool(muted),
+                    stamp_boot_ns=stamp_boot_ns,
+                )
+        async with self._lock:
+            stamp_boot_ns = volume_context_stamp_boot_ns()
+            latest = self._persistence.load()
+        level = (
+            int(latest.listening_level)
+            if latest is not None and latest.listening_level is not None
+            else self._level
+        )
+        muted = (
+            (latest is not None and latest.pre_mute_level is not None)
+            or self._main_mute_for_level(level)
+        )
+        downstream_db = (
+            latest.main_volume_db
+            if latest is not None
+            else percent_to_db(level)
+        )
+        log_event(
+            logger,
+            "volume.context_snapshot_degraded",
+            reason="intent_churn",
+            attempts=3,
+            level=logging.WARNING,
+        )
+        return EffectiveVolumeContext(
+            canonical_db=float(percent_to_db(level)),
+            downstream_db=float(downstream_db),
+            tts_envelope_lufs=tts_envelope_lufs_for_level(level),
+            muted=bool(muted),
+            stamp_boot_ns=stamp_boot_ns,
+        )
+
+    async def _publish_user_intent_context(
+        self,
+        source: Source,
+        level: int,
+        *,
+        muted: bool,
+    ) -> None:
+        """Publish known intent before a slow or safety-critical actuator.
+
+        Caller holds ``_lock``. This deliberately does not call the ordinary
+        snapshot method (which would re-enter that lock). Non-muted
+        Camilla-master paths skip the provisional message because their local
+        write is already fast and publishing against the old downstream gain
+        would create a needless two-ramp transient. Mute always publishes first
+        so a wedged Camilla cannot delay the immediate TTS stop.
+        """
+        if (
+            self._volume_context_publisher is None
+            or (not muted and volume_mode(source) != VolumeMode.PUSH)
+        ):
+            return
+        try:
+            stamp_boot_ns = volume_context_stamp_boot_ns()
+            current_mute: bool | None = None
+            current_db: float | None
+            if muted:
+                current_db = None
+            else:
+                current_db, current_mute = (
+                    await self._read_camilla_volume_and_mute()
+                )
+            if current_db is None:
+                record = self._persistence.load()
+                current_db = (
+                    float(record.main_volume_db)
+                    if record is not None and record.main_volume_db is not None
+                    else 0.0
+                )
+            context = EffectiveVolumeContext(
+                canonical_db=float(percent_to_db(level)),
+                downstream_db=float(current_db),
+                tts_envelope_lufs=tts_envelope_lufs_for_level(level),
+                muted=bool(muted or current_mute is True),
+                stamp_boot_ns=stamp_boot_ns,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            self._log_volume_context_publish_failure(e, phase="intent")
+            return
+        await self._publish_effective_volume_context(context, phase="intent")
+
+    async def publish_volume_context(self, *, phase: str = "snapshot") -> None:
+        """Best-effort absolute context update; never breaks volume control."""
+        if self._volume_context_publisher is None:
+            return
+        try:
+            context = await self.effective_volume_context()
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            self._log_volume_context_publish_failure(e, phase=phase)
+            return
+        await self._publish_effective_volume_context(context, phase=phase)
+
+    async def _publish_effective_volume_context(
+        self,
+        context: EffectiveVolumeContext,
+        *,
+        phase: str,
+    ) -> None:
+        """Publish one already-snapshotted context without taking ``_lock``."""
+        publisher = self._volume_context_publisher
+        if publisher is None:
+            return
+        try:
+            await publisher(context)
+            log_event(
+                logger,
+                "volume.context_published",
+                canonical_db=f"{context.canonical_db:.1f}",
+                downstream_db=f"{context.downstream_db:.1f}",
+                muted=str(context.muted).lower(),
+                phase=phase,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            self._log_volume_context_publish_failure(e, phase=phase)
+
+    @staticmethod
+    def _log_volume_context_publish_failure(
+        exc: Exception,
+        *,
+        phase: str,
+    ) -> None:
+        log_event(
+            logger,
+            "volume.context_publish_failed",
+            exc_type=type(exc).__name__,
+            detail=str(exc),
+            phase=phase,
+            level=logging.WARNING,
+        )
 
     async def note_measurement_active(self, active: bool) -> None:
         """Pause/resume this process's 1 Hz Camilla drift reconciler."""
@@ -1424,8 +1719,8 @@ class VolumeCoordinator:
         """
         return volume_mode(source) == VolumeMode.CAMILLA_MASTER
 
-    async def _duck_active(self) -> bool | None:
-        if self._voice_session_active:
+    async def _camilla_locked(self) -> bool | None:
+        if self._camilla_volume_locked:
             return True
         if self._duck_active_probe is None:
             return False
@@ -1524,8 +1819,8 @@ class VolumeCoordinator:
         for a source handoff. With `persist=True`, the target is still
         saved so Ducker.restore lands safe after the duck.
         """
-        duck_active = await self._duck_active()
-        if duck_active is True:
+        camilla_locked = await self._camilla_locked()
+        if camilla_locked is True:
             target_mute = self._main_mute_for_db(db)
             if target_mute:
                 mute_ok = await self._set_camilla_main_mute(
@@ -1607,7 +1902,7 @@ class VolumeCoordinator:
         effective_previous_db = (
             previous_db if persisted_guard_active else current_db
         )
-        if await self._duck_active() is True:
+        if await self._camilla_locked() is True:
             volume_diagnostics.record_push_guard_clear(
                 source,
                 level=level,
@@ -1711,6 +2006,22 @@ class VolumeCoordinator:
         context: str,
         include_live_guard: bool = False,
     ) -> bool:
+        ok, _mutated = await self._confirm_push_mode_carrier_with_mutation(
+            source,
+            level,
+            context=context,
+            include_live_guard=include_live_guard,
+        )
+        return ok
+
+    async def _confirm_push_mode_carrier_with_mutation(
+        self,
+        source: Source,
+        level: int,
+        *,
+        context: str,
+        include_live_guard: bool = False,
+    ) -> tuple[bool, bool]:
         """Keep Camilla's final carrier consistent for push-mode sources.
 
         For 1-100%, Spotify/Bluetooth carry volume and Camilla returns
@@ -1719,13 +2030,14 @@ class VolumeCoordinator:
         silence does not depend on the renderer's idea of "zero".
         """
         if volume_mode(source) != VolumeMode.PUSH:
-            return False
+            return False, False
         if self._main_mute_for_level(level):
-            return await self._set_camilla_db(
+            ok = await self._set_camilla_db(
                 percent_to_db(0),
                 context=f"{context}_zero_mute",
                 persist=True,
             )
+            return ok, ok
 
         current_db, current_mute = await self._read_camilla_volume_and_mute()
         record = self._persistence.load()
@@ -1743,10 +2055,11 @@ class VolumeCoordinator:
             )
         )
         if not needs_clear:
-            return True
-        return await self._clear_confirmed_push_guard(
+            return True, False
+        cleared = await self._clear_confirmed_push_guard(
             source, level, context=context,
         )
+        return cleared, cleared
 
     async def abort_source_handoff(self, handoff: SourceHandoff) -> bool:
         """Best-effort rollback when fan-in selection fails after prepare.
@@ -2003,17 +2316,17 @@ class VolumeCoordinator:
     async def _set_camilla(self, level: int) -> bool:
         db = percent_to_db(level)
         target_mute = self._main_mute_for_level(level)
-        # Defer gate #1: in-process voice-session flag. Set by
+        # Defer gate #1: in-process Camilla-ownership flag. Set by
         # WakeLoop.note_voice_session on the long-lived coordinator
-        # owned by jasper-voice. The Ducker has exclusive control of
-        # camilla during a session; Ducker.restore() reads the
+        # owned by jasper-voice. Only the legacy Camilla Ducker sets
+        # this flag; Ducker.restore() reads the
         # canonical target via get_camilla_target_db() on session end
         # and lands camilla at the user's intent. listening_level is
         # still updated in self._level by the caller and persisted by
         # _dispatch's finally block, so the user's intent survives;
         # main_volume_db is intentionally NOT saved here — it'd
         # diverge from camilla's actual state until restore.
-        if self._voice_session_active:
+        if self._camilla_volume_locked:
             mute_ok = await self._set_camilla_main_mute(
                 target_mute,
                 context="set_camilla_voice_session",
@@ -2023,7 +2336,7 @@ class VolumeCoordinator:
                 "volume.deferred",
                 # `level` collides with log_event's level= param → fields=.
                 fields={
-                    "reason": "voice_session_active",
+                    "reason": "camilla_volume_locked",
                     "level": f"{level}%",
                     "target_db": f"{db:.1f}",
                     "muted": str(target_mute).lower(),
@@ -2031,7 +2344,7 @@ class VolumeCoordinator:
                 },
             )
             return bool(mute_ok)
-        # Defer gate #2: cross-daemon duck-active probe. The flag
+        # Defer gate #2: cross-daemon Camilla-lock probe. The flag
         # above only fires on jasper-voice's long-lived coordinator.
         # jasper-control builds a fresh VolumeCoordinator per HTTP
         # request whose flag is always False, so it asks jasper-voice

@@ -53,10 +53,16 @@ _ENV_EXAMPLE = _REPO / ".env.example"
 # CORRECTION-mode observable (0 while disabled). Combo boxes get exactly this shape
 # under /state.audio_graph.fanin.host_clock.
 _PINNED_HOST_CLOCK_FRAGMENT = (
-    '{"enabled":false,"ladder":"disabled","obs_mode":"correction","pitch_ppm_commanded":0.0,'
+    '{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction",'
+    '"pitch_ppm_commanded":0.0,'
     '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,'
     '"dll":{"err_frames":0.00,"locked":false},'
-    '"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},'
+    '"actuator":{"ready":false,"capture_generation":0,"control_generation":null,'
+    '"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},'
+    '"probe":{"phase":null,"attempt":1,"max_attempts":2,'
+    '"last_attempt_result":"none","last_attempt_response_ratio":null,'
+    '"final_result":"none","final_response_ratio":null,'
+    '"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},'
     '"demotions":0,"transitions":0,"last_transition_reason":"startup"}'
 )
 
@@ -75,14 +81,14 @@ def _fanin_host_clock_text() -> str:
 
 # --------------------------------------------------------------------------
 # Env-key names + defaults, pinned against config.rs + .env.example prose.
-# The three JASPER_FANIN_HOST_CLOCK* keys mirror usbsink's; there is NO target
-# env (the setpoint is the resampler's held target, derived).
+# The live fan-in host-clock keys; there is NO target or probe-duration env.
+# The setpoint is the resampler's held target and Correction mode uses a fixed
+# probe window.
 # --------------------------------------------------------------------------
 
 _PINNED_ENV_KEYS = {
     "JASPER_FANIN_HOST_CLOCK": None,  # unset = disabled; no numeric default
     "JASPER_FANIN_HOST_CLOCK_PROBE_PPM": "300",
-    "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS": "6",
 }
 
 
@@ -129,16 +135,16 @@ def test_fanin_host_clock_is_default_off_literal_gate():
     assert "event=fanin.host_clock_config_ignored" in text
 
 
-def test_fanin_probe_ranges_match_usbsink_contract():
-    # The two servos share one probe contract: ppm 200..=800, secs 5..=10.
+def test_fanin_probe_ppm_range_is_bounded():
     text = _fanin_config_text()
     assert "(200..=800).contains(&host_clock_probe_ppm)" in text, (
         "the fan-in probe-ppm range must be 200..=800 (the ~163 ppm Windows "
-        "deadband floor + the ±1000 ppm validity ceiling), matching usbsink."
+        "deadband floor + the ±1000 ppm validity ceiling)."
     )
-    assert "(5..=10).contains(&host_clock_probe_secs)" in text, (
-        "the fan-in probe-seconds range must be 5..=10, matching usbsink."
-    )
+
+
+def test_no_dead_fanin_host_clock_probe_duration_env():
+    assert "JASPER_FANIN_HOST_CLOCK_PROBE_SECONDS" not in _fanin_config_text()
 
 
 def test_no_fanin_host_clock_target_env_key():
@@ -218,7 +224,6 @@ def test_audio_graph_passes_through_present_fanin_host_clock_block():
     block["enabled"] = True
     block["ladder"] = "l0_locked"
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status=_fanin_status_with_host_clock(block),
         outputd_status=None,
     )
@@ -230,7 +235,6 @@ def test_audio_graph_fanin_host_clock_none_when_key_absent():
     # A combo build with no host_clock in the fan-in STATUS (feature never
     # rendered a block) → None, a definite "no evidence".
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status={"inputs": []},
         outputd_status=None,
     )
@@ -240,7 +244,6 @@ def test_audio_graph_fanin_host_clock_none_when_key_absent():
 
 def test_audio_graph_fanin_host_clock_none_when_fanin_status_none():
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status=None,
         outputd_status=None,
     )
@@ -251,12 +254,59 @@ def test_audio_graph_fanin_host_clock_none_when_fanin_status_none():
 def test_audio_graph_fanin_host_clock_none_when_fanin_status_not_a_dict():
     # Defensive: a malformed fan-in status must degrade to None, not raise.
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw=None,
         fanin_status="not-a-dict",  # type: ignore[arg-type]
         outputd_status=None,
     )
     assert graph is not None
     assert graph["fanin"]["host_clock"] is None
+
+
+def test_generation_lifecycle_and_bounded_retry_contract_is_explicit():
+    adapter = _fanin_host_clock_text()
+    shared = _SHARED_HOST_CLOCK_RS.read_text(encoding="utf-8")
+    mixer = (_REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text(
+        encoding="utf-8"
+    )
+    compliance = (
+        _REPO / "rust" / "jasper-fanin" / "src" / "host_compliance.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "capture_generation: Arc<AtomicU64>" in adapter
+    assert "capture_generation: Arc::clone(&direct_obs.opens)" in mixer, (
+        "direct successful-open count must remain the capture-generation SSOT"
+    )
+    assert "self.control_generation == Some(capture_generation)" in adapter
+    assert "event=fanin.host_clock_generation_mismatch" in adapter
+    assert "event=fanin.host_clock_control_refresh_succeeded" in adapter
+    assert "pub const CONTROL_REOPEN_INTERVAL_MS: u64 = 1_000;" in adapter
+    assert "pub const MAX_PROBE_ATTEMPTS: u32 = 2;" in shared
+    assert "pub const PROBE_RETRY_SETTLE_SECS: u64 = 10;" in shared
+    assert "ProbePhase::RetryWait" in shared
+    assert 'Some("probe_noncompliant")' in shared
+    assert 'Some("lost_authority")' in shared
+    assert 'Some("actuator_unavailable")' in shared
+
+    assert "host_clock_fallback_reason_code" in mixer
+    assert "decode_fallback_reason_code" in mixer
+    assert "compute_revoke_reason(fallback_reason)" in compliance
+    assert "probe_verdict_is_live" not in compliance
+    assert "ladder_l2" not in compliance, (
+        "compliance cause must be explicit, never inferred from L2 + probe result"
+    )
+
+
+def test_host_clock_thread_boundary_is_data_only_and_thread_confined():
+    adapter = _fanin_host_clock_text()
+    signals_start = adapter.index("pub struct HostClockSignals")
+    signals_end = adapter.index("pub const PROBE_RATIO_NONE", signals_start)
+    signals = adapter[signals_start:signals_end]
+    assert "pub pcm" not in signals.lower()
+    assert "pub mixer" not in signals.lower()
+    assert "pub actuator" not in signals.lower()
+    assert "Arc<Atomic" in signals
+    assert "HostClockActuator::new(ctl_card, AlsaPitchCtl::open)" in adapter, (
+        "the concrete !Send ALSA handle must be constructed inside its owning thread"
+    )
 
 
 # --------------------------------------------------------------------------

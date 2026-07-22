@@ -97,8 +97,8 @@ function makeEl(id) {
   };
 }
 
-function response(payload, ok = true) {
-  return { ok, async json() { return payload; } };
+function response(payload, ok = true, status = ok ? 200 : 500) {
+  return { ok, status, async json() { return payload; } };
 }
 
 function deferred() {
@@ -192,6 +192,50 @@ function activeTwoWayTopologyPayload() {
       ],
     }],
   };
+}
+
+function activeStereoTwoWayTopologyPayload() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.hardware.physical_output_count = 4;
+  topology.hardware.outputs = [0, 1, 2, 3].map((index) => ({
+    index,
+    human_label: `DAC output ${index + 1}`,
+  }));
+  topology.routing = {
+    mono_group_id: null,
+    main_left_group_id: "left",
+    main_right_group_id: "right",
+    subwoofer_group_ids: [],
+  };
+  topology.speaker_groups = [
+    { id: "left", label: "Left cabinet", kind: "left", outputBase: 0 },
+    { id: "right", label: "Right cabinet", kind: "right", outputBase: 2 },
+  ].map((group) => ({
+    id: group.id,
+    label: group.label,
+    kind: group.kind,
+    mode: "active_2_way",
+    position: { x: group.id === "left" ? -1 : 1, y: 0, rotation_degrees: 0 },
+    channels: [
+      {
+        role: "woofer",
+        physical_output_index: group.outputBase,
+        identity_verified: true,
+        startup_muted: true,
+        protection_required: false,
+        protection_status: "not_required",
+      },
+      {
+        role: "tweeter",
+        physical_output_index: group.outputBase + 1,
+        identity_verified: true,
+        startup_muted: true,
+        protection_required: true,
+        protection_status: "software_guard_requested",
+      },
+    ],
+  }));
+  return topology;
 }
 
 function activeTwoWayWithSubwooferTopologyPayload() {
@@ -1877,6 +1921,180 @@ async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   return { twoOutputChannelSelectorAutoAssignsPeerOnSave: true };
 }
 
+// JTS3 hardware punch: a compression-driver tweeter commissioned with a
+// ~2 kHz crossover point was permanently blocked because driver_style had no
+// UI surface anywhere, so the conservative 5000 Hz "unknown style" floor
+// could never be lowered to the driver's real 2000 Hz floor. This pins the
+// fix: the layout card offers a tweeter-only style selector that writes onto
+// the topology channel (the existing single writer, saved through
+// ./output-topology), and the declared style is visible on the driver
+// research/review card before the safety profile is confirmed.
+async function testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview() {
+  const topology = activeTwoWayTopologyPayload();
+  const saves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        saves.push(body.output_topology);
+        return Promise.resolve(response({
+          output_topology: body.output_topology,
+          topology_revision: "saved-1",
+        }));
+      }
+      return Promise.resolve(response(topology));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (!initialHtml.includes('data-driver-style data-group-id="main" data-role="tweeter"')) {
+    fail("layout card must offer a tweeter driver-style selector", { initialHtml });
+  }
+  if (initialHtml.includes('data-driver-style data-group-id="main" data-role="woofer"')) {
+    fail("a low-frequency role must not get a driver-style selector (unused by the floor policy)", { initialHtml });
+  }
+  if (!initialHtml.includes("Not sure (conservative default)")) {
+    fail("undeclared style must default to the conservative 'not sure' option", { initialHtml });
+  }
+  if (!initialHtml.includes("Tweeter style not set") || !initialHtml.includes("5000 Hz floor")) {
+    fail("driver research/review card must show the undeclared-style conservative floor", { initialHtml });
+  }
+
+  harness.dispatchChange({
+    value: "compression_driver",
+    getAttribute(name) {
+      return { "data-group-id": "main", "data-role": "tweeter" }[name] || "";
+    },
+    hasAttribute(name) { return name === "data-driver-style"; },
+  });
+  await harness.flush();
+
+  const afterSelectHtml = harness.elements.get("view-body").innerHTML;
+  if (!afterSelectHtml.includes('value="compression_driver" selected')) {
+    fail("selecting a style must reflect back as the selected option", { afterSelectHtml });
+  }
+  if (!afterSelectHtml.includes("Tweeter style: Compression driver (horn-loaded)") ||
+      !afterSelectHtml.includes("protective high-pass floor 2000 Hz")) {
+    fail("declared style must be visible on the review card with its floor", { afterSelectHtml });
+  }
+
+  harness.dispatchClick({ "data-act": "save-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (saves.length !== 1) fail("style change should save through the existing topology writer", { saves });
+  const tweeter = saves[0].speaker_groups[0].channels.find((c) => c.role === "tweeter");
+  if (!tweeter || tweeter.driver_style !== "compression_driver") {
+    fail("saved topology must carry the declared driver_style on the channel", { tweeter });
+  }
+  return { tweeterDriverStyleSelectorSetsTopologyAndAppearsInReview: true };
+}
+
+// A stored driver_style the picker doesn't know (set via API or a newer
+// build, e.g. horn_compression_driver) must render label-only — never a
+// guessed floor number — and the picker must not misreport it as "Not sure".
+// The server's safety evaluation stays the floor authority.
+async function testUnknownDriverStyleRendersWithoutGuessedFloor() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels[1].driver_style = "horn_compression_driver";
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(topology)),
+  }));
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes("Tweeter style: horn compression driver.")) {
+    fail("an unknown-to-the-picker style must render its label without a floor", { html });
+  }
+  if (html.includes("horn compression driver — protective high-pass floor") ||
+      /horn compression driver[^<]*5000/.test(html)) {
+    fail("an unknown-to-the-picker style must never show a guessed floor", { html });
+  }
+  if (!html.includes('value="horn_compression_driver" selected')) {
+    fail("the picker must show the stored unknown style as selected, not 'Not sure'", { html });
+  }
+  return { unknownDriverStyleRendersWithoutGuessedFloor: true };
+}
+
+// Nit from review: the safety-confirmation toast restates the confirmed
+// tweeter style + floor so the operator sees what they just confirmed.
+async function testConfirmSafetyToastRestatesTweeterStyleAndFloor() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels[1].driver_style = "compression_driver";
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(topology)),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        return Promise.resolve(response({
+          status: "ready_for_review",
+          revision: 4,
+          summary: {},
+          operator_inputs: {},
+        }));
+      }
+      return Promise.resolve(response({ status: "ready_for_review", revision: 3, summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({ "data-act": "confirm-driver-safety" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const text = harness.elements.get("status").textContent;
+  if (!text.includes("Safety limits confirmed") ||
+      !text.includes("Compression driver (horn-loaded), 2000 Hz protective floor")) {
+    fail("confirm toast must restate the confirmed tweeter style and floor", { text });
+  }
+  if (!text.includes("does not authorize sound")) {
+    fail("confirm toast must keep the no-audio disclaimer", { text });
+  }
+  return { confirmSafetyToastRestatesTweeterStyleAndFloor: true };
+}
+
+// Punch #13 (MEDIUM): a save refusal (e.g. a stale-fingerprint confirmation)
+// must surface the server's real error, not a false "saved" toast. Verified
+// this already holds for both the plain working-setup save and the
+// confirm-safety-profile save (same handler, same status branch) — this pins
+// it as a regression guard.
+async function testDesignDraftSaveRefusalShowsServerErrorNotSavedToast() {
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        posts.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response(
+          { error: "driver safety profile confirmation did not validate as current" },
+          false,
+          400,
+        ));
+      }
+      return Promise.resolve(response({ status: "ready_for_review", revision: 3, summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchClick({ "data-act": "confirm-driver-safety" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (posts.length !== 1) fail("confirm action should POST once", { posts });
+  const statusNode = harness.elements.get("status");
+  if (!statusNode.textContent.includes("driver safety profile confirmation did not validate as current")) {
+    fail("a 400 refusal must surface the server's real error text", { text: statusNode.textContent });
+  }
+  if (statusNode.textContent.toLowerCase().includes("saved") ||
+      statusNode.textContent.toLowerCase().includes("confirmed for the current")) {
+    fail("a 400 refusal must not show a success/saved toast", { text: statusNode.textContent });
+  }
+  if (!statusNode.className.includes("err")) {
+    fail("a 400 refusal must render with the error status style", { className: statusNode.className });
+  }
+  return { designDraftSaveRefusalShowsServerErrorNotSavedToast: true };
+}
+
 async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   const topology = activeTwoWayTopologyPayload();
   const fetchHandler = baseFetch({
@@ -2681,6 +2899,7 @@ async function testCrossoverPreviewRowsShowInversionAndDelay() {
 async function testDriverResearchPromptCopyUsesHttpFallback() {
   let copiedText = "";
   let asyncClipboardCalled = false;
+  const researchRequests = [];
   const draft = {
     status: "ready_for_review",
     operator_inputs: {
@@ -2705,6 +2924,13 @@ async function testDriverResearchPromptCopyUsesHttpFallback() {
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+    "./active-speaker/driver-research-request": (_path, options = {}) => {
+      researchRequests.push(JSON.parse(options.body || "{}"));
+      return Promise.resolve(response({
+        prompt: "Target-bound prompt for Manual Woofer and Manual Tweeter",
+        request: { request_fingerprint: "a".repeat(64) },
+      }));
+    },
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -2739,6 +2965,13 @@ async function testDriverResearchPromptCopyUsesHttpFallback() {
 
   if (!copiedText.includes("Manual Woofer") || !copiedText.includes("Manual Tweeter")) {
     fail("driver research prompt should copy through the HTTP fallback", { copiedText });
+  }
+  if (researchRequests.length !== 1 ||
+      researchRequests[0].operator_inputs.woofer !== "Manual Woofer" ||
+      researchRequests[0].operator_inputs.tweeter !== "Manual Tweeter") {
+    fail("driver research prompt should be prepared from the visible current values", {
+      researchRequests,
+    });
   }
   if (asyncClipboardCalled) {
     fail("local HTTP fallback should not await async clipboard before selection copy", {
@@ -2776,6 +3009,10 @@ async function testDriverResearchPromptCopyBlockedSelectsPrompt() {
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+    "./active-speaker/driver-research-request": () => Promise.resolve(response({
+      prompt: "Target-bound prompt for Manual Woofer and Manual Tweeter",
+      request: { request_fingerprint: "b".repeat(64) },
+    })),
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -4568,6 +4805,429 @@ async function testFollowerModeSafeFallbackOnMalformedIsland() {
   return { followerModeSafeFallbackOnMalformedIsland: true };
 }
 
+async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
+  let designPosts = 0;
+  let previewPosts = 0;
+  const targetIds = ["left:woofer", "left:tweeter", "right:woofer", "right:tweeter"];
+  const legacyDraft = {
+    status: "ready_for_review",
+    revision: 7,
+    summary: {
+      missing_driver_info_target_ids: [],
+      missing_crossover_candidate_pairs: [],
+    },
+    operator_inputs: { woofer: "Legacy shared woofer", tweeter: "Legacy shared tweeter" },
+    manual_settings: {
+      drivers: [
+        { role: "woofer", model: "Legacy shared woofer" },
+        { role: "tweeter", model: "Legacy shared tweeter" },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 2500,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+      }],
+    },
+    driver_safety_profile: {
+      status: "incomplete",
+      confirmation: null,
+      targets: targetIds.map((targetId) => ({
+        target_id: targetId,
+        target_values_binding: "missing",
+      })),
+    },
+    driver_safety_profile_evaluation: {
+      status: "incomplete",
+      confirmed_and_current: false,
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeStereoTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") designPosts += 1;
+      return Promise.resolve(response(legacyDraft));
+    },
+    "./active-speaker/crossover-preview": (_path, options = {}) => {
+      if (options.method === "POST") {
+        previewPosts += 1;
+        return Promise.resolve(response({
+          kind: "jts_active_speaker_crossover_preview",
+          status: "ready_for_protected_staging",
+          summary: { ready_crossover_count: 2, blocker_count: 0 },
+          groups: [],
+          issues: [],
+          permissions: { may_prepare_protected_startup_config: true },
+        }));
+      }
+      return Promise.resolve(response({ status: "not_prepared", summary: {}, issues: [] }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (initialHtml.includes("Legacy shared woofer") || initialHtml.includes("Legacy shared tweeter")) {
+    fail("Legacy role-only values must not copy into stereo target edit rows", { initialHtml });
+  }
+  for (const targetId of targetIds) {
+    if (!initialHtml.includes(`data-driver-target="${targetId}"`)) {
+      fail("Legacy stereo draft must retain one editable row per physical target", {
+        targetId,
+        initialHtml,
+      });
+    }
+  }
+  if (!initialHtml.includes("Safety profile: add the missing limits before confirmation.")) {
+    fail("Preview readiness must not imply per-target safety confirmation", { initialHtml });
+  }
+  if (/data-act="prepare-crossover-preview" disabled/.test(initialHtml)) {
+    fail("A clean server-ready legacy draft must allow crossover preview", { initialHtml });
+  }
+
+  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
+  for (let i = 0; i < 6; i += 1) await harness.flush();
+
+  if (previewPosts !== 1 || designPosts !== 0) {
+    fail("Legacy stereo preview should POST directly without rewriting ambiguous target values", {
+      previewPosts,
+      designPosts,
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  const previewHtml = harness.elements.get("view-body").innerHTML;
+  if (!previewHtml.includes("Safety profile: add the missing limits before confirmation.") ||
+      previewHtml.includes("Legacy shared woofer") || previewHtml.includes("Legacy shared tweeter")) {
+    fail("Preparing a preview must not promote or copy legacy role-only safety values", {
+      previewHtml,
+    });
+  }
+  if (legacyDraft.driver_safety_profile.confirmation !== null ||
+      legacyDraft.driver_safety_profile.targets.some((target) =>
+        target.target_values_binding !== "missing")) {
+    fail("Legacy preview must leave physical-target safety confirmation incomplete", { legacyDraft });
+  }
+  return { legacyStereoDraftCanPreparePreviewWithoutTargetCopy: true };
+}
+
+async function testStereoDriverValuesStayTargetSpecific() {
+  const designSaves = [];
+  const legacyDraft = {
+    status: "ready_for_review",
+    revision: 7,
+    summary: {},
+    operator_inputs: { woofer: "Legacy shared woofer", tweeter: "Legacy shared tweeter" },
+    manual_settings: {
+      drivers: [
+        { role: "woofer", model: "Legacy shared woofer" },
+        { role: "tweeter", model: "Legacy shared tweeter" },
+      ],
+      crossover_candidates: [],
+    },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeStereoTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body || "{}");
+        designSaves.push(body);
+        return Promise.resolve(response({
+          ...legacyDraft,
+          revision: 8,
+          operator_inputs: body.operator_inputs,
+          manual_settings: body.manual_settings,
+        }));
+      }
+      return Promise.resolve(response(legacyDraft));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  const targetRows = initialHtml.match(/data-driver-target=/g) || [];
+  if (targetRows.length !== 4) {
+    fail("Stereo active speakers must render one driver model row per physical target", { initialHtml });
+  }
+  if (initialHtml.includes("Legacy shared woofer") || initialHtml.includes("Legacy shared tweeter")) {
+    fail("Ambiguous legacy role values must not copy into both stereo cabinets", { initialHtml });
+  }
+
+  const models = {
+    "left:woofer": "Left W6",
+    "left:tweeter": "Left T1",
+    "right:woofer": "Right W8",
+    "right:tweeter": "Right T2",
+  };
+  Object.entries(models).forEach(([targetId, model]) => {
+    harness.dispatchInput({ "data-driver-target": targetId }, model);
+  });
+  harness.dispatchInput({
+    "data-manual-crossover": "woofer:tweeter",
+    "data-manual-field": "frequency_hz",
+  }, "2500");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 1) fail("Target-specific stereo save should POST once", { designSaves });
+  const saved = designSaves[0];
+  if (saved.expected_revision !== 7) {
+    fail("Design save must carry the loaded optimistic revision", { saved });
+  }
+  if (JSON.stringify(saved.operator_inputs.target_models) !== JSON.stringify(models)) {
+    fail("Each stereo model must stay keyed by physical target", { saved });
+  }
+  const savedModels = Object.fromEntries(
+    saved.manual_settings.drivers.map((driver) => [driver.target_id, driver.model])
+  );
+  if (JSON.stringify(savedModels) !== JSON.stringify(models)) {
+    fail("Manual driver rows must preserve asymmetric target models", { savedModels, saved });
+  }
+  return { stereoDriverValuesStayTargetSpecific: true };
+}
+
+async function testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop() {
+  const posts = [];
+  const request = { request_fingerprint: "a".repeat(64), targets: [] };
+  const research = {
+    artifact_schema_version: 2,
+    kind: "jts_active_crossover_driver_research",
+    request_fingerprint: "a".repeat(64),
+    drivers: [{
+      target_id: "main:woofer",
+      target_fingerprint: "b".repeat(64),
+      role: "woofer",
+      model: "Original W6",
+      unknowns: ["thermal limit unknown"],
+      field_provenance: {
+        cabinet: {
+          confidence: "medium",
+          basis: "manufacturer drawing",
+          sources: ["https://example.test/w6"],
+        },
+      },
+    }],
+    crossover_candidates: [],
+  };
+  const initial = {
+    status: "ready_for_review",
+    revision: 4,
+    summary: {},
+    operator_inputs: {
+      target_models: { "main:woofer": "Original W6", "main:tweeter": "Original T1" },
+    },
+    driver_research_request: request,
+    driver_research: research,
+    driver_safety_profile: {
+      targets: [{
+        target_id: "main:woofer",
+        unknowns: ["thermal limit unknown"],
+        field_provenance: research.drivers[0].field_provenance,
+      }],
+    },
+    manual_settings: {
+      drivers: [
+        {
+          target_id: "main:woofer",
+          role: "woofer",
+          model: "Original W6",
+          nominal_impedance_ohm: true,
+        },
+        { target_id: "main:tweeter", role: "tweeter", model: "Original T1" },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 2500,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+      }],
+    },
+  };
+  const fresh = {
+    status: "ready_for_review",
+    revision: 5,
+    error: "Speaker design changed in another session",
+    summary: {},
+    operator_inputs: {
+      target_models: { "main:woofer": "Fresh W8", "main:tweeter": "Fresh T2" },
+    },
+    manual_settings: { drivers: [], crossover_candidates: [] },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        posts.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response(fresh, false, 409));
+      }
+      return Promise.resolve(response(initial));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "Explicit unknowns",
+    "manufacturer drawing",
+    "https://example.test/w6",
+    "High-pass family / equivalent",
+  ]) {
+    if (!initialHtml.includes(expected)) {
+      fail("Authority-bearing safety evidence must render after reload", { expected, initialHtml });
+    }
+  }
+
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (posts.length !== 1) fail("A 409 must refresh without a blind retry", { posts });
+  const saved = posts[0];
+  if (saved.expected_revision !== 4) fail("Save must use the loaded revision", { saved });
+  if (saved.driver_research_request.request_fingerprint !== request.request_fingerprint ||
+      saved.driver_research.request_fingerprint !== research.request_fingerprint) {
+    fail("Reload must preserve the bound v2 request and research packet", { saved });
+  }
+  const woofer = saved.manual_settings.drivers.find((driver) => driver.target_id === "main:woofer");
+  if (woofer && Object.prototype.hasOwnProperty.call(woofer, "nominal_impedance_ohm")) {
+    fail("Boolean values must not pass through Number(true) into a numeric field", { woofer });
+  }
+  const refreshedHtml = harness.elements.get("view-body").innerHTML;
+  if (!refreshedHtml.includes("Fresh W8") || !refreshedHtml.includes("Fresh T2") ||
+      !refreshedHtml.includes("another session")) {
+    fail("Conflict response must replace stale values and explain the refresh", { refreshedHtml });
+  }
+  return { designConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop: true };
+}
+
+async function testDesignConflictPreservesUnsavedSafetyEdits() {
+  const posts = [];
+  const initial = {
+    status: "ready_for_review",
+    revision: 4,
+    summary: {},
+    operator_inputs: {
+      target_models: { "main:woofer": "Original W6", "main:tweeter": "Original T1" },
+    },
+    manual_settings: {
+      drivers: [
+        { target_id: "main:woofer", role: "woofer", model: "Original W6" },
+        {
+          target_id: "main:tweeter",
+          role: "tweeter",
+          model: "Original T1",
+          hard_excitation_band_hz: [5000, 22000],
+        },
+      ],
+      crossover_candidates: [],
+    },
+    driver_safety_profile: {
+      status: "confirmed",
+      targets: [{
+        target_id: "main:tweeter",
+        hard_excitation_band_hz: [5000, 22000],
+        field_provenance: {
+          hard_excitation_band_hz: {
+            confidence: "medium",
+            basis: "old saved evidence",
+            sources: ["https://example.test/old-tweeter"],
+          },
+        },
+      }],
+    },
+    driver_safety_profile_evaluation: {
+      status: "confirmed",
+      confirmed_and_current: true,
+    },
+  };
+  const fresh = {
+    status: "ready_for_review",
+    revision: 5,
+    error: "Speaker design changed in another session.",
+    summary: {},
+    operator_inputs: {
+      target_models: { "main:woofer": "Fresh W8", "main:tweeter": "Fresh T2" },
+    },
+    manual_settings: { drivers: [], crossover_candidates: [] },
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method !== "POST") return Promise.resolve(response(initial));
+      const body = JSON.parse(options.body || "{}");
+      posts.push(body);
+      if (posts.length === 1) return Promise.resolve(response(fresh, false, 409));
+      return Promise.resolve(response({
+        ...fresh,
+        revision: 6,
+        error: "",
+        operator_inputs: body.operator_inputs,
+        manual_settings: body.manual_settings,
+        driver_safety_profile: { status: "unconfirmed", targets: [] },
+        driver_safety_profile_evaluation: {
+          status: "unconfirmed",
+          confirmed_and_current: false,
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  const initialHtml = harness.elements.get("view-body").innerHTML;
+  if (!initialHtml.includes("confirmed for the current outputs") ||
+      !initialHtml.includes("old saved evidence")) {
+    fail("A clean confirmed draft must show its current confirmation and provenance", {
+      initialHtml,
+    });
+  }
+
+  harness.dispatchInput({
+    "data-manual-driver": "main:tweeter",
+    "data-manual-field": "hard_excitation_min_hz",
+  }, "5500");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (posts.length !== 1) fail("A conflict must not retry without user action", { posts });
+  const conflictHtml = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    'data-manual-field="hard_excitation_min_hz" value="5500"',
+    "Your unsaved edits were kept",
+    "needs confirmation after saving current edits",
+  ]) {
+    if (!conflictHtml.includes(expected)) {
+      fail("Conflict UI must retain and truthfully label unsaved safety edits", {
+        expected,
+        conflictHtml,
+      });
+    }
+  }
+  if (conflictHtml.includes("Fresh T2") || conflictHtml.includes("old saved evidence") ||
+      conflictHtml.includes("confirmed for the current outputs")) {
+    fail("Conflict UI must not replace edits or show stale authority", { conflictHtml });
+  }
+
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+  if (posts.length !== 2 || posts[1].expected_revision !== 5) {
+    fail("An explicit retry must reconcile against the fresh server revision", { posts });
+  }
+  const tweeter = posts[1].manual_settings.drivers.find(
+    (driver) => driver.target_id === "main:tweeter"
+  );
+  if (!tweeter || tweeter.hard_excitation_band_hz[0] !== 5500) {
+    fail("Explicit conflict retry must keep the local safety edit", { posts, tweeter });
+  }
+  return { designConflictPreservesUnsavedSafetyEdits: true };
+}
+
 const results = [];
 // Dead-end: a layout is drafted but no spare physical output exists for a LOCAL
 // subwoofer (the single-output Apple-dongle case). The card must keep the
@@ -4638,11 +5298,19 @@ results.push(await testReloadedPageRendersReloadSafeStopForActiveTest());
 results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
 results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
+results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
+results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
+results.push(await testConfirmSafetyToastRestatesTweeterStyleAndFloor());
+results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
+results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
+results.push(await testStereoDriverValuesStayTargetSpecific());
+results.push(await testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop());
+results.push(await testDesignConflictPreservesUnsavedSafetyEdits());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault());
 results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());

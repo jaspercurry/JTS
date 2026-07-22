@@ -17,8 +17,8 @@ consumes:
   * the JSONL event schema (`jasper.route_latency.tap_client.read_tap_events`
     must parse exactly the pinned shape — the SAME shape the fan-in tap emits,
     including malformed-tail tolerance for a file read mid-write), and
-  * the state.json health-counter leaf names the route-health verdict reads out of
-    the usbsink + fanin + outputd Rust status serializers (a Rust-side rename must
+  * the health-counter leaf names the route-health verdict reads out of the
+    fanin + outputd Rust status serializers (a Rust-side rename must
     fail loudly here, not silently make the verdict vacuous).
 """
 from __future__ import annotations
@@ -38,7 +38,6 @@ from jasper.route_latency.tap_client import (
 )
 
 _REPO = Path(__file__).resolve().parents[1]
-_USBSINK_MAIN_RS = _REPO / "rust" / "jasper-usbsink-audio" / "src" / "main.rs"
 _FANIN_STATE_RS = _REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 _OUTPUTD_STATE_RS = _REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
 
@@ -161,8 +160,8 @@ def test_read_tap_events_skips_lines_missing_required_fields(tmp_path):
 # Health-counter names: the harness's route-health verdict
 # (`RouteHealthReport.would_justify_route_health_ok`, which
 # `--confirm-route-health-ok` gates on) reads specific counter paths out of
-# the usbsink `state.json`. If the Rust `counters` block ever renamed one of
-# those, `all_deltas.get(path, 0.0)` would return 0 forever and the flagged
+# fan-in/outputd STATUS snapshots. If a Rust serializer renamed one of those,
+# a stable-path lookup could stop observing the real counter and the flagged
 # verdict would silently degrade to vacuous-true. Pin the leaf names against
 # the Rust source so a rename fails loudly here — the same cross-language
 # discipline used for the JSONL fixture and the raw0 wire constants.
@@ -172,22 +171,18 @@ def test_read_tap_events_skips_lines_missing_required_fields(tmp_path):
 def _rust_status_emits_leaf(source: str, leaf: str) -> bool:
     """True iff `source` emits `leaf` as a JSON key.
 
-    Two shapes appear across the Rust status serializers:
-      * usbsink/main.rs builds its counters line with escaped literals
-        (`\\"capture_xruns\\":`), and
-      * jasper-fanin/jasper-outputd use `push_kv_*(&mut buf, "xrun_count", ...)`
-        helpers, so the key is a plain string literal (`"xrun_count"`).
-    Accept either so the cross-check works against all three surfaces.
+    Fan-in/outputd currently use ``push_kv_*`` helpers with plain string
+    literals. Accept the escaped form too so the check stays insensitive to
+    serializer construction style.
     """
 
     return f'\\"{leaf}\\":' in source or f'"{leaf}"' in source
 
 
-# The three route-health surfaces and the Rust source that serializes each. A
+# The route-health surfaces and the Rust source that serializes each. A
 # pinned counter's leaf must still be emitted by the surface it lives on, so a
 # Rust-side rename fails loudly here instead of silently degrading the verdict.
 _SURFACE_SOURCES = {
-    "usbsink": _USBSINK_MAIN_RS,
     "fanin": _FANIN_STATE_RS,
     "outputd": _OUTPUTD_STATE_RS,
 }

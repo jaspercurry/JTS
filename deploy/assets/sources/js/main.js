@@ -9,7 +9,9 @@
 // backend the legacy inline script did, behaviour-for-behaviour:
 //
 //   * Optimistic UI — flip the checkbox immediately, POST ./set {source,
-//     enabled}, then reconcile from the JSON response (roll back on failure).
+//     enabled}, then reconcile from desired + effective state. If persistence
+//     succeeds but runtime convergence fails, desired stays checked and the
+//     degraded reason is shown; only a failed write rolls the choice back.
 //   * Poll ./state every 4 s while the tab is visible, so an external
 //     `systemctl stop shairport-sync` from SSH shows up without a reload. A
 //     short ignore-window after a POST keeps a racing poll from reverting the
@@ -25,20 +27,26 @@
 // the native popup, which the browser can suppress.
 
 import { jsonHeaders } from "/assets/shared/js/http.js";
-import { jtsConfirm } from "/assets/shared/js/dialog.js";
+import { jtsAlert, jtsConfirm } from "/assets/shared/js/dialog.js";
 
 const POLL_MS = 4000;
 const SOURCES = ["airplay", "bluetooth", "spotify_connect", "usbsink"];
 const dirty = {};
 let ignorePollUntil = 0;
 let latestState = {};
+let stateKnown = false;
+let postInFlight = false;
+let stateFetchPromise = null;
 
 const el = (id) => document.getElementById(id);
 
 function applyState(state) {
+  stateKnown = true;
   latestState = state;
-  // Satellite-only profile: every source is parked while this speaker
-  // is a bonded follower — toggles read disabled and the pair note
+  if (el("sources-state-error")) {
+    el("sources-state-error").style.display = "none";
+  }
+  // A bonded follower parks every local source — toggles read disabled and the pair note
   // explains (POST /set 409s server-side regardless).
   const parked = !!(state.pair && state.pair.parked);
   if (el("pair-note")) el("pair-note").style.display = parked ? "" : "none";
@@ -48,12 +56,18 @@ function applyState(state) {
     if (!input) continue;
     if (dirty[name]) continue; // user toggled mid-flight; don't clobber
     input.checked = !!s.enabled;
-    input.disabled = parked || s.available === false;
+    // Missing hardware/install pieces block On, never the safer Off repair.
+    input.disabled =
+      postInFlight || parked || (s.available === false && !s.enabled);
     const note = el(name + "-unavailable-note");
     if (note) {
       const unavailable = s.available === false;
-      note.style.display = unavailable ? "" : "none";
-      if (
+      const degraded =
+        typeof s.degradedReason === "string" && !!s.degradedReason;
+      note.style.display = unavailable || degraded ? "" : "none";
+      if (degraded) {
+        note.textContent = s.degradedReason;
+      } else if (
         unavailable &&
         typeof s.unavailableReason === "string" &&
         s.unavailableReason
@@ -62,21 +76,26 @@ function applyState(state) {
       }
     }
   }
-  const btUnavailable =
-    state.bluetooth && state.bluetooth.available === false;
+  const bt = state.bluetooth || {};
+  const btUnavailable = bt.available === false;
+  const btDegraded =
+    typeof bt.degradedReason === "string" && !!bt.degradedReason;
   if (el("bt-note")) {
-    el("bt-note").style.display = btUnavailable ? "" : "none";
-    if (
+    el("bt-note").style.display = btUnavailable || btDegraded ? "" : "none";
+    if (btDegraded) {
+      el("bt-note").textContent = bt.degradedReason;
+    } else if (
       btUnavailable &&
-      typeof state.bluetooth.unavailableReason === "string" &&
-      state.bluetooth.unavailableReason
+      typeof bt.unavailableReason === "string" &&
+      bt.unavailableReason
     ) {
-      el("bt-note").textContent = state.bluetooth.unavailableReason;
+      el("bt-note").textContent = bt.unavailableReason;
     }
   }
   // USB sink has two warning shapes: unavailable means the toggle cannot
   // work; degraded means the host-visible gadget is up but the bridge is
-  // not healthy yet. Both hide the ordinary "plug a computer in" note.
+  // direct fan-in lane is not healthy yet. Both hide the ordinary "plug a
+  // computer in" note.
   const usb = state.usbsink || {};
   const usbUnavailable = usb.available === false;
   const usbDegraded =
@@ -100,43 +119,123 @@ function applyState(state) {
   }
 }
 
-async function fetchState() {
-  if (document.visibilityState === "hidden") return;
-  if (Date.now() < ignorePollUntil) return;
-  try {
-    const resp = await fetch("./state", { cache: "no-store" });
-    if (resp.ok) applyState(await resp.json());
-  } catch (_) {
-    // Transient — the next poll retries. Toggles keep their last state.
+function showStateError(message) {
+  const error = el("sources-state-error");
+  if (error) {
+    error.textContent = message;
+    error.style.display = "";
+  }
+  for (const name of SOURCES) {
+    const input = el("t-" + name);
+    if (input) input.disabled = true;
   }
 }
 
+async function fetchState() {
+  if (postInFlight) return;
+  if (document.visibilityState === "hidden") return;
+  if (Date.now() < ignorePollUntil) return;
+  if (stateFetchPromise !== null) return stateFetchPromise;
+  stateFetchPromise = (async () => {
+    try {
+      const resp = await fetch("./state", { cache: "no-store" });
+      if (resp.ok) {
+        applyState(await resp.json());
+        return;
+      }
+      const payload = await resp.json().catch(() => ({}));
+      showStateError(
+        payload.error ||
+          "Source settings could not be read. Run jasper-doctor or re-run install.sh."
+      );
+    } catch (_) {
+      // Keep a previously-authoritative snapshot through a transient network
+      // miss. On initial load there is no truth to preserve, so say so plainly.
+      if (!stateKnown) {
+        showStateError(
+          "Source settings are unavailable. Check the speaker connection and retry."
+        );
+      }
+    }
+  })();
+  try {
+    return await stateFetchPromise;
+  } finally {
+    stateFetchPromise = null;
+  }
+}
+
+async function refreshAfterMutation() {
+  // A GET may have started just before the mutation gate closed. Join it, then
+  // issue one fresh authoritative read; never overlap state snapshots.
+  if (stateFetchPromise !== null) {
+    try {
+      await stateFetchPromise;
+    } catch (_) {
+      // fetchState already owns user-facing failure policy.
+    }
+  }
+  // The joined pre-mutation snapshot rendered while postInFlight was still
+  // true, so controls remained disabled. Clear the gate and start the fresh GET
+  // in this same JavaScript turn; no second change event can enter between them.
+  postInFlight = false;
+  ignorePollUntil = 0;
+  return fetchState();
+}
+
 async function postToggle(name, want) {
+  if (postInFlight) return;
   // Optimistic flip already happened on change. Mark dirty so polls don't
   // overwrite while we wait for the server, and pause polling briefly so a
   // poll fired right before this POST doesn't reconcile back to the old value.
   dirty[name] = true;
+  postInFlight = true;
   ignorePollUntil = Date.now() + 1500;
+  for (const source of SOURCES) {
+    const control = el("t-" + source);
+    if (control) control.disabled = true;
+  }
   try {
     const resp = await fetch("./set", {
       method: "POST",
       headers: jsonHeaders(),
       body: JSON.stringify({ source: name, enabled: want }),
     });
+    const payload = await resp.json().catch(() => ({}));
     if (resp.ok) {
-      const state = await resp.json();
       dirty[name] = false;
-      applyState(state);
+      applyState(payload);
     } else {
-      // Server refused — roll back the optimistic flip.
       dirty[name] = false;
-      const input = el("t-" + name);
-      if (input) input.checked = !want;
+      if (payload.state && typeof payload.state === "object") {
+        // The desired write landed but reconciliation failed. Preserve the
+        // user's choice and surface the mismatch instead of lying via rollback.
+        applyState(payload.state);
+      } else if (
+        payload.intentRecorded === true &&
+        typeof payload.desired === "boolean"
+      ) {
+        // Persistence succeeded but authoritative state hydration failed. Keep
+        // the durable choice instead of inventing a rollback; the next poll
+        // will fill in effective state or show the global read error.
+        const input = el("t-" + name);
+        if (input) input.checked = payload.desired;
+      } else {
+        // The request was rejected before durable intent changed.
+        const input = el("t-" + name);
+        if (input) input.checked = !want;
+      }
+      await jtsAlert(payload.error || "Could not update this source.");
     }
-  } catch (_) {
+  } catch (error) {
     dirty[name] = false;
-    const input = el("t-" + name);
-    if (input) input.checked = !want;
+    // The POST may have committed before its response was lost. Disable the
+    // controls and keep the optimistic position until a GET supplies truth;
+    // rolling back here would be a second unsupported guess.
+    showStateError("The update result is unknown. Refreshing source state…");
+    await jtsAlert(error && error.message ? error.message : "Could not update this source.");
+  } finally {
+    await refreshAfterMutation();
   }
 }
 
@@ -144,12 +243,20 @@ for (const name of SOURCES) {
   const input = el("t-" + name);
   if (!input) continue;
   input.addEventListener("change", async () => {
+    // Confirmation is asynchronous and polling continues behind the modal.
+    // Capture the user's transition now; never re-read a checkbox that a poll
+    // may have reconciled while the dialog was open.
+    const want = !!input.checked;
+    const current = latestState[name] || {};
+    const previous = typeof current.enabled === "boolean"
+      ? current.enabled
+      : !want;
     // Warn before turning Bluetooth off while a wireless remote (volume knob,
     // etc.) is paired — otherwise the remote silently stops working until BT
     // is turned back on.
     if (
       name === "bluetooth" &&
-      !input.checked &&
+      !want &&
       latestState.bluetooth &&
       latestState.bluetooth.hasPairedHid
     ) {
@@ -161,11 +268,14 @@ for (const name of SOURCES) {
       );
       if (!ok) {
         // Revert the optimistic flip and skip the POST entirely.
-        input.checked = true;
+        input.checked = previous;
         return;
       }
     }
-    postToggle(name, input.checked);
+    // A state poll may have redrawn this control during confirmation. Restore
+    // the captured choice both visually and in the immutable POST argument.
+    input.checked = want;
+    await postToggle(name, want);
   });
 }
 

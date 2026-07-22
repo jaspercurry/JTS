@@ -337,3 +337,213 @@ def normalize_to_band(
     else:
         ref = float(np.mean(magnitude_db[band]))
     return (magnitude_db - ref).astype(np.float64)
+
+
+from typing import Mapping, Sequence
+
+
+_THIRD_OCTAVE_CENTERS_HZ = (20.0, 25.0, 31.5, 40.0, 50.0, 63.0,
+                            80.0, 100.0, 125.0, 160.0, 200.0)
+_THIRD_OCTAVE_EDGE_FACTOR = 2.0 ** (1.0 / 6.0)
+THIRD_OCTAVE_BASS_BANDS_HZ: tuple[tuple[float, float], ...] = tuple(
+    (center / _THIRD_OCTAVE_EDGE_FACTOR, center * _THIRD_OCTAVE_EDGE_FACTOR)
+    for center in _THIRD_OCTAVE_CENTERS_HZ
+)
+
+
+def band_levels_from_magnitude(
+    freqs,
+    magnitude_db,
+    bands,
+) -> tuple[float, ...]:
+    """Return the power-mean magnitude in each requested band."""
+
+    frequencies = np.asarray(freqs, dtype=np.float64)
+    magnitude = np.asarray(magnitude_db, dtype=np.float64)
+    if frequencies.ndim != 1 or magnitude.ndim != 1 or len(frequencies) != len(magnitude):
+        raise ValueError("frequency and magnitude arrays must be matched 1-D data")
+    levels = []
+    for low, high in bands:
+        mask = (frequencies >= low) & (frequencies < high)
+        if not np.any(mask):
+            raise ValueError(f"band {low:g}-{high:g} Hz has no frequency bins")
+        power = 10.0 ** (magnitude[mask] / 10.0)
+        levels.append(10.0 * np.log10(max(float(np.mean(power)), 1e-12)))
+    return tuple(levels)
+
+
+def thd_curve(
+    fund_freqs,
+    fund_db,
+    harmonics: Mapping[int, tuple[np.ndarray, np.ndarray]],
+    band=(20.0, 200.0),
+    noise_floor: tuple[np.ndarray, np.ndarray] | None = None,
+    min_fund_snr_db: float = 10.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return total-harmonic-distortion ratio on the fundamental grid."""
+
+    frequencies = np.asarray(fund_freqs, dtype=np.float64)
+    fundamental_db = np.asarray(fund_db, dtype=np.float64)
+    if frequencies.ndim != 1 or len(frequencies) != len(fundamental_db):
+        raise ValueError("fundamental frequency and magnitude arrays must match")
+    mask = (frequencies >= band[0]) & (frequencies <= band[1])
+    output_freqs = frequencies[mask]
+    fundamental = 10.0 ** (fundamental_db[mask] / 20.0)
+    harmonic_power = np.zeros_like(output_freqs)
+    for order, (harmonic_freqs, harmonic_db) in harmonics.items():
+        if type(order) is not int or order < 2:
+            raise ValueError("harmonic orders must be integers of at least 2")
+        source_freqs = np.asarray(harmonic_freqs, dtype=np.float64)
+        source_db = np.asarray(harmonic_db, dtype=np.float64)
+        if source_freqs.ndim != 1 or len(source_freqs) != len(source_db):
+            raise ValueError("harmonic frequency and magnitude arrays must match")
+        interpolated = np.interp(
+            output_freqs,
+            source_freqs,
+            source_db,
+            left=-6000.0,
+            right=-6000.0,
+        )
+        harmonic_power += 10.0 ** (interpolated / 10.0)
+    ratio = np.sqrt(harmonic_power) / np.maximum(fundamental, 1e-300)
+    if noise_floor is not None:
+        noise_freqs = np.asarray(noise_floor[0], dtype=np.float64)
+        noise_db = np.asarray(noise_floor[1], dtype=np.float64)
+        if noise_freqs.ndim != 1 or len(noise_freqs) != len(noise_db):
+            raise ValueError("noise-floor frequency and magnitude arrays must match")
+        interpolated_noise = np.interp(output_freqs, noise_freqs, noise_db)
+        ratio[fundamental_db[mask] - interpolated_noise <= min_fund_snr_db] = np.nan
+    return output_freqs, ratio
+
+
+def compression_curve(
+    rungs: Sequence[tuple[float, tuple[float, ...]]],
+) -> tuple[tuple[float, ...], ...]:
+    """Return measured-minus-linear-extrapolation compression per rung."""
+
+    if not rungs:
+        return ()
+    first_command, first_levels = rungs[0]
+    width = len(first_levels)
+    if any(len(levels) != width for _, levels in rungs):
+        raise ValueError("all compression rungs must have the same band count")
+    if any(rungs[index][0] <= rungs[index - 1][0] for index in range(1, len(rungs))):
+        raise ValueError("compression rungs must be in ascending commanded order")
+    return tuple(
+        tuple(
+            float(measured) - (float(baseline) + command - first_command)
+            for measured, baseline in zip(levels, first_levels)
+        )
+        for command, levels in rungs
+    )
+
+
+def _offset_invariant_rms_and_max(
+    measured: np.ndarray, predicted: np.ndarray
+) -> tuple[float, float]:
+    """RMS and max-absolute of ``measured - predicted``, mean-centered.
+
+    Mean-centering makes the comparison level-offset-invariant: a uniform gain
+    difference between measured and predicted (e.g. mic sensitivity, session
+    volume) does not by itself read as a tracking error.
+    """
+    error = measured - predicted
+    error -= float(np.mean(error))
+    return float(np.sqrt(np.mean(error ** 2))), float(np.max(np.abs(error)))
+
+
+def _band_mask(frequencies: np.ndarray, band: tuple[float, float]) -> np.ndarray:
+    mask = (frequencies >= band[0]) & (frequencies <= band[1])
+    if not np.any(mask):
+        raise ValueError("tracking band has no frequency bins")
+    return mask
+
+
+def tracking_error_db(
+    freqs,
+    measured_db,
+    predicted_db,
+    band,
+) -> tuple[float, float]:
+    """Return level-offset-invariant RMS and max-absolute tracking error."""
+
+    frequencies = np.asarray(freqs, dtype=np.float64)
+    measured = np.asarray(measured_db, dtype=np.float64)
+    predicted = np.asarray(predicted_db, dtype=np.float64)
+    if not (frequencies.ndim == measured.ndim == predicted.ndim == 1):
+        raise ValueError("tracking arrays must be 1-D")
+    if not (len(frequencies) == len(measured) == len(predicted)):
+        raise ValueError("tracking arrays must have matching lengths")
+    mask = _band_mask(frequencies, band)
+    return _offset_invariant_rms_and_max(measured[mask], predicted[mask])
+
+
+def notch_excluded_tracking_error_db(
+    freqs,
+    measured_db,
+    predicted_db,
+    band,
+    *,
+    notch_exclusion_db: float,
+    notch_reference_db=None,
+) -> tuple[float, float]:
+    """Tracking error, excluding bins inside a deep PREDICTED notch.
+
+    Same level-offset-invariant RMS/max as :func:`tracking_error_db`, but first
+    drops any bin whose PREDICTED level sits more than ``notch_exclusion_db``
+    below this band's own predicted median. Inside a deep predicted
+    interference notch, the notch depth is hypersensitive to sub-dB/
+    sub-degree branch differences, so depth agreement there is not a
+    meaningful tracking signal — see the VERIFY comparator in
+    ``jasper.active_speaker.crossover_v2_flow`` (W6.7 ruling 1, the run-7
+    hardware bug where a 27.8 dB "max" tracking error was entirely a shifted
+    predicted notch, not a broadband alignment problem).
+
+    The exclusion key is deliberately asymmetric: it reads the PREDICTED
+    level only, never the measured one. ``notch_reference_db`` may supply the
+    corresponding unsmoothed predicted curve when ``predicted_db`` has been
+    smoothed for a like-for-like tracking comparison. This preserves genuine
+    modeled-notch identity without comparing a smoothed capture to an
+    unsmoothed prediction. A deep MEASURED notch at bins where the prediction
+    is flat is the wrong-polarity / wrong-alignment discriminant — real
+    evidence the applied graph does not sum as the candidate predicted — and
+    must count in full. Keying on the measured level would exclude exactly
+    that evidence and silently pass a broken apply (pinned by the case-A/
+    case-B fixtures in ``tests/test_audio_measurement_harmonics.py``).
+
+    Falls back to the full band when every bin would be excluded (a
+    degenerate all-notch band), so the comparator is never computed over an
+    empty set.
+    """
+    frequencies = np.asarray(freqs, dtype=np.float64)
+    measured = np.asarray(measured_db, dtype=np.float64)
+    predicted = np.asarray(predicted_db, dtype=np.float64)
+    notch_reference = (
+        predicted
+        if notch_reference_db is None
+        else np.asarray(notch_reference_db, dtype=np.float64)
+    )
+    if not (
+        frequencies.ndim
+        == measured.ndim
+        == predicted.ndim
+        == notch_reference.ndim
+        == 1
+    ):
+        raise ValueError("tracking arrays must be 1-D")
+    if not (
+        len(frequencies)
+        == len(measured)
+        == len(predicted)
+        == len(notch_reference)
+    ):
+        raise ValueError("tracking arrays must have matching lengths")
+    mask = _band_mask(frequencies, band)
+    band_predicted = predicted[mask]
+    band_measured = measured[mask]
+    band_notch_reference = notch_reference[mask]
+    median_predicted = float(np.median(band_notch_reference))
+    keep = band_notch_reference >= (median_predicted - notch_exclusion_db)
+    if not np.any(keep):
+        keep = np.ones_like(keep, dtype=bool)
+    return _offset_invariant_rms_and_max(band_measured[keep], band_predicted[keep])

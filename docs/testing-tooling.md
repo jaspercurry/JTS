@@ -36,6 +36,7 @@
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
 | Measure the live loopback-coupled receiver path from lane 7 to outputd's final electrical reference | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-receiver-timing-proof.py`](../scripts/airplay-receiver-timing-proof.py) |
 | Certify (or honestly fail) `usb_low_latency_48k`'s p95/p99 route-latency claim with real click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
+| Certify the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency artifact](#usb-microphone-export-latency-artifact) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | [`HANDOFF-identity.md`](HANDOFF-identity.md) — `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
@@ -589,6 +590,35 @@ Pure stdlib + numpy/scipy; covered by `tests/test_analyze_wake_corpus_quality.py
 
 ---
 
+## USB microphone export latency artifact
+
+`jasper-usb-mic-latency-artifact` samples the live `jasper-usbmic` status while
+a computer is actively recording from `JTS Mic`. It rejects an idle or stale
+window, then writes a schema-1 JSON record bound to the installed build,
+descriptor revision, resolved software/chip export source, negotiated
+XVF/PortAudio capture geometry,
+realized ALSA writer geometry/target, and operator-supplied host application.
+Use it for the optional Pi→computer microphone direction; it does not replace
+the host→speaker click/capture harness below.
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact \
+  --duration-seconds 30 \
+  --host-os "macOS 15" \
+  --host-app "CoreAudio / sounddevice" \
+  --output /tmp/jts-usb-mic-latency.json
+```
+
+The active-only 120 ms doctor budget and the exact artifact interpretation are
+canonical in
+[`HANDOFF-usb-gadget.md`](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
+Aggregation waits at least 11 seconds and also proves 512 exact source-age
+appends after the first post-start relay status, so delayed status reads cannot
+admit history from before the run. Use the documented 30-second command for
+review artifacts, and add `--require-pass` in automation.
+
+---
+
 ## Route-latency click/capture harness
 
 `jasper-route-latency-harness` (source: `jasper/cli/route_latency_harness.py`
@@ -715,17 +745,18 @@ the file one second at a time so memory stays bounded (~192 KB), but the
 promotion track is still ~415 MB on disk; a laptop is the comfortable place to
 generate it (the 1 GB Pi is busy running the audio stack under test).
 
-**Route-health honesty.** `capture` snapshots
-`/run/jasper-usbsink/state.json` plus the fan-in/outputd `STATUS` sockets
-before and after the capture window (writing `route-health-snapshot.json`);
+**Route-health honesty.** `capture` snapshots the two live route owners — the
+fan-in and outputd `STATUS` sockets — before and after the capture window
+(writing `route-health-snapshot.json`);
 `analyze` then diffs that file, prints every nonzero counter delta, and states
 whether `--route-health-ok` on the artifact CLI *would* be justified — it
-never asserts that for the operator. The verdict disqualifies on ANY nonzero
-change to a curated route-health counter (a NEGATIVE delta means the daemon
-restarted mid-window — also unclean): usbsink capture/playback
-xruns/underflow/overflow/drops, the fan-in output xrun, the outputd
-content/DAC xruns, and any fan-in USB-resampler unlock/silence/overrun or
-per-lane xrun. Read the printed deltas before deciding.
+never asserts that for the operator. Both surfaces and the expected USB DIRECT
+lane/counter shape must be present in both snapshots; incomplete telemetry is
+not a clean window. The verdict disqualifies on ANY nonzero change to a curated
+route-health counter (a NEGATIVE delta means the daemon restarted mid-window —
+also unclean): the fan-in output xrun, the outputd content/DAC xruns, and any
+fan-in USB-resampler unlock/silence/overrun or per-lane xrun. The retired
+bridge/state surface is not route-health evidence. Read the printed deltas before deciding.
 
 **Mic source.** Default is `udp:9879` (the AEC bridge's `raw0` leg — requires
 an XVF3800 present with 6-channel firmware and the bridge running; the
@@ -751,7 +782,7 @@ match-rate floor (default 90% of tap events).
 `tests/test_route_latency_impulse_detect.py`,
 `tests/test_route_latency_pairing.py`,
 `tests/test_route_latency_harness.py`, and
-`tests/test_usbsink_impulse_tap_contract.py` (the JSONL/HTTP contract this
+`tests/test_usbsink_impulse_tap_contract.py` (the JSONL/control-UDS contract this
 harness's Python side shares with the Rust tap it does not itself implement).
 
 ---
@@ -841,7 +872,7 @@ Live Pi state without modifying anything:
 | `sudo /opt/jasper/.venv/bin/jasper-doctor` | Codified BRINGUP smoke tests — first command to run when something's broken. Checks run with bounded parallelism while ALSA-sensitive probes stay serialized, so the flat report keeps stable ordering without summing every subprocess timeout. Also re-checks output hardware observed-vs-active state plus presence/hashes for opaque runtime model files that JTS stages directly (required openWakeWord assets, the active wake model when registry-pinned, and configured DTLN ONNX stages when DTLN is enabled). |
 | `curl -s http://jts.local/system/diagnostics.json \| jq` | Management dashboard doctor snapshot. It serves the last root-fidelity `jasper-doctor --json --out` result immediately and schedules a background refresh when the cache is stale or missing, so the dashboard does not block on a live doctor run. |
 | `curl -s http://jts.local:8780/state \| jq` | Cross-daemon JSON snapshot (voice / audio including `output_hardware` / AEC runtime profile / renderers / satellites). Fail-soft per section. |
-| `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact --samples <latencies.json> --duration-seconds <s> --route-health-ok` | Writes the doctor-consumed `route_latency` validation artifact from measured USB click/capture latencies and the live `jasper.audio_runtime_plan` route identity. It is not the measurement harness; only pass `--route-health-ok` when the same window had clean bridge/fan-in/outputd counter deltas. |
+| `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact --samples <latencies.json> --duration-seconds <s> --route-health-ok` | Writes the doctor-consumed `route_latency` validation artifact from measured USB click/capture latencies and the live `jasper.audio_runtime_plan` route identity. It is not the measurement harness; only pass `--route-health-ok` when the same window had complete, clean fan-in/outputd telemetry. |
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + monotonic boot timelines + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks plus `log-noise-summary-latest.txt` for line counts and repeated-message fingerprints. |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |
 | [`scripts/pi-system-soak.sh`](../scripts/pi-system-soak.sh) | Convenience wrapper for a bounded `jasper-system-soak` run on the active Pi; writes a versioned JSON resource artifact. |
@@ -941,7 +972,10 @@ Artifact contract, schema v1:
   (`ActiveState`, `SubState`, `NRestarts`, `MainPID`, tasks,
   `MemoryCurrent`, `CPUUsageNSec` delta-derived CPU%), cgroup
   `cpu.stat`, `memory.events`, PSI when available, and outputd/fanin/
-  mux/voice STATUS snapshots.
+  mux/voice STATUS snapshots. The tracked inventory includes the resident
+  USB host-microphone export path (`jasper-usbgadget`, `jasper-usbmic`, and
+  `jasper-usbnet-dhcp`); it deliberately excludes the transient
+  `jasper-usbmic-apply` oneshot.
 - `journal`: count/byte summary by unit and priority for the soak
   window. It intentionally does **not** store raw message text, which
   keeps routine resource artifacts out of the log-redaction business.

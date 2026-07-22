@@ -194,40 +194,22 @@ sounds fine, let's not touch anything below 150 Hz."
 Re-read [`HANDOFF-correction.md`](HANDOFF-correction.md) for the
 full picture. The bits that matter for this proposal:
 
-### Web wizard — `jasper-correction-web`
+### Room web boundary
 
-- **Socket-activated** (zero RAM idle; spawns on first request to
-  `https://jts.local/correction/`, 10-min idle timeout). Unit files
-  at [`deploy/jasper-correction-web.service`](../deploy/jasper-correction-web.service)
-  and [`.socket`](../deploy/jasper-correction-web.socket).
-- stdlib [`ThreadingHTTPServer`](../jasper/web/correction_setup.py) on
-  127.0.0.1:8770 behind nginx → `https://jts.local/correction/`.
-  HTTPS is mandatory because `getUserMedia` requires a secure
-  context; the page documents the iOS trust dance.
-- Routes (all in [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py)):
-  `GET /`, `GET /healthz`, `GET /status`, `GET /sessions`,
-  `GET /session-report?id=<id>`,
-  `POST /start`, `POST /next-position`, `POST /repeat-position`,
-  `POST /verify`, `POST /upload-noise`, `POST /upload-capture`,
-  `POST /apply`, `POST /reset`,
-  `POST /session/delete`,
-  `POST /test-tone`, `POST /autolevel/start`, `POST /autolevel/lock`,
-  `POST /autolevel/cancel`.
-- Frontend is an inline HTML / vanilla JS page emitted from the
-  `_PAGE_HTML` template with `__HOSTNAME__` / `__REQUIRED_SR__` /
-  navigation substitutions in `_render_page()`. It uses a canvas
-  chart and an AudioWorklet for mic capture at 48 kHz
-  (constraint-pinned; the page hard-rejects sample-rate / EC / NS /
-  AGC overrides per WebKit Bug 179411 mitigation).
-- Browser polls `GET /status` every 500 ms for state snapshots; no
-  SSE today.
+Current Room routes, browser flow, polling, presentation-envelope ownership,
+and capture constraints live in [`HANDOFF-correction.md`](HANDOFF-correction.md)
+and [`room-correction-information-design.md`](room-correction-information-design.md).
+This calibration-agent layer owns only the optional tuning operations exposed
+by the Room server: `/interpret`, `/propose`, and `/propose/apply`. The server
+revalidates and re-simulates every proposed filter set before the shared apply,
+verify, acceptance, and automatic-revert path can use it.
 
 ### DSP pipeline — [`jasper/correction/`](../jasper/correction/)
 
 | Module | Responsibility |
 |---|---|
 | `sweep.py` | Novak 2015 synchronized ESS, 20 Hz – 20 kHz, 10 s, -12 dBFS, 48 kHz, deterministic + on-disk cache under `/var/lib/jasper/correction/sweeps/`. |
-| `playback.py` | `aplay -D correction_substream` (dedicated fan-in lane; sweep traverses the same pipeline real music does); 1 kHz test-tone cache under `/var/lib/jasper/correction/tones/`. |
+| `audio_measurement/playback.py` + `correction/playback.py` | Shared, policy-free bounded `aplay`/tone mechanics behind explicit resource arguments; the Room wrapper retains `correction_substream` (the same pipeline real music traverses) and the 1 kHz cache under `/var/lib/jasper/correction/tones/`. |
 | `deconv.py` | FFT + Tikhonov-regularized inversion (`H(f) = Y(f) conj(X(f)) / (\|X(f)\|² + ε)`), IR window 5 ms pre / 500 ms post direct arrival. |
 | `analysis.py` | 1/48-octave power-mean smoothing, log-spaced 480-point resampling, multi-position power-mean spatial averaging. |
 | `peq.py` | Greedy peak-fit: residual = measured − target → find max peak → estimate Q from -3 dB bandwidth → add peaking biquad → repeat. Cuts-only by default, 20–350 Hz, ≤5 filters, Q ∈ [1.0, 8.0], max -10 dB. |
@@ -242,13 +224,17 @@ full picture. The bits that matter for this proposal:
 [`_handle_start()`](../jasper/web/correction_setup.py) asks
 [`jasper.correction.runtime_safety`](../jasper/correction/runtime_safety.py)
 whether `/etc/camilladsp/outputd-cutover.yml` is legal for the saved output
-topology before playing the sweep. For ordinary full-range stereo this still
-means every measurement captures the raw room through the current protected
-outputd-safe baseline, never through a prior room-correction or preference-EQ
-profile. Saved active/protected topology, or explicit mono topology that would
-be driven by a wider flat graph, fails before sweep playback. The agent must
-understand this — its "compare verify against measured" reasoning only works
-when both were captured against the same legal baseline.
+topology before playing the sweep. Ordinary full-range layouts measure through
+that protected flat baseline, never through a prior Room or preference-EQ
+profile. A saved active/protected topology instead uses the active graph carrier:
+an operator-applied manual profile may enter Room only when Active's semantic
+Layer-A fingerprint of CamillaDSP's fresh `active_raw` readback matches
+snapshot-derived recomposition. The measurement baseline then strips only the
+pre-split Room/preference layers and preserves the exact crossover, routing,
+polarity, delay, gain, and protection. An incomplete or mismatched active setup,
+or any topology for which neither legal baseline exists, fails before sweep
+playback. The agent must understand this — its "compare verify against measured"
+reasoning only works when both were captured against the same legal baseline.
 
 ### Storage layout
 
@@ -364,7 +350,11 @@ strict), and only then routes the set through the **existing**
 `session.apply()` path (same headroom re-clip any correction gets — no new
 apply path). `applied` in the response is derived from the real outcome — a
 CamillaDSP-rejected reload reports `applied: false` ("the speaker kept its
-previous sound"), never a false success. The re-measure remains the true
+previous sound"), never a false success. The response also carries a closed
+Room `failure` block; the internal `reason` remains forensic and is never
+rendered as homeowner copy. Apply fails closed when the stored measurement
+evidence contains a fail-severity confidence finding, so historical or unsafe
+evidence cannot bypass the Room review gate. The re-measure remains the true
 judge (the correction loop closes by re-measure; preference suggestions are
 phrased as questions). **Target moves are suggestion-only**: there is no
 apply route for them — the card gives plain-text guidance to use the flow's
@@ -391,20 +381,26 @@ exercises the real request path and can refresh the fixtures from live
 captures. Spend is **observable AND ledgered** against the household daily
 spend cap. Each paid call:
 
-1. is **gated before** — `_tuning_spend_cap_gate()` builds a `SpendCap` over
+1. is **gated before** —
+   [`correction_tuning._tuning_spend_cap_gate()`](../jasper/web/correction_tuning.py)
+   builds a `SpendCap` over
    `household_usage_reader(usage_db)` (the voice ledger + the tuning sibling,
    summed); if the cap is reached it raises `SpendCapExceeded` → **HTTP 429**
-   with an honest rollover-worded body the panel renders verbatim. Reading the
+   with a closed, rollover-worded Room failure block. The panel renders that
+   bounded homeowner copy rather than the raw response body. Reading the
    cap is **fail-open** (an unreadable ledger reads as zero spend, never
    blocks — matching the module direction).
-2. is **recorded after** — `_record_tuning_spend()` writes one priced row into
+2. is **recorded after** —
+   [`correction_tuning._record_tuning_spend()`](../jasper/web/correction_tuning.py)
+   writes one priced row into
    a **separate** SQLite ledger, `usage-tuning.db` (a derived sibling of
    `JASPER_USAGE_DB`), of which root `jasper-correction-web` is the **sole
    writer**. It must never open the jasper-voice-owned `usage.db` read-write —
    a root-created file or `-journal` sidecar wedges the voice ledger (the
    2026-06-19 "readonly database" class). The write is serialised under a
-   module lock, `chmod 0644` on first create (so the 0077-umask root unit
-   still leaves it readable by the jasper-group readers), and **fail-soft**
+   module lock, checked and self-healed to `0644` on every record (so the
+   0077-umask root unit still leaves it readable by the jasper-group readers),
+   and **fail-soft**
    (an OSError/sqlite error logs `event=tuning_spend.record_failed` and returns
    the normal response — a ledger problem never blocks the user).
 
@@ -708,9 +704,11 @@ Two key constraints from existing architecture:
 1. **`/start` resets to flat only when the topology contract permits it**
    ([`_handle_start`](../jasper/web/correction_setup.py)). The agent must never
    bypass this — fresh measurements capture the raw room for legal full-range
-   layouts, and active/protected layouts are deferred to the active-speaker
-   flow. If the agent wants to know how the *corrected* pipeline measures, it
-   goes through `/verify` (which deliberately doesn't reset).
+   layouts. For active/protected layouts with matching manual applied-profile or
+   verified automatic-receipt authority, the active graph carrier preserves
+   Layer A and strips only the pre-split Room/preference layers; incomplete or
+   mismatched active authority remains blocked. If the agent wants to know how the *corrected* pipeline
+   measures, it goes through `/verify` (which deliberately doesn't reset).
 2. **`measurement_window()` precondition: no active voice session.**
    ([`jasper/correction/coordinator.py`](../jasper/correction/coordinator.py))
    The agent cannot trigger a re-measurement while "Jarvis" is in a
@@ -1316,17 +1314,30 @@ Codebase:
 - [`HANDOFF-correction.md`](HANDOFF-correction.md) — the existing substrate this sits on
 - [`jasper/correction/`](../jasper/correction/) — DSP pipeline
 - [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py) — wizard
+- [`jasper/web/correction_tuning.py`](../jasper/web/correction_tuning.py) —
+  paid-call throttling, provider invocation, spend gate, and tuning ledger
 - [`jasper/voice/`](../jasper/voice/) — `LiveConnection`/`LiveTurn` pattern to mirror
 - [`HANDOFF-voice-providers.md`](HANDOFF-voice-providers.md) — provider-abstraction precedent
 - [`HANDOFF-prompting.md`](HANDOFF-prompting.md) — playbook for LLM prompts (cross-provider principles, conditional vs absolute rules, `confirm` field handling) that this agent should respect
 
 ---
 
-Last verified: 2026-07-06 (P6 tuning-spend ledger landed: per-surface
+Last verified: 2026-07-15 (manual/verified-automatic Active Room admission, fresh Layer-A readback
+binding, and topology-preserving measurement baseline rechecked against
+`jasper/active_speaker/setup_status.py`, `jasper/sound/graph_carrier.py`, and
+`jasper/web/correction_setup.py`; prior 2026-07-13 Wave 2 paid tuning backend
+extraction rechecked the
+shared interpret/propose throttle, gate-before/provider/record-after order,
+fresh cap settings, provider-error translation, and fail-soft ledger behavior
+against `jasper/web/correction_tuning.py` and the thin adapters in
+`jasper/web/correction_setup.py`. Room R1b typed failure and unsafe-evidence
+gates, neutral playback ownership, and the retained Room device/cache
+compatibility surface rechecked hardware-free; prior 2026-07-06
+P6 tuning-spend ledger landed: per-surface
 `usage-tuning.db` written solely by correction-web, gate-before/record-after
 in the two paid handlers, and the `household_usage_reader` aggregation seam
 that the voice cap + `/voice` card + doctor all read — verified against
-`jasper/usage.py`, `jasper/web/correction_setup.py`, `jasper/voice/daemon_main.py`,
+`jasper/usage.py`, `jasper/web/correction_tuning.py`, `jasper/voice/daemon_main.py`,
 `jasper/web/voice_setup.py`, and `jasper/cli/doctor/voice.py`; prior 2026-07-05
 pass covered the P6 tuning surface landing: key seam, vocabulary
 extension, interpreter, confirm-gated proposer with simulate-before-apply,

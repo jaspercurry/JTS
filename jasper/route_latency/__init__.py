@@ -18,13 +18,13 @@ Module map:
     `jasper.audio_validation` with margin.
   - `impulse_detect` — the shared peak/hysteresis/refractory detector
     algorithm, mirrored (not imported — different runtime) by the Rust
-    ingress tap in `rust/jasper-usbsink-audio`.
+    ingress tap in `rust/jasper-fanin`.
   - `mic_readers` — the egress (mic) audio sources: the default UDP raw0
     leg on `:9879`, and an ALSA fallback for boxes without an XVF3800.
   - `pairing` — nearest-match pairing of tap/mic detections with ambiguity
     rejection and a match-rate floor.
-  - `tap_client` — the HTTP client for the Rust tap's arm/disarm/status
-    surface plus its JSONL event-log reader.
+  - `tap_client` — the fan-in control-UDS client for the Rust tap's
+    arm/disarm surface plus its JSONL event-log reader.
 
 This package intentionally has no audio-device or network I/O at import
 time (readers/clients open sockets lazily in `__init__`), so importing it

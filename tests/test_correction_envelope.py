@@ -21,6 +21,9 @@ wiring (`/envelope`) is a thin `build_envelope_logged` call over
 """
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -31,6 +34,8 @@ ENVELOPE_KEYS = {
     "schema_version",
     "screen",
     "state",
+    "sections",
+    "run_defaults",
     "curves",
     "fill_segments",
     "headline",
@@ -38,6 +43,8 @@ ENVELOPE_KEYS = {
     "verdict_text",
     "nudges",
     "next_action",
+    "blocker",
+    "failure",
     "progress",
     "tuning_llm",
 }
@@ -51,6 +58,17 @@ LOGICAL_SCREENS = {
     "apply",
     "verify",
     "result",
+}
+
+READY_SPEAKER_SETUP = {
+    "active": False,
+    "room_correction_allowed": True,
+    "acoustic_commissioning": {
+        "decision_schema_version": 1,
+        "allowed": True,
+        "authority": "passive_not_required",
+        "status": "not_required",
+    },
 }
 
 
@@ -76,6 +94,10 @@ class _FakeSession:
         self.error: str | None = None
         self.total_positions = 3
         self.current_position = 0
+        self.target_choice = "flat"
+        self.strategy_choice = "balanced"
+        self.repeat_main_position = True
+        self.capture_transport = "local"
         self.autolevel = _FakeAutolevel("idle")
         self.measured_curve: CurveJSON | None = None
         self.target_curve: CurveJSON | None = None
@@ -86,6 +108,10 @@ class _FakeSession:
         self.auto_revert_outcome: dict[str, object] | None = None
         self.confidence_report: dict[str, object] | None = None
         self.design_report: dict[str, object] | None = None
+        self.config_path: str | None = None
+        self.peqs: list[object] = [
+            {"freq_hz": 80.0, "q": 2.0, "gain_db": -3.0},
+        ]
 
 
 def _relay_session(
@@ -177,21 +203,55 @@ def test_state_screen_map_spot_checks():
     assert envelope.screen_for_state("failed") == "result"
 
 
-def test_unknown_state_value_falls_back_to_idle_not_crash():
-    assert envelope.screen_for_state("some_future_state") == "idle"
+def test_unknown_state_value_fails_closed_instead_of_offering_start():
+    with pytest.raises(ValueError, match="unsupported room-correction state"):
+        envelope.screen_for_state("some_future_state")
+
+
+def test_analyzing_never_offers_apply_or_paid_tuning():
+    sess = _FakeSession(SessionState.ANALYZING)
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "review"
+    assert env["progress"]["position"] == 3
+    assert env["sections"] == ["measurement-review"]
+    assert env["verdict_text"] == (
+        "Analyzing the measurement now. This usually takes a few seconds."
+    )
+    assert env["next_action"] is None
+    assert env["tuning_llm"]["offered"] is False
+
+
+def test_verify_analysis_stays_on_verify_progress_without_actions():
+    sess = _FakeSession(SessionState.ANALYZING)
+    sess.config_path = "/tmp/correction.yml"
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "verify"
+    assert env["progress"]["position"] == 5
+    assert env["sections"] == ["measurement-review"]
+    assert env["verdict_text"] == (
+        "Analyzing the measurement now. This usually takes a few seconds."
+    )
+    assert env["next_action"] is None
+    assert env["tuning_llm"]["offered"] is False
 
 
 # ---------- top-level shape ------------------------------------------------
 
 
-def test_schema_version_is_five():
+def test_schema_version_is_nine():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
     # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
     # v4 (P6) added the `tuning_llm` affordance block.
-    # v5 wires the relay-owned level-before-sweep actions.
-    assert envelope.ENVELOPE_SCHEMA_VERSION == 5
+    # v5 wires the relay-owned level-before-sweep actions; v6 makes the
+    # ordered section list the sole whole-page visibility authority; v7 adds
+    # closed blocker/failure presentation data; v8 adds run defaults; v9 adds
+    # the required server-owned progress labels, summary template, and repeat
+    # disclosure after v8 had shipped.
+    assert envelope.ENVELOPE_SCHEMA_VERSION == 9
     env = envelope.build_envelope(_FakeSession())
-    assert env["schema_version"] == 5
+    assert env["schema_version"] == 9
 
 
 def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
@@ -241,18 +301,411 @@ def test_envelope_top_level_shape_is_pinned():
     assert set(env) == ENVELOPE_KEYS
 
 
+def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
+    from jasper.correction.session import DEFAULT_ROOM_POSITION_COUNT
+
+    idle = _FakeSession(SessionState.IDLE)
+    idle.total_positions = DEFAULT_ROOM_POSITION_COUNT
+    env = envelope.build_envelope(
+        idle,
+        capture_transport="relay",
+        readiness_blocker=None,
+    )
+
+    assert env["run_defaults"] == {
+        "summary": "Measuring 6 positions with the flat target",
+        "summary_template": "Measuring {positions_label} with the {target} target",
+        "total_positions": DEFAULT_ROOM_POSITION_COUNT,
+        "target": {"id": "flat", "label": "Flat"},
+        "strategy": {"id": "balanced", "label": "Balanced"},
+        "repeat_main_position": True,
+        "repeat_disclosure": (
+            "JTS automatically repeats the main-seat measurement once to check "
+            "that the result is trustworthy."
+        ),
+        "capture_transport": "relay",
+        "change_allowed": True,
+    }
+
+    active = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
+    active.total_positions = 3
+    active.target_choice = "warm"
+    active.strategy_choice = "safe"
+    active.capture_transport = "local"
+    active_env = envelope.build_envelope(active)
+    assert active_env["run_defaults"]["summary"] == (
+        "Measuring 3 positions with the warm target"
+    )
+    assert active_env["run_defaults"]["change_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    ("transport", "endpoint"),
+    [("relay", "/relay/capture"), ("local", "/repeat-position")],
+)
+def test_repeat_action_uses_the_current_capture_transport(transport, endpoint):
+    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
+    sess.capture_transport = transport
+
+    env = envelope.build_envelope(sess)
+
+    assert env["next_action"] == {
+        "label": "Repeat the main seat",
+        "endpoint": endpoint,
+    }
+    assert "trustworthy" in env["verdict_text"]
+
+
+def test_pending_relay_capture_withholds_duplicate_repeat_action():
+    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
+    sess.capture_transport = "relay"
+
+    env = envelope.build_envelope(sess, relay_capture_pending=True)
+
+    assert env["next_action"] is None
+
+
+def test_section_vocabulary_is_exact_and_room_owned():
+    assert envelope.SECTION_VOCABULARY == {
+        "current-correction",
+        "run-defaults",
+        "readiness-blocker",
+        "capture-handoff",
+        "placement",
+        "capture-setup",
+        "local-certificate-warning",
+        "level-check",
+        "position-capture",
+        "measurement-review",
+        "apply-status",
+        "verification",
+        "result-proof",
+        "tuning",
+        "reports",
+    }
+
+
+@pytest.mark.parametrize(
+    ("state", "sections"),
+    [
+        (SessionState.IDLE, ["current-correction", "run-defaults"]),
+        (
+            SessionState.NEEDS_NOISE_CAPTURE,
+            [
+                "run-defaults",
+                "capture-handoff",
+                "placement",
+                "local-certificate-warning",
+                "capture-setup",
+            ],
+        ),
+        (
+            SessionState.AWAITING_CAPTURE,
+            ["capture-handoff", "placement", "position-capture"],
+        ),
+        (SessionState.READY, ["measurement-review", "tuning"]),
+        (SessionState.APPLIED, ["apply-status", "tuning"]),
+        (
+            SessionState.AWAITING_VERIFY_CAPTURE,
+            ["capture-handoff", "placement", "verification", "tuning"],
+        ),
+        (
+            SessionState.VERIFIED,
+            ["current-correction", "result-proof", "tuning"],
+        ),
+    ],
+)
+def test_sections_are_server_ordered_for_each_screen(state, sections):
+    env = envelope.build_envelope(
+        _FakeSession(state),
+        readiness_blocker=None,
+    )
+    assert env["sections"] == sections
+
+
+def test_relay_handoff_omits_local_only_sections():
+    env = envelope.build_envelope(
+        _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="locked")
+    )
+    assert env["sections"] == [
+        "run-defaults",
+        "capture-handoff",
+        "placement",
+    ]
+    assert "capture-setup" not in env["sections"]
+    assert "local-certificate-warning" not in env["sections"]
+
+
+def test_local_mic_setup_is_the_envelope_owned_primary_action():
+    sess = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
+    env = envelope.build_envelope(sess)
+    assert env["next_action"] == {
+        "label": "Allow microphone",
+        "endpoint": "/local-capture/setup",
+    }
+    sess.local_capture_setup_bound = True
+    bound = envelope.build_envelope(sess)
+    assert bound["screen"] == "level"
+    assert bound["sections"] == [
+        "capture-handoff",
+        "placement",
+        "level-check",
+    ]
+    assert bound["next_action"] == {
+        "label": "Check measurement level",
+        "endpoint": "/autolevel/start",
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "action"),
+    [
+        ("ramping", None),
+        (
+            "locked",
+            {"label": "Measure this position", "endpoint": "/upload-noise"},
+        ),
+        (
+            "maxed_out",
+            {"label": "Retry level check", "endpoint": "/autolevel/start"},
+        ),
+        (
+            "cancelled",
+            {"label": "Retry level check", "endpoint": "/autolevel/start"},
+        ),
+        (
+            "error",
+            {"label": "Retry level check", "endpoint": "/autolevel/start"},
+        ),
+    ],
+)
+def test_local_first_position_requires_level_before_noise_upload(status, action):
+    sess = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
+    sess.local_capture_setup_bound = True
+    sess.autolevel = _FakeAutolevel(status)
+
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "level"
+    assert env["next_action"] == action
+    if status == "maxed_out":
+        assert "too quiet" in env["verdict_text"].lower()
+
+
+def test_local_later_position_reuses_bound_setup_without_leveling_again():
+    sess = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
+    sess.local_capture_setup_bound = True
+    sess.current_position = 1
+
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "sweep"
+    assert env["next_action"] == {
+        "label": "Measure this position",
+        "endpoint": "/upload-noise",
+    }
+
+
+@pytest.mark.parametrize("state", [SessionState.IDLE, SessionState.VERIFIED])
+def test_reports_section_is_conditional_on_static_edge_availability(state):
+    without_reports = envelope.build_envelope(
+        _FakeSession(state),
+        reports_available=False,
+        readiness_blocker=None,
+    )
+    with_reports = envelope.build_envelope(
+        _FakeSession(state),
+        reports_available=True,
+        readiness_blocker=None,
+    )
+    assert "reports" not in without_reports["sections"]
+    assert with_reports["sections"][-1] == "reports"
+
+
+def test_reports_section_never_appears_on_active_screen():
+    env = envelope.build_envelope(
+        _FakeSession(SessionState.AWAITING_CAPTURE),
+        reports_available=True,
+    )
+    assert "reports" not in env["sections"]
+
+
+def test_web_handler_never_scans_reports_on_active_poll(monkeypatch):
+    from jasper.correction import bundles
+    from jasper.web import correction_setup
+
+    sess = _FakeSession(SessionState.AWAITING_CAPTURE)
+    sess.cfg = SimpleNamespace(sessions_dir="unused")
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("active envelope polled the session store")
+
+    monkeypatch.setattr(bundles, "list_bundles", fail_if_called)
+    body = correction_setup._handle_envelope(
+        SimpleNamespace(path="/envelope")
+    )
+    assert body["screen"] == "sweep"
+    assert "reports" not in body["sections"]
+
+
+def test_web_handler_starting_room_repeat_withholds_duplicate_action(monkeypatch):
+    from jasper.web import correction_setup
+
+    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
+    sess.capture_transport = "relay"
+    sess.cfg = SimpleNamespace(sessions_dir="unused")
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    correction_setup._set_relay_capture({
+        "status": "starting",
+        "kind": "room_repeat",
+    })
+    try:
+        body = correction_setup._handle_envelope(
+            SimpleNamespace(path="/envelope?capture_transport=relay")
+        )
+    finally:
+        correction_setup._set_relay_capture(None)
+
+    assert body["state"] == "needs_repeat_capture"
+    assert body["next_action"] is None
+
+
+def test_web_handler_active_to_idle_race_fails_closed(monkeypatch):
+    from jasper.web import correction_setup
+
+    sess = _FakeSession(SessionState.IDLE)
+    sess.cfg = SimpleNamespace(sessions_dir="unused")
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        envelope,
+        "screen_for_session",
+        lambda _sess: envelope.SCREEN_SWEEP,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_readiness",
+        lambda: pytest.fail("the first active observation must not read readiness"),
+    )
+
+    body = correction_setup._handle_envelope(SimpleNamespace(path="/envelope"))
+
+    assert body["screen"] == "idle"
+    assert body["next_action"] is None
+    assert body["blocker"]["code"] == "speaker_readiness_unavailable"
+
+
+def test_web_handler_adds_reports_only_when_static_store_has_one(monkeypatch):
+    from jasper.capture_relay import correction_adapter
+    from jasper.correction import bundles
+    from jasper.web import correction_setup
+
+    sess = _FakeSession(SessionState.IDLE)
+    sess.cfg = SimpleNamespace(sessions_dir="unused")
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: READY_SPEAKER_SETUP,
+    )
+    monkeypatch.setattr(correction_adapter, "relay_enabled", lambda: True)
+    monkeypatch.setattr(bundles, "list_bundles", lambda *_args, **_kwargs: [{}])
+
+    body = correction_setup._handle_envelope(
+        SimpleNamespace(path="/envelope?capture_transport=local")
+    )
+    assert body["sections"] == [
+        "current-correction",
+        "run-defaults",
+        "reports",
+    ]
+
+
+def test_web_handler_report_discovery_failure_does_not_block_idle(monkeypatch):
+    from jasper.correction import bundles
+    from jasper.web import correction_setup
+
+    sess = _FakeSession(SessionState.IDLE)
+    sess.cfg = SimpleNamespace(sessions_dir="unavailable")
+    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: READY_SPEAKER_SETUP,
+    )
+    monkeypatch.setattr(
+        bundles,
+        "list_bundles",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError()),
+    )
+
+    body = correction_setup._handle_envelope(SimpleNamespace(path="/envelope"))
+
+    assert body["screen"] == "idle"
+    assert body["next_action"]["endpoint"] == "/start"
+    assert "reports" not in body["sections"]
+
+
 def test_idle_envelope_has_entry_action_and_no_headline():
-    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+    env = envelope.build_envelope(
+        _FakeSession(SessionState.IDLE),
+        readiness_blocker=None,
+    )
     assert env["screen"] == "idle"
     assert env["state"] == "idle"
+    assert env["sections"] == ["current-correction", "run-defaults"]
     assert env["headline"] is None
     assert env["fill_segments"] == []
     assert env["curves"] == {}
     assert env["nudges"] == []
     assert env["next_action"] == {"label": "Start measuring", "endpoint": "/start"}
-    assert env["progress"] == {"position": 1, "total": 6}
+    assert env["blocker"] is None
+    assert env["failure"] is None
+    assert env["progress"] == {
+        "position": 1,
+        "total": 6,
+        "labels": ["Set up", "Measure", "Review", "Apply", "Verify", "Done"],
+    }
     assert isinstance(env["verdict_text"], str) and env["verdict_text"]
     assert env["verdict"] is None  # no verify yet → no acceptance verdict
+
+
+def test_idle_envelope_without_explicit_readiness_fails_closed():
+    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+
+    assert env["sections"] == ["current-correction", "readiness-blocker"]
+    assert env["next_action"] is None
+    assert env["blocker"]["code"] == "speaker_readiness_unavailable"
+    assert env["blocker"]["recovery_action"] == {
+        "label": "Check again",
+        "href": "/correction/room/",
+    }
+
+
+def test_blocked_idle_keeps_reports_but_withholds_defaults_and_start():
+    from jasper.correction import failures
+
+    blocker = failures.public_failure(
+        failures.SPEAKER_SETUP_INCOMPLETE,
+        recovery_action={
+            "label": "Open speaker setup",
+            "href": "/correction/crossover/",
+        },
+    )
+    env = envelope.build_envelope(
+        _FakeSession(SessionState.IDLE),
+        readiness_blocker=blocker,
+        reports_available=True,
+    )
+
+    assert env["sections"] == [
+        "current-correction",
+        "readiness-blocker",
+        "reports",
+    ]
+    assert env["next_action"] is None
+    assert env["blocker"] == blocker
+    assert env["verdict_text"] == "Room correction is waiting for speaker setup."
 
 
 def test_relay_next_position_has_one_compound_forward_action():
@@ -280,7 +733,159 @@ def test_relay_pending_confirmation_reuses_retained_level_for_second_verify():
     sess.acceptance = {"verdict": "revert_pending_confirm"}
     env = envelope.build_envelope(sess)
     assert env["screen"] == "result"
-    assert env["next_action"]["endpoint"] == "/relay/verify"
+    assert env["next_action"] == {
+        "label": "Measure again to confirm",
+        "endpoint": "/relay/verify",
+    }
+
+
+def test_relay_unlocked_verification_level_check_stays_on_verify_screen():
+    sess = _relay_session(SessionState.APPLIED, level_state="idle")
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "verify"
+    assert env["progress"]["position"] == 5
+    assert env["sections"][:3] == [
+        "capture-handoff",
+        "placement",
+        "verification",
+    ]
+    assert env["next_action"] == {
+        "label": "Check verification level",
+        "endpoint": "/relay/level-match",
+    }
+
+
+def test_relay_unlocked_confirmation_keeps_worse_result_visible():
+    sess = _relay_session(SessionState.VERIFIED, level_state="idle")
+    sess.acceptance = {"verdict": "revert_pending_confirm"}
+
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "result"
+    assert env["progress"]["position"] == 6
+    assert "result-proof" in env["sections"]
+    assert env["next_action"] == {
+        "label": "Measure again to confirm",
+        "endpoint": "/relay/level-match",
+    }
+
+
+@pytest.mark.parametrize("state", [SessionState.APPLIED, SessionState.VERIFIED])
+def test_relay_verification_pending_keeps_phone_handoff_visible(state):
+    sess = _relay_session(state, restored=True)
+    if state is SessionState.VERIFIED:
+        sess.acceptance = {"verdict": "revert_pending_confirm"}
+
+    env = envelope.build_envelope(sess, relay_capture_pending=True)
+
+    assert env["screen"] == "verify"
+    assert env["progress"]["position"] == 5
+    assert "capture-handoff" in env["sections"]
+    assert env["next_action"] is None
+
+
+# ---------- relay level-match refusal (2026-07-16 jts3 finding) -----------
+#
+# A level-match ramp terminal that doesn't lock (agc_suspected, a safety
+# timeout, ...) never advances session.state, so it fell outside every other
+# `failure` branch and the Room envelope served `failure: null` with no
+# explanation. These pin that the envelope now surfaces the same mapped
+# homeowner copy the phone terminal gets.
+
+
+def test_relay_agc_suspected_terminal_surfaces_the_mapped_failure():
+    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="error")
+    sess.level_match_snapshot = lambda: {
+        "running": False,
+        "locks": {},
+        "last": {
+            "ramp": {
+                "state": "error",
+                "restored": False,
+                "error": "agc_suspected",
+                "error_detail": "slopes 0.64, 0.61 over 4 steps",
+            },
+        },
+    }
+
+    env = envelope.build_envelope(sess)
+
+    assert env["failure"] is not None
+    assert env["failure"]["code"] == "agc_suspected"
+    assert "automatic gain" in env["failure"]["text"]
+    assert "slopes 0.64, 0.61 over 4 steps" in env["failure"]["text"]
+    assert env["failure"]["retryable"] is True
+    # verdict_text already prioritizes `failure` ahead of every screen-scoped
+    # fallback, so the same mapped copy is what a homeowner actually reads.
+    assert env["verdict_text"] == env["failure"]["text"]
+    # A refusal is not "no action needed" — withhold any forward action so
+    # the phone/Room flow retries the check rather than silently continuing.
+    assert env["next_action"] is None
+
+
+def test_relay_safety_timeout_terminal_is_distinguished_from_a_plain_cancel():
+    # Both a genuine user cancel and a safety-timeout refusal land in
+    # RampState.CANCELLED; only the timeout sets `error`.
+    cancelled = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="cancelled")
+    assert envelope.build_envelope(cancelled)["failure"] is None
+
+    timed_out = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="cancelled")
+    timed_out.level_match_snapshot = lambda: {
+        "running": False,
+        "locks": {},
+        "last": {
+            "ramp": {
+                "state": "cancelled",
+                "restored": False,
+                "error": "safety timeout after 45s",
+            },
+        },
+    }
+    env = envelope.build_envelope(timed_out)
+    assert env["failure"] is not None
+    assert "took too long" in env["failure"]["text"].lower()
+
+
+def test_relay_locked_level_match_never_shows_a_stale_refusal():
+    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="locked")
+    assert envelope.build_envelope(sess)["failure"] is None
+
+
+def test_relay_running_retry_suppresses_the_prior_attempt_refusal():
+    """Retry-after-error: while a NEW ramp is live (running=True), the PRIOR
+    attempt's terminal is stale news — the Room page must not keep showing
+    "can't be trusted" copy over a check that is currently climbing. Same
+    liveness source _next_action_for reads."""
+    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="error")
+    sess.level_match_snapshot = lambda: {
+        "running": True,
+        "locks": {},
+        "last": {
+            "ramp": {
+                "state": "error",
+                "restored": False,
+                "error": "agc_suspected",
+            },
+        },
+    }
+    assert envelope.build_envelope(sess)["failure"] is None
+
+
+def test_relay_in_progress_ramp_is_not_a_refusal():
+    for state in ("climbing", "settling", "confirming"):
+        sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state=state)
+        assert envelope.build_envelope(sess)["failure"] is None
+
+
+def test_local_transport_never_consults_the_relay_refusal_mapping():
+    # A local (non-relay) session must not be affected by this branch at all
+    # — it has no `level_match_snapshot` shaped this way.
+    sess = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
+    sess.local_capture_setup_bound = True
+    sess.autolevel = _FakeAutolevel("error")
+    env = envelope.build_envelope(sess)
+    assert env["failure"] is None
 
 
 # ---------- level screen (autolevel sub-state) -----------------------------
@@ -362,15 +967,39 @@ def test_review_screen_next_action_is_apply():
     sess = _FakeSession(SessionState.READY)
     env = envelope.build_envelope(sess)
     assert env["screen"] == "review"
-    assert env["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
-    assert env["progress"] == {"position": 3, "total": 6}
+    assert env["next_action"] == {
+        "label": "Apply room correction",
+        "endpoint": "/apply",
+    }
+    assert env["progress"] == {
+        "position": 3,
+        "total": 6,
+        "labels": ["Set up", "Measure", "Review", "Apply", "Verify", "Done"],
+    }
+
+
+def test_review_with_no_filters_is_truthful_and_cannot_apply():
+    sess = _FakeSession(SessionState.READY)
+    sess.peqs = []
+
+    env = envelope.build_envelope(sess)
+
+    assert env["screen"] == "review"
+    assert env["verdict_text"] == (
+        "This measurement produced no safe room-correction filters to apply. "
+        "Restore your previous sound to finish."
+    )
+    assert env["next_action"] == {
+        "label": "Restore previous sound",
+        "endpoint": "/reset",
+    }
 
 
 def test_apply_screen_next_action_is_verify():
     sess = _FakeSession(SessionState.APPLIED)
     env = envelope.build_envelope(sess)
     assert env["screen"] == "apply"
-    assert env["next_action"] == {"label": "Verify the result", "endpoint": "/verify"}
+    assert env["next_action"] == {"label": "Verify correction", "endpoint": "/verify"}
 
 
 def test_verify_screen_has_no_forward_action():
@@ -431,13 +1060,66 @@ def test_headline_none_when_before_after_malformed():
     assert env["fill_segments"] == []
 
 
-def test_failed_state_result_screen_carries_error_in_verdict():
+def test_failed_state_result_screen_maps_raw_error_to_typed_failure():
     sess = _FakeSession(SessionState.FAILED)
     sess.error = "capture too quiet"
     env = envelope.build_envelope(sess)
     assert env["screen"] == "result"
-    assert "capture too quiet" in env["verdict_text"]
+    assert "capture too quiet" not in env["verdict_text"]
+    assert env["failure"] == {
+        "code": "unknown_failure",
+        "text": "The speaker could not continue this step. Try again.",
+        "retryable": True,
+        "recovery_action": None,
+    }
+    assert env["verdict_text"] == env["failure"]["text"]
+    assert env["next_action"] == {
+        "label": "Start over",
+        "endpoint": "/reset",
+    }
     assert env["headline"] is None
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "code"),
+    [
+        ("measurement stopped", "measurement_stopped"),
+        ("sweep playback failed: private detail", "test_signal_unavailable"),
+        ("verify analysis failed: private detail", "measurement_analysis_failed"),
+        ("YAML emit failed: private detail", "correction_update_failed"),
+        (
+            "CamillaDSP rejected the base config — manual intervention required",
+            "correction_restore_failed",
+        ),
+        ("reset reload failed: private detail", "correction_restore_failed"),
+    ],
+)
+def test_session_diagnostics_map_to_truthful_closed_failures(diagnostic, code):
+    from jasper.correction import failures
+
+    public = failures.session_failure(diagnostic)
+
+    assert public["code"] == code
+    assert "private detail" not in str(public)
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"label": "Open", "href": "https://example.com"},
+        {"label": "Open", "href": "//example.com"},
+        {"label": "Open", "href": "/correction/\\bad"},
+        {"label": "Open", "href": "/correction/\nnext"},
+    ],
+)
+def test_public_failure_rejects_unsafe_recovery_actions(action):
+    from jasper.correction import failures
+
+    with pytest.raises(ValueError, match="invalid Room recovery action"):
+        failures.public_failure(
+            failures.SPEAKER_SETUP_INCOMPLETE,
+            recovery_action=action,
+        )
 
 
 # ---------- nudges: never block, homeowner language ------------------------
@@ -465,7 +1147,10 @@ def test_uncalibrated_mic_nudge_present_and_non_blocking():
     assert "approximate" in n["text"].lower()
     assert "continue" in n["text"].lower()
     # A nudge NEVER removes the forward action.
-    assert env["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
+    assert env["next_action"] == {
+        "label": "Apply room correction",
+        "endpoint": "/apply",
+    }
 
 
 def test_room_bounded_low_level_surfaces_shortfall_without_blocking_sweep():
@@ -530,7 +1215,7 @@ def test_low_confidence_findings_map_to_nudges():
     assert env["next_action"] is not None
 
 
-def test_fail_severity_finding_is_clamped_to_warn_never_block():
+def test_fail_severity_finding_is_not_softened_into_a_nudge():
     sess = _FakeSession(SessionState.READY)
     sess.confidence_report = {
         "findings": [
@@ -539,11 +1224,24 @@ def test_fail_severity_finding_is_clamped_to_warn_never_block():
         ],
     }
     env = envelope.build_envelope(sess)
-    assert len(env["nudges"]) == 1
-    assert env["nudges"][0]["severity"] == "warn"  # fail -> warn ceiling
+    assert env["nudges"] == []
+    assert env["failure"]["code"] == "measurement_evidence_unsafe"
+    assert env["next_action"] is None
+    assert env["tuning_llm"]["offered"] is False
+    assert "safety checks" in env["verdict_text"]
+
+    # Resetting the session to idle retires result evidence and restores the
+    # fresh-measurement recovery action; a retained report cannot strand Room.
+    sess.state = SessionState.IDLE
+    reset_env = envelope.build_envelope(sess, readiness_blocker=None)
+    assert reset_env["failure"] is None
+    assert reset_env["next_action"] == {
+        "label": "Start measuring",
+        "endpoint": "/start",
+    }
 
 
-def test_unknown_finding_is_surfaced_degraded_not_dropped():
+def test_unknown_finding_does_not_surface_raw_diagnostic_copy():
     sess = _FakeSession(SessionState.READY)
     sess.confidence_report = {
         "findings": [
@@ -552,12 +1250,8 @@ def test_unknown_finding_is_surfaced_degraded_not_dropped():
         ],
     }
     env = envelope.build_envelope(sess)
-    assert len(env["nudges"]) == 1
-    n = env["nudges"][0]
-    assert n["code"] == "brand_new_finding"
-    # Unknown -> raw message surfaced, severity clamped into nudge vocab.
-    assert n["text"] == "a newly added confidence check tripped"
-    assert n["severity"] == "warn"
+    assert env["nudges"] == []
+    assert "newly added confidence check" not in str(env)
 
 
 def test_duplicate_finding_codes_collapse_to_one_nudge():
@@ -594,7 +1288,6 @@ def test_build_envelope_logged_matches_pure_builder(caplog):
             {"code": "uncalibrated_mic", "severity": "warn", "message": "x"},
         ],
     }
-    import logging
     with caplog.at_level(logging.INFO, logger="jasper.correction.envelope"):
         logged = envelope.build_envelope_logged(sess)
     assert logged == envelope.build_envelope(sess)
@@ -602,6 +1295,21 @@ def test_build_envelope_logged_matches_pure_builder(caplog):
         "event=correction_envelope.serve" in rec.getMessage()
         for rec in caplog.records
     )
+
+
+def test_build_envelope_logged_emits_only_on_presentation_transition(caplog):
+    sess = _FakeSession(SessionState.SWEEPING)
+    with caplog.at_level(logging.INFO, logger="jasper.correction.envelope"):
+        envelope.build_envelope_logged(sess)
+        envelope.build_envelope_logged(sess)
+        sess.state = SessionState.READY
+        envelope.build_envelope_logged(sess)
+
+    events = [
+        rec for rec in caplog.records
+        if "event=correction_envelope.serve" in rec.getMessage()
+    ]
+    assert len(events) == 2
 
 
 # ---------- endpoint wiring ------------------------------------------------
@@ -645,6 +1353,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
     from jasper.web import correction_setup
     from jasper.correction.session import (
         MeasurementSession,
+        PEQJSON,
         SessionConfig,
         SessionState,
     )
@@ -659,6 +1368,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         ),
     )
     sess.state = SessionState.READY
+    sess.peqs = [PEQJSON(freq_hz=80.0, q=2.0, gain_db=-3.0)]
     sess.confidence_report = {
         "findings": [
             {"code": "uncalibrated_mic", "severity": "warn",
@@ -684,10 +1394,13 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
-    assert body["schema_version"] == 5
+    assert body["schema_version"] == 9
     assert body["screen"] == "review"
     assert body["state"] == "ready"
-    assert body["next_action"] == {"label": "Apply correction", "endpoint": "/apply"}
+    assert body["next_action"] == {
+        "label": "Apply room correction",
+        "endpoint": "/apply",
+    }
     # The uncalibrated-mic nudge survives the full round-trip, non-blocking.
     assert any(n["code"] == "uncalibrated_mic" for n in body["nudges"])
     assert all(n["severity"] in {"info", "warn"} for n in body["nudges"])
@@ -738,7 +1451,10 @@ def test_successful_auto_revert_is_announced_on_idle():
 
 def test_fresh_idle_session_keeps_default_copy():
     """The post-revert branch must not fire for an ordinary fresh session."""
-    env = envelope.build_envelope(_FakeSession(SessionState.IDLE))
+    env = envelope.build_envelope(
+        _FakeSession(SessionState.IDLE),
+        readiness_blocker=None,
+    )
     assert env["verdict_text"] == "Ready to measure your room."
 
 
@@ -754,6 +1470,24 @@ def test_failed_auto_revert_says_still_applied():
     assert "Reset" in env["verdict_text"]
     assert "put it back" not in env["verdict_text"]
     assert "removed the correction" not in env["verdict_text"]
+
+
+def test_failed_state_auto_revert_uses_typed_still_applied_failure():
+    sess = _FakeSession(SessionState.FAILED)
+    sess.error = "reset reload failed: connection lost"
+    sess.acceptance = _acceptance("revert")
+    sess.auto_revert_outcome = {"result": "failed", "at": 1234.0}
+
+    env = envelope.build_envelope(sess)
+
+    assert env["failure"]["code"] == "correction_auto_revert_failed"
+    assert env["verdict_text"] == env["failure"]["text"]
+    assert env["next_action"] == {
+        "label": "Start over",
+        "endpoint": "/reset",
+    }
+    assert "STILL APPLIED" in env["verdict_text"]
+    assert "connection lost" not in str(env)
 
 
 def test_inflight_revert_copy_does_not_claim_completion():

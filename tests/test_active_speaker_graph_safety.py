@@ -13,6 +13,9 @@ agree on a graph regardless of which dialect it arrived in.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
 import yaml
 
 from jasper.active_speaker import graph_safety as gs
@@ -101,6 +104,8 @@ def test_float_matches():
     assert not gs.float_matches(-119.0, MUTE_GAIN)
     assert not gs.float_matches(None, MUTE_GAIN)
     assert not gs.float_matches("nope", MUTE_GAIN)
+    assert not gs.float_matches(10**400, MUTE_GAIN)
+    assert gs.float_value(10**400) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +164,109 @@ def test_camilla_dict_channel_sugar_and_list_equivalent():
     assert not gs.pipeline_contains_chain(weird, channels={1}, required_names=("x",))
 
 
+_BASS_EXTENSION_GRAPH = """\
+filters:
+  bass_ext_lt:
+    type: Biquad
+    parameters: { type: LinkwitzTransform, freq_act: 61.2, q_act: 0.72, freq_target: 61.2, q_target: 0.72 }
+  bass_ext_subsonic:
+    type: BiquadCombo
+    parameters: { type: ButterworthHighpass, freq: 22.0, order: 4 }
+pipeline:
+  - type: Filter
+    channels: [0, 2]
+    names: [woofer_lp, bass_ext_lt, bass_ext_subsonic, woofer_delay]
+"""
+
+
+def _bass_summary(*, authority_valid=True, required=True):
+    return {
+        "authority_valid": authority_valid,
+        "runtime_block_required": required,
+        "bass_owner_channels": [0, 2],
+        "natural": {
+            "fp_hz": 61.2,
+            "qp": 0.72,
+            "boost_headroom_db": 0.0,
+            "subsonic": {
+                "type": "ButterworthHighpass",
+                "freq": 22.0,
+                "order": 4,
+            },
+        },
+    }
+
+
+def test_bass_extension_predicate_requires_exact_natural_pair_and_owner_channels():
+    view = gs.view_from_emitted_text(_BASS_EXTENSION_GRAPH)
+
+    assert gs.bass_extension_block_valid(view, _bass_summary()).valid is True
+    assert gs.bass_extension_block_valid(
+        view, _bass_summary(required=False)
+    ).valid is False
+    assert gs.bass_extension_block_valid(
+        view, _bass_summary(authority_valid=False)
+    ).valid is False
+
+    off_natural = gs.view_from_emitted_text(
+        _BASS_EXTENSION_GRAPH.replace("freq_target: 61.2", "freq_target: 45.0")
+    )
+    assert gs.bass_extension_block_valid(
+        off_natural, _bass_summary()
+    ).valid is False
+
+
+def test_bass_extension_predicate_requires_subsonic_and_rejects_unknown_names():
+    missing = gs.view_from_emitted_text(
+        _BASS_EXTENSION_GRAPH.replace(
+            "  bass_ext_subsonic:\n"
+            "    type: BiquadCombo\n"
+            "    parameters: { type: ButterworthHighpass, freq: 22.0, order: 4 }\n",
+            "",
+        ).replace(", bass_ext_subsonic", "")
+    )
+    assert gs.bass_extension_block_valid(missing, _bass_summary()).valid is False
+
+    injected = gs.view_from_emitted_text(
+        _BASS_EXTENSION_GRAPH.replace(
+            "  bass_ext_subsonic:",
+            "  bass_ext_extra:\n"
+            "    type: Gain\n"
+            "    parameters: { gain: 0.0 }\n"
+            "  bass_ext_subsonic:",
+        )
+    )
+    assert gs.bass_extension_block_valid(injected, _bass_summary()).valid is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("bass_owner_channels", [0, True]),
+        ("fp_hz", True),
+        ("qp", False),
+        ("boost_headroom_db", True),
+        ("subsonic_freq", True),
+        ("subsonic_order", 4.0),
+    ],
+)
+def test_bass_extension_predicate_rejects_coercible_evidence_types(
+    field,
+    value,
+):
+    summary = _bass_summary()
+    if field == "bass_owner_channels":
+        summary[field] = value
+    elif field.startswith("subsonic_"):
+        summary["natural"]["subsonic"][field.removeprefix("subsonic_")] = value
+    else:
+        summary["natural"][field] = value
+
+    assert not gs.bass_extension_block_valid(
+        gs.view_from_emitted_text(_BASS_EXTENSION_GRAPH), summary
+    ).valid
+
+
 # --------------------------------------------------------------------------- #
 # filter_param_matches + pipeline_contains_chain
 # --------------------------------------------------------------------------- #
@@ -198,6 +306,68 @@ def test_pipeline_contains_chain_requires_exact_channels():
     # superset of channels must not match an exact-{1} step
     assert not gs.pipeline_contains_chain(
         view, channels={0, 1}, required_names=("as_tweeter_protective_hp",)
+    )
+
+
+def test_protection_requirement_allows_only_same_role_grouped_channels():
+    requirement = {
+        "kind": "highpass",
+        "cutoff_hz": 1_200.0,
+        "minimum_slope_db_per_octave": 24.0,
+        "family_or_equivalent": "equivalent_or_steeper",
+    }
+    grouped = gs.view_from_camilla_dict(
+        {
+            "filters": {
+                "stereo_tweeter_hp": {
+                    "type": "BiquadCombo",
+                    "parameters": {
+                        "type": "LinkwitzRileyHighpass",
+                        "freq": 1_600.0,
+                        "order": 4,
+                    },
+                }
+            },
+            "pipeline": [
+                {
+                    "type": "Filter",
+                    "channels": [1, 3],
+                    "names": ["stereo_tweeter_hp"],
+                }
+            ],
+        }
+    )
+
+    assert gs.protection_requirement_present(
+        grouped,
+        output_index=1,
+        allowed_channels={1, 3},
+        requirement=requirement,
+    )
+    assert gs.protection_requirement_present(
+        grouped,
+        output_index=3,
+        allowed_channels={1, 3},
+        requirement=requirement,
+    )
+    assert not gs.protection_requirement_present(
+        grouped,
+        output_index=1,
+        allowed_channels={1},
+        requirement=requirement,
+    )
+
+    cross_role = replace(
+        grouped,
+        pipeline_steps=(
+            replace(grouped.pipeline_steps[0], channels=frozenset({0, 1})),
+        ),
+    )
+    assert not gs.protection_requirement_present(
+        cross_role,
+        output_index=1,
+        allowed_channels={1, 3},
+        requirement=requirement,
     )
 
 

@@ -4,21 +4,13 @@
 
 // Room correction — measurement + DSP wizard.
 //
-// Static ES module served from /assets/correction/js/ (revalidated by
-// nginx, same delivery model as /system/ and /sound/). Relocated VERBATIM
-// from the previously-inline IIFE in jasper/web/correction_setup.py; the
-// only changes are mechanical: (a) the CSRF helpers (csrfHeaders /
-// jsonHeaders) and the confirm/alert dialog (jtsConfirm / jtsAlert) are now
-// imported from the shared modules instead of being string-substituted /
-// inlined at render time, and (b) REQUIRED_SR is the literal 48000 (was the
-// __REQUIRED_SR__ Python substitution). The getUserMedia mic capture, the
-// AudioWorklet RMS/capture pipeline, the /status polling state machine, the
-// autolevel ramp, the sweep upload flow, and the canvas chart math are
-// UNCHANGED — this page can only be fully exercised on real Pi hardware
-// (HTTPS secure context + mic + CamillaDSP), so it was moved, not
-// refactored. The IIFE wrapper is kept so the body's var/function
-// declarations are byte-for-byte the original. See
-// docs/HANDOFF-management-ui.md (restyle-in-place) and
+// Static ES module served from /assets/correction/js/ (revalidated by nginx,
+// same delivery model as /system/ and /sound/). GET /envelope owns the exact
+// whole-page section order and single forward action; this module validates
+// and renders that closed contract while /status continues to drive capture,
+// upload, autolevel, and safety-control mechanics. The getUserMedia,
+// AudioWorklet, local/relay capture, and canvas paths still require a real Pi
+// browser pass (HTTPS secure context + mic + CamillaDSP). See
 // docs/HANDOFF-correction.md.
 import { csrfHeaders, jsonHeaders } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
@@ -28,26 +20,32 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // its own `|| 'fallback'`, so no falsy non-string reaches it — output is
 // unchanged.
 import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
+import { renderRelayQr } from "/assets/shared/js/qr.js";
 (function () {
   'use strict';
 
   var REQUIRED_SR = 48000;  // REQUIRED_SAMPLE_RATE — see jasper/web/correction_setup.py
 
   var pageRoot = document.querySelector('main.correction-stack');
+  // The shared measurement kernel owns this trust margin. If the server ever
+  // omits or corrupts it, suppress automatic lock and leave the bounded manual
+  // Lock/cancel path available instead of treating ambient sound as the tone.
+  var autolevelTrustMarginDb = Number(
+    pageRoot ? pageRoot.dataset.levelTrustMarginDb : NaN
+  );
+  if (!Number.isFinite(autolevelTrustMarginDb) || autolevelTrustMarginDb < 0) {
+    autolevelTrustMarginDb = Infinity;
+  }
   var relayConfigured = !!(
     pageRoot && pageRoot.dataset.captureRelayEnabled === '1'
   );
   var relayMode = relayConfigured;
-  var relayPanel = document.getElementById('relay-panel');
+  var captureHandoffCopy = document.getElementById('capture-handoff-copy');
   var relayStatus = document.getElementById('relay-status');
   var relayLinkRow = document.getElementById('relay-link-row');
   var relayTapLink = document.getElementById('relay-tap-link');
-  var relayStartBtn = document.getElementById('relay-start-capture');
+  var relayQr = document.getElementById('relay-qr');
   var localCaptureFallbackBtn = document.getElementById('local-capture-fallback');
-  var localInputRow = document.getElementById('local-input-row');
-  var localInputHint = document.getElementById('local-input-hint');
-  var micPanel = document.getElementById('mic-panel');
-  var startBtn = document.getElementById('start');
   var inputDeviceSelect = document.getElementById('input-device-select');
   var refreshInputsBtn = document.getElementById('refresh-inputs');
   var micModelSelect = document.getElementById('mic-model-select');
@@ -61,15 +59,27 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var uploadCalibrationBtn = document.getElementById('upload-calibration');
   var calibrationStatus = document.getElementById('calibration-status');
   var calibrationPreview = document.getElementById('calibration-preview');
+  // Household-mic prefill (Wave-2 persistence) — server-rendered default
+  // selection from a prior session's successful calibration.
+  var householdMicBanner = document.getElementById('household-mic-banner');
+  var householdMicBannerText = document.getElementById('household-mic-banner-text');
+  var householdMicChangeBtn = document.getElementById('household-mic-change');
   var currentCorrectionBanner = document.getElementById('current-correction');
   var currentCorrectionLabel = document.getElementById('current-correction-label');
   var currentCorrectionResetBtn = document.getElementById('current-correction-reset');
+  // Latest server answer to "is reset allowed at all" — cached so the
+  // one-reset-at-a-time reconciliation below (syncCurrentCorrectionReset)
+  // can re-derive banner visibility without a fresh /status fetch whenever
+  // the wizard's own reset button appears or disappears.
+  var currentCorrectionResetAllowed = false;
   // Stepped-wizard chrome (P3b) — driven by GET /envelope.
   var wizardChrome = document.getElementById('wizard-chrome');
   var wizardSteps = document.getElementById('wizard-steps');
   var wizardVerdict = document.getElementById('wizard-verdict');
   var wizardNudges = document.getElementById('wizard-nudges');
   var wizardNextBtn = document.getElementById('wizard-next');
+  var readinessBlockerMessage = document.getElementById('readiness-blocker-message');
+  var readinessBlockerAction = document.getElementById('readiness-blocker-action');
   // P6 tuning assistant elements.
   var tuningPanel = document.getElementById('tuning-panel');
   var tuningNudge = document.getElementById('tuning-nudge');
@@ -86,46 +96,34 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var browserAudioReport = document.getElementById('browser-audio-report');
   var levelBar = document.getElementById('level-bar-fill');
   var levelReadout = document.getElementById('level-db');
-  var measureSection = document.getElementById('measure-section');
-  var stateBadge = document.getElementById('state-badge');
-  var stateDetail = document.getElementById('state-detail');
+  var envelopeSections = document.getElementById('envelope-sections');
+  var measurementReview = document.getElementById('measurement-review');
+  var resultProof = document.getElementById('result-proof');
   var qualityBanner = document.getElementById('quality-banner');
-  var autolevelBtn = document.getElementById('autolevel');
   var autolevelLockBtn = document.getElementById('autolevel-lock');
   var autolevelCancelBtn = document.getElementById('autolevel-cancel');
   var autolevelStatus = document.getElementById('autolevel-status');
   var autolevelLine = document.getElementById('autolevel-line');
   var autolevelDetail = document.getElementById('autolevel-detail');
   var autolevelHint = document.getElementById('autolevel-hint');
-  var runBtn = document.getElementById('run-measurement');
-  var repeatBtn = document.getElementById('repeat-position');
-  var continueBtn = document.getElementById('continue-position');
-  var applyBtn = document.getElementById('apply-correction');
-  var verifyBtn = document.getElementById('verify-correction');
   var resetBtn = document.getElementById('reset-correction');
   var cancelMeasureBtn = document.getElementById('cancel-measurement');
+  var emergencyStopActive = false;
   var measurementOptions = document.getElementById('measurement-options');
+  var changeRunDefaultsBtn = document.getElementById('change-run-defaults');
+  var runDefaultsSummary = document.getElementById('run-defaults-summary');
+  var repeatMainPositionDisclosure = document.getElementById(
+    'repeat-main-position-disclosure'
+  );
   var positionsSelect = document.getElementById('positions-select');
-  var repeatMainPosition = document.getElementById('repeat-main-position');
-  var repeatMainPositionRow = document.getElementById('repeat-main-position-row');
-  var repeatMainPositionHint = document.getElementById('repeat-main-position-hint');
   var targetSelect = document.getElementById('target-select');
   var strategySelect = document.getElementById('strategy-select');
   var positionPrompt = document.getElementById('position-prompt');
   var positionCurrent = document.getElementById('position-current');
   var positionTotal = document.getElementById('position-total');
   var resultSection = document.getElementById('result-section');
-  var resultsSummary = document.getElementById('results-summary');
-  var chartSmoothing = document.getElementById('chart-smoothing');
-  var chartShowSpread = document.getElementById('chart-show-spread');
   var chartShowFilter = document.getElementById('chart-show-filter');
-  var chartShowBand = document.getElementById('chart-show-band');
   var canvas = document.getElementById('chart');
-  var peqList = document.getElementById('peq-list');
-  var verifySummary = document.getElementById('verify-summary');
-  var designReport = document.getElementById('design-report');
-  var confidencePanel = document.getElementById('confidence-panel');
-  var runtimeIntegrityPanel = document.getElementById('runtime-integrity-panel');
   var loadSessionsBtn = document.getElementById('load-sessions');
   var sessionHistory = document.getElementById('session-history');
   var sessionReport = document.getElementById('session-report');
@@ -135,9 +133,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var workletNode = null;
   var pollTimer = null;
   var sessionId = null;
-  var currentState = null;
-  var lastResult = null;
-  var lastVerify = null;
+  var runTransportLocked = false;
+  var localCaptureSetupBound = false;
+  var localRunOwnedByThisTab = false;
+  var localRunOwnerSessionId = null;
+  var wizardActionInFlight = false;
+  var envelopeRequestInFlight = null;
+  var envelopeRefreshQueued = false;
+  var envelopeFetchTimeoutMs = 5000;
+  var idleEnvelopeRefreshMs = 10000;
+  var noiseCaptureCompletion = null;
+  var noiseCaptureResolve = null;
+  var noiseCaptureReject = null;
+  var noiseCaptureTimeout = null;
+  var lastChartEnvelope = null;
   var inVerifyMode = false;
   var captureMode = 'measurement';
   // Latest mic RMS in dBFS, updated by the AudioWorklet at ~20 Hz.
@@ -156,10 +165,21 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // user-facing wizard chrome (step, verdict, nudges, primary action). To
   // honour the P3b-1 reviewer's poll discipline — hot-poll only during
   // active capture, fetch once per state change on static screens — we
-  // track the last screen/state the envelope reported and refresh it on a
-  // transition, plus a low-frequency tick while a capture screen is live.
-  var lastEnvelopeState = null;
+  // track status observations separately from the last successfully rendered
+  // envelope and refresh on a transition, plus a low-frequency tick while a
+  // capture screen is live. A failed envelope must not make every unchanged
+  // 500 ms status tick look like a new transition.
+  var lastObservedStatusState = null;
+  var lastRenderedEnvelopeScreen = null;
+  var lastRenderedEnvelopeState = null;
+  var lastRenderedReadinessSignature = null;
   var envelopeTimer = null;
+  var envelopePollingEnabled = true;
+  // A typed POST refusal belongs to the current interaction, not the session
+  // mechanism state. Keep it across the immediate envelope refresh so a
+  // still-ready session cannot overwrite the homeowner sentence with stale
+  // "Ready" copy. A server blocker/failure or the next action clears it.
+  var pendingHomeownerFailure = null;
   // One bounded retry credit per failure streak: each successful envelope
   // fetch (and each fresh trigger — state change, wizard click, landing)
   // re-arms it; a failure consumes it to schedule exactly one retry. Two
@@ -169,6 +189,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // Probe-visible fetch counter (harness reads this to prove fetch-once
   // discipline: it must increment once per state change, not per poll tick).
   var envelopeFetchCount = 0;
+  var runDefaultsDirty = false;
+  var currentRunDefaults = null;
 
   // Logical screens whose data is live-updating (capture in flight or a
   // short server-side transient) — the only screens the envelope is
@@ -178,30 +200,66 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     mic: true, level: true, sweep: true, verify: true,
   };
 
-  // Ordered wizard spine + homeowner labels for the step indicator. Mirrors
-  // envelope._PROGRESS_SPINE (idle, sweep, review, apply, verify, result) so
-  // progress.position indexes the same six steps the server counts.
-  var WIZARD_STEP_LABELS = [
-    'Set up', 'Measure', 'Review', 'Apply', 'Verify', 'Done',
-  ];
+  // Schema v9 has one exact six-step progress spine. The server supplies its
+  // homeowner labels; the browser owns only the structural bound.
+  var WIZARD_PROGRESS_TOTAL = 6;
 
-  // Screen -> which existing workflow sections are visible. The router owns
-  // top-level phase visibility; applyButtonPolicy still governs the
-  // fine-grained mechanism buttons inside measure-section. Sections not
-  // listed for a screen are hidden by the router. `measure` is the big
-  // workflow block (mic-level, options, action buttons, result); it stays
-  // visible from the mic step through result so the capture UI the browser
-  // drives is reachable. `result` shows the frequency-response review.
-  var SCREEN_SECTIONS = {
-    idle:   { measure: false, result: false },
-    mic:    { measure: true,  result: false },
-    level:  { measure: true,  result: false },
-    sweep:  { measure: true,  result: false },
-    review: { measure: true,  result: true },
-    apply:  { measure: true,  result: true },
-    verify: { measure: true,  result: true },
-    result: { measure: true,  result: true },
+  var SUPPORTED_ENVELOPE_SCHEMA = 9;
+  var KNOWN_ENVELOPE_SCREENS = {
+    idle: true, mic: true, level: true, sweep: true,
+    review: true, apply: true, verify: true, result: true,
   };
+  var KNOWN_ACTION_ENDPOINTS = {
+    '/start': true,
+    '/next-position': true,
+    '/repeat-position': true,
+    '/local-capture/setup': true,
+    '/autolevel/start': true,
+    '/upload-noise': true,
+    '/apply': true,
+    '/reset': true,
+    '/verify': true,
+    '/relay/level-match': true,
+    '/relay/capture': true,
+    '/relay/verify': true,
+  };
+  // Closed presentation vocabulary. Codes are duplicated at this wire
+  // boundary deliberately: a malformed/partially deployed server must not
+  // smuggle arbitrary diagnostics into a block the browser treats as safe.
+  var KNOWN_FAILURES = {
+    speaker_setup_incomplete: {text: "Finish speaker setup first.", retryable: false},
+    speaker_readiness_unavailable: {text: "Speaker setup could not be checked. Try again.", retryable: true},
+    measurement_in_progress: {text: "A measurement is already in progress. Finish or stop it before starting again.", retryable: true},
+    measurement_setup_invalid: {text: "The measurement setup changed. Review the microphone choices and try again.", retryable: true},
+    speaker_measurement_unsafe: {text: "The speaker is not ready to measure safely. Review speaker setup, then try again.", retryable: false},
+    microphone_setup_unavailable: {text: "The saved microphone setup is unavailable. Choose the microphone again.", retryable: true},
+    phone_capture_unavailable: {text: "Phone capture could not be opened. Try again or use this device.", retryable: true},
+    measurement_stopped: {text: "Measurement stopped.", retryable: true},
+    test_signal_unavailable: {text: "The speaker could not play the test sound. Try again.", retryable: true},
+    measurement_analysis_failed: {text: "The speaker could not finish this measurement. Try measuring again.", retryable: true},
+    measurement_evidence_unsafe: {text: "This measurement did not pass its safety checks. Measure again.", retryable: true},
+    correction_update_failed: {text: "The correction could not be applied. Check the current correction before trying again.", retryable: true},
+    correction_restore_failed: {text: "The previous sound could not be confirmed restored. The correction may still be applied.", retryable: true},
+    correction_auto_revert_failed: {text: "That measured worse, but the correction could not be removed automatically. It is STILL APPLIED. Use Reset to remove it.", retryable: true},
+    tuning_busy: {text: "The tuning assistant just ran. Wait a moment, then try again.", retryable: true},
+    tuning_spend_limit: {text: "The daily assistant budget is reached. Try again after the daily rollover.", retryable: false},
+    tuning_unavailable: {text: "The tuning assistant is not set up yet.", retryable: false},
+    tuning_request_failed: {text: "The tuning assistant could not continue. Try again.", retryable: true},
+    tuning_proposal_rejected: {text: "That suggestion was not applied because it did not pass the speaker's safety checks.", retryable: true},
+    unknown_failure: {text: "The speaker could not continue this step. Try again.", retryable: true},
+  };
+  var KNOWN_SECTION_IDS = [
+    'current-correction', 'run-defaults', 'readiness-blocker',
+    'capture-handoff', 'placement', 'capture-setup',
+    'local-certificate-warning', 'level-check', 'position-capture',
+    'measurement-review', 'apply-status', 'verification', 'result-proof',
+    'tuning', 'reports',
+  ];
+  var sectionNodes = {};
+  KNOWN_SECTION_IDS.forEach(function (sectionId) {
+    var node = document.querySelector('[data-envelope-section="' + sectionId + '"]');
+    if (node) sectionNodes[sectionId] = node;
+  });
 
   // For the three audio-processing flags (echoCancellation,
   // noiseSuppression, autoGainControl), iOS Safari often returns
@@ -264,20 +322,24 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!relay) {
       hideEl(relayLinkRow, true);
       if (relayTapLink) relayTapLink.href = '#';
+      renderRelayQr(relayQr, null);
       return;
     }
     var tapLink = relay.tap_link || '';
-    if (tapLink && relayTapLink) {
+    if (relay.status === 'awaiting_phone' && tapLink && relayTapLink) {
       relayTapLink.href = tapLink;
       hideEl(relayLinkRow, false);
+      renderRelayQr(relayQr, tapLink);
     } else {
       hideEl(relayLinkRow, true);
       if (relayTapLink) relayTapLink.href = '#';
+      renderRelayQr(relayQr, null);
     }
     if (relay.status === 'complete') {
       setRelayStatus('Phone capture received. Wait for the next instruction on this page.', 'ok');
     } else if (relay.status === 'failed') {
-      setRelayStatus(relay.error || 'Phone capture failed. Cancel and try again.', 'bad');
+      console.warn('phone capture failed', relay.error || '');
+      setRelayStatus('Phone capture stopped. Try that step again.', 'bad');
     } else if (relay.status === 'starting') {
       setRelayStatus('Creating phone capture link…', 'idle');
     } else {
@@ -287,52 +349,66 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function setRelayMode(enabled) {
     relayMode = !!enabled;
-    hideEl(relayPanel, !relayMode);
-    // The server envelope owns the one primary action.  Keep the legacy relay
-    // Start control retired so it cannot compete with Start/Level/Measure.
-    hideEl(relayStartBtn, true);
-    hideEl(runBtn, relayMode);
-    hideEl(micPanel, relayMode);
-    hideEl(measurementOptions, relayMode);
-    hideEl(localInputRow, relayMode);
-    hideEl(localInputHint, relayMode);
-    hideEl(startBtn, relayMode);
-    hideEl(constraintsBlock, relayMode);
-    hideEl(autolevelBtn, relayMode);
+    if (captureHandoffCopy) {
+      captureHandoffCopy.textContent = relayMode
+        ? 'Continue on the phone while the speaker coordinates each capture.'
+        : 'This device will capture the microphone signal locally.';
+    }
+    if (localCaptureFallbackBtn) {
+      localCaptureFallbackBtn.textContent = relayMode
+        ? "Use this device's microphone"
+        : 'Use phone capture';
+    }
+    hideEl(localCaptureFallbackBtn, runTransportLocked || !relayConfigured);
     hideEl(autolevelLockBtn, true);
     hideEl(autolevelCancelBtn, true);
     hideEl(autolevelStatus, true);
     hideEl(autolevelHint, relayMode);
-    if (repeatMainPosition) {
-      repeatMainPosition.checked = !relayMode;
-      repeatMainPosition.disabled = relayMode;
-    }
-    hideEl(repeatMainPositionRow, relayMode);
-    hideEl(repeatMainPositionHint, relayMode);
     if (relayMode) {
       stopMicStream();
-      measureSection.classList.remove('hidden');
-      runBtn.textContent = 'Start phone measurement';
-      continueBtn.textContent = 'Create next phone capture';
-      autolevelBtn.disabled = true;
-      runBtn.disabled = false;
-      if (relayStartBtn) {
-        relayStartBtn.textContent = 'Start';
-        relayStartBtn.disabled = false;
-      }
-      setRelayStatus('Ready to create a phone capture link.', 'idle');
+      setRelayStatus('', 'idle');
     } else {
-      hideEl(runBtn, false);
-      hideEl(micPanel, false);
-      hideEl(measurementOptions, false);
-      runBtn.textContent = 'Run measurement';
-      continueBtn.textContent = 'Continue to next position';
       renderRelayCapture(null);
       setRelayStatus('', 'idle');
-      runBtn.disabled = true;
-      if (relayStartBtn) relayStartBtn.disabled = true;
-      autolevelBtn.disabled = true;
     }
+  }
+
+  function setRunTransportLocked(locked) {
+    runTransportLocked = !!locked;
+    if (changeRunDefaultsBtn) changeRunDefaultsBtn.disabled = runTransportLocked;
+    if (runTransportLocked) {
+      setMeasurementOptionsOpen(false);
+      hideEl(localCaptureFallbackBtn, true);
+    } else {
+      hideEl(localCaptureFallbackBtn, !relayConfigured);
+    }
+  }
+
+  function setMeasurementOptionsOpen(open) {
+    hideEl(measurementOptions, !open);
+    if (changeRunDefaultsBtn) {
+      changeRunDefaultsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  }
+
+  function selectedOptionLabel(select) {
+    if (!select || select.selectedIndex < 0 || !select.options) return '';
+    var option = select.options[select.selectedIndex];
+    return option ? String(option.textContent || '').split(' — ')[0].trim() : '';
+  }
+
+  function updateRunDefaultsSummaryFromControls() {
+    var positions = Number(positionsSelect && positionsSelect.value);
+    var selectedPosition = positionsSelect && positionsSelect.options &&
+      positionsSelect.options[positionsSelect.selectedIndex];
+    var positionsLabel = selectedPosition &&
+      selectedPosition.getAttribute('data-summary-label');
+    var targetLabel = selectedOptionLabel(targetSelect).toLowerCase();
+    if (!currentRunDefaults || !Number.isInteger(positions) ||
+        positions <= 0 || !positionsLabel || !targetLabel) return;
+    runDefaultsSummary.textContent = currentRunDefaults.summary_template
+      .split('{positions_label}').join(positionsLabel)
+      .split('{target}').join(targetLabel);
   }
 
   async function populateInputDevices(selectedId) {
@@ -475,6 +551,58 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
+  // Household-mic prefill (Wave-2 persistence): the server embeds the
+  // household's remembered mic + calibration as a JSON data island
+  // (#household-mic-data) when jasper/correction/household_mic.py has a
+  // record whose calibration still resolves on disk. Applied once at page
+  // load, before any device/permission flow runs, so the household need not
+  // re-enter a serial or re-upload a file it already gave JTS. Deliberately
+  // does NOT call updateMicCalibrationRows() — that resets
+  // selectedCalibrationId to null and can trigger a per-browser
+  // localStorage-remembered-serial auto-fetch (loadSavedSerial), neither of
+  // which is wanted when the server has already resolved the exact
+  // calibration file. "Change" clears the prefill and falls back to the
+  // ordinary blank-state flow (model reset, rows hidden, no auto-fetch).
+  function applyHouseholdMicPrefill() {
+    var island = document.getElementById('household-mic-data');
+    if (!island) return;
+    var data;
+    try {
+      data = JSON.parse(island.textContent || 'null');
+    } catch (e) {
+      return;
+    }
+    if (!data || !data.calibration) return;
+    var modelKey = data.model_key || '';
+    var hasOption = modelKey === 'other' || Array.prototype.some.call(
+      micModelSelect.options,
+      function (o) { return o.value === modelKey; }
+    );
+    if (!hasOption) return;  // registry drifted since the record was saved
+    micModelSelect.value = modelKey;
+    if (!modelKey) {
+      serialRow.classList.add('hidden');
+      uploadRow.classList.add('hidden');
+    } else if (modelKey === 'other') {
+      serialRow.classList.add('hidden');
+      uploadRow.classList.remove('hidden');
+    } else {
+      serialRow.classList.remove('hidden');
+      uploadRow.classList.remove('hidden');
+    }
+    showCalibrationLoaded(data);
+    if (!selectedCalibrationId) return;
+    householdMicBannerText.textContent =
+      'Using ' + selectedCalibrationMeta.label + ' — remembered from your last measurement.';
+    householdMicBanner.classList.remove('hidden');
+  }
+
+  householdMicChangeBtn.addEventListener('click', function () {
+    householdMicBanner.classList.add('hidden');
+    micModelSelect.value = '';
+    updateMicCalibrationRows();
+  });
+
   async function fetchCalibration() {
     var model = micModelSelect.value;
     var serial = micSerialInput.value.trim();
@@ -496,9 +624,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       showCalibrationLoaded(payload);
       if (selectedCalibrationId) saveSerial(model, serial);
     } catch (e) {
+      console.warn('calibration lookup failed', e);
       calibrationStatus.className = 'mic-status bad';
       calibrationStatus.textContent =
-        'Lookup failed: ' + e.message + '. Use upload as a fallback.';
+        'Calibration lookup failed. Use upload as a fallback.';
     } finally {
       fetchCalibrationBtn.disabled = false;
     }
@@ -526,8 +655,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       });
       showCalibrationLoaded(payload);
     } catch (e) {
+      console.warn('calibration upload failed', e);
       calibrationStatus.className = 'mic-status bad';
-      calibrationStatus.textContent = 'Upload failed: ' + e.message;
+      calibrationStatus.textContent = 'Calibration upload failed. Try again.';
     } finally {
       uploadCalibrationBtn.disabled = false;
     }
@@ -609,7 +739,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     return 'Captured device “' + (capturedLabel || 'default') + '” looks like ' +
       'this phone’s built-in mic, but you loaded a ' +
       selectedCalibrationMeta.label + ' calibration. Select the USB ' +
-      'measurement mic under Input device, then Start mic capture again.';
+      'measurement mic under Input device, then choose Allow microphone again.';
   }
 
   function renderConstraints(actual, problems) {
@@ -647,12 +777,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         problems.join(', ') +
         '. The measurement will refuse to start in this state.';
       errBanner.classList.remove('hidden');
-      runBtn.disabled = true;
-      autolevelBtn.disabled = true;
     } else {
       errBanner.classList.add('hidden');
-      runBtn.disabled = false;
-      autolevelBtn.disabled = false;
     }
     renderBrowserAudioLocal(actual, problems);
   }
@@ -679,37 +805,104 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!report) return;
     var level = report.level || (report.failed ? 'fail' : 'warn');
     browserAudioReport.className = 'browser-audio-card ' + level;
-    var issues = report.issues || [];
     browserAudioReport.innerHTML =
       '<strong>Browser audio path: ' +
       escapeText(level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
-      '</strong><p class="hint">' + escapeText(report.summary || '') + '</p>' +
-      (issues.length
-        ? '<ul>' + issues.map(function (issue) {
-            return '<li>' + escapeText(issue.message || issue.code) + '</li>';
-          }).join('') + '</ul>'
-        : '');
+      '</strong><p class="hint">' + (level === 'ok'
+        ? 'The microphone settings are ready for measurement.'
+        : (level === 'fail'
+          ? 'The microphone settings are not safe for this measurement.'
+          : 'The microphone may reduce measurement accuracy.')) + '</p>';
+  }
+
+  var LOCAL_CAPTURE_MEMORY_KEY = 'jts-room-local-capture-v1';
+
+  function readLocalCaptureMemory() {
+    try {
+      var raw = window.sessionStorage &&
+        window.sessionStorage.getItem(LOCAL_CAPTURE_MEMORY_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function rememberLocalCapture(deviceId) {
+    try {
+      if (!window.sessionStorage || !sessionId) return;
+      window.sessionStorage.setItem(LOCAL_CAPTURE_MEMORY_KEY, JSON.stringify({
+        session_id: sessionId,
+        device_id: deviceId || null,
+        calibration_id: selectedCalibrationId || null
+      }));
+    } catch (_e) {}
+  }
+
+  function syncSessionMechanics(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    var serverSessionId = snapshot.session_id
+      ? String(snapshot.session_id) : null;
+    localCaptureSetupBound = snapshot.local_capture_setup_bound === true;
+    var liveRun = snapshot.state !== 'idle' && snapshot.state !== 'failed';
+    var remembered = readLocalCaptureMemory();
+    var matchingMemory = remembered && remembered.session_id === serverSessionId
+      ? remembered : null;
+    if (liveRun && snapshot.capture_transport !== 'relay') {
+      // Only the tab that received /start may perform the one-shot local bind.
+      // A different stale tab can observe the live session, but must not adopt
+      // its identity and attach an arbitrary microphone to it.
+      localRunOwnedByThisTab = !!matchingMemory ||
+        localRunOwnerSessionId === serverSessionId;
+      sessionId = localRunOwnedByThisTab ? serverSessionId : null;
+    } else {
+      localRunOwnedByThisTab = false;
+      sessionId = serverSessionId;
+    }
+    if (liveRun) {
+      setRelayMode(snapshot.capture_transport === 'relay');
+    }
+    setRunTransportLocked(liveRun);
+    if (matchingMemory) {
+      selectedCalibrationId = matchingMemory.calibration_id || null;
+    }
+  }
+
+  async function refreshSessionMechanics() {
+    var snapshot = await fetchStatus();
+    syncSessionMechanics(snapshot);
+    return snapshot;
   }
 
   async function startMicCapture() {
-    if (!inputDeviceSelect.value) {
-      jtsAlert('Pick a microphone first. Tap “Refresh microphones” (and ' +
-        'replug the USB mic if it is not listed), then choose your ' +
-        'measurement mic under Input device.');
-      return;
+    try {
+      await refreshSessionMechanics();
+    } catch (_e) {
+      jtsAlert('The speaker could not confirm the current measurement. Try again.');
+      return false;
     }
-    startBtn.disabled = true;
-    startBtn.textContent = 'Capturing…';
+    if (!relayMode && !localRunOwnedByThisTab) {
+      jtsAlert('This measurement was started in another tab. Return to that tab, ' +
+        'or cancel the measurement and start again here.');
+      return false;
+    }
+    var remembered = readLocalCaptureMemory();
+    var matchingMemory = remembered && remembered.session_id === sessionId
+      ? remembered : null;
+    if (localCaptureSetupBound && !matchingMemory) {
+      jtsAlert('This tab no longer has the microphone identity for the active run. ' +
+        'Cancel this measurement and start again.');
+      return false;
+    }
     stopMicStream();
 
     try {
       var Ctor = window.AudioContext || window.webkitAudioContext;
       ctx = new Ctor({sampleRate: REQUIRED_SR});
     } catch (e) {
-      jtsAlert('Could not create AudioContext: ' + e.message);
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start mic capture';
-      return;
+      console.warn('AudioContext unavailable', e);
+      jtsAlert('This browser could not start microphone capture. Try again.');
+      return false;
     }
 
     var stream;
@@ -723,7 +916,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // Always pin the exact device. Without {exact} Safari silently falls
     // back to the built-in mic, which is how an iMM-6C calibration ended up
     // applied to iPhone-mic audio.
-    audioConstraints.deviceId = {exact: inputDeviceSelect.value};
+    var desiredDeviceId = inputDeviceSelect.value ||
+      (matchingMemory && matchingMemory.device_id) || '';
+    if (desiredDeviceId) audioConstraints.deviceId = {exact: desiredDeviceId};
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraints,
@@ -736,15 +931,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         jtsAlert('That microphone is no longer available (was it unplugged?). ' +
           'Tap “Refresh microphones”, reselect it, and try again.');
       } else {
-        jtsAlert('Microphone permission denied or unavailable: ' + e.message);
+        console.warn('microphone permission unavailable', e);
+        jtsAlert('Microphone access was not available. Check permission and try again.');
       }
-      startBtn.disabled = false;
-      startBtn.textContent = 'Start mic capture';
-      return;
+      return false;
     }
 
     constraintsBlock.classList.remove('hidden');
-    measureSection.classList.remove('hidden');
 
     var settings = stream.getAudioTracks()[0].getSettings();
     var trackLabel = stream.getAudioTracks()[0].label || '';
@@ -757,6 +950,23 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       deviceId: settings.deviceId || inputDeviceSelect.value || '',
       label: trackLabel
     };
+    if (!desiredDeviceId && !localCaptureSetupBound) {
+      // Safari reveals the real USB device list only after a permission grant.
+      // Treat this first default stream as discovery only; never commit it as
+      // the run's one-shot microphone identity.
+      stopMicStream();
+      await populateInputDevices();
+      jtsAlert('Microphones are now available. Select the one you want, then ' +
+        'choose Allow microphone again.');
+      return false;
+    }
+    if (desiredDeviceId && actual.deviceId &&
+        actual.deviceId !== desiredDeviceId) {
+      stopMicStream();
+      jtsAlert('The browser opened a different microphone than the one bound ' +
+        'to this run. Cancel the measurement and start again.');
+      return false;
+    }
     await populateInputDevices(actual.deviceId);
     selectedInputDevice = selectedInputDeviceMetadata(actual);
     maybeInferCalibrationModel(actual.label);
@@ -805,8 +1015,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     try {
       await ctx.audioWorklet.addModule(blobUrl);
     } catch (e) {
-      jtsAlert('AudioWorklet load failed: ' + e.message);
-      return;
+      stopMicStream();
+      console.warn('microphone processor unavailable', e);
+      jtsAlert('This browser could not prepare microphone capture. Try again.');
+      return false;
+    } finally {
+      URL.revokeObjectURL(blobUrl);
     }
     var src = ctx.createMediaStreamSource(stream);
     workletNode = new AudioWorkletNode(ctx, 'm');
@@ -817,7 +1031,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         // Live meter
         var pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
         levelBar.style.width = pct.toFixed(1) + '%';
-        levelReadout.textContent = db.toFixed(1);
+        if (levelReadout) levelReadout.textContent = db.toFixed(1);
         // Stash for the autolevel loop (which polls this).
         latestMicRmsDb = db;
       } else if (ev.data && ev.data.type === 'capture') {
@@ -828,9 +1042,50 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // No mic→destination connection — would create a feedback loop
     // on the smart speaker that's the listening target.
 
-    startBtn.textContent = 'Capturing (mic level live below)';
+    rememberLocalCapture(actual.deviceId || desiredDeviceId);
+    if (!localCaptureSetupBound) {
+      var boundSetup = null;
+      var bindError = null;
+      var bindPayload = {
+        session_id: sessionId,
+        calibration_id: selectedCalibrationId,
+        input_device: selectedInputDevice
+      };
+      // A response can be lost after the server commits the binding. The server
+      // treats this exact identity retry as idempotent; keep the browser retry
+      // bounded so a real rejection never becomes a request loop.
+      for (var bindAttempt = 0; bindAttempt < 2; bindAttempt++) {
+        try {
+          boundSetup = await postJson('local-capture/setup', bindPayload);
+          bindError = null;
+          break;
+        } catch (e) {
+          bindError = e;
+          if (bindAttempt === 0) {
+            await new Promise(function (resolve) { setTimeout(resolve, 200); });
+          }
+        }
+      }
+      if (bindError) {
+        console.warn('local capture setup bind failed', bindError);
+        stopMicStream();
+        jtsAlert('The speaker could not use that microphone setup. Try again.');
+        return false;
+      }
 
+      if (boundSetup && boundSetup.state === 'needs_noise_capture') {
+        localCaptureSetupBound = true;
+        pollState();
+      }
+    }
     await acquireWakeLock();
+    return true;
+  }
+
+  async function ensureLocalCaptureReady() {
+    if (relayMode) return false;
+    if (workletNode && micStream) return true;
+    return await startMicCapture();
   }
 
   // iOS auto-releases the screen wake lock when the tab is backgrounded, which
@@ -851,9 +1106,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   function setStateBadge(state, detail) {
-    stateBadge.className = 'state-badge ' + state;
-    stateBadge.textContent = state;
-    stateDetail.textContent = detail || '';
+    // Whole-page progress/copy comes from the server envelope. Keep raw
+    // mechanism details out of the DOM; the envelope refresh replaces this
+    // bounded fallback with the server's typed homeowner failure.
+    if (state === 'failed') {
+      console.warn('room-correction mechanism failed', detail || '');
+      if (wizardVerdict) {
+        wizardVerdict.textContent =
+          'The speaker could not continue this step. Try again.';
+      }
+    }
   }
 
   function qualityReports(payload) {
@@ -872,7 +1134,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var issues = [];
     qualityReports(payload).forEach(function (report) {
       (report && report.issues || []).forEach(function (issue) {
-        var key = [issue.severity, issue.code, issue.message].join('|');
+        var key = [issue.severity, issue.code].join('|');
         if (!seen[key]) {
           seen[key] = true;
           issues.push(issue);
@@ -890,11 +1152,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     qualityBanner.className = 'quality-banner ' + (hasFail ? 'fail' : 'warn');
     qualityBanner.innerHTML =
       '<strong>' + (hasFail ? 'Measurement blocked:' : 'Measurement quality warnings:') +
-      '</strong><ul>' +
-      issues.map(function (issue) {
-        return '<li>' + escapeText(issue.message || issue.code) + '</li>';
-      }).join('') +
-      '</ul>';
+      '</strong><p>' + (hasFail
+        ? 'This capture could not be used safely. Try this position again.'
+        : 'A quieter re-measure may improve confidence, but you can continue.') +
+      '</p>';
   }
 
   function formatAppliedAt(epoch) {
@@ -908,66 +1169,105 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
-  // Map the backend config `kind` to a banner CSS class. The class set
-  // (applied/custom/flat) is presentation and stays here; the human copy is
-  // OWNED by the backend (correction.status.describe_current_config -> {label,
-  // message}) and rendered verbatim so the two surfaces cannot drift (C4a-2).
-  function correctionBannerClass(kind) {
-    if (kind === 'custom' || kind === 'unknown') return 'custom';
-    return 'flat';
+  function setCurrentCorrectionTone(tone) {
+    currentCorrectionBanner.classList.remove('applied', 'custom', 'flat');
+    currentCorrectionBanner.classList.add(tone);
   }
 
-  function renderCurrentCorrection(cc, config) {
-    // `cc` is the parsed JTS room-correction descriptor. When a correction is
-    // applied JTS formats the live PEQ count + timestamp client-side (dynamic
-    // data, not copy). Otherwise the backend `config` descriptor owns the
-    // label/message; the browser renders it rather than re-deriving per-kind
-    // strings that have drifted from the backend.
-    if (cc && cc.applied_at_epoch) {
-      currentCorrectionBanner.className = 'applied';
-      var when = formatAppliedAt(cc.applied_at_epoch);
-      var count = cc.peq_count || 0;
-      var noun = count === 1 ? 'filter' : 'filters';
-      currentCorrectionLabel.textContent =
-        'Current correction: ' + count + ' PEQ ' + noun +
-        (when ? ' applied ' + when : '');
-      currentCorrectionResetBtn.classList.remove('hidden');
+  // One reset affordance visible at a time. resetBtn (#reset-correction) is
+  // the wizard-flow control renderSections() re-homes into whichever of
+  // measurement-review / apply-status / result-proof is the live section;
+  // applyButtonPolicy() owns its own hidden class on top of that. When both
+  // agree it is on-screen, the user's attention is already on the wizard
+  // section that hosts it, so the persistent status banner defers to it —
+  // the banner stays the reset home for every other state (e.g. idle with
+  // an applied correction, where no wizard section hosts the button).
+  // Structural, not positional: renderSections MOVES the single button node
+  // between host sections, so "any host section visible" could false-positive
+  // while the button sits inside a hidden one (leaving ZERO visible resets).
+  // Walk the button's own ancestor chain instead.
+  function isWizardResetVisible() {
+    for (var node = resetBtn; node; node = node.parentNode || null) {
+      if (node.classList && node.classList.contains('hidden')) return false;
+    }
+    return true;
+  }
+
+  function syncCurrentCorrectionReset() {
+    hideEl(
+      currentCorrectionResetBtn,
+      !currentCorrectionResetAllowed || isWizardResetVisible()
+    );
+  }
+
+  function renderCurrentCorrectionUnavailable() {
+    setCurrentCorrectionTone('flat');
+    currentCorrectionLabel.textContent =
+      'The current correction could not be checked. Try again.';
+    currentCorrectionResetAllowed = false;
+    syncCurrentCorrectionReset();
+  }
+
+  function renderCurrentCorrection(presentation) {
+    var tones = {applied: true, custom: true, flat: true};
+    if (!presentation || typeof presentation !== 'object' ||
+        !tones[presentation.tone] ||
+        typeof presentation.message_template !== 'string' ||
+        !presentation.message_template.trim() ||
+        typeof presentation.reset_allowed !== 'boolean' ||
+        !Object.prototype.hasOwnProperty.call(
+          presentation, 'applied_at_epoch'
+        ) ||
+        (presentation.applied_at_epoch !== null &&
+          (!Number.isInteger(presentation.applied_at_epoch) ||
+           presentation.applied_at_epoch < 0))) {
+      renderCurrentCorrectionUnavailable();
       return;
     }
-    var kind = config && config.kind || '';
-    currentCorrectionBanner.className = correctionBannerClass(kind);
-    currentCorrectionLabel.textContent =
-      (config && (config.message || config.label)) ||
-      'No correction applied — speaker is flat.';
-    // A non-JTS/advanced config offers a reset to the flat baseline; managed
-    // (flat/preference/active-speaker/measurement) states have nothing to reset.
-    if (kind === 'custom') {
-      currentCorrectionResetBtn.classList.remove('hidden');
-    } else {
-      currentCorrectionResetBtn.classList.add('hidden');
+    var message = presentation.message_template;
+    if (message.indexOf('{applied_at}') !== -1) {
+      var when = formatAppliedAt(presentation.applied_at_epoch);
+      if (!when) {
+        renderCurrentCorrectionUnavailable();
+        return;
+      }
+      message = message.split('{applied_at}').join(when);
     }
+    if (/\{[^{}]+\}/.test(message)) {
+      renderCurrentCorrectionUnavailable();
+      return;
+    }
+    setCurrentCorrectionTone(presentation.tone);
+    currentCorrectionLabel.textContent = message;
+    currentCorrectionResetAllowed = !!presentation.reset_allowed;
+    syncCurrentCorrectionReset();
   }
 
   async function refreshCurrentCorrection() {
     try {
       var s = await fetchStatus();
-      renderCurrentCorrection(s.current_correction, s.current_config);
+      renderCurrentCorrection(s.current_correction_presentation);
     } catch (e) {
-      currentCorrectionBanner.className = 'flat';
-      currentCorrectionLabel.textContent =
-        'Could not read current correction: ' + e.message;
-      currentCorrectionResetBtn.classList.add('hidden');
+      renderCurrentCorrectionUnavailable();
     }
   }
 
   async function resetFromBanner() {
+    if (!(await jtsConfirm(
+      'Reset room correction? This removes the applied adjustments and cannot be undone.',
+      {danger: true},
+    ))) {
+      return;
+    }
     currentCorrectionResetBtn.disabled = true;
     currentCorrectionLabel.textContent = 'Resetting correction…';
     try {
       await postJson('reset', {});
     } catch (e) {
-      currentCorrectionLabel.textContent =
-        'Reset failed: ' + e.message;
+      currentCorrectionLabel.textContent = safeErrorMessage(
+        e,
+        GENERIC_STEP_FAILURE
+      );
       currentCorrectionResetBtn.disabled = false;
       return;
     }
@@ -988,13 +1288,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // capture/upload/autolevel/relay mechanics the envelope can't express.
   // ==========================================================================
 
-  // Render the step indicator from envelope.progress ({position, total}).
-  // Homeowner labels come from WIZARD_STEP_LABELS; the server owns which
-  // position is current, so the browser never re-counts the flow.
+  // Render the step indicator from envelope.progress
+  // ({position, total, labels}). Both the current position and homeowner
+  // labels come from the server, so the browser never re-counts or authors
+  // the flow.
   function renderProgress(progress) {
     if (!wizardSteps) return;
-    var total = Number(progress && progress.total) || WIZARD_STEP_LABELS.length;
-    var position = Number(progress && progress.position) || 1;
+    var total = progress.total;
+    var position = progress.position;
     wizardSteps.innerHTML = '';
     for (var i = 1; i <= total; i++) {
       var li = document.createElement('li');
@@ -1005,9 +1306,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       dot.setAttribute('aria-hidden', 'true');
       var label = document.createElement('span');
       label.className = 'wizard-step__label';
-      // Labels are a fixed client-owned lexicon (not untrusted); still use
-      // textContent so no markup path exists.
-      label.textContent = WIZARD_STEP_LABELS[i - 1] || ('Step ' + i);
+      label.textContent = progress.labels[i - 1];
       li.appendChild(dot);
       li.appendChild(label);
       wizardSteps.appendChild(li);
@@ -1057,110 +1356,33 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // next_action === null means a browser-driven or terminal step: no button.
   function renderPrimaryAction(nextAction) {
     if (!wizardNextBtn) return;
+    if (wizardActionInFlight) {
+      wizardNextBtn.classList.add('hidden');
+      wizardNextBtn.disabled = true;
+      return;
+    }
     if (!nextAction || !nextAction.endpoint) {
       wizardNextBtn.classList.add('hidden');
       wizardNextBtn.textContent = '';
       wizardNextBtn.removeAttribute('data-endpoint');
       return;
     }
-    wizardNextBtn.textContent = String(nextAction.label || 'Continue');
+    wizardNextBtn.textContent = String(nextAction.label);
     wizardNextBtn.setAttribute('data-endpoint', String(nextAction.endpoint));
     wizardNextBtn.disabled = false;   // nudges never gate the action
     wizardNextBtn.classList.remove('hidden');
   }
 
-  // The forward endpoint the wizard's next_action carries for each session
-  // state — a client mirror of envelope._NEXT_ACTION keyed by state (idle,
-  // verified, and failed all forward to /start: "Start measuring" /
-  // "Measure again"). Two consumers: (a) wizardProvidesForwardAction below
-  // (legacy-button subordination), (b) retireStaleWizardAction (staleness
-  // detection when an envelope refresh fails mid-flow). States absent from
-  // this map (capture screens, transients like analyzing) expect NO wizard
-  // forward action, so a displayed one is treated as stale on an outage.
-  var WIZARD_FORWARD_ACTION_BY_STATE = {
-    idle: '/start',
-    needs_next_position: '/next-position',
-    ready: '/apply',
-    applied: '/verify',
-    verified: '/start',
-    failed: '/start',
-  };
-
-  // True iff the wizard is CURRENTLY showing exactly this forward action:
-  // chrome visible, button visible, the displayed data-endpoint matches,
-  // and the static map agrees it belongs to the current state (so a stale
-  // button left over from the previous state never counts).
-  // applyButtonPolicy uses this to subordinate the legacy in-section
-  // Apply/Verify buttons — requiring the *displayed* endpoint to match
-  // makes the suppression correct-by-construction: if the envelope path is
-  // down, cold-load failed, or the shown action is stale after a state
-  // advance, this returns false and the legacy button stays as the fallback
-  // (never strand the user). Ordering note: on a transition the /status
-  // policy pass runs before the async envelope render lands, so the legacy
-  // button may show for one fetch (~50 ms) and is then retired by
-  // reconcileLegacyPrimaryButtons — a brief correct-action overlap, never a
-  // wrong single action.
-  function wizardProvidesForwardAction(endpoint) {
-    if (!wizardChrome || wizardChrome.classList.contains('hidden')) return false;
-    if (!wizardNextBtn || wizardNextBtn.classList.contains('hidden')) return false;
-    if (wizardNextBtn.getAttribute('data-endpoint') !== endpoint) return false;
-    return WIZARD_FORWARD_ACTION_BY_STATE[currentState] === endpoint;
-  }
-
-  // Mid-flow envelope-only outage repair: the session advanced but the
-  // envelope refresh failed, so the chrome may still display the PREVIOUS
-  // state's action (e.g. "Apply" after the session already reached
-  // applied). A stale action pointing at the wrong endpoint is worse than
-  // no wizard action — hide it, so the legacy in-section button (already
-  // re-surfaced by applyButtonPolicy this cycle, since
-  // wizardProvidesForwardAction saw the mismatch) is the single, correct
-  // action. A displayed action that still matches the current state is
-  // left alone (e.g. /start is right for idle, verified, and failed).
-  function retireStaleWizardAction() {
-    if (!wizardNextBtn || wizardNextBtn.classList.contains('hidden')) return;
-    var displayed = wizardNextBtn.getAttribute('data-endpoint');
-    var expected = WIZARD_FORWARD_ACTION_BY_STATE[currentState] || null;
-    if (relayMode && currentState === 'needs_noise_capture' &&
-        (displayed === '/relay/level-match' || displayed === '/relay/capture')) {
-      return;
-    }
-    if (relayMode && currentState === 'applied' &&
-        (displayed === '/relay/level-match' || displayed === '/relay/verify')) {
-      return;
-    }
-    if (displayed !== expected) {
-      renderPrimaryAction(null);
-    }
-  }
-
-  // Hide the legacy in-section Apply/Verify buttons when the wizard's single
-  // primary action now owns them. Called after an envelope render so the
-  // suppression reflects the freshly-shown chrome regardless of the
-  // applyButtonPolicy-vs-async-render order within a poll cycle. Only hides
-  // (never shows) — applyButtonPolicy is still the authority on when a
-  // button may appear; this just removes the duplicate once the wizard is up.
-  function reconcileLegacyPrimaryButtons() {
-    if (applyBtn && wizardProvidesForwardAction('/apply')) {
-      applyBtn.classList.add('hidden');
-    }
-    var wizardEndpoint = wizardNextBtn && wizardNextBtn.getAttribute('data-endpoint');
-    if (verifyBtn && (wizardProvidesForwardAction('/verify') ||
-        (relayMode && (wizardEndpoint === '/relay/level-match' ||
-          wizardEndpoint === '/relay/verify')))) {
-      verifyBtn.classList.add('hidden');
-    }
-    if (relayMode && wizardProvidesForwardAction('/next-position')) {
-      continueBtn.classList.add('hidden');
-      if (relayStartBtn) relayStartBtn.disabled = true;
-    }
-  }
-
   // Delegated click for the wizard primary action. Reads the endpoint from
   // the data-* attribute the router set (no interpolated inline handler).
   async function onWizardNextClick() {
+    if (wizardActionInFlight) return;
     var ep = wizardNextBtn.getAttribute('data-endpoint');
     if (!ep) return;
+    pendingHomeownerFailure = null;
+    wizardActionInFlight = true;
     wizardNextBtn.disabled = true;
+    wizardNextBtn.classList.add('hidden');
     try {
       if (ep === '/start') {
         await startMeasurement();
@@ -1170,14 +1392,42 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         await startRelayCaptureForCurrentPosition();
       } else if (ep === '/relay/verify') {
         await startRelayVerify();
-      } else if (relayMode && ep === '/next-position') {
+      } else if (ep === '/next-position') {
         await continueToNextPosition();
+      } else if (ep === '/repeat-position') {
+        await repeatMainSeat();
+      } else if (ep === '/local-capture/setup') {
+        // The OS permission dialog can take a moment to appear (or need a
+        // second tap to bring the browser forward); say so immediately so
+        // the tap doesn't look like it did nothing.
+        if (wizardVerdict) {
+          wizardVerdict.textContent = "Waiting for the browser's permission prompt…";
+        }
+        await startMicCapture();
+      } else if (ep === '/autolevel/start') {
+        if (!(await ensureLocalCaptureReady())) {
+          throw new Error('local microphone capture is not ready');
+        }
+        await startAutolevel();
+      } else if (ep === '/upload-noise') {
+        if (!(await ensureLocalCaptureReady())) {
+          throw new Error('local microphone capture is not ready');
+        }
+        await capturePreSweepNoise();
+      } else if (ep === '/apply') {
+        await applyCorrection(wizardNextBtn);
+      } else if (ep === '/reset') {
+        await resetCorrection();
+      } else if (ep === '/verify') {
+        await startVerify(wizardNextBtn);
       } else {
-        await postJson(ep.replace(/^\/+/, ''), {});
+        throw new Error('unsupported room-correction action');
       }
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
+      wizardActionInFlight = false;
       wizardNextBtn.disabled = false;
     }
     pollState();
@@ -1187,40 +1437,260 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     refreshCurrentCorrection();
   }
 
-  // Show/hide the top-level workflow sections for the current screen. The
-  // router owns phase visibility; applyButtonPolicy still governs the
-  // mechanism buttons inside measure-section. Unknown screens fall back to
-  // showing the measure section (never strand the user with nothing).
-  // `curves` is the envelope's own curves object — the SINGLE source for the
-  // review/result chart visibility (never client-side state like lastResult,
-  // which is empty after a mid-flow page reload even though the server has a
-  // measured curve): no measured curve -> no chart frame; envelope measured
-  // curve -> chart shown before drawEnvelopeCurves draws into it.
-  function showScreenSections(screen, curves) {
-    var spec = SCREEN_SECTIONS[screen] || { measure: true, result: false };
-    hideEl(measureSection, !spec.measure);
+  function validateEnvelope(env) {
+    if (!env || env.schema_version !== SUPPORTED_ENVELOPE_SCHEMA) {
+      throw new Error('unsupported room-correction envelope');
+    }
+    if (!KNOWN_ENVELOPE_SCREENS[String(env.screen || '')]) {
+      throw new Error('unknown room-correction screen');
+    }
+    validateProgress(env.progress);
+    if (!Array.isArray(env.sections) || env.sections.length === 0) {
+      throw new Error('room-correction sections missing');
+    }
+    validateRunDefaults(env.run_defaults);
+    if (env.run_defaults.change_allowed !== (
+      env.screen === 'idle' && env.state === 'idle'
+    )) {
+      throw new Error('room-correction Change authority is inconsistent');
+    }
+    var seen = {};
+    env.sections.forEach(function (sectionId) {
+      if (typeof sectionId !== 'string' || !sectionNodes[sectionId] || seen[sectionId]) {
+        throw new Error('unknown or duplicate room-correction section');
+      }
+      seen[sectionId] = true;
+    });
+    if (env.next_action !== null) {
+      var action = env.next_action;
+      if (!action || typeof action.label !== 'string' || !action.label.trim() ||
+          !KNOWN_ACTION_ENDPOINTS[String(action.endpoint || '')]) {
+        throw new Error('unknown room-correction action');
+      }
+    }
+    if (!Object.prototype.hasOwnProperty.call(env, 'blocker') ||
+        !Object.prototype.hasOwnProperty.call(env, 'failure')) {
+      throw new Error('room-correction failure blocks missing');
+    }
+    var blocker = validatePublicFailure(env.blocker);
+    var failure = validatePublicFailure(env.failure);
+    if (blocker && blocker.code !== 'speaker_setup_incomplete' &&
+        blocker.code !== 'speaker_readiness_unavailable') {
+      throw new Error('room-correction blocker code mismatch');
+    }
+    var hasBlockerSection = env.sections.indexOf('readiness-blocker') !== -1;
+    if (hasBlockerSection !== !!blocker) {
+      throw new Error('room-correction blocker section mismatch');
+    }
+    if (blocker && (env.screen !== 'idle' || env.next_action !== null)) {
+      throw new Error('blocked room-correction entry offered an action');
+    }
+    if (String(env.state) === 'failed' && !failure) {
+      throw new Error('room-correction failure/state mismatch');
+    }
+    if (failure && String(env.state) !== 'failed' &&
+        (env.screen !== 'review' || failure.code !== 'measurement_evidence_unsafe')) {
+      throw new Error('room-correction failure/screen mismatch');
+    }
+    if (failure && env.next_action !== null && !(
+      String(env.state) === 'failed' && env.screen === 'result' &&
+      env.next_action.endpoint === '/reset'
+    )) {
+      throw new Error('failed room-correction envelope offered an action');
+    }
+    return env;
+  }
+
+  function validateProgress(progress) {
+    if (!progress || typeof progress !== 'object' ||
+        !Number.isInteger(progress.position) || progress.position < 1 ||
+        progress.position > WIZARD_PROGRESS_TOTAL ||
+        !Number.isInteger(progress.total) ||
+        progress.total !== WIZARD_PROGRESS_TOTAL ||
+        !Array.isArray(progress.labels) ||
+        progress.labels.length !== WIZARD_PROGRESS_TOTAL ||
+        !progress.labels.every(function (label) {
+          return typeof label === 'string' && !!label.trim();
+        })) {
+      throw new Error('invalid room-correction progress');
+    }
+    return progress;
+  }
+
+  function validateRunDefaults(block) {
+    var summaryRemainder = (
+      block && typeof block.summary_template === 'string'
+        ? block.summary_template
+        : ''
+    );
+    var requiredSummaryTokens = ['{positions_label}', '{target}'];
+    var summaryTokensValid = requiredSummaryTokens.every(function (token) {
+      if (summaryRemainder.split(token).length !== 2) return false;
+      summaryRemainder = summaryRemainder.replace(token, '');
+      return true;
+    }) && summaryRemainder.indexOf('{') === -1 &&
+      summaryRemainder.indexOf('}') === -1;
+    if (!block || typeof block !== 'object' ||
+        typeof block.summary !== 'string' || !block.summary.trim() ||
+        typeof block.summary_template !== 'string' ||
+        !block.summary_template.trim() ||
+        !summaryTokensValid ||
+        !Number.isInteger(block.total_positions) || block.total_positions <= 0 ||
+        !block.target || typeof block.target.id !== 'string' ||
+        typeof block.target.label !== 'string' || !block.target.label.trim() ||
+        !block.strategy || typeof block.strategy.id !== 'string' ||
+        typeof block.strategy.label !== 'string' || !block.strategy.label.trim() ||
+        typeof block.repeat_main_position !== 'boolean' ||
+        typeof block.repeat_disclosure !== 'string' ||
+        (block.capture_transport !== 'relay' && block.capture_transport !== 'local') ||
+        typeof block.change_allowed !== 'boolean') {
+      throw new Error('invalid room-correction run defaults');
+    }
+    if (!selectSupportsValue(positionsSelect, block.total_positions) ||
+        !selectSupportsValue(targetSelect, block.target.id) ||
+        !selectSupportsValue(strategySelect, block.strategy.id)) {
+      throw new Error('unsupported room-correction run defaults');
+    }
+    return block;
+  }
+
+  function selectSupportsValue(select, value) {
+    if (!select || !select.options) return false;
+    var expected = String(value);
+    for (var i = 0; i < select.options.length; i++) {
+      if (String(select.options[i].value) === expected) return true;
+    }
+    return false;
+  }
+
+  function renderRunDefaults(block) {
+    if (!block || !runDefaultsSummary) return;
+    currentRunDefaults = block;
+    if (!block.change_allowed || !runDefaultsDirty) {
+      positionsSelect.value = String(block.total_positions);
+      targetSelect.value = String(block.target.id);
+      strategySelect.value = String(block.strategy.id);
+      if (positionsSelect.value !== String(block.total_positions) ||
+          targetSelect.value !== String(block.target.id) ||
+          strategySelect.value !== String(block.strategy.id)) {
+        throw new Error('room-correction run choice is not supported by this page');
+      }
+      runDefaultsSummary.textContent = String(block.summary);
+    }
+    if (repeatMainPositionDisclosure) {
+      repeatMainPositionDisclosure.textContent = String(block.repeat_disclosure);
+      hideEl(repeatMainPositionDisclosure, !block.repeat_disclosure);
+    }
+    setRunTransportLocked(!block.change_allowed);
+  }
+
+  function validatePublicFailure(block) {
+    if (block === null) return null;
+    if (!block || typeof block !== 'object' ||
+        typeof block.code !== 'string' || !KNOWN_FAILURES[block.code] ||
+        typeof block.text !== 'string' || !block.text.trim() ||
+        typeof block.retryable !== 'boolean') {
+      throw new Error('invalid room-correction failure');
+    }
+    var expected = KNOWN_FAILURES[block.code];
+    if (block.text !== expected.text || block.retryable !== expected.retryable) {
+      throw new Error('room-correction failure presentation mismatch');
+    }
+    var action = block.recovery_action;
+    if (action !== null) {
+      if (!action || typeof action.label !== 'string' || !action.label.trim() ||
+          typeof action.href !== 'string' || !action.href.startsWith('/') ||
+          action.href.startsWith('//') || action.href.indexOf('\\') !== -1 ||
+          /[\u0000-\u001f]/.test(action.href)) {
+        throw new Error('invalid room-correction recovery action');
+      }
+    }
+    return block;
+  }
+
+  function renderReadinessBlocker(blocker) {
+    if (!readinessBlockerMessage || !readinessBlockerAction) return;
+    readinessBlockerMessage.textContent = blocker ? String(blocker.text) : '';
+    var action = blocker && blocker.recovery_action;
+    if (action) {
+      readinessBlockerAction.textContent = String(action.label);
+      readinessBlockerAction.href = String(action.href);
+      readinessBlockerAction.classList.remove('hidden');
+    } else {
+      readinessBlockerAction.textContent = '';
+      readinessBlockerAction.removeAttribute('href');
+      readinessBlockerAction.classList.add('hidden');
+    }
+  }
+
+  function renderEnvelopeFailure() {
+    Object.keys(sectionNodes).forEach(function (sectionId) {
+      sectionNodes[sectionId].classList.add('hidden');
+    });
+    renderPrimaryAction(null);
+    if (wizardChrome) wizardChrome.classList.remove('hidden');
+    if (wizardVerdict) {
+      wizardVerdict.textContent =
+        'The speaker could not refresh this step. Wait a moment and try again.';
+    }
+    renderNudges([]);
+    renderReadinessBlocker(null);
+  }
+
+  // The server supplies both membership and order. This renderer knows only
+  // the closed section vocabulary and moves those DOM roots into the exact
+  // order received; it contains no screen-to-section policy.
+  function renderSections(sections, curves) {
+    Object.keys(sectionNodes).forEach(function (sectionId) {
+      sectionNodes[sectionId].classList.add('hidden');
+    });
+    sections.forEach(function (sectionId) {
+      var node = sectionNodes[sectionId];
+      envelopeSections.appendChild(node);
+      node.classList.remove('hidden');
+    });
+
+    // Review and result use one neutral evidence subtree. The selected
+    // server section owns its host; no two section names alias one DOM root.
+    if (sections.indexOf('measurement-review') !== -1) {
+      measurementReview.appendChild(resultSection);
+      measurementReview.appendChild(resetBtn);
+    } else if (sections.indexOf('result-proof') !== -1) {
+      resultProof.appendChild(resultSection);
+      resultProof.appendChild(resetBtn);
+    } else if (sections.indexOf('apply-status') !== -1) {
+      sectionNodes['apply-status'].appendChild(resetBtn);
+    }
     var haveResult = !!(curves && curves.measured);
-    hideEl(resultSection, !(spec.result && haveResult));
+    hideEl(resultSection, !haveResult);
+    // Whole-section visibility just settled — re-derive whether the banner's
+    // own reset control should defer to the wizard's.
+    syncCurrentCorrectionReset();
   }
 
   // The envelope router. Renders the full wizard chrome from one envelope
-  // and, on review/result, draws the server-smoothed curves + headline into
-  // the SAME canvas the /status path uses (the browser renders server data
-  // verbatim — no client smoothing on this path).
+  // and, on review/result, draws its server-smoothed curves into the shared
+  // result canvas (server data verbatim; no client smoothing or /status
+  // presentation path).
   function renderEnvelope(env) {
     if (!env || !wizardChrome) return;
     wizardChrome.classList.remove('hidden');
-    if (wizardVerdict) wizardVerdict.textContent = String(env.verdict_text || '');
+    if (env.blocker || env.failure) pendingHomeownerFailure = null;
+    if (wizardVerdict) {
+      wizardVerdict.textContent = String(
+        env.failure && env.failure.text || env.verdict_text || ''
+      );
+    }
     renderNudges(env.nudges);
     renderPrimaryAction(env.next_action);
     renderProgress(env.progress);
-    showScreenSections(env.screen, env.curves || {});
-    // The chrome is now visible with its primary action, so retire any
-    // duplicate legacy in-section Apply/Verify button the earlier
-    // applyButtonPolicy pass may have shown before this async render landed
-    // (the envelope render can arrive after applyButtonPolicy in a poll
-    // cycle). Idempotent; keeps the single-primary-action contract.
-    reconcileLegacyPrimaryButtons();
+    renderSections(env.sections, env.curves || {});
+    renderRunDefaults(env.run_defaults);
+    renderReadinessBlocker(env.blocker);
+    if (pendingHomeownerFailure) {
+      wizardVerdict.textContent = String(pendingHomeownerFailure.text);
+      if (!pendingHomeownerFailure.retryable) renderPrimaryAction(null);
+    }
     // On the review/result screens the envelope carries the honest,
     // server-smoothed curves + Pi-classified two-tone fill. Draw them into
     // the shared canvas via drawEnvelopeCurves so the "what your room is
@@ -1233,16 +1703,17 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   // P6: render the tuning-assistant affordance from the envelope's
   // tuning_llm block ({offered, available, provider, model?, nudge?}).
-  // Hidden unless offered (a measurement screen). When offered but the
-  // household has no OpenAI key, show only the nudge. When available,
-  // show the two per-tap actions. Fail-soft: a missing block hides it.
+  // Whole-section visibility is owned only by renderSections(). This function
+  // fills the section's internals: when offered but the household has no
+  // OpenAI key, show only the nudge; when available, show the two per-tap
+  // actions. A missing block clears both internal affordances.
   function renderTuning(block) {
     if (!tuningPanel) return;
     if (!block || !block.offered) {
-      tuningPanel.classList.add('hidden');
+      tuningActions.classList.add('hidden');
+      tuningNudge.classList.add('hidden');
       return;
     }
-    tuningPanel.classList.remove('hidden');
     if (block.available) {
       tuningNudge.classList.add('hidden');
       tuningActions.classList.remove('hidden');
@@ -1290,24 +1761,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   }
 
-  // An HTTP error whose body carried the server's honest JSON error
-  // message (e.g. the paid-call min-interval 409): the assistant WAS
-  // reached, so its message is shown as-is. A plain Error (fetch threw,
-  // or the body wasn't JSON) is a genuine network/parse failure and keeps
-  // the "Could not reach" framing.
-  function tuningServerError(message) {
-    var err = new Error(String(message));
-    err.serverMessage = true;
-    return err;
-  }
-
   function setTuningError(e) {
-    if (e && e.serverMessage) {
-      setTuningStatus(e.message);
-    } else {
-      setTuningStatus('Could not reach the tuning assistant: '
-        + (e && e.message ? e.message : e));
-    }
+    setTuningStatus(safeErrorMessage(
+      e,
+      'The tuning assistant could not continue. Try again.'
+    ));
   }
 
   async function onTuningInterpret() {
@@ -1318,12 +1776,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var resp = await fetch(endpoint('interpret'), {
         method: 'POST', headers: jsonHeaders(), body: '{}',
       });
-      var payload = await resp.json();
       if (!resp.ok) {
-        throw payload && payload.error
-          ? tuningServerError(payload.error)
-          : new Error('interpret ' + resp.status);
+        throw await responseError(
+          resp,
+          'The tuning assistant could not continue. Try again.'
+        );
       }
+      var payload = await resp.json();
       renderTuningExplanation(payload);
       setTuningStatus('');
     } catch (e) {
@@ -1340,12 +1799,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var resp = await fetch(endpoint('propose'), {
         method: 'POST', headers: jsonHeaders(), body: '{}',
       });
-      var payload = await resp.json();
       if (!resp.ok) {
-        throw payload && payload.error
-          ? tuningServerError(payload.error)
-          : new Error('propose ' + resp.status);
+        throw await responseError(
+          resp,
+          'The tuning assistant could not continue. Try again.'
+        );
       }
+      var payload = await resp.json();
       renderTuningExplanation(payload);
       renderTuningProposals(payload.proposals || []);
       setTuningStatus('');
@@ -1464,98 +1924,183 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         headers: jsonHeaders(),
         body: JSON.stringify({ confirm: true, correction_peqs: p.correction_peqs }),
       });
+      if (!resp.ok) throw await responseError(resp, GENERIC_STEP_FAILURE);
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload && payload.error ? payload.error : ('apply ' + resp.status));
       if (payload.applied) {
         setTuningStatus('Applied. Measure once more to verify it worked.');
         pollState();
         refreshEnvelope();
       } else {
-        // Server-derived honesty: applied is false both for a safety-gate
-        // rejection AND for an apply that failed downstream (CamillaDSP
-        // rejected the reload — the speaker kept its previous sound). The
-        // server's reason carries the honest sentence; refresh so the UI
-        // shows the real session state rather than a stale review screen.
-        setTuningStatus('Not applied: ' + (payload.reason || "couldn't apply — the speaker kept its previous sound."));
+        var failure = null;
+        try { failure = validatePublicFailure(payload.failure || null); }
+        catch (_e) {}
+        setTuningStatus(
+          failure ? failure.text : 'That suggestion was not applied.'
+        );
         if (btn) btn.disabled = false;
         pollState();
         refreshEnvelope();
       }
     } catch (e) {
-      setTuningStatus('Apply failed: ' + (e && e.message ? e.message : e));
+      setTuningStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE));
       if (btn) btn.disabled = false;
     }
   }
 
-  // Draw the envelope's server-smoothed curves + two-tone fill + headline.
-  // Bridges the envelope shape onto the existing drawChart contract: the
-  // envelope's `verify` curve becomes drawChart's lastVerify overlay, and
-  // fill_segments ride in on a synthesized `verify_before_after` payload so
-  // drawBeforeAfterFill consumes them exactly as it does on the /status
-  // path (server tones verbatim — pinned by the render harness). Curves are
-  // already 1/N-oct smoothed on the Pi, so smoothCurve (client display
-  // smoothing) is a near no-op here; the honest server data is what draws.
+  // Draw the envelope's already-smoothed curves and server-classified fill.
+  // The canvas is deliberately a dumb renderer: no /status result payload,
+  // client smoothing, confidence policy, or verdict derivation enters here.
   function drawEnvelopeCurves(env) {
     var curves = env.curves || {};
     if (!curves.measured) return;   // nothing to draw before the first sweep
-    if (curves.verify) {
-      lastVerify = curves.verify;   // drawChart reads this for the overlay
-    }
-    // The one-number headline (env.headline) is already folded into
-    // verdict_text by the server for the result screen, so it needs no
-    // separate render here — the verdict line carries it.
-    var payload = {};
-    if (env.fill_segments && env.fill_segments.length && curves.verify) {
-      payload.verify_before_after = { fill_segments: env.fill_segments };
-    }
-    // result-section visibility is owned by showScreenSections (gated on
+    lastChartEnvelope = env;
+    // result-section visibility is owned by renderSections (gated on
     // these same envelope curves), which renderEnvelope ran just before
     // this — the canvas is already laid out; no second un-hide here.
     void canvas.offsetWidth;   // force layout so getBoundingClientRect is real
-    drawChart(curves.measured, curves.target || null, curves.predicted || null, payload);
+    if (!drawChart(curves, env.fill_segments || [])) {
+      // Mobile Safari can report 0×0 for one frame after revealing the
+      // result section. Retry once, bounded, after layout catches up.
+      window.requestAnimationFrame(function () {
+        if (lastChartEnvelope === env) {
+          drawChart(curves, env.fill_segments || []);
+        }
+      });
+    }
   }
 
   // Fetch the screen envelope once and render it. Increments a probe-visible
   // counter so the harness can prove the fetch-once-per-state-change
-  // discipline. Fail-soft: an envelope fetch error never disturbs the
-  // /status mechanism path (the chrome just keeps its last render).
-  async function refreshEnvelope() {
-    envelopeFetchCount += 1;
+  // discipline. A failed or unsupported envelope keeps the /status
+  // mechanism path alive but clears every user-facing section and action.
+  async function fetchPresentationJson(path, label) {
+    var controller = new AbortController();
+    var fetchTimeout = setTimeout(function () {
+      controller.abort();
+    }, envelopeFetchTimeoutMs);
     try {
-      var resp = await fetch(endpoint('envelope'), { cache: 'no-store' });
-      if (!resp.ok) throw new Error('envelope ' + resp.status);
-      var env = await resp.json();
-      lastEnvelopeState = env.state;
-      envelopeRetryArmed = true;   // success re-arms one retry credit
-      renderEnvelope(env);
-      scheduleEnvelopePoll(env.screen);
-    } catch (e) {
-      // Chrome degrades to its last good render; mechanism path is
-      // unaffected. Two repairs: (1) if the displayed primary action no
-      // longer matches the session state (mid-flow envelope-only outage),
-      // retire it so the legacy fallback is the single correct action;
-      // (2) spend the one retry credit so a transient blip (a 503 during a
-      // deploy restart) self-heals without hot-polling a static screen.
-      console.warn('envelope refresh failed', e);
-      retireStaleWizardAction();
-      if (envelopeRetryArmed) {
-        envelopeRetryArmed = false;
-        if (envelopeTimer) clearTimeout(envelopeTimer);
-        envelopeTimer = setTimeout(refreshEnvelope, 1500);
-      }
+      var resp = await fetch(endpoint(path), {
+        cache: 'no-store', signal: controller.signal,
+      });
+      if (!resp.ok) throw new Error(label + ' ' + resp.status);
+      return await resp.json();
+    } finally {
+      clearTimeout(fetchTimeout);
     }
   }
 
-  // Poll discipline (P3b-1 reviewer advisory): re-fetch the envelope on a
-  // timer ONLY while an active-capture screen is live. Static screens
-  // (idle/review/apply/result) are edge-triggered off a /status state
-  // change (see maybeRefreshEnvelopeOnStateChange) and are never hot-polled
-  // — server-smoothed curves ride those envelopes at ~25–50 ms/GET on a Pi,
-  // too costly to spin on.
+  async function refreshEnvelope() {
+    envelopePollingEnabled = true;
+    if (envelopeRequestInFlight) {
+      envelopeRefreshQueued = true;
+      return envelopeRequestInFlight;
+    }
+    if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    envelopeFetchCount += 1;
+    envelopeRequestInFlight = (async function () {
+      try {
+        var envelopePath = 'envelope?capture_transport=' +
+          (relayMode ? 'relay' : 'local');
+        var env = validateEnvelope(
+          await fetchPresentationJson(envelopePath, 'envelope')
+        );
+        envelopeRetryArmed = true;   // success re-arms one retry credit
+        renderEnvelope(env);
+        lastRenderedEnvelopeScreen = env.screen;
+        lastRenderedEnvelopeState = env.state;
+        if (env.screen === 'idle') {
+          lastRenderedReadinessSignature = JSON.stringify(env.blocker);
+        }
+        scheduleEnvelopePoll(env.screen);
+        return true;
+      } catch (e) {
+        // Fail closed immediately: no stale action or section policy survives
+        // an unsupported/malformed envelope. Spend one retry credit so a
+        // transient deploy restart can self-heal without creating a loop.
+        console.warn('envelope refresh failed', e);
+        renderEnvelopeFailure();
+        var shouldMonitorIdle = lastRenderedEnvelopeScreen === 'idle' ||
+          lastObservedStatusState === 'idle';
+        // The last presentation was retired above. Mark it stale so a later
+        // lightweight readiness read forces one full policy refresh even when
+        // readiness itself did not change during the outage.
+        lastRenderedEnvelopeScreen = null;
+        if (envelopeRetryArmed && envelopePollingEnabled) {
+          envelopeRetryArmed = false;
+          envelopeTimer = setTimeout(refreshEnvelope, 1500);
+        } else if (shouldMonitorIdle && envelopePollingEnabled) {
+          // Two consecutive failures spend the fast retry. Resume through the
+          // cheap idle probe instead of repeatedly scanning report bundles.
+          envelopeTimer = setTimeout(refreshIdleEntry, idleEnvelopeRefreshMs);
+        }
+        return false;
+      }
+    })();
+    var succeeded = false;
+    try {
+      succeeded = await envelopeRequestInFlight;
+    } finally {
+      envelopeRequestInFlight = null;
+      var queued = envelopeRefreshQueued;
+      envelopeRefreshQueued = false;
+      // A newer trigger that arrived during a successful read gets one
+      // coalesced follow-up. After failure, the bounded backoff above owns
+      // recovery; never turn queued status ticks into immediate retries.
+      if (queued && succeeded) refreshEnvelope();
+    }
+  }
+
+  // Idle readiness and the current-correction banner can change outside the
+  // Room session. Refresh those two cheap facts together, and fetch the full
+  // envelope only when its readiness policy or logical screen is stale. This
+  // keeps report discovery off the steady-state idle cadence.
+  async function refreshIdleEntry() {
+    if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    var keepPolling = lastRenderedEnvelopeScreen === 'idle' ||
+      lastObservedStatusState === 'idle';
+    try {
+      var entry = await fetchPresentationJson(
+        'entry-status', 'entry status'
+      );
+      if (!entry || typeof entry !== 'object' ||
+          !KNOWN_ENVELOPE_SCREENS[String(entry.screen || '')] ||
+          typeof entry.state !== 'string' || !entry.state.trim() ||
+          !Object.prototype.hasOwnProperty.call(entry, 'readiness_blocker')) {
+        throw new Error('invalid room-correction entry status');
+      }
+      var blocker = validatePublicFailure(entry.readiness_blocker);
+      renderCurrentCorrection(entry.current_correction_presentation);
+      var signature = JSON.stringify(blocker);
+      if (entry.screen !== lastRenderedEnvelopeScreen ||
+          entry.state !== lastRenderedEnvelopeState ||
+          signature !== lastRenderedReadinessSignature) {
+        envelopeRetryArmed = true;
+        await refreshEnvelope();
+        return;
+      }
+    } catch (e) {
+      console.warn('entry status refresh failed', e);
+      renderCurrentCorrectionUnavailable();
+      renderEnvelopeFailure();
+      lastRenderedEnvelopeScreen = null;
+      lastRenderedEnvelopeState = null;
+    }
+    if (envelopePollingEnabled &&
+        (keepPolling || lastObservedStatusState === 'idle')) {
+      envelopeTimer = setTimeout(refreshIdleEntry, idleEnvelopeRefreshMs);
+    }
+  }
+
+  // Poll discipline (P3b-1 reviewer advisory): active capture is hot-polled;
+  // idle gets a lightweight readiness/banner refresh because both are
+  // external to Room state. Other static screens remain state-edge triggered.
   function scheduleEnvelopePoll(screen) {
     if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
+    if (!envelopePollingEnabled) return;
     if (ACTIVE_ENVELOPE_SCREENS[screen]) {
       envelopeTimer = setTimeout(refreshEnvelope, 900);
+    } else if (screen === 'idle') {
+      envelopeTimer = setTimeout(refreshIdleEntry, idleEnvelopeRefreshMs);
     }
   }
 
@@ -1569,166 +2114,14 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var lastAutolevelStatus = null;
   function maybeRefreshEnvelopeOnStateChange(state, autolevelStatus) {
     var al = autolevelStatus || 'idle';
-    if (state !== lastEnvelopeState || al !== lastAutolevelStatus) {
+    var stateChanged = state !== lastObservedStatusState;
+    if (stateChanged || al !== lastAutolevelStatus) {
+      if (stateChanged) pendingHomeownerFailure = null;
+      lastObservedStatusState = state;
       lastAutolevelStatus = al;
       envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
       refreshEnvelope();
     }
-  }
-
-  function renderPEQs(peqs) {
-    if (!peqs || peqs.length === 0) {
-      peqList.innerHTML = '<p class="hint">No filters needed — your room\'s bass is already flat (or close enough). Nothing to apply.</p>';
-      return;
-    }
-    var rows = peqs.map(function (p, i) {
-      return '<tr><td>peq_' + (i+1) + '</td>' +
-             '<td>' + p.freq_hz.toFixed(1) + ' Hz</td>' +
-             '<td>Q ' + p.q.toFixed(2) + '</td>' +
-             '<td>' + p.gain_db.toFixed(2) + ' dB</td></tr>';
-    }).join('');
-    peqList.innerHTML =
-      '<table><thead><tr><th>Filter</th><th>Freq</th><th>Q</th><th>Gain</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody></table>';
-  }
-
-  function renderDesignReport(report) {
-    if (!report || !report.correction_strategy) {
-      designReport.classList.add('hidden');
-      designReport.innerHTML = '';
-      return;
-    }
-    var before = report.before || {};
-    var after = report.after || {};
-    // PREDICTED (model estimate), not a measured improvement. The
-    // server renames this key from the old "improvement" so the UI
-    // cannot claim the room got better without a verify measurement.
-    var predicted = report.predicted || {};
-    var warnings = report.warnings || [];
-    var filterAudits = report.filters || [];
-    var warningHtml = '';
-    if (warnings.length) {
-      warningHtml = '<ul>' + warnings.map(function (w) {
-        return '<li>' + escapeText(w.message || w.code) + '</li>';
-      }).join('') + '</ul>';
-    }
-    var filterHtml = '';
-    if (filterAudits.length) {
-      filterHtml = '<ul>' + filterAudits.map(function (f) {
-        return '<li>' + escapeText(f.rationale || (
-          'Filter near ' + Math.round(f.freq_hz) + ' Hz'
-        )) + '</li>';
-      }).join('') + '</ul>';
-    }
-    designReport.classList.remove('hidden');
-    designReport.innerHTML =
-      '<h3>Design audit</h3>' +
-      '<p class="hint">' +
-      'Strategy: <strong>' + escapeText(report.correction_strategy.label) +
-      '</strong> · Target: <strong>' + escapeText(report.target_profile.label) +
-      '</strong> · Band: ' + Math.round(report.band_hz[0]) + '-' +
-      Math.round(report.band_hz[1]) + ' Hz.</p>' +
-      '<p class="hint">Predicted modal-band RMS error: ' +
-      (before.rms_db || 0).toFixed(1) + ' dB -> ' +
-      (after.rms_db || 0).toFixed(1) + ' dB' +
-      ' (' + (predicted.rms_db || 0).toFixed(1) +
-      ' dB predicted change — model estimate, not yet measured). ' +
-      'Apply, then Verify to measure the real before/after.</p>' +
-      warningHtml + filterHtml;
-  }
-
-  function renderConfidence(payload) {
-    var report = payload && (
-      payload.confidence_report ||
-      (payload.design_report && payload.design_report.confidence_report)
-    );
-    if (!report) {
-      confidencePanel.className = 'confidence-card hidden';
-      confidencePanel.innerHTML = '';
-      return;
-    }
-
-    var level = report.level || 'low';
-    var score = typeof report.score === 'number' ? report.score : 0;
-    var variance = report.position_variance || {};
-    var gates = report.strategy_gates || {};
-    var findings = (report.findings || []).slice(0, 5);
-    var gateHtml = ['safe', 'balanced', 'assertive'].map(function (name) {
-      var gate = gates[name] || {};
-      var allowed = !!gate.allowed;
-      return '<span class="gate ' + (allowed ? 'allowed' : 'blocked') + '">' +
-        escapeText(name) + ': ' + (allowed ? 'allowed' : 'blocked') +
-        '</span>';
-    }).join('');
-
-    var varianceHtml = '';
-    if (variance.available) {
-      varianceHtml =
-        '<p class="hint">Position variance: ' +
-        'p90 std ' + Number(variance.p90_std_db || 0).toFixed(1) + ' dB, ' +
-        'max range ' + Number(variance.max_range_db || 0).toFixed(1) +
-        ' dB across ' + Number(variance.position_count || 0) +
-        ' positions.</p>';
-    } else {
-      varianceHtml =
-        '<p class="hint">Position variance unavailable: ' +
-        escapeText(variance.reason || 'need more completed positions') +
-        '.</p>';
-    }
-
-    var findingsHtml = '';
-    if (findings.length) {
-      findingsHtml = '<ul>' + findings.map(function (finding) {
-        return '<li>' + escapeText(finding.message || finding.code) + '</li>';
-      }).join('') + '</ul>';
-    }
-
-    confidencePanel.className = 'confidence-card ' + level;
-    confidencePanel.innerHTML =
-      '<h3>Measurement confidence</h3>' +
-      '<p><strong>' + escapeText(level.toUpperCase()) + '</strong> · ' +
-      '<span class="confidence-score">' + score + '/100</span></p>' +
-      '<p class="hint">' + escapeText(report.summary || '') + '</p>' +
-      varianceHtml +
-      '<div class="gate-list">' + gateHtml + '</div>' +
-      findingsHtml;
-  }
-
-  function renderRuntimeIntegrity(payload) {
-    var report = payload && (
-      payload.runtime_integrity ||
-      (payload.confidence_report && payload.confidence_report.runtime_integrity)
-    );
-    if (!report || (!report.snapshot_count && !report.capture_count)) {
-      runtimeIntegrityPanel.className = 'runtime-card hidden';
-      runtimeIntegrityPanel.innerHTML = '';
-      return;
-    }
-    var level = report.level || 'ok';
-    var latest = report.latest_snapshot || {};
-    var memory = latest.memory || {};
-    var load = latest.load_per_core;
-    var issues = (report.issues || []).slice(0, 5);
-    var issueHtml = issues.length
-      ? '<ul>' + issues.map(function (issue) {
-          return '<li>' + escapeText(issue.message || issue.code) + '</li>';
-        }).join('') + '</ul>'
-      : '<p class="hint">No runtime warnings were recorded around the sweep.</p>';
-    var loadText = Number.isFinite(Number(load))
-      ? Number(load).toFixed(2) + ' load/core'
-      : 'load unavailable';
-    var memText = Number.isFinite(Number(memory.available_mb))
-      ? Number(memory.available_mb).toFixed(0) + ' MB free'
-      : 'memory unavailable';
-    runtimeIntegrityPanel.className = 'runtime-card ' + level;
-    runtimeIntegrityPanel.innerHTML =
-      '<h3>Runtime integrity</h3>' +
-      '<p><strong>' + escapeText(level.toUpperCase()) + '</strong> · ' +
-      Number(report.capture_count || 0) + ' capture artifact(s), ' +
-      Number(report.snapshot_count || 0) + ' system snapshot(s).</p>' +
-      '<p class="hint">' + escapeText(loadText) + ' · ' +
-      escapeText(memText) + '</p>' +
-      issueHtml;
   }
 
   function numberOrNull(value) {
@@ -1736,49 +2129,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     return Number.isFinite(n) ? n : null;
   }
 
-  function formatHz(value) {
-    var n = numberOrNull(value);
-    if (n === null) return '—';
-    if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + ' kHz';
-    return n.toFixed(n >= 100 ? 0 : 1) + ' Hz';
-  }
-
-  function formatDb(value) {
-    var n = numberOrNull(value);
-    if (n === null) return '—';
-    return (n > 0 ? '+' : '') + n.toFixed(1) + ' dB';
-  }
-
   function formatMaybeDb(value) {
     var n = numberOrNull(value);
     return n === null ? '—' : n.toFixed(1) + ' dB';
-  }
-
-  // Honest MEASURED before/after headline. All numbers are computed
-  // on the Pi (session.verify_before_after) and are authoritative;
-  // the client applies only a small ±0.1 dB display deadband to the
-  // server delta when choosing the verb/colour, so a sub-noise delta
-  // reads "held about the same" instead of over-claiming a change.
-  function verifyHeadlineHtml(ba) {
-    if (!ba || !ba.before || !ba.after || !ba.delta) return '';
-    var band = ba.band_hz || [50, 350];
-    var beforeRms = numberOrNull(ba.before.rms_db);
-    var afterRms = numberOrNull(ba.after.rms_db);
-    var deltaRms = numberOrNull(ba.delta.rms_db);
-    if (beforeRms === null || afterRms === null || deltaRms === null) return '';
-    // delta.rms_db > 0 means the measured deviation shrank.
-    var better = deltaRms > 0.1;
-    var worse = deltaRms < -0.1;
-    var verb = better
-      ? 'Bass evened out'
-      : (worse ? 'Bass deviation grew' : 'Bass held about the same');
-    return '<strong class="verify-headline ' +
-      (better ? 'improved' : (worse ? 'regressed' : 'neutral')) + '">' +
-      escapeText(verb) + ': ±' + beforeRms.toFixed(1) + ' dB → ±' +
-      afterRms.toFixed(1) + ' dB</strong> ' +
-      '<span class="hint">(measured RMS deviation from target over ' +
-      Math.round(Number(band[0])) + '–' + Math.round(Number(band[1])) +
-      ' Hz, before vs after correction).</span>';
   }
 
   function formatBytes(bytes) {
@@ -1812,7 +2165,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       var payload = await resp.json();
       renderSessionHistory(payload.sessions || []);
     } catch (e) {
-      sessionHistory.textContent = 'Could not load measurement reports: ' + e.message;
+      console.warn('measurement report list failed', e);
+      sessionHistory.textContent = 'Measurement reports could not be loaded. Try again.';
     } finally {
       loadSessionsBtn.disabled = false;
     }
@@ -1894,9 +2248,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         delete sessionReport.dataset.sessionId;
       }
       await loadSessionReports();
+      envelopeRetryArmed = true;
+      await refreshEnvelope();
     } catch (e) {
       sessionReport.className = 'session-report blocked';
-      sessionReport.textContent = 'Could not delete bundle: ' + e.message;
+      sessionReport.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
     }
   }
 
@@ -1917,13 +2273,23 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         payload = {error: text};
       }
       if (!resp.ok) {
-        throw new Error(payload.error || ('session-report ' + resp.status));
+        console.warn('measurement report request failed', {
+          status: resp.status,
+          diagnostic: payload && payload.error,
+        });
+        throw homeownerError(
+          null,
+          'That measurement report could not be loaded. Try again.'
+        );
       }
       sessionReport.dataset.sessionId = sessionId;
       renderSessionReport(payload);
     } catch (e) {
       sessionReport.className = 'session-report blocked';
-      sessionReport.textContent = 'Could not load report: ' + e.message;
+      sessionReport.textContent = safeErrorMessage(
+        e,
+        'That measurement report could not be loaded. Try again.'
+      );
     }
   }
 
@@ -2004,155 +2370,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       '.</p>';
   }
 
-  function chartPayload(payload) {
-    payload = payload || lastResult || {};
-    return {
-      confidence: payload.confidence_report ||
-        (payload.design_report && payload.design_report.confidence_report) ||
-        null,
-      design: payload.design_report || null,
-      position: payload.position_analysis ||
-        (payload.design_report && payload.design_report.position_report) ||
-        null,
-      runtime: payload.runtime_integrity ||
-        (payload.confidence_report && payload.confidence_report.runtime_integrity) ||
-        null,
-      peqs: payload.peqs || []
-    };
-  }
-
-  function recommendedNextAction(payload) {
-    var p = chartPayload(payload);
-    var confidence = p.confidence || {};
-    var level = confidence.level || 'low';
-    var failed = (confidence.findings || []).some(function (finding) {
-      return finding.severity === 'fail';
-    });
-    if (p.runtime && p.runtime.level === 'fail') {
-      return 'Remeasure — runtime evidence says this sweep may be corrupted.';
-    }
-    if (p.runtime && p.runtime.level === 'warn' && level !== 'high') {
-      return 'Review runtime warnings, then remeasure if the curve looks surprising.';
-    }
-    if (failed || level === 'low') {
-      return 'Remeasure before trusting aggressive correction.';
-    }
-    if (!p.peqs.length) {
-      return 'No correction is needed from this measurement.';
-    }
-    if (level === 'medium') {
-      return 'Apply only a conservative strategy, then verify.';
-    }
-    return 'Apply the proposed correction, then verify from the main seat.';
-  }
-
-  function renderResultsSummary(payload) {
-    if (!payload || !payload.measured) {
-      resultsSummary.className = 'results-summary hidden';
-      resultsSummary.innerHTML = '';
-      return;
-    }
-    var p = chartPayload(payload);
-    var confidence = p.confidence || {};
-    var design = p.design || {};
-    // PREDICTED model estimate (renamed from "improvement" server-side).
-    var predicted = design.predicted || {};
-    var strategy = design.correction_strategy || {};
-    var position = p.position || {};
-    var bands = (position.bands || []).filter(function (band) {
-      return band.available;
-    }).slice(0, 5);
-    var flags = position.feature_flags || [];
-    var flagText = flags.length
-      ? flags.slice(0, 3).map(function (flag) {
-          return escapeText(flag.reason || flag.kind);
-        }).join('<br>')
-      : 'No rejected high-risk features were flagged.';
-    var bandRows = bands.map(function (band) {
-      var confidenceLevel = band.confidence_level || 'low';
-      var residual = band.residual || {};
-      return '<tr><td data-label="Band">' +
-        escapeText(band.label || band.band_id) + '</td>' +
-        '<td data-label="Range">' + formatHz((band.band_hz || [])[0]) + '-' +
-        formatHz((band.band_hz || [])[1]) + '</td>' +
-        '<td data-label="Confidence"><span class="band-pill ' + escapeText(confidenceLevel) + '">' +
-        escapeText(confidenceLevel) + '</span></td>' +
-        '<td data-label="Spread">' + formatDb(band.p90_std_db) + '</td>' +
-        '<td data-label="RMS error">' + formatDb(residual.rms_db) + '</td></tr>';
-    }).join('');
-
-    resultsSummary.className = 'results-summary';
-    resultsSummary.innerHTML =
-      '<h3>Correction readout</h3>' +
-      '<p class="hint"><strong>Recommended next action:</strong> ' +
-      escapeText(recommendedNextAction(payload)) + '</p>' +
-      '<div class="metric-grid">' +
-        '<div class="metric"><span class="label">Confidence</span>' +
-        '<span class="value">' + escapeText(confidence.level || '—') +
-        ' · ' + Number(confidence.score || 0).toFixed(0) + '/100</span></div>' +
-        '<div class="metric"><span class="label">Positions</span>' +
-        '<span class="value">' + Number(position.position_count || 0) +
-        '</span></div>' +
-        '<div class="metric"><span class="label">Strategy</span>' +
-        '<span class="value">' + escapeText(strategy.label || strategy.strategy_id || '—') +
-        '</span></div>' +
-        '<div class="metric"><span class="label">Filters</span>' +
-        '<span class="value">' + Number(p.peqs.length || 0) + '</span></div>' +
-        '<div class="metric"><span class="label">Runtime</span>' +
-        '<span class="value">' + escapeText((p.runtime && p.runtime.level) || '—') +
-        '</span></div>' +
-        '<div class="metric"><span class="label">Predicted RMS change</span>' +
-        '<span class="value">' + formatDb(predicted.rms_db) + '</span></div>' +
-      '</div>' +
-      (bandRows
-        ? '<table class="band-table"><thead><tr><th>Band</th><th>Range</th>' +
-          '<th>Confidence</th><th>Spread</th><th>RMS error</th></tr></thead>' +
-          '<tbody>' + bandRows + '</tbody></table>'
-        : '<p class="hint">Band confidence is unavailable for this run.</p>') +
-      '<p class="hint"><strong>Rejected / caution areas:</strong><br>' +
-      flagText + '</p>';
-  }
-
-  function smoothingWidthOctaves() {
-    var mode = chartSmoothing ? chartSmoothing.value : 'none';
-    if (mode === '1/3') return 1 / 3;
-    if (mode === '1/6') return 1 / 6;
-    if (mode === '1/12') return 1 / 12;
-    return 0;
-  }
-
-  function smoothValues(freqs, values) {
-    var width = smoothingWidthOctaves();
-    if (!width || !freqs || !values || freqs.length !== values.length) {
-      return values ? values.slice() : [];
-    }
-    var half = width / 2;
-    return values.map(function (_value, i) {
-      var f0 = Number(freqs[i]);
-      if (!Number.isFinite(f0) || f0 <= 0) return Number(values[i] || 0);
-      var sum = 0;
-      var count = 0;
-      for (var j = 0; j < values.length; j++) {
-        var f = Number(freqs[j]);
-        var v = Number(values[j]);
-        if (!Number.isFinite(f) || f <= 0 || !Number.isFinite(v)) continue;
-        if (Math.abs(Math.log2(f / f0)) <= half) {
-          sum += v;
-          count += 1;
-        }
-      }
-      return count ? sum / count : Number(values[i] || 0);
-    });
-  }
-
-  function smoothCurve(curve) {
-    if (!curve || !curve.freqs_hz || !curve.magnitude_db) return curve;
-    return {
-      freqs_hz: curve.freqs_hz,
-      magnitude_db: smoothValues(curve.freqs_hz, curve.magnitude_db)
-    };
-  }
-
   function filterEffectCurve(measured, predicted) {
     if (
       !measured || !predicted ||
@@ -2170,7 +2387,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     };
   }
 
-  function drawChart(measured, target, predicted, payload) {
+  function drawChart(curves, fillSegments) {
+    curves = curves || {};
+    var measured = curves.measured || null;
+    var target = curves.target || null;
+    var predicted = curves.predicted || null;
+    var verify = curves.verify || null;
     var dpr = window.devicePixelRatio || 1;
     var rect = canvas.getBoundingClientRect();
     // Defensive: a hidden canvas (display:none ancestor) reports
@@ -2198,18 +2420,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
     function fx(f) { return ml + W * (Math.log2(f / fMin) / Math.log2(fMax / fMin)); }
     function fy(db) { return mt + H * (1 - (db - dbMin) / (dbMax - dbMin)); }
-    var displayMeasured = smoothCurve(measured);
-    var displayTarget = smoothCurve(target);
-    var displayPredicted = smoothCurve(predicted);
-    var p = chartPayload(payload);
-    var band = p.design && p.design.band_hz;
-
-    if (chartShowBand && chartShowBand.checked && band && band.length === 2) {
-      c.fillStyle = 'rgba(29, 185, 84, 0.08)';
-      var x0 = fx(Math.max(fMin, Number(band[0])));
-      var x1 = fx(Math.min(fMax, Number(band[1])));
-      c.fillRect(x0, mt, Math.max(0, x1 - x0), H);
-    }
 
     // Grid
     c.strokeStyle = '#e6e6e6'; c.fillStyle = '#888';
@@ -2228,30 +2438,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // 0 dB emphasis
     c.strokeStyle = '#bbb';
     c.beginPath(); c.moveTo(ml, fy(0)); c.lineTo(ml + W, fy(0)); c.stroke();
-
-    function drawSpread(chart) {
-      if (
-        !chart || !chart.freqs_hz || !chart.min_db || !chart.max_db ||
-        chart.freqs_hz.length !== chart.min_db.length ||
-        chart.freqs_hz.length !== chart.max_db.length
-      ) return;
-      var minDb = smoothValues(chart.freqs_hz, chart.min_db);
-      var maxDb = smoothValues(chart.freqs_hz, chart.max_db);
-      c.fillStyle = 'rgba(212, 68, 68, 0.14)';
-      c.beginPath();
-      var first = true;
-      for (var i = 0; i < chart.freqs_hz.length; i++) {
-        var x = fx(chart.freqs_hz[i]);
-        var y = fy(maxDb[i]);
-        if (first) { c.moveTo(x, y); first = false; }
-        else c.lineTo(x, y);
-      }
-      for (var j = chart.freqs_hz.length - 1; j >= 0; j--) {
-        c.lineTo(fx(chart.freqs_hz[j]), fy(minDb[j]));
-      }
-      c.closePath();
-      c.fill();
-    }
 
     function drawCurve(curve, color, dashed, width) {
       if (!curve || !curve.freqs_hz) return;
@@ -2274,11 +2460,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // pre-correction measured curve and the post-correction verify
     // curve, green where the correction moved toward the target
     // (improved), amber where it moved away (regressed). The segment
-    // classification + grid indices come from the Pi
-    // (verify_before_after.fill_segments); this only renders them,
-    // mirroring drawSpread's polygon technique. Callers pass the
-    // display curves — smoothing preserves the grid, so the server's
-    // i_lo/i_hi still address the right frequency points.
+    // classification + grid indices come from the Pi envelope; this only
+    // renders them against the exact server-smoothed curves.
     function drawBeforeAfterFill(segments, beforeCurve, afterCurve) {
       if (
         !segments || !segments.length ||
@@ -2316,99 +2499,113 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       });
     }
 
-    if (
-      chartShowSpread && chartShowSpread.checked &&
-      p.position && p.position.chart
-    ) {
-      drawSpread(p.position.chart);
-    }
-
     // Measured before/after fill (green=improved, amber=regressed),
     // under the curves so both edges stay visible. The improved/
     // regressed verdict + grid indices are Pi-computed; we only fill
-    // between the displayed (smoothed) before/after curves within each
+    // between the server-smoothed before/after curves within each
     // server-classified segment. Render only when a verify exists.
-    var beforeAfter = payload && payload.verify_before_after;
-    if (lastVerify && beforeAfter && beforeAfter.fill_segments) {
-      drawBeforeAfterFill(
-        beforeAfter.fill_segments, displayMeasured, smoothCurve(lastVerify),
-      );
+    if (verify && fillSegments && fillSegments.length) {
+      drawBeforeAfterFill(fillSegments, measured, verify);
     }
 
-    drawCurve(displayTarget, '#888', true, 2);
-    drawCurve(displayMeasured, '#d44', false, 2);
-    drawCurve(displayPredicted, '#1db954', false, 2);
+    drawCurve(target, '#888', true, 2);
+    drawCurve(measured, '#d44', false, 2);
+    drawCurve(predicted, '#1db954', false, 2);
     if (chartShowFilter && chartShowFilter.checked) {
       drawCurve(
-        filterEffectCurve(displayMeasured, displayPredicted),
+        filterEffectCurve(measured, predicted),
         '#2b7bb9',
         true,
         1.6,
       );
     }
     // Phase 2: post-correction verify pass overlay (purple dashed).
-    if (lastVerify) {
-      drawCurve(smoothCurve(lastVerify), '#a050d0', true, 2);
-    }
-
-    (p.peqs || []).forEach(function (peq, idx) {
-      var freq = Number(peq.freq_hz);
-      if (!Number.isFinite(freq) || freq < fMin || freq > fMax) return;
-      var x = fx(freq);
-      c.strokeStyle = 'rgba(43, 123, 185, 0.45)';
-      c.lineWidth = 1;
-      c.beginPath(); c.moveTo(x, mt); c.lineTo(x, mt + H); c.stroke();
-      c.fillStyle = '#2b7bb9';
-      c.fillText(String(idx + 1), x - 3, mt + 11);
-    });
-
-    var flags = (p.position && p.position.feature_flags) || [];
-    flags.slice(0, 6).forEach(function (flag) {
-      var freq = Number(flag.freq_hz || flag.worst_freq_hz);
-      if (!Number.isFinite(freq) || freq < fMin || freq > fMax) return;
-      var x = fx(freq);
-      c.strokeStyle = 'rgba(214, 130, 0, 0.55)';
-      c.setLineDash([2, 3]);
-      c.beginPath(); c.moveTo(x, mt); c.lineTo(x, mt + H); c.stroke();
-      c.setLineDash([]);
-    });
+    drawCurve(verify, '#a050d0', true, 2);
+    return true;
   }
 
   function redrawLatestChart() {
-    if (lastResult && lastResult.measured) {
-      drawChart(
-        lastResult.measured,
-        lastResult.target,
-        lastResult.predicted,
-        lastResult,
-      );
-    }
+    if (lastChartEnvelope) drawEnvelopeCurves(lastChartEnvelope);
   }
 
   // -- Network --
 
+  var GENERIC_STEP_FAILURE =
+    'The speaker could not continue this step. Try again.';
+
+  function homeownerError(failure, fallback) {
+    var err = new Error(
+      failure && failure.text
+        ? String(failure.text)
+        : String(fallback || GENERIC_STEP_FAILURE)
+    );
+    err.homeownerSafe = true;
+    err.failure = failure || null;
+    return err;
+  }
+
+  function safeErrorMessage(error, fallback) {
+    return error && error.homeownerSafe
+      ? String(error.message)
+      : String(fallback || GENERIC_STEP_FAILURE);
+  }
+
+  function showHomeownerFailure(error) {
+    var failure = error && error.failure;
+    pendingHomeownerFailure = failure || {
+      text: safeErrorMessage(error, GENERIC_STEP_FAILURE),
+      retryable: true,
+    };
+    if (wizardVerdict) wizardVerdict.textContent = pendingHomeownerFailure.text;
+    if (!pendingHomeownerFailure.retryable) renderPrimaryAction(null);
+  }
+
+  async function responseError(resp, fallback) {
+    var text = '';
+    var payload = null;
+    try {
+      text = await resp.text();
+      payload = JSON.parse(text);
+    } catch (_e) {}
+    var failure = null;
+    try {
+      failure = validatePublicFailure(payload && payload.failure || null);
+    } catch (_e) {}
+    console.warn('room-correction request failed', {
+      status: resp.status,
+      failureCode: failure && failure.code,
+    });
+    return homeownerError(failure, fallback);
+  }
 
   async function postJson(path, body) {
     var url = endpoint(path);
-    var resp = await fetch(url, {
-      method: 'POST',
-      headers: jsonHeaders(),
-      body: JSON.stringify(body || {})
-    });
+    var resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body || {})
+      });
+    } catch (e) {
+      console.warn('room-correction request unavailable', {url: url, error: e});
+      throw homeownerError(null, GENERIC_STEP_FAILURE);
+    }
     if (!resp.ok) {
-      var msg = await resp.text();
-      try {
-        var payload = JSON.parse(msg);
-        if (payload && payload.error) msg = payload.error;
-      } catch (_e) {}
-      throw new Error('POST ' + url + ' → ' + resp.status + ': ' + msg);
+      throw await responseError(resp, GENERIC_STEP_FAILURE);
     }
     return await resp.json();
   }
 
   async function fetchStatus() {
-    var resp = await fetch(endpoint('status'), {cache: 'no-store'});
-    if (!resp.ok) throw new Error('status ' + resp.status);
+    var resp;
+    try {
+      resp = await fetch(endpoint('status'), {cache: 'no-store'});
+    } catch (e) {
+      console.warn('room-correction status unavailable', e);
+      throw homeownerError(null, GENERIC_STEP_FAILURE);
+    }
+    if (!resp.ok) throw await responseError(resp, GENERIC_STEP_FAILURE);
     return await resp.json();
   }
 
@@ -2445,8 +2642,30 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   // -- Workflow --
 
+  function finishNoiseCapture(error) {
+    if (noiseCaptureTimeout) clearTimeout(noiseCaptureTimeout);
+    noiseCaptureTimeout = null;
+    var resolve = noiseCaptureResolve;
+    var reject = noiseCaptureReject;
+    noiseCaptureCompletion = null;
+    noiseCaptureResolve = null;
+    noiseCaptureReject = null;
+    if (error) {
+      if (reject) reject(error);
+    } else if (resolve) {
+      resolve();
+    }
+  }
+
   function capturePreSweepNoise() {
-    if (!workletNode) return;
+    if (!workletNode) {
+      return Promise.reject(new Error('local microphone capture is not ready'));
+    }
+    if (noiseCaptureCompletion) return noiseCaptureCompletion;
+    noiseCaptureCompletion = new Promise(function (resolve, reject) {
+      noiseCaptureResolve = resolve;
+      noiseCaptureReject = reject;
+    });
     captureMode = 'noise';
     setStateBadge('needs_noise_capture', 'recording room noise…');
     workletNode.port.postMessage('startCapture');
@@ -2455,35 +2674,33 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         workletNode.port.postMessage('stopCapture');
       }
     }, 700);
+    noiseCaptureTimeout = setTimeout(function () {
+      captureMode = 'discard';
+      if (workletNode) workletNode.port.postMessage('stopCapture');
+      finishNoiseCapture(new Error('the room-noise capture did not finish'));
+    }, 5000);
+    return noiseCaptureCompletion;
   }
 
   function resetMeasurementUiForStart() {
-    continueBtn.classList.add('hidden');
-    applyBtn.classList.add('hidden');
-    verifyBtn.classList.add('hidden');
     resetBtn.classList.add('hidden');
     resultSection.classList.add('hidden');
     positionPrompt.classList.add('hidden');
-    verifySummary.classList.add('hidden');
-    resultsSummary.className = 'results-summary hidden';
-    resultsSummary.innerHTML = '';
-    designReport.classList.add('hidden');
-    designReport.innerHTML = '';
-    confidencePanel.className = 'confidence-card hidden';
-    confidencePanel.innerHTML = '';
-    runtimeIntegrityPanel.className = 'runtime-card hidden';
-    runtimeIntegrityPanel.innerHTML = '';
     qualityBanner.className = 'quality-banner hidden';
     qualityBanner.innerHTML = '';
-    lastVerify = null;
+    lastChartEnvelope = null;
     inVerifyMode = false;
     setStateBadge('preparing', 'pausing music…');
   }
 
   function measurementStartPayload() {
-    var totalPositions = parseInt(positionsSelect.value, 10) || 1;
-    var targetChoice = targetSelect.value || 'flat';
-    var strategyChoice = strategySelect.value || 'balanced';
+    var totalPositions = Number(positionsSelect.value);
+    var targetChoice = String(targetSelect.value || '');
+    var strategyChoice = String(strategySelect.value || '');
+    if (!Number.isInteger(totalPositions) || totalPositions <= 0 ||
+        !targetChoice || !strategyChoice) {
+      throw new Error('measurement choices are unavailable; refresh the page');
+    }
     return {
       total_positions: totalPositions,
       target_choice: targetChoice,
@@ -2491,9 +2708,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       noise_floor_db: relayMode ? null : lastNoiseFloorDb,
       calibration_id: selectedCalibrationId,
       input_device: relayMode ? null : selectedInputDevice,
-      repeat_main_position: relayMode
-        ? false
-        : !!(repeatMainPosition && repeatMainPosition.checked),
       capture_transport: relayMode ? 'relay' : 'local'
     };
   }
@@ -2507,14 +2721,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
-      runBtn.disabled = false;
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
     }
   }
 
   async function startRelayCaptureForCurrentPosition() {
     setRelayStatus('Creating phone capture link…', 'idle');
-    if (relayStartBtn) relayStartBtn.disabled = true;
     renderRelayCapture({status: 'starting'});
     try {
       var resp = await postJson('relay/capture', {});
@@ -2522,10 +2735,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
-      runBtn.disabled = false;
-      if (relayStartBtn) relayStartBtn.disabled = false;
-      continueBtn.disabled = false;
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
     }
   }
 
@@ -2538,22 +2749,21 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
     }
   }
 
   async function startRelayMeasurement() {
-    runBtn.disabled = true;
-    if (relayStartBtn) relayStartBtn.disabled = true;
     resetMeasurementUiForStart();
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      setRunTransportLocked(true);
     } catch (e) {
       setStateBadge('failed', e.message);
-      setRelayStatus(e.message, 'bad');
-      runBtn.disabled = false;
-      if (relayStartBtn) relayStartBtn.disabled = false;
+      showHomeownerFailure(e);
+      setRelayStatus(safeErrorMessage(e, GENERIC_STEP_FAILURE), 'bad');
       return;
     }
     await startRelayLevelMatch();
@@ -2570,34 +2780,35 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       jtsAlert(mismatch);
       return;
     }
-    runBtn.disabled = true;
     resetMeasurementUiForStart();
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      localRunOwnedByThisTab = true;
+      localRunOwnerSessionId = sessionId;
+      rememberLocalCapture(null);
+      setRunTransportLocked(true);
     } catch (e) {
       setStateBadge('failed', e.message);
-      runBtn.disabled = false;
+      showHomeownerFailure(e);
       return;
     }
-    capturePreSweepNoise();
     pollState();
   }
 
   async function continueToNextPosition() {
-    // Hide + disable Continue immediately so a double-tap can't fire
-    // a second /next-position before the server transitions out of
-    // NEEDS_NEXT_POSITION. (A user hit this in first-pass testing
-    // — race between a double-tap and the worklet's stopCapture
-    // → upload → state-transition cycle.)
-    continueBtn.classList.add('hidden');
-    continueBtn.disabled = true;
+    // The envelope-owned wizard button is disabled by its dispatcher before
+    // this runs, preventing a second /next-position double-tap.
     positionPrompt.classList.add('hidden');
     setStateBadge('preparing', 'pausing music…');
+    if (!relayMode && !(await ensureLocalCaptureReady())) {
+      throw new Error('local microphone capture is not ready');
+    }
     try {
       await postJson('next-position', {});
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
       // pollState will reapply the button policy on next tick —
       // user can retry from the new state.
       return;
@@ -2606,22 +2817,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       await startRelayCaptureForCurrentPosition();
       return;
     }
-    capturePreSweepNoise();
+    await capturePreSweepNoise();
     pollState();
   }
 
-  async function relayPrimaryAction() {
-    if (currentState === 'needs_next_position') {
-      await continueToNextPosition();
-      return;
-    }
-    await startMeasurement();
-  }
-
   async function repeatMainSeat() {
-    repeatBtn.classList.add('hidden');
-    repeatBtn.disabled = true;
     setStateBadge('preparing', 'preparing repeat sweep…');
+    if (!relayMode && !(await ensureLocalCaptureReady())) {
+      throw new Error('local microphone capture is not ready');
+    }
     captureMode = 'repeat';
     if (workletNode) workletNode.port.postMessage('startCapture');
     try {
@@ -2630,51 +2834,40 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       captureMode = 'discard';
       if (workletNode) workletNode.port.postMessage('stopCapture');
       setStateBadge('failed', e.message);
-      repeatBtn.disabled = false;
+      showHomeownerFailure(e);
       return;
     }
     pollState();
   }
 
-  // Auto-level: how much SNR (dB) above the measured room noise
-  // floor we want the tone to sit at when we lock. 20-30 dB above
-  // noise gives 15-25 dB SNR on the sweep (which is 6 dB quieter
-  // than the tone source). Clamped on both ends:
-  //   - lower clamp -30 dBFS: don't lock at very quiet absolute
-  //     levels even in dead-silent rooms (capture would still work
-  //     but the user wouldn't believe a measurement happened).
-  //   - upper clamp -10 dBFS: avoid pushing the iPhone mic near
-  //     its clipping ceiling.
-  //
-  // Previous hard-coded -20..-10 target was unreachable in normal
-  // rooms (user's "decently loud voice at 10 cm" peaked at -25 dBFS
-  // — a speaker tone at couch distance would land around -25 to
-  // -35 dBFS at best). Adaptive band picks a target that's
-  // physically achievable for whatever noise floor you've got.
-  var AUTOLEVEL_SNR_DESIRED_LOW = 20;   // 20 dB above noise = minimum
-  var AUTOLEVEL_SNR_DESIRED_HIGH = 30;  // 30 dB above noise = ideal
-  var AUTOLEVEL_TARGET_DB_FLOOR = -30;  // lower clamp (absolute)
-  var AUTOLEVEL_TARGET_DB_CEILING = -10; // upper clamp (absolute)
+  // Keep the local-browser UMIK path on the same Room-owned acoustic
+  // window as the relay path. The 2026-07-15 JTS3 smoke showed that even
+  // Room's initial 3 dB reserve could let the following ESS clip: its RMS
+  // rose 3.24 dB above the locked tone and its peak reached full scale.
+  // Noise is measured and reported for the downstream SNR gates, but it
+  // must not raise this bounded level target.
+  var ROOM_LEVEL_WINDOW_LOW_DBFS = -26;
+  var ROOM_LEVEL_WINDOW_HIGH_DBFS = -18;
 
-  function computeTargetBand(noiseFloorDb) {
-    var high = Math.min(
-      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_HIGH,
-      AUTOLEVEL_TARGET_DB_CEILING,
-    );
-    var low = Math.max(
-      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_LOW,
-      AUTOLEVEL_TARGET_DB_FLOOR,
-    );
-    // In very noisy rooms the clamps can collide. Force a minimum
-    // 5 dB window so a momentary RMS spike can satisfy the lock
-    // condition.
-    if (low > high - 5) low = high - 5;
-    return { low: low, high: high };
+  function computeTargetBand(_noiseFloorDb) {
+    return {
+      low: ROOM_LEVEL_WINDOW_LOW_DBFS,
+      high: ROOM_LEVEL_WINDOW_HIGH_DBFS,
+    };
+  }
+
+  function autolevelAutoLockEligible(
+    averageDb, targetBand, noiseFloorDb, trustMarginDb
+  ) {
+    return Number.isFinite(averageDb) &&
+      Number.isFinite(noiseFloorDb) &&
+      Number.isFinite(trustMarginDb) &&
+      averageDb >= targetBand.low &&
+      averageDb <= targetBand.high &&
+      averageDb >= noiseFloorDb + trustMarginDb;
   }
 
   async function startAutolevel() {
-    autolevelBtn.disabled = true;
-    runBtn.disabled = true;
     autolevelStatus.classList.remove('hidden');
     autolevelLockBtn.classList.remove('hidden');
     autolevelCancelBtn.classList.remove('hidden');
@@ -2683,10 +2876,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // Step 1: measure ambient noise floor for ~500 ms BEFORE the
     // tone starts. This gives us a real number for "what counts as
     // quiet in this room right now", which we then use to pick a
-    // target SNR band that's actually achievable. Hard-coded bands
-    // from the previous version were unreachable in rooms where
-    // the speaker-to-listener path attenuated more than I'd
-    // assumed (real complaint from first-user test).
+    // target readout and downstream capture-quality evidence. The lock
+    // window itself is fixed above so local and relay captures reserve the
+    // same ESS headroom.
     autolevelLine.textContent = 'Measuring room noise…';
     autolevelDetail.textContent = '';
     var noiseSamples = [];
@@ -2701,16 +2893,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       for (var ni = 0; ni < noiseSamples.length; ni++) nsum += noiseSamples[ni];
       noiseFloorDb = nsum / noiseSamples.length;
     } else {
-      // Couldn't measure (mic stream not ready?). Fall back to a
-      // reasonable assumption.
-      noiseFloorDb = -50;
+      // No measured ambient means no automatic-lock authority. Keep the
+      // visible manual Lock/cancel path, but never invent a quiet floor that
+      // could let ordinary room sound impersonate the calibration tone.
+      noiseFloorDb = null;
     }
     lastNoiseFloorDb = noiseFloorDb;
     var targetBand = computeTargetBand(noiseFloorDb);
-    autolevelDetail.textContent =
-      'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
-      targetBand.low.toFixed(0) + ' to ' + targetBand.high.toFixed(0) +
-      ' dBFS. Tap Lock now if the tone sounds like a comfortable measurement level.';
+    autolevelDetail.textContent = Number.isFinite(noiseFloorDb)
+      ? 'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
+        targetBand.low.toFixed(0) + ' to ' + targetBand.high.toFixed(0) +
+        ' dBFS. Tap Lock now if the tone sounds like a comfortable measurement level.'
+      : 'Room noise could not be measured, so automatic lock is off. ' +
+        'Tap Lock now only after the tone starts at a comfortable measurement level, ' +
+        'or cancel and retry.';
 
     var lockSent = false;
     var sendLock = function (reason) {
@@ -2729,10 +2925,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var prevCancelHandler = autolevelCancelBtn.onclick;
     autolevelCancelBtn.onclick = function () { cancelAutolevel(); };
 
-    // Watch the latest mic RMS at 50 ms granularity. As soon as the
-    // smoothed (last ~250 ms) RMS lands in the target range, send
-    // auto-lock. Target band is the adaptive one computed above.
-    var watcher = setInterval(function () {
+    // Watch the latest mic RMS at 50 ms granularity after the server confirms
+    // the bounded tone/ramp has started. Automatic lock requires both the
+    // fixed Room headroom window and the shared ambient trust margin; a noisy
+    // room that cannot satisfy both keeps the manual/retry path instead of
+    // mistaking ambient sound for the calibration tone.
+    var watcher = null;
+    var watchAutolevelRms = function () {
       if (lockSent) return;
       var db = latestMicRmsDb;
       if (db <= -100) return;
@@ -2742,12 +2941,13 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       for (var i = 0; i < autolevelRmsBuffer.length; i++) sum += autolevelRmsBuffer[i];
       var avg = sum / autolevelRmsBuffer.length;
       if (autolevelRmsBuffer.length >= 3 &&
-          avg >= targetBand.low &&
-          avg <= targetBand.high) {
+          autolevelAutoLockEligible(
+            avg, targetBand, noiseFloorDb, autolevelTrustMarginDb
+          )) {
         sendLock('mic ' + avg.toFixed(1) + ' dBFS in band ' +
           targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0));
       }
-    }, 50);
+    };
 
     try {
       await postJson('autolevel/start', {});
@@ -2755,13 +2955,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       clearInterval(watcher);
       autolevelLockBtn.onclick = prevLockHandler;
       autolevelCancelBtn.onclick = prevCancelHandler;
-      autolevelLine.textContent = 'Auto-level failed: ' + e.message;
+      autolevelLine.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
       autolevelLockBtn.classList.add('hidden');
       autolevelCancelBtn.classList.add('hidden');
-      autolevelBtn.disabled = false;
-      runBtn.disabled = false;
       return;
     }
+    watcher = setInterval(watchAutolevelRms, 50);
 
     // Poll /status every 200 ms until autolevel reaches terminal.
     var pollOnce = async function () {
@@ -2783,23 +2982,23 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         } else if (al.status === 'maxed_out') {
           var capStr = (al.cap_db != null) ? al.cap_db.toFixed(0) : '?';
           autolevelLine.textContent =
-            '✓ Leveled to ' + capStr + ' dB — the safe maximum for this room. ' +
-            'You can measure now.';
+            'Level check stopped at ' + capStr + ' dB — the safe software maximum.';
           autolevelDetail.textContent =
             'The mic read ' + latestMicRmsDb.toFixed(0) + ' dBFS (target ' +
             targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0) + ' dBFS), ' +
-            'so auto-level couldn’t confirm by ear. If the tone sounded reasonable, ' +
-            'just tap Run measurement. To go louder, turn up your amplifier and retry.';
+            'so no measurement level was locked. Raise the external amplifier a little, ' +
+            'then retry the level check.';
         } else if (al.status === 'cancelled') {
           autolevelLine.textContent = 'Auto-level cancelled — speaker volume restored.';
           autolevelDetail.textContent = '';
         } else if (al.status === 'error') {
           autolevelLine.textContent = 'Auto-level error.';
-          autolevelDetail.textContent = al.error || '(no details)';
+          console.warn('autolevel failed', al.error || '');
+          autolevelDetail.textContent = 'The level check stopped safely. Try again.';
         }
         return true;
       } catch (e) {
-        autolevelLine.textContent = 'Status fetch failed: ' + e.message;
+        autolevelLine.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
         return true;
       }
     };
@@ -2815,20 +3014,22 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     autolevelCancelBtn.onclick = prevCancelHandler;
     autolevelLockBtn.classList.add('hidden');
     autolevelCancelBtn.classList.add('hidden');
-    autolevelBtn.disabled = false;
-    runBtn.disabled = false;
   }
 
   async function cancelAutolevel() {
     try {
       await postJson('autolevel/cancel', {});
     } catch (e) {
-      autolevelLine.textContent = 'Cancel POST failed: ' + e.message;
+      autolevelLine.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
     }
   }
 
-  async function startVerify() {
-    verifyBtn.disabled = true;
+  async function startVerify(triggerBtn) {
+    if (triggerBtn) triggerBtn.disabled = true;
+    if (!relayMode && !(await ensureLocalCaptureReady())) {
+      if (triggerBtn) triggerBtn.disabled = false;
+      throw new Error('local microphone capture is not ready');
+    }
     inVerifyMode = true;
     setStateBadge('verifying', 'pausing music for re-measurement…');
     captureMode = 'verify';
@@ -2839,11 +3040,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       captureMode = 'discard';
       if (workletNode) workletNode.port.postMessage('stopCapture');
       setStateBadge('failed', e.message);
-      verifyBtn.disabled = false;
+      showHomeownerFailure(e);
+      if (triggerBtn) triggerBtn.disabled = false;
       inVerifyMode = false;
       return;
     }
-    verifyBtn.disabled = false;
+    if (triggerBtn) triggerBtn.disabled = false;
     pollState();
   }
 
@@ -2856,56 +3058,35 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function applyButtonPolicy(state, autolevelStatus) {
     // Default: everything hidden / disabled.
     positionPrompt.classList.add('hidden');
-    repeatBtn.classList.add('hidden');
-    repeatBtn.disabled = false;
-    continueBtn.classList.add('hidden');
-    continueBtn.disabled = false;
-    applyBtn.classList.add('hidden');
-    applyBtn.disabled = false;
-    verifyBtn.classList.add('hidden');
-    verifyBtn.disabled = false;
     resetBtn.classList.add('hidden');
     resetBtn.disabled = false;
     cancelMeasureBtn.classList.add('hidden');
     cancelMeasureBtn.disabled = false;
-    if (relayStartBtn) relayStartBtn.disabled = true;
+    emergencyStopActive = false;
     autolevelLockBtn.classList.add('hidden');
     autolevelLockBtn.disabled = false;
     autolevelCancelBtn.classList.add('hidden');
     autolevelCancelBtn.disabled = false;
-    // Run + Auto-level: enabled only when nothing is in flight.
-    // Disabled during measurement, autolevel ramp, etc.
-    var idleStates = ['idle', 'ready', 'applied', 'verified', 'failed'];
-    var sessionIdle = idleStates.indexOf(state) !== -1;
     var autolevelRamping = autolevelStatus === 'ramping';
-    // Show Cancel only where the session is genuinely *waiting* on the user or
-    // browser and no background task is about to overwrite the state. During
-    // preparing/sweeping/analyzing/verifying a fire-and-forget sweep/analysis
-    // task is running; /reset would race it (the task sets AWAITING_CAPTURE
-    // *after* reset's IDLE) and the server now rejects it outright, so Cancel
-    // would appear to fail. Those phases take seconds and land in a waiting
-    // state on their own, where Cancel is shown. needs_noise_capture is a
-    // waiting state too: the browser auto-records pre-sweep room noise, and if
-    // mic permission is denied or the tab is backgrounded the upload never
-    // arrives — without Cancel here the user was stranded until the
-    // server-side watchdog fired (~120 s).
+    // The persistent shell owns the emergency action outside the envelope.
+    // Audio-producing preparation/sweep/verify phases use Stop: the server
+    // cancels and reaps their exact playback task before graph rollback.
+    // ANALYZING is intentionally absent (no audio is playing and its worker
+    // must finish coherently). Parked browser/user states use Cancel.
     var cancellableStates = [
+      'preparing', 'sweeping', 'verifying',
       'needs_noise_capture',
       'awaiting_capture', 'awaiting_repeat_capture', 'awaiting_verify_capture',
       'needs_next_position', 'needs_repeat_capture',
     ];
     if (cancellableStates.indexOf(state) !== -1) {
+      emergencyStopActive = (
+        state === 'preparing' || state === 'sweeping' || state === 'verifying'
+      );
+      cancelMeasureBtn.textContent = emergencyStopActive
+        ? 'Stop measurement'
+        : 'Cancel measurement';
       cancelMeasureBtn.classList.remove('hidden');
-    }
-    runBtn.disabled = !sessionIdle || autolevelRamping;
-    autolevelBtn.disabled = !sessionIdle || autolevelRamping;
-    if (relayMode) {
-      autolevelBtn.disabled = true;
-      hideEl(autolevelBtn, true);
-      if (relayStartBtn) {
-        if (sessionIdle) relayStartBtn.textContent = 'Start';
-        relayStartBtn.disabled = !sessionIdle;
-      }
     }
     // Per-state additions:
     if (autolevelRamping && !relayMode) {
@@ -2917,36 +3098,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     if (state === 'needs_next_position') {
       positionPrompt.classList.remove('hidden');
-      continueBtn.classList.remove('hidden');
-      if (relayMode && relayStartBtn) {
-        relayStartBtn.textContent = 'Create next phone capture';
-        relayStartBtn.disabled = false;
-      }
-      runBtn.disabled = true;
-      autolevelBtn.disabled = true;
     } else if (state === 'needs_repeat_capture') {
       positionPrompt.classList.remove('hidden');
       positionCurrent.textContent = '1';
       positionTotal.textContent = '1';
-      if (!relayMode) repeatBtn.classList.remove('hidden');
-      runBtn.disabled = true;
-      autolevelBtn.disabled = true;
     } else if (state === 'ready') {
-      // The stepped-wizard primary action (GET /envelope's next_action) now
-      // owns "Apply correction". Only fall back to the legacy in-section
-      // Apply button when the wizard isn't providing it (envelope path down
-      // / cold-load fetch failure) — so the user is never stranded without
-      // an apply path. Reset has no wizard equivalent, so it always shows.
-      if (!wizardProvidesForwardAction('/apply')) {
-        applyBtn.classList.remove('hidden');
-      }
       resetBtn.classList.remove('hidden');
     } else if (state === 'applied' || state === 'verified') {
-      // Same subordination for "Verify" — the wizard owns it; the legacy
-      // button is the fallback when the wizard isn't showing it.
-      if (!relayMode && !wizardProvidesForwardAction('/verify')) verifyBtn.classList.remove('hidden');
       resetBtn.classList.remove('hidden');
     }
+    // resetBtn's own hidden class just settled — re-derive whether the
+    // banner's reset control should defer to it (see syncCurrentCorrectionReset).
+    syncCurrentCorrectionReset();
   }
 
   function renderRelayStatusFromSnapshot(snapshot) {
@@ -2967,18 +3130,18 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       renderRelayCapture(snapshot.relay);
       return;
     }
-    if (snapshot && snapshot.state === 'ready') {
-      setRelayStatus('Measurement is ready. Review confidence, then apply or reset.', 'ok');
-    } else if (snapshot && snapshot.state === 'failed') {
-      setRelayStatus(snapshot.error || 'Measurement failed. Cancel or start again.', 'bad');
+    if (snapshot && snapshot.state === 'failed') {
+      console.warn('room-correction session failed', snapshot.error || '');
+      setRelayStatus(GENERIC_STEP_FAILURE, 'bad');
     }
   }
 
-  async function pollState() {
+  async function pollState(options) {
+    options = options || {};
     if (pollTimer) clearTimeout(pollTimer);
     try {
       var s = await fetchStatus();
-      currentState = s.state;
+      syncSessionMechanics(s);
       renderRelayStatusFromSnapshot(s);
       var detail = s.error || '';
       if (s.total_positions > 1 && s.current_position !== undefined &&
@@ -2989,16 +3152,21 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       setStateBadge(s.state, detail);
       renderQuality(s);
       renderBrowserAudioReport(s.browser_audio_report);
-      renderConfidence(s);
-      renderRuntimeIntegrity(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
       // Edge-trigger the envelope-driven wizard chrome on a real transition
       // (state change, or autolevel sub-state change that flips the "level"
       // screen). Static screens are refreshed exactly here — never on every
       // /status tick — honouring the P3b-1 poll discipline.
-      maybeRefreshEnvelopeOnStateChange(
-        s.state, s.autolevel ? s.autolevel.status : 'idle',
-      );
+      var autolevelState = s.autolevel ? s.autolevel.status : 'idle';
+      if (options.skipEnvelopeRefresh) {
+        pendingHomeownerFailure = null;
+        lastObservedStatusState = s.state;
+        lastAutolevelStatus = autolevelState || 'idle';
+      } else {
+        maybeRefreshEnvelopeOnStateChange(
+          s.state, autolevelState,
+        );
+      }
 
       if (s.state === 'needs_next_position') {
         positionCurrent.textContent = (s.current_position + 1);
@@ -3006,6 +3174,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         return;
       }
       if (s.state === 'needs_repeat_capture') {
+        var repeatRelayPending = relayMode && s.relay && (
+          s.relay.status === 'starting' ||
+          s.relay.status === 'awaiting_phone'
+        );
+        if (repeatRelayPending) {
+          pollTimer = setTimeout(pollState, 500);
+        } else if (relayMode && s.relay) {
+          envelopeRetryArmed = true;
+          refreshEnvelope();
+        }
         return;
       }
       if (
@@ -3013,46 +3191,25 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         s.state === 'awaiting_verify_capture' ||
         s.state === 'awaiting_repeat_capture'
       ) {
-        if (relayMode && s.state === 'awaiting_capture') {
+        if (relayMode && (
+          s.state === 'awaiting_capture' ||
+          s.state === 'awaiting_repeat_capture'
+        )) {
           pollTimer = setTimeout(pollState, 500);
           return;
         }
         if (workletNode) workletNode.port.postMessage('stopCapture');
         return;  // upload-capture handler resumes polling
       }
-      if (s.state === 'verified' && s.verify_metrics) {
-        var headline = verifyHeadlineHtml(s.verify_before_after);
-        // Band text comes from the server payload (verify_before_after
-        // shares verify_metrics' band); 50–350 is only the fallback for
-        // sessions verified before the before/after payload existed.
-        var vband = (s.verify_before_after && s.verify_before_after.band_hz) ||
-          [50, 350];
-        verifySummary.innerHTML =
-          (headline ? headline + '<br>' : '') +
-          '<strong>Post-correction (' + Math.round(Number(vband[0])) + '–' +
-          Math.round(Number(vband[1])) + ' Hz):</strong> RMS deviation ' +
-          s.verify_metrics.rms_db.toFixed(1) + ' dB, max ' +
-          s.verify_metrics.max_db.toFixed(1) + ' dB.<br>' +
-          '<span class="hint">' +
-          'Verify is a <em>single-position</em> measurement vs the ' +
-          'multi-position averaged design — in a modal room (especially a ' +
-          'cube), per-position swings of 10–15 dB at modal frequencies ' +
-          'are normal. Some bands will look corrected, some over-corrected, ' +
-          'some under-corrected. The audible test is what actually matters: ' +
-          'play familiar bass-heavy music and listen for the bass tightening ' +
-          'and modal "boom" reducing without the music sounding thinned-out.' +
-          '</span>';
-        verifySummary.classList.remove('hidden');
-        return;
-      }
-      if (s.state === 'ready' || s.state === 'applied' || s.state === 'failed') {
+      if (s.state === 'idle' || s.state === 'ready' ||
+          s.state === 'applied' || s.state === 'verified' ||
+          s.state === 'failed') {
         return;
       }
       // Mid-flight states: keep polling.
       pollTimer = setTimeout(pollState, 500);
     } catch (e) {
       setStateBadge('failed', e.message);
-      runBtn.disabled = false;
     }
   }
 
@@ -3074,16 +3231,17 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
           body: wav
         });
         if (!noiseResp.ok) {
-          var noiseMsg = await noiseResp.text();
-          throw new Error('upload-noise → ' + noiseResp.status + ': ' + noiseMsg);
+          throw await responseError(noiseResp, GENERIC_STEP_FAILURE);
         }
         await noiseResp.json();
+        finishNoiseCapture(null);
         pollState();
       } catch (e) {
         captureMode = 'discard';
         if (workletNode) workletNode.port.postMessage('stopCapture');
+        finishNoiseCapture(e);
         setStateBadge('failed', e.message);
-        runBtn.disabled = false;
+        showHomeownerFailure(e);
       }
       return;
     }
@@ -3097,74 +3255,48 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         body: wav
       });
       if (!resp.ok) {
-        var msg = await resp.text();
-        throw new Error('upload-capture → ' + resp.status + ': ' + msg);
+        throw await responseError(resp, GENERIC_STEP_FAILURE);
       }
-      var data = await resp.json();
-      lastResult = data;
-      // Verify pass: hold the design curves, overlay the new
-      // measurement as `lastVerify`. Otherwise: redraw with the
-      // freshly designed curves.
-      if (data.verify) {
-        lastVerify = data.verify;
-      }
-      // CRITICAL: show resultSection BEFORE drawing the chart. A
-      // hidden canvas has zero bounding-rect dimensions, so
-      // canvas.width gets set to 0 and the chart renders empty —
-      // which is exactly the "frequency response is blank" bug a
-      // user hit on the first measurement. Show, then draw, then
-      // request a follow-up frame to redraw in case layout hadn't
-      // settled (mobile Safari sometimes lags one frame on
-      // display:block transitions).
-      if (data.peqs) {
-        renderPEQs(data.peqs);
-      }
-      renderDesignReport(data.design_report);
-      renderConfidence(data);
-      renderRuntimeIntegrity(data);
-      renderResultsSummary(data);
-      renderQuality(data);
-      renderBrowserAudioReport(data.browser_audio_report);
-      var hasResultPayload = !!(
-        data.measured || data.verify || data.design_report ||
-        (data.peqs && data.peqs.length)
-      );
-      if (hasResultPayload) resultSection.classList.remove('hidden');
-      if (hasResultPayload && data.measured) {
-        // Force a layout flush so getBoundingClientRect returns
-        // real dimensions on the first draw.
-        void canvas.offsetWidth;
-        drawChart(data.measured, data.target, data.predicted, data);
-        // Safety redraw next frame.
-        requestAnimationFrame(function () {
-          drawChart(data.measured, data.target, data.predicted, data);
-        });
-      }
-      pollState();
+      // The upload response is only an acknowledgement. Presentation comes
+      // from the envelope after the server has committed the new state.
+      await resp.json();
+      pendingHomeownerFailure = null;
+      envelopeRetryArmed = true;
+      await Promise.all([
+        pollState({skipEnvelopeRefresh: true}),
+        refreshEnvelope(),
+      ]);
     } catch (e) {
       setStateBadge('failed', e.message);
-      runBtn.disabled = false;
+      showHomeownerFailure(e);
       try {
         renderQuality(await fetchStatus());
       } catch (ignored) {}
     }
   }
 
-  async function applyCorrection() {
-    applyBtn.disabled = true;
+  async function applyCorrection(triggerBtn) {
+    if (triggerBtn) triggerBtn.disabled = true;
     setStateBadge('analyzing', 'applying to CamillaDSP…');
     try {
       await postJson('apply', {});
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
-      applyBtn.disabled = false;
+      if (triggerBtn) triggerBtn.disabled = false;
     }
     refreshCurrentCorrection();
   }
 
   async function resetCorrection() {
+    if (!(await jtsConfirm(
+      'Reset room correction? This removes the applied adjustments and cannot be undone.',
+      {danger: true},
+    ))) {
+      return;
+    }
     resetBtn.disabled = true;
     setStateBadge('analyzing', 'resetting correction…');
     try {
@@ -3172,6 +3304,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
       resetBtn.disabled = false;
     }
@@ -3184,19 +3317,37 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // the UI without SSH. The server-side watchdog also auto-recovers after
   // ~2 min; this is the instant manual path.
   async function cancelMeasurement() {
-    if (!(await jtsConfirm('Cancel this measurement and restore the speaker?', {danger: true}))) {
+    // Disable immediately, before the confirm dialog even opens — a fast
+    // double-tap could otherwise fire this handler twice and stack two
+    // confirms. Re-enable if the operator backs out below.
+    cancelMeasureBtn.disabled = true;
+    // Active audio is an emergency control: the first tap must dispatch the
+    // server-side stop/reap path immediately. Parked-state cancellation keeps
+    // its destructive confirmation because no audio needs urgent silencing.
+    if (!emergencyStopActive && !(await jtsConfirm(
+      'Cancel this measurement and restore the speaker?',
+      {danger: true},
+    ))) {
+      cancelMeasureBtn.disabled = false;
       return;
     }
-    cancelMeasureBtn.disabled = true;
     setStateBadge('idle', 'cancelling…');
     try {
       await postJson('reset', {});
+      // A pending mic-permission prompt (startMicCapture's getUserMedia
+      // await) can outlive this cancel — clear the in-flight latch and force
+      // a fresh render so the primary action isn't stranded hidden behind a
+      // flag that may never otherwise clear.
+      wizardActionInFlight = false;
     } catch (e) {
       setStateBadge('failed', e.message);
+      showHomeownerFailure(e);
     } finally {
       cancelMeasureBtn.disabled = false;
     }
     pollState();
+    envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
+    refreshEnvelope();
     refreshCurrentCorrection();
   }
 
@@ -3216,7 +3367,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     refreshInputsBtn.disabled = false;
   }
 
-  startBtn.addEventListener('click', function () { startMicCapture(); });
   refreshInputsBtn.addEventListener('click', function () { detectMicrophones(); });
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     navigator.mediaDevices.addEventListener('devicechange', function () {
@@ -3226,11 +3376,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   inputDeviceSelect.addEventListener('change', function () {
     var opt = inputDeviceSelect.options[inputDeviceSelect.selectedIndex];
     maybeInferCalibrationModel(opt ? opt.textContent : '');
-    if (micStream) {
-      startMicCapture().catch(function (e) {
-        setStateBadge('failed', e.message);
-      });
-    }
   });
   micModelSelect.addEventListener('change', function () { updateMicCalibrationRows(); });
   micSerialInput.addEventListener('input', function () { invalidateLoadedCalibration(); });
@@ -3241,18 +3386,28 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   uploadCalibrationBtn.addEventListener('click', function () { uploadCalibration(); });
   if (localCaptureFallbackBtn) {
     localCaptureFallbackBtn.addEventListener('click', function () {
-      setRelayMode(false);
-      detectMicrophones();
+      if (runTransportLocked) return;
+      setRelayMode(!relayMode);
+      if (!relayMode) populateInputDevices();
+      envelopeRetryArmed = true;
+      refreshEnvelope();
     });
   }
-  if (relayStartBtn) {
-    relayStartBtn.addEventListener('click', function () { relayPrimaryAction(); });
+  if (changeRunDefaultsBtn) {
+    changeRunDefaultsBtn.addEventListener('click', function () {
+      if (runTransportLocked) return;
+      setMeasurementOptionsOpen(
+        measurementOptions.classList.contains('hidden')
+      );
+    });
   }
-  runBtn.addEventListener('click', function () { startMeasurement(); });
-  repeatBtn.addEventListener('click', function () { repeatMainSeat(); });
-  continueBtn.addEventListener('click', function () { continueToNextPosition(); });
-  applyBtn.addEventListener('click', function () { applyCorrection(); });
-  verifyBtn.addEventListener('click', function () { startVerify(); });
+  [positionsSelect, targetSelect, strategySelect].forEach(function (select) {
+    if (!select) return;
+    select.addEventListener('change', function () {
+      runDefaultsDirty = true;
+      updateRunDefaultsSummaryFromControls();
+    });
+  });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
   cancelMeasureBtn.addEventListener('click', function () { cancelMeasurement(); });
   if (tuningInterpretBtn) tuningInterpretBtn.addEventListener('click', function () { onTuningInterpret(); });
@@ -3264,7 +3419,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       acquireWakeLock();
     }
   });
-  autolevelBtn.addEventListener('click', function () { startAutolevel(); });
   autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
   currentCorrectionResetBtn.addEventListener('click', function () { resetFromBanner(); });
   if (wizardNextBtn) {
@@ -3283,22 +3437,22 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
   });
 
-  // Auto-detect microphones on landing only for the local same-origin capture
-  // flow. Relay-configured boxes start with the cloud phone-capture flow, so
-  // this controller tab must not ask for mic permission unless the user chooses
-  // the local fallback.
+  // Landing never asks for microphone permission. Local capture requests it
+  // only after /start exposes the server-owned Allow microphone action; the
+  // refresh control is likewise inside that post-Start setup section.
   if (relayConfigured) {
     setRelayMode(true);
-    pollState();
   } else {
     if (!window.isSecureContext && currentPathname().indexOf('/correction/') === 0) {
       window.location.href = '/correction/proceed/room';
       return;
     }
     setRelayMode(false);
-    detectMicrophones();
+    populateInputDevices();
   }
+  pollState();
   updateMicCalibrationRows();
+  applyHouseholdMicPrefill();
   refreshCurrentCorrection();
   // Initial paint of the stepped-wizard chrome from the server envelope.
   // (Both landing paths reach here; the plain-HTTP deep-link fallback above
@@ -3318,8 +3472,5 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
   window.addEventListener('resize', scheduleChartRedraw);
   window.addEventListener('orientationchange', scheduleChartRedraw);
-  chartSmoothing.addEventListener('change', redrawLatestChart);
-  chartShowSpread.addEventListener('change', redrawLatestChart);
   chartShowFilter.addEventListener('change', redrawLatestChart);
-  chartShowBand.addEventListener('change', redrawLatestChart);
 })();

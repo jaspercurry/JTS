@@ -138,23 +138,31 @@ TTS is already a core realtime-voice component:
   a passive bonded non-sub multiroom member, the grouping reconciler instead
   points voice at `/run/jasper-outputd/tts.sock` so assistant audio mixes
   post-round-trip at the final output owner.
-- Fan-in and outputd speak the same `jasper-tts-protocol` wire
-  vocabulary and share the same assistant loudness policy. `jasper-fanin`
-  owns assistant gain in the solo packaged topology: it snapshots
-  pre-duck content loudness, applies the provider source-loudness profile
-  and peak-capped gain policy, emits `event=fanin.assistant_loudness`, and
-  publishes the latest decision under `tts.assistant_loudness` in its
-  STATUS payload. On a bonded member, outputd applies the same loudness
-  policy at the post-round-trip mix point. Python seeds and learns
-  profiles but does not set final gain.
+- Fan-in and outputd speak the same `jasper-tts-protocol` wire vocabulary,
+  but **volume-context parity is not claimed across their different mix
+  stages**. `jasper-fanin` owns assistant gain in the solo/active pre-DSP
+  topology: it snapshots pre-duck content loudness, applies the provider
+  source-loudness profile and peak-capped gain policy, emits
+  `event=fanin.assistant_loudness`, and publishes the accepted stamped volume
+  context, held references, rejection count, and latest decision under
+  `tts.assistant_loudness` in STATUS. Python seeds/learns source profiles and
+  publishes speaker-volume facts; it does not set final gain.
+- On a passive bonded member, the grouping reconciler routes TTS to outputd and
+  writes `JASPER_TTS_MIX_STAGE=post_dsp`. Voice and the coordinator then send no
+  `VOLUME_CONTEXT`: post-DSP outputd must not inherit fan-in's downstream
+  pre-compensation, and today it has neither equivalent mute semantics nor
+  live re-gain for queued speech. It keeps the pre-volume-context bonded-member
+  behavior. The follow-up
+  [Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
+  must make mix stage an explicit input to `decide_gain`, add mute, and apply
+  live re-gain in outputd's mix loop before parity can be claimed.
 - Cues and chirps route through the same `TtsPlayout` object. They
   inherit fan-in routing, drain behavior, flush behavior, and
   profile/peak-capped gain policy without training live assistant
   profiles, then pass through CamillaDSP crossover/protection with the
   rest of the audio stream. If a feedback sound arrives with no
   wake-turn context and no measured content baseline, fan-in uses the
-  configured default
-  silence target rather than a fixed legacy gain.
+  configured default TTS envelope rather than a fixed legacy gain.
 
 That is good groundwork, but it is not a complete "what did the user
 hear?" ledger. Robust barge-in needs both a true AEC reference and
@@ -346,7 +354,11 @@ What exists:
   `/run/jasper-output-hardware/output_hardware.json`, a structured observed-hardware
   artifact with the current profile id, status, physical output count,
   Apple child-device facts, and selected card/PCM for single-device
-  profiles. `/state` exposes this artifact as `audio.output_hardware`,
+  profiles. Its additive `usb_data_role` block reports board topology,
+  configured registered I²S overlays, desired/configured/active controller
+  roles, strict audio-gadget availability, current management-transport
+  availability, reason, and pending-reboot state. `/state`
+  exposes this artifact as `audio.output_hardware`,
   `/sound/output-topology` returns it alongside the topology draft, and
   `jasper-doctor` has a first-line "Output hardware state" check for
   missing, partial, blocked, or ready hardware. Runtime selection remains
@@ -478,6 +490,14 @@ What exists:
   `PROGRAM_DUCK_ON/OFF` to `jasper-fanin`, which attenuates
   renderer/program lanes before mixing TTS/cues. TTS therefore remains
   audible and still flows through CamillaDSP crossover/protection.
+  The mixer also ducks the program lane whenever TTS frames are merely
+  *pending* (no explicit `PROGRAM_DUCK_ON`) so an out-of-turn cue is never
+  buried. That segment-driven auto-duck is depth-aware by segment kind:
+  assistant audio and explicitly-ducked turns use the full
+  `JASPER_DUCK_DB` (default -25 dB), but a standalone short earcon/cue —
+  the mute/unmute sparkle and wake/end chirps — ducks only by
+  `JASPER_FANIN_TTS_CUE_DUCK_DB` (default -6 dB; set 0 to not duck for
+  cues), since a ~0.3 s tone shouldn't slam the music like a conversation.
 - Runtime `JASPER_TTS_TRANSPORT=sounddevice` is intentionally rejected
   in this outputd-loudness tree. That older PortAudio path no longer has
   the dynamic content/profile matching policy; rollback means deploying a
@@ -861,6 +881,10 @@ forced narrow speakers to pad to the DAC's full channel count with muted lanes;
 rejected — see the "Stage 2a landed" callout above.)
 
 **6. `DacProfile` additions (pure data, IO-free, fail-closed at import).**
+- `connection: "usb" | "i2s"` declares which host interface the final-output
+  DAC consumes. I²S profiles must declare their registered `dtoverlay`; USB
+  profiles cannot. The USB-role resolver consumes this data without growing a
+  per-DAC branch.
 - `dac_channel_map: tuple[ChannelMapEntry, ...] | None` — `(camilla_out_index,
   physical_dac_channel)` permutation. **No gain field** (CamillaDSP owns gain).
 - `is_coherent_single() -> bool` predicate (folds `kind=="single" and
@@ -1463,7 +1487,8 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-12 (outputd control-socket command cap/deadline and
+Last verified: 2026-07-16 (pre-DSP fan-in volume-context ownership and the explicit passive-outputd parity scope checked against PR #1542; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the
 protected commission ramp; prior 2026-07-10 pass covered optional-reference failure isolation and full

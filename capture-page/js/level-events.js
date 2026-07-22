@@ -57,6 +57,16 @@ export const RAMP_TERMINAL_STATES = Object.freeze([
 ]);
 const RAMP_TERMINAL_STATE_SET = new Set(RAMP_TERMINAL_STATES);
 
+// A status read is observational and the whole ramp is already bounded by both
+// the Pi safety timeout and this page's duration_ms.  Keep the mic stream alive
+// across an ordinary network fetch failure, relay throttling, or relay 5xx; a
+// credential/session 4xx remains immediately fatal.
+export function retryableRelayStatusError(error) {
+  const status = Number(error && error.status);
+  if (Number.isFinite(status)) return status === 429 || status >= 500;
+  return error instanceof TypeError || (error && error.name === "AbortError");
+}
+
 // Compute one {rms_dbfs, peak_dbfs, clip} verdict for a block of mono samples.
 // Exported for direct unit testing.
 export function blockLevel(samples) {
@@ -93,7 +103,18 @@ export class LevelStreamer {
   //   postIntervalMs    — min gap between relay posts (default 500 → <=2 Hz).
   //   windowMs          — rolling window kept in each batch (default 3000).
   //   sampleRate        — mic sample rate (default 48000).
-  //   agcFrozen         — realized autoGainControl:false (false = iOS ignored it).
+  //   agcFrozen         — realized autoGainControl:false (false = the browser
+  //                       either reported AGC on, or never reports the
+  //                       setting at all — see agcUnattested).
+  //   agcUnattested     — true when the browser could not attest autoGainControl
+  //                       either way (undefined/null — every WebKit build
+  //                       today). Rides alongside agcFrozen:false (never
+  //                       agcFrozen:true) so an older Pi that does not know
+  //                       this field still falls back to its pre-existing
+  //                       "never trust" handling instead of silently trusting
+  //                       an unproven chain. A new-Pi server verifies chain
+  //                       linearity from the ramp's own staircase instead of
+  //                       requiring the browser flag — see ramp.py.
   //   context           — optional compact JSON metadata repeated in every
   //                       batch (validated setup identity + realized device).
   //                       Raw serials/calibration text are forbidden here.
@@ -109,6 +130,7 @@ export class LevelStreamer {
     this._windowMs = opts.windowMs || 3000;
     this._sampleRate = opts.sampleRate || 48000;
     this._agcFrozen = opts.agcFrozen !== false;
+    this._agcUnattested = Boolean(opts.agcUnattested);
     this._context = compactLevelContext(opts.context);
     this._onLevel = typeof opts.onLevel === "function" ? opts.onLevel : () => {};
 
@@ -160,6 +182,7 @@ export class LevelStreamer {
         peak_dbfs: round1(level.peak_dbfs),
         clip: level.clip,
         agc_frozen: this._agcFrozen,
+        agc_unattested: this._agcUnattested,
       });
       this._trimWindow();
     }
@@ -199,6 +222,7 @@ export class LevelStreamer {
       run_token: this._runToken,
       samples: this._window.slice(),
       agc_frozen: this._agcFrozen,
+      agc_unattested: this._agcUnattested,
       armed: this._armed,
       aborted: this._aborted,
       abort_reason: this._abortReason,
@@ -293,6 +317,7 @@ export function rampEventFromStatus(status, runToken = "") {
 //   recorder           — createMonoRecorder() result.
 //   spec               — kind=level_ramp capture spec.
 //   agcFrozen          — realized autoGainControl:false.
+//   agcUnattested      — true when the browser could not attest AGC either way.
 //   context            — selected setup + realized capture device metadata.
 //   onLevel(level)     — optional display callback.
 //   onProgress(event)  — optional Pi progress callback.
@@ -321,7 +346,15 @@ export async function runLevelRampProtocol(opts = {}) {
   const isAborted = typeof opts.isAborted === "function" ? opts.isAborted : () => false;
   const blockMs = Math.max(100, Math.min(500, Number(opts.blockMs) || 200));
   const durationMs = Math.max(1000, Number(spec.duration_ms) || 75000);
-  const deadline = now() + durationMs;
+  // The deadline is a per-PHASE budget, not a single tap-anchored one. It is
+  // armed at Start for the pre-ramp phase (setup echo, the Pi's ambient
+  // baseline and DSP commissioning load) and RE-ARMED once when the Pi's ramp
+  // first becomes visible for this run token. The server's own safety timeout
+  // (MeasurementRamp.safety_timeout) is anchored at ramp start, so a deadline
+  // anchored at the Start tap silently shrinks the ramp's budget by however
+  // long the pre-ramp phase took — the 2026-07-15 JTS3 false-timeout class.
+  let deadline = now() + durationMs;
+  let rampSeen = false;
   const streamer = opts.streamer || new LevelStreamer({
     postEvent: (event) => client.postEvent(event),
     runToken: spec.run_token || "",
@@ -329,6 +362,7 @@ export async function runLevelRampProtocol(opts = {}) {
     postIntervalMs: Math.max(250, Number(spec.progress_poll_ms) || 500),
     sampleRate: Number(spec.sample_rate_hz) || 48000,
     agcFrozen: opts.agcFrozen !== false,
+    agcUnattested: Boolean(opts.agcUnattested),
     context: opts.context,
     onLevel: opts.onLevel,
     now,
@@ -346,10 +380,18 @@ export async function runLevelRampProtocol(opts = {}) {
       const frames = await recorder.stop({ timeoutMs: 5000 });
       await streamer.addFrame(frames);
 
-      const ramp = rampEventFromStatus(
-        await client.fetchPhoneStatus(),
-        spec.run_token || "",
-      );
+      let phoneStatus;
+      try {
+        phoneStatus = await client.fetchPhoneStatus();
+      } catch (err) {
+        if (!retryableRelayStatusError(err)) throw err;
+        continue;
+      }
+      const ramp = rampEventFromStatus(phoneStatus, spec.run_token || "");
+      if (ramp && !rampSeen) {
+        rampSeen = true;
+        deadline = now() + durationMs;
+      }
       if (ramp && typeof opts.onProgress === "function") opts.onProgress(ramp);
       if (ramp && ramp.terminal) {
         await streamer.close();
@@ -362,7 +404,10 @@ export async function runLevelRampProtocol(opts = {}) {
   }
 
   await streamer.abort("phone_timeout");
-  throw new Error("speaker did not finish the level check before the timeout");
+  throw new Error(
+    "timed out waiting for the speaker's level-check result — this is a " +
+      "phone/relay timeout, not a failed measurement",
+  );
 }
 
 function cloneJsonObject(value) {

@@ -24,20 +24,27 @@ import pytest
 from jasper.audio_measurement.ramp import (
     LEVEL_EVENT_SCHEMA_VERSION,
     MeasurementRamp,
+    RampData,
     RampLockKind,
     RampState,
 )
 from jasper.correction.level_match import (
     DriftVerdict,
     LevelLockStore,
+    LevelMatchRefused,
     LevelMatchSession,
     MeasurementLevelLock,
     MicGeometry,
     RelayLevelFeed,
     check_level_drift,
+    describe_ramp_refusal,
     parse_level_batch,
     phone_reported_abort,
     phone_reported_armed,
+)
+from jasper.correction.session import (
+    ROOM_LEVEL_WINDOW_HIGH_DBFS,
+    ROOM_LEVEL_WINDOW_LOW_DBFS,
 )
 from .correction_session_fixtures import (
     make_measurement_session as _make_session,
@@ -131,6 +138,42 @@ def test_parse_level_batch_applies_batch_agc_flag():
     event = _batch([{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False)
     got = parse_level_batch(event)
     assert got[0].agc_frozen is False  # batch-level superset applies
+
+
+def test_parse_level_batch_applies_batch_agc_unattested_flag():
+    # New-client wire shape for an unattested (undefined AGC) phone: the
+    # batch superset carries agc_unattested even when a per-sample entry
+    # omits it (mirrors the existing agc_frozen cascade).
+    event = _batch(
+        [{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False, agc_unattested=True
+    )
+    got = parse_level_batch(event)
+    assert got[0].agc_frozen is False
+    assert got[0].agc_unattested is True
+
+    # Per-sample values win over the batch superset when both are present.
+    event2 = _batch(
+        [{"seq": 1, "rms_dbfs": -30.0, "agc_unattested": False}],
+        agc_frozen=False,
+        agc_unattested=True,
+    )
+    got2 = parse_level_batch(event2)
+    assert got2[0].agc_unattested is False
+
+
+def test_parse_level_batch_old_server_shape_ignores_unattested_field():
+    # Mixed-version safety: an OLD server (this parser, before agc_unattested
+    # existed) reading a NEW client's unattested batch sees only agc_frozen —
+    # always false for an unattested chain at the wire level (never true) —
+    # so it falls back to the pre-existing "never trust" behavior instead of
+    # silently trusting an unproven chain. Simulated here by parsing the
+    # batch and confirming agc_frozen alone (ignoring agc_unattested) already
+    # carries the safe signal.
+    event = _batch(
+        [{"seq": 1, "rms_dbfs": -30.0}], agc_frozen=False, agc_unattested=True
+    )
+    got = parse_level_batch(event)
+    assert got[0].agc_frozen is False
 
 
 def test_parse_level_batch_token_scoping():
@@ -299,6 +342,49 @@ async def test_relay_feed_latches_schema_mismatch_warning(caplog):
     assert len(warnings) == 1  # a stale mismatched slot warns once, not per tick
 
 
+# --- MeasurementLevelLock.from_ramp sources agc_frozen from agc_trusted -------
+
+
+def test_lock_from_ramp_attested_is_byte_identical():
+    data = RampData(
+        state=RampState.LOCKED,
+        locked_main_volume_db=-18.0,
+        lock_kind=RampLockKind.IN_WINDOW,
+        agc_frozen=True,
+    )
+    lock = MeasurementLevelLock.from_ramp(MicGeometry.LISTENING_POSITION.value, data)
+    assert lock.agc_frozen is True
+
+
+def test_lock_from_ramp_unattested_verified_reads_as_trustworthy():
+    # A verified-unattested run has agc_frozen=False at the wire/RampData
+    # level (by design — see LevelSample), but agc_verified=True. The lock
+    # must read as trustworthy (agc_frozen=True) so downstream consumers
+    # (check_level_drift) treat it identically to an attested lock.
+    data = RampData(
+        state=RampState.LOCKED,
+        locked_main_volume_db=-18.0,
+        lock_kind=RampLockKind.IN_WINDOW,
+        agc_frozen=False,
+        agc_unattested=True,
+        agc_verified=True,
+    )
+    assert data.agc_trusted is True
+    lock = MeasurementLevelLock.from_ramp(MicGeometry.LISTENING_POSITION.value, data)
+    assert lock.agc_frozen is True
+
+
+def test_lock_from_ramp_explicit_agc_on_reads_as_untrustworthy():
+    data = RampData(
+        state=RampState.LOCKED,
+        locked_main_volume_db=-18.0,
+        lock_kind=RampLockKind.MANUAL,
+        agc_frozen=False,
+    )
+    lock = MeasurementLevelLock.from_ramp(MicGeometry.LISTENING_POSITION.value, data)
+    assert lock.agc_frozen is False
+
+
 # --- geometry lock store ------------------------------------------------------
 
 
@@ -398,6 +484,85 @@ def test_drift_env_knobs_override_thresholds(monkeypatch):
     assert check_level_drift(ref, cur, same_geometry=True).verdict == DriftVerdict.OK
 
 
+# --- ramp terminal refusal copy (2026-07-16 jts3: every refusal names its
+# reason — a raw "agc_suspected" reached the phone and the log untranslated) --
+
+
+def test_describe_ramp_refusal_agc_suspected_names_the_reason():
+    refusal = describe_ramp_refusal("agc_suspected")
+    assert refusal.code == "agc_suspected"
+    assert "automatic" in refusal.user_message.lower()
+    assert "gain" in refusal.user_message.lower()
+    # Jargon/vendor-agnostic: no provider or hardware-model names leak through.
+    for banned in ("gemini", "openai", "grok", "google", "webrtc", "dayton"):
+        assert banned not in refusal.user_message.lower()
+
+
+def test_describe_ramp_refusal_appends_the_measured_detail():
+    refusal = describe_ramp_refusal(
+        "agc_suspected", "slopes 0.64, 0.61 over 4 steps"
+    )
+    assert refusal.code == "agc_suspected"
+    assert "slopes 0.64, 0.61 over 4 steps" in refusal.user_message
+
+
+@pytest.mark.parametrize(
+    ("raw_error", "canonical_code", "message_fragment"),
+    [
+        ("safety timeout after 45s", "safety_timeout", "took too long"),
+        (
+            "phone feed lost (no samples for 8s)",
+            "phone_feed_lost",
+            "lost the phone's microphone feed",
+        ),
+        (
+            "safe cap reached below target window; raise the external "
+            "amplifier and retry",
+            "safe_cap_below_window",
+            "too quiet at the safe volume limit",
+        ),
+        (
+            "non-finite pre-ramp main_volume: nan",
+            "non_finite_original",
+            "starting volume was invalid",
+        ),
+    ],
+)
+def test_describe_ramp_refusal_normalizes_parameterized_family_codes(
+    raw_error, canonical_code, message_fragment
+):
+    """Parameterized terminals (a duration/dB baked into RampData.error) get
+    ONE canonical snake_case code per family, so `reason=` log keys group
+    across runs instead of one key per duration — while the verbatim
+    parameterized error stays visible in the user_message parenthetical."""
+    refusal = describe_ramp_refusal(raw_error)
+    assert refusal.code == canonical_code
+    assert message_fragment in refusal.user_message.lower()
+    assert raw_error in refusal.user_message
+
+
+def test_describe_ramp_refusal_empty_code_is_the_generic_not_locked_case():
+    for empty in (None, "", "   "):
+        refusal = describe_ramp_refusal(empty)
+        assert refusal.code == "not_locked"
+        assert refusal.user_message  # never blank
+
+
+def test_describe_ramp_refusal_unknown_code_falls_back_but_includes_the_code():
+    refusal = describe_ramp_refusal("some brand new ramp failure mode")
+    assert refusal.code == "some brand new ramp failure mode"
+    assert "some brand new ramp failure mode" in refusal.user_message.lower()
+
+
+def test_level_match_refused_str_is_the_homeowner_message():
+    refusal = describe_ramp_refusal("agc_suspected")
+    exc = LevelMatchRefused(refusal)
+    assert str(exc) == refusal.user_message
+    assert exc.code == "agc_suspected"
+    assert exc.user_message == refusal.user_message
+    assert isinstance(exc, RuntimeError)  # caught by the existing except tuples
+
+
 # --- LevelMatchSession end-to-end with a fake relay ---------------------------
 
 
@@ -406,10 +571,19 @@ class FakeChain:
     back through a mutable relay status dict as armed level batches. The Pi's
     host events land in the same status dict (host_event echo works)."""
 
-    def __init__(self, *, gain_db, start_vol, nf=-80.0, run_token=""):
+    def __init__(
+        self,
+        *,
+        gain_db,
+        start_vol,
+        nf=-80.0,
+        run_token="",
+        agc_unattested=False,
+    ):
         self.gain_db = gain_db
         self.nf = nf
         self.run_token = run_token
+        self.agc_unattested = agc_unattested
         self._vol = start_vol
         self.commanded = []
         self._seq = 0
@@ -454,7 +628,8 @@ class FakeChain:
                         "rms_dbfs": mic,
                         "peak_dbfs": mic + 3.0,
                         "clip": False,
-                        "agc_frozen": True,
+                        "agc_frozen": not self.agc_unattested,
+                        "agc_unattested": self.agc_unattested,
                     }
                 ],
             }
@@ -506,6 +681,27 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
 
 
 @pytest.mark.asyncio
+async def test_level_match_session_unattested_verified_locks_like_attested():
+    """End-to-end through the full relay adapter: an unattested (undefined
+    AGC) chain — the wire-level agc_frozen is false on every sample — still
+    locks IN_WINDOW once the staircase's slope is empirically verified, and
+    the stored lock reads as trustworthy (agc_frozen=True), identically to
+    the attested test above."""
+    store = LevelLockStore()
+    sess = _session(store)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0, agc_unattested=True)
+    outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
+    assert outcome.ramp.state == RampState.LOCKED
+    assert outcome.ramp.lock_kind is RampLockKind.IN_WINDOW
+    assert outcome.ramp.agc_unattested is True
+    assert outcome.ramp.agc_verified is True
+    assert outcome.locked
+    lock = store.get(MicGeometry.LISTENING_POSITION.value)
+    assert lock is not None
+    assert lock.agc_frozen is True  # verified-unattested reads as trustworthy
+
+
+@pytest.mark.asyncio
 async def test_level_match_maxed_out_restores_and_stores_no_lock():
     store = LevelLockStore()
     sess = _session(store, cap_bump_db=6.0, cap_ceil_db=-6.0)
@@ -554,10 +750,15 @@ async def test_level_match_persists_bounded_low_evidence_in_lock_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_level_match_terminal_state_reposted_until_echoed():
-    # The relay event slot is a read-modify-write race: the terminal state is
-    # re-posted until /status echoes it back. FakeChain echoes on the first
-    # post, so the loop stops early — and at least one post carries the state.
+async def test_level_match_terminal_state_repost_never_stops_on_first_echo():
+    # The relay event slot is a whole-meta read-modify-write race: a phone
+    # batch post whose read predates the Pi's terminal write reverts
+    # host_event when it lands. Stopping the re-post schedule on a single
+    # confirmed echo left exactly that revert window with nobody re-posting —
+    # the phone then missed the terminal and reported a false timeout
+    # (2026-07-15 JTS3 tweeter ramp: locked at 33.8 s server-side, phone
+    # showed "did not finish the level check before the timeout"). The full
+    # bounded schedule must run even when the echo confirms immediately.
     sess = _session()
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
     outcome = await _run_geometry(sess, chain, MicGeometry.LISTENING_POSITION.value)
@@ -565,9 +766,8 @@ async def test_level_match_terminal_state_reposted_until_echoed():
     terminal_posts = [
         e for e in chain.host_events if e.get("ramp", {}).get("state") == "locked"
     ]
-    assert terminal_posts, "terminal ramp state was never posted"
-    # Echo detected on the first verify → no full 5-attempt blast.
-    assert len(terminal_posts) <= 2
+    # FakeChain echoes on the first post; the schedule still runs to its end.
+    assert len(terminal_posts) == LevelMatchSession.TERMINAL_POST_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -735,10 +935,98 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_room_session_uses_sweep_headroom_window(tmp_path):
+    """Room keeps 6 dB beyond the shared tone window for the full-band ESS."""
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+
+    outcome = await sess.run_level_match(
+        MicGeometry.LISTENING_POSITION.value,
+        get_main_volume_db=chain.get_vol,
+        set_main_volume_db=chain.set_vol,
+        play_continuous_tone=chain.tone,
+        cancel_tone=chain.cancel_tone,
+        read_status=chain.read_status,
+        post_host_event=chain.post_host_event,
+        noise_floor_dbfs=chain.nf,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+
+    assert outcome.ramp.state is RampState.LOCKED
+    assert outcome.ramp.locked_main_volume_db is not None
+    locked_mic_dbfs = outcome.ramp.locked_main_volume_db + chain.gain_db
+    assert locked_mic_dbfs == pytest.approx(-22.0)
+    assert ROOM_LEVEL_WINDOW_LOW_DBFS <= locked_mic_dbfs
+    assert locked_mic_dbfs <= ROOM_LEVEL_WINDOW_HIGH_DBFS
+    assert outcome.ramp.restored is True
+    assert chain._vol == pytest.approx(-30.0)
+
+
+@pytest.mark.asyncio
+async def test_stop_after_locked_waits_for_terminal_ack_then_restores(tmp_path):
+    """Terminal RampState is not lifecycle completion or restore authority."""
+    sess = _make_session(tmp_path)
+    chain = FakeChain(gain_db=10.0, start_vol=-30.0)
+    clock = Clock()
+    terminal_waiting = asyncio.Event()
+    release_terminal = asyncio.Event()
+    held_terminal_once = False
+
+    async def controlled_sleep(delay: float) -> None:
+        nonlocal held_terminal_once
+        clock.t += max(delay, 0.01)
+        await asyncio.sleep(0)
+        level_session = sess._level_match_session
+        controller = level_session._controller if level_session else None
+        if (
+            not held_terminal_once
+            and delay == LevelMatchSession.TERMINAL_POST_SPACING_S
+            and controller is not None
+            and controller.data.state is RampState.LOCKED
+        ):
+            held_terminal_once = True
+            terminal_waiting.set()
+            await release_terminal.wait()
+
+    running = asyncio.create_task(
+        sess.run_level_match(
+            MicGeometry.LISTENING_POSITION.value,
+            get_main_volume_db=chain.get_vol,
+            set_main_volume_db=chain.set_vol,
+            play_continuous_tone=chain.tone,
+            cancel_tone=chain.cancel_tone,
+            read_status=chain.read_status,
+            post_host_event=chain.post_host_event,
+            noise_floor_dbfs=chain.nf,
+            clock=clock.now,
+            sleep=controlled_sleep,
+        )
+    )
+    await terminal_waiting.wait()
+    assert chain._vol != pytest.approx(-30.0)
+
+    intent = await sess.begin_autolevel_reset()
+    stopping = asyncio.create_task(sess.stop_background_audio_for_reset())
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    release_terminal.set()
+
+    assert await stopping is True
+    outcome = await running
+    assert outcome.ramp.state is RampState.LOCKED
+    assert sess._last_level_match is outcome
+    assert outcome.ramp.restored is True
+    assert chain._vol == pytest.approx(-30.0)
+    assert await sess.end_autolevel_reset(intent) is True
+
+
+@pytest.mark.asyncio
 async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
     """A quiet external amp can proceed only with explicit degraded evidence."""
     sess = _make_session(tmp_path)
-    chain = FakeChain(gain_db=-10.0, start_vol=-30.0, nf=-60.0)
+    chain = FakeChain(gain_db=-13.0, start_vol=-30.0, nf=-60.0)
     clock = Clock()
 
     outcome = await sess.run_level_match(
@@ -1051,6 +1339,35 @@ async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
     assert chain._vol == pytest.approx(original)
 
 
+def test_crossover_lease_phone_timeout_never_undercuts_server_safety_timeout():
+    """The phone's hard capture deadline must always exceed the server's own
+    ``MeasurementRamp.safety_timeout`` for the SAME ramp config, with the
+    documented grace margin — otherwise the phone can declare a false timeout
+    failure while the Pi's ramp is still legitimately running (the JTS3
+    2026-07-15 crossover level-ramp incident: the phone's flat, disconnected
+    hard-timeout constant undercut the server's real ~58 s safety timeout)."""
+
+    import math
+
+    from jasper.active_speaker.crossover_level_run import PHONE_TRANSPORT_GRACE_S
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease()
+    for geometry in (
+        "near_field_driver:mono:woofer",
+        "reference_axis_driver:mono:tweeter",
+    ):
+        server_safety_timeout_s = lease._ramp_config_for_geometry(
+            geometry
+        ).safety_timeout
+        phone_timeout_ms = lease.phone_hard_timeout_ms(geometry)
+
+        assert phone_timeout_ms == math.ceil(
+            (server_safety_timeout_s + PHONE_TRANSPORT_GRACE_S) * 1000.0
+        )
+        assert phone_timeout_ms > server_safety_timeout_s * 1000.0
+
+
 @pytest.mark.asyncio
 async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
     """The production crossover caller need not inject test scheduler seams."""
@@ -1090,6 +1407,160 @@ async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
     assert seen["geometry"] == "near_field_driver:mono:woofer"
     assert callable(seen["clock"])
     assert seen["sleep"] is asyncio.sleep
+
+
+@pytest.mark.asyncio
+async def test_crossover_claimed_run_executes_its_frozen_env_config(
+    monkeypatch, tmp_path
+):
+    """Planning and backend execution share one exact persisted ramp config."""
+
+    from types import SimpleNamespace
+
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    seen = {}
+
+    async def fake_run(session, _geometry, **_ports):
+        seen["config"] = session.config
+        return SimpleNamespace(locked=False)
+
+    monkeypatch.setattr(LevelMatchSession, "run_for_geometry", fake_run)
+    monkeypatch.setenv("JASPER_RAMP_FEED_TIMEOUT_S", "7")
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    target = {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "b" * 64,
+        "geometry": "near_field_driver:mono:woofer",
+    }
+    claim = lease.claim_level_match_run(
+        topology_id="topology-1",
+        protected_profile_fingerprint="a" * 64,
+        target=target,
+    )
+    monkeypatch.setenv("JASPER_RAMP_FEED_TIMEOUT_S", "30")
+    assert lease.mark_level_run_phone_armed(claim.run_id) is True
+
+    async def get_volume():
+        return -30.0
+
+    async def set_volume(_db):
+        return True
+
+    await lease.run_level_match(
+        target["geometry"],
+        run_token=claim.run_id,
+        level_run_id=claim.run_id,
+        get_main_volume_db=get_volume,
+        set_main_volume_db=set_volume,
+        play_continuous_tone=lambda: None,
+        cancel_tone=lambda: None,
+        read_status=lambda: {},
+        post_host_event=None,
+        noise_floor_dbfs=-60.0,
+    )
+
+    assert seen["config"].feed_timeout_s == 7.0
+    assert seen["config"] == claim.request.measurement_ramp()
+    assert lease.level_run_snapshot()["backend_started_at"] is not None
+
+
+def test_crossover_terminal_success_requires_process_local_level_result(tmp_path):
+    from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    target = {
+        "target_id": "mono:woofer",
+        "target_fingerprint": "b" * 64,
+        "geometry": "near_field_driver:mono:woofer",
+    }
+    claim = lease.claim_level_match_run(
+        topology_id="topology-1",
+        protected_profile_fingerprint="a" * 64,
+        target=target,
+    )
+    assert lease.mark_level_run_phone_armed(claim.run_id) is True
+    lease._level_run_store.begin_backend(
+        claim.run_id,
+        geometry=target["geometry"],
+    )
+
+    with pytest.raises(CrossoverLevelRunError, match="process-local result"):
+        lease.mark_level_run_succeeded(claim.run_id)
+    assert lease.level_run_snapshot()["phase"] == "running"
+
+    lease._outcomes[target["geometry"]] = object()
+    assert lease.mark_level_run_succeeded(claim.run_id) is True
+    assert lease.level_run_snapshot()["result_available"] is True
+    lease.discard_driver_level_outcome(
+        "mono",
+        "woofer",
+        capture_geometry="near_field",
+    )
+    assert lease.mark_level_run_succeeded(claim.run_id) is False
+
+
+@pytest.mark.asyncio
+async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_path):
+    from jasper.active_speaker.capture_geometry import driver_level_geometry
+    from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    geometry = driver_level_geometry("mono", "woofer", "near_field")
+
+    async def get_volume():
+        return -30.0
+
+    async def set_volume(_db):
+        return True
+
+    with pytest.raises(CrossoverLevelRunError, match="does not own this armed run"):
+        await lease.run_level_match(
+            geometry,
+            run_token="c" * 32,
+            level_run_id="c" * 32,
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+            play_continuous_tone=lambda: None,
+            cancel_tone=lambda: None,
+            read_status=lambda: {},
+            post_host_event=None,
+            noise_floor_dbfs=-60.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_crossover_claimed_run_must_match_relay_token(tmp_path):
+    from jasper.active_speaker.capture_geometry import driver_level_geometry
+    from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
+    from jasper.web.correction_crossover_backend import CrossoverLevelLease
+
+    lease = CrossoverLevelLease(level_run_state_path=tmp_path / "run.json")
+    geometry = driver_level_geometry("mono", "woofer", "near_field")
+
+    async def get_volume():
+        return -30.0
+
+    async def set_volume(_db):
+        return True
+
+    with pytest.raises(
+        CrossoverLevelRunError, match="does not match the relay run token"
+    ):
+        await lease.run_level_match(
+            geometry,
+            run_token="relay-token",
+            level_run_id="c" * 32,
+            get_main_volume_db=get_volume,
+            set_main_volume_db=set_volume,
+            play_continuous_tone=lambda: None,
+            cancel_tone=lambda: None,
+            read_status=lambda: {},
+            post_host_event=None,
+            noise_floor_dbfs=-60.0,
+        )
 
 
 def test_session_level_match_snapshot_empty_before_run(tmp_path):

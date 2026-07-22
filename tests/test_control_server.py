@@ -1079,6 +1079,516 @@ def test_aec_profile_restarts_reconciler(
     ]
 
 
+def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    statuses = iter([
+        {"usb_mic": {"enabled": False, "toggle_enabled": True}},
+        {"usb_mic": {"enabled": True, "state": "starting"}},
+    ])
+    writes: list[bool] = []
+    recomposes: list[bool] = []
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: next(statuses))
+    monkeypatch.setattr(srv_mod, "write_usb_mic_enabled", writes.append)
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: recomposes.append(True) or True,
+    )
+
+    status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
+
+    assert status == 200
+    assert body["usb_mic"] == {"enabled": True, "state": "starting"}
+    assert writes == [True]
+    assert recomposes == [True]
+
+
+def test_usb_mic_schedule_failure_returns_structured_502(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    usb_mic = {
+        "enabled": True,
+        "state": "starting",
+        "toggle_enabled": True,
+    }
+    writes: list[bool] = []
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {"usb_mic": usb_mic},
+    )
+    monkeypatch.setattr(srv_mod, "write_usb_mic_enabled", writes.append)
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: False,
+    )
+
+    status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
+
+    assert status == 502
+    assert body == {
+        "error": (
+            "USB microphone preference was saved, but its hardware update "
+            "could not be scheduled."
+        ),
+        "code": "usb_mic_recompose_schedule_failed",
+        "intent_saved": True,
+        "requested_enabled": True,
+        "usb_mic": usb_mic,
+    }
+    assert writes == [True]
+
+
+def test_usb_mic_refuses_enable_when_status_gate_is_closed(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {
+            "usb_mic": {
+                "enabled": False,
+                "toggle_enabled": False,
+                "detail": "Turn on USB Audio Input in Sources first.",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_enabled",
+        lambda _enabled: pytest.fail("unavailable switch must not persist intent"),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: pytest.fail("unavailable switch must not recompose USB"),
+    )
+
+    status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
+
+    assert status == 409
+    assert body["error"] == "Turn on USB Audio Input in Sources first."
+
+
+def test_usb_mic_leg_persists_then_restarts_only_aec_bridge(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    events = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    final_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "chip_aec_210",
+                "choices": choices,
+                "applied": None,
+            },
+        },
+    }
+    monkeypatch.setattr(
+        srv_mod,
+        "usb_mic_leg_choices",
+        lambda env: choices if env == {"JASPER_AUDIO_INPUT_PROFILE": "fresh"}
+        else pytest.fail(
+            "choice validation must use the fresh reconciled environment"
+        ),
+    )
+    monkeypatch.setattr(
+        srv_mod._aec_endpoints,
+        "_fresh_jasper_env",
+        lambda: {"JASPER_AUDIO_INPUT_PROFILE": "fresh"},
+    )
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: "primary")
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: events.append(("write", leg)),
+    )
+
+    def fake_manage(unit, **kwargs):
+        events.append(("restart", unit, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage)
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: final_status)
+    monkeypatch.setattr(
+        srv_mod,
+        "_schedule_usb_gadget_recompose",
+        lambda: pytest.fail("source selection must not recompose the gadget"),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_kick_aec_reconciler",
+        lambda: pytest.fail("source selection must not run the reconciler"),
+    )
+
+    status, body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert status == 200
+    assert body == final_status
+    assert events == [
+        ("write", "chip_aec_210"),
+        (
+            "restart",
+            "jasper-aec-bridge.service",
+            {
+                "verb": "reset-failed",
+                "reason": "usb_mic_leg",
+                "no_block": False,
+                "timeout": 5.0,
+            },
+        ),
+        (
+            "restart",
+            "jasper-aec-bridge.service",
+            {
+                "verb": "restart",
+                "reason": "usb_mic_leg",
+                "no_block": True,
+                "timeout": 5.0,
+            },
+        ),
+    ]
+
+
+def test_usb_mic_leg_rejects_choice_not_advertised_by_server(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    choices = [{"value": "primary", "label": "Same as JTS voice"}]
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda _leg: pytest.fail("unavailable choice must not be persisted"),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unavailable choice must not restart any unit"
+        ),
+    )
+
+    status, body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert status == 409
+    assert body["requested_leg"] == "chip_aec_210"
+    assert body["choices"] == choices
+
+
+def test_usb_mic_leg_same_value_is_noop(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    final_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "primary",
+                "applied": {"value": "primary"},
+            },
+        },
+    }
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(
+        srv_mod,
+        "usb_mic_leg_choices",
+        lambda _env: [{"value": "primary", "label": "Same as JTS voice"}],
+    )
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: "primary")
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda _leg: pytest.fail("same-value save must not write"),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda *_args, **_kwargs: pytest.fail("same-value save must not restart"),
+    )
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: final_status)
+
+    status, body = _post(f"{base}/aec/usb-mic-leg", {"leg": "primary"})
+
+    assert status == 200
+    assert body == final_status
+
+
+def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    state = {"leg": "primary"}
+    clock = {"now": 100.0}
+    calls = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    pending_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "chip_aec_210",
+                "applied": {"value": "primary"},
+            },
+        },
+    }
+    monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
+    monkeypatch.setattr(srv_mod.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: state.__setitem__("leg", leg),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda unit, **kwargs: calls.append((unit, kwargs["verb"])) or {"ok": True},
+    )
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: pending_status)
+
+    for _request in range(2):
+        status, body = _post(
+            f"{base}/aec/usb-mic-leg",
+            {"leg": "chip_aec_210"},
+        )
+        assert status == 200
+        assert body == pending_status
+
+    assert calls == [
+        ("jasper-aec-bridge.service", "reset-failed"),
+        ("jasper-aec-bridge.service", "restart"),
+    ]
+
+    clock["now"] += srv_mod._USB_MIC_LEG_APPLY_COALESCE_SECONDS + 0.1
+    status, body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert status == 200
+    assert body == pending_status
+    assert calls == [
+        ("jasper-aec-bridge.service", verb)
+        for _attempt in range(2)
+        for verb in ("reset-failed", "restart")
+    ]
+
+
+def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    state = {"leg": "primary"}
+    calls = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    pending_status = {
+        "usb_mic": {
+            "source_selection": {
+                "requested": "chip_aec_210",
+                "applied": {"value": "primary"},
+            },
+        },
+    }
+    monkeypatch.setattr(srv_mod, "_usb_mic_leg_apply_pending", None)
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: state.__setitem__("leg", leg),
+    )
+
+    def manage(unit, **kwargs):
+        calls.append((unit, kwargs["verb"]))
+        return {"ok": len(calls) != 2}
+
+    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", manage)
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: pending_status)
+
+    first_status, first_body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+    second_status, second_body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert first_status == 502
+    assert first_body["code"] == "usb_mic_leg_restart_failed"
+    assert second_status == 200
+    assert second_body == pending_status
+    assert calls == [
+        ("jasper-aec-bridge.service", verb)
+        for _attempt in range(2)
+        for verb in ("reset-failed", "restart")
+    ]
+
+
+def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    state = {"leg": "primary"}
+    calls = []
+    choices = [
+        {"value": "primary", "label": "Same as JTS voice"},
+        {"value": "chip_aec_210", "label": "Rear hardware beam"},
+    ]
+    monkeypatch.setattr(srv_mod._aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(srv_mod, "usb_mic_leg_choices", lambda _env: choices)
+    monkeypatch.setattr(srv_mod, "read_usb_mic_leg", lambda: state["leg"])
+    monkeypatch.setattr(
+        srv_mod,
+        "write_usb_mic_leg",
+        lambda leg: state.__setitem__("leg", leg),
+    )
+    monkeypatch.setattr(
+        srv_mod.restart_broker,
+        "manage_units",
+        lambda unit, **kwargs: calls.append((unit, kwargs["verb"])) or {"ok": True},
+    )
+    monkeypatch.setattr(srv_mod, "_aec_full_status", lambda: {"usb_mic": {}})
+
+    for leg in ("chip_aec_210", "primary") * 3:
+        status, _body = _post(f"{base}/aec/usb-mic-leg", {"leg": leg})
+        assert status == 200
+
+    assert calls == [
+        ("jasper-aec-bridge.service", verb)
+        for _change in range(6)
+        for verb in ("reset-failed", "restart")
+    ]
+
+
+def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
+    import jasper.control.server as srv_mod
+
+    commands = []
+    events = []
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    monkeypatch.setattr(
+        srv_mod.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or Result(),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    assert srv_mod._schedule_usb_gadget_recompose() is True
+
+    assert commands == [
+        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
+        [
+            "systemctl", "restart", "--no-block",
+            "jasper-usbmic-apply.service",
+        ],
+    ]
+    assert events == [(
+        "usb_mic.recompose_scheduled",
+        {
+            "unit": "jasper-usbmic-apply.service",
+            "grace_ms": 350,
+            "max_attempts": 4,
+        },
+    )]
+
+
+def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
+    import jasper.control.server as srv_mod
+
+    events = []
+
+    class Result:
+        def __init__(self, returncode=0, stderr=""):
+            self.returncode = returncode
+            self.stderr = stderr
+            self.stdout = ""
+
+    def run(command, **_kwargs):
+        if "restart" in command:
+            return Result(1, "access denied\n")
+        return Result()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(
+        srv_mod,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    assert srv_mod._schedule_usb_gadget_recompose() is False
+
+    assert events == [(
+        "usb_mic.recompose_failed",
+        {
+            "unit": "jasper-usbmic-apply.service",
+            "phase": "enqueue",
+            "returncode": 1,
+            "detail": "access denied",
+            "level": srv_mod.logging.ERROR,
+        },
+    )]
+
+
 def test_aec_firmware_update_starts_when_required(
     monkeypatch, server_with_coordinator,
 ):
@@ -1156,7 +1666,7 @@ def _grouping_test_setup(monkeypatch, tmp_path):
 
 
 _GROUPING_KICK = [
-    "systemctl", "restart", "--no-block", "jasper-grouping-reconcile.service",
+    "/usr/local/sbin/jasper-grouping-reconcile-kick",
 ]
 
 
@@ -2806,9 +3316,6 @@ def test_state_prefers_mux_winner_over_raw_renderer_probe(
     }))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
     monkeypatch.setenv(
-        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing_usb.json"),
-    )
-    monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
 
@@ -2858,9 +3365,6 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(volume_state))
     monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
-    monkeypatch.setenv(
-        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing_usb.json"),
-    )
     volume_diagnostics.record_source_push(
         "spotify",
         level=100,
@@ -2898,13 +3402,8 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
 def test_state_usbsink_section_null_when_disabled(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """When jasper-usbsink isn't running, no /run/jasper-usbsink/
-    state.json exists — the section comes back as null so consumers
-    can distinguish "feature off" from "feature on but idle"."""
+    """No identity-bound fan-in DIRECT lane means the source is off."""
     base, _ = server_with_coordinator
-    monkeypatch.setenv(
-        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing.json"),
-    )
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -2920,16 +3419,28 @@ def test_state_usbsink_section_null_when_disabled(
 def test_state_usbsink_section_populated_when_enabled(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """When the daemon is publishing, /state surfaces playing,
-    preempted, host_connected, rms_dbfs."""
+    """Fan-in owns activity/level; UDC sysfs owns host connection."""
+    import jasper.control.server as srv_mod
+
     base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "playing": True, "preempted": False, "host_connected": True,
-        "rms_dbfs": -12.3,
-        "updated_at": "2026-05-16T00:00:00+00:00",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    udc = tmp_path / "udc" / "controller"
+    udc.mkdir(parents=True)
+    (udc / "state").write_text("configured\n")
+    monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(tmp_path / "udc"))
+
+    async def fake_status(path, **_kwargs):
+        if "jasper-fanin" in path:
+            return {
+                "inputs": [{
+                    "label": "usbsink",
+                    "source": "direct",
+                    "rms_dbfs": -12.3,
+                    "muted": False,
+                }],
+            }
+        return None
+
+    monkeypatch.setattr(srv_mod, "_local_status_json", fake_status)
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -2940,39 +3451,13 @@ def test_state_usbsink_section_populated_when_enabled(
     status, body = _get(f"{base}/state")
     assert status == 200
     section = body["renderers"]["usbsink"]
-    # Solo box (no fan-in direct lane, bridge not in standby): the bridge's
-    # RMS-gated truth is surfaced verbatim.
-    assert section["combo"] is False
+    assert section["combo"] is True
     assert section["playing"] is True
     assert section["preempted"] is False
+    assert section["muted"] is False
     assert section["host_connected"] is True
     assert section["rms_dbfs"] == -12.3
-
-
-def test_state_usbsink_section_scrubs_legacy_nonfinite_rms(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """Old jasper-usbsink versions could write -Infinity. /state must still
-    return standards-compliant JSON values."""
-    base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(
-        '{"playing":false,"preempted":false,"host_connected":true,'
-        '"rms_dbfs":-Infinity,"updated_at":"2026-05-16T00:00:00+00:00"}'
-    )
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
-    )
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert body["renderers"]["usbsink"]["rms_dbfs"] is None
-    json.dumps(body, allow_nan=False)
+    assert section["updated_at"] is None
 
 
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
@@ -2981,14 +3466,23 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
     """active_source ranks usbsink above idle but below the named
     renderers — when nothing else is playing and USB is, the field
     surfaces as 'usbsink' so the dashboard renders correctly."""
+    import jasper.control.server as srv_mod
+
     base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "playing": True, "preempted": False, "host_connected": True,
-        "rms_dbfs": -10.0,
-        "updated_at": "2026-05-16T00:00:00+00:00",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+
+    async def fake_status(path, **_kwargs):
+        if "jasper-fanin" in path:
+            return {
+                "inputs": [{
+                    "label": "usbsink",
+                    "source": "direct",
+                    "rms_dbfs": -10.0,
+                    "muted": False,
+                }],
+            }
+        return None
+
+    monkeypatch.setattr(srv_mod, "_local_status_json", fake_status)
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -3001,55 +3495,10 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
     assert body["active_source"] == "usbsink"
 
 
-def test_state_usbsink_section_honest_in_combo_standby_mode(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """Combo box: the jasper-usbsink bridge is in standby (fan-in DIRECT-captures
-    the gadget) and publishes frozen idle defaults (playing:false / rms:-120).
-    /state must NOT relay those as live truth — it nulls playing/rms and flags
-    combo, keeping the still-valid host_connected. Regression for the
-    2026-07-06 'renderers.usbsink misleads while combo audio flows' bug.
-
-    Detection here rides the bridge's own `standby` flag (the test server has no
-    fan-in socket, so fanin_st is None); the fan-in `source=="direct"` detector
-    is pinned in tests/test_state_usbsink_renderer.py."""
-    base, _ = server_with_coordinator
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "standby": True,
-        "playing": False, "preempted": False, "host_connected": True,
-        "rms_dbfs": -120.0,
-        "updated_at": "2026-07-06T16:15:33.123Z",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
-    )
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    section = body["renderers"]["usbsink"]
-    assert section["combo"] is True
-    assert section["playing"] is None
-    assert section["rms_dbfs"] is None
-    assert section["host_connected"] is True
-    # The stale standby-bridge `playing:false` must not be the only signal that
-    # keeps USB out of active_source — but it must also never PICK usbsink off a
-    # dead flag. With no mux winner and combo playing=None, USB is not active.
-    assert body["active_source"] != "usbsink"
-    json.dumps(body, allow_nan=False)
-
-
 def test_state_combo_active_source_still_driven_by_mux_selection(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """Combo box in manual mode: renderers.usbsink.playing is None (combo), but
-    active_source must still resolve to usbsink from mux's selected_source.
-    Pins the state_aggregate line-1004 promise — nulling the dead bridge flag in
-    combo mode must not break the mux-driven (step 2) USB selection."""
+    """Mux selection remains authoritative when fan-in STATUS is unavailable."""
     import jasper.control.server as srv_mod
     base, _ = server_with_coordinator
 
@@ -3062,14 +3511,6 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
         }
 
     monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
-    usbsink_state = tmp_path / "usbsink_state.json"
-    usbsink_state.write_text(json.dumps({
-        "standby": True,
-        "playing": False, "preempted": False, "host_connected": True,
-        "rms_dbfs": -120.0,
-        "updated_at": "2026-07-06T16:15:33.123Z",
-    }))
-    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
@@ -3079,10 +3520,7 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
 
     status, body = _get(f"{base}/state")
     assert status == 200
-    section = body["renderers"]["usbsink"]
-    assert section["combo"] is True
-    assert section["playing"] is None
-    # active_source is mux-driven (step 2), not the nulled combo bridge flag.
+    assert body["renderers"]["usbsink"] is None
     assert body["active_source"] == "usbsink"
 
 
@@ -3475,11 +3913,11 @@ def test_session_endpoint_503_when_voice_socket_missing(server_with_coordinator)
     assert "voice_daemon" in body["error"]
 
 
-# --- _make_duck_active_probe (cross-daemon defer signal) -----------------
+# --- _make_duck_active_probe (cross-daemon Camilla ownership) ------------
 #
 # Unit tests for the probe factory consumed by per-request
 # VolumeCoordinators. Validates the wire format and the fail-open
-# error envelope. See docs/HANDOFF-volume.md "Cross-daemon defer signal".
+# error envelope. See docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal".
 
 
 def test_duck_active_probe_returns_true_when_voice_reports_ducked(monkeypatch):
@@ -3501,6 +3939,24 @@ def test_duck_active_probe_returns_false_when_voice_reports_no_duck(monkeypatch)
 
     async def fake_command(socket_path, cmd, *, timeout=5.0):
         return {"state": "IDLE", "duck_active": False}
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is False
+
+
+def test_duck_probe_prefers_explicit_camilla_lock_over_fanin_duck(monkeypatch):
+    """Fan-in can be actively ducking music while Camilla remains the live
+    master-volume surface; the explicit ownership fact wins."""
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        return {
+            "state": "LISTENING",
+            "duck_active": True,
+            "camilla_volume_locked": False,
+        }
 
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
     probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
@@ -4240,7 +4696,12 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     """Only an ACTIVE bonded follower forwards: leader, solo, and
     fail-LOUD-invalid configs all resolve to None (local handling)."""
     import jasper.multiroom.config as mcfg
+    import jasper.multiroom.effective_role as effective_role
     import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        effective_role, "read_effective_role_status", lambda: {},
+    )
 
     cases = [
         (_grouping_cfg(), "jts.local"),
@@ -4252,6 +4713,28 @@ def test_pair_follower_leader_addr_resolution(monkeypatch):
     for cfg, want in cases:
         monkeypatch.setattr(mcfg, "load_config", lambda *a, _c=cfg, **k: _c)
         assert srv_mod._pair_follower_leader_addr() == want
+
+
+def test_refused_follower_landed_solo_does_not_forward_volume(monkeypatch):
+    import jasper.control.server as srv_mod
+    import jasper.multiroom.config as mcfg
+    import jasper.multiroom.effective_role as effective_role
+
+    cfg = _grouping_cfg()
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(mcfg, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(effective_role, "read_current_boot_id", lambda: boot_id)
+    monkeypatch.setattr(
+        effective_role,
+        "read_effective_role_status",
+        lambda: {
+            "requested_fingerprint": effective_role.grouping_request_fingerprint(cfg),
+            "local_sources_allowed": True,
+            "boot_id": boot_id,
+        },
+    )
+
+    assert srv_mod._pair_follower_leader_addr() is None
 
 
 class _FakeUpstream:
@@ -4624,9 +5107,9 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     assert "librespot.service" not in flat
     assert "shairport-sync.service" not in flat
     assert "jasper-usbsink.service" not in flat
-    # The composite USB gadget is infrastructure (it carries the always-on USB
-    # management network), never an audio-refresh renderer — a dashboard
-    # restart-audio must never recompose it (that would blip the network).
+    # The hardware-gated composite gadget may carry the USB management network;
+    # it is infrastructure, not an audio-refresh renderer. A dashboard audio
+    # restart must not recompose it and blip an available management link.
     assert "jasper-usbgadget.service" not in flat
 
 
@@ -5110,9 +5593,18 @@ def test_grouping_set_stays_in_token_gated_routes():
         "/system/restart/voice",
         "/system/restart/audio",
         "/mic/mute",
+        "/aec/usb-mic",
+        "/aec/usb-mic-leg",
         "/grouping/set",
         "/aec/firmware/update",
     })
+
+
+def test_usb_mic_export_stays_in_token_gated_routes():
+    """Live room-audio export is a privacy mutation, not a LAN-open control."""
+
+    assert "/aec/usb-mic" in _srv_mod._TOKEN_GATED_ROUTES
+    assert "/aec/usb-mic-leg" in _srv_mod._TOKEN_GATED_ROUTES
 
 
 def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):

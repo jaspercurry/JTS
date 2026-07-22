@@ -17,7 +17,7 @@
 //!     contribution to the sum WITHOUT gating its capture telemetry
 //!     (`frames_read` / `rms_dbfs`). mux's latest-source-wins arbitration
 //!     primitive for the USB lane — the only USB-silencing mechanism now that
-//!     the standby jasper-usbsink bridge owns no audio path of its own to mute.
+//!     fan-in owns the sole USB audio path and its mix-mute.
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!
@@ -51,11 +51,13 @@
 //!   instance). On shutdown, we don't bother — systemd's
 //!   `RuntimeDirectory=` cleans up the whole runtime dir on stop.
 //!
-//! - **Shutdown via `set_nonblocking` + poll.** The accept loop
-//!   sets a 500ms timeout, checks the shutdown flag between accepts,
-//!   so SIGTERM is honored within ~500ms.
+//! - **Readiness-driven accept with bounded shutdown poll.** `poll(2)` wakes as
+//!   soon as a client connects while retaining a 500 ms timeout for checking the
+//!   shutdown flag. Do not replace this with a blind sleep: that added ~500 ms
+//!   to every other short-lived STATUS/SELECT connection in production.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -63,6 +65,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use jasper_tts_protocol::loudness::HeldLoudnessReference;
 use log::{info, warn};
 
 use crate::impulse_tap::{TapConfig, TapState};
@@ -79,8 +82,8 @@ use crate::watchdog::Heartbeat;
 /// server thread).
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Poll interval for the accept loop, used to honor shutdown without
-/// blocking indefinitely in `accept()`.
+/// Maximum `poll(2)` wait for the accept loop, bounding shutdown latency while
+/// socket readiness still wakes immediately.
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Bound on how long a `TRIM` command waits for the mixer work loop to consume
@@ -96,6 +99,28 @@ const TRIM_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 /// enough to return promptly once the flag clears (a trim usually completes in
 /// one period), long enough that the poll loop is not a busy-spin.
 const TRIM_WAIT_POLL: Duration = Duration::from_millis(1);
+
+fn wait_for_listener(listener: &UnixListener, timeout: Duration) -> std::io::Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    loop {
+        // SAFETY: `descriptor` points to one initialized pollfd for the duration
+        // of the syscall; poll neither retains nor aliases the pointer.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if ready >= 0 {
+            return Ok(ready > 0);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
+}
 
 pub struct StateServer {
     /// Process start instant — for uptime in the snapshot.
@@ -290,18 +315,11 @@ impl StateServer {
         );
 
         while !shutdown.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    if let Err(e) = self.handle_connection(stream) {
-                        warn!("event=fanin.state_server.handle_failed detail={:#}", e);
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(ACCEPT_POLL_INTERVAL);
-                }
+            match wait_for_listener(&listener, ACCEPT_POLL_INTERVAL) {
+                Ok(false) => continue,
+                Ok(true) => self.drain_ready_connections(&listener, shutdown),
                 Err(e) => {
-                    warn!("event=fanin.state_server.accept_failed detail={}", e);
-                    std::thread::sleep(ACCEPT_POLL_INTERVAL);
+                    warn!("event=fanin.state_server.poll_failed detail={}", e);
                 }
             }
         }
@@ -309,6 +327,27 @@ impl StateServer {
         let _ = std::fs::remove_file(&self.socket_path);
         info!("event=fanin.state_server.stopped");
         Ok(())
+    }
+
+    fn drain_ready_connections(&self, listener: &UnixListener, shutdown: &AtomicBool) {
+        // Re-check shutdown between clients. A continuously replenished local
+        // accept queue must not trap the audio daemon here until systemd's
+        // SIGKILL deadline; one in-flight client remains bounded by the socket
+        // read timeout.
+        while !shutdown.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if let Err(e) = self.handle_connection(stream) {
+                        warn!("event=fanin.state_server.handle_failed detail={:#}", e);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    warn!("event=fanin.state_server.accept_failed detail={}", e);
+                    break;
+                }
+            }
+        }
     }
 
     fn handle_connection(&self, mut stream: UnixStream) -> Result<()> {
@@ -875,12 +914,37 @@ impl StateServer {
                 buf.push(',');
                 push_kv_bool(&mut buf, "present", d.present.load(Ordering::Relaxed));
                 buf.push(',');
-                // Coarse capture health for the Pi-side combo runtime-fallback
-                // watcher (jasper-fanin-combo-health): "capturing" (present +
-                // flowing), "idle" (no host / attached-but-silent / (re)opening —
-                // NEVER a failure), or "broken" (the flowing→dead zombie signature
-                // — a real runtime capture break). Instantaneous view; the watcher
-                // acts on the durable `reopens`/`card_gen_reopens` churn below. See
+                push_kv_bool(&mut buf, "streaming", d.streaming.load(Ordering::Relaxed));
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "stream_starts",
+                    d.stream_starts.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "stream_stops",
+                    d.stream_stops.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "notify_attempts",
+                    d.notify_attempts.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "notify_failures",
+                    d.notify_failures.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // Coarse capture-health observability: "capturing" (present +
+                // flowing), "idle" (no host / attached-but-silent / (re)opening),
+                // or "broken" (the flowing→dead zombie signature). This and the
+                // reopen counters below expose fan-in's local recovery; they do not
+                // authorize a USB lifecycle or composition change. See
                 // crate::mixer::direct_health.
                 push_kv_str(
                     &mut buf,
@@ -1158,6 +1222,58 @@ impl StateServer {
                 push_kv_f64_opt(&mut buf, "peak_cap_gain_db", loudness.peak_cap_gain_db, 1);
                 buf.push(',');
                 push_kv_f64_opt(&mut buf, "final_gain_db", loudness.final_gain_db, 1);
+                buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "target_speaker_lufs",
+                    loudness.target_speaker_lufs,
+                    1,
+                );
+                buf.push(',');
+                push_kv_f64_opt(
+                    &mut buf,
+                    "envelope_offset_lu",
+                    loudness.envelope_offset_lu,
+                    1,
+                );
+                buf.push(',');
+                match loudness.reference_kind {
+                    Some(kind) => push_kv_str(&mut buf, "reference_kind", kind),
+                    None => buf.push_str(r#""reference_kind":null"#),
+                }
+                buf.push(',');
+                buf.push_str(r#""volume_context":"#);
+                match loudness.volume_context {
+                    Some(context) => {
+                        buf.push('{');
+                        push_kv_f64(&mut buf, "canonical_db", context.canonical_db as f64, 1);
+                        buf.push(',');
+                        push_kv_f64(&mut buf, "downstream_db", context.downstream_db as f64, 1);
+                        buf.push(',');
+                        push_kv_f64(
+                            &mut buf,
+                            "tts_envelope_lufs",
+                            context.tts_envelope_lufs as f64,
+                            1,
+                        );
+                        buf.push(',');
+                        push_kv_bool(&mut buf, "muted", context.muted);
+                        buf.push(',');
+                        push_kv_u64(&mut buf, "stamp_boot_ns", context.stamp_boot_ns);
+                        buf.push('}');
+                    }
+                    None => buf.push_str("null"),
+                }
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "volume_context_rejected",
+                    loudness.volume_context_rejected,
+                );
+                buf.push(',');
+                push_reference(&mut buf, "held_content", loudness.held_content);
+                buf.push(',');
+                push_reference(&mut buf, "held_assistant", loudness.held_assistant);
                 buf.push('}');
             }
             None => {
@@ -1290,9 +1406,83 @@ fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: us
     }
 }
 
+fn push_reference(buf: &mut String, key: &str, reference: Option<HeldLoudnessReference>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+    let Some(reference) = reference else {
+        buf.push_str("null");
+        return;
+    };
+    buf.push('{');
+    push_kv_f64(buf, "speaker_lufs", reference.speaker_lufs as f64, 1);
+    buf.push(',');
+    push_kv_f64(buf, "canonical_db", reference.canonical_db as f64, 1);
+    buf.push(',');
+    push_kv_f64(
+        buf,
+        "calibration_offset_lu",
+        reference.calibration_offset_lu as f64,
+        1,
+    );
+    buf.push('}');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listener_poll_wakes_on_connection_before_shutdown_timeout() {
+        let unique = format!(
+            "jasper-fanin-poll-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        );
+        let path = std::env::temp_dir().join(unique);
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client_path = path.clone();
+        let connector = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            UnixStream::connect(client_path).unwrap()
+        });
+        let started = Instant::now();
+        assert!(wait_for_listener(&listener, Duration::from_millis(500)).unwrap());
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "socket readiness must wake poll rather than pay the 500 ms timeout",
+        );
+        let _stream = connector.join().unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn listener_backlog_drain_honors_shutdown_before_next_client() {
+        let unique = format!(
+            "jasper-fanin-shutdown-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        );
+        let path = std::env::temp_dir().join(unique);
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let _pending_client = UnixStream::connect(&path).unwrap();
+        let shutdown = AtomicBool::new(true);
+
+        make_test_server().drain_ready_connections(&listener, &shutdown);
+
+        // The pending connection remains untouched: shutdown won over draining
+        // the ready backlog, so the outer run loop can exit promptly.
+        assert!(listener.accept().is_ok());
+        let _ = std::fs::remove_file(path);
+    }
 
     fn make_test_server() -> StateServer {
         // Test-only: the direct fixture builds a DrainStats. Scoped here (not a
@@ -1375,6 +1565,11 @@ mod tests {
                         period_frames: 256,
                         buffer_frames: Arc::new(AtomicU64::new(768)),
                         present: Arc::new(AtomicBool::new(true)),
+                        streaming: Arc::new(AtomicBool::new(true)),
+                        stream_starts: Arc::new(AtomicU64::new(2)),
+                        stream_stops: Arc::new(AtomicU64::new(1)),
+                        notify_attempts: Arc::new(AtomicU64::new(3)),
+                        notify_failures: Arc::new(AtomicU64::new(0)),
                         opens: Arc::new(AtomicU64::new(1)),
                         retries: Arc::new(AtomicU64::new(0)),
                         reopens: Arc::new(AtomicU64::new(0)),
@@ -1463,7 +1658,7 @@ mod tests {
             // STATUS always carries. `crate::host_clock::initial_fragment` on a
             // disabled config renders exactly this.
             host_clock_fragment: Arc::new(Mutex::new(crate::host_clock::initial_fragment(
-                crate::host_clock::build_config(false, 300, 6, 2048),
+                crate::host_clock::build_config(false, 300, 2048),
             ))),
         }
     }
@@ -1543,7 +1738,7 @@ mod tests {
         // by swapping the fragment for an armed-config render.
         let mut server = make_test_server();
         server.host_clock_fragment = Arc::new(Mutex::new(crate::host_clock::initial_fragment(
-            crate::host_clock::build_config(true, 300, 6, 2048),
+            crate::host_clock::build_config(true, 300, 2048),
         )));
         let j = server.snapshot_json();
         let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
@@ -1801,6 +1996,11 @@ mod tests {
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
         assert!(j.contains(r#""decision_seen":false"#));
         assert!(j.contains(r#""final_gain_db":null"#));
+        assert!(j.contains(r#""reference_kind":null"#));
+        assert!(j.contains(r#""volume_context":null"#));
+        assert!(j.contains(r#""volume_context_rejected":0"#));
+        assert!(j.contains(r#""held_content":null"#));
+        assert!(j.contains(r#""held_assistant":null"#));
     }
 
     #[test]
@@ -2220,6 +2420,11 @@ mod tests {
         let direct = inputs.iter().find(|i| i["label"] == "usbsink").unwrap();
         assert_eq!(direct["source"].as_str(), Some("direct"));
         assert_eq!(direct["direct"]["present"].as_bool(), Some(true));
+        assert_eq!(direct["direct"]["streaming"].as_bool(), Some(true));
+        assert_eq!(direct["direct"]["stream_starts"].as_u64(), Some(2));
+        assert_eq!(direct["direct"]["stream_stops"].as_u64(), Some(1));
+        assert_eq!(direct["direct"]["notify_attempts"].as_u64(), Some(3));
+        assert_eq!(direct["direct"]["notify_failures"].as_u64(), Some(0));
         // health: present + frames_flowed + zero streak = actively capturing (the
         // combo runtime-fallback watcher's healthy reading). See mixer::direct_health.
         assert_eq!(direct["direct"]["health"].as_str(), Some("capturing"));

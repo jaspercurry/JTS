@@ -176,6 +176,18 @@ def test_commissioning_config_rejects_positive_volume_limit():
         )
 
 
+def test_commissioning_config_preserves_exact_negative_volume_limit():
+    preset = _preset(_two_way_preset())
+    out = emit_active_speaker_commissioning_config(
+        preset,
+        playback_device=ACTIVE_PCM,
+        audible_outputs={0},
+        volume_limit_db=-3.74,
+    )
+
+    assert yaml_lib.safe_load(out)["devices"]["volume_limit"] == -3.74
+
+
 def test_audible_outputs_for_role_groups_both_sides():
     preset = _preset(_two_way_preset("stereo"))
     # Stereo 2-way: woofers on 0 and 2, tweeters on 1 and 3.

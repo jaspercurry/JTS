@@ -64,8 +64,9 @@ modules are independent.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
@@ -135,7 +136,7 @@ def float_matches(value: Any, expected: float) -> bool:
     """True iff ``value`` parses to within 1e-4 of ``expected`` (fail-closed)."""
     try:
         return abs(float(value) - expected) < 0.0001
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return False
 
 
@@ -146,7 +147,7 @@ def float_value(value: Any) -> float | None:
     or unparseable value must fail the check rather than raise."""
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
 
 
@@ -187,6 +188,17 @@ class GraphView:
     parsed_ok: bool
     filters: dict[str, GraphFilter] = field(default_factory=dict)
     pipeline_steps: tuple[GraphPipelineStep, ...] = ()
+
+
+@dataclass(frozen=True)
+class BassExtensionBlockEvidence:
+    """Independent proof of the optional natural-at-rest bass filter block."""
+
+    valid: bool
+    expected: bool
+    definitions_present: tuple[str, ...]
+    reference_channels: tuple[int, ...]
+    reason: str | None = None
 
 
 def _filters_from_dict(payload: dict[str, Any]) -> dict[str, GraphFilter]:
@@ -429,6 +441,67 @@ def pipeline_contains_chain(
     for step in view.pipeline_steps:
         if step.channels == target and all(n in step.names for n in required_names):
             return True
+    return False
+
+
+def protection_requirement_present(
+    view: GraphView,
+    *,
+    output_index: int,
+    allowed_channels: set[int] | frozenset[int],
+    requirement: Any,
+) -> bool:
+    """Whether one output proves a confirmed driver band-limit requirement.
+
+    Driver and summed excitation share this exact fail-closed interpretation of
+    the safety profile: a high-pass must be at or above its confirmed corner, a
+    low-pass at or below it, and either must meet the confirmed minimum slope.
+    A covering pipeline step may group outputs only inside the caller-supplied
+    same-role channel set. Isolated-driver admission supplies a singleton; summed
+    stereo admission supplies every physical output for that one driver role.
+    """
+
+    if not isinstance(requirement, dict):
+        return False
+    kind = str(requirement.get("kind") or "")
+    expected_type = {
+        "highpass": "LinkwitzRileyHighpass",
+        "lowpass": "LinkwitzRileyLowpass",
+    }.get(kind)
+    cutoff = requirement.get("cutoff_hz")
+    slope = requirement.get("minimum_slope_db_per_octave")
+    if (
+        expected_type is None
+        or isinstance(cutoff, bool)
+        or not isinstance(cutoff, (int, float))
+        or isinstance(slope, bool)
+        or not isinstance(slope, (int, float))
+        or requirement.get("family_or_equivalent") != "equivalent_or_steeper"
+    ):
+        return False
+    allowed = frozenset(int(channel) for channel in allowed_channels)
+    if output_index not in allowed:
+        return False
+    for step in view.pipeline_steps:
+        if output_index not in step.channels or not step.channels <= allowed:
+            continue
+        for name in step.names:
+            definition = view.filters.get(name)
+            if definition is None or definition.type != "BiquadCombo":
+                continue
+            if definition.params.get("type") != expected_type:
+                continue
+            actual_cutoff = float_value(definition.params.get("freq"))
+            actual_order = float_value(definition.params.get("order"))
+            if actual_cutoff is None or actual_order is None:
+                continue
+            cutoff_ok = (
+                actual_cutoff >= float(cutoff)
+                if kind == "highpass"
+                else actual_cutoff <= float(cutoff)
+            )
+            if cutoff_ok and actual_order * 6.0 >= float(slope):
+                return True
     return False
 
 
@@ -814,3 +887,224 @@ def bass_management_corner_matched(
     if lp_freq is None or hp_freq is None or lp_freq <= 0.0 or hp_freq <= 0.0:
         return False
     return float_matches(lp_freq, hp_freq)
+
+
+def bass_extension_block_valid(
+    view: GraphView,
+    profile_summary: Mapping[str, Any],
+) -> BassExtensionBlockEvidence:
+    """Prove the complete optional sealed natural-at-rest filter pair.
+
+    Permission comes only from separately evaluated profile evidence. A missing,
+    deferred, bypassed, or stale profile requires the complete absence of both
+    definitions and references. An eligible sealed profile requires the exact
+    named pair, exact natural parameters, and one reference on exactly the
+    recorded bass-owner channels.
+    """
+
+    from jasper.camilla_emit import (
+        BASS_EXTENSION_FREQ_HZ_HI,
+        BASS_EXTENSION_FREQ_HZ_LO,
+        BASS_EXTENSION_Q_HI,
+        BASS_EXTENSION_Q_LO,
+        BASS_EXTENSION_SUBSONIC_ORDERS,
+    )
+
+    names = ("bass_ext_lt", "bass_ext_subsonic")
+    definitions = tuple(sorted(name for name in view.filters if name.startswith("bass_ext")))
+    references = tuple(
+        step
+        for step in view.pipeline_steps
+        if any(name.startswith("bass_ext") for name in step.names)
+    )
+    if profile_summary.get("authority_valid") is False:
+        return BassExtensionBlockEvidence(
+            False,
+            bool(profile_summary.get("runtime_block_required")),
+            definitions,
+            tuple(sorted({c for step in references for c in step.channels})),
+            "bass_extension_authority_invalid",
+        )
+    expected = bool(profile_summary.get("runtime_block_required"))
+    if not expected:
+        valid = not definitions and not references
+        return BassExtensionBlockEvidence(
+            valid,
+            False,
+            definitions,
+            tuple(sorted({c for step in references for c in step.channels})),
+            None if valid else "bass_extension_block_forbidden",
+        )
+
+    if not view.parsed_ok or definitions != names:
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_definitions_invalid"
+        )
+    natural = profile_summary.get("natural")
+    owner_channels = profile_summary.get("bass_owner_channels")
+    if not isinstance(natural, Mapping) or not isinstance(owner_channels, (list, tuple)):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_profile_evidence_invalid"
+        )
+    if (
+        not owner_channels
+        or any(type(channel) is not int or channel < 0 for channel in owner_channels)
+        or len(set(owner_channels)) != len(owner_channels)
+        or any(
+            isinstance(natural.get(key), bool)
+            or not isinstance(natural.get(key), (int, float))
+            for key in ("fp_hz", "qp", "boost_headroom_db")
+        )
+    ):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_profile_evidence_invalid"
+        )
+    try:
+        fp_hz = float(natural["fp_hz"])
+        qp = float(natural["qp"])
+        boost = float(natural["boost_headroom_db"])
+        subsonic = natural["subsonic"]
+        channels = frozenset(owner_channels)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, (), "bass_extension_profile_evidence_invalid"
+        )
+    if (
+        not math.isfinite(fp_hz)
+        or not BASS_EXTENSION_FREQ_HZ_LO <= fp_hz <= BASS_EXTENSION_FREQ_HZ_HI
+        or not math.isfinite(qp)
+        or not BASS_EXTENSION_Q_LO <= qp <= BASS_EXTENSION_Q_HI
+        or boost != 0.0
+        or not isinstance(subsonic, Mapping)
+    ):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, tuple(sorted(channels)),
+            "bass_extension_natural_target_invalid",
+        )
+    if (
+        type(subsonic.get("order")) is not int
+        or isinstance(subsonic.get("freq"), bool)
+        or not isinstance(subsonic.get("freq"), (int, float))
+    ):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, tuple(sorted(channels)),
+            "bass_extension_subsonic_invalid",
+        )
+    try:
+        sub_freq = float(subsonic["freq"])
+        sub_order = subsonic["order"]
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return BassExtensionBlockEvidence(
+            False, True, definitions, tuple(sorted(channels)),
+            "bass_extension_subsonic_invalid",
+        )
+    lt = view.filters.get(names[0])
+    hp = view.filters.get(names[1])
+    params = lt.params if lt else {}
+    hp_params = hp.params if hp else {}
+    definitions_ok = (
+        lt is not None
+        and lt.type == "Biquad"
+        and params.get("type") == "LinkwitzTransform"
+        and all(
+            float_matches(params.get(key), expected_value)
+            for key, expected_value in (
+                ("freq_act", fp_hz),
+                ("q_act", qp),
+                ("freq_target", fp_hz),
+                ("q_target", qp),
+            )
+        )
+        and hp is not None
+        and hp.type == "BiquadCombo"
+        and subsonic.get("type") == "ButterworthHighpass"
+        and hp_params.get("type") == "ButterworthHighpass"
+        and math.isfinite(sub_freq)
+        and BASS_EXTENSION_FREQ_HZ_LO <= sub_freq <= BASS_EXTENSION_FREQ_HZ_HI
+        and sub_order in BASS_EXTENSION_SUBSONIC_ORDERS
+        and float_matches(hp_params.get("freq"), sub_freq)
+        and hp_params.get("order") == sub_order
+    )
+    reference_ok = (
+        len(references) == 1
+        and references[0].channels == channels
+        and tuple(name for name in references[0].names if name.startswith("bass_ext"))
+        == names
+    )
+    valid = definitions_ok and reference_ok
+    return BassExtensionBlockEvidence(
+        valid,
+        True,
+        definitions,
+        tuple(sorted(references[0].channels)) if len(references) == 1 else (),
+        None if valid else "bass_extension_block_invalid",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline reference closure — a structural check, independent of GraphView.
+#
+# W6 hardware run 4 finding I: ``emit_active_speaker_program_config`` emitted a
+# pipeline ``Mixer`` step naming ``split_active_2way`` (reused verbatim from
+# ``_emit_commissioning_pipeline``) while its own ``mixers:`` section defined
+# only ``program_route_2way`` — CamillaDSP's ``SetConfig`` rejected the graph at
+# LOAD time ("Use of missing mixer 'split_active_2way'"), and nothing upstream
+# had proven the two sides of the graph agreed at BUILD time. Every existing L0
+# proof in this module (``tweeter_guard_present``, `output_highpass_protected``,
+# …) runs on ``GraphView``, which by design DROPS ``Mixer`` steps entirely
+# (``_emitted_step`` returns ``None`` for anything but ``type: Filter`` — see
+# its comment) and never tracks the ``mixers:`` section at all, so none of them
+# could have caught this class of bug regardless of how thorough the tweeter
+# proofs were. This is a deliberately separate, narrower primitive: it does not
+# reason about channels, filter parameters, or protection — only whether every
+# name the pipeline points at actually exists.
+#
+# Dict-taking like ``view_from_yaml_dict``/``view_from_camilla_dict``: this
+# module stays a stdlib-only leaf (see the module docstring), so the caller
+# owns ``yaml.safe_load`` and hands the parsed mapping in.
+# --------------------------------------------------------------------------- #
+
+
+def pipeline_reference_closure_errors(payload: Any) -> tuple[str, ...]:
+    """Every pipeline ``Mixer``/``Filter`` reference that resolves to nothing.
+
+    A CamillaDSP pipeline step's ``Mixer.name`` must be a key under the
+    top-level ``mixers:`` map, and every entry of a ``Filter.names`` list must
+    be a key under ``filters:``. Returns a tuple of human-readable error
+    strings (empty when the graph is reference-closed). Fails closed: a
+    non-mapping payload or a missing/non-list ``pipeline`` is reported as an
+    error rather than silently passing.
+    """
+    if not isinstance(payload, dict):
+        return ("config is not a YAML mapping",)
+    mixers = payload.get("mixers")
+    mixer_names = set(mixers) if isinstance(mixers, dict) else set()
+    filters = payload.get("filters")
+    filter_names = set(filters) if isinstance(filters, dict) else set()
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ("config has no pipeline list",)
+
+    errors: list[str] = []
+    for index, step in enumerate(pipeline):
+        if not isinstance(step, dict):
+            continue
+        step_type = step.get("type")
+        if step_type == "Mixer":
+            name = step.get("name")
+            if name not in mixer_names:
+                errors.append(
+                    f"pipeline step {index} (Mixer) references undefined "
+                    f"mixer {name!r}"
+                )
+        elif step_type == "Filter":
+            names = step.get("names")
+            if not isinstance(names, list):
+                continue
+            for filter_name in names:
+                if filter_name not in filter_names:
+                    errors.append(
+                        f"pipeline step {index} (Filter) references undefined "
+                        f"filter {filter_name!r}"
+                    )
+    return tuple(errors)

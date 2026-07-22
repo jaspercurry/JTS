@@ -569,30 +569,55 @@ def _minidsp_candidate_urls(
     digits = re.sub(r"[^0-9]", "", serial)
     if not digits:
         return []
-    suffixes = (
-        [f"{digits}_90deg.txt", f"{digits}.txt"]
-        if orientation == "90deg"
-        else [f"{digits}.txt", f"{digits}_90deg.txt"]
-    )
     # UMIK ships 0-degree + 90-degree files. Default to 0-degree for
     # two-channel room correction, but include the other orientation
-    # as a fallback candidate because old product-page implementations
-    # expose both. The legacy UMIK-1 direct path is /images/umik/<sn>.txt;
-    # keep model-specific folders as secondary probes for site drift.
+    # as a fallback candidate.
     if vendor_model == "umik-1":
+        suffixes = (
+            [f"{digits}_90deg.txt", f"{digits}.txt"]
+            if orientation == "90deg"
+            else [f"{digits}.txt", f"{digits}_90deg.txt"]
+        )
+        # The legacy UMIK-1 direct path is /images/umik/<sn>.txt; keep
+        # model-specific folders as secondary probes for site drift.
         dirs = [
             "https://www.minidsp.com/images/umik/",
             "https://www.minidsp.com/images/umik/Umik-1/",
             "https://www.minidsp.com/images/umik/UMIK-1/",
         ]
-    else:
-        dirs = [
-            "https://www.minidsp.com/images/umik/",
-            "https://www.minidsp.com/images/umik/Umik-2/",
-            "https://www.minidsp.com/images/umik/UMIK-2/",
-            "https://www.minidsp.com/images/umik-2/",
-        ]
-    return [base + suffix for base in dirs for suffix in suffixes]
+        return [base + suffix for base in dirs for suffix in suffixes]
+
+    # UMIK-2 serves calibration files through per-orientation PHP scripts,
+    # each of which only accepts its own suffix — umik.php ONLY resolves
+    # "<serial>.txt" (0-degree) and umik90.php ONLY resolves
+    # "<serial>_90deg.txt" (90-degree). Crossing the pairing (e.g.
+    # umik.php/<serial>_90deg.txt) returns HTTP 200 with an "Unable to
+    # locate calibration data" page rather than a 404, so getting the
+    # pairing right avoids a wasted round-trip; _looks_like_calibration
+    # still guards against ever accepting that error page.
+    # Verified live 2026-07-15 against a real UMIK-2: both script URLs
+    # return 200 with real cal data, while the whole legacy
+    # /images/umik... family is dead (404 for every serial). One legacy
+    # dir is retained below as minimal drift insurance in case the site
+    # ever reverts to static files.
+    scripts = [
+        ("https://www.minidsp.com/scripts/umik2cal/umik.php/", f"{digits}.txt"),
+        (
+            "https://www.minidsp.com/scripts/umik2cal/umik90.php/",
+            f"{digits}_90deg.txt",
+        ),
+    ]
+    if orientation == "90deg":
+        scripts.reverse()
+    legacy_suffixes = (
+        [f"{digits}_90deg.txt", f"{digits}.txt"]
+        if orientation == "90deg"
+        else [f"{digits}.txt", f"{digits}_90deg.txt"]
+    )
+    return [base + suffix for base, suffix in scripts] + [
+        "https://www.minidsp.com/images/umik/" + suffix
+        for suffix in legacy_suffixes
+    ]
 
 
 def fetch_minidsp_calibration_text(
@@ -619,8 +644,14 @@ def fetch_minidsp_calibration_text(
     if not candidates:
         raise ValueError("miniDSP serial must contain digits")
     for url in candidates:
+        # miniDSP blanket-blocks urllib's default "Python-urllib/x.y" User-Agent
+        # site-wide (verified live 2026-07-15: 403, not the real 404), so every
+        # request needs an explicit non-default header, same as the Dayton path.
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "JTS correction calibration lookup"},
+        )
         try:
-            text = _decode_body(opener(url, timeout))
+            text = _decode_body(opener(req, timeout))
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 saw_not_found = True
@@ -670,6 +701,43 @@ def find_stored_calibration(
         if data.get("serial_hash") != sh:
             continue
         if str(data.get("orientation") or "unknown") != orientation:
+            continue
+        try:
+            rec = CalibrationRecord.from_dict(data)
+        except (KeyError, ValueError, TypeError):
+            continue
+        if best is None or rec.fetched_at > best.fetched_at:
+            best = rec
+    return best
+
+
+def find_stored_calibration_by_content_hash(
+    *,
+    file_sha256: str,
+    root: Path = DEFAULT_CALIBRATION_DIR,
+) -> CalibrationRecord | None:
+    """Return a previously-stored calibration matching this content hash,
+    regardless of provider, model, or serial.
+
+    ``find_stored_calibration`` (above) makes a vendor-serial calibration
+    reachable again across sessions, keyed by serial_hash + model +
+    orientation. A manual upload carries no serial, so that lookup can never
+    reach it — this is the additive counterpart: any stored calibration
+    (vendor OR upload) can be found again from nothing but the content hash
+    of the file that produced it. Used by
+    ``jasper.correction.household_mic`` to resolve a remembered upload back
+    to its stored file on a later run. Corrupt records are skipped, not
+    fatal. Returns the most recently fetched match.
+    """
+    if not file_sha256:
+        return None
+    best: CalibrationRecord | None = None
+    for path in root.glob("*/*/*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if data.get("file_sha256") != file_sha256:
             continue
         try:
             rec = CalibrationRecord.from_dict(data)

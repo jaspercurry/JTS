@@ -367,22 +367,24 @@ def test_streambox_parking_disables_brain_units():
     assert "systemctl disable --now" in parking
 
 
-def test_streambox_parking_disables_coupling_auto_unit():
-    """F7: the P3/P4 default-flip unit (jasper-fanin-coupling-auto.service) is
-    installed on BOTH profiles via the shared audio-graph rows, but only the FULL
-    install enables + runs it. A full->streambox conversion must PARK it here, or it
-    would run every boot on the streambox and could arm the ring on zero-class
-    hardware the campaign never validated. A fresh streambox never enables it (no
-    resolve_fanin_coupling_default call in the streambox runtime path), so parking is
-    a no-op there — but the disable-on-conversion is the load-bearing safety."""
+def test_streambox_keeps_coupling_auto_for_usb_direct_capture():
+    """Fan-in coupling is data-plane ownership, not a voice-brain feature.
+
+    Streambox supports USB Audio Input through the same direct fan-in lane, so
+    full->streambox conversion must preserve coupling-auto and its runtime path
+    must enable it before source-intent reapply.
+    """
     text = installer_text()
     parking = text.split("park_streambox_brain_units() {", 1)[1].split("\n}", 1)[0]
-    assert "jasper-fanin-coupling-auto.service" in parking
-    # And the streambox runtime path must NOT invoke the full-profile auto resolver.
+    assert "jasper-fanin-coupling-auto.service" not in parking
     streambox_runtime = text.split("start_streambox_runtime_units() {", 1)[1].split(
         "\n}", 1
     )[0]
-    assert "resolve_fanin_coupling_default" not in streambox_runtime
+    coupling_idx = streambox_runtime.index(
+        "systemctl enable jasper-fanin-coupling-auto.service"
+    )
+    reapply_idx = streambox_runtime.index("reapply_source_intent")
+    assert coupling_idx < reapply_idx
 
 
 # ---------- Zero-2-W default + low-memory cargo build (preserved) --------
@@ -489,23 +491,53 @@ def test_rust_low_memory_build_can_be_forced_for_recovery(tmp_path: Path):
 # ---------- (5) follower parks the brain — pointer to the canonical test --
 
 
-def test_follower_parks_renderer_stack_via_reconcile_plan():
-    """Cross-reference: the dumb-follower runtime role (which provides the
-    old "endpoint" behaviour) parks the renderer stack. The exhaustive
-    per-unit coverage lives in tests/test_multiroom_reconcile.py."""
-    from jasper.local_sources import local_source_park_units
+def test_follower_role_plan_hands_sources_to_canonical_owner():
+    """Grouping owns Snapcast state and one blocking source handoff."""
     from jasper.multiroom.config import (
         DEFAULT_BUFFER_MS,
         DEFAULT_CODEC,
         GroupingConfig,
     )
-    from jasper.multiroom.reconcile import plan
+    from jasper.multiroom.reconcile import SOURCE_INTENT_RECONCILE_UNIT, plan
 
     cfg = GroupingConfig(
         enabled=True, role="follower", channel="left",
         bond_id="bond-1", leader_addr="jts.local",
         buffer_ms=DEFAULT_BUFFER_MS, codec=DEFAULT_CODEC, error=None,
     )
-    by_unit = {i.unit: i.desired for i in plan(cfg).intents}
-    for unit in local_source_park_units():
-        assert by_unit.get(unit) == "stop", unit
+    units = {intent.unit for intent in plan(cfg).intents}
+    assert units == {"jasper-snapserver.service", "jasper-snapclient.service"}
+    assert SOURCE_INTENT_RECONCILE_UNIT == "jasper-source-intent-reconcile.service"
+
+
+def test_both_install_profiles_start_mux_on_first_install():
+    """Enable-only + try-restart leaves a never-started mux inactive."""
+
+    source = (
+        REPO_ROOT / "deploy/lib/install/systemd-units.sh"
+    ).read_text(encoding="utf-8")
+    streambox = source.split("start_streambox_runtime_units() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    full = source.split("install_systemd_units() {", 1)[1]
+
+    assert "systemctl enable --now jasper-mux.service" in streambox
+    assert "systemctl enable --now jasper-mux.service" in full
+    assert "systemctl try-restart jasper-mux.service" not in streambox
+    assert "systemctl try-restart jasper-mux.service" not in full
+
+
+def test_streambox_resolves_coupling_after_grouping_during_install():
+    """Do not leave USB/ring derived state stale until the next boot."""
+
+    source = (
+        REPO_ROOT / "deploy/lib/install/systemd-units.sh"
+    ).read_text(encoding="utf-8")
+    body = source.split("start_streambox_runtime_units() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+
+    assert "systemctl enable jasper-fanin-coupling-auto.service" in body
+    assert body.index("reconcile_grouping_state") < body.index(
+        "resolve_fanin_coupling_default"
+    )

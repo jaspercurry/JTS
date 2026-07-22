@@ -30,11 +30,19 @@ from jasper.active_speaker import (
     audible_outputs_for_role,
     graph_evidence as ge,
 )
-from jasper.active_speaker.runtime_contract import classify_camilla_graph
+from jasper.active_speaker.runtime_contract import (
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_camilla_graph as _classify_camilla_graph,
+)
 from jasper.active_speaker.staging import driver_commission_audible_evidence
 
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _active_yaml
+
+
+def classify_camilla_graph(*args, **kwargs):
+    kwargs.setdefault("bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY)
+    return _classify_camilla_graph(*args, **kwargs)
 
 
 def test_canonical_names_appear_in_the_emitted_commissioning_config():

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ from jasper.active_speaker.calibration_level import MIN_TEST_LEVEL_DBFS
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -92,6 +94,25 @@ def _driver_comparison_set(topology):
         },
     }
     return {**core, "fingerprint": comparison_set_fingerprint(core)}
+
+
+def _install_driver_admission_prerequisites(monkeypatch):
+    """Keep legacy orchestration tests focused below the new admission gates."""
+
+    from jasper import dsp_apply
+    from jasper.active_speaker import design_draft
+
+    monkeypatch.setattr(
+        design_draft,
+        "load_design_draft",
+        lambda: {"driver_safety_profile": {"status": "confirmed"}},
+    )
+
+    @asynccontextmanager
+    async def unlocked(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", unlocked)
 
 
 @pytest.mark.parametrize("source_kind", ["preset", "preview"])
@@ -195,6 +216,12 @@ def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -215,6 +242,7 @@ def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
     )
     monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
     loaded = {}
 
     async def blocked_load(**kwargs):
@@ -240,6 +268,7 @@ def test_driver_capture_sweep_accepts_durable_confirmation_after_session_expiry(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
         )
     )
 
@@ -269,6 +298,7 @@ def test_driver_capture_refuses_malformed_durable_floor_confirmation(
     measurements = {
         "summary": {
             "latest_driver_measurements": {"mono:woofer": record},
+            "latest_driver_confirmations": {"mono:woofer": record},
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -434,13 +464,18 @@ def test_driver_level_match_loads_isolated_path_and_restores_entry_graph(monkeyp
         load_call.update(kwargs)
         return prepared_load
 
-    async def restore(payload, *, camilla_factory):
+    # The level-match teardown re-mutes to the staged anchor ONLY; production
+    # stays stashed for the sequence-level restore. A per-level-match
+    # production restore would force the following sweep attempts to reload
+    # the anchor again — the double-config-swap churn that starved the sweep
+    # transport on JTS3 (2026-07-16).
+    async def rollback_to_anchor(payload, *, camilla_factory):
         restored.append((payload, camilla_factory))
-        return {"status": "rolled_back"}
+        return {"status": "anchored"}
 
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", load)
     monkeypatch.setattr(
-        web, "_restore_automatic_driver_entry_config_resilient", restore
+        web, "_rollback_capture_attempt_to_anchor_resilient", rollback_to_anchor
     )
     camilla_factory = lambda: object()
 
@@ -465,7 +500,7 @@ def test_driver_level_match_loads_isolated_path_and_restores_entry_graph(monkeyp
             prepared, camilla_factory=camilla_factory
         )
     )
-    assert result == {"status": "rolled_back"}
+    assert result == {"status": "anchored"}
     assert restored == [(prepared_load, camilla_factory)]
 
 
@@ -621,6 +656,15 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
                     test_level_dbfs=legacy_floor_dbfs,
                 ),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(
+                    topology,
+                    test_level_dbfs=legacy_floor_dbfs,
+                ),
+            },
         },
     }
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
@@ -628,6 +672,7 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
     from jasper.active_speaker import baseline_profile
 
     monkeypatch.setattr(
@@ -648,47 +693,365 @@ def test_driver_capture_sweep_never_reuses_legacy_floor_level(
 
     async def fake_play(**kwargs):
         play_call.update(kwargs)
-        excitation = {
-            key: value
-            for key, value in kwargs["planned_excitation"].items()
-            if key != "status"
-        }
-        return {
-            "status": "completed",
-            "audio_emitted": True,
-            "playback_id": "play-woofer",
-            "sweep_meta": {
-                "amplitude_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
-            },
-            "excitation": excitation,
-        }
+        return SimpleNamespace(
+            sweep_meta=SimpleNamespace(
+                to_dict=lambda: {
+                    "amplitude_dbfs": AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
+                }
+            ),
+            handoff=SimpleNamespace(
+                admission_id="admission-woofer",
+                to_dict=lambda: {"admission_id": "admission-woofer"},
+            ),
+        )
 
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
-    monkeypatch.setattr(web, "_play_capture_sweep", fake_play)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda *_a: {})
+    monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
+    from jasper.active_speaker import commissioning_admission
+
+    monkeypatch.setattr(
+        commissioning_admission, "play_admitted_driver_capture", fake_play
+    )
 
     payload = asyncio.run(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
         )
     )
 
     assert payload["status"] == "completed"
     assert payload["test_level_dbfs"] == applied_gain_db
     assert load_call["level_dbfs"] == applied_gain_db
+    assert load_call["volume_limit_db"] == -4.0
     startup_gate = load_call["startup_gate_calibration_level"]
     assert startup_gate["status"] == "floor"
     assert startup_gate["test_signal"]["requested_level_dbfs"] == (
         MIN_TEST_LEVEL_DBFS
     )
-    assert play_call["level_dbfs"] == applied_gain_db
-    assert play_call["planned_excitation"]["commissioning_gain_db"] == (
-        applied_gain_db
-    )
-    assert play_call["planned_excitation"]["gain_source"] == (
-        web.AUTOMATIC_EXCITATION_GAIN_SOURCE
-    )
+    assert play_call["commissioning_gain_db"] == applied_gain_db
+    assert play_call["expected_main_volume_db"] == -4.0
     assert payload["test_level_dbfs"] != legacy_floor_dbfs
+
+
+def test_commission_tone_select_fanin_lane_indeterminate_recovery_standalone(
+    monkeypatch,
+):
+    """SELECT response lost (mux command raises): standalone mode's recovery
+    releases its OWN owner — never correction's gate."""
+
+    calls: list[str] = []
+
+    def flaky_mux_command(cmd: str) -> dict:
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise RuntimeError("response lost")
+        return {"active_source": None}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", flaky_mux_command)
+
+    with pytest.raises(RuntimeError, match="response lost"):
+        web._commission_tone_select_fanin_lane()
+
+    assert calls == [
+        "TEST_SELECT correction active-speaker-commissioning",
+        "TEST_RELEASE active-speaker-commissioning",
+    ]
+
+
+def test_commission_tone_select_fanin_lane_indeterminate_recovery_nested(
+    monkeypatch,
+):
+    """SELECT response lost while nested under a correction measurement
+    window: recovery must NOT release the outer owner's gate — it restores
+    the outer owner's prior label instead (still a TEST_SELECT, never a
+    TEST_RELEASE)."""
+
+    calls: list[str] = []
+
+    def flaky_mux_command(cmd: str) -> dict:
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise RuntimeError("response lost")
+        return {"active_source": "correction"}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", flaky_mux_command)
+    fanin_gate_context = web.FaninGateContext(
+        owner="correction-measurement", restore_label="correction",
+    )
+
+    with pytest.raises(RuntimeError, match="response lost"):
+        web._commission_tone_select_fanin_lane(fanin_gate_context)
+
+    assert calls == [
+        "TEST_SELECT correction correction-measurement",
+        "TEST_SELECT correction correction-measurement",
+    ]
+    assert all("TEST_RELEASE" not in call for call in calls)
+
+
+def _driver_capture_sweep_boundary(monkeypatch, *, play_admitted=None):
+    """Boundary mocks for a play_driver_capture_sweep() run that leave the
+    REAL _commission_tone_select/release_fanin_lane() in place — only the
+    lowest-level socket call (_commission_tone_mux_command) is faked — so
+    tests can inspect the actual TEST_SELECT/TEST_RELEASE strings sent to
+    jasper-mux for standalone vs nested (FaninGateContext) commissioning.
+    """
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
+    monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+    from jasper.active_speaker import baseline_profile
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: _applied_excitation_profile(topology=topology),
+    )
+
+    async def fake_load(**kwargs):
+        return {"load": {"status": "loaded"}}
+
+    async def default_play_admitted(**kwargs):
+        return SimpleNamespace(
+            sweep_meta=SimpleNamespace(
+                to_dict=lambda: {"amplitude_dbfs": -12.0}
+            ),
+            handoff=SimpleNamespace(
+                admission_id="admission-woofer",
+                to_dict=lambda: {"admission_id": "admission-woofer"},
+            ),
+        )
+
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    from jasper.active_speaker import commissioning_admission
+
+    monkeypatch.setattr(
+        commissioning_admission,
+        "play_admitted_driver_capture",
+        play_admitted or default_play_admitted,
+    )
+
+    mux_calls: list[str] = []
+
+    def fake_mux_command(cmd: str) -> dict:
+        mux_calls.append(cmd)
+        return {"active_source": "correction"}
+
+    monkeypatch.setattr(web, "_commission_tone_mux_command", fake_mux_command)
+    return mux_calls
+
+
+def test_driver_capture_sweep_standalone_mode_owns_and_releases_its_own_gate(
+    monkeypatch,
+):
+    """No FaninGateContext (today's /sound/ commissioning path): unchanged
+    behavior — claims its own owner and releases it, never touching
+    correction's gate."""
+
+    mux_calls = _driver_capture_sweep_boundary(monkeypatch)
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
+        )
+    )
+
+    assert payload["status"] == "completed"
+    assert mux_calls == [
+        "TEST_SELECT correction active-speaker-commissioning",
+        "TEST_RELEASE active-speaker-commissioning",
+    ]
+
+
+def test_driver_capture_sweep_nested_mode_selects_and_restores_under_outer_owner(
+    monkeypatch,
+):
+    """FaninGateContext set (the crossover-driver-sweep relay flow, running
+    inside a correction measurement window): the tone selects under the
+    OUTER owner (never its own 'active-speaker-commissioning') and, on
+    completion, relabels back to the outer owner's prior label — never a
+    TEST_RELEASE. The gate stays continuously held by one owner across the
+    window; the coordinator's own end-of-window release is the only
+    release. This is the PR #1508 regression pin: before the fix, the
+    second-owner SELECT was refused with 'test fan-in gate is owned by
+    correction-measurement' (hardware-observed on JTS3)."""
+
+    mux_calls = _driver_capture_sweep_boundary(monkeypatch)
+    fanin_gate_context = web.FaninGateContext(
+        owner="correction-measurement", restore_label="correction",
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
+            fanin_gate_context=fanin_gate_context,
+        )
+    )
+
+    assert payload["status"] == "completed"
+    assert mux_calls == [
+        "TEST_SELECT correction correction-measurement",
+        "TEST_SELECT correction correction-measurement",
+    ]
+    assert all("TEST_RELEASE" not in call for call in mux_calls)
+    assert all("correction-measurement" in call for call in mux_calls)
+
+
+def test_driver_capture_sweep_nested_mode_restores_label_on_crash(monkeypatch):
+    """Crash mid-tone (the admitted capture raises) still restores the outer
+    owner's label via the finally block — the nested gate is never left
+    dangling on an unhandled exception, and it is still a restore, not a
+    release."""
+
+    async def crashing_play_admitted(**kwargs):
+        raise RuntimeError("simulated mid-tone crash")
+
+    mux_calls = _driver_capture_sweep_boundary(
+        monkeypatch, play_admitted=crashing_play_admitted,
+    )
+    fanin_gate_context = web.FaninGateContext(
+        owner="correction-measurement", restore_label="correction",
+    )
+
+    with pytest.raises(RuntimeError, match="simulated mid-tone crash"):
+        asyncio.run(
+            web.play_driver_capture_sweep(
+                {"speaker_group_id": "mono", "role": "woofer"},
+                camilla_factory=lambda: object(),
+                locked_main_volume_db=-4.0,
+                fanin_gate_context=fanin_gate_context,
+            )
+        )
+
+    assert mux_calls == [
+        "TEST_SELECT correction correction-measurement",
+        "TEST_SELECT correction correction-measurement",
+    ]
+    assert all("TEST_RELEASE" not in call for call in mux_calls)
+
+
+@pytest.mark.parametrize(
+    ("post_play_reason", "expected_issue"),
+    [
+        ("main_volume_drift", "active_driver_capture_volume_drift"),
+        (
+            "post_play_volume_unverified",
+            "active_driver_capture_post_play_volume_unverified",
+        ),
+        (
+            "post_play_volume_verification_cancelled",
+            "active_driver_capture_post_play_volume_unverified",
+        ),
+    ],
+)
+def test_driver_capture_post_play_failure_reports_consumed_attempt_and_reason(
+    monkeypatch,
+    post_play_reason,
+    expected_issue,
+):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
+    monkeypatch.setattr(web, "resolve_commission_inputs", lambda: (object(), None))
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+    from jasper.active_speaker import baseline_profile, commissioning_admission
+
+    monkeypatch.setattr(
+        baseline_profile,
+        "load_applied_baseline_profile_state",
+        lambda: _applied_excitation_profile(topology=topology, gain_db=-9.0),
+    )
+
+    async def fake_load(**_kwargs):
+        return {"load": {"status": "loaded"}}
+
+    artifact = ArtifactIdentity(
+        bundle_kind="jts_active_speaker_commissioning_bundle",
+        bundle_id="bundle-1",
+        relative_path="admission/v1/playback/attempt-1.json",
+        sha256="a" * 64,
+        byte_size=100,
+    )
+
+    async def drift_after_play(**_kwargs):
+        raise commissioning_admission.ActiveCommissioningPlaybackDrift(
+            "main volume changed during admitted driver playback",
+            reason=post_play_reason,
+            admission_id="attempt-1",
+            playback_artifact=artifact,
+        )
+
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", fake_load)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda *_a: {})
+    monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
+    monkeypatch.setattr(
+        commissioning_admission, "play_admitted_driver_capture", drift_after_play
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
+        )
+    )
+
+    assert payload["status"] == "failed"
+    assert payload["reason"] == expected_issue
+    assert payload["audio_emitted"] is True
+    assert payload["playback"]["audio_may_have_started"] is True
+    assert payload["playback"]["post_play_failure_reason"] == post_play_reason
+    assert payload["issues"][0]["code"] == expected_issue
+    expected_consumed_attempt = {
+        "admission_id": "attempt-1",
+        "playback_artifact": artifact.to_dict(),
+        "requires_new_generation": True,
+    }
+    assert payload["capture_admission"] == expected_consumed_attempt
+    assert payload["playback"]["capture_admission"] == expected_consumed_attempt
 
 
 @pytest.mark.parametrize("playback_fails", [False, True])
@@ -875,7 +1238,10 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
         lambda _cam: (object(), object(), object()),
     )
 
-    async def load_driver(*_args, **_kwargs):
+    load_driver_call = {}
+
+    async def load_driver(*_args, **kwargs):
+        load_driver_call.update(kwargs)
         return {"load": {"status": "loaded"}}
 
     monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
@@ -887,6 +1253,7 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
             speaker_group_id="mono",
             role="woofer",
             level_dbfs=0.0,
+            volume_limit_db=-4.0,
             startup_gate_calibration_level={"status": "floor"},
             preset=frozen_preset,
             crossover_preview=None,
@@ -902,6 +1269,385 @@ def test_automatic_driver_load_captures_entry_before_startup_anchor(monkeypatch)
     }
     assert anchor_call["preset"] is frozen_preset
     assert anchor_call["crossover_preview"] is None
+    assert load_driver_call["volume_limit_db"] == -4.0
+    # De-anchoring live production must durably stash its path FIRST, so the
+    # sequence-level restore has a crash-safe target.
+    from jasper.active_speaker import capture_entry_anchor
+
+    assert capture_entry_anchor.pending_entry() == entry_path
+    # _ensure_commission_startup_anchor reporting status="loaded" means it just
+    # reloaded the all-muted anchor and already triggered
+    # jasper-audio-hardware-reconcile for this exact DAC a moment ago (see
+    # startup_load._trigger_audio_hardware_reconcile). A second reconcile
+    # immediately behind it is redundant -- hardware-reproduced on JTS3
+    # 2026-07-16 (deterministic 2/2 aplay timeouts on the driver capture
+    # sweep), where an automatic capture retry always re-enters this reload
+    # branch (the flow's own cleanup, _restore_automatic_driver_entry_config,
+    # reverts CamillaDSP's persisted config path to the pre-commissioning
+    # production config after every attempt) and paid for two
+    # jasper-audio-hardware-reconcile round trips per attempt even though
+    # every run reported env_changed=0 render_changed=0.
+    assert load_driver_call["reconcile_output_hardware"] is False
+
+
+def test_automatic_driver_load_skips_second_reconcile_only_after_fresh_anchor_reload(
+    monkeypatch,
+):
+    """already_loaded (anchor fast path, no reload) must still reconcile once.
+
+    Companion to the "loaded" case above: when
+    ``_ensure_commission_startup_anchor`` takes its already-anchored fast path
+    (nothing needed reloading, so it did not just trigger a reconcile),
+    ``load_driver_commissioning_config`` must still be allowed its own
+    reconcile -- there is no recent confirmation of this exact hardware to
+    piggyback on.
+    """
+
+    entry_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return entry_path
+
+    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
+
+    async def ensure_anchor(**_kwargs):
+        return {"status": "already_loaded", "staged_config_path": entry_path}
+
+    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", ensure_anchor)
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    load_driver_call = {}
+
+    async def load_driver(*_args, **kwargs):
+        load_driver_call.update(kwargs)
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    assert load_driver_call["reconcile_output_hardware"] is True
+
+
+def test_capture_retry_reuses_staged_anchor_without_reanchoring(monkeypatch):
+    """A retry attempt must not re-load the staged anchor (zero SetConfigs).
+
+    Per-attempt teardown leaves the persisted path ON the staged anchor and
+    the sequence's production path stashed. The next attempt then takes the
+    REAL ``_ensure_commission_startup_anchor`` fast path: no
+    ``set_config_file_path`` call at all before the commissioning load, and
+    the stash keeps the original production path. Restoring production per
+    attempt forced anchor reload + commissioning load ~150 ms apart before
+    every retry's ``aplay`` — the double config swap behind the JTS3
+    2026-07-16 deterministic sweep timeouts.
+    """
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    production_path = "/var/lib/camilladsp/configs/sound_current.yml"
+    capture_entry_anchor.record_entry(production_path)  # attempt 1 stashed it
+
+    set_calls = []
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return staged_path  # attempt 1's teardown left the anchor loaded
+
+        async def set_config_file_path(self, path, *, best_effort):
+            set_calls.append(path)
+            return True
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    load_driver_call = {}
+
+    async def load_driver(*_args, **kwargs):
+        load_driver_call.update(kwargs)
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    payload = asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    # Real fast path: the anchor is already the persisted path, so nothing
+    # was staged or reloaded — zero SetConfigFilePath calls this attempt.
+    assert payload["startup_setup"]["status"] == "already_loaded"
+    assert set_calls == []
+    # The stash still holds the SEQUENCE's production path — an anchored
+    # attempt must not overwrite it with the anchor.
+    assert capture_entry_anchor.pending_entry() == production_path
+    assert load_driver_call["load_config"] is not None
+
+
+def test_level_match_teardown_leaves_anchor_for_first_sweep_attempt(monkeypatch):
+    """Sweep attempt 1 after a same-session level lock does ZERO SetConfigFilePath.
+
+    The level-match prepare loaded the staged anchor once (the sequence's only
+    persisted-path write); its teardown re-mutes via the INLINE rollback
+    (``commission_load_config`` = CamillaDSP ``SetConfig``, persisted path
+    untouched) and deliberately does not restore production. The first sweep
+    attempt therefore finds persisted==anchor and takes the real anchor fast
+    path — the run-8 wedge shape (level teardown -> production -> sweep
+    re-anchor double SetConfig) no longer exists. The only double config swap
+    left in the sequence is at level-match START, which never wedged (arming
+    waits on the phone; seconds of settle before any tone).
+    """
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    production_path = "/var/lib/camilladsp/configs/sound_current.yml"
+
+    set_calls = []
+
+    class Cam:
+        # After level-match prepare, the persisted path IS the staged anchor
+        # (commission loads are inline and never repoint it).
+        async def get_config_file_path(self, *, best_effort):
+            return staged_path
+
+        async def set_config_file_path(self, path, *, best_effort):
+            set_calls.append(path)
+            return True
+
+    # The state the level-match prepare left behind: stash = production,
+    # transaction entry = production.
+    capture_entry_anchor.record_entry(production_path)
+    prepared = {
+        "load": {
+            "load": {"status": "loaded"},
+            "measurement_transaction": {
+                "kind": "automatic_driver_capture",
+                "entry_config_path": production_path,
+                "restored": False,
+            },
+        },
+    }
+
+    async def inner_rollback(**_kwargs):
+        # rollback_driver_commissioning_config through the INLINE seam.
+        return {"rollback": {"status": "rolled_back"}}
+
+    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", inner_rollback)
+
+    teardown = asyncio.run(
+        web.restore_automatic_driver_level_match(prepared, camilla_factory=Cam)
+    )
+    assert teardown["status"] == "anchored"
+    assert set_calls == []  # teardown never repoints the persisted path
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+    monkeypatch.setattr(
+        web,
+        "write_commission_path_safety",
+        lambda *_args, **_kwargs: "/tmp/path-safety.json",
+    )
+    monkeypatch.setattr(
+        web,
+        "commission_seams",
+        lambda _cam: (object(), object(), object()),
+    )
+
+    async def load_driver(*_args, **_kwargs):
+        return {"load": {"status": "loaded"}}
+
+    monkeypatch.setattr(web, "load_driver_commissioning_config", load_driver)
+
+    payload = asyncio.run(
+        web._load_driver_commissioning_config_for_level(
+            topology=_topology(),
+            speaker_group_id="mono",
+            role="woofer",
+            level_dbfs=0.0,
+            volume_limit_db=-4.0,
+            startup_gate_calibration_level={"status": "floor"},
+            preset=object(),
+            crossover_preview=None,
+            camilla_factory=Cam,
+        )
+    )
+
+    # Attempt 1 rides the real anchor fast path: still zero SetConfigFilePath
+    # across teardown + sweep load, stash intact for the sequence restore.
+    assert payload["startup_setup"]["status"] == "already_loaded"
+    assert set_calls == []
+    assert capture_entry_anchor.pending_entry() == production_path
+
+
+def test_restore_pending_capture_entry_config_restores_exactly_once(monkeypatch, tmp_path):
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    entry = tmp_path / "sound_current.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    capture_entry_anchor.record_entry(str(entry))
+
+    set_calls = []
+
+    class Cam:
+        current = staged_path
+
+        async def get_config_file_path(self, *, best_effort):
+            return type(self).current
+
+        async def set_config_file_path(self, path, *, best_effort):
+            set_calls.append(path)
+            type(self).current = path
+            return True
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+
+    first = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+    assert first == {"status": "restored", "config_path": str(entry)}
+    assert set_calls == [str(entry)]
+    assert capture_entry_anchor.pending_entry() is None
+
+    second = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+    assert second == {"status": "idle"}
+    assert set_calls == [str(entry)]  # exactly once
+
+
+def test_restore_pending_capture_entry_config_defers_and_supersedes(
+    monkeypatch, tmp_path
+):
+    """Unreachable Camilla retains the stash; a repointed production clears it."""
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    entry = tmp_path / "sound_current.yml"
+    entry.write_text("devices: {}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+
+    # Camilla unreachable -> deferred, stash retained (muted-safe posture).
+    capture_entry_anchor.record_entry(str(entry))
+
+    class UnreachableCam:
+        async def get_config_file_path(self, *, best_effort):
+            raise RuntimeError("camilla down")
+
+        async def set_config_file_path(self, path, *, best_effort):
+            raise AssertionError("must not load while state is unknown")
+
+    deferred = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=UnreachableCam)
+    )
+    assert deferred["status"] == "deferred"
+    assert capture_entry_anchor.pending_entry() == str(entry)
+
+    # Persisted path is no longer the staged anchor (an apply repointed
+    # production) -> the stale stash is cleared WITHOUT touching CamillaDSP.
+    class RepointedCam:
+        async def get_config_file_path(self, *, best_effort):
+            return "/var/lib/camilladsp/configs/newly_applied.yml"
+
+        async def set_config_file_path(self, path, *, best_effort):
+            raise AssertionError("superseded stash must not reload anything")
+
+    superseded = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=RepointedCam)
+    )
+    assert superseded["status"] == "superseded"
+    assert capture_entry_anchor.pending_entry() is None
+
+
+def test_restore_pending_capture_entry_config_missing_entry_stays_muted(
+    monkeypatch, tmp_path
+):
+    """A vanished production config clears the stash and keeps the anchor.
+
+    Fail direction is muted-never-loud: with no valid restore target the
+    speaker stays on the all-muted staged anchor rather than guessing.
+    """
+
+    from jasper.active_speaker import capture_entry_anchor
+
+    staged_path = "/var/lib/camilladsp/configs/active_speaker_staged_startup.yml"
+    capture_entry_anchor.record_entry(str(tmp_path / "deleted.yml"))
+
+    class Cam:
+        async def get_config_file_path(self, *, best_effort):
+            return staged_path
+
+        async def set_config_file_path(self, path, *, best_effort):
+            raise AssertionError("must not load a missing config")
+
+    monkeypatch.setattr(
+        web,
+        "load_staged_startup_config",
+        lambda: {"status": "staged", "config": {"path": staged_path}},
+    )
+
+    result = asyncio.run(
+        web.restore_pending_capture_entry_config(camilla_factory=Cam)
+    )
+    assert result["status"] == "entry_missing"
+    assert capture_entry_anchor.pending_entry() is None
 
 
 def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_preset(
@@ -1189,6 +1935,12 @@ def test_automatic_driver_load_failure_restores_entry_graph(
             "latest_driver_measurements": {
                 "mono:woofer": _durable_driver_record(topology),
             },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
         },
     }
     entry_path = "/var/lib/camilladsp/configs/sound_current.yml"
@@ -1203,6 +1955,7 @@ def test_automatic_driver_load_failure_restores_entry_graph(
         "load_applied_baseline_profile_state",
         lambda: _applied_excitation_profile(topology=topology, gain_db=0.0),
     )
+    _install_driver_admission_prerequisites(monkeypatch)
 
     async def blocked_load(**_kwargs):
         return {
@@ -1221,15 +1974,22 @@ def test_automatic_driver_load_failure_restores_entry_graph(
             },
         }
 
+    # The per-attempt teardown re-mutes to the staged anchor; the entry
+    # production path must NOT be restored per attempt (sequence-level restore
+    # owns it — see restore_pending_capture_entry_config). restore_fails now
+    # exercises the anchor rollback itself failing, which must still flip the
+    # attempt to failed because the driver may be left audible.
     async def inner_rollback(**_kwargs):
-        return {"status": "blocked"}
+        if restore_fails:
+            return {"rollback": {"status": "rollback_failed"}}
+        return {"rollback": {"status": "blocked"}}
 
     restored_paths = []
 
     class Cam:
         async def set_config_file_path(self, path, *, best_effort):
             restored_paths.append(path)
-            return not restore_fails
+            return True
 
     log_calls = []
     monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", blocked_load)
@@ -1244,11 +2004,12 @@ def test_automatic_driver_load_failure_restores_entry_graph(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=Cam,
+            locked_main_volume_db=-4.0,
         )
     )
 
-    assert payload["status"] == "blocked"
-    assert restored_paths == [entry_path]
+    assert payload["status"] == ("failed" if restore_fails else "blocked")
+    assert restored_paths == []
     if restore_fails:
         assert payload["issues"][0]["code"] == (
             "automatic_driver_config_restore_failed"
@@ -1259,7 +2020,8 @@ def test_automatic_driver_load_failure_restores_entry_graph(
             for args, kwargs in log_calls
         )
     else:
-        assert payload["rollback"]["config_path"] == entry_path
+        assert payload["rollback"]["status"] == "anchored"
+        assert payload["rollback"]["pending_entry_config_path"] == entry_path
         assert payload["issues"][0]["code"] == "calibration_level_not_at_floor"
 
 
@@ -1271,6 +2033,15 @@ def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(
+                    topology,
+                    test_level_dbfs=-60.0,
+                ),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(
                     topology,
                     test_level_dbfs=-60.0,
@@ -1301,6 +2072,7 @@ def test_driver_capture_sweep_refuses_before_loading_when_applied_gain_is_stale(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
+            locked_main_volume_db=-4.0,
         )
     )
 
@@ -1317,6 +2089,12 @@ def test_driver_capture_sweep_uses_frozen_applied_preset_not_mutable_draft(
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
@@ -1346,12 +2124,14 @@ def test_driver_capture_sweep_uses_frozen_applied_preset_not_mutable_draft(
         "_load_driver_commissioning_config_for_level",
         capture_load,
     )
+    _install_driver_admission_prerequisites(monkeypatch)
 
     payload = asyncio.run(
         web.play_driver_capture_sweep(
             {"speaker_group_id": "mono", "role": "woofer"},
             camilla_factory=lambda: object(),
             applied_profile=applied,
+            locked_main_volume_db=-4.0,
         )
     )
 
@@ -1367,6 +2147,12 @@ def test_driver_capture_sweep_uses_explicit_geometry_lock_in_excitation(monkeypa
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
@@ -1391,6 +2177,7 @@ def test_driver_capture_sweep_uses_explicit_geometry_lock_in_excitation(monkeypa
         "_load_driver_commissioning_config_for_level",
         capture_load,
     )
+    _install_driver_admission_prerequisites(monkeypatch)
 
     payload = asyncio.run(
         web.play_driver_capture_sweep(
@@ -1405,6 +2192,152 @@ def test_driver_capture_sweep_uses_explicit_geometry_lock_in_excitation(monkeypa
     assert seen["locked_main_volume_db"] == -3.5
 
 
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cancelled):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    applied = _applied_excitation_profile(topology=topology, gain_db=-9.0)
+    events = []
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+
+    from jasper import dsp_apply
+    from jasper.active_speaker import commissioning_admission
+
+    @asynccontextmanager
+    async def tracked_lock(*_args, **kwargs):
+        assert kwargs["source"] == "active_speaker_driver_capture"
+        events.append("lock_enter")
+        try:
+            yield
+        finally:
+            events.append("lock_exit")
+
+    async def load(**kwargs):
+        assert kwargs["acquire_lock"] is False
+        events.append("load")
+        return {
+            "load": {"status": "loaded"},
+            "measurement_transaction": {
+                "entry_config_path": "/tmp/entry.yml",
+                "restored": False,
+            },
+        }
+
+    async def admitted(**_kwargs):
+        events.append("play")
+        if cancelled:
+            raise asyncio.CancelledError
+        return SimpleNamespace(
+            sweep_meta=SimpleNamespace(
+                to_dict=lambda: {"amplitude_dbfs": -12.0, "duration_s": 4.0}
+            ),
+            handoff=SimpleNamespace(
+                admission_id="admission-1",
+                to_dict=lambda: {"admission_id": "admission-1"},
+            ),
+        )
+
+    async def restore(_payload, *, camilla_factory, acquire_lock):
+        del camilla_factory
+        assert acquire_lock is False
+        events.append("restore")
+        return {"status": "anchored"}
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", tracked_lock)
+    monkeypatch.setattr(web, "_load_driver_commissioning_config_for_level", load)
+    monkeypatch.setattr(web, "commission_seams", lambda _cam: (None, None, None))
+    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda *_a: {})
+    monkeypatch.setattr(web, "_commission_tone_release_fanin_lane", lambda **_kw: None)
+    monkeypatch.setattr(
+        web, "_rollback_capture_attempt_to_anchor_resilient", restore
+    )
+    monkeypatch.setattr(
+        commissioning_admission, "play_admitted_driver_capture", admitted
+    )
+
+    operation = web.play_driver_capture_sweep(
+        {"speaker_group_id": "mono", "role": "woofer"},
+        camilla_factory=lambda: object(),
+        applied_profile=applied,
+        locked_main_volume_db=-4.0,
+    )
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(operation)
+    else:
+        assert asyncio.run(operation)["status"] == "completed"
+    assert events == ["lock_enter", "load", "play", "restore", "lock_exit"]
+
+
+def test_driver_capture_writer_timeout_refuses_before_graph_load(monkeypatch):
+    topology = _topology()
+    measurements = {
+        "active_comparison_set": _driver_comparison_set(topology),
+        "summary": {
+            "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+        },
+    }
+    monkeypatch.setattr(web, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    _install_driver_admission_prerequisites(monkeypatch)
+
+    from jasper import dsp_apply
+
+    @asynccontextmanager
+    async def busy_lock(*_args, **_kwargs):
+        raise dsp_apply.DspWriterLockTimeout(
+            "/tmp/writer.lock",
+            timeout_s=3.0,
+            waited_s=3.0,
+            source="active_speaker_driver_capture",
+        )
+        yield
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", busy_lock)
+    monkeypatch.setattr(
+        web,
+        "_load_driver_commissioning_config_for_level",
+        lambda **_kwargs: pytest.fail("writer timeout must precede graph load"),
+    )
+
+    payload = asyncio.run(
+        web.play_driver_capture_sweep(
+            {"speaker_group_id": "mono", "role": "woofer"},
+            camilla_factory=lambda: object(),
+            applied_profile=_applied_excitation_profile(topology=topology),
+            locked_main_volume_db=-4.0,
+        )
+    )
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_driver_capture_writer_busy"
+    assert payload["audio_emitted"] is False
+
+
 @pytest.mark.parametrize("invalid_lock", (True, float("nan"), 0.1, "-3.5"))
 def test_driver_capture_sweep_refuses_invalid_explicit_geometry_lock(
     monkeypatch, invalid_lock
@@ -1414,6 +2347,12 @@ def test_driver_capture_sweep_refuses_invalid_explicit_geometry_lock(
         "active_comparison_set": _driver_comparison_set(topology),
         "summary": {
             "latest_driver_measurements": {
+                "mono:woofer": _durable_driver_record(topology),
+            },
+            # No acoustic block -- an accurate real-shaped by-ear
+            # confirmation record, so it belongs in the confirmation-only
+            # index too (see measurement._latest_current_driver_confirmations).
+            "latest_driver_confirmations": {
                 "mono:woofer": _durable_driver_record(topology),
             },
         },
@@ -1456,42 +2395,34 @@ def test_automatic_measurement_source_peak_is_one_shared_default():
     assert SessionConfig().amplitude_dbfs == sweep_default
 
 
-def test_summed_capture_sweep_arms_safe_session_for_mutual_exclusion(monkeypatch):
+def test_summed_capture_sweep_refuses_before_session_or_graph_mutation(monkeypatch):
     armed = {}
-    measurements = {
-        "summary": {
-            "latest_summed_tests": {
-                "mono": {
-                    "captured": True,
-                    "audio_emitted": True,
-                    "summed_test_id": "sum-1",
-                    "tone": {"level_dbfs": -72.0},
-                    "issues": [],
-                },
-            },
-        },
-    }
-    monkeypatch.setattr(web, "load_output_topology", lambda: object())
-    monkeypatch.setattr(web, "load_measurement_state", lambda topology: measurements)
-    monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "idle"})
+    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
+    monkeypatch.setattr(
+        web,
+        "load_output_topology",
+        lambda: pytest.fail("blocked summed capture must not inspect the graph"),
+    )
+    monkeypatch.setattr(
+        web,
+        "load_measurement_state",
+        lambda _topology: pytest.fail("blocked summed capture must not read evidence"),
+    )
+    monkeypatch.setattr(
+        web,
+        "load_safe_playback_state",
+        lambda: pytest.fail("blocked summed capture must not arm playback"),
+    )
     monkeypatch.setattr(
         web,
         "arm_safe_playback_session",
         lambda report: armed.setdefault("report", report) or {"status": "armed"},
     )
-    async def fake_load(**kwargs):
-        return {
-            "load": {
-                "status": "blocked",
-                "issues": [{
-                    "severity": "blocker",
-                    "code": "test_block",
-                    "message": "blocked in test",
-                }],
-            },
-        }
-
-    monkeypatch.setattr(web, "_load_applied_summed_measurement_config", fake_load)
+    monkeypatch.setattr(
+        web,
+        "_load_applied_summed_measurement_config",
+        lambda **_kwargs: pytest.fail("blocked summed capture must not load"),
+    )
 
     payload = asyncio.run(
         web.play_summed_capture_sweep(
@@ -1500,9 +2431,10 @@ def test_summed_capture_sweep_arms_safe_session_for_mutual_exclusion(monkeypatch
         )
     )
 
-    assert armed["report"]["status"] == "ready"
-    assert payload["status"] == "blocked"
-    assert payload["reason"] == "summed_capture_sweep_load_failed"
+    assert armed == {}
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
+    assert payload["audio_emitted"] is False
 
 
 def _full_applied_profile(*, topology=None, topology_id=None):
@@ -1514,7 +2446,7 @@ def _full_applied_profile(*, topology=None, topology_id=None):
     return profile
 
 
-def test_summed_capture_ignores_legacy_minus_80_level_and_uses_applied_graph(
+def test_summed_capture_never_reuses_legacy_evidence_without_admission(
     monkeypatch,
 ):
     topology = _topology()
@@ -1531,42 +2463,23 @@ def test_summed_capture_ignores_legacy_minus_80_level_and_uses_applied_graph(
             },
         },
     }
-    excitation = web.automatic_summed_excitation(
-        topology,
-        _full_applied_profile(topology=topology),
-    )
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(web, "load_measurement_state", lambda _topology: measurements)
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
 
-    async def fake_load(**_kwargs):
-        return {
-            "load": {
-                "status": "loaded",
-                "previous_config_path": "/tmp/normal.yml",
-            },
-            "excitation": excitation,
-        }
-
-    monkeypatch.setattr(web, "_load_applied_summed_measurement_config", fake_load)
+    monkeypatch.setattr(
+        web,
+        "_load_applied_summed_measurement_config",
+        lambda **_kwargs: pytest.fail("summed admission must precede graph load"),
+    )
     play_call = {}
 
-    async def fake_play(**kwargs):
-        play_call.update(kwargs)
-        return {
-            "status": "completed",
-            "audio_emitted": True,
-            "playback_id": "sum-legacy",
-            "sweep_meta": {"amplitude_dbfs": -12.0},
-            "excitation": {
-                key: value
-                for key, value in excitation.items()
-                if key != "status"
-            },
-        }
-
-    monkeypatch.setattr(web, "_play_capture_sweep", fake_play)
+    monkeypatch.setattr(
+        web,
+        "_play_capture_sweep",
+        lambda **_kwargs: pytest.fail("summed admission must precede playback"),
+    )
 
     payload = asyncio.run(
         web.play_summed_capture_sweep(
@@ -1575,20 +2488,10 @@ def test_summed_capture_ignores_legacy_minus_80_level_and_uses_applied_graph(
         )
     )
 
-    assert payload["status"] == "completed"
-    assert payload["test_level_dbfs"] == 0.0
-    assert payload["test_level_dbfs"] != -80.8
-    assert play_call["level_dbfs"] == 0.0
-    assert play_call["planned_excitation"]["scope"] == (
-        "sweep_plus_applied_full_layer_a_graph"
-    )
-    assert play_call["planned_excitation"]["corrections"]["woofer"] == {
-        "gain_db": -9.0,
-        "delay_ms": 0.25,
-        "inverted": False,
-        "effective_peak_dbfs": -21.0,
-    }
-    assert callable(play_call["rollback_capture_config"])
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
+    assert payload["audio_emitted"] is False
+    assert play_call == {}
 
 
 def test_summed_capture_refuses_unloaded_reverse_or_delay_candidate(
@@ -1612,11 +2515,11 @@ def test_summed_capture_refuses_unloaded_reverse_or_delay_candidate(
             )
         )
         assert payload["status"] == "refused"
-        assert payload["reason"] == "summed_alignment_candidate_not_loaded"
+        assert payload["reason"] == "active_summed_persisted_admission_unavailable"
         assert payload["audio_emitted"] is False
 
 
-def test_summed_capture_refuses_stale_applied_snapshot_before_audio(monkeypatch):
+def test_summed_capture_refuses_before_stale_snapshot_loader(monkeypatch):
     topology = _topology()
     measurements = {
         "summary": {
@@ -1636,22 +2539,10 @@ def test_summed_capture_refuses_stale_applied_snapshot_before_audio(monkeypatch)
     monkeypatch.setattr(web, "load_safe_playback_state", lambda: {"status": "armed"})
     monkeypatch.setattr(web, "commission_status_payload", lambda: {})
 
-    async def blocked_load(**_kwargs):
-        return {
-            "load": {
-                "status": "blocked",
-                "issues": [{
-                    "severity": "blocker",
-                    "code": "applied_baseline_snapshot_topology_stale",
-                    "message": "the applied crossover belongs to another topology",
-                }],
-            },
-        }
-
     monkeypatch.setattr(
         web,
         "_load_applied_summed_measurement_config",
-        blocked_load,
+        lambda **_kwargs: pytest.fail("summed admission must precede graph load"),
     )
     monkeypatch.setattr(
         web,
@@ -1666,10 +2557,10 @@ def test_summed_capture_refuses_stale_applied_snapshot_before_audio(monkeypatch)
         )
     )
 
-    assert payload["status"] == "blocked"
+    assert payload["status"] == "refused"
     assert payload["audio_emitted"] is False
     assert payload["issues"][0]["code"] == (
-        "applied_baseline_snapshot_topology_stale"
+        "active_summed_persisted_admission_unavailable"
     )
 
 
@@ -2125,3 +3016,51 @@ def test_summed_test_playback_dispatches_off_loop_primitive():
         "_play_summed_commission_tone reintroduced a blocking subprocess.run "
         "on the correction loop (C4a-6 regression)"
     )
+
+
+def test_regenerate_crossover_preview_matches_sound_setups_preview_button(
+    monkeypatch, tmp_path,
+):
+    """W6.11: the v2 flow's session-start preview ensure
+    (``jasper.web.correction_crossover_v2.ensure_crossover_preview_ready``)
+    calls :func:`web.regenerate_crossover_preview_from_current_draft` instead
+    of reimplementing ``/sound/``'s Preview-button generation. Pin that it
+    really is the SAME machinery: seeded against the same design
+    draft/topology, its output matches
+    ``jasper.web.sound_setup``'s own
+    ``_active_speaker_crossover_preview_save_payload()`` byte-for-byte except
+    for the wall-clock ``created_at``/``updated_at`` timestamps."""
+    import json
+
+    from jasper.output_topology import save_output_topology
+    from jasper.web import sound_setup
+
+    from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
+
+    topology = _dual_apple_topology()
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(topology, topology_path)
+
+    draft = _draft(topology)
+    draft_path = tmp_path / "design_draft.json"
+    draft_path.write_text(json.dumps(draft), encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "via_web_commissioning.json"),
+    )
+    via_new = web.regenerate_crossover_preview_from_current_draft()
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
+        str(tmp_path / "via_sound_setup.json"),
+    )
+    via_sound = sound_setup._active_speaker_crossover_preview_save_payload()
+
+    assert via_new["status"] == "ready_for_protected_staging"
+    ignored = {"path", "created_at", "updated_at"}
+    assert {k: v for k, v in via_new.items() if k not in ignored} == {
+        k: v for k, v in via_sound.items() if k not in ignored
+    }

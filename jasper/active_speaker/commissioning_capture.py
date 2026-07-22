@@ -84,9 +84,6 @@ RESERVED_CROSSOVER_EVENTS = (
     # Slice 3 (measured candidate selection) produces the proposal this fires
     # for; Slice 1 wires only the lifecycle events themselves.
     "correction.crossover_proposal_ready",
-    # Phase 2 post-apply acoustic verification; not built in Phase 1.
-    "correction.crossover_verification_passed",
-    "correction.crossover_verification_failed",
     # Level locking already ships under correction.crossover_driver_level_*
     # names in jasper/web/correction_crossover_backend.py. Renaming a shipped
     # event onto this namespace is a deliberate future migration, not
@@ -307,6 +304,7 @@ def record_driver_acoustic_capture(
     ambient_duration_s: float | None = None,
     test_level_dbfs: float | None = None,
     excitation: Mapping[str, Any] | None = None,
+    capture_admission: Mapping[str, Any] | None = None,
     placement_proof: Mapping[str, Any] | None = None,
     has_mic_calibration: bool = False,
     calibration: "CalibrationCurve | None" = None,
@@ -483,6 +481,7 @@ def record_driver_acoustic_capture(
         calibration_level=calibration_level,
         safe_session=safe_session,
         durable_floor_confirmation=durable_floor_confirmation,
+        capture_admission=capture_admission,
         bundle_ref=bundle_ref,
         state_path=state_path,
         now=now,
@@ -1407,6 +1406,11 @@ def aggregate_driver_repeats(
             "clipping": bool(acoustic.get("mic_clipping")),
             "above_validity_floor": above_validity_floor,
             "level_dbfs": level_dbfs,
+            "capture_admission": (
+                dict(item["capture_admission"])
+                if isinstance(item.get("capture_admission"), Mapping)
+                else None
+            ),
         })
         if accepted and level_dbfs is not None:
             accepted_levels.append(level_dbfs)

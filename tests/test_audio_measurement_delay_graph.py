@@ -18,11 +18,15 @@ from jasper.audio_measurement.delay_graph import (
     DelayGraphSnapshot,
     DelayLaneBinding,
     confirm_delay_candidate,
+    prove_static_delay_binding,
+    quantized_delay_ms,
 )
 from jasper.audio_measurement.null_walk import (
     MAX_DSP_DELAY_US,
+    BoundedNullWalkSchedule,
     DelayCandidate,
     DspPredecessor,
+    NullWalkError,
     NullWalkSpec,
 )
 from jasper.bass_alignment import SUB_MAINS_DELAY_WALK_SCOPE, sub_mains_delay_walk_spec
@@ -730,3 +734,175 @@ def test_confirmation_refuses_noncanonical_or_incoherent_candidate(candidate):
         _confirm(snapshot, candidate, copy.deepcopy(snapshot.graph))
 
     assert caught.value.code == "candidate_invalid"
+
+
+def test_350_hz_scheduled_coordinate_is_proven_without_exhaustive_materialization():
+    spec = NullWalkSpec(
+        crossover_fc_hz=350.0,
+        geometry_seed_us=0.0,
+        positive_delay_target="upper",
+        negative_delay_target="lower",
+    )
+    schedule = BoundedNullWalkSchedule(spec, refinement_anchor_us=0.0)
+    candidate = spec.dsp_candidate(schedule.refinement_delays_us[-1])
+    snapshot = _snapshot(spec)
+
+    confirmation = _confirm(
+        snapshot,
+        candidate,
+        _readback(snapshot, positive_ms=0.1),
+    )
+
+    assert spec.candidate_count == 29
+    with pytest.raises(NullWalkError, match="candidate budget"):
+        spec.candidate_delays_us()
+    assert confirmation.readback_relative_delay_us == pytest.approx(100.0)
+
+
+def test_snapshot_refuses_a_fine_grid_whose_endpoint_exceeds_dsp_delay_bound():
+    spec = NullWalkSpec(
+        crossover_fc_hz=24.0,
+        geometry_seed_us=0.0,
+        positive_delay_target="upper",
+        negative_delay_target="lower",
+    )
+
+    with pytest.raises(DelayGraphProofError) as caught:
+        _snapshot(spec)
+
+    assert caught.value.code == "snapshot_invalid"
+
+
+# --- prove_static_delay_binding: the one-shot static (non-walk) proof ------
+#
+# Wave 4 of the crossover measurement v2 redesign
+# (docs/crossover-measurement-productization-design.md §5.8) needs a simple
+# "this final compiled graph binds exactly one requested Delay filter, on the
+# right channels, at the right value" proof — distinct from the
+# DelayGraphSnapshot/confirm_delay_candidate pair above, which binds TWO
+# lanes against a live null-walk audition. Reuses the same ``_graph`` fixture.
+
+
+def test_prove_static_delay_binding_passes_for_a_matching_graph():
+    graph = _graph("as_positive_delay", "as_negative_delay")
+    graph["filters"]["as_positive_delay"]["parameters"]["delay"] = 0.34
+
+    delay_ms = prove_static_delay_binding(
+        graph,
+        delay_filter_name="as_positive_delay",
+        channels=(0,),
+        delay_us=340.0,
+    )
+    assert delay_ms == pytest.approx(0.34)
+
+
+def test_prove_static_delay_binding_rejects_negative_delay_us():
+    graph = _graph(POSITIVE_IDENTITY_FILTER, NEGATIVE_IDENTITY_FILTER)
+    with pytest.raises(DelayGraphProofError) as caught:
+        prove_static_delay_binding(
+            graph,
+            delay_filter_name="cut_only",
+            channels=(0,),
+            delay_us=-1.0,
+        )
+    assert caught.value.code == "candidate_invalid"
+
+
+def test_prove_static_delay_binding_rejects_delay_us_above_dsp_ceiling():
+    graph = _graph(POSITIVE_IDENTITY_FILTER, NEGATIVE_IDENTITY_FILTER)
+    with pytest.raises(DelayGraphProofError) as caught:
+        prove_static_delay_binding(
+            graph,
+            delay_filter_name="cut_only",
+            channels=(0,),
+            delay_us=MAX_DSP_DELAY_US + 1.0,
+        )
+    assert caught.value.code == "candidate_invalid"
+
+
+def test_prove_static_delay_binding_rejects_mismatched_delay_value():
+    graph = _graph("as_positive_delay", "as_negative_delay")
+    with pytest.raises(DelayGraphProofError) as caught:
+        prove_static_delay_binding(
+            graph,
+            delay_filter_name="as_positive_delay",
+            channels=(0,),
+            delay_us=340.0,
+        )
+    assert caught.value.code == "delay_mismatch"
+
+
+def test_prove_static_delay_binding_rejects_wrong_channel_binding():
+    # The Delay filter is present and its value matches, but its pipeline step
+    # is wired to channel 1 (negative_channels), not the requested channel 0.
+    graph = _graph(
+        "as_positive_delay",
+        "as_negative_delay",
+        positive_channels=(1,),
+    )
+    graph["filters"]["as_positive_delay"]["parameters"]["delay"] = 0.34
+    with pytest.raises(DelayGraphProofError) as caught:
+        prove_static_delay_binding(
+            graph,
+            delay_filter_name="as_positive_delay",
+            channels=(0,),
+            delay_us=340.0,
+        )
+    assert caught.value.code == "lane_binding_invalid"
+
+
+def test_prove_static_delay_binding_rejects_filter_occurring_in_two_steps():
+    graph = _graph("as_positive_delay", "as_negative_delay")
+    graph["filters"]["as_positive_delay"]["parameters"]["delay"] = 0.34
+    # Duplicate the positive filter into the negative lane's pipeline step too
+    # — "exactly one pipeline step" is the load-bearing proof.
+    graph["pipeline"][2]["names"].append("as_positive_delay")
+    with pytest.raises(DelayGraphProofError) as caught:
+        prove_static_delay_binding(
+            graph,
+            delay_filter_name="as_positive_delay",
+            channels=(0,),
+            delay_us=340.0,
+        )
+    assert caught.value.code == "delay_filter_invalid"
+
+
+def test_prove_static_delay_binding_rejects_non_delay_filter():
+    graph = _graph(POSITIVE_IDENTITY_FILTER, NEGATIVE_IDENTITY_FILTER)
+    with pytest.raises(DelayGraphProofError) as caught:
+        prove_static_delay_binding(
+            graph,
+            delay_filter_name="cut_only",
+            channels=(0,),
+            delay_us=0.0,
+        )
+    assert caught.value.code == "delay_filter_invalid"
+
+
+def test_prove_static_delay_binding_rejects_positive_volume_limit():
+    graph = _graph("as_positive_delay", "as_negative_delay")
+    graph["filters"]["as_positive_delay"]["parameters"]["delay"] = 0.0
+    graph["devices"]["volume_limit"] = 1.0
+    with pytest.raises(DelayGraphProofError) as caught:
+        prove_static_delay_binding(
+            graph,
+            delay_filter_name="as_positive_delay",
+            channels=(0,),
+            delay_us=0.0,
+        )
+    assert caught.value.code == "volume_limit_invalid"
+
+
+def test_quantized_delay_ms_is_the_single_fmt_quantizer():
+    # One fmt pass over the raw µs value — no intermediate rounding. The
+    # regression value is the S1 case where round(µs/1000, 6)-then-fmt
+    # disagreed with a single fmt.
+    from jasper.camilla_emit import fmt
+
+    delay_us = 11382.15006948647
+    quantized = quantized_delay_ms(delay_us)
+    assert quantized == float(fmt(delay_us / 1000.0))
+    assert quantized != float(fmt(round(delay_us / 1000.0, 6)))
+    # Idempotent: re-quantizing an already-quantized value is a no-op, so the
+    # emitter's own fmt pass over the folded value cannot shift it again.
+    assert quantized_delay_ms(quantized * 1000.0) == quantized

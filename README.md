@@ -17,7 +17,8 @@ The pitch: a music streamer that's also a voice assistant, built
 from open hardware and open audio software, with the LLM costing
 roughly $1–3/month at light use on the cheapest provider.
 
-Privacy details: [PRIVACY.md](PRIVACY.md) explains cloud egress, local retention, and mic mute scope.
+Privacy details: [PRIVACY.md](PRIVACY.md) explains cloud egress, local retention,
+voice-assistant pause scope, and the independent USB microphone export.
 
 **Want to set one up?**
 - **Using Claude Code?** Just open this repo and say *"I want to set up
@@ -175,6 +176,10 @@ chip-AEC profile, the same bridge process bypasses WebRTC AEC3 and
 forwards the selected hardware-AEC chip beam over that carrier. It
 runs automatically only when the configured AEC mic is present with
 6-channel firmware — see § below.
+When USB Audio Input is enabled, an independent switch on `/wake/` can also
+export that same cleaned microphone to the connected computer. It uses a
+dedicated local carrier and relay, so voice keeps its normal mic stream while
+the computer gets a mono USB input.
 
 ---
 
@@ -259,6 +264,11 @@ runs automatically only when the configured AEC mic is present with
   MTA BusTime API key — that card is locked until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
   AirPlay / Bluetooth / Spotify Connect / USB Audio Input toggles.
+  Choices persist independently from runtime health, so the UI can show a
+  saved desired state separately from `on`, `off`, `degraded`, `parked`, or
+  `unavailable` effective state. One boot/deploy reconciler applies all four
+  sources; see
+  [docs/HANDOFF-source-lifecycle.md](docs/HANDOFF-source-lifecycle.md).
   Bluetooth's off toggle prompts for confirmation when a paired
   wireless remote (e.g. the VK-01 volume knob) is present, since
   powering the adapter off would silently disconnect it. Same
@@ -278,7 +288,12 @@ runs automatically only when the configured AEC mic is present with
   full-range speakers skip the driver test). See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract, profile semantics, and observability
-  hooks.
+  hooks. The same card now has a silent, per-physical-target hardware-research
+  flow: version-2 results must echo a server-authored request, every safety
+  value remains visible/editable, and operator confirmation produces an inert
+  safety-profile fingerprint. Research and the confirmed profile are not
+  playback permission; live excitation/graph integration remains a later
+  active-crossover slice.
 - ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
   name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. Defaults
   to `JTS`; the URL remains the hostname chosen in Imager
@@ -287,21 +302,40 @@ runs automatically only when the configured AEC mic is present with
   Plug a computer into the Pi's USB data/OTG port through a compatible
   power/data splitter or hub and the host sees the configured speaker
   name as a USB audio output device while this speaker is solo or a pair
-  leader. A bonded follower parks the USB gadget even if saved intent is
-  on, so it does not advertise itself as an independent input. Off by default; toggle at
+  leader. A bonded follower parks the USB audio function even if saved intent
+  is on, while the gadget's management network remains available when the
+  resolved hardware role permits it, so the follower does not advertise itself
+  as an independent audio input. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
   drives JTS's canonical `listening_level` (feels like spinning the
   dial). Joins the existing mux arbitration for latest-source-wins
-  preemption. Zero RAM cost when off; the Rust audio bridge is low
-  single-digit MB when on, plus the non-real-time host-volume helper. See
+  preemption. Zero resident-process RAM for the lifecycle marker; when on,
+  fan-in captures the UAC2 device directly and the non-real-time host-volume
+  helper remains bounded. See
   [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md) for the full
   design.
-- ✅ **USB management network** — the same USB-C port always carries a
-  USB NCM network link (`ncm.usb0`, on by default, independent of the
-  USB Audio Input toggle above): plug a laptop in and
+- ✅ **USB microphone for the connected computer** (`jasper-usbmic`) — an optional
+  reverse direction on that same USB audio device. With USB Audio Input and an
+  echo-cancelled mic profile active, the switch at `http://jts.local/wake/`
+  makes JTS appear as a mono computer input; switching it off removes the input
+  after the bounded descriptor apply completes. The request reports an error if
+  that apply cannot be scheduled, and an accepted apply retries up to three
+  transient failures before remaining loudly failed for doctor/log diagnosis.
+  The Voice assistant Pause control does not silence this explicitly enabled
+  export; the `/wake/` switch is its sole end-user authority. Voice remains
+  available because the relay uses its own AEC-bridge carrier. Changing the
+  switch briefly reconnects USB audio and the USB management link. See
+  [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md).
+- ✅ **USB management network** — when the resolved hardware role permits
+  gadget mode, the same USB-C data port carries a USB NCM network link
+  (`ncm.usb0`, on by default and independent of the USB Audio Input toggle
+  above): plug a laptop in and
   `http://<JASPER_HOSTNAME>/` (or the documented fallback
   `http://10.12.194.1/`) works even with the Pi's Wi-Fi off. No IP
-  forwarding/NAT — the plugged-in laptop keeps its own default route.
+  forwarding/NAT — the plugged-in laptop keeps its own default route. A
+  Zero-class speaker using its shared OTG port for a USB output DAC
+  intentionally has no gadget network; a supported I²S DAC leaves that port
+  available.
   Kill switch: `JASPER_USB_NETWORK=disabled`. See
   [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
   composite-gadget design (both USB functions share one ConfigFS
@@ -528,7 +562,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributors | Quick start, PR flow, testing, doc layout |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Security reporters / maintainers | Supported versions, vulnerability reporting path, current LAN-appliance security model |
-| [PRIVACY.md](PRIVACY.md) | Operators / OSS reviewers | What leaves the device, what stays local, retention defaults, and mic mute scope |
+| [PRIVACY.md](PRIVACY.md) | Operators / OSS reviewers | What leaves the device, what stays local, retention defaults, voice-assistant pause scope, and USB microphone export scope |
 | [CHANGELOG.md](CHANGELOG.md) | Maintainers / release followers | Keep-a-Changelog release notes; release tags are maintainer-cut (`v0.1.0` marks OSS launch) |
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
@@ -536,6 +570,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Raspberry Pi Imager password-SSH flow → boot → `scripts/onboard.sh --adopt` → working speaker in ~30 min. Carries the chosen hostname through every step. |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — OS flash, XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
+| [docs/PLAN-usb-mic-export-latency-fix.md](docs/PLAN-usb-mic-export-latency-fix.md) | Audio architects / maintainers | **Verbatim point-in-time plan / execution record.** Preserves the original latency-fix instructions exactly; current operational truth remains in the linked HANDOFF docs. |
 | [docs/extensibility.md](docs/extensibility.md) | Maintainers / AI / extension contributors | **Start here before adding a modular subsystem.** The cross-cutting extensibility doctrine: the one invariant (host-mediated indirection), the five extension contracts (tools, sources, model providers, hardware profiles, features), the *what-kind → which-pattern* decision tree, and the build-now-vs-defer trust gradient. Frames the per-contract docs that follow. |
 | [docs/tool-platform-plan.md](docs/tool-platform-plan.md) | Maintainers / AI | Vision, research, findings, rationale, and phased plan for turning JTS integrations into an extensible tool platform (trust gradient: first-party → trusted PRs → eventual marketplace). Records the shipped Phase-1.5 pieces: the `labels` facet, pack-first catalog, singleton packs for standalone tools, generated pack detail pages, full prompt override/reset, and the built-in `/tools/` on/off catalog wizard |
 | [docs/research-tool-plan.md](docs/research-tool-plan.md) | Maintainers / AI | Vision, design, and phased roadmap for the async "research this and tell me later" tool: a fast `research(query)` tool that hands the question to a pluggable text LLM (OpenAI v1, Anthropic v2) running in a bounded background job, then reads a <=30 s summary back through the existing timer-fire announcement path. Records the shipped defaults (background+poll, no webhook, short spoken answers, spend accounting, etiquette hardening, and privacy-safe status/doctor observability) and the deferred future (Anthropic, full barge-in, richer interaction history). |
@@ -543,7 +578,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/examples/tool_pack_starter.py](docs/examples/tool_pack_starter.py) | Trusted tool-pack contributors | Non-production postcard example of a copyable capability pack: `CapabilityPack`, `CatalogPack`, explicit `ToolDefinition`, `PythonExecutor`, labels, timeout, risk flags, and deps/build shape. Tests import it so the example cannot drift from the real boundary. |
 | [docs/install-update-resilience-plan.md](docs/install-update-resilience-plan.md) | Maintainers / AI | **Planning brief (not operational truth).** Problems + open questions for hardening the install/update flow across Pi hardware tiers (512 MB–16 GB), fresh-vs-in-service-update, large version jumps, and runtime hot-plug/unplug. Origin: a 2026-06-21 jts2 update that OOM-killed the build (and nginx/voice) mid-install. Carries four ready-to-paste workstream prompts (memory-safe builds, atomic/recoverable updates, hot-plug resilience, tier-aware install + testing). |
 | [docs/HANDOFF-runtime-memory.md](docs/HANDOFF-runtime-memory.md) | Maintainers / AI | **Operational.** Current always-on runtime memory decisions: chip-AEC defaults to one wake detector, optional chip beams are explicit custom opt-ins, `/system/` Home Assistant status runs through a child-process cache, the dashboard shows root cgroup memory buckets, and the remaining high-leverage RAM options are tracked without turning them into scattered TODOs. |
-| [docs/phone-mic-relay-plan.md](docs/phone-mic-relay-plan.md) | Maintainers / AI | **Design + build plan (`/correction/` + `/sync/` relay + USB-C-mic-on-phone BUILT, gated default-off; on-device validation pending).** How to capture the phone mic in a browser for room/balance/sync/crossover measurement on iOS + Android with **no trusted cert on the Pi and no per-device cloud infra**: a static capture page on a trusted origin (jasper.tech) + a stateless, end-to-end-encrypted **dead-drop relay** the Pi pulls from (O(1) for the whole fleet, vs the rejected O(N) per-Pi-cert path). A Pi-owned **opaque `capture_spec`** (kind/duration/constraints/stimulus/UI) keeps one page + one relay agnostic across measurement types; **server-driven UI as data, not code** (the security boundary); the relay carries the guided room setup and host-synchronized "phone records, Pi plays, Pi reports sweep complete" handshake. WebRTC LAN-direct passthrough validated but deferred. |
+| [docs/phone-mic-relay-plan.md](docs/phone-mic-relay-plan.md) | Maintainers / AI | **Operational design + build record (`/correction/` + `/sync/` relay + USB-C-mic-on-phone BUILT, fresh-install default; on-device validation pending).** How to capture the phone mic in a browser for room/balance/sync/crossover measurement on iOS + Android with **no trusted cert on the Pi and no per-device cloud infra**: a static capture page on a trusted origin (jasper.tech) + a stateless, end-to-end-encrypted **dead-drop relay** the Pi pulls from (O(1) for the whole fleet, vs the rejected O(N) per-Pi-cert path). A Pi-owned **opaque `capture_spec`** (kind/duration/constraints/stimulus/UI) keeps one page + one relay agnostic across measurement types; **server-driven UI as data, not code** (the security boundary); the relay carries the guided room setup and host-synchronized "phone records, Pi plays, Pi reports sweep complete" handshake. WebRTC LAN-direct passthrough validated but deferred. |
 | [docs/HANDOFF-install-update-transaction.md](docs/HANDOFF-install-update-transaction.md) | Maintainers / AI | **Operational** (Workstream B, landed). How a JTS update is a transaction: the build manifest is the verified-install marker (written last, gated by `set -e`, so a failed update never advertises a SHA it isn't running), deploy verification covers voice/AEC/renderers via `jasper-doctor` or the profile-aware low-memory probe, and collateral OOM kills are surfaced/gated. Includes the rollback/A-B analysis (cheapest "never worse than before"; full A-B deferred) and the Workstream-C seam. |
 | [docs/install-hardware-tier-and-staleness.md](docs/install-hardware-tier-and-staleness.md) | Maintainers / AI | **Design note + recommendation (Workstream D output).** Findings on making the installer hardware-tier-aware (RAM/CPU/arch detected up front, orthogonal to the full/streambox *profile*) and the version-skew risk question. Bottom line: migrations are convergent so being far behind is not a migration-pile-up risk; it amplifies risk via cold build caches (the OOM-prone WebRTC/Cargo rebuilds) — so stepwise updates are rejected in favor of safe builds (A) + atomic updates (B). Includes the cross-SKU test strategy and the scoped tier-detection/arch-guard PR. |
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Contributor "files to know" register + the original top-five framing (priority list superseded by LAUNCH-READINESS.md) |
@@ -555,9 +590,10 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/REVIEW-deep-audit-2026-07-11.md](docs/REVIEW-deep-audit-2026-07-11.md) | Maintainers | Point-in-time whole-codebase deep-audit report (677 verified findings, grades, fix waves); session-artifact, not current operational truth |
 | [docs/REVIEW-deep-audit-ledger.md](docs/REVIEW-deep-audit-ledger.md) | Maintainers | Live findings tracker joined to the deep-audit report by DA-NNNN id — per-finding status/disposition/PR, consolidation triage, owner decisions, validation owed |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
+| [docs/HANDOFF-source-lifecycle.md](docs/HANDOFF-source-lifecycle.md) | Operators / source maintainers | **Operational.** Single current-truth owner for persisted source intent, desired-vs-effective state, the AirPlay/Spotify, Bluetooth, and USB convergence mechanisms, follower parking, boot/deploy replay, failure observability, and the JTS4 validation checklist. |
 | [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
 | [docs/HANDOFF-audio-latency-foundation.md](docs/HANDOFF-audio-latency-foundation.md) | Audio architects | Local-audio-latency work: the lean File-capture lane (Stage 4, default-OFF, soak-gated), USB-input bridge latency, the snapcast bond buffer, the CamillaDSP v4 resampler object schema, chip/software AEC optionality, and the hard rules against re-architecting the topology |
-| [docs/HANDOFF-usb-low-latency.md](docs/HANDOFF-usb-low-latency.md) | Audio architects | **Operational + evidence gate.** Current `usb_low_latency_48k` route: Rust UAC2 bridge, fan-in USB input resampler, CamillaDSP protection/correction, outputd final-reference ownership, Apple DAC tuned floor, rejected lower settings, `jasper-route-latency-artifact`, and the doctor route-latency artifact gate. The older lean-FIFO bypass is preserved there only as historical/deferred context. |
+| [docs/HANDOFF-usb-low-latency.md](docs/HANDOFF-usb-low-latency.md) | Audio architects | **Operational + evidence gate.** Current `usb_low_latency_48k` route: fan-in DIRECT UAC2 capture + USB resampler, CamillaDSP protection/correction, outputd final-reference ownership, Apple DAC tuned floor, rejected lower settings, `jasper-route-latency-artifact`, and the doctor route-latency artifact gate. The older bridge/lean-FIFO paths are preserved there only as historical/deferred context. |
 | [docs/HANDOFF-usb-latency-measurement.md](docs/HANDOFF-usb-latency-measurement.md) | Audio architects / maintainers | **Operational + reference.** Measurement reference for USB-input latency: the hardware-measured results (~55.5 ms full chain, electrical `:9891` + analog Scarlett-loopback methods that compose exactly), the per-stage breakdown, the productized-settings table (every value is the shipped code default or auto-pass-armed — the fresh-install reference), and the host/bench reproduction setup (Mac output pinning, gadget recovery, click-WAV spec, descend-to-floor). |
 | [docs/HANDOFF-audio-graph-consolidation.md](docs/HANDOFF-audio-graph-consolidation.md) | Audio architects | **Campaign plan.** Consolidating the audio graph onto SHM rings + the `jts_ring` ioplug and deleting every duplicate/legacy path (snd-aloop, Python usbsink pump, lean lane, transport_pipe, rate_match): the file-level no-dupes audit, sequenced phase map with per-phase gates/rollbacks, renderer ring-ingress design, risk register, and campaign done criteria |
 | [docs/RESEARCH-pipewire-low-latency.md](docs/RESEARCH-pipewire-low-latency.md) | Audio architects | Research artifact: how PipeWire's *actual* source achieves low latency + clock resilience (the `spa_dll` delay-locked loop, driver/follower double-buffered quantum, timer/headroom ALSA model, xrun recovery, zero-copy), a JTS verdict per technique, and a principle-aligned adoption plan centered on lifting one shared DLL primitive. We do NOT use PipeWire — this mines its algorithms, not its architecture |
@@ -852,6 +888,10 @@ reference. Currently:
   — Planned provider/source capability boundary for future music
   integrations: volume, transport, metadata, health, and contributor
   checklist
+- [`HANDOFF-source-lifecycle.md`](docs/HANDOFF-source-lifecycle.md) —
+  Current local-source on/off contract: persisted household intent versus
+  effective runtime state, one bounded boot/deploy coordinator, the three
+  concrete source mechanisms, and follower-role parking.
 - [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay
   glitch troubleshooting guide. **Start here if you hear audio
   artifacts on AirPlay.** Symptom → pattern decision flow, concrete
@@ -877,7 +917,7 @@ reference. Currently:
   hash-checked model downloads, and accepted gaps for apt, Python,
   and PlatformIO transitive resolution.
 - [`HANDOFF-usb-gadget.md`](docs/HANDOFF-usb-gadget.md) — **Canonical**
-  for the composite USB gadget: the always-on USB management network
+  for the composite USB gadget: the hardware-conditional USB management network
   (`ncm.usb0`, NetworkManager keyfile, scoped dnsmasq, no IP
   forwarding/NAT), the function truth table shared with USB audio,
   OS-support verification (Windows/macOS NCM, dwc2 endpoint capacity),
@@ -892,26 +932,73 @@ reference. Currently:
   how to add a new reactive or proactive cue. Start here when a
   failure path needs to "say something" rather than fall silent.
 - [`HANDOFF-audio-measurement-core.md`](docs/HANDOFF-audio-measurement-core.md)
-  — **Living architecture + product plan** (2026-06-19) for the shared
+  — **Living architecture + product plan** for the shared
   audio measurement/calibration core that room correction, active-crossover
   calibration, and pair/leader-follower balance all build on: the layered
   calibration product (L0 fail-closed crossover / L1 phone-mic level match /
   L2 calibrated-mic FR-phase), the multi-volume verdict, and a strangler-fig
-  refactor roadmap (kernel extraction + single GraphValidator). The
+  refactor roadmap. Wave 1 adds pure exact excitation admission, neutral
+  artifact/capture/replay identities, and exact DSP-state identity while
+  deliberately leaving existing bundles, playback, persistence, and Room
+  gates unchanged. The
   output/measurement-side sibling of `HANDOFF-audio-capability-platform.md`.
+- [`correction-journey-design.md`](docs/correction-journey-design.md)
+  — **Design record (not yet implemented)** for the three-step calibration
+  journey (1 Crossover → 2 Room → 3 Bass) over the existing `/correction/`
+  tabs: a read-only aggregator + strip that composes the per-tab facts each
+  flow already owns (the Active-to-Room eligibility receipt, the current
+  correction descriptor, the bass-extension classifier) into per-step state
+  and one "next" pointer. Deliberately not a wizard framework.
+- [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
+  — **Operational canon for the crossover measurement v2 "conductor" flow**
+  (the default `/correction/crossover/` flow since 2026-07-19). The conductor
+  model (phone = dumb recorder, Pi = conductor, analysis = pure functions), the
+  CHECK → MEASURE → automatic APPLYING → VERIFY capture flow, the `JASPER_CROSSOVER_FLOW`
+  selector, the file map, invariants, failure taxonomy, session-state paths, the
+  W6 hardware bug catalog, and the W5b future-work list. Read this for how the
+  flow works today; the design/decision record below is the "why."
+- [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
+  — **Design proposal / decision record (shipped 2026-07-19)** for making the
+  `/correction/crossover/` measurement + tuning flow flexible for non-expert
+  phone-mic users: the first-principles framework, the resolved level/distance/
+  phase-delay tradeoffs, and the conductor architecture (§5) that superseded the
+  earlier staged plan. Read for the decision archaeology; current operational
+  truth lives in `HANDOFF-crossover-measurement-v2.md` above.
+  Motivated by the e2e validation log; the verbatim deep-research report behind it
+  is the linked primary source
+  [`crossover-measurement-deep-research-2026-07-18.md`](docs/crossover-measurement-deep-research-2026-07-18.md).
+- [`room-correction-information-design.md`](docs/room-correction-information-design.md)
+  — **Product and architecture design of record** for the Room tab:
+  server-owned screen visibility and readiness, disclosed six-position/flat
+  defaults, relay-first/local-backup parity, blocker-vs-nudge language,
+  returning-user state, one phone handoff, target/headroom/latency promises,
+  mandatory proof, acceptance authority, and ownership boundaries.
 - [`HANDOFF-correction-revision-plan.md`](docs/HANDOFF-correction-revision-plan.md) —
-  execution plan of record for the layered correction/tuning revision
-  (speaker → room → preference pipeline, shared measurement kernel,
-  level-match ramp, verify-acceptance loop, tuning LLM; hardware-free
-  vs hardware-gated roadmap).
+  **Historical completed P-track plan.** H1 carries into the Room hardware
+  track; the rest is layered-pipeline rationale and program archaeology, not
+  current behavior or current planning authority.
+- [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —
+  **Planning brief / execution plan of record** for Bass Extension:
+  commissioned, volume-scheduled low-frequency alignment (Linkwitz-Transform
+  families for sealed boxes, bounded EQ + subsonic-protection families for
+  ported/passive-radiator) that retreats toward the natural response as
+  listening level rises. Profile schema, enclosure-adapter contract,
+  level-ladder commissioning, CamillaDSP runtime mechanism candidates, and
+  the phased wave plan. Waves 1–3 are merged; commissioning and runtime
+  scheduling have not shipped — read before extending a later wave.
+  Per-wave Codex execution prompts (shared charter, file allowlists, frozen
+  interfaces) live in
+  [`docs/bass-extension-waves/`](docs/bass-extension-waves/README.md).
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — HTTPS
   correction measurement hub at `/correction/`: room correction,
   active-crossover mic measurement, and bass/subwoofer tuning surfaces;
   calibrated mic ingest, configurable correction strategies,
   design-audit bundles, replay-grade analysis artifacts,
   `jasper-correction-bundle` inspect/export/FIR-inspect tooling, PEQ
-  generation, CamillaDSP hot-swap. Active workstream — read the Status
-  section first to see which phase is in flight.
+  generation, CamillaDSP hot-swap. Its Status section also records the inert
+  Wave 1 Active eligibility-receipt contract and the deliberate fact that
+  production Room still gates from the legacy applied recomposition snapshot,
+  not that receipt. Active workstream — read Status first.
 - [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
   — `/sound/` preference-EQ layer: Off / Saved / Draft live source,
   stock curves, five-band Simple EQ + exclusive PEQ editing, named custom
@@ -938,14 +1025,15 @@ reference. Currently:
   "more bass" / "brighter," and safe reversible EQ layered separately
   from room correction.
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md)
-  — Active speaker DSP / crossover commissioning workstream
-  planning baseline (2026-05-25, updated 2026-05-26). Canonical
+  — Active speaker DSP / crossover commissioning workstream. Canonical
   handoff for future JTS hardware where CamillaDSP directly drives
   woofer/mid/tweeter amplifier channels: speaker-baseline layer,
   strict room-correction/preference separation, 2-way/3-way preset
   model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
   near-field/null-depth/gated measurement triad, LR/IIR-first default,
-  and delay/null verification.
+  and delay/null verification. The Wave 1 section defines the target-bound
+  research and visible confirmed safety profile, nine-state lifecycle, exact
+  positive Room-eligibility receipt, and the no-live-consumer boundary.
 - [`HANDOFF-distributed-active.md`](docs/HANDOFF-distributed-active.md) —
   **Design-of-record (proposed 2026-06-20)** for running an active
   speaker's driver-domain crossover (Layer A) as a wireless **follower**,
@@ -961,6 +1049,15 @@ reference. Currently:
   one shared crossover model, explicit overwrite/apply/rollback semantics,
   fixed-axis driver measurement, observability, ownership boundaries, and the
   simple delivery path from level matching through full crossover design.
+  Includes the Wave 1 contract foundation and clearly separates those inert
+  identities from current playback, `/state`, and Room-gate behavior.
+  Wave 3's execution prompts (shared charter, file allowlists, staged
+  PR plans) for the correction/crossover information-architecture
+  rework — single entry + active/passive declaration, one crossover
+  surface, stepper semantics, room-flow parity, a jargon sweep, a
+  conventions tightening, and a region-scoped-quality-gates design
+  investigation — live in
+  [`docs/correction-ux-wave3/`](docs/correction-ux-wave3/README.md).
 - [`dual-apple-dac-lab.md`](docs/dual-apple-dac-lab.md) —
   Lab-only runbook for validating two Apple USB-C to 3.5 mm adapters
   as one stereo DAC per speaker. Keeps the experiment outside the
@@ -1121,8 +1218,8 @@ openwakeword stub diet, and jasper-input httpx removal landed.
 | `jasper-accessory-reconcile` (optional accessory mic profile gate) | Active oneshot | ~0 resident | boot/deploy and Bluetooth pair/connect/forget only |
 | `jasper-wiim-remote-mic` (WiiM Remote 2 BLE mic adapter) | Profile-gated; active only when paired WiiM Remote 2 is present | 0 MB off; ~15 MB on, bounded by MemoryMax=100M | ~0% idle; decode only while the remote mic streams |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
-| `jasper-usbsink` (USB audio source) | **Disabled by default**; Rust data plane when on | 0 MB off; low single-digit MB for the bridge, plus host-volume helper | low; ALSA-period Rust bridge while host streams |
-| `jasper-usbgadget` (composite ConfigFS gadget: always-on USB network + optional audio) | **Active by default** (network function); audio function follows the usbsink toggle above | one-shot, ~0 own footprint; ~1 MB kernel modules once composed — see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) "RAM contract" | ~0 |
+| `jasper-usbsink` (USB audio source lifecycle mirror) | **Disabled by default**; fan-in DIRECT data plane when on | process-free readiness marker; only the bounded host-volume observer is resident while on | low; fan-in owns ALSA capture while the host streams |
+| `jasper-usbgadget` (composite ConfigFS gadget: USB network + optional audio) | **Active when gadget hardware is available** (network function); audio function follows the usbsink toggle above | one-shot, ~0 own footprint; ~1 MB kernel modules once composed — see [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) "RAM contract" | ~0 |
 | `jasper-usbnet-dhcp` (scoped dnsmasq for the USB management network) | **Device-activated** — active only while `usb0` exists | 0 MB when `usb0` absent; bounded ≤16 MB when active | ~0% idle |
 | `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Transit / Home Assistant / Weather / Sound / Wake-Corpus / Speaker / Rooms / Tools wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |

@@ -55,11 +55,9 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S16LE};
-// The ONE shared per-lane RMS level helper + silence-floor sentinel (same crate
-// jasper-usbsink-audio consumes for solo mode). Importing them here — rather
-// than a local copy — makes the combo lane's level identical to the solo
-// bridge's by construction, which the parity mux's -60 dBFS combo-liveness gate
-// relies on. Pure, no ALSA.
+// The ONE shared per-lane RMS level helper + silence-floor sentinel. Importing
+// them from the pure crate keeps the USB DIRECT activity gate independent of
+// the ALSA owner and avoids a local metric copy.
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
 use crate::config::{Config, Coupling, RING_SLOT_FRAMES};
@@ -131,11 +129,9 @@ const CATCHUP_MAX_DRAIN_PERIODS: i64 = 64;
 /// producer. Count-based (not time-based) so the hot loop never reads a clock.
 const CATCHUP_LOG_EVERY: u64 = 64;
 
-/// USB DIRECT capture open envelope (C1) — the bridge's PROVEN params, NOT
-/// fanin's aloop-tuned `configure_pcm`. S32_LE 2ch 48k, period 256, buffer
-/// ~768 (near). These MUST match `jasper-usbsink-audio`'s
-/// `open_capture`/`configure_pcm` so the direct lane inherits the exact
-/// negotiation the bridge validated on the UAC2 gadget.
+/// USB DIRECT capture open envelope (C1) — the parameters proven on the UAC2
+/// gadget before the retired bridge was removed, NOT fan-in's aloop-tuned
+/// `configure_pcm`: S32_LE 2ch 48k, period 256, buffer ~768 (near).
 ///
 /// `DIRECT_PERIOD_FRAMES` is the DEFAULT gadget open period; the actual open
 /// period is overridable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` (lever 2 —
@@ -281,12 +277,12 @@ fn zombie_handle_suspected(frames_flowed: bool, zero_avail_streak: u64, threshol
     frames_flowed && threshold > 0 && zero_avail_streak >= threshold
 }
 
-/// Coarse per-direct-lane capture health for the STATUS `direct.health` field
-/// (defect 2026-07-10 — combo runtime-fallback watcher). The Pi-side
-/// `jasper-fanin-combo-health` watcher polls this to decide whether fan-in's
-/// direct capture of `hw:UAC2Gadget` has BROKEN at runtime (and combo should fall
-/// back to the aloop bridge) vs is merely IDLE (no host, or an attached host not
-/// streaming — which must NEVER trip the fallback).
+/// Coarse per-direct-lane capture health for the STATUS `direct.health` field.
+/// This makes fan-in's local recovery visible without creating a second USB
+/// lifecycle authority. A BROKEN sample means the direct handle reached the
+/// flowing-to-dead zombie signature; IDLE means no host, an attached host not
+/// streaming, or a handle being reopened. Neither classification changes gadget
+/// composition or canonical source intent.
 ///
 /// It is a PURE classification over the direct lane's EXISTING atomics — no new
 /// hot-path state — so the "reuse fan-in's detection state" contract holds:
@@ -303,9 +299,9 @@ fn zombie_handle_suspected(frames_flowed: bool, zero_avail_streak: u64, threshol
 ///
 /// The `health` field is the INSTANTANEOUS classification (the zombie streak is
 /// reset by the self-heal reopen the moment it trips, so Broken is a brief live
-/// window). The watcher's DURABLE cross-tick signal is the cumulative `reopens` /
-/// `card_gen_reopens` reopen counters climbing between ticks — this field is the
-/// human-facing instantaneous view for `/state` + jasper-doctor.
+/// window). Cumulative `reopens` / `card_gen_reopens` counters preserve durable
+/// diagnostic evidence for `/state`, doctor, and journal correlation; successful
+/// recovery counters are telemetry, not permission to disable USB audio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectHealth {
     /// Present, frames have flowed, handle not deaf — actively capturing.
@@ -334,8 +330,8 @@ pub(crate) fn direct_health(
     }
 }
 
-/// Stable STATUS token for a [`DirectHealth`]. Kept in lock-step with the Pi-side
-/// `jasper.fanin.combo_health` reader (`DIRECT_HEALTH_BROKEN`, etc.).
+/// Stable STATUS token for a [`DirectHealth`]. Kept in lock-step with the Python
+/// fan-in status reader (`DIRECT_HEALTH_BROKEN`, etc.).
 pub(crate) fn direct_health_str(h: DirectHealth) -> &'static str {
     match h {
         DirectHealth::Capturing => "capturing",
@@ -683,6 +679,18 @@ pub struct Mixer {
     xrun_tx: Sender<XrunEvent>,
     period_frames: u32,
     tts: Option<TtsMixer>,
+    /// Smoothed program-lane duck gain (linear), persisted across periods.
+    /// 1.0 = no duck. `step()` glides this toward the per-period target
+    /// (1.0, or the configured duck level while TTS/cue/chirp audio is
+    /// queued) at `program_duck_attack_step` / `program_duck_release_step`
+    /// per frame. Before this, the ~25 dB program duck was applied as a
+    /// hard per-period step, which clicked and pumped the music around
+    /// every earcon/cue.
+    program_duck_current: f32,
+    /// Per-frame linear-gain decrement while ducking DOWN (attack).
+    program_duck_attack_step: f32,
+    /// Per-frame linear-gain increment while releasing UP toward 1.0.
+    program_duck_release_step: f32,
     /// OPTIONAL music-only (pre-TTS) side-output — the multi-room sync
     /// tap (`docs/HANDOFF-multiroom.md` §2 "inv-2 realization"). `None`
     /// on a solo speaker (zero added work). `write_music_only` keeps it a
@@ -738,14 +746,9 @@ pub struct Mixer {
     /// DLL, which is correct.
     host_clock_ladder_l0: Arc<AtomicBool>,
     host_clock_commanded_milli_ppm: Arc<AtomicI64>,
-    /// REVERSE host-clock signals for host-compliance REVALIDATION (servo thread →
-    /// mixer). `ladder_l2` = the DLL demoted to L2 (probe fail or mid-stream
-    /// demotion); `probe_result_code` = the servo's last probe verdict (0 none / 1
-    /// pass / 2 fail / 3 aborted). The mixer's per-period compliance tick reads
-    /// these to decide a one-strike revocation of a floor-primed proof. Stay at
-    /// their init (`false` / 0) when the servo is not running, so revalidation
-    /// never fires without a live DLL — same dependency as the decay tick.
-    host_clock_ladder_l2: Arc<AtomicBool>,
+    /// Explicit fallback cause from the host-clock controller. Host compliance
+    /// consumes this typed code directly; it never infers cause from L2 + probe.
+    host_clock_fallback_reason_code: Arc<AtomicU64>,
     host_clock_probe_result_code: Arc<AtomicU64>,
     /// REVERSE host-clock signal: the servo's last probe RESPONSE RATIO ×1000
     /// (i64-bits-in-u64, `PROBE_RATIO_NONE` sentinel = no verdict). The mixer
@@ -911,14 +914,12 @@ pub struct Input {
     pub xrun_count: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
     /// Per-lane content level: the most recent period's RMS in dBFS, ×100 and
-    /// rounded into an `i32` (matching the solo bridge's `rms_dbfs_x100`
-    /// scaling in jasper-usbsink-audio). Overwritten EVERY period from exactly
+    /// rounded into an `i32`. Overwritten EVERY period from exactly
     /// the samples this lane contributed to the sum; silence / gadget-absent
     /// renders the `RMS_DBFS_FLOOR` (-120 dBFS). STATUS surfaces it as the
     /// lane's `rms_dbfs`; mux's combo-liveness gate reads the USB DIRECT lane's
     /// value to reject a host streaming digital silence (a muted Zoom / an idle
-    /// tab), giving combo boxes parity with the solo bridge's -60 dBFS
-    /// `playing` gate.
+    /// tab).
     pub rms_dbfs_x100: Arc<AtomicI32>,
     /// Cumulative frames DISCARDED by the bounded catch-up resync on this
     /// lane (see `drain_input_excess`). Non-zero only on a free-running
@@ -946,7 +947,7 @@ pub struct Input {
     /// when set — WITHOUT touching this lane's capture, `frames_read`, or
     /// `rms_dbfs_x100` telemetry, which are accounted BEFORE the gate. This is
     /// mux's latest-source-wins arbitration primitive for the USB lane — the
-    /// only USB-silencing mechanism now that the standby bridge emits nothing.
+    /// sole USB-silencing mechanism in the one-pipeline design.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
     /// Default `false` (contribute).
     muted: Arc<AtomicBool>,
@@ -981,6 +982,17 @@ pub struct DirectObservability {
     /// Whether the gadget capture is currently open (`Present`) — the live
     /// "is the USB host attached and captured" gauge.
     pub present: Arc<AtomicBool>,
+    /// Edge-detected host-frame flow used by mux's fast USB wake path. A helper
+    /// thread samples the already-published input counter; the audio thread does
+    /// no notification I/O and never reads this field.
+    pub streaming: Arc<AtomicBool>,
+    /// Since-boot false→true / true→false streaming edges.
+    pub stream_starts: Arc<AtomicU64>,
+    pub stream_stops: Arc<AtomicU64>,
+    /// Best-effort mux wake delivery counters. A failure is safe because mux's
+    /// fixed patrol observes the published ``streaming`` state.
+    pub notify_attempts: Arc<AtomicU64>,
+    pub notify_failures: Arc<AtomicU64>,
     /// Cumulative successful opens of the gadget capture (climbs on first open
     /// and on every reopen after an unplug/loss).
     pub opens: Arc<AtomicU64>,
@@ -1364,6 +1376,15 @@ impl Mixer {
             xrun_tx,
             period_frames: config.period_frames,
             tts: tts.map(TtsMixer::new),
+            program_duck_current: 1.0,
+            program_duck_attack_step: duck_step_per_frame(
+                config.tts_duck_attack_ms,
+                config.sample_rate,
+            ),
+            program_duck_release_step: duck_step_per_frame(
+                config.tts_duck_release_ms,
+                config.sample_rate,
+            ),
             music_output,
             music_only_buf: vec![0i16; period_samples],
             music_frames_written: Arc::new(AtomicU64::new(0)),
@@ -1380,9 +1401,9 @@ impl Mixer {
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
             // Reverse host-clock signals for host-compliance REVALIDATION. Init to
-            // the inert state (not-l2, no probe verdict) so a floor-primed session
+            // the inert state (no fallback, no probe verdict) so a floor-primed session
             // only revokes on a LIVE demotion/probe-fail from the servo.
-            host_clock_ladder_l2: Arc::new(AtomicBool::new(false)),
+            host_clock_fallback_reason_code: Arc::new(AtomicU64::new(0)),
             host_clock_probe_result_code: Arc::new(AtomicU64::new(0)),
             // Init to the None sentinel (no probe verdict) so a pre-servo period
             // records `None` rather than a stale zero ratio.
@@ -1429,6 +1450,9 @@ impl Mixer {
             output_frames: Arc::clone(&resampler.output_frames),
             locked: Arc::clone(&resampler.locked),
             present: Arc::clone(&direct_obs.present),
+            // Reuse the direct capture's existing monotonic successful-open
+            // counter as the sole capture-generation source of truth.
+            capture_generation: Arc::clone(&direct_obs.opens),
             // The resampler's LIVE correction ppm gauge (its `ratio_milli_ppm`,
             // milli-ppm i64-bits-in-u64) — the COMBO-mode probe/servo observable.
             // Owned/written by the resampler on the mixer thread; the servo thread
@@ -1445,9 +1469,30 @@ impl Mixer {
             commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
             // The revalidation reverse signals — written by the servo, read by the
             // mixer's per-period compliance tick.
-            ladder_l2: Arc::clone(&self.host_clock_ladder_l2),
+            fallback_reason_code: Arc::clone(&self.host_clock_fallback_reason_code),
             probe_result_code: Arc::clone(&self.host_clock_probe_result_code),
             probe_response_ratio_milli: Arc::clone(&self.host_clock_probe_response_ratio_milli),
+        })
+    }
+
+    /// Clone the USB DIRECT lane's existing frame counter plus the atomics owned
+    /// by the lightweight source-notification helper. No host/policy object is
+    /// exposed: fan-in reports only whether frames are flowing; mux remains the
+    /// sole routing authority.
+    pub fn source_notify_signals(&self) -> Option<crate::source_notify::SourceNotifySignals> {
+        let direct = self.inputs.iter().find(|inp| inp.is_direct())?;
+        let direct_obs = direct.direct_observability()?;
+        let input_frames = direct
+            .resampler_observability()
+            .map(|resampler| Arc::clone(&resampler.input_frames))
+            .unwrap_or_else(|| Arc::clone(&direct.frames_read));
+        Some(crate::source_notify::SourceNotifySignals {
+            input_frames,
+            streaming: Arc::clone(&direct_obs.streaming),
+            stream_starts: Arc::clone(&direct_obs.stream_starts),
+            stream_stops: Arc::clone(&direct_obs.stream_stops),
+            notify_attempts: Arc::clone(&direct_obs.notify_attempts),
+            notify_failures: Arc::clone(&direct_obs.notify_failures),
         })
     }
 
@@ -1536,10 +1581,10 @@ impl Mixer {
         // When voice ducking is routed through fan-in, attenuate only
         // renderer/program lanes. TTS is mixed after this step so it
         // remains audible and then flows through CamillaDSP crossover.
-        let mut program_gain = 1.0f32;
+        let mut program_target = 1.0f32;
         if let Some(tts) = self.tts.as_mut() {
             if tts.prepare_period() {
-                program_gain = tts.program_duck_gain();
+                program_target = tts.program_duck_gain();
             }
         }
 
@@ -1561,10 +1606,11 @@ impl Mixer {
             (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
         // 2d. Snapshot the REVERSE host-clock revalidation signals ONCE per period
         // for the host-compliance service below (same self-borrow avoidance as the
-        // decay signals). `ladder_l2` = probe-fail / mid-stream demotion;
-        // `probe_result_code` distinguishes a fresh probe FAIL from a later L2.
-        // Inert (false / 0) when the servo is not running.
-        let compliance_ladder_l2 = self.host_clock_ladder_l2.load(Ordering::Relaxed);
+        // decay signals). Cause is explicit; the compliance subsystem must not
+        // reconstruct it from a loose L2/probe combination.
+        let compliance_fallback_reason = crate::host_clock::decode_fallback_reason_code(
+            self.host_clock_fallback_reason_code.load(Ordering::Relaxed),
+        );
         let compliance_probe_code = self.host_clock_probe_result_code.load(Ordering::Relaxed);
         let compliance_probe_ratio = crate::host_clock::decode_response_ratio_milli(
             self.host_clock_probe_response_ratio_milli
@@ -1655,7 +1701,7 @@ impl Mixer {
         // period's fresh held-target / lock state.
         self.service_host_compliance(
             decay_l0,
-            compliance_ladder_l2,
+            compliance_fallback_reason,
             compliance_probe_code,
             compliance_probe_ratio,
         );
@@ -1663,8 +1709,24 @@ impl Mixer {
             saturate_to_i16(&self.sum_buf, &mut self.content_meter_buf);
             tts.observe_content_period(&self.content_meter_buf);
         }
-        if program_gain != 1.0 {
-            apply_gain_to_sum(&mut self.sum_buf, program_gain);
+        // Apply the program-lane duck as a per-sample ramp toward the
+        // period target, so a ~25 dB duck engages/releases smoothly rather
+        // than stepping at the period boundary (the click/pump-the-music
+        // artifact). Fast paths: skip entirely when fully un-ducked, and
+        // flat-multiply when already at a steady ducked level.
+        if program_target == 1.0 && self.program_duck_current == 1.0 {
+            // no duck — common path, nothing to do
+        } else if program_target == self.program_duck_current {
+            apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current);
+        } else {
+            self.program_duck_current = ramp_program_duck(
+                &mut self.sum_buf,
+                CHANNELS as usize,
+                self.program_duck_current,
+                program_target,
+                self.program_duck_attack_step,
+                self.program_duck_release_step,
+            );
         }
         // Music-only side-tap (multi-room sync): the program AS PLAYED
         // minus the assistant — taken POST-duck (so a synced follower
@@ -1773,7 +1835,7 @@ impl Mixer {
     fn service_host_compliance(
         &mut self,
         dll_l0: bool,
-        ladder_l2: bool,
+        fallback_reason: jasper_host_clock::FallbackReason,
         probe_code: u64,
         probe_response_ratio: Option<f64>,
     ) {
@@ -1816,13 +1878,18 @@ impl Mixer {
         // lock-edge bookkeeping. It re-samples `floor_primed` from the live proof at
         // the rising edge and returns the revoke decision plus the observed edges so
         // the proof machine's reset stays in lock-step with the tracker.
-        let step = hc.revalidation.step(
-            locked,
-            unlock_count,
-            probe_code,
-            ladder_l2,
-            floor_primed_now,
-        );
+        let step = hc
+            .revalidation
+            .step(locked, unlock_count, fallback_reason, floor_primed_now);
+        if step.raise_safe_ceiling {
+            // Local actuator loss is not host evidence. Raise only the current
+            // session cushion; retain the proof, strike count, and flag_present.
+            resampler.snap_decay_to_ceiling();
+            warn!(
+                "event=fanin.host_compliance.infrastructure_ceiling reason=actuator_unavailable path={} — current session raised to safe ceiling; proof retained",
+                hc.path.display(),
+            );
+        }
         if let Some(reason) = step.revoke {
             // A floor-primed revalidation failure. EVERY strike snaps the held
             // target back to the full ceiling so THIS session re-acquires deep and
@@ -2249,6 +2316,53 @@ fn apply_gain_to_sum(sum: &mut [i32], gain: f32) {
     }
 }
 
+/// Per-frame linear-gain slew such that a full 0.0→1.0 traversal takes
+/// `ms` milliseconds at `sample_rate`. Floored so a misconfigured 0 can't
+/// divide by zero (config validation already bounds `ms >= 1`).
+fn duck_step_per_frame(ms: u32, sample_rate: u32) -> f32 {
+    let frames = (ms.max(1) as f32) * (sample_rate.max(1) as f32) / 1000.0;
+    1.0 / frames.max(1.0)
+}
+
+/// Glide `current` toward `target` and apply the gliding gain to the
+/// interleaved program sum, one linear step per frame. Ducking DOWN uses
+/// `attack_step`; releasing UP uses `release_step`. The clamp to `target`
+/// means it never overshoots and lands exactly, so callers can compare
+/// `current == target` to detect a settled duck. Returns the updated
+/// `current` for the caller to persist across periods.
+///
+/// This replaces a hard per-period gain step: a ~25 dB program duck that
+/// switched levels in one sample injected a broadband click and a "pump"
+/// into music playing under a short earcon/cue. Ramping the edges removes
+/// both.
+fn ramp_program_duck(
+    sum: &mut [i32],
+    channels: usize,
+    mut current: f32,
+    target: f32,
+    attack_step: f32,
+    release_step: f32,
+) -> f32 {
+    debug_assert!(channels >= 1);
+    let frames = sum.len() / channels;
+    for f in 0..frames {
+        if current > target {
+            current = (current - attack_step).max(target);
+        } else if current < target {
+            current = (current + release_step).min(target);
+        }
+        if current != 1.0 {
+            let base = f * channels;
+            for s in &mut sum[base..base + channels] {
+                *s = ((*s as f32) * current)
+                    .round()
+                    .clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+            }
+        }
+    }
+    current
+}
+
 /// Clamp i32 sum back to i16 for output. Pulled out for unit testability.
 fn saturate_to_i16(sum: &[i32], out: &mut [i16]) {
     debug_assert_eq!(sum.len(), out.len());
@@ -2265,8 +2379,7 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
 /// the sum this period iff it is selected AND not muted.
 ///
 /// The mute is mux's latest-source-wins arbitration primitive for the USB
-/// lane — the only USB-silencing mechanism (the standby jasper-usbsink bridge
-/// emits nothing, so fan-in must silence the USB lane itself). It is
+/// lane — the only USB-silencing mechanism. It is
 /// applied at the SUM ONLY: the caller stores this lane's `rms_dbfs_x100` and
 /// bumps `frames_read` BEFORE consulting this gate, so a muted lane still
 /// reports its true captured level and liveness to STATUS. mux depends on that
@@ -2686,8 +2799,8 @@ fn open_direct_input(
             DirectCapture::Present(pcm)
         }
         Err(e) => {
-            // Gadget absent at startup (unplugged host, or the usbsink bridge
-            // is holding hw:UAC2Gadget in a misconfig). Start Absent; the lane
+            // Gadget absent at startup (source not yet advertised, unplugged
+            // host, or another process holds hw:UAC2Gadget). Start Absent; the lane
             // renders silence and retries on its own cadence (C3). Not fatal.
             warn!(
                 "event=fanin.usb_direct.absent device={} errno={} detail={:#} (startup; will retry ~every {}s)",
@@ -2723,6 +2836,11 @@ fn open_direct_input(
             period_frames: open_period,
             buffer_frames,
             present,
+            streaming: Arc::new(AtomicBool::new(false)),
+            stream_starts: Arc::new(AtomicU64::new(0)),
+            stream_stops: Arc::new(AtomicU64::new(0)),
+            notify_attempts: Arc::new(AtomicU64::new(0)),
+            notify_failures: Arc::new(AtomicU64::new(0)),
             opens,
             retries,
             reopens: Arc::new(AtomicU64::new(0)),
@@ -2735,12 +2853,12 @@ fn open_direct_input(
     }
 }
 
-/// Open the USB DIRECT capture PCM with the usbsink BRIDGE's proven envelope
+/// Open the USB DIRECT capture PCM with the hardware-validated gadget envelope
 /// (C1) — deliberately NOT fanin's aloop-tuned `configure_pcm` (which sets an
 /// exact buffer). S32_LE 2ch 48k, `set_period_size(open_period, Nearest)`,
 /// `set_buffer_size_near(resolve_direct_buffer_frames(open_period))`; then the
-/// bridge-parity post-negotiation bails. `open_period` is 256 by default
-/// (byte-identical to today) or the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`
+/// validated post-negotiation checks. `open_period` is 256 by default
+/// (the on-device-proven value) or the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`
 /// override (lever 2 H1 knob). Non-blocking (the direct lane rides the resampler
 /// read slot like the aloop lane) and `start()`ed so reads return data / EAGAIN.
 /// Returns `(open PCM, negotiated buffer frames)` — the second element is the
@@ -4362,14 +4480,13 @@ mod tests {
         );
     }
 
-    // ---- direct.health classifier (defect 2026-07-10, combo runtime fallback) ----
+    // ---- direct.health classifier (capture recovery observability) ------------
 
     #[test]
     fn direct_health_broken_only_on_flowing_then_dead() {
         // The Broken classification IS the zombie signature: frames flowed on this
-        // handle, then it went deaf for >= the threshold. This is the ONLY state the
-        // fallback watcher acts on, so it must fire exactly when a real capture break
-        // happened (not idle, not merely absent).
+        // handle, then it went deaf for >= the threshold. It must classify exactly
+        // when a real capture break happened (not idle, not merely absent).
         assert_eq!(
             direct_health(
                 true,
@@ -4395,8 +4512,8 @@ mod tests {
     fn direct_health_idle_host_and_unplug_never_broken() {
         // The binding constraint: an attached-but-silent Mac (present, never flowed,
         // avail≈0 streak growing forever) and a fully unplugged host (not present)
-        // are IDLE, never Broken — they must never trip the runtime fallback. This
-        // mirrors zombie_handle_never_fires_on_attached_idle_host at the health layer.
+        // are IDLE, never Broken. This mirrors
+        // zombie_handle_never_fires_on_attached_idle_host at the health layer.
         // Attached-idle: present, never flowed, huge zero-avail streak.
         assert_eq!(
             direct_health(true, false, u64::MAX, DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS),
@@ -4434,7 +4551,7 @@ mod tests {
 
     #[test]
     fn direct_health_str_tokens_are_stable() {
-        // The Pi-side jasper.fanin.combo_health reader matches these exact tokens.
+        // The Python jasper.fanin.status reader matches these exact tokens.
         assert_eq!(direct_health_str(DirectHealth::Capturing), "capturing");
         assert_eq!(direct_health_str(DirectHealth::Idle), "idle");
         assert_eq!(direct_health_str(DirectHealth::Broken), "broken");
@@ -4619,6 +4736,77 @@ mod tests {
         let mut sum = vec![20_000i32, -20_000, 1_500, -1_500];
         apply_gain_to_sum(&mut sum, 0.1);
         assert_eq!(sum, vec![2_000, -2_000, 150, -150]);
+    }
+
+    #[test]
+    fn duck_step_per_frame_matches_requested_time() {
+        // 15 ms at 48 kHz = 720 frames for a full 0->1 traversal.
+        let step = duck_step_per_frame(15, 48_000);
+        assert!((step - 1.0 / 720.0).abs() < 1e-9);
+        // A misconfigured 0 floors to 1 ms rather than dividing by zero.
+        assert!(duck_step_per_frame(0, 48_000).is_finite());
+        assert!(duck_step_per_frame(15, 0).is_finite());
+    }
+
+    #[test]
+    fn ramp_program_duck_glides_it_does_not_step() {
+        // A constant program signal, one period long. Ducking DOWN toward
+        // 0.5 must NOT drop every frame to 0.5 at once (the old hard step);
+        // early frames stay near full level and the level descends monotonically.
+        let channels = 2usize;
+        let frames = 64usize;
+        let mut sum = vec![10_000i32; frames * channels];
+        // attack_step chosen so it takes ~the whole period to reach target.
+        let attack = (1.0 - 0.5) / (frames as f32);
+        let current = ramp_program_duck(&mut sum, channels, 1.0, 0.5, attack, 1.0);
+        // First frame is essentially un-ducked (no instantaneous 25 dB drop).
+        assert!(
+            sum[0] > 9_800,
+            "onset stepped instead of ramping: {}",
+            sum[0]
+        );
+        // Level descends monotonically frame to frame.
+        let frame_val = |f: usize| sum[f * channels];
+        for f in 1..frames {
+            assert!(
+                frame_val(f) <= frame_val(f - 1),
+                "duck ramp not monotonic at frame {f}"
+            );
+        }
+        // Landed at (or approaching) the target by the end.
+        assert!(
+            (current - 0.5).abs() < 0.02,
+            "did not reach target: {current}"
+        );
+        assert!(frame_val(frames - 1) < 6_000);
+    }
+
+    #[test]
+    fn ramp_program_duck_release_returns_to_unity_and_stops_scaling() {
+        // Releasing UP from a ducked 0.5 back to 1.0: once it lands on 1.0
+        // it must stop scaling entirely (samples pass through unchanged).
+        let channels = 2usize;
+        let frames = 8usize;
+        let mut sum = vec![10_000i32; frames * channels];
+        // release_step large enough to reach 1.0 within the first frame.
+        let current = ramp_program_duck(&mut sum, channels, 0.5, 1.0, 1.0, 1.0);
+        assert_eq!(current, 1.0);
+        // The last frame, fully released, is unscaled.
+        assert_eq!(sum[(frames - 1) * channels], 10_000);
+    }
+
+    #[test]
+    fn ramp_program_duck_steady_state_is_flat_multiply_equivalent() {
+        // When current already equals target, every frame scales by the same
+        // constant — identical to apply_gain_to_sum (the step() steady-state
+        // fast path uses apply_gain_to_sum; this guards their equivalence).
+        let channels = 2usize;
+        let mut ramped = vec![20_000i32, -20_000, 1_500, -1_500];
+        let mut flat = ramped.clone();
+        let current = ramp_program_duck(&mut ramped, channels, 0.1, 0.1, 0.01, 0.01);
+        apply_gain_to_sum(&mut flat, 0.1);
+        assert_eq!(current, 0.1);
+        assert_eq!(ramped, flat);
     }
 
     #[test]

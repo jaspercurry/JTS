@@ -4,10 +4,11 @@
 
 """Source-state probes for the four music renderers.
 
-Each `<source>_playing()` returns True iff that renderer is
-currently producing audio. Probes are fail-soft: any transport
-error (missing daemon, missing CLI, timeout, parse miss) is
-logged at debug and returns False.
+Each `<source>_playing()` returns True iff that renderer is currently producing
+audio and preserves the historical fail-soft bool contract. The mux uses the
+matching `<source>_playing_observed()` probes, whose third ``None`` state means
+"the probe failed, do not reinterpret that as the source stopping." This keeps
+a transient D-Bus/CLI/status failure from creating a false stop/start edge.
 
 Both `jasper.renderer.RendererClient.active_renderers` (consumed
 by voice tools, transport, volume coordinator) and `jasper.mux`'s
@@ -24,11 +25,16 @@ import logging
 import math
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from . import bluealsa_probe
 from . import librespot_state
-from .fanin.status import FANIN_INPUT_SOURCE_DIRECT, USBSINK_INPUT_LABEL
+from .fanin.status import (
+    FANIN_INPUT_SOURCE_DIRECT,
+    fanin_usbsink_input,
+    read_fanin_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,21 +47,34 @@ logger = logging.getLogger(__name__)
 # so a search-fail is the phantom signal.
 _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 
-# Default path the Rust jasper-usbsink-audio daemon publishes its state to.
-# Spelled here rather than imported so jasper-mux doesn't pull the usbsink
-# package into its import graph just to know where the state file is.
-USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
-
-# The RMS level (dBFS) at or below which the USB lane is treated as NOT playing —
-# so a host streaming digital silence (a muted Zoom, an idle tab) does not seize
-# the speaker. Applied against fan-in's reported per-lane rms_dbfs for the
-# DIRECT-capture lane (the live USB path). This is the single definition of the
-# gate: the Rust jasper-usbsink-audio daemon is standby-only and never computes
-# a `playing` value of its own, so its former `PLAYING_RMS_DBFS` anchor constant
-# (and the cross-language drift guard that pinned it to this value) were deleted
-# 2026-07-11. tests/test_usbsink_playing_rms_contract.py now pins that
-# `jasper.mux` imports this constant rather than re-declaring its own copy.
+# Display/renderer-status threshold for fan-in's USB DIRECT lane. Mux source
+# arbitration is deliberately level-independent: it uses frame-flow liveness so
+# faint audio and quiet passages cannot drop the source. This value survives for
+# ``usbsink_direct_audible`` consumers such as the aggregate ``/state`` surface.
+# ``tests/test_usbsink_playing_rms_contract.py`` pins both that ownership and the
+# invariant that mux does not import this constant.
 USBSINK_PLAYING_RMS_DBFS = -60.0
+
+_DBUS_NAME_ABSENT_ERRORS = (
+    b"was not provided by any .service files",
+    b"name has no owner",
+    b"is not activatable",
+)
+
+
+def _airplay_nonzero_observation(stderr: bytes) -> bool | None:
+    """Classify a failed AirPlay property call without inventing a stop.
+
+    A missing shairport MPRIS bus name is definite inactivity. Other nonzero
+    exits (system-bus loss, denied access, malformed replies) are transport
+    failures, so the mux's bounded unknown-state grace must decide continuity.
+    ``busctl`` writes the D-Bus error to stderr; its service-absent wording is
+    stable under the system image's C locale.
+    """
+    detail = stderr.lower()
+    if any(marker in detail for marker in _DBUS_NAME_ABSENT_ERRORS):
+        return False
+    return None
 
 
 async def spotify_playing(
@@ -65,7 +84,34 @@ async def spotify_playing(
     event via its --onevent hook. Reading on every probe is cheap
     (file is a few hundred bytes); is_playing returns False on
     missing/malformed file."""
-    return librespot_state.is_playing(librespot_state_path)
+    return await spotify_playing_observed(librespot_state_path) is True
+
+
+async def spotify_playing_observed(
+    librespot_state_path: str = librespot_state.DEFAULT_PATH,
+) -> bool | None:
+    """Tri-state Spotify observation for source arbitration.
+
+    A missing state file is a definite inactive state: librespot has not emitted
+    an event yet. A malformed/unreadable file is unknown, because treating a
+    torn or temporarily inaccessible observation as "stopped" can make the mux
+    flutter away from an otherwise healthy session.
+    """
+    path = Path(librespot_state_path)
+    try:
+        state = json.loads(path.read_text())
+    except FileNotFoundError:
+        return False
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.debug("librespot state observation failed (%s): %s", path, exc)
+        return None
+    if not isinstance(state, dict):
+        return None
+    if state.get("playing") is True:
+        return True
+    if state.get("paused") is True or state.get("stopped") is True:
+        return False
+    return False
 
 
 def _airplay_metadata_gate_disabled() -> bool:
@@ -82,7 +128,7 @@ def _airplay_metadata_gate_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
-async def _airplay_has_metadata_title() -> bool:
+async def _airplay_has_metadata_title_observed() -> bool | None:
     """True iff shairport-sync's MPRIS Metadata carries a non-empty
     xesam:title at the moment we ask.
 
@@ -94,9 +140,8 @@ async def _airplay_has_metadata_title() -> bool:
     audio frames carry a track title from the sender. Genuine sessions
     populate xesam:title with the sender's current track.
 
-    Fail-soft: any DBus / busctl error returns False, treating an
-    unverifiable session as phantom. The off-switch above is the
-    escape hatch if this ever produces false negatives in the field.
+    Transport failures are unknown rather than inactive. The public bool wrapper
+    below retains the historical fail-soft behavior for non-mux callers.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -106,18 +151,23 @@ async def _airplay_has_metadata_title() -> bool:
             "org.freedesktop.DBus.Properties", "Get", "ss",
             "org.mpris.MediaPlayer2.Player", "Metadata",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
     except (FileNotFoundError, asyncio.TimeoutError) as e:
         logger.debug("busctl Metadata probe failed: %s", e)
-        return False
+        return None
     if proc.returncode != 0:
-        return False
+        return _airplay_nonzero_observation(stderr)
     return _AIRPLAY_TITLE_RE.search(stdout) is not None
 
 
-async def airplay_playing() -> bool:
+async def _airplay_has_metadata_title() -> bool:
+    """Historical bool wrapper used by tests and non-arbiter callers."""
+    return await _airplay_has_metadata_title_observed() is True
+
+
+async def airplay_playing_observed() -> bool | None:
     """True iff shairport-sync is currently emitting AirPlay audio.
 
     Predicate is two-part since 2026-05-22:
@@ -148,14 +198,14 @@ async def airplay_playing() -> bool:
             "org.freedesktop.DBus.Properties", "Get", "ss",
             "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
     except (FileNotFoundError, asyncio.TimeoutError) as e:
         logger.debug("busctl PlaybackStatus probe failed: %s", e)
-        return False
+        return None
     if proc.returncode != 0:
-        return False
+        return _airplay_nonzero_observation(stderr)
     # busctl emits a single line like:  v s "Playing"
     # (variant-of-string-of-value). Substring match is robust to
     # leading/trailing whitespace busctl may add.
@@ -165,58 +215,24 @@ async def airplay_playing() -> bool:
     # the gate is disabled via the escape-hatch env var.
     if _airplay_metadata_gate_disabled():
         return True
-    return await _airplay_has_metadata_title()
+    return await _airplay_has_metadata_title_observed()
 
 
-async def usbsink_playing(state_path: str = USBSINK_STATE_PATH) -> bool:
-    """jasper-usbsink publishes RMS-based playing state to
-    /run/jasper-usbsink/state.json (atomic writes, hysteresis-debounced).
-    Reading is cheap — the file is well under 1 KB. Missing file (the
-    feature is disabled or the daemon hasn't started yet) and
-    malformed JSON both resolve to False, matching the fail-soft
-    convention of the other probes."""
-    data = read_usbsink_state(state_path)
-    if data is None:
-        return False
-    return bool(data.get("playing", False))
+async def airplay_playing() -> bool:
+    """Historical fail-soft bool wrapper around the mux's tri-state probe."""
+    return await airplay_playing_observed() is True
 
 
-def read_usbsink_state(state_path: str = USBSINK_STATE_PATH) -> dict[str, Any] | None:
-    """Read jasper-usbsink's small JSON state file, fail-soft."""
-    try:
-        with open(state_path) as f:
-            data = json.load(f)
-    except (FileNotFoundError, OSError, json.JSONDecodeError) as e:
-        logger.debug("usbsink_playing probe failed: %s", e)
-        return None
-    return data if isinstance(data, dict) else None
+async def usbsink_playing() -> bool:
+    """USB activity from the sole live ingress owner: fan-in DIRECT.
 
-
-def usbsink_bridge_in_standby(state: dict[str, Any] | None) -> bool:
-    """True when the jasper-usbsink daemon has published a state.json.
-
-    The daemon is standby-only now: fan-in DIRECT-captures the gadget and the
-    bridge opens no PCM, so its published ``playing`` / ``rms_dbfs`` are frozen
-    idle defaults that describe nothing (it always publishes ``standby: true``).
-    A missing/malformed state (``None``) reads as not-standby — the "USB Audio
-    Input off / daemon not running" fallback for callers.
+    Read fan-in's bounded STATUS probe off the event loop, then require both
+    current direct-capture health and audible pre-mute level. Missing/old
+    snapshots fail soft to ``False``.
     """
-    return bool(isinstance(state, dict) and state.get("standby"))
 
-
-def _fanin_usbsink_input(
-    fanin_status: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """The fan-in STATUS ``inputs[]`` entry for the usbsink lane, or None."""
-    if not isinstance(fanin_status, dict):
-        return None
-    inputs = fanin_status.get("inputs")
-    if not isinstance(inputs, list):
-        return None
-    for entry in inputs:
-        if isinstance(entry, dict) and entry.get("label") == USBSINK_INPUT_LABEL:
-            return entry
-    return None
+    status = await asyncio.to_thread(read_fanin_status)
+    return usbsink_direct_playing(status) is True
 
 
 def _nonnegative_int_counter(value: Any) -> int | None:
@@ -232,8 +248,7 @@ def usbsink_direct_frames_read(
     """Cumulative liveness counter on fan-in's USB DIRECT lane, else None.
 
     Returns a counter only when the usbsink lane is in direct mode
-    (``source == "direct"``), meaning fan-in owns the live gadget capture and
-    the standby bridge's RMS-gated ``playing`` flag is not meaningful.
+    (``source == "direct"``), meaning fan-in owns the live gadget capture.
 
     Prefer ``resampler.input_frames``: direct capture accounts host input there
     on builds where the lane-level ``frames_read`` can remain frozen at 0.
@@ -241,7 +256,7 @@ def usbsink_direct_frames_read(
     A single snapshot is not enough; the value becomes a liveness signal only as
     a delta across mux ticks.
     """
-    lane = _fanin_usbsink_input(fanin_status)
+    lane = fanin_usbsink_input(fanin_status)
     if not (
         isinstance(lane, dict)
         and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
@@ -254,6 +269,30 @@ def usbsink_direct_frames_read(
         if frames is not None:
             return frames
     return _nonnegative_int_counter(lane.get("frames_read"))
+
+
+def usbsink_direct_streaming(
+    fanin_status: dict[str, Any] | None,
+) -> bool | None:
+    """Fan-in's edge-detected USB streaming state, when available.
+
+    New fan-in builds sample their existing host-input counter on a lightweight
+    helper thread and publish this boolean in ``direct.streaming``. Older builds
+    omit it; mux then falls back to comparing the cumulative frame counter across
+    patrols. ``None`` also covers a missing/malformed STATUS response, allowing
+    the arbiter to retain its last known state rather than invent a stop.
+    """
+    lane = fanin_usbsink_input(fanin_status)
+    if not (
+        isinstance(lane, dict)
+        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
+    ):
+        return None
+    direct = lane.get("direct")
+    if not isinstance(direct, dict):
+        return None
+    value = direct.get("streaming")
+    return value if isinstance(value, bool) else None
 
 
 def _finite_float(value: Any) -> float | None:
@@ -272,11 +311,11 @@ def usbsink_direct_rms_dbfs(
 
     Mirrors :func:`usbsink_direct_frames_read`: a value is returned only when the
     usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
-    live gadget capture and the standby bridge's own ``rms_dbfs`` is meaningless.
+    live gadget capture and reports its pre-mute level directly.
     ``None`` when there is no direct lane, the STATUS is missing / malformed, or
     the lane carries no numeric ``rms_dbfs`` (an older fan-in build predating the
     per-lane level)."""
-    lane = _fanin_usbsink_input(fanin_status)
+    lane = fanin_usbsink_input(fanin_status)
     if not (
         isinstance(lane, dict)
         and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
@@ -295,13 +334,38 @@ def usbsink_direct_audible(
     ``True`` / ``False`` from the direct lane's most-recent-period ``rms_dbfs``
     vs the shared :data:`USBSINK_PLAYING_RMS_DBFS` threshold. ``None`` when
     there is no direct lane or no numeric level to compare (older fan-in) —
-    callers pick the fail-soft direction. This is the instantaneous *level*
-    half of combo liveness; mux pairs it with the frames-advanced *liveness*
-    half (see ``jasper.mux.step_combo_liveness``)."""
+    callers pick the fail-soft direction. This is display/renderer-status
+    telemetry only; mux arbitration uses frame-flow liveness and never gates a
+    source on instantaneous audio level."""
     rms = usbsink_direct_rms_dbfs(fanin_status)
     if rms is None:
         return None
     return rms > threshold_dbfs
+
+
+def usbsink_direct_playing(
+    fanin_status: dict[str, Any] | None,
+) -> bool | None:
+    """Current USB activity from fan-in's DIRECT lane, or ``None`` if absent.
+
+    ``direct.health`` proves capture is flowing now; ``rms_dbfs`` rejects a
+    host that is merely streaming digital silence. Older direct snapshots that
+    predate the health field fall back to the same RMS gate.
+    """
+
+    lane = fanin_usbsink_input(fanin_status)
+    if not (
+        isinstance(lane, dict)
+        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
+    ):
+        return None
+    audible = usbsink_direct_audible(fanin_status)
+    if audible is None:
+        return False
+    direct = lane.get("direct")
+    if not isinstance(direct, dict) or "health" not in direct:
+        return audible
+    return direct.get("health") == "capturing" and audible
 
 
 def usbsink_direct_muted(
@@ -311,14 +375,13 @@ def usbsink_direct_muted(
 
     Mirrors :func:`usbsink_direct_rms_dbfs`: a value is returned only when the
     usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
-    live gadget capture — the fan-in lane MIX-mute is how mux silences USB (the
-    only USB-silencing primitive now that the aloop bridge is standby-only).
+    live gadget capture — the fan-in lane MIX-mute is how mux silences USB.
     ``None`` when there is no direct lane, the STATUS is missing /
     malformed, or the lane predates the per-lane ``muted`` flag (older fan-in
     build). This is the mute STATE, separate from the ``rms_dbfs`` /
     ``frames_read`` telemetry the lane keeps reporting PRE-mute (so mux still
     sees a muted-but-streaming host as active)."""
-    lane = _fanin_usbsink_input(fanin_status)
+    lane = fanin_usbsink_input(fanin_status)
     if not (
         isinstance(lane, dict)
         and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
@@ -328,7 +391,7 @@ def usbsink_direct_muted(
     return value if isinstance(value, bool) else None
 
 
-async def bluetooth_playing() -> bool:
+async def bluetooth_playing_observed() -> bool | None:
     """bluealsa-cli list-pcms prints one line per BlueALSA PCM path.
     On an idle box this is empty; with a phone connected and an A2DP
     stream open you get one or more lines like
@@ -338,5 +401,10 @@ async def bluetooth_playing() -> bool:
     reliably."""
     stdout = await bluealsa_probe.list_pcms(logger)
     if stdout is None:
-        return False
+        return None
     return b"a2dpsnk/source" in stdout
+
+
+async def bluetooth_playing() -> bool:
+    """Historical fail-soft bool wrapper around the mux's tri-state probe."""
+    return await bluetooth_playing_observed() is True

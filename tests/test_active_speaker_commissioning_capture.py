@@ -1018,6 +1018,31 @@ def _reference_axis_proof(
     }
 
 
+@pytest.mark.parametrize(
+    ("protocol", "valid"), [(1, False), (2, True), (3, True), (4, False)]
+)
+def test_placement_proof_capture_protocol_is_an_explicit_allowlist(
+    protocol, valid
+):
+    """PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS is a deliberate
+    allowlist, not a ``>= 2`` floor: protocol 1 has no acknowledgement
+    machinery for a proof to stand on, and a future protocol 4 must be a
+    deliberate addition here, never a silent pass-through (see the
+    constant's comment in jasper.active_speaker.capture_geometry)."""
+    from jasper.active_speaker.capture_geometry import (
+        placement_proof_shape_valid,
+    )
+
+    proof = {**_reference_axis_proof(), "capture_protocol_version": protocol}
+    assert placement_proof_shape_valid(
+        proof,
+        policy_id="driver_reference_axis_v1",
+        role="woofer",
+        speaker_group_id="mono",
+        target_fingerprint="c" * 64,
+    ) is valid
+
+
 def test_aggregate_three_accepted_repeats_is_normal_confidence():
     repeats = [_repeat(-30.0), _repeat(-30.3), _repeat(-29.8)]
 
@@ -1669,16 +1694,13 @@ def test_summed_capture_no_crossover_region_emits_exactly_one_rejected_event(cap
 
 def test_reserved_crossover_events_are_never_emitted():
     # Spec-pinned (docs/active-crossover-information-design.md "Structured
-    # events"): correction.crossover_proposal_ready / _verification_passed /
-    # _verification_failed / _level_locked / _level_failed are documented as
-    # future work and MUST NOT have a call site yet. A static grep over the
-    # source tree is the guard: no jasper/ file may pass one of these literal
-    # strings to log_event.
+    # events"): correction.crossover_proposal_ready / _level_locked /
+    # _level_failed are documented as future work and MUST NOT have a call site
+    # yet. Verification pass/fail now ship from the Active-owned verification
+    # service and have their own once-only transition tests.
     root = Path(__file__).resolve().parents[1] / "jasper"
     assert set(RESERVED_CROSSOVER_EVENTS) == {
         "correction.crossover_proposal_ready",
-        "correction.crossover_verification_passed",
-        "correction.crossover_verification_failed",
         "correction.crossover_level_locked",
         "correction.crossover_level_failed",
     }

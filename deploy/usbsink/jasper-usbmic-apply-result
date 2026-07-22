@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# systemd invokes this as ExecStopPost with SERVICE_RESULT and EXIT_* set. A
+# restart used for debouncing is a clean stop and deliberately stays silent;
+# real apply failures get one stable, grep-friendly event with no user data.
+if [ "${SERVICE_RESULT:-unknown}" = "success" ]; then
+    exit 0
+fi
+
+/usr/bin/logger --tag jasper-usbmic-apply \
+    "event=usb_mic.recompose_failed unit=jasper-usbmic-apply.service phase=apply result=${SERVICE_RESULT:-unknown} exit_code=${EXIT_CODE:-unknown} exit_status=${EXIT_STATUS:-unknown}"
+
+exit 0

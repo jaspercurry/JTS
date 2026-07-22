@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One shared reader for the ``STATUS\\n`` line protocol the fan-in and outputd
-control sockets speak (and the shape the usbsink ``state.json`` file mirrors).
+"""One shared reader for the ``STATUS\\n`` line protocol fan-in and outputd use.
 
 Several route-latency surfaces need "connect to a JTS control socket, send
 ``STATUS\\n``, read the JSON reply to EOF, parse it, and confirm it's an
@@ -41,14 +40,9 @@ logger = logging.getLogger("jasper.route_latency.status_socket")
 DEFAULT_STATUS_TIMEOUT_SECONDS = 1.0
 _RECV_CHUNK_BYTES = 65536
 
-# Canonical control-socket paths for the two daemons that speak STATUS\n, plus
-# the usbsink state.json path (a FILE, read directly, not over this socket —
-# co-located here as the one route-latency home for "where do I read route
-# health"). These mirror the paths in jasper-fanin / jasper-outputd /
-# jasper-usbsink-audio; if a daemon moves its socket, update it here.
+# Canonical control-socket paths for the two live route-health owners.
 FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
-USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
 
 
 def read_status_socket(path: str, *, timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS) -> dict[str, Any]:
@@ -108,7 +102,6 @@ __all__ = [
     "DEFAULT_STATUS_TIMEOUT_SECONDS",
     "FANIN_STATUS_SOCKET",
     "OUTPUTD_STATUS_SOCKET",
-    "USBSINK_STATE_PATH",
     "read_status_socket",
     "read_status_socket_or_none",
 ]

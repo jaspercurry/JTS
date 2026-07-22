@@ -13,8 +13,11 @@ from jasper.active_speaker.capture_geometry import (
     driver_repeat_binding,
 )
 from jasper.active_speaker.crossover_eligibility import (
+    RepeatProgress,
     automatic_measurement_eligibility,
+    driver_acoustic_usable,
     mapping_sequence,
+    render_repeat_progress,
     repeat_progress,
 )
 
@@ -391,3 +394,504 @@ def test_mapping_sequence_and_repeat_progress_reject_malformed_types(value):
     assert progress.accepted == expected_count
     assert progress.target == 3
     assert progress.failure == {}
+    assert progress.completed is False
+    assert progress.last_result == {}
+
+
+def test_repeat_progress_exposes_completed_status_and_last_result():
+    """The envelope's driver-step derivation must be able to tell "the repeat
+    set finished all its bounded attempts" apart from "still in progress" --
+    the durable ledger's own ``status`` field is the only place that
+    distinction lives, and it must survive the safe/bounded projection."""
+    progress = repeat_progress(
+        {
+            "targets": {
+                "mono:woofer": {
+                    "status": "completed",
+                    "attempts": 3,
+                    "accepted": 3,
+                    "target": 3,
+                    "results": [
+                        {"attempt": 1, "accepted": True},
+                        {
+                            "attempt": 2,
+                            "accepted": True,
+                            "estimated_snr_db": 8.4,
+                            "snr_verdict": "insufficient",
+                        },
+                    ],
+                }
+            },
+            "failures": {},
+        },
+        "mono:woofer",
+    )
+
+    assert progress.completed is True
+    assert progress.last_result == {
+        "attempt": 2,
+        "accepted": True,
+        "estimated_snr_db": 8.4,
+        "snr_verdict": "insufficient",
+    }
+
+
+def test_render_repeat_progress_uses_human_terms_not_repeat_n():
+    """The progress sentence must never say "Repeat N" -- that leaked the
+    repeat-ledger counter into user-facing copy. It stays a plain count of
+    accepted-vs-target measurements."""
+    zero_attempts = render_repeat_progress(
+        RepeatProgress(
+            attempts=0, accepted=0, target=3, failure={}, completed=False,
+            last_result={},
+        )
+    )
+    assert zero_attempts == " JTS takes 3 stationary repeats."
+    assert "Repeat" not in zero_attempts
+
+    with_attempts = render_repeat_progress(
+        RepeatProgress(
+            attempts=2, accepted=2, target=3, failure={}, completed=False,
+            last_result={},
+        )
+    )
+    assert with_attempts == " 2 of 3 measurements accepted."
+    assert "Repeat" not in with_attempts
+
+
+@pytest.mark.parametrize("status", ("active", "ready", "refused", "aborted", None))
+def test_repeat_progress_completed_is_false_for_every_other_status(status):
+    progress = repeat_progress(
+        {"targets": {"mono:woofer": {"status": status, "attempts": 1}}, "failures": {}},
+        "mono:woofer",
+    )
+
+    assert progress.completed is False
+
+
+def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
+    tmp_path,
+):
+    """Verifies the invalidation machinery a driver-level-check restart relies
+    on (``jasper.web.correction_setup._handle_crossover_relay_level_match``'s
+    inner ``_run()``, the "not fixed_axis_request and not continuing" branch:
+    ``repeat_admission.invalidate()`` then
+    ``measurement.clear_active_comparison_set()`` before a fresh comparison
+    set is minted, logged as ``event=correction.crossover_comparison_set_invalidated
+    reason=new_level_match_started``). A woofer repeat set that completed
+    3/3 with an insufficient median must not survive that restart: the
+    ledger itself is wiped, and the stale acoustic record's placement proof
+    (bound to the OLD comparison set) fails ``capture_proof_valid`` against
+    the freshly-minted one -- so the honest-terminal render's own "Restart
+    driver level check" action cannot be undone by a stale record leaking
+    back into ``driver_acoustic_usable``."""
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker.crossover_eligibility import driver_acoustic_usable
+    from jasper.active_speaker.capture_geometry import normalized_placement_proof
+
+    repeat_path = tmp_path / "repeat.json"
+    target = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "target_fingerprint": "6" * 64,
+    }
+
+    def comparison(seed: str) -> dict:
+        core = {
+            "schema_version": 2,
+            "comparison_set_id": seed * 32,
+            "created_at": "2026-07-12T12:00:00Z",
+            "topology_id": "topology-1",
+            "profile_context_id": "profile-1",
+            "setup_sha256": "2" * 64,
+            "device_sha256": "3" * 64,
+            "calibration_id": "",
+            "driver_level_locks": {
+                "mono:woofer": {
+                    "target_id": "mono:woofer",
+                    "speaker_group_id": "mono",
+                    "role": "woofer",
+                    "tone_frequency_hz": 100.0,
+                    "tone_peak_dbfs": -20.0,
+                    "commissioning_gain_db": 0.0,
+                    "locked_main_volume_db": -18.0,
+                }
+            },
+        }
+        core["fingerprint"] = comparison_set_fingerprint(core)
+        return core
+
+    old_comparison = comparison("1")
+
+    # Drive the repeat ledger to "completed" with an insufficient median,
+    # the same shape `_finalize_driver_repeat_set` persists for 3/3 accepted
+    # repeats whose aggregate SNR never cleared the floor.
+    repeat_admission.activate(old_comparison, path=repeat_path)
+    for attempt in (1, 2, 3):
+        reservation = repeat_admission.reserve(
+            old_comparison,
+            target_id="mono:woofer",
+            target_fingerprint=target["target_fingerprint"],
+            path=repeat_path,
+        )
+        repeat_admission.finish(
+            old_comparison,
+            target_id="mono:woofer",
+            target_fingerprint=target["target_fingerprint"],
+            token=reservation["token"],
+            result={"accepted": True, "snr_verdict": "insufficient"},
+            status="ready" if attempt == 3 else "active",
+            path=repeat_path,
+        )
+    repeat_admission.complete(
+        old_comparison,
+        target_id="mono:woofer",
+        target_fingerprint=target["target_fingerprint"],
+        path=repeat_path,
+    )
+    assert (
+        repeat_admission.snapshot(old_comparison, path=repeat_path)["targets"][
+            "mono:woofer"
+        ]["status"]
+        == "completed"
+    )
+
+    old_record = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "target_fingerprint": target["target_fingerprint"],
+        "captured": True,
+        "mic_clipping": False,
+        "repeats": {"target": 3, "accepted": 3, "admission_attempts": 3},
+        "acoustic": {
+            "verdict": "present",
+            "capture_geometry": "near_field",
+            "mic_clipping": False,
+            "gating": {
+                "applied": False,
+                "exempt_reason": "near_field",
+                "f_valid_floor_hz": None,
+            },
+            "overlap_levels": [{"above_validity_floor": True, "usable": True}],
+        },
+        "placement_proof": normalized_placement_proof(
+            policy_id="driver_same_distance_v1",
+            acknowledgement_binding="ack",
+            relay_session_id="relay-1",
+            capture_page={
+                "capture_protocol_version": 2,
+                "capture_page_build": "20260711.1",
+            },
+            speaker_group_id="mono",
+            role="woofer",
+            target_fingerprint=target["target_fingerprint"],
+            comparison_set=old_comparison,
+        ),
+    }
+    assert driver_acoustic_usable(
+        old_record, old_comparison, target, capture_geometry="near_field"
+    )
+
+    # The exact pair the restart branch calls before minting a fresh
+    # comparison set.
+    repeat_admission.invalidate(path=repeat_path)
+    new_comparison = comparison("9")
+
+    wiped = repeat_admission.snapshot(path=repeat_path)
+    assert wiped["targets"] == {}
+    assert new_comparison["comparison_set_id"] != old_comparison["comparison_set_id"]
+    assert not driver_acoustic_usable(
+        old_record, new_comparison, target, capture_geometry="near_field"
+    )
+
+
+def _real_write_path_topology():
+    """A mono active-2-way topology built the same way the production
+    commissioning flow measures against -- not a synthetic status dict."""
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return mono_output_topology(
+        tweeter_output=1, tweeter_verified=True, topology_name="Bench mono"
+    )
+
+
+def _real_comparison_set(topology, *, state_path):
+    from jasper.active_speaker.measurement import (
+        active_driver_targets,
+        start_active_comparison_set,
+    )
+
+    targets = active_driver_targets(topology)
+    locks = {
+        t["target_id"]: {
+            "target_id": t["target_id"],
+            "speaker_group_id": t["speaker_group_id"],
+            "role": t["role"],
+            "tone_frequency_hz": 100.0,
+            "tone_peak_dbfs": -20.0,
+            "commissioning_gain_db": 0.0,
+            "locked_main_volume_db": -18.0,
+        }
+        for t in targets
+    }
+    return start_active_comparison_set(
+        topology,
+        profile_context_id="profile-1",
+        setup_sha256="2" * 64,
+        device_sha256="3" * 64,
+        calibration_id="",
+        driver_level_locks=locks,
+        state_path=state_path,
+        now="2026-07-16T05:00:00Z",
+    )
+
+
+def _real_floor_confirmation(
+    topology,
+    *,
+    state_path,
+    role="woofer",
+    output_index=0,
+    playback_id="floor-confirm-1",
+    now="2026-07-16T05:41:12Z",
+):
+    """Record the by-ear driver-level-check ceremony through the real write
+    path -- mirrors ``web_commissioning.confirm_driver_test``."""
+    from jasper.active_speaker.measurement import record_driver_measurement
+
+    target = {
+        "speaker_group_id": "mono",
+        "role": role,
+        "driver_role": role,
+        "output_index": output_index,
+    }
+    confirmed = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": role,
+            "outcome": "heard_correct_driver",
+            "playback_id": playback_id,
+        },
+        safe_session={
+            "status": "armed",
+            "quiet_start": {
+                "status": "floor_confirmed",
+                "floor_audio_confirmed": True,
+                "current_target": target,
+                "last_operator_result": {
+                    "accepted": True,
+                    "outcome": "heard_correct_driver",
+                    "playback_id": playback_id,
+                    "target": target,
+                },
+            },
+        },
+        state_path=state_path,
+        now=now,
+    )
+    return confirmed["summary"]["latest_driver_confirmations"][f"mono:{role}"]
+
+
+def _real_sweep_capture(
+    topology,
+    *,
+    state_path,
+    comparison_set,
+    floor_confirmation,
+    playback_id,
+    snr_db,
+    usable,
+    now,
+    role="woofer",
+):
+    """Record one WINNER acoustic capture through the real write path --
+    mirrors what ``web_measurement._finalize_driver_repeat_set`` durably
+    persists for an accepted 3/3 repeat set, including the sweep's own
+    (necessarily different) playback id relative to the floor confirmation
+    (see ``crossover_eligibility._FLOOR_REPLAY_MISMATCH_ISSUE_CODE``).
+    """
+    from jasper.active_speaker.measurement import (
+        _target_lookup,
+        record_driver_measurement,
+    )
+
+    target = _target_lookup(topology)[f"mono:{role}"]
+    target_fingerprint = target["target_fingerprint"]
+    placement_proof = {
+        "schema_version": 1,
+        "policy_id": "driver_same_distance_v1",
+        "accepted": True,
+        "confirmation_source": "relay_begin_capture",
+        "acknowledgement_binding_sha256": "5" * 64,
+        "relay_session_id": f"relay-{role}",
+        "capture_protocol_version": 2,
+        "capture_page_build": "20260711.1",
+        "speaker_group_id": "mono",
+        "role": role,
+        "target_fingerprint": target_fingerprint,
+        "captured": True,
+        "comparison_set_id": comparison_set["comparison_set_id"],
+        "comparison_set_fingerprint": comparison_set["fingerprint"],
+    }
+    swept = record_driver_measurement(
+        topology,
+        {
+            "speaker_group_id": "mono",
+            "role": role,
+            "outcome": "heard_correct_driver",
+            "playback_id": playback_id,
+            "observed_mic_dbfs": -18.0,
+            "acoustic": {
+                "verdict": "present",
+                "capture_geometry": "near_field",
+                "mic_clipping": False,
+                "gating": {
+                    "applied": False,
+                    "exempt_reason": "near_field",
+                    "f_valid_floor_hz": None,
+                },
+                "overlap_levels": [{
+                    "fc_hz": 2000.0,
+                    "above_validity_floor": True,
+                    "usable": usable,
+                    "snr_verdict": "ok" if usable else "insufficient",
+                }],
+            },
+            "placement_proof": placement_proof,
+            "repeats": {
+                "repeat_group_id": f"grp-{playback_id}",
+                "target": 3,
+                "accepted": 3,
+                "rejected": 0,
+                "recaptured": False,
+                "needed_recapture": False,
+                "aggregate": "median",
+                "spread_db_p90": 0.4,
+                "confidence": "normal",
+                "admission_attempts": 3,
+                "per_repeat": [
+                    {
+                        "index": i,
+                        "attempt": i + 1,
+                        "verdict": "present",
+                        "accepted": True,
+                        "reject_reason": None,
+                        "artifact_path": f"captures/{playback_id}-{i}.wav",
+                        "estimated_snr_db": snr_db,
+                        "clipping": False,
+                        "above_validity_floor": True,
+                        "level_dbfs": -18.0,
+                        "capture_admission": None,
+                    }
+                    for i in range(3)
+                ],
+            },
+        },
+        durable_floor_confirmation=floor_confirmation["floor_confirmation"],
+        state_path=state_path,
+        now=now,
+    )
+    record = swept["summary"]["latest_driver_measurements"][f"mono:{role}"]
+    return record, target_fingerprint, swept["active_comparison_set"]
+
+
+def test_accepted_production_capture_is_usable_despite_captured_false(tmp_path):
+    """JTS3 run 22 pre-fix repro: a genuinely accepted 3/3 woofer near-field
+    repeat set (60 dB SNR, overlap usable) built through the REAL
+    ``measurement.record_driver_measurement`` write path -- not a synthetic
+    status dict -- still comes back ``captured: False`` on the durable
+    record (the sweep's own playback id can never equal the earlier,
+    separately-recorded floor confirmation's -- pinned by
+    ``test_active_speaker_measurement.py::
+    test_sweep_evidence_never_clobbers_the_confirmation_gate``). Before the
+    fix, gating eligibility on ``record.get("captured") is True`` refused
+    this driver forever; ``driver_acoustic_usable`` must accept it."""
+    topology = _real_write_path_topology()
+    state_path = tmp_path / "measurements.json"
+    comparison_set = _real_comparison_set(topology, state_path=state_path)
+    floor_confirmation = _real_floor_confirmation(topology, state_path=state_path)
+
+    record, target_fingerprint, active_comparison_set = _real_sweep_capture(
+        topology,
+        state_path=state_path,
+        comparison_set=comparison_set,
+        floor_confirmation=floor_confirmation,
+        playback_id="sweep-3",
+        snr_db=60.9,
+        usable=True,
+        now="2026-07-17T11:08:42Z",
+    )
+
+    # The write-path quirk this fix works around, still exactly reproduced.
+    assert record["captured"] is False
+    assert any(
+        issue["code"] == "driver_measurement_playback_mismatch"
+        for issue in record["issues"]
+    )
+
+    target = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "target_fingerprint": target_fingerprint,
+    }
+    assert driver_acoustic_usable(
+        record, active_comparison_set, target, capture_geometry="near_field"
+    ) is True
+
+
+def test_fresh_accepted_capture_wins_over_stale_insufficient_siblings(tmp_path):
+    """Mirrors the run-22 durable store shape: several older, insufficient-
+    SNR near-field attempts for the SAME target/fingerprint (JTS3's indices
+    [2]-[9]) followed by a fresh, accepted, usable capture (indices
+    [10]/[11]). The selection (``measurement._latest_current_driver_records``)
+    must resolve to the fresh record, not a stale one -- and the fresh
+    record, once resolved, must be usable. Evaluating a stale record
+    directly must still refuse (the acoustic-quality gate is untouched)."""
+    topology = _real_write_path_topology()
+    state_path = tmp_path / "measurements.json"
+    comparison_set = _real_comparison_set(topology, state_path=state_path)
+    floor_confirmation = _real_floor_confirmation(topology, state_path=state_path)
+
+    stale_record = None
+    for index in range(3):
+        stale_record, target_fingerprint, _ = _real_sweep_capture(
+            topology,
+            state_path=state_path,
+            comparison_set=comparison_set,
+            floor_confirmation=floor_confirmation,
+            playback_id=f"stale-sweep-{index}",
+            snr_db=10.5 - index,
+            usable=False,
+            now=f"2026-07-14T0{index}:00:00Z",
+        )
+
+    fresh_record, target_fingerprint, active_comparison_set = _real_sweep_capture(
+        topology,
+        state_path=state_path,
+        comparison_set=comparison_set,
+        floor_confirmation=floor_confirmation,
+        playback_id="fresh-sweep",
+        snr_db=60.9,
+        usable=True,
+        now="2026-07-17T11:08:42Z",
+    )
+
+    # Selection resolved to the fresh record (distinguishable by its own
+    # sweep playback id), not one of the three stale ones written first.
+    assert fresh_record["playback_id"] == "fresh-sweep"
+    assert stale_record["playback_id"] != fresh_record["playback_id"]
+
+    target = {
+        "speaker_group_id": "mono",
+        "role": "woofer",
+        "target_fingerprint": target_fingerprint,
+    }
+    assert driver_acoustic_usable(
+        fresh_record, active_comparison_set, target, capture_geometry="near_field"
+    ) is True
+    # The stale, insufficient-SNR record on its own is correctly still
+    # refused -- the fix did not loosen the acoustic-quality gate.
+    assert driver_acoustic_usable(
+        stale_record, active_comparison_set, target, capture_geometry="near_field"
+    ) is False

@@ -126,6 +126,12 @@ def driver_protection_profile(
             min_highpass_hz=min_highpass,
             floor_test_frequency_hz=max(min_highpass, 3000.0),
             floor_test_duration_ms=100,
+            # -65 dBFS was sized for a NAKED driver tone with no proven
+            # protective HP. On the program-admission path (a graph that
+            # carries the crossover HP by construction) this is superseded by
+            # the sensitivity-derived ceiling below -- see
+            # ``derive_hf_measurement_ceiling_dbfs`` and
+            # ``jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings``.
             max_auto_level_dbfs=-65.0,
             requires_floor_confirmation_above_floor=True,
         )
@@ -138,6 +144,44 @@ def driver_protection_profile(
         floor_test_duration_ms=300,
         max_auto_level_dbfs=MIN_TEST_LEVEL_DBFS,
         requires_floor_confirmation_above_floor=True,
+    )
+
+
+# --- HF measurement-ceiling derivation (two-invariant protection model) ------
+#
+# Operator ruling (2026-07-19): driver protection is exactly two invariants,
+# one owner each -- (1) wrong-frequency-range: the declared hard band plus the
+# proven protective high-pass (unrelated to this section, untouched, airtight);
+# (2) too-loud: ONE derived ceiling instead of stacked hedges. The -65 dBFS
+# ``max_auto_level_dbfs`` above was sized for a naked driver tone with no
+# proven HP. On the program-admission path -- a graph that carries the
+# driver's crossover high-pass by construction -- it pins a compression-driver
+# tweeter far below its optimal measurement level: JTS3 hardware measurement
+# (2026-07-18, run 5) showed the tweeter's -65 dBFS cap reading near-inaudible
+# at 27 dB in-band SNR, while the woofer's comfortable pilots ran -26 dBFS
+# effective -- a 25.2 dB sensitivity delta (B&C DE250-8 ~108.5 dB vs Dayton
+# Epique E150HE-44 ~83.3 dB) the class default never accounted for.
+HF_MEASUREMENT_ABS_CEILING_DBFS = -35.0  # provisional pending W6 bench validation; a hearing-safety bound, not derived from any driver's declared data
+
+
+def derive_hf_measurement_ceiling_dbfs(
+    *,
+    declared_lf_driver_cap_dbfs: float,
+    sens_hf_db: float,
+    sens_lf_db: float,
+) -> float:
+    """The sensitivity-referenced HF measurement ceiling (two-invariant model).
+
+    Same acoustic ceiling CLASS as the low-frequency driver's own declared
+    cap, corrected for the sensitivity delta between the two declared driver
+    specs, bounded by the absolute hearing-safety ceiling. Pure arithmetic --
+    the caller owns picking valid inputs (a proven-protective-HP graph, an
+    unsuperseded class-default seed, and both drivers' declared sensitivities).
+    """
+
+    return min(
+        declared_lf_driver_cap_dbfs - (sens_hf_db - sens_lf_db),
+        HF_MEASUREMENT_ABS_CEILING_DBFS,
     )
 
 

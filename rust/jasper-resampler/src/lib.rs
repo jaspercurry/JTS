@@ -152,12 +152,10 @@ pub fn clamp_i16(value: f64) -> i16 {
 /// right shift by 16, sign-preserving, no rounding, no dither.
 ///
 /// This is the EXACT UAC2-gadget capture narrowing the JTS USB path uses. It
-/// lives in this pure crate (rather than duplicated in the two ALSA daemons)
-/// so that `jasper-usbsink-audio`'s bridge capture and `jasper-fanin`'s direct
-/// capture share ONE definition — the conversion is bit-identical by
-/// construction, not by a hand-synced test vector. The pinned sign-boundary
-/// vector is asserted in this crate's tests AND re-asserted in both consuming
-/// crates so a drift fails every suite.
+/// lives in this pure crate so jasper-fanin's DIRECT capture shares the same
+/// tested conversion primitive as the resampler math, rather than embedding an
+/// ALSA-local copy. The pinned sign-boundary vector is asserted here and in the
+/// consuming fan-in crate.
 ///
 /// Semantics (pinned): `(sample >> 16) as i16` — `>>` on `i32` is arithmetic,
 /// so the sign extends and `i32::MIN` maps to `i16::MIN` (full-scale negative),
@@ -175,8 +173,8 @@ pub fn s32_high_word_to_s16(sample: i32) -> i16 {
 /// common prefix.
 ///
 /// Returns `true` on success. Allocation-free — the caller owns both slices.
-/// Kept as a slice-map sibling of [`clamp_i16`] so the two ALSA daemons narrow
-/// a captured period identically without either owning the primitive.
+/// Kept as a slice-map sibling of [`clamp_i16`] so the ALSA owner does not also
+/// own a second conversion implementation.
 pub fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> bool {
     if input.len() != output.len() {
         return false;
@@ -188,19 +186,14 @@ pub fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> bool {
 }
 
 /// The dBFS floor an empty / digitally-silent i16 slice reports. Lives in this
-/// pure crate (rather than duplicated in the two ALSA daemons) so the solo
-/// bridge (`jasper-usbsink-audio`) and the combo lane (`jasper-fanin`) describe
-/// silence with the same sentinel — one const, no drift.
+/// pure crate so fan-in's telemetry and its tests share one sentinel.
 pub const RMS_DBFS_FLOOR: f64 = -120.0;
 
 /// Per-period RMS in dBFS of an interleaved i16 slice.
 ///
 /// The ONE definition of the USB path's per-lane level metric. It lives in this
-/// pure crate (rather than duplicated in the two ALSA daemons) so that the solo
-/// bridge (`jasper-usbsink-audio`) and the combo lane (`jasper-fanin`) yield the
-/// SAME level for the same audio — the parity mux's -60 dBFS combo-liveness gate
-/// depends on that identity, and having one definition makes it hold by
-/// construction rather than by a hand-synced copy.
+/// pure crate so fan-in's USB DIRECT lane and the mux's -60 dBFS activity gate
+/// depend on one tested metric rather than a hand-synced copy.
 ///
 /// Semantics (pinned): each sample is normalized by `/ 32768.0`, the mean square
 /// is `sqrt`-ed, and an rms at or below a `1.0e-9` epsilon (empty or fully
@@ -1247,10 +1240,9 @@ mod tests {
     }
 
     /// The pinned S32→S16 sign-boundary vector (C2). This is the SINGLE
-    /// definition of the UAC2 narrowing math; both `jasper-usbsink-audio`'s
-    /// bridge capture and `jasper-fanin`'s direct capture consume
-    /// [`s32_high_word_to_s16`] from this crate, and each re-asserts this exact
-    /// vector in its own suite so a drift fails everywhere.
+    /// definition of the UAC2 narrowing math; jasper-fanin's direct capture
+    /// consumes [`s32_high_word_to_s16`] and re-asserts this exact vector in its
+    /// own suite.
     #[test]
     fn s32_high_word_truncation_preserves_sign_boundaries() {
         assert_eq!(s32_high_word_to_s16(0), 0);
@@ -1273,11 +1265,9 @@ mod tests {
     }
 
     // ---- Per-lane RMS level (USB combo silence gate) ---------------------
-    // The SINGLE definition of the USB path's dBFS level metric. The solo
-    // bridge (jasper-usbsink-audio) and the combo lane (jasper-fanin) both
-    // consume `rms_dbfs_i16` / `RMS_DBFS_FLOOR` from this crate, so the same
-    // audio yields the same level by construction — the parity the mux's
-    // combo-liveness gate depends on. These pure-math vectors used to live in
+    // The SINGLE definition of the USB path's dBFS level metric. jasper-fanin
+    // consumes `rms_dbfs_i16` / `RMS_DBFS_FLOOR` from this crate; the mux's
+    // activity gate consumes that telemetry. These pure-math vectors used to live in
     // jasper-fanin's mixer tests; they moved here with the helper.
 
     #[test]

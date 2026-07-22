@@ -158,7 +158,10 @@ async def precheck_active_follower(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.runtime_contract import classify_camilla_graph
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_DRIVER_DOMAIN_BASELINE,
+        classify_camilla_graph,
+    )
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -235,19 +238,27 @@ async def precheck_active_follower(
             "this speaker as an active speaker before bonding it",
         )
 
-    # Invariant 5 — re-prove the EMITTED graph against the saved topology before
-    # loading it. The emitter and verifier are independent on purpose: the
-    # carrier emits, classify_camilla_graph re-proves Layer A is present
-    # (crossover HP + per-driver limiter <= 0 + non-positive gain + 0 dB
-    # ceiling). A graph that cannot be re-proven NEVER reaches CamillaDSP.
+    # Re-prove the complete emitted Layer-A graph independently. The emit gates
+    # cover tweeter HP and the bass-owner pair; this verifier also proves every
+    # driver crossover/gain/limiter chain before the candidate can be loaded.
     graph = classify_camilla_graph(
-        config_path=FOLLOWER_CONFIG_PATH, topology=topology,
+        topology=topology,
+        text=Path(FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8"),
+        config_path=FOLLOWER_CONFIG_PATH,
+        bass_profile_summary=candidate.get("bass_extension_profile_summary"),
     )
-    if not graph.allowed:
-        codes = [i.get("code") for i in graph.issues if isinstance(i, dict)]
+    if (
+        not graph.allowed
+        or graph.classification != GRAPH_DRIVER_DOMAIN_BASELINE
+    ):
+        codes = [
+            issue.get("code")
+            for issue in graph.issues
+            if isinstance(issue, dict)
+        ]
         raise ActiveFollowerError(
             "graph_unprovable",
-            "active follower driver-domain graph failed re-proof "
+            "active follower driver-domain graph failed whole-graph re-proof "
             f"(classification={graph.classification}, issues={codes}); refusing "
             "to bond (no full-range emit)",
         )
@@ -260,26 +271,57 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
     :func:`precheck_active_follower` has built + re-proven it, and after
     snapclient is feeding the round-trip loopback (so CamillaDSP locks at once).
     """
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_DRIVER_DOMAIN_BASELINE,
+    )
+    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     from .reconcile import GROUPING_LOOPBACK_CAPTURE
 
     cam = camilla_factory()
-    current = await cam.get_config_file_path(best_effort=True)
-    await apply_dsp_config(
+    async with dsp_writer_lock(
+        Path(FOLLOWER_CONFIG_PATH).parent,
         source=REGEN_SOURCE,
-        candidate_path=FOLLOWER_CONFIG_PATH,
-        load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
-        get_current_config_path=lambda: cam.get_config_file_path(
-            best_effort=True,
-        ),
-    )
-    # Stash the prior solo-active config for the unwind — but only a genuinely
-    # different (solo) config, never the follower config itself. Paths passed
-    # explicitly (module globals read at CALL time) so tests can redirect them;
-    # a def-time default would pin the production path (the reconcile idiom).
-    if current and current != FOLLOWER_CONFIG_PATH:
-        _write_stash(current, path=FOLLOWER_PRIOR_STASH)
+    ):
+        current = await cam.get_config_file_path(best_effort=True)
+        await apply_dsp_config(
+            source=REGEN_SOURCE,
+            candidate_path=FOLLOWER_CONFIG_PATH,
+            load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(
+                best_effort=True,
+            ),
+            acquire_lock=False,
+        )
+        try:
+            await _prove_live_bass_extension_graph(
+                cam,
+                expected_config_path=FOLLOWER_CONFIG_PATH,
+                expected_classification=GRAPH_DRIVER_DOMAIN_BASELINE,
+            )
+        except RuntimeError as exc:
+            if current and current != FOLLOWER_CONFIG_PATH:
+                await apply_dsp_config(
+                    source=f"{REGEN_SOURCE}-proof-rollback",
+                    candidate_path=current,
+                    load_config=lambda p: cam.set_config_file_path(
+                        p, best_effort=False
+                    ),
+                    get_current_config_path=lambda: cam.get_config_file_path(
+                        best_effort=True
+                    ),
+                    acquire_lock=False,
+                )
+            raise ActiveFollowerError(
+                "graph_unprovable",
+                "active follower driver-domain graph failed canonical live re-proof",
+            ) from exc
+        # Stash the prior solo-active config for the unwind — but only a
+        # genuinely different (solo) config, never the follower config itself.
+        # Paths passed explicitly (module globals read at CALL time) so tests
+        # can redirect them; a def-time default would pin the production path.
+        if current and current != FOLLOWER_CONFIG_PATH:
+            _write_stash(current, path=FOLLOWER_PRIOR_STASH)
     log_event(
         logger,
         "multiroom.camilla_apply",
@@ -333,96 +375,141 @@ async def restore_active_camilla_solo(
     dsp-apply for the same reason.
     """
     from jasper.active_speaker.baseline_profile import baseline_config_path
-    from jasper.active_speaker.runtime_contract import classify_camilla_graph
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.active_speaker.runtime_contract import (
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        safe_graph_for_current_topology,
+    )
+    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
     )
 
     cam = camilla_factory()
-    current = await cam.get_config_file_path(best_effort=True)
-    stash = read_stash(stash_path)
-
-    if not stash and current != own_config_path:
-        # Solo-active box that was never a bonded active endpoint — no churn.
-        return None
-
-    # STRICT topology load (fail-closed). The re-proof below keys "is this a
-    # safe active graph" on the topology being roleful; a fail-SOFT empty draft
-    # would let a flat full-range config pass re-proof (the tweeter guard goes
-    # blind). The filesystem-loss class that corrupts a durable baseline also
-    # corrupts topology.json, so on an unreadable topology we must NOT load any
-    # candidate — leave CamillaDSP on its current (safe) graph.
-    try:
-        topology = load_output_topology_strict()
-    except OutputTopologyError as exc:
-        log_event(
-            logger,
-            "multiroom.camilla_apply",
-            result=f"{log_kind}_restore_topology_unreadable",
-            error=str(exc),
-            current=current or "(none)",
-            level=logging.WARNING,
-        )
-        return None
-
-    # Candidate order: the stashed prior solo config, then the durable solo
-    # active baseline YAML on disk. Both must be a genuinely different config
-    # (never our own endpoint config itself).
-    options: list[tuple[str, str]] = []
-    if stash and stash != own_config_path and Path(stash).exists():
-        options.append((stash, "stash"))
-    durable = baseline_config_path()
-    if durable.exists() and str(durable) != own_config_path:
-        options.append((str(durable), "durable_baseline"))
-
-    # Re-prove each candidate against the saved topology and load the FIRST that
-    # classifies as a safe active graph. This is the "never a passive graph"
-    # guarantee made good at load time: a flat/corrupt config under a tweeter
-    # topology fails classify_camilla_graph and is refused here.
-    candidate: str | None = None
-    via = ""
-    for cand, cand_via in options:
-        graph = classify_camilla_graph(config_path=cand, topology=topology)
-        if graph.allowed:
-            candidate, via = cand, cand_via
-            break
-        codes = [i.get("code") for i in graph.issues if isinstance(i, dict)]
-        log_event(
-            logger,
-            "multiroom.camilla_apply",
-            result=f"{log_kind}_restore_skip_unsafe",
-            candidate=cand,
-            via=cand_via,
-            classification=graph.classification,
-            issues=codes,
-            level=logging.WARNING,
-        )
-
-    if candidate is None:
-        # Nothing safe-and-active to restore. Do NOT downgrade to a passive
-        # config; leave CamillaDSP on its current (safe Layer-A) graph and let
-        # the doctor surface it. Clear the stash so we stop retrying a dead path.
-        log_event(
-            logger,
-            "multiroom.camilla_apply",
-            result=f"{log_kind}_restore_unavailable",
-            current=current or "(none)",
-            level=logging.WARNING,
-        )
-        _clear_stash(stash_path)
-        return None
-
-    await apply_dsp_config(
+    async with dsp_writer_lock(
+        Path(own_config_path).parent,
         source=apply_source,
-        candidate_path=candidate,
-        load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
-        get_current_config_path=lambda: cam.get_config_file_path(
-            best_effort=True,
-        ),
-    )
-    _clear_stash(stash_path)
+    ):
+        current = await cam.get_config_file_path(best_effort=True)
+        stash = read_stash(stash_path)
+
+        if not stash and current != own_config_path:
+            # Solo-active box that was never a bonded active endpoint — no churn.
+            return None
+
+        # STRICT topology load (fail-closed). The re-proof below keys "is this a
+        # safe active graph" on the topology being roleful; a fail-SOFT empty
+        # draft would let a flat full-range config pass re-proof (the tweeter
+        # guard goes blind). On an unreadable topology, load nothing.
+        try:
+            topology = load_output_topology_strict()
+        except OutputTopologyError as exc:
+            log_event(
+                logger,
+                "multiroom.camilla_apply",
+                result=f"{log_kind}_restore_topology_unreadable",
+                error=str(exc),
+                current=current or "(none)",
+                level=logging.WARNING,
+            )
+            return None
+
+        # Candidate order: the stashed prior solo config, then the durable solo
+        # active baseline YAML on disk. Both must differ from our endpoint graph.
+        options: list[tuple[str, str]] = []
+        if stash and stash != own_config_path and Path(stash).exists():
+            options.append((stash, "stash"))
+        durable = baseline_config_path()
+        if durable.exists() and str(durable) != own_config_path:
+            options.append((str(durable), "durable_baseline"))
+
+        candidate: str | None = None
+        via = ""
+        for cand, cand_via in options:
+            decision = safe_graph_for_current_topology(
+                topology,
+                current_config_path=cand,
+                consider_applied_baseline=False,
+            )
+            graph = decision.current_graph
+            if (
+                graph is not None
+                and graph.allowed
+                and decision.selected_config_path == cand
+            ):
+                candidate, via = cand, cand_via
+                break
+            if graph is None:
+                codes = [
+                    issue.get("code")
+                    for issue in decision.issues
+                    if isinstance(issue, dict)
+                ]
+                classification = "unavailable"
+            else:
+                codes = [
+                    issue.get("code")
+                    for issue in graph.issues
+                    if isinstance(issue, dict)
+                ]
+                classification = graph.classification
+            log_event(
+                logger,
+                "multiroom.camilla_apply",
+                result=f"{log_kind}_restore_skip_unsafe",
+                candidate=cand,
+                via=cand_via,
+                classification=classification,
+                issues=codes,
+                level=logging.WARNING,
+            )
+
+        if candidate is None:
+            # Nothing safe-and-active to restore. Do NOT downgrade to a passive
+            # graph. Clear the dead stash while ownership still excludes writers.
+            log_event(
+                logger,
+                "multiroom.camilla_apply",
+                result=f"{log_kind}_restore_unavailable",
+                current=current or "(none)",
+                level=logging.WARNING,
+            )
+            _clear_stash(stash_path)
+            return None
+
+        await apply_dsp_config(
+            source=apply_source,
+            candidate_path=candidate,
+            load_config=lambda p: cam.set_config_file_path(p, best_effort=False),
+            get_current_config_path=lambda: cam.get_config_file_path(
+                best_effort=True,
+            ),
+            acquire_lock=False,
+        )
+        try:
+            await _prove_live_bass_extension_graph(
+                cam,
+                expected_config_path=candidate,
+                expected_classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
+            )
+        except RuntimeError as exc:
+            if current and current != candidate:
+                await apply_dsp_config(
+                    source=f"{apply_source}-proof-rollback",
+                    candidate_path=current,
+                    load_config=lambda p: cam.set_config_file_path(
+                        p, best_effort=False
+                    ),
+                    get_current_config_path=lambda: cam.get_config_file_path(
+                        best_effort=True
+                    ),
+                    acquire_lock=False,
+                )
+            raise ActiveFollowerError(
+                "restore_graph_unprovable",
+                "restored solo graph failed canonical live re-proof",
+            ) from exc
+        _clear_stash(stash_path)
     log_event(
         logger,
         "multiroom.camilla_apply",
@@ -431,6 +518,48 @@ async def restore_active_camilla_solo(
         via=via,
     )
     return candidate
+
+
+async def _prove_live_bass_extension_graph(
+    cam,
+    *,
+    expected_config_path: str | Path,
+    expected_classification: str,
+    statefile_path=None,
+):
+    """Canonical live graph/profile proof shared by both active bond roles."""
+
+    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+    from jasper.active_speaker.runtime_contract import (
+        classify_active_bass_extension_graph,
+    )
+    from jasper.active_speaker.staging import staged_metadata_path
+    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+    from jasper.output_topology import load_output_topology_strict
+
+    proof = await classify_active_bass_extension_graph(
+        load_output_topology_strict(),
+        statefile_path=Path(statefile_path or DEFAULT_CAMILLA_STATEFILE),
+        read_active_graph_text=lambda: cam.get_active_config_raw(best_effort=False),
+        applied_baseline_path=baseline_profile_state_path(),
+        profile_path=DEFAULT_PROFILE_PATH,
+        intent_path=BASS_EXTENSION_APPLY_INTENT_PATH,
+        staged_metadata_path=staged_metadata_path(),
+    )
+    if (
+        not proof.allowed
+        or proof.config_path != str(expected_config_path)
+        or proof.classification != expected_classification
+    ):
+        code = proof.issues[0].get("code") if proof.issues else proof.classification
+        raise RuntimeError(
+            "live bass-extension graph proof failed: "
+            f"{code} (path={proof.config_path!r}, "
+            f"classification={proof.classification!r})"
+        )
+    return proof
 
 
 async def restore_active_follower_solo(*, camilla_factory=_camilla) -> str | None:

@@ -3,9 +3,10 @@ Description=Spotify Connect renderer (librespot, log volume curve)
 Documentation=https://github.com/librespot-org/librespot
 After=network-online.target sound.target jasper-fanin.service jasper-camilla.service
 Wants=network-online.target jasper-fanin.service
-# Always-on renderer: same logic as shairport-sync — Spotify Connect
-# must be advertised on the LAN whenever the speaker is up, including
-# after a clean exit (which Restart=on-failure ignores by design).
+# While Spotify is household-On and role-authorized, keep its endpoint
+# advertised across crashes and clean exits. The ExecCondition below is the
+# final start boundary, so Restart=always cannot resurrect household-Off or a
+# follower-parked renderer.
 StartLimitIntervalSec=600
 StartLimitBurst=20
 
@@ -14,6 +15,10 @@ StartLimitBurst=20
 # docs/HANDOFF-resilience.md "Stage 2 — audio-protection subset".
 Slice=jts-audio.slice
 Type=simple
+# Type=simple completes start after exec; keep the coordinator-facing job
+# contract finite and shorter than its client wait.
+TimeoutStartSec=2s
+TimeoutStopSec=5s
 User=pi
 Group=audio
 # Spotify Connect display name. Sourced from /etc/jasper/jasper.env if
@@ -53,7 +58,8 @@ CacheDirectoryMode=0700
 # lane. jasper-fanin reads the capture side and publishes the summed
 # music stream to CamillaDSP/AEC. The private lane keeps renderer
 # opens independent; latest-source-wins remains jasper-mux policy.
-ExecCondition=/opt/jasper/.venv/bin/jasper-local-source-allowed
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
+ExecCondition=+/usr/bin/env -i PATH=/opt/jasper/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /opt/jasper/.venv/bin/jasper-local-source-allowed --source spotify
 ExecStart=/usr/bin/librespot \
     --name=${JASPER_SPEAKER_NAME} \
     --device-type speaker \

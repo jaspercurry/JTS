@@ -281,8 +281,11 @@ the UI pairing flow converges without a second deploy. Adapter service changes
 are queued with `systemctl --no-block` and the boot reconciler orders only
 before `jasper-voice`, not before the adapter it may start, so optional
 accessory state cannot wedge voice startup. The accessory reconciler also carries
-`TimeoutStartSec=60`, matching the AEC/grouping oneshots: future blocking
-mistakes fail visibly instead of holding voice startup forever. A
+`TimeoutStartSec=60`, matching the AEC oneshot: future blocking mistakes fail
+visibly instead of holding voice startup forever. Grouping has a separate
+finite 300-second bound because it may join one pre-existing accessory and
+fan-in coupling activation before queuing fresh post-role passes, with bounded
+manager-call overhead and terminal margin. A
 paired-but-sleeping remote still self-heals:
 missing GATT report logs `event=wiim_remote_mic.not_ready` (throttled
 after the first visible event) and retries; `jasper-voice` keeps the
@@ -364,4 +367,6 @@ session):**
 - [`deploy/systemd/jasper-accessory-reconcile.service`](../deploy/systemd/jasper-accessory-reconcile.service) — optional accessory mic profile gate
 - [`deploy/systemd/jasper-wiim-remote-mic.service`](../deploy/systemd/jasper-wiim-remote-mic.service) — optional BLE remote mic adapter
 
-Last verified: 2026-07-10
+Last verified: 2026-07-14 (accessory/grouping timeout relationship rechecked
+against both systemd units and `jasper.multiroom.reconcile`; other subsystem
+claims retain their 2026-07-10 verification.)

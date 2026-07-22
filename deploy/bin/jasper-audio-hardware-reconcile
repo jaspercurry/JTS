@@ -17,7 +17,6 @@ OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
 OUTPUTD_ENV_STAGE_FILE=""
 FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
-USBSINK_ENV_FILE="${JASPER_USBSINK_ENV_FILE:-/var/lib/jasper/usbsink.env}"
 ASOUND_SOURCE_TEMPLATE="${JASPER_ASOUND_SOURCE_TEMPLATE:-/etc/jasper/asoundrc.jasper.source}"
 ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}"
 RENDER_ASOUND_CONF="${JASPER_RENDER_ASOUND_CONF:-/usr/local/sbin/jasper-render-asound-conf}"
@@ -36,14 +35,6 @@ OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-out
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
-# Storm breaker (defect D): rate-limit the usbsink (gadget-rebuild) restart. A
-# usbsink restart recomposes the ConfigFS gadget → a new udev card-add event →
-# this reconciler runs again; if it judged the route "changed" each cycle it
-# looped (~6-min cadence, 4 cycles observed 2026-07-05). The limiter caps
-# gadget-rebuilding restarts to at most one per this window; the state file is on
-# tmpfs (/run), so it resets on reboot.
-USBSINK_RESTART_STATE_FILE="${JASPER_USBSINK_RESTART_STATE_FILE:-/run/jasper-output-hardware/usbsink-restart.stamp}"
-USBSINK_RESTART_MIN_INTERVAL_SEC="${JASPER_USBSINK_RESTART_MIN_INTERVAL_SEC:-600}"
 REASON="manual"
 PRINT_ENV=0
 NO_RESTART=0
@@ -172,7 +163,7 @@ find_card() {
 
 observe_output_hardware_state() {
     local should_write="${1:-0}"
-    local payload profile_id profile_status
+    local payload profile_id profile_status usb_topology usb_desired usb_active usb_available usb_management usb_reason
     local action="observed"
     local args=()
     if [[ "$should_write" == "1" ]]; then
@@ -196,8 +187,20 @@ observe_output_hardware_state() {
     profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
     OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
     OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
+    usb_topology="$(printf '%s' "$payload" | sed -n 's/.*"board_topology": *"\([^"]*\)".*/\1/p')"
+    usb_desired="$(printf '%s' "$payload" | sed -n 's/.*"desired_role": *"\([^"]*\)".*/\1/p')"
+    usb_active="$(printf '%s' "$payload" | sed -n 's/.*"active_role": *"\([^"]*\)".*/\1/p')"
+    usb_available="$(printf '%s' "$payload" | sed -n 's/.*"gadget_available": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
+    usb_management="$(printf '%s' "$payload" | sed -n 's/.*"management_transport_available": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
+    case "$usb_available" in true|false) ;; *) usb_available="" ;; esac
+    case "$usb_management" in true|false) ;; *) usb_management="" ;; esac
+    usb_reason="$(printf '%s' "$payload" | sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p')"
     log_event "state_${action}" \
         "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${profile_id:-unknown} status=${profile_status:-unknown}"
+    printf 'event=hardware.usb_role_resolved topology=%s desired=%s active=%s gadget_available=%s management_transport_available=%s reason=%s\n' \
+        "${usb_topology:-unknown}" "${usb_desired:-unknown}" \
+        "${usb_active:-unknown}" "${usb_available:-false}" \
+        "${usb_management:-false}" "${usb_reason:-state_missing}" >&2
 }
 
 env_file_value() {
@@ -380,7 +383,6 @@ commit_outputd_env_stage() {
 repair_generated_env_permissions() {
     jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750
     jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750
-    jasper_env_file_repair_permissions "$USBSINK_ENV_FILE" 0640 0750
 }
 
 APPLE_DONGLE_CARD=""
@@ -614,15 +616,10 @@ route_env_actions() {
         --base-env "$ENV_FILE" 2>/dev/null
 }
 
-# Per-file route-env change flags (defect D). Split so the restart edge can bounce
-# ONLY the daemon whose keys actually moved: a fanin.env-only change restarts fan-in
-# WITHOUT rebuilding the USB gadget (a gadget rebuild re-triggers udev → this
-# reconciler → the ~6-min restart storm observed 2026-07-05). Reset each call.
+# Route-env change flag. Route-owned runtime keys now all live in fanin.env.
 ROUTE_FANIN_CHANGED=0
-ROUTE_USBSINK_CHANGED=0
 apply_route_env() {
     ROUTE_FANIN_CHANGED=0
-    ROUTE_USBSINK_CHANGED=0
     local changed=0
     local actions target kind key value file
     if ! actions="$(route_env_actions)"; then
@@ -636,7 +633,6 @@ apply_route_env() {
         fi
         case "$target" in
             fanin) file="$FANIN_ENV_FILE" ;;
-            usbsink) file="$USBSINK_ENV_FILE" ;;
             *) continue ;;
         esac
         local file_changed=0
@@ -655,14 +651,11 @@ apply_route_env() {
         esac
         if [[ "$file_changed" == "1" ]]; then
             changed=1
-            case "$target" in
-                fanin) ROUTE_FANIN_CHANGED=1 ;;
-                usbsink) ROUTE_USBSINK_CHANGED=1 ;;
-            esac
+            ROUTE_FANIN_CHANGED=1
         fi
     done <<<"$actions"
     log_event "route_env" \
-        "fanin_env=${FANIN_ENV_FILE} usbsink_env=${USBSINK_ENV_FILE} changed=${changed} fanin_changed=${ROUTE_FANIN_CHANGED} usbsink_changed=${ROUTE_USBSINK_CHANGED}"
+        "fanin_env=${FANIN_ENV_FILE} changed=${changed} fanin_changed=${ROUTE_FANIN_CHANGED}"
     if [[ "$changed" == "1" ]]; then
         return 0
     fi
@@ -768,7 +761,17 @@ gate_role_services() {
     if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
         "$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service
         "$SYSTEMCTL" start jasper-dac-init.service || true
-        "$SYSTEMCTL" restart jasper-headphone-monitor.service || true
+        # Ensure the monitor is running idempotently — do NOT restart it. This
+        # gate runs on every udev/reconcile pass, and a deploy's core-audio
+        # bounce fires it several times inside the unit's StartLimitIntervalSec;
+        # a restart-per-pass burned StartLimitBurst and left the monitor parked
+        # 'start-limit-hit' with nothing to revive it (reset-failed only lived in
+        # the disabled branch below). reset-failed clears any such parked state
+        # (incl. a box still on the old build); start is then a no-op when it is
+        # already running. The monitor self-resolves the card in its own poll
+        # loop, so it never needs a re-exec here.
+        "$SYSTEMCTL" reset-failed jasper-headphone-monitor.service 2>/dev/null || true
+        "$SYSTEMCTL" start jasper-headphone-monitor.service || true
         log_event "apple_services" "state=enabled output_dac_id=${OUTPUT_DAC_ID}"
     else
         "$SYSTEMCTL" disable --now jasper-dac-init.service jasper-headphone-monitor.service 2>/dev/null || true
@@ -799,48 +802,9 @@ restart_audio_if_needed() {
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
 
-# Storm breaker (defect D): true iff a usbsink (gadget-rebuilding) restart is
-# allowed right now — i.e. the last one was more than USBSINK_RESTART_MIN_INTERVAL_SEC
-# ago (or there was no last one). On success it STAMPS the state file with now, so
-# the next call within the window is refused. A missing/unreadable/garbage stamp is
-# treated as "allowed" (fail-open on the limiter — never block a legitimate first
-# restart because the tmpfs stamp is absent after a reboot). Best-effort: an
-# unwritable state dir logs and still allows the restart (the limiter is a storm
-# damper, not a hard gate).
-usbsink_restart_allowed() {
-    local now last delta
-    now="$(date +%s 2>/dev/null || echo 0)"
-    if [[ -r "$USBSINK_RESTART_STATE_FILE" ]]; then
-        last="$(cat "$USBSINK_RESTART_STATE_FILE" 2>/dev/null || echo "")"
-        if [[ "$last" =~ ^[0-9]+$ ]]; then
-            delta=$(( now - last ))
-            if (( delta < USBSINK_RESTART_MIN_INTERVAL_SEC )); then
-                log_event "usbsink_restart_ratelimited" \
-                    "since_last_sec=${delta} min_interval_sec=${USBSINK_RESTART_MIN_INTERVAL_SEC} state=${USBSINK_RESTART_STATE_FILE}"
-                return 1
-            fi
-        fi
-    fi
-    return 0
-}
-
-usbsink_restart_stamp() {
-    local now
-    now="$(date +%s 2>/dev/null || echo 0)"
-    mkdir -p "$(dirname "$USBSINK_RESTART_STATE_FILE")" 2>/dev/null || true
-    if ! printf '%s\n' "$now" >"$USBSINK_RESTART_STATE_FILE" 2>/dev/null; then
-        log_event "usbsink_restart_stamp_failed" "state=${USBSINK_RESTART_STATE_FILE}"
-    fi
-}
-
-# Restart the route-runtime daemons whose env actually changed (defect D). SPLIT
-# EDGE: a fanin.env-only change restarts fan-in ONLY — it does NOT try-restart
-# jasper-usbsink, because a usbsink restart recomposes the USB gadget → a fresh
-# udev card-add → this reconciler runs again → the ~6-min restart storm. usbsink
-# is bounced only when a usbsink.env key changed AND the rate limiter permits it.
-# Args: $1 = fanin changed (0|1), $2 = usbsink changed (0|1).
+# Restart fan-in when its route-owned environment changed.
 restart_route_runtime_if_needed() {
-    local fanin_changed="${1:-0}" usbsink_changed="${2:-0}"
+    local fanin_changed="${1:-0}"
     if [[ "$NO_RESTART" == "1" ]]; then
         return
     fi
@@ -848,27 +812,8 @@ restart_route_runtime_if_needed() {
         "$SYSTEMCTL" reset-failed jasper-fanin.service 2>/dev/null || true
         "$SYSTEMCTL" --no-block restart jasper-fanin.service 2>/dev/null || true
     fi
-    local usbsink_restarted=0
-    if [[ "$usbsink_changed" == "1" ]]; then
-        if usbsink_restart_allowed; then
-            "$SYSTEMCTL" reset-failed jasper-usbsink.service jasper-usbsink-volume.service 2>/dev/null || true
-            "$SYSTEMCTL" --no-block try-restart jasper-usbsink.service jasper-usbsink-volume.service 2>/dev/null || true
-            usbsink_restart_stamp
-            usbsink_restarted=1
-        else
-            # Refused by the storm limiter (defect D): usbsink.env is now AHEAD of
-            # the running daemon, which keeps the old geometry with no auto-retry
-            # scheduled (convergence would wait for the next udev/boot/manual run).
-            # Name that drift explicitly so it isn't a silent no-op — jasper-doctor's
-            # check_usbsink_env_drift surfaces the same state for the operator, whose
-            # manual `systemctl restart jasper-usbsink.service` converges it (the
-            # limiter only damps automatic reconciler churn, not an operator action).
-            log_event "route_env_drift" \
-                "usbsink_env=${USBSINK_ENV_FILE} reason=usbsink_restart_ratelimited remedy=restart_jasper-usbsink.service"
-        fi
-    fi
     log_event "route_runtime_restarted" \
-        "fanin_env=${FANIN_ENV_FILE} usbsink_env=${USBSINK_ENV_FILE} fanin_restarted=${fanin_changed} usbsink_restarted=${usbsink_restarted}"
+        "fanin_env=${FANIN_ENV_FILE} fanin_restarted=${fanin_changed}"
 }
 
 start_outputd_if_recognized() {
@@ -1008,9 +953,8 @@ stage_outputd_env
 set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && env_changed=1
 set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed=1
 apply_audio_runtime_env && outputd_env_changed=1
-# apply_route_env sets ROUTE_FANIN_CHANGED / ROUTE_USBSINK_CHANGED (the split
-# restart edge, defect D); a route change also counts toward env_changed so the
-# outputd/audio restart still fires when appropriate.
+# A route change also counts toward env_changed so the outputd/audio restart
+# still fires when appropriate.
 if apply_route_env; then
     env_changed=1
 fi
@@ -1047,13 +991,13 @@ if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     fi
     if [[ "$restart_needed" == "1" ]]; then
         restart_audio_if_needed "$restart_needed"
-        restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED" "$ROUTE_USBSINK_CHANGED"
+        restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
     else
         start_outputd_if_recognized
-        restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED" "$ROUTE_USBSINK_CHANGED"
+        restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
     fi
 else
-    restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED" "$ROUTE_USBSINK_CHANGED"
+    restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
     park_output_audio
 fi
 

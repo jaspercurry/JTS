@@ -6,10 +6,12 @@
 
 deploy/usbsink/jasper-usbgadget-{up,down,wanted} are pure-bash policy scripts.
 They are driven here against a TEMP ConfigFS tree + fake UDC dir + injected
-audio-intent/gate probes — exactly the seams the scripts expose via env
-(JASPER_CONFIGFS_ROOT / JASPER_UDC_CLASS_DIR / JASPER_USBGADGET_AUDIO_INTENT_CMD
-/ JASPER_USBGADGET_AUDIO_GATE_CMD / JASPER_CPUINFO_FILE). No real ConfigFS, no
-libcomposite, no systemd — mirrors tests/test_wifi_guardian_script.py.
+canonical audio-allowed and derived-lifecycle-readiness probes — exactly the
+seams the scripts expose via env (JASPER_CONFIGFS_ROOT /
+JASPER_UDC_CLASS_DIR / JASPER_USBGADGET_AUDIO_ALLOWED_CMD /
+JASPER_USBGADGET_AUDIO_READY_CMD /
+JASPER_USBGADGET_AUDIO_DATA_READY_CMD / JASPER_CPUINFO_FILE). No real ConfigFS,
+libcomposite, or systemd — mirrors tests/test_wifi_guardian_script.py.
 
 Each test asserts on:
   1. the structured `event=usb_gadget.<outcome>` line in stderr;
@@ -28,9 +30,10 @@ ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
 DOWN = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-down"
 WANTED = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-wanted"
+NAME_PATCH = ROOT / "deploy" / "usbsink" / "jasper-usbsink-name-patch"
 
 # `true` always succeeds (exit 0); `false` always fails (exit 1). The scripts
-# run the intent/gate commands and branch on their exit status, so these are
+# run the canonical guard command and branch on its exit status, so these are
 # the cleanest injectable probes.
 TRUE = "/usr/bin/true"
 FALSE = "/usr/bin/false"
@@ -67,21 +70,37 @@ def _run(
     network: str | None = "enabled",
     audio_intent: str = FALSE,
     audio_gate: str = TRUE,
+    audio_ready: str | None = None,
+    audio_data_ready: str | None = None,
+    hardware_allowed: str = TRUE,
     udc_present: bool = True,
     configfs: Path | None = None,
     cpuinfo_serial: str = "10000000abcdef01",
+    speaker_name_file: Path | None = None,
+    usb_mic: str = FALSE,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     configfs = configfs if configfs is not None else _configfs(tmp_path)
     udc = _udc_dir(tmp_path, present=udc_present)
     env = os.environ.copy()
+    audio_allowed = TRUE if audio_intent == TRUE and audio_gate == TRUE else FALSE
+    if audio_ready is None:
+        audio_ready = audio_intent
+    if audio_data_ready is None:
+        audio_data_ready = audio_intent
     env.update({
         "JASPER_CONFIGFS_ROOT": str(configfs),
         "JASPER_UDC_CLASS_DIR": str(udc),
-        "JASPER_USBGADGET_AUDIO_INTENT_CMD": audio_intent,
-        "JASPER_USBGADGET_AUDIO_GATE_CMD": audio_gate,
+        "JASPER_USBGADGET_AUDIO_ALLOWED_CMD": audio_allowed,
+        "JASPER_USBGADGET_AUDIO_READY_CMD": audio_ready,
+        "JASPER_USBGADGET_AUDIO_DATA_READY_CMD": audio_data_ready,
+        "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD": hardware_allowed,
+        "JASPER_USBGADGET_USB_MIC_ENABLED_CMD": usb_mic,
         "JASPER_CPUINFO_FILE": str(_cpuinfo(tmp_path, cpuinfo_serial)),
-        # Keep the speaker-name source deterministic + absent (defaults to JTS).
-        "JASPER_SPEAKER_NAME_FILE": str(tmp_path / "no-such-name.env"),
+        # Keep the speaker-name source deterministic + absent by default.
+        "JASPER_SPEAKER_NAME_FILE": str(
+            speaker_name_file or (tmp_path / "no-such-name.env")
+        ),
+        "JASPER_SPEAKER_NAME_READER": str(ROOT / ".venv/bin/python"),
     })
     if network is None:
         env.pop("JASPER_USB_NETWORK", None)
@@ -126,7 +145,7 @@ def test_up_network_only_when_audio_parked(tmp_path):
     proc, cfg = _run(UP, tmp_path, network="enabled", audio_intent=TRUE, audio_gate=FALSE)
     assert proc.returncode == 0, proc.stderr
     assert "network=1 audio=0" in proc.stderr
-    assert "audio_reason=parked_follower" in proc.stderr
+    assert "audio_reason=intent_disabled_or_parked" in proc.stderr
     assert _linked(cfg, "ncm.usb0")
     assert not _linked(cfg, "uac2.usb0")
 
@@ -136,7 +155,7 @@ def test_up_network_only_when_audio_intent_disabled(tmp_path):
     proc, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
     assert proc.returncode == 0, proc.stderr
     assert "network=1 audio=0" in proc.stderr
-    assert "audio_reason=intent_disabled" in proc.stderr
+    assert "audio_reason=intent_disabled_or_parked" in proc.stderr
     assert _linked(cfg, "ncm.usb0")
     assert not _linked(cfg, "uac2.usb0")
 
@@ -162,6 +181,18 @@ def test_up_no_function_wanted_skips_and_tears_down(tmp_path):
     assert not _gadget_dir(cfg).exists()
 
 
+def test_up_hardware_unavailable_tears_down_without_composing(tmp_path):
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        hardware_allowed=FALSE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "reason=hardware_unavailable" in proc.stderr
+    assert not _gadget_dir(cfg).exists()
+
+
 # ---------- kill-switch literal parsing -------------------------------------
 
 
@@ -175,7 +206,7 @@ def test_up_killswitch_case_insensitive(tmp_path):
 
 
 def test_up_unset_network_defaults_enabled(tmp_path):
-    """An UNSET JASPER_USB_NETWORK defaults to enabled (always-on network)."""
+    """An unset network kill switch defaults On when hardware allows it."""
     proc, cfg = _run(UP, tmp_path, network=None, audio_intent=FALSE)
     assert proc.returncode == 0, proc.stderr
     assert "network=1 audio=0" in proc.stderr
@@ -287,6 +318,19 @@ def test_up_product_string_is_speaker_name_only(tmp_path):
     assert "USB Audio" not in product
 
 
+def test_up_microphone_terminal_name_derives_from_speaker_name():
+    """The configfs fallback label follows the same canonical identity as the
+    macOS AudioStreaming label, with one explicit `` Mic`` suffix."""
+
+    text = UP.read_text(encoding="utf-8")
+    assert 'MIC_NAME="${SPEAKER_NAME} Mic"' in text
+    assert (
+        'write_if_present functions/uac2.usb0/p_it_name "${MIC_NAME}"'
+        in text
+    )
+    assert "JTS Microphone" not in text
+
+
 # ---------- uac2 attribute block is byte-identical (protection list) --------
 
 
@@ -307,6 +351,37 @@ def test_up_uac2_attribute_block_byte_identical(tmp_path):
     # tree they are ABSENT, so write_if_present is a no-op — assert the script
     # did not error and the always-written names are correct.
     assert (fn / "function_name").read_text().strip() == "JTS Capture Endpoint"
+
+
+def test_up_usb_microphone_adds_only_the_reverse_uac2_direction(tmp_path):
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        audio_intent=TRUE,
+        audio_gate=TRUE,
+        usb_mic=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "audio=1 usb_mic=1" in proc.stderr
+    fn = _gadget_dir(cfg) / "functions" / "uac2.usb0"
+    assert (fn / "c_chmask").read_text().strip() == "3"
+    assert (fn / "p_chmask").read_text().strip() == "1"
+    assert (_gadget_dir(cfg) / "bcdDevice").read_text().strip() == "0x0210"
+
+
+def test_up_usb_microphone_never_creates_uac2_without_usb_audio_input(tmp_path):
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        audio_intent=FALSE,
+        usb_mic=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "audio=0 usb_mic=0" in proc.stderr
+    assert not _linked(cfg, "uac2.usb0")
+    assert (_gadget_dir(cfg) / "bcdDevice").read_text().strip() == "0x0200"
 
 
 # ---------- idempotency + UDC binding ---------------------------------------
@@ -365,6 +440,222 @@ def test_wanted_skips_cleanly_when_no_udc(tmp_path):
     proc, _ = _run(WANTED, tmp_path, network="enabled", audio_intent=FALSE, udc_present=False)
     assert proc.returncode == 1
     assert "event=usb_gadget.skip reason=no_udc" in proc.stderr
+
+
+def test_wanted_skips_when_hardware_transport_is_unavailable(tmp_path):
+    proc, _ = _run(
+        WANTED,
+        tmp_path,
+        network="enabled",
+        hardware_allowed=FALSE,
+    )
+    assert proc.returncode == 1
+    assert "reason=hardware_unavailable" in proc.stderr
+
+
+def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
+    """Both paths require intent, lifecycle readiness, and a live direct lane."""
+
+    expected_allowed = (
+        "AUDIO_ALLOWED_CMD=\"${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-"
+        "/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}\""
+    )
+    expected_ready = (
+        "AUDIO_READY_CMD=\"${JASPER_USBGADGET_AUDIO_READY_CMD:-"
+        "systemctl is-enabled --quiet jasper-usbsink.service}\""
+    )
+    expected_data_ready = (
+        "AUDIO_DATA_READY_CMD=\"${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-"
+        "/opt/jasper/.venv/bin/python -m jasper.fanin.status "
+        "--usbsink-direct-armed}\""
+    )
+    for script in (UP, WANTED):
+        text = script.read_text()
+        assert expected_allowed in text
+        assert expected_ready in text
+        assert expected_data_ready in text
+        assert "JASPER_USBGADGET_AUDIO_INTENT_CMD" not in text
+        assert "JASPER_USBGADGET_AUDIO_GATE_CMD" not in text
+
+
+def test_name_patch_treats_speaker_state_as_inert_data(tmp_path: Path) -> None:
+    marker = tmp_path / "must-not-exist"
+    state = tmp_path / "speaker_name.env"
+    state.write_text(
+        f'JASPER_SPEAKER_NAME="$(touch {marker})"\n'
+        "JASPER_MODULES_ROOT=/should/not/win\n",
+        encoding="utf-8",
+    )
+    modules_root = tmp_path / "modules"
+    modules_root.mkdir()
+
+    result = subprocess.run(
+        [str(NAME_PATCH)],
+        env={
+            **os.environ,
+            "JASPER_SPEAKER_NAME_FILE": str(state),
+            "JASPER_SPEAKER_NAME_READER": str(ROOT / ".venv/bin/python"),
+            "JASPER_MODULES_ROOT": str(modules_root),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "event=usbsink_name.no_stock_module" in result.stderr
+    assert not marker.exists()
+    script = NAME_PATCH.read_text(encoding="utf-8")
+    assert 'source "${SPEAKER_NAME_FILE}"' not in script
+    assert "\neval " not in script
+
+
+def test_root_name_readers_reject_malformed_and_unsafe_paths(tmp_path: Path) -> None:
+    """Both root scripts consume one bounded regular inode, never raw state."""
+
+    states: list[Path] = []
+    for index, raw in enumerate((
+        'JASPER_SPEAKER_NAME="' + "A" * 40 + '"\n',
+        'JASPER_SPEAKER_NAME="Kitchen\\nforged"\n',
+    )):
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        state = case_dir / "speaker_name.env"
+        state.write_text(raw, encoding="utf-8")
+        states.append(state)
+
+    oversize_dir = tmp_path / "oversize"
+    oversize_dir.mkdir()
+    oversize = oversize_dir / "speaker_name.env"
+    oversize.write_bytes(b'JASPER_SPEAKER_NAME="Kitchen"\n' + b"#" * (64 * 1024))
+    states.append(oversize)
+
+    symlink_dir = tmp_path / "symlink"
+    symlink_dir.mkdir()
+    symlink_target = symlink_dir / "target.env"
+    symlink_target.write_text('JASPER_SPEAKER_NAME="Forged"\n', encoding="utf-8")
+    symlink = symlink_dir / "speaker_name.env"
+    symlink.symlink_to(symlink_target)
+    states.append(symlink)
+
+    fifo_dir = tmp_path / "fifo"
+    fifo_dir.mkdir()
+    fifo = fifo_dir / "speaker_name.env"
+    os.mkfifo(fifo)
+    states.append(fifo)
+
+    for state in states:
+        case_dir = state.parent
+        proc, configfs = _run(
+            UP,
+            case_dir,
+            audio_intent=FALSE,
+            speaker_name_file=state,
+        )
+        assert proc.returncode == 0, proc.stderr
+        product = _gadget_dir(configfs) / "strings/0x409/product"
+        assert product.read_text().strip() == "JTS"
+
+        modules_root = case_dir / "modules"
+        modules_root.mkdir(exist_ok=True)
+        patch_result = subprocess.run(
+            [str(NAME_PATCH)],
+            env={
+                **os.environ,
+                "JASPER_SPEAKER_NAME_FILE": str(state),
+                "JASPER_SPEAKER_NAME_READER": str(ROOT / ".venv/bin/python"),
+                "JASPER_MODULES_ROOT": str(modules_root),
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+        assert patch_result.returncode == 0
+        assert "event=usbsink_name.no_stock_module" in patch_result.stderr
+
+    for script in (UP, NAME_PATCH):
+        text = script.read_text(encoding="utf-8")
+        assert '"${SPEAKER_NAME_READER}" -m jasper.speaker_name' in text
+        assert 'source "${SPEAKER_NAME_FILE}"' not in text
+        assert "wc -c" not in text
+
+
+def test_up_canonical_off_dominates_stale_enabled_mirror(tmp_path):
+    """Derived enablement cannot authorize UAC2 after the household turns it Off."""
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        audio_intent=FALSE,
+        audio_ready=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "network=1 audio=0" in proc.stderr
+    assert "audio_reason=intent_disabled_or_parked" in proc.stderr
+    assert _linked(cfg, "ncm.usb0")
+    assert not _linked(cfg, "uac2.usb0")
+
+
+def test_up_desired_on_but_lifecycle_not_ready_composes_network_only(tmp_path):
+    """A failed/stale On transition must not advertise UAC2 without its consumer."""
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        audio_intent=TRUE,
+        audio_gate=TRUE,
+        audio_ready=FALSE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "network=1 audio=0" in proc.stderr
+    assert "audio_reason=derived_unit_disabled" in proc.stderr
+    assert _linked(cfg, "ncm.usb0")
+    assert not _linked(cfg, "uac2.usb0")
+
+
+def test_up_desired_on_but_direct_lane_unarmed_composes_network_only(tmp_path):
+    proc, cfg = _run(
+        UP,
+        tmp_path,
+        network="enabled",
+        audio_intent=TRUE,
+        audio_gate=TRUE,
+        audio_ready=TRUE,
+        audio_data_ready=FALSE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "network=1 audio=0" in proc.stderr
+    assert "audio_reason=direct_lane_unarmed" in proc.stderr
+    assert _linked(cfg, "ncm.usb0")
+    assert not _linked(cfg, "uac2.usb0")
+
+
+def test_wanted_canonical_off_dominates_stale_enabled_mirror(tmp_path):
+    proc, _ = _run(
+        WANTED,
+        tmp_path,
+        network="enabled",
+        audio_intent=FALSE,
+        audio_ready=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "network=1 audio=0" in proc.stderr
+    assert "audio_reason=intent_disabled_or_parked" in proc.stderr
+
+
+def test_wanted_desired_on_but_lifecycle_not_ready_keeps_network(tmp_path):
+    proc, _ = _run(
+        WANTED,
+        tmp_path,
+        network="enabled",
+        audio_intent=TRUE,
+        audio_gate=TRUE,
+        audio_ready=FALSE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "network=1 audio=0" in proc.stderr
+    assert "audio_reason=derived_unit_disabled" in proc.stderr
 
 
 # ---------- jasper-usbgadget-down (teardown) --------------------------------

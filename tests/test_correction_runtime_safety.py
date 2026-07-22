@@ -9,6 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from jasper.correction import runtime_safety as runtime_safety_module
+from jasper.active_speaker.runtime_contract import (
+    GraphSafety,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+)
 from jasper.correction.runtime_safety import (
     CorrectionRuntimeSafetyError,
     assert_correction_graph_safe,
@@ -17,6 +22,7 @@ from jasper.correction.runtime_safety import (
 )
 
 from tests.test_active_speaker_runtime_contract import (
+    _active_baseline_yaml,
     _active_topology,
     _active_yaml,
     _flat_yaml,
@@ -82,6 +88,82 @@ def test_assert_flat_apply_safe_allows_full_range() -> None:
 def test_assert_correction_graph_safe_rejects_mono_width_mismatch() -> None:
     with pytest.raises(CorrectionRuntimeSafetyError, match="exposes 2 output"):
         assert_correction_graph_safe(_flat_yaml(), topology=_full_range_mono())
+
+
+def test_assert_correction_graph_safe_preserves_active_baseline_omission() -> None:
+    with pytest.raises(
+        CorrectionRuntimeSafetyError,
+        match="requires explicit bass-extension profile evidence",
+    ):
+        assert_correction_graph_safe(
+            _active_baseline_yaml("mono", 2),
+            topology=_active_topology("mono", "active_2_way"),
+        )
+
+
+def test_assert_correction_graph_safe_accepts_explicit_no_profile_evidence() -> None:
+    assert_correction_graph_safe(
+        _active_baseline_yaml("mono", 2),
+        topology=_active_topology("mono", "active_2_way"),
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
+
+
+def test_assert_correction_graph_safe_rejects_non_mapping_before_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    def classify(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("malformed evidence must refuse before classification")
+
+    monkeypatch.setattr(runtime_safety_module, "classify_camilla_graph", classify)
+
+    with pytest.raises(
+        CorrectionRuntimeSafetyError,
+        match="bass authority evidence is invalid",
+    ):
+        assert_correction_graph_safe(
+            _flat_yaml(),
+            topology=_full_range_stereo(),
+            bass_profile_summary="invalid",
+        )
+
+    assert called is False
+
+
+def test_assert_correction_graph_safe_forwards_mapping_by_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summary = {
+        "authority_valid": True,
+        "runtime_block_required": False,
+    }
+    observed: list[object] = []
+
+    def classify(*args, bass_profile_summary=None, **kwargs):
+        observed.append(bass_profile_summary)
+        return GraphSafety(classification="flat_full_range", allowed=True)
+
+    monkeypatch.setattr(runtime_safety_module, "classify_camilla_graph", classify)
+
+    assert_correction_graph_safe(
+        _flat_yaml(),
+        topology=_full_range_stereo(),
+        bass_profile_summary=summary,
+    )
+
+    assert observed == [summary]
+    assert observed[0] is summary
+
+
+def test_assert_correction_graph_safe_keeps_flat_omission_legal() -> None:
+    assert_correction_graph_safe(
+        _flat_yaml(),
+        topology=_full_range_stereo(),
+    )
 
 
 def test_assert_flat_apply_safe_fail_closed_on_corrupt_topology(

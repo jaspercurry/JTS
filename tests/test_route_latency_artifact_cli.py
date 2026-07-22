@@ -77,6 +77,7 @@ def test_build_artifact_binds_live_route_identity(monkeypatch):
         metrics,
         impulse_spacing_jittered=True,
         route_health_ok=True,
+        fanin_direct_negotiated_buffer_frames=768,
     )
 
     assert artifact.status == "pass"
@@ -85,13 +86,15 @@ def test_build_artifact_binds_live_route_identity(monkeypatch):
     assert identity["route_id"] == "usb_low_latency_48k"
     assert identity["source_id"] == "usbsink"
     assert identity["dac_profile_id"] == "apple_usb_c_dongle"
-    assert identity["rust_bridge_config"] == {
-        "implementation": "rust",
-        "latency_hint": "low",
-        "output_mode": "aloop",
+    assert identity["fanin_direct_config"] == {
+        "lane": "usbsink",
+        "source": "direct",
+        "device": "hw:UAC2Gadget",
         "period_frames": 256,
-        "ring_periods": 3,
+        "min_buffer_frames": 768,
+        "buffer_period_aligned": True,
     }
+    assert identity["fanin_direct_negotiated_buffer_frames"] == 768
     assert artifact.checks["evidence"] == {"input_kind": "aggregate_metrics"}
 
 
@@ -116,6 +119,41 @@ def test_artifact_fails_without_clean_route_health(monkeypatch):
 
     assert artifact.status == "fail"
     assert "route_health_anomaly" in artifact.checks["issues"]
+
+
+def test_route_live_state_records_negotiated_direct_buffer(monkeypatch):
+    monkeypatch.setattr(
+        route_latency_artifact,
+        "build_audio_runtime_plan_from_system",
+        _usb_plan,
+    )
+    monkeypatch.setattr(
+        route_latency_artifact,
+        "read_status_socket",
+        lambda _path: {
+            "inputs": [
+                {
+                    "label": "usbsink",
+                    "source": "direct",
+                    "direct": {
+                        "device": "hw:UAC2Gadget",
+                        "health": "capturing",
+                        "period_frames": 256,
+                        "buffer_frames": 768,
+                    },
+                    "resampler": {
+                        "locked": True,
+                        "target_fill_frames": 2048,
+                    },
+                }
+            ]
+        },
+    )
+
+    live_state = route_latency_artifact._route_live_state_for_current_route()
+
+    assert live_state.issues == ()
+    assert live_state.negotiated_buffer_frames == 768
 
 
 def test_build_artifact_refuses_runtime_plan_errors(monkeypatch):
@@ -151,8 +189,10 @@ def test_main_writes_quick_validation_warn_artifact(monkeypatch, tmp_path, capsy
     )
     monkeypatch.setattr(
         route_latency_artifact,
-        "_route_live_state_issues_for_current_route",
-        lambda: (),
+        "_route_live_state_for_current_route",
+        lambda: route_latency_artifact._RouteLiveState(
+            negotiated_buffer_frames=768
+        ),
     )
     samples_path = tmp_path / "samples.json"
     samples_path.write_text(json.dumps([30.0] * 200), encoding="utf-8")
@@ -173,7 +213,15 @@ def test_main_writes_quick_validation_warn_artifact(monkeypatch, tmp_path, capsy
     assert "certified=[95]" in out
     artifacts = sorted(p.name for p in tmp_path.glob("*.json"))
     assert "latest.json" in artifacts
+    assert "latest-route-latency.json" in artifacts
     assert any("__route_latency__" in name for name in artifacts)
+    latest = json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))
+    assert (
+        latest["checks"]["identity"][
+            "fanin_direct_negotiated_buffer_frames"
+        ]
+        == 768
+    )
 
 
 def test_main_route_health_ok_fails_when_live_state_mismatches(
@@ -187,8 +235,11 @@ def test_main_route_health_ok_fails_when_live_state_mismatches(
     )
     monkeypatch.setattr(
         route_latency_artifact,
-        "_route_live_state_issues_for_current_route",
-        lambda: ("live_fanin_resampler_unlocked:usbsink",),
+        "_route_live_state_for_current_route",
+        lambda: route_latency_artifact._RouteLiveState(
+            issues=("live_fanin_resampler_unlocked:usbsink",),
+            negotiated_buffer_frames=768,
+        ),
     )
 
     rc = route_latency_artifact.main([
@@ -224,8 +275,10 @@ def test_main_require_pass_rejects_missing_p99(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         route_latency_artifact,
-        "_route_live_state_issues_for_current_route",
-        lambda: (),
+        "_route_live_state_for_current_route",
+        lambda: route_latency_artifact._RouteLiveState(
+            negotiated_buffer_frames=768
+        ),
     )
 
     rc = route_latency_artifact.main([
@@ -253,8 +306,10 @@ def test_main_records_raw_sample_file_provenance(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         route_latency_artifact,
-        "_route_live_state_issues_for_current_route",
-        lambda: (),
+        "_route_live_state_for_current_route",
+        lambda: route_latency_artifact._RouteLiveState(
+            negotiated_buffer_frames=768
+        ),
     )
     body = json.dumps({"latencies_ms": [30.0] * 200})
     samples_path = tmp_path / "samples.json"

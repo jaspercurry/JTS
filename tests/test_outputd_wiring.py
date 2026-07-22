@@ -219,7 +219,13 @@ def test_apple_dongle_mixer_services_are_enabled_only_for_apple_output_role():
     )[1].split("restart_audio_if_needed()", 1)[0]
     assert '"$SYSTEMCTL" enable jasper-dac-init.service jasper-headphone-monitor.service' in gated
     assert '"$SYSTEMCTL" start jasper-dac-init.service' in gated
-    assert '"$SYSTEMCTL" restart jasper-headphone-monitor.service' in gated
+    # The monitor is ensured idempotently (reset-failed + start), never
+    # restarted: this gate runs on every udev/reconcile pass and a deploy fires
+    # it repeatedly inside the unit's StartLimitIntervalSec, so a restart-per-
+    # pass burned StartLimitBurst and parked it 'start-limit-hit'.
+    assert '"$SYSTEMCTL" reset-failed jasper-headphone-monitor.service' in gated
+    assert '"$SYSTEMCTL" start jasper-headphone-monitor.service' in gated
+    assert '"$SYSTEMCTL" restart jasper-headphone-monitor.service' not in gated
     assert '"$SYSTEMCTL" disable --now jasper-dac-init.service jasper-headphone-monitor.service' in gated
     assert '"$SYSTEMCTL" reset-failed jasper-dac-init.service jasper-headphone-monitor.service' in gated
     assert "output_dac_id=${OUTPUT_DAC_ID}" in gated
@@ -375,11 +381,21 @@ def test_fanin_exposes_outputd_compatible_tts_socket():
     assert "TtsCommand::FlushSync" in tts_rs
     assert "TtsCommand::ProgramDuckOn" in tts_rs
     assert "prepare_period()" in mixer_rs
-    assert "program_gain" in mixer_rs
-    assert "apply_gain_to_sum(&mut self.sum_buf, program_gain)" in mixer_rs
+    # Program ducking is applied to the renderer sum BEFORE TTS is mixed
+    # in, so renderer lanes duck while TTS/cues stay unattenuated. The
+    # duck engages/releases as a per-sample ramp (`ramp_program_duck`)
+    # toward the per-period `program_target`, with a flat-multiply
+    # steady-state fast path; both write `self.sum_buf` before
+    # `tts.mix_period`.
+    assert "program_target" in mixer_rs
+    assert "ramp_program_duck(" in mixer_rs
+    assert (
+        "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
+        in mixer_rs
+    )
     assert "tts.mix_period(&mut self.sum_buf)" in mixer_rs
     assert mixer_rs.index(
-        "apply_gain_to_sum(&mut self.sum_buf, program_gain)"
+        "apply_gain_to_sum(&mut self.sum_buf, self.program_duck_current)"
     ) < mixer_rs.index("tts.mix_period(&mut self.sum_buf)")
     # The wire layer itself (command vocabulary + parser) lives ONCE in
     # the shared crate; both daemons consume it as a path dependency —

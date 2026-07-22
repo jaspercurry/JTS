@@ -5,16 +5,14 @@
 """P3/P4 default-flip: default-resolution of the fan-in coupling + USB combo.
 
 Pins the campaign brief's contracts + the review remediation:
-  - marker semantics (operator choice survives the auto pass; the operator-frozen
-    result reports the box's ACTUAL persisted coupling, not a hardcoded loopback);
-  - eligibility no-ops across the four validated box shapes
-    (jts.local eligible; jts3 roleful; jts5 composite; jts4 fanin-less);
-  - the USB combo arms ONLY on a gadget box that ALSO has USB audio turned on
-    (jasper-usbsink.service enabled) — B2 fleet-wide-arming fix;
-  - BOTH combo halves are written together: fan-in keys in fanin.env AND the
-    JASPER_USBSINK_AUDIO_STANDBY key in usbsink.env, with jasper-usbsink restarted
-    on a standby change — B1 split-brain fix;
-  - off a combo box the keys are EXPLICIT `disabled`/`0`, never unset — F5
+  - marker semantics (operator coupling choice survives the auto pass, while USB
+    combo permission still follows canonical source intent);
+  - eligibility no-ops across the validated box shapes
+    (jts.local eligible; jts3 roleful; jts5 composite; jts4 streambox loopback);
+  - the USB combo arms ONLY on a gadget box that ALSO has canonical USB intent
+    On, local sources allowed for the current role, and a ready derived
+    lifecycle mirror — B2 capability-gated arming + split-brain fix;
+  - off a combo box the fan-in keys are EXPLICIT `disabled`, never unset — F5
     jasper.env-precedence fix;
   - a grouped box resolves loopback (not a route-blocked ok=False) — F3;
   - an unreadable topology resolves loopback (fail-closed) in the auto path — F4;
@@ -26,6 +24,7 @@ Pins the campaign brief's contracts + the review remediation:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,6 +73,95 @@ def test_is_operator_choice(raw, expected):
     assert ca.is_operator_choice(raw) is expected
 
 
+def test_streambox_profile_keeps_ring_loopback_while_usb_combo_arms(monkeypatch):
+    """Ring hardware validation and USB DIRECT eligibility are independent."""
+
+    from jasper import install_profile
+
+    monkeypatch.setattr(
+        install_profile,
+        "read_install_profile",
+        lambda: install_profile.STREAMBOX_INSTALL_PROFILE,
+    )
+    decision = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        ring_gates=ca.default_ring_gates(),
+    )
+
+    assert decision.coupling == COUPLING_LOOPBACK
+    assert decision.combo_armed is True
+    assert decision.usb_combo_actions
+    assert all(action.value == "enabled" for action in decision.usb_combo_actions)
+    assert "streambox profile" in decision.reason
+
+
+def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):
+    from jasper import source_intent
+    from jasper.local_sources import guard
+    from jasper.music_sources import Source
+
+    seen = []
+    monkeypatch.setattr(
+        source_intent,
+        "source_intent_enabled",
+        lambda source: seen.append(source) or True,
+    )
+    monkeypatch.setattr(guard, "local_sources_allowed", lambda: (True, None))
+    monkeypatch.setattr(ca, "_usbsink_lifecycle_ready", lambda: True)
+
+    assert ca.usbsink_effectively_enabled() is True
+    assert seen == [Source.USBSINK]
+
+
+def test_usbsink_desired_on_but_follower_parked_disarms_effective_gate(
+    monkeypatch,
+):
+    from jasper import source_intent
+    from jasper.local_sources import guard
+
+    monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(
+        guard,
+        "local_sources_allowed",
+        lambda: (False, "bonded follower"),
+    )
+    monkeypatch.setattr(
+        ca,
+        "_usbsink_lifecycle_ready",
+        lambda: pytest.fail("parked role must short-circuit readiness probe"),
+    )
+
+    assert ca.usbsink_effectively_enabled() is False
+
+
+def test_usbsink_desired_on_but_derived_lifecycle_not_ready_disarms(
+    monkeypatch,
+):
+    from jasper import source_intent
+    from jasper.local_sources import guard
+
+    monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(guard, "local_sources_allowed", lambda: (True, None))
+    monkeypatch.setattr(ca, "_usbsink_lifecycle_ready", lambda: False)
+
+    assert ca.usbsink_effectively_enabled() is False
+
+
+def test_usbsink_canonical_off_dominates_stale_enabled_mirror(monkeypatch):
+    from jasper import source_intent
+
+    monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: False)
+    monkeypatch.setattr(
+        ca,
+        "_usbsink_lifecycle_ready",
+        lambda: pytest.fail("canonical Off must short-circuit readiness probe"),
+    )
+
+    assert ca.usbsink_effectively_enabled() is False
+
+
 def _pass_gate(detail="ok"):
     return lambda: (True, detail)
 
@@ -82,17 +170,18 @@ def _fail_gate(detail="ineligible"):
     return lambda: (False, detail)
 
 
-def test_decision_operator_marker_is_complete_no_op():
+def test_decision_operator_marker_freezes_coupling_but_not_usb_permission():
     d = ca.resolve_auto_decision(
         marker_raw="operator",
         gadget_present=True,
         usb_intent_enabled=True,
         ring_gates=(("assets", _pass_gate()),),
+        current_coupling=COUPLING_SHM_RING,
     )
     assert d.owned is False
-    # No env actions at all — the operator's revert must not be touched.
-    assert d.usb_combo_actions == ()
-    assert d.usbsink_standby_actions == ()
+    assert d.coupling == COUPLING_SHM_RING
+    assert d.combo_armed is True
+    assert all(action.value == "enabled" for action in d.usb_combo_actions)
 
 
 def test_decision_eligible_gadget_box_with_intent_resolves_ring_and_combo_on():
@@ -110,16 +199,11 @@ def test_decision_eligible_gadget_box_with_intent_resolves_ring_and_combo_on():
         ("set", ca.HOST_CLOCK_ENV_VAR, "enabled"),
         ("set", ca.CUSHION_DECAY_ENV_VAR, "enabled"),
     ]
-    assert [(a.action, a.key, a.value) for a in d.usbsink_standby_actions] == [
-        ("set", ca.USBSINK_STANDBY_ENV_VAR, "1"),
-    ]
 
 
 def test_decision_gadget_without_usb_intent_does_not_arm_combo():
-    """B2: the gadget dtoverlay is fleet-wide; without USB-audio intent the combo
-    stays OFF (fan-in keys explicit disabled). The usbsink standby key is ALWAYS 1
-    now — the daemon is standby-only and disarm does not promote a bridge
-    capture."""
+    """B2: gadget-capable hardware without USB-audio intent keeps the combo
+    off (fan-in keys explicitly disabled)."""
     d = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=True,
@@ -132,14 +216,10 @@ def test_decision_gadget_without_usb_intent_does_not_arm_combo():
         ("set", ca.HOST_CLOCK_ENV_VAR, "disabled"),
         ("set", ca.CUSHION_DECAY_ENV_VAR, "disabled"),
     ]
-    assert [(a.action, a.key, a.value) for a in d.usbsink_standby_actions] == [
-        ("set", ca.USBSINK_STANDBY_ENV_VAR, "1"),
-    ]
 
 
 def test_decision_usb_intent_without_gadget_does_not_arm_combo():
-    """Intent on but no gadget hardware → combo off (both signals required).
-    Standby stays 1 (daemon is standby-only)."""
+    """Intent on but no gadget hardware → combo off (both signals required)."""
     d = ca.resolve_auto_decision(
         marker_raw=None,
         gadget_present=False,
@@ -148,7 +228,6 @@ def test_decision_usb_intent_without_gadget_does_not_arm_combo():
     )
     assert d.combo_armed is False
     assert all(a.value == "disabled" for a in d.usb_combo_actions)
-    assert d.usbsink_standby_actions[0].value == "1"
 
 
 def test_decision_first_failing_gate_short_circuits_to_loopback():
@@ -200,6 +279,20 @@ def test_combo_is_armed_requires_both_signals():
     assert ca.combo_is_armed(gadget_present=False, usb_intent_enabled=False) is False
 
 
+def test_usb_combo_authority_has_no_runtime_health_override():
+    """Only gadget availability plus canonical intent can resolve composition."""
+
+    decision = ca.resolve_auto_decision(
+        marker_raw=None,
+        gadget_present=True,
+        usb_intent_enabled=True,
+        ring_gates=(),
+    )
+
+    assert decision.combo_armed is True
+    assert not hasattr(decision, "fallback_active")
+
+
 def test_usb_combo_actions_enabled_when_armed():
     acts = ca.usb_combo_actions(armed=True)
     assert all(a.action == "set" and a.value == "enabled" for a in acts)
@@ -213,64 +306,20 @@ def test_usb_combo_actions_explicit_disabled_when_not_armed():
     assert {a.key for a in acts} == set(ca.USB_COMBO_ENV_VARS)
 
 
-def test_usbsink_standby_actions_always_one():
-    # The daemon is standby-only, so the standby key is ALWAYS written `1` — armed
-    # or not. Disarming the combo does NOT promote a bridge capture (there is none).
-    acts = ca.usbsink_standby_actions()
-    assert [(a.action, a.key, a.value) for a in acts] == [
-        ("set", ca.USBSINK_STANDBY_ENV_VAR, "1")
-    ]
+def test_live_gadget_probe_reads_shared_resolved_capability(monkeypatch):
+    monkeypatch.setattr(
+        ca,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(gadget_available=True),
+    )
+    assert ca.read_usb_gadget_available() is True
 
-
-def test_usbsink_env_path_agrees_between_coupling_writers():
-    # Drift guard: the standby key lives in the same usbsink.env both the combo
-    # auto-detector and the coupling reconciler own. Pin the two literals so
-    # they never diverge.
-    assert ca.USBSINK_ENV_PATH == cr.USBSINK_ENV_PATH
-    assert ca.USBSINK_ENV_PATH == "/var/lib/jasper/usbsink.env"
-
-
-# --------------------------------------------------------------------------
-# usb_gadget_stack_present — the dtoverlay probe (reused /sources/ detection)
-# --------------------------------------------------------------------------
-
-
-def test_gadget_present_true_when_dtoverlay_line(tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("dtparam=audio=on\ndtoverlay=dwc2,dr_mode=peripheral\n")
-    assert ca.usb_gadget_stack_present(str(cfg)) is True
-
-
-def test_gadget_present_true_with_leading_whitespace(tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("  dtoverlay=dwc2,dr_mode=peripheral # gadget\n")
-    assert ca.usb_gadget_stack_present(str(cfg)) is True
-
-
-def test_gadget_present_false_when_absent(tmp_path):
-    cfg = tmp_path / "config.txt"
-    cfg.write_text("dtparam=audio=on\n")
-    assert ca.usb_gadget_stack_present(str(cfg)) is False
-
-
-def test_gadget_present_false_when_config_missing(tmp_path):
-    assert ca.usb_gadget_stack_present(str(tmp_path / "nope.txt")) is False
-
-
-def test_live_gadget_probe_prefers_installer_boot_config_override(
-    tmp_path, monkeypatch,
-):
-    installer_cfg = tmp_path / "installer-config.txt"
-    installer_cfg.write_text("dtparam=audio=on\n")
-    legacy_cfg = tmp_path / "legacy-config.txt"
-    legacy_cfg.write_text("dtoverlay=dwc2,dr_mode=peripheral\n")
-    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(installer_cfg))
-    monkeypatch.setenv("JASPER_BOOT_CONFIG_PATH", str(legacy_cfg))
-
-    assert ca.read_boot_config_gadget_present() is False
-
-    monkeypatch.delenv("JTS_BOOT_CONFIG_FILE")
-    assert ca.read_boot_config_gadget_present() is True
+    monkeypatch.setattr(
+        ca,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(gadget_available=False),
+    )
+    assert ca.read_usb_gadget_available() is False
 
 
 def test_resolved_choice_label():
@@ -316,9 +365,7 @@ def _auto(
     gadget,
     restarts,
     usb_intent=None,
-    usbsink=None,
     camilla_ok=True,
-    usbsink_ok=True,
     leader=False,
     fanin_ok=True,
     camilla_stop_ok=True,
@@ -328,14 +375,11 @@ def _auto(
 
     ``usb_intent`` defaults to ``gadget`` so a test that says "gadget on" gets the
     combo armed unless it opts out — matching the common jts.local case (gadget
-    present AND USB audio on). ``usbsink`` is the usbsink.env tmp path (defaults to a
-    sibling of ``fanin``). ``camilla_stop``/``camilla_start`` are the coordinated
+    present AND USB audio on). ``camilla_stop``/``camilla_start`` are the coordinated
     combo-restart pause/resume ops (record ``camilla_stop``/``camilla_start`` in
     ``restarts``) so the RTTIME-SIGKILL coordination can be exercised hardware-free."""
     if usb_intent is None:
         usb_intent = gadget
-    if usbsink is None:
-        usbsink = fanin.parent / "usbsink.env"
 
     def rf():
         restarts.append("fanin")
@@ -344,10 +388,6 @@ def _auto(
     def ro():
         restarts.append("outputd")
         return (True, "")
-
-    def ru():
-        restarts.append("usbsink")
-        return (usbsink_ok, "" if usbsink_ok else "usbsink restart failed")
 
     def rsc():
         restarts.append("camilla_stop")
@@ -365,108 +405,205 @@ def _auto(
         reason="t",
         env_path=fanin,
         outputd_env_path=outputd,
-        usbsink_env_path=usbsink,
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
         restart_fanin=rf,
         restart_outputd=ro,
-        restart_usbsink=ru,
         stop_camilla=rsc,
         start_camilla=rstc,
         reconcile_camilla=rc,
         active_leader_check=lambda: leader,
     )
 
-
-def test_auto_operator_marker_is_total_no_op(tmp_path, monkeypatch):
-    """Marker semantics: an operator-frozen box gets ZERO env changes and NO
-    daemon ops — the coupling + combo the operator set stay exactly as they are.
-    And the result reports the box's ACTUAL persisted coupling (Nit8)."""
+def test_auto_operator_marker_preserves_coupling_and_converges_usb_combo(
+    tmp_path, monkeypatch,
+):
+    """The transport is frozen, but canonical USB On still arms capture."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text(
         "JASPER_FANIN_COUPLING_CHOICE=operator\n"
         "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
     )
     _stub_ring_gates(monkeypatch, eligible=True)  # would resolve ring if owned
-    # reconcile_coupling must NOT be called on the operator path.
+    # The coupling owner is bypassed; only combo convergence may restart fan-in.
     called = {"n": 0}
     monkeypatch.setattr(
         cr, "reconcile_coupling", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
     )
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.owned is False
     assert r.ok is True
     # Nit8: report the frozen box's real coupling, not a hardcoded loopback.
     assert r.coupling == COUPLING_SHM_RING
     assert called["n"] == 0
-    assert restarts == []
-    # Env untouched: marker + coupling survive; NO combo keys were written to
-    # fanin.env OR usbsink.env.
+    assert "fanin" in restarts
+    # Marker + exact coupling survive while the USB combo becomes explicit On.
     text = fanin.read_text()
     assert "JASPER_FANIN_COUPLING_CHOICE=operator" in text
-    assert ca.USB_DIRECT_ENV_VAR not in text
-    assert not usbsink.exists() or ca.USBSINK_STANDBY_ENV_VAR not in usbsink.read_text()
+    assert f"{ca.USB_DIRECT_ENV_VAR}=enabled" in text
 
 
-def test_auto_eligible_gadget_box_with_intent_arms_ring_and_both_combo_halves(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("coupling", [COUPLING_LOOPBACK, COUPLING_SHM_RING])
+@pytest.mark.parametrize(
+    "initial_value,usb_intent,expected_value",
+    [
+        ("enabled", False, "disabled"),
+        ("disabled", True, "enabled"),
+    ],
+)
+def test_operator_frozen_coupling_still_converges_usb_authorization(
+    tmp_path,
+    monkeypatch,
+    coupling,
+    initial_value,
+    usb_intent,
+    expected_value,
 ):
-    """jts.local shape: solo, ring-eligible, gadget present, USB audio ON -> shm_ring
-    + BOTH combo halves (fanin keys enabled AND usbsink standby=1), usbsink restarted
-    into standby BEFORE fan-in opens the gadget (arm ordering)."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
+    fanin.write_text(
+        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
+        f"JASPER_FANIN_CAMILLA_COUPLING={coupling}\n"
+        f"{ca.USB_DIRECT_ENV_VAR}={initial_value}\n"
+        f"{ca.HOST_CLOCK_ENV_VAR}={initial_value}\n"
+        f"{ca.CUSHION_DECAY_ENV_VAR}={initial_value}\n"
+    )
+    outputd.write_text("")
+    _stub_ring_gates(monkeypatch, eligible=True)
+    restarts: list[str] = []
+
+    result = _auto(
+        fanin,
+        outputd,
+        gadget=True,
+        usb_intent=usb_intent,
+        restarts=restarts,
+    )
+
+    assert result.ok is True
+    assert result.owned is False
+    assert result.coupling == coupling
+    assert cr.read_persisted_coupling(fanin) == coupling
+    assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == expected_value
+    assert "fanin" in restarts
+    assert not any(item.startswith("camilla:") for item in restarts)
+
+
+def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
+    tmp_path, monkeypatch
+):
+    """jts.local shape: solo, ring-eligible, gadget present, USB audio ON resolves
+    shm_ring and enables the fan-in direct-capture combo."""
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
     fanin.write_text("")
     outputd.write_text("")
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.owned is True
     assert r.coupling == COUPLING_SHM_RING
     assert r.combo_armed is True
     assert r.usb_combo_changed is True
-    assert r.usbsink_standby_changed is True
-    assert r.restarted_usbsink is True
     assert r.ok is True
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "enabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "enabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "enabled"
     assert read_value(text, COUPLING_ENV_VAR) == COUPLING_SHM_RING
-    # The standby half landed in usbsink.env, not fanin.env.
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
-    assert ca.USBSINK_STANDBY_ENV_VAR not in text
     # Auto NEVER stamps the operator marker (stays auto-owned).
     assert read_value(text, ca.COUPLING_CHOICE_ENV_VAR) is None
-    # ARM ordering: usbsink restarted into standby BEFORE fan-in opens the gadget.
-    assert "usbsink" in restarts and "fanin" in restarts
-    assert restarts.index("usbsink") < restarts.index("fanin")
     assert r.restarted_fanin_for_combo is False
 
 
 def test_auto_gadget_present_but_usb_audio_off_does_not_arm_combo(tmp_path, monkeypatch):
-    """B2: a box with the gadget dtoverlay (fleet-wide) but USB audio turned OFF must
-    NOT arm the combo — it writes explicit-off values, not enabled."""
+    """B2: a gadget-capable box with USB audio Off must not arm the combo; it
+    writes explicit-off values rather than enabled ones."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("")
     outputd.write_text("")
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(
-        fanin, outputd, gadget=True, usb_intent=False, usbsink=usbsink, restarts=restarts
+        fanin, outputd, gadget=True, usb_intent=False, restarts=restarts
     )
     assert r.combo_armed is False
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
     # The ring can still resolve (eligible), but the combo is off.
     assert r.coupling == COUPLING_SHM_RING
+
+
+def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    """Invalid canonical USB intent must not abort before the safe disarm.
+
+    The operator marker freezes the coupling choice only; it cannot preserve a
+    stale USB DIRECT lane whose authorization is unreadable.
+    """
+
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    fanin.write_text(
+        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
+        "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
+        f"{ca.USB_DIRECT_ENV_VAR}=enabled\n"
+        f"{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
+        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
+        "JASPER_UNRELATED_SOURCE_SENTINEL=enabled\n"
+    )
+    outputd.write_text("")
+    monkeypatch.setattr(
+        cr,
+        "_migrate_stale_fanin_ring_slots",
+        lambda *_args, **_kwargs: pytest.fail(
+            "malformed USB safety disarm must not run unrelated ring migrations"
+        ),
+    )
+
+    def invalid_usb_intent():
+        raise RuntimeError("bad USB intent value")
+
+    monkeypatch.setattr(
+        ca,
+        "usbsink_effectively_enabled",
+        invalid_usb_intent,
+    )
+    restarts: list[str] = []
+    caplog.set_level("ERROR", logger=cr.__name__)
+
+    result = cr.reconcile_auto(
+        reason="malformed_usb_test",
+        env_path=fanin,
+        outputd_env_path=outputd,
+        gadget_present=True,
+        restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
+        restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
+        reconcile_camilla=lambda _coupling: (True, "reconciled"),
+        active_leader_check=lambda: False,
+    )
+
+    text = fanin.read_text()
+    assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
+    assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
+    assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
+    assert read_value(text, "JASPER_UNRELATED_SOURCE_SENTINEL") == "enabled"
+    assert read_value(text, ca.COUPLING_CHOICE_ENV_VAR) == "operator"
+    assert read_value(text, COUPLING_ENV_VAR) == COUPLING_LOOPBACK
+    assert restarts == ["fanin"]
+    assert result.combo_armed is False
+    assert result.usb_combo_changed is True
+    assert result.restarted_fanin_for_combo is True
+    assert result.usb_intent_enabled is False
+    assert result.ok is False
+    assert "bad USB intent value" in result.detail
+    assert "result=auto_usb_intent_fail_closed" in caplog.text
 
 
 def test_auto_jts3_roleful_is_loopback_combo_off(tmp_path, monkeypatch):
@@ -474,12 +611,11 @@ def test_auto_jts3_roleful_is_loopback_combo_off(tmp_path, monkeypatch):
     combo written to explicit OFF (F5), and the arm never runs (no ring transition)."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("")
     outputd.write_text("")
     _stub_ring_gates(monkeypatch, eligible=False)
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert r.owned is True
     assert r.coupling == COUPLING_LOOPBACK
     assert r.combo_armed is False
@@ -487,7 +623,6 @@ def test_auto_jts3_roleful_is_loopback_combo_off(tmp_path, monkeypatch):
     # precedence), not left absent.
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
     assert read_value(text, COUPLING_ENV_VAR) in (None, COUPLING_LOOPBACK)
 
 
@@ -495,29 +630,28 @@ def test_auto_jts5_composite_is_loopback(tmp_path, monkeypatch):
     """jts5 shape: composite dual-DAC (a ring gate fails) + no gadget -> loopback."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("")
     outputd.write_text("")
     _stub_ring_gates(monkeypatch, eligible=False)
-    r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=[])
+    r = _auto(fanin, outputd, gadget=False, restarts=[])
     assert r.owned is True
     assert r.coupling == COUPLING_LOOPBACK
     assert r.combo_armed is False
 
 
 def test_auto_jts4_streambox_no_fanin_stack_exits_clean(tmp_path, monkeypatch):
-    """jts4 shape: no fan-in stack. The auto pass must exit cleanly with no crash.
-    Modeled as: not eligible, no gadget. (In production the unit is parked on a
-    streambox, so this pass does not even run there — F7.) Combo resolves to the
-    explicit OFF values (F5)."""
+    """Legacy jts4 shape: ineligible ring and no gadget exits cleanly.
+
+    Current streamboxes run this owner because they share fan-in and may need
+    USB DIRECT; the install-profile gate independently keeps ring on loopback.
+    """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     # Already loopback (a streambox never armed anything).
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
     outputd.write_text("")
     _stub_ring_gates(monkeypatch, eligible=False)
-    r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=[])
+    r = _auto(fanin, outputd, gadget=False, restarts=[])
     assert r.owned is True
     assert r.coupling == COUPLING_LOOPBACK
     assert r.ok is True
@@ -529,14 +663,10 @@ def test_auto_jts4_streambox_no_fanin_stack_exits_clean(tmp_path, monkeypatch):
 def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):
     """Single-writer discipline: a box that previously had the combo armed but LOST
     the gadget has the fan-in combo keys driven to their explicit OFF value
-    (`disabled`, F5: not unset, so a stale jasper.env `enabled` can't win). The
-    usbsink standby key is ALWAYS 1 (daemon is standby-only), so with the box
-    already at STANDBY=1 it does not change and usbsink is NOT restarted — only
-    fan-in restarts to release the gadget. USB audio is left unavailable (no solo
-    fallback to promote)."""
+    (`disabled`, F5: not unset, so a stale jasper.env `enabled` can't win).
+    fan-in restarts to release the gadget. USB audio is left unavailable."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text(
         "JASPER_FANIN_USB_DIRECT=enabled\n"
         "JASPER_FANIN_HOST_CLOCK=enabled\n"
@@ -544,82 +674,62 @@ def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):
         "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
     )
     outputd.write_text("")
-    usbsink.write_text("JASPER_USBSINK_AUDIO_STANDBY=1\n")
     _stub_ring_gates(monkeypatch, eligible=False)
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert r.usb_combo_changed is True
-    # Standby was already 1 and stays 1 (always-1 now) → no standby change.
-    assert r.usbsink_standby_changed is False
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
-    # fan-in restarts to release the gadget; usbsink does NOT (standby unchanged,
-    # and the standby-only daemon never held the gadget anyway).
-    assert r.restarted_usbsink is False
+    # fan-in restarts to release the gadget; no second audio owner is involved.
     assert "fanin" in restarts
-    assert "usbsink" not in restarts
 
 
 def test_auto_is_idempotent_second_pass_writes_nothing(tmp_path, monkeypatch):
     """Idempotence: two identical auto passes converge with ONE write. The second
-    pass reports both change flags False and leaves fanin.env + usbsink.env
-    byte-identical (no daemon restarts on the second pass)."""
+    pass reports no combo change and leaves fanin.env byte-identical."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("")
     outputd.write_text("")
     _stub_ring_gates(monkeypatch, eligible=True)
 
-    r1 = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=[])
+    r1 = _auto(fanin, outputd, gadget=True, restarts=[])
     assert r1.usb_combo_changed is True
-    assert r1.usbsink_standby_changed is True
     after_first_fanin = fanin.read_text()
-    after_first_usbsink = usbsink.read_text()
 
     restarts2: list[str] = []
-    r2 = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts2)
+    r2 = _auto(fanin, outputd, gadget=True, restarts=restarts2)
     assert r2.usb_combo_changed is False
-    assert r2.usbsink_standby_changed is False
-    assert r2.restarted_usbsink is False
     assert fanin.read_text() == after_first_fanin
-    assert usbsink.read_text() == after_first_usbsink
     # The second pass writes nothing and bounces NO data-plane daemon. It DOES
     # re-run the lightweight camilla confirm (the shm_ring CONFIRM-path self-heal),
     # which is by design — that never glitches audio. Assert only that no fan-in /
-    # outputd / usbsink restart fired.
+    # outputd restart fired.
     assert "fanin" not in restarts2
     assert "outputd" not in restarts2
-    assert "usbsink" not in restarts2
 
 
 def test_auto_combo_only_change_forces_fanin_restart(tmp_path, monkeypatch):
     """A combo-only change on an already-at-desired-coupling box (loopback, no
     ring transition -> confirm path, no bounce) still needs fan-in restarted so the
-    new combo takes effect. The auto pass issues that one restart; the arming standby
-    change also restarts usbsink first (arm ordering)."""
+    new combo takes effect. The auto pass issues that one restart."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     # Already loopback; gadget present + USB audio on but combo NOT yet written.
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
     outputd.write_text("")
     # Ineligible for ring (so coupling stays loopback = no arm bounce), gadget+intent.
     _stub_ring_gates(monkeypatch, eligible=False)
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.usb_combo_changed is True
     assert r.combo_armed is True
     assert r.coupling == COUPLING_LOOPBACK
     # The confirm path did not restart fan-in, so the combo forced one.
     assert r.restarted_fanin_for_combo is True
     assert restarts.count("fanin") == 1
-    # Arming standby restarted usbsink BEFORE the combo fan-in restart.
-    assert r.restarted_usbsink is True
-    assert restarts.index("usbsink") < restarts.index("fanin")
     # LOOPBACK skips the camilla coordination (snd-aloop decouples the two): the
     # combo fan-in restart does NOT pause/resume camilla.
     assert "camilla_stop" not in restarts
@@ -643,15 +753,13 @@ def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
     the ioplug capture reader can't busy-spin the SCHED_FIFO daemon into a SIGKILL."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     # Already shm_ring (the live-ring coupling) + standby already 1, so the ONLY
     # change is the combo fan-in keys -> confirm path -> combo-forced fan-in restart.
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     outputd.write_text(_armed_shm_ring_outputd())
-    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.coupling == COUPLING_SHM_RING
     assert r.usb_combo_changed is True
     assert r.restarted_fanin_for_combo is True
@@ -664,63 +772,18 @@ def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
     assert restarts.index("fanin") < restarts.index("camilla_start")
 
 
-def test_auto_fallback_disarm_on_live_ring_pauses_camilla(tmp_path, monkeypatch):
-    """The realistic runtime-fallback disarm path: an ALREADY-armed shm_ring box
-    (coupling stays shm_ring, only the combo turns off) hits the confirm path, so the
-    combo-off fan-in restart is the one that must be camilla-coordinated. (The
-    fallback watcher delegates to reconcile_auto with fallback_active=True.)"""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
-    # Live ring + combo currently armed; standby already 1.
-    fanin.write_text(
-        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-        f"{ca.USB_DIRECT_ENV_VAR}=enabled\n{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
-    )
-    outputd.write_text(_armed_shm_ring_outputd())
-    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
-    _stub_ring_gates(monkeypatch, eligible=True)
-    restarts: list[str] = []
-    r = cr.reconcile_auto(
-        reason="health",
-        env_path=fanin,
-        outputd_env_path=outputd,
-        usbsink_env_path=usbsink,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        fallback_active=True,  # marker forces combo off, coupling stays shm_ring
-        restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
-        restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
-        restart_usbsink=lambda: (restarts.append("usbsink"), (True, ""))[1],
-        stop_camilla=lambda: (restarts.append("camilla_stop"), (True, ""))[1],
-        start_camilla=lambda: (restarts.append("camilla_start"), (True, ""))[1],
-        reconcile_camilla=lambda coupling: (True, "reconciled"),
-        active_leader_check=lambda: False,
-    )
-    assert r.combo_armed is False
-    assert r.usb_combo_changed is True
-    assert r.coupling == COUPLING_SHM_RING
-    # fan-in restarts to release the gadget, camilla-coordinated (stop -> fan-in -> start).
-    assert restarts.count("fanin") == 1
-    assert restarts.index("camilla_stop") < restarts.index("fanin")
-    assert restarts.index("fanin") < restarts.index("camilla_start")
-
-
 def test_auto_ring_combo_camilla_stop_failure_aborts_fanin_restart(tmp_path, monkeypatch):
     """Failure honesty: if camilla can't be paused on a live ring, the combo fan-in
     restart is ABORTED (restarting fan-in with camilla live is what SIGKILLs it),
     surfaced ok=False, and camilla is started back — never left stopped-forever."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     outputd.write_text(_armed_shm_ring_outputd())
-    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(
-        fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts,
+        fanin, outputd, gadget=True, restarts=restarts,
         camilla_stop_ok=False,
     )
     assert r.ok is False
@@ -736,38 +799,18 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
     failure is surfaced ok=False."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     outputd.write_text(_armed_shm_ring_outputd())
-    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(
-        fanin, outputd, gadget=True, usbsink=usbsink, restarts=restarts,
+        fanin, outputd, gadget=True, restarts=restarts,
         fanin_ok=False,
     )
     assert r.ok is False
     assert r.restarted_fanin_for_combo is False
     assert restarts.index("camilla_stop") < restarts.index("fanin")
     assert restarts.index("fanin") < restarts.index("camilla_start")
-
-
-def test_auto_usbsink_restart_failure_is_not_ok(tmp_path, monkeypatch):
-    """A combo transition that cannot restart usbsink leaves the two gadget owners
-    in a split state — surface it as ok=False (the unit exits non-zero) rather than a
-    silently-broken USB path."""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
-    fanin.write_text("")
-    outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=True)
-    r = _auto(
-        fanin, outputd, gadget=True, usbsink=usbsink, usbsink_ok=False, restarts=[]
-    )
-    assert r.usbsink_standby_changed is True
-    assert r.restarted_usbsink is False
-    assert r.ok is False
 
 
 # --------------------------------------------------------------------------
@@ -801,14 +844,13 @@ def test_auto_grouped_leader_resolves_loopback_and_succeeds(tmp_path, monkeypatc
     get route-blocked with ok=False (a failing boot unit on a healthy box)."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("")
     outputd.write_text("")
     # Everything eligible EXCEPT we let the real route gate see an active leader.
     _stub_ring_gates_except_route(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(
-        fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts, leader=True
+        fanin, outputd, gadget=False, restarts=restarts, leader=True
     )
     assert r.owned is True
     assert r.coupling == COUPLING_LOOPBACK
@@ -866,7 +908,6 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     does before the slot gate, so the residue is overridden and the ring resolves."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text(
         "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
         "JASPER_FANIN_RING_SLOTS=8\n"
@@ -893,7 +934,7 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
 
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert r.owned is True
     # The stale slots line was overridden (self-heal), so the ring resolved — NOT
     # disarmed to loopback.
@@ -910,7 +951,6 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     jasper_env = tmp_path / "jasper.env"
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", encoding="utf-8")
     outputd.write_text("", encoding="utf-8")
@@ -933,7 +973,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
 
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=False, usbsink=usbsink, restarts=restarts)
+    r = _auto(fanin, outputd, gadget=False, restarts=restarts)
 
     assert r.owned is True
     assert r.coupling == COUPLING_SHM_RING
@@ -977,12 +1017,11 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
     fanin.write_text("")
     outputd.write_text("")
     _stub_ring_gates(monkeypatch, eligible=True)
 
-    r = _auto(fanin, outputd, gadget=True, usbsink=usbsink, restarts=[])
+    r = _auto(fanin, outputd, gadget=True, restarts=[])
 
     assert r.owned is True
     assert r.combo_armed is True
@@ -1002,8 +1041,6 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
     # Auto ownership is preserved — the auto-pass never freezes the box to an
     # operator choice (that would stop the combo re-arming across deploys).
     assert read_value(text, ca.COUPLING_CHOICE_ENV_VAR) is None
-    # The usbsink standby half of the combo lands (documented as armed together).
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
 
 
 def test_fresh_install_ring_geometry_defaults_match_the_doc_table():
@@ -1059,89 +1096,3 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
         "config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES must stay 576 — the "
         "hardware-validated floor the measurement doc §2 table ships"
     )
-
-
-# ---- runtime-fallback flap guard (defect 2026-07-10) -----------------------
-
-
-def _ring_gates_ok():
-    return (("ring_assets", lambda: (True, "a")), ("ring_topology", lambda: (True, "t")))
-
-
-def test_resolve_fallback_active_forces_combo_off_when_eligible():
-    """A combo-eligible box (gadget + USB intent) whose live capture broke carries
-    the fallback marker -> combo forced OFF (fan-in keys explicit disabled),
-    fallback_active reported, but the ring coupling is UNAFFECTED. The usbsink
-    standby key stays 1 (daemon standby-only) — the disarm leaves USB audio
-    unavailable, it does NOT promote a bridge capture."""
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=_ring_gates_ok(),
-        fallback_active=True,
-    )
-    assert d.combo_armed is False
-    assert d.fallback_active is True
-    assert d.coupling == COUPLING_SHM_RING  # ring decision untouched by the fallback
-    # fan-in keys written to explicit-off; the standby key stays 1 (always).
-    for a in d.usb_combo_actions:
-        assert a.value == ca.USB_COMBO_DISABLED_VALUE
-    assert d.usbsink_standby_actions[0].value == ca.USBSINK_STANDBY_ON_VALUE
-
-
-def test_resolve_fallback_on_ineligible_box_is_not_reported():
-    """fallback_active is only meaningful when the box WOULD otherwise arm; on an
-    ineligible box (USB intent off) it is not reported as a fallback."""
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=False,  # not eligible
-        ring_gates=_ring_gates_ok(),
-        fallback_active=True,
-    )
-    assert d.combo_armed is False
-    assert d.fallback_active is False
-
-
-def test_reconcile_auto_fallback_marker_disarms_a_combo_box(tmp_path, monkeypatch):
-    """End-to-end: an eligible gadget box (would arm) with fallback_active=True
-    resolves the combo OFF (fan-in keys disabled; usbsink standby stays 1), leaving
-    USB audio unavailable (no aloop solo fallback). fan-in restarts to release the
-    gadget; usbsink does not (standby unchanged, daemon standby-only)."""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    usbsink = tmp_path / "usbsink.env"
-    # Pre-arm the combo so the disarm is an actual change.
-    fanin.write_text(
-        f"{ca.USB_DIRECT_ENV_VAR}=enabled\n{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
-    )
-    outputd.write_text("")
-    usbsink.write_text(f"{ca.USBSINK_STANDBY_ENV_VAR}=1\n")
-    _stub_ring_gates(monkeypatch, eligible=True)
-    restarts: list[str] = []
-    r = cr.reconcile_auto(
-        reason="health",
-        env_path=fanin,
-        outputd_env_path=outputd,
-        usbsink_env_path=usbsink,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        fallback_active=True,  # the marker forces combo off
-        restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
-        restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
-        restart_usbsink=lambda: (restarts.append("usbsink"), (True, ""))[1],
-        reconcile_camilla=lambda coupling: (True, "reconciled"),
-        active_leader_check=lambda: False,
-    )
-    assert r.combo_armed is False
-    assert r.fallback_active is True
-    assert r.usb_combo_changed is True
-    assert r.usbsink_standby_changed is False  # already 1, stays 1
-    # fan-in keys forced to explicit-off; the standby key stays 1 (always).
-    assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == "disabled"
-    assert read_value(usbsink.read_text(), ca.USBSINK_STANDBY_ENV_VAR) == "1"
-    # fan-in restarts to release the gadget; usbsink does NOT (standby unchanged).
-    assert "fanin" in restarts
-    assert "usbsink" not in restarts

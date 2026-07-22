@@ -50,7 +50,7 @@ from .audio_runtime_plan import (
 )
 from .control import client as control
 from .env_load import parse_env_file
-from .fanin.combo_health import DIRECT_HEALTH_IDLE
+from .fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
 from .log_event import log_event
 
 
@@ -58,6 +58,7 @@ CURRENT_SCHEMA_VERSION = 1
 SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 DEFAULT_ARTIFACT_DIR = Path("/var/lib/jasper/audio-validation")
 LATEST_POINTER_NAME = "latest.json"
+ROUTE_LATENCY_POINTER_NAME = "latest-route-latency.json"
 DEFAULT_STALE_AFTER = timedelta(days=30)
 DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
@@ -324,9 +325,10 @@ def make_route_latency_artifact(
     sample_count: int,
     duration_seconds: float,
     camilla_config_hash: str = "",
+    fanin_direct_config: Mapping[str, JsonValue] | None = None,
+    fanin_direct_negotiated_buffer_frames: int | None = None,
     fanin_resampler_config: Mapping[str, JsonValue] | None = None,
     outputd_config: Mapping[str, JsonValue] | None = None,
-    rust_bridge_config: Mapping[str, JsonValue] | None = None,
     uac2_gadget_attrs: Mapping[str, JsonValue] | None = None,
     measurement_provenance: Mapping[str, JsonValue] | None = None,
     impulse_spacing_jittered: bool = False,
@@ -337,6 +339,20 @@ def make_route_latency_artifact(
     """Build a route-latency artifact without playing/measuring audio."""
 
     health_issues = tuple(str(issue) for issue in route_health_issues if str(issue))
+    negotiated_buffer_frames = _int_or_none(
+        fanin_direct_negotiated_buffer_frames
+    )
+    if fanin_direct_config and (
+        negotiated_buffer_frames is None or negotiated_buffer_frames <= 0
+    ):
+        health_issues = tuple(
+            dict.fromkeys(
+                (
+                    *health_issues,
+                    "live_fanin_direct_negotiated_buffer_missing",
+                )
+            )
+        )
     status, recommendation, certified, issues = route_latency_gate_status(
         p95_ms=p95_ms,
         p99_ms=p99_ms,
@@ -355,9 +371,10 @@ def make_route_latency_artifact(
             "dac_profile_id": dac_id,
             "route_config_hash": route_config_hash,
             "camilla_config_hash": camilla_config_hash,
+            "fanin_direct_config": dict(fanin_direct_config or {}),
+            "fanin_direct_negotiated_buffer_frames": negotiated_buffer_frames,
             "fanin_resampler_config": dict(fanin_resampler_config or {}),
             "outputd_config": dict(outputd_config or {}),
-            "rust_bridge_config": dict(rust_bridge_config or {}),
             "uac2_gadget_attrs": dict(uac2_gadget_attrs or {}),
         },
         "sample_count": sample_count,
@@ -439,46 +456,97 @@ def _fanin_input_status(
 def route_live_state_issues(
     expected_identity: Mapping[str, JsonValue],
     *,
-    usbsink_state: Mapping[str, Any] | None = None,
     fanin_status: Mapping[str, Any] | None = None,
-    allow_idle_resampler_unlocked: bool = False,
+    allow_idle_direct_lane: bool = False,
 ) -> tuple[str, ...]:
     """Return live runtime mismatches that invalidate route-latency promotion.
 
     Route artifacts bind measurements to the intended route identity. Promotion
-    also needs the current daemons to be running that identity: Rust bridge
-    period/ring settings and the fan-in USB resampler lock/target are live
-    timing facts, not just config promises. Artifact creation keeps the strict
-    default because its measurement window must have a live, locked resampler.
-    Doctor may allow an unlocked resampler only when fan-in explicitly reports
-    the direct lane as idle; static identity such as the configured target is
+    also needs fan-in to be running that identity: the direct USB source,
+    negotiated capture geometry, and resampler lock/target are live timing
+    facts, not config promises. Artifact creation keeps the strict default
+    because its measurement window must have a capturing, locked direct lane.
+    Doctor may allow an idle direct lane because a stored certification remains
+    valid while the host is not streaming; static identity and geometry are
     still checked in that state.
     """
 
     issues: list[str] = []
 
-    bridge_expected = _mapping_or_empty(
-        expected_identity.get("rust_bridge_config"),
+    direct_expected = _mapping_or_empty(
+        expected_identity.get("fanin_direct_config"),
     )
-    if bridge_expected:
-        if not isinstance(usbsink_state, Mapping):
-            issues.append("live_usbsink_state_missing")
+    if direct_expected:
+        lane = str(direct_expected.get("lane") or "usbsink")
+        lane_status = _fanin_input_status(fanin_status, lane)
+        if lane_status is None:
+            issues.append(f"live_fanin_input_missing:{lane}")
         else:
-            expected_impl = str(bridge_expected.get("implementation") or "")
-            observed_impl = str(usbsink_state.get("implementation") or "")
-            if expected_impl and observed_impl != expected_impl:
-                issues.append("live_usbsink_bridge_mismatch:implementation")
+            expected_source = str(direct_expected.get("source") or "direct")
+            if lane_status.get("source") != expected_source:
+                issues.append(f"live_fanin_direct_mismatch:{lane}:source")
+            direct = lane_status.get("direct")
+            if not isinstance(direct, Mapping):
+                issues.append(f"live_fanin_direct_missing:{lane}")
+            else:
+                expected_device = str(direct_expected.get("device") or "")
+                if expected_device and direct.get("device") != expected_device:
+                    issues.append(f"live_fanin_direct_mismatch:{lane}:device")
 
-            expected_period = _int_or_none(bridge_expected.get("period_frames"))
-            observed_period = _int_or_none(usbsink_state.get("period_frames"))
-            if expected_period is not None and observed_period != expected_period:
-                issues.append("live_usbsink_bridge_mismatch:period_frames")
+                health = str(direct.get("health") or "unknown")
+                idle_allowed = (
+                    allow_idle_direct_lane and health == DIRECT_HEALTH_IDLE
+                )
+                if health != DIRECT_HEALTH_CAPTURING and not idle_allowed:
+                    issues.append(f"live_fanin_direct_unhealthy:{lane}:{health}")
 
-            expected_ring = _int_or_none(bridge_expected.get("ring_periods"))
-            ring = _mapping_or_empty(usbsink_state.get("ring"))
-            observed_ring = _int_or_none(ring.get("capacity_periods"))
-            if expected_ring is not None and observed_ring != expected_ring:
-                issues.append("live_usbsink_bridge_mismatch:ring_periods")
+                expected_period = _int_or_none(
+                    direct_expected.get("period_frames")
+                )
+                observed_period = _int_or_none(direct.get("period_frames"))
+                if (
+                    expected_period is not None
+                    and observed_period != expected_period
+                ):
+                    issues.append(
+                        f"live_fanin_direct_mismatch:{lane}:period_frames"
+                    )
+
+                minimum_buffer = _int_or_none(
+                    direct_expected.get("min_buffer_frames")
+                )
+                observed_buffer = _int_or_none(direct.get("buffer_frames"))
+                expected_buffer = _int_or_none(
+                    direct_expected.get("negotiated_buffer_frames")
+                )
+                if (
+                    expected_buffer is not None
+                    and observed_buffer != expected_buffer
+                ):
+                    issues.append(
+                        "live_fanin_direct_mismatch:"
+                        f"{lane}:negotiated_buffer_frames"
+                    )
+                if (
+                    minimum_buffer is not None
+                    and (
+                        observed_buffer is None
+                        or observed_buffer < minimum_buffer
+                    )
+                ):
+                    issues.append(
+                        f"live_fanin_direct_mismatch:{lane}:buffer_frames"
+                    )
+                if (
+                    direct_expected.get("buffer_period_aligned") is True
+                    and observed_period is not None
+                    and observed_period > 0
+                    and observed_buffer is not None
+                    and observed_buffer % observed_period != 0
+                ):
+                    issues.append(
+                        f"live_fanin_direct_mismatch:{lane}:buffer_alignment"
+                    )
 
     resampler_expected = _mapping_or_empty(
         expected_identity.get("fanin_resampler_config"),
@@ -499,7 +567,7 @@ def route_live_state_issues(
                     and direct.get("health") == DIRECT_HEALTH_IDLE
                 )
                 idle_unlock_allowed = (
-                    allow_idle_resampler_unlocked
+                    allow_idle_direct_lane
                     and lane_is_explicitly_idle
                     and resampler.get("locked") is False
                 )
@@ -522,7 +590,7 @@ def route_live_state_issues(
                         f"live_fanin_resampler_mismatch:{lane}:target_fill_frames"
                     )
 
-    return tuple(issues)
+    return tuple(dict.fromkeys(issues))
 
 
 def assess_route_latency_artifact(
@@ -549,6 +617,23 @@ def assess_route_latency_artifact(
     observed_hash = str(identity.get("route_config_hash") or "")
     expected = dict(expected_identity or {"route_config_hash": route_config_hash})
     identity_issues = _route_identity_mismatches(identity, expected)
+    if _mapping_or_empty(expected.get("fanin_direct_config")):
+        negotiated_buffer_frames = _int_or_none(
+            identity.get("fanin_direct_negotiated_buffer_frames")
+        )
+        if (
+            negotiated_buffer_frames is None
+            or negotiated_buffer_frames <= 0
+        ):
+            identity_issues = tuple(
+                dict.fromkeys(
+                    (
+                        *identity_issues,
+                        "identity_mismatch:"
+                        "fanin_direct_negotiated_buffer_frames",
+                    )
+                )
+            )
     config_match = observed_hash == route_config_hash and not identity_issues
     artifact_issues = _string_issues(checks.get("issues"))
     route_artifact_health_issues = tuple(
@@ -695,11 +780,14 @@ def write_latest_pointer(
     *,
     directory: Path | str = DEFAULT_ARTIFACT_DIR,
     file_mode: int = 0o644,
+    pointer_name: str = LATEST_POINTER_NAME,
 ) -> Path:
-    """Atomically update the convenience latest pointer for status surfaces."""
+    """Atomically update one trusted latest pointer for status surfaces."""
 
     directory_path = Path(directory)
-    path = directory_path / LATEST_POINTER_NAME
+    if Path(pointer_name).name != pointer_name or not pointer_name.endswith(".json"):
+        raise ValueError("pointer_name must be a JSON filename")
+    path = directory_path / pointer_name
     _write_artifact_json(path, artifact, file_mode=file_mode)
     return path
 
@@ -797,7 +885,8 @@ def load_latest_artifact(
     try:
         paths = sorted(
             p for p in directory_path.glob("*.json")
-            if p.is_file() and p.name != LATEST_POINTER_NAME
+            if p.is_file()
+            and p.name not in {LATEST_POINTER_NAME, ROUTE_LATENCY_POINTER_NAME}
         )
     except OSError as e:
         return ArtifactLoadResult(

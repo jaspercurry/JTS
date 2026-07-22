@@ -51,7 +51,364 @@ The product is three tiers:
 
 ---
 
-## Current state (verified against the worktree & `origin/main`, 2026-06-19)
+## Current state (verified against the production isolated and summed relay producers, durable Active run and region-evidence host, and the Shared manifest, playback, admission, and guarded-playback implementation, 2026-07-15)
+
+### Wave 1 contract-only foundation (2026-07-13)
+
+Wave 1 adds strict, pure boundary values; it does **not** change the current
+measurement, playback, bundle, DSP, or Room-correction flows:
+
+- `excitation_admission.py` owns one deterministic allow/refuse calculation over
+  an exact request, caller-composed limits, and fresh-protection claim. The
+  request and authority bind target, safety profile, excitation plan, closed
+  band, effective peak, duration, and repeat count. The owning adapter must
+  intersect code-owned, confirmed-profile, and plan limits; bind the plan to
+  normalized stimulus/generator/effective-peak inputs; issue protection evidence
+  from a fresh graph readback; and rerun admission immediately before playback.
+  The strict SHA-256 values are content identities, not signatures, trusted
+  issuers, or transferable playback capabilities. The original Wave 1 slice had
+  no producer; Active's isolated-driver production adapter now supplies the
+  trusted live consumer. The strict pure per-region evidence shape now has a
+  typed internal host and raw-WAV producer that can collect synthetic-admitted
+  evidence and advance an exact run to `measured`. A separate strict
+  `CompleteIsolatedDriverEvidence` aggregate now binds exactly three fresh
+  admitted captures for every physical driver in that same plan, with one
+  canonical run-scoped artifact and deep child/admission verification on every
+  reopen. The production fixed-axis driver relay now promotes each accepted,
+  freshly admitted capture into a resumable strict attempt and publishes the
+  complete aggregate only after all three repeats for every physical driver.
+  The bounded fourth attempt refuses rather than treating two fixed-axis
+  repeats as complete, and status idempotently finishes any derived
+  per-driver/run anchors interrupted after their typed captures were stored.
+  Existing fail-soft records are never read or promoted. A
+  store-backed pure deterministic evaluator can now reopen the exact complete
+  isolated and summed artifacts and derive an attenuation/polarity/delay-only
+  electrical candidate. The Active production service now invokes it after the
+  final summed capture and persists/reopens one exact candidate before binding
+  `candidate_ready`; Shared remains only the evidence/identity substrate and
+  owns no candidate policy. Active now applies that reviewed candidate under
+  the shared writer lock and uses Shared's exact DSP-state identity for fresh
+  readback and restoration; Shared still owns no candidate, apply, receipt, or
+  Room policy. Active now uses the same admitted playback/capture primitives
+  for three current-graph post-apply repeats and persists its own receipt.
+- `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
+  `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
+  replay inputs, admission artifacts, algorithm id/version, geometry, placement,
+  and context. They do not read files, migrate Room or Active bundle formats,
+  decide quality, own a verdict, or promote a forensic bundle into authority.
+  Existing `jasper.correction.bundles` and `jasper.active_speaker.bundles`
+  retain feature ownership; newly created Active commissioning bundles also
+  establish the exact Shared admission marker, while historical bundles are
+  never upgraded.
+- The same module distinguishes a normalized CamillaDSP `active_raw` content
+  identity from the exact host transaction/rollback state. The latter reuses
+  the existing `null_walk.DspPredecessor` canonical JSON and fingerprint rules.
+  No generic graph-transaction abstraction landed. The feature host must still
+  hold the real writer lock across apply, fresh readback, and exact restoration.
+  Shared writer admission is bounded and cancellation-safe: it polls a
+  non-blocking file lock to a monotonic deadline, closes a cancelled/timed-out
+  waiter's descriptor immediately, and reports only contention transitions.
+  Public lock callers must supply a stable feature source, so contention and
+  timeout events identify the owner rather than collapsing to an anonymous
+  shared-boundary failure.
+  The deadline governs admission only; a host that has acquired the boundary
+  must still drain mutation and restoration to an exact terminal result.
+- Active owns the nine-state lifecycle and positive eligibility receipt built on
+  these shared identities. The lifecycle's
+  `blocked_live_state_unknown` state prevents an attempted/unknown mutation from
+  returning to an ordinary pre-mutation block without exact restore evidence.
+  A positive receipt requires an evaluated-`verified` topology and every
+  topology-derived combined active-speaker
+  target to pass exactly three distinct admitted fixed-axis post-apply captures
+  from one session/threshold profile. Every capture has a unique one-shot
+  admission id, separate canonical generation/playback artifacts, and a
+  playback decision that retains its generation request and limits. The receipt
+  binds the retained applied candidate, fresh graph proof, predecessor, and
+  rollback result bound to the same
+  operation, mutation, and observed applied graph. The transition value remains
+  pure, while Wave 3 now persists one exact current-run identity and provides
+  bounded attempt/journal mutation APIs. Production isolated and summed
+  adapters now use that run/store authority; Active's production verification
+  service constructs, persists, and strictly reopens the eligibility receipt
+  after all exact targets pass.
+  The breaking admitted-capture shape and its post-apply/receipt containers are
+  all schema version 2; schema version 1 is intentionally rejected because no
+  schema-v2 is the only production receipt format.
+
+Existing fail-soft Active bundles remain forensic. Active setup status now
+exposes one explicit Room decision: manual applied snapshots retain their
+separate legacy authority, while automatic tuning requires the exact verified
+receipt. Room consumes that decision and does not parse the receipt or
+reconstruct it from historical B2b evidence. The crossover status has a separate fail-closed
+`commissioning_run` control-plane projection; it is not an eligibility receipt
+and Room does not consume it. Live JTS3 behavior remains unvalidated.
+
+### Wave 2 neutral artifact-manifest ownership (2026-07-13)
+
+`jasper.audio_measurement.bundles` now owns only the byte-level artifact-manifest
+mechanics already shared by Room and Active: normalized bundle-relative paths,
+SHA-256/size records, dependency normalization, atomic JSON replacement, and
+manifest upsert/read behavior. The public neutral writers require the feature
+schema from authoritative `info.json` or an explicit schema argument. Room's
+legacy schema-5 fallback is private to the `jasper.correction.bundles`
+compatibility wrapper.
+
+Feature readers use the public `relative_artifact_path()` validator for the
+same traversal, normalization, and manifest-self-reference checks as the
+writers. They use the neutral public `sha256_file()` and
+`read_artifact_manifest()` APIs directly rather than reaching through another
+feature's compatibility wrapper.
+
+The feature packages still own everything that gives a bundle meaning. Room
+retains schema 5, `/var/lib/jasper/correction/sessions`, validation, replay,
+latest-session, retention, and private-audio policy. Active retains schema 1,
+its append-only fail-soft commissioning envelope, retention, and core-artifact
+rules. Manifest schema remains 1. No existing bundle tree is rewritten or
+migrated, and no manifest, artifact hash, or bundle reader grants playback,
+apply, admission, lifecycle, or eligibility-receipt authority. The historical
+`correction_bundle_*` warning event names remain temporarily stable for journal
+compatibility.
+
+### Wave 2 neutral playback extraction (2026-07-13)
+
+`jasper.audio_measurement.playback` now owns only the process and deterministic
+sine-WAV mechanics already proven by Room. Its neutral entry points require the
+feature owner to supply the WAV, ALSA device, timeout, and tone cache directory;
+the shared module has no target, band, level, cache-path, or admission default.
+It treats playback as emission of an **already-admitted** artifact and does not
+turn a Wave 1 request, identity, fingerprint, or planning result into authority.
+No Active or browser flow was adopted in this extraction.
+
+For an exact feature-manifest artifact, `verified_wav_source()` resolves the
+relative path without following links, requires a regular uncompressed PCM WAV
+under the 64 MiB / 90-second / 192 kHz bounds, and checks size plus SHA-256 while
+copying into a sealed memory descriptor (or an unlinked, read-only fallback).
+`play_verified_wav()` reverifies and emits that immutable snapshot through its
+inherited descriptor, so later in-place writes and path replacement cannot swap
+the bytes. These primitives establish content identity only; they do not grant
+admission or choose policy, device, or locking.
+
+`jasper.correction.playback` remains the Room-owned compatibility wrapper. It
+retains `correction_substream`, `/var/lib/jasper/correction/tones`, the existing
+`play_sweep`, `_ensure_tone_wav`, `TonePlayer`, and `play_test_tone` call shapes,
+legacy missing-file/startup exceptions, deterministic cache filenames, and
+generated PCM bytes. The shim stays until Room owns a concrete fresh-admission
+adapter and every in-repo caller has migrated; extraction alone is not a reason
+to delete it.
+
+Playback validates finite positive time/resource inputs before spawn or cache
+creation; tone generation is capped at the current 90-second consumer ceiling,
+4.32 million samples, and 192 kHz. Subprocess stderr is capped at 8 KiB.
+Timeout and cancellation send a kill and allow two seconds for reap; a
+non-settling child produces the typed
+`kill_sent_reap_unconfirmed` cleanup state instead of holding the web service
+forever. Continuous-tone lifecycle logs use the stable
+`event=audio_measurement.continuous_tone` family. `TonePlayer.cancel()` is an
+owning-event-loop-thread API; it makes no cross-thread promise.
+
+### Wave 2 production admission artifacts (2026-07-13)
+
+`excitation_artifacts.py` is the narrow production persistence bridge around the frozen
+schema-version-1 `ExcitationAdmission`. `create_admission_authority()` creates
+one dedicated admission-authority directory exclusively per fresh production
+feature session/bundle and persists its canonical marker; each capture or retry
+then uses a unique `admission_id` inside that authority. Creation refuses every
+existing directory instead of upgrading evidence already there. Its
+feature-owned parent must already exist; Shared does not create feature/session
+ancestors. This directory is not a feature session envelope: the feature still
+owns its manifest, retention, capture storage, and bundle-root resolution, and
+records the returned marker/artifact identities in that state.
+Generation and playback decisions are separately persisted at the enforced
+`admission/v1/generation/<id>.json` and
+`admission/v1/playback/<id>.json` path roles. Their compact, sorted bytes are
+the exact encoding required by Active's `AdmittedCaptureProof`. Refused
+decisions, existing paths, non-canonical files, identity mismatches, and
+unreadable writes fail closed. The existing Room/Active forensic bundle writer
+is not an authority writer. Publication is no-replace and crash-durable: file
+bytes and every newly created directory entry are fsynced before success;
+failure after the final path appears is reported as outcome unknown, never as
+a clean retryable failure.
+
+The two boundaries are deliberately distinct. A feature first persists an
+allowed generation decision. Immediately before audio, while its existing DSP
+writer/playback guard is still held, it calls
+`readmit_and_persist_playback_admission()` with freshly recomposed current
+limits and new `ProtectionEvidence` issued from a second live
+graph/protection readback. That operation re-reads the generation artifact,
+invokes the pure `readmit_excitation_for_playback()` calculation internally,
+and only persists an allowed playback-role artifact. It does not infer temporal
+freshness from fingerprint inequality; the guarded host establishes freshness
+by doing the live readback and call in that order without releasing its guard.
+A resulting capture points to that final artifact, not the generation artifact.
+`admitted_playback.play_admitted_wav()` is the guarded production composition:
+the feature records its generated WAV in its own manifest, calls
+`bind_generated_excitation_wav()` to create the schema-version-1 binding between
+that exact `ArtifactIdentity`, generation artifact, and plan, and persists the
+binding with its feature state. There is no free WAV pathname in the production
+gate. Shared opens the manifest-relative artifact without following symlinks,
+requires a regular uncompressed PCM WAV under the 64 MiB / 90-second / 192 kHz
+bounds, checks size + SHA-256 + exact admitted duration before the fresh issuer,
+copies the verified bytes into a sealed memory descriptor (or an unlinked,
+read-only fallback), and reverifies that immutable snapshot immediately before
+passing its descriptor to `aplay`. Later in-place writes and path replacement
+cannot swap the emitted stimulus after admission.
+
+The feature supplies one async issuer rather than precomputed proof values; the
+entry point verifies generation authority, invokes that issuer exactly once,
+immediately re-admits, durably persists and rereads the playback-role artifact,
+and only then calls the neutral WAV emitter. The feature must hold its existing
+DSP writer/playback guard across the whole await. Shared does not acquire the
+lock or interpret the graph. Repeated cancellation during threaded persistence
+is drained before it is reported, so publication cannot finish later after the
+caller believes the operation stopped. If persistence completed, the typed
+`PlaybackAdmissionCancelled` carries the verified artifact and records whether
+audio may have started. Cancellation before spawn proves no audio ran;
+cancellation during playback has an uncertain/active emission outcome. Both
+consume the one-shot path and require a new generation admission/id for retry.
+`PlaybackAdmissionFailed` provides the same verified artifact and retry rule for
+every ordinary failure after playback admission persists. A final immutable-WAV
+verification or `aplay` start failure proves no audio ran; timeout, process/wait
+failure, and cleanup failure after completed playback report that audio may
+have started. The correlated terminal event carries the artifact SHA and the
+same possible-audio value.
+Refusal, stale proof, malformed content, and every failed/unknown persistence or
+final-readback result emit no audio. The guarded boundary logs one correlated
+terminal result with closed failure classes and no proof content.
+
+Historical captures have no admission route through this API.
+`refuse_historical_evidence()` raises the typed, stable
+`historical_evidence_not_admitted` failure, while the exclusive authority
+marker and versioned roles prevent an existing forensic directory from being
+promoted through the supported creation path. The marker is content identity,
+not a signature or proof of filesystem history; it must never be copied into a
+historical session. There is no migration, ensure, repair, synthesis, or
+backfill API. The current B2b replay remains permanently diagnostic-only. At
+adoption, Active must classify B2b before authority resolution, use a fixed
+production authority root and `bundle_kind`, require a playback-role artifact,
+and never add/copy an authority marker for a historical session. Active's pure
+receipt and region-evidence values now require the production Active bundle
+kind plus canonical, distinct generation/playback roles; filesystem marker and
+fresh-live-issuer trust remain responsibilities of the production host/store.
+Active's isolated-driver
+production path has adopted these APIs. It holds the bounded Shared writer lock
+across transient load, fresh generation/playback proofs, exact playback, and
+restoration, and threads the verified playback-role handoff through the
+server-owned capture call. Legacy direct/browser summed routes remain
+intentionally refused before graph load; the recorder-only production relay
+now passes real WAV bytes and explicit fixed-axis acknowledgement into the typed
+host without accepting browser DSP policy. The `CommissioningEvidenceHost` and
+`SummedCaptureProducer` now own the server-derived region schedule, exact
+adjacent-output isolation, fresh generation/playback admission, bounded raw-WAV
+ingress, analysis/quality persistence, exact restoration, and lifecycle
+progression to `measured`. The complete normal/reverse/delay program stays bound
+to one normalized applied baseline and microphone-calibration context, and every
+normal, reverse, and delay coordinate requires a distinct live-graph identity.
+Cleanup freshly proves the predecessor graph and path before restoring its
+potentially louder listening volume; an unproved graph restore retains the
+attenuated measurement volume and blocks as unknown.
+Every transient summed graph also lowers `devices.volume_limit` to the quieter
+of the inherited ceiling and the admitted measurement volume, and playback
+admission freshly proves that ceiling. The raw transport's play closure expires
+as soon as transport returns, raises, or is cancelled, so it cannot retain an
+audio capability beyond the guarded writer transaction.
+Protection proof accepts canonical stereo pipeline steps only when every covered
+output shares the target driver role; isolated-driver admission remains
+singleton-only, and mixed-role groups fail closed. A zero-delay coordinate
+reuses the freshly proved zero-relative graph rather than applying it twice.
+Correction-web now persists signed per-region geometry and supplies the real
+relay transport. It reopens calibration and recorder identity from the durable
+comparison set; status does not duplicate the host schedule. Production entry
+is currently limited to a two-way preset on the registry-declared DAC8x
+commissioning profile. Polling reopens the typed complete anchors and checks
+their current program/lifecycle fingerprints without rereading every child WAV;
+geometry mutation, capture, candidate evaluation, and commit boundaries retain
+full child-byte and admission verification. Candidate,
+receipt, and Room-gate authority are unchanged.
+
+### Wave 3 Active run identity (2026-07-14)
+
+`jasper.active_speaker.commissioning_run` is an Active-owned control-plane
+store, not a new Shared evidence bundle. A fresh production comparison set starts
+one run only when it carries its bundle session id and exact comparison
+fingerprint. The store atomically persists bounded, fully validated
+session/run/process-owner-generation identity, immutable generation-bound target
+attempts, and a sequenced journal of typed nine-state transitions. Every
+public read revalidates the complete artifact. Correction-web claims the owner
+generation on service start, making prior-process handles stale, and exposes a
+safe `commissioning_run` projection on crossover status. A comparison must pass
+its complete schema/fingerprint and match the current topology and protected
+profile before status can call the run current. Absent state is
+`not_started`; an exact active comparison is `current`; comparison drift is
+`stale`; corrupt/unreadable state is `unavailable`. The web-created run starts
+`unconfigured`; no browser route reserves attempts. The typed internal host
+uses generation-bound attempt reservations plus a cross-process issuance CAS,
+a crash-released execution mutex spanning runtime through capture commit, and
+advances exact synthetic-admitted compositions through `protected` to `measured`
+only after strict write/reopen and exact predecessor restoration.
+
+### Wave 3 Active per-region evidence authority (2026-07-14)
+
+`jasper.active_speaker.commissioning_evidence` is a strict, pure Active-owned
+contract over Shared identities and exact `CommissioningRunHandle` /
+`CommissioningAttemptHandle` values; it is not another bundle or a production
+capture service. It derives the exact group-by-crossover-region plan from the
+current run, topology, preset, protected profile, comparison, threshold
+profile, and session. The preset layout is authoritative: mono requires exactly
+one mono active group, while stereo requires exactly left and right active
+groups; every group must match the preset way count and complete driver-role
+set. A two-way has one target per active group; a three-way
+keeps its lower and upper crossover regions separate. Normal, reverse, and
+delay identities are distinct. Each stationary set requires three fresh
+one-shot captures from one durable attempt, and each coordinate in the exact
+Shared `BoundedNullWalkSchedule` requires five fresh one-shot captures from its
+own attempt. Every
+capture binds exact graph and placement identities, separate generation and
+playback protection proofs, a generated immutable WAV, and canonical Active
+generation/playback admission artifacts. Cross-role and cross-set artifact
+replay fails closed. Each delay walk also requires an explicit typed
+operator-attested signed geometry seed, including when the attested value is
+zero. `CompleteCommissioningEvidence` requires one canonically ordered region
+per plan target and makes artifact roles/paths, admission ids, raw bytes, and
+durable attempts globally unique across a three-way or multiple groups.
+The schema-v2 eligibility receipt applies the same global-namespace rule to
+every post-apply raw, analysis-input, quality, generation-admission, and
+playback-admission identity and path across all required groups.
+
+The module performs no I/O, persistence, playback, scoring, graph mutation, or
+lifecycle transition. The separate typed internal host and producer now retain
+the run handle, reserve bounded attempts, build and freshly confirm each exact
+adjacent-pair graph under the writer lock, admit generation and playback,
+persist/reopen strict values only after exact restoration, and consume the
+bounded schedule and evaluator. Legacy direct/browser summed ingress remains
+pre-audio refused; the production `kind=summed` relay supplies recorder bytes
+and generation-specific signed geometry to that host. Active, not this shared
+module, now publishes the candidate, performs exact apply/readback, evaluates
+three post-apply repeats, and exposes the receipt-backed Room decision.
+The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
+budget at the allowed 100 µs maximum step. Shared now represents it with a
+deterministic schedule of 15 symmetric coarse coordinates plus at most two
+adjacent fine refinements around an explicit coarse anchor; the exhaustive
+runner remains capped at 25 and the complete schedule at 27. The separate
+`select_scheduled_delay()` evaluator requires evidence for that exact schedule
+and reuses `select_delay()`'s repeatability, plateau, and tie policy; the
+scheduler itself still chooses only where to refine. The internal host consumes
+the exact schedule and evaluator; the pure evidence module still does not play
+or capture and neither integration weakens either bound.
+
+`jasper.active_speaker.commissioning_evidence_store` is the separate strict I/O
+boundary for these values. It reopens one exact bundle admission authority,
+publishes canonical artifacts once with durable no-replace semantics, and
+reopens the exact bytes before returning progress. Paths are normalized and
+bundle-relative; symlinks, non-regular files, oversized artifacts, noncanonical
+or duplicate-key JSON, cross-session identities, and conflicting retries fail
+closed. A deep reopen verifies every raw, analysis, quality, stimulus,
+generation-admission, and playback-admission artifact. The fail-soft forensic
+manifest and `info.json` remain metadata, never evidence authority. Run plans
+and incomplete aggregates are process-owner-generation scoped; the completed
+aggregate is run scoped so a restart can recover a durable complete-before-
+transition result without accepting an incomplete prior generation. This store
+does not schedule, score, mutate DSP, play audio, advance the lifecycle, or
+create a second retention system.
 
 ### What exists and is production-grade
 - **Measurement kernel** (the pure primitives now in `jasper/audio_measurement/`
@@ -64,11 +421,18 @@ The product is three tiers:
   verbatim from `correction/session.py._band_levels_dbfs`, which now
   delegates to it; `band_snr_verdicts` / `cap_null_depth_db` are new,
   consumed by `active_speaker/driver_acoustics.py` and
-  `crossover_alignment.py`) — all under `jasper/audio_measurement/`; plus,
+  `crossover_alignment.py`), `program.py` + `program_analysis.py` (crossover
+  conductor W1: the excitation-program schedule dataclasses + CHECK/MEASURE/
+  VERIFY composers, and the pure `(program, capture) → ProgramAnalysis`
+  locator / clock-drift ε / GCC-PHAT polarity-and-confidence seed +
+  declaration-bounded summed-flatness candidate pipeline whose comb lobe is
+  anchored by the drift-corrected physical peak gap) — all
+  under `jasper/audio_measurement/`; plus,
   staying in `jasper/correction/`: `confidence.py`, `coordinator.py`
   (`measurement_window`: pauses renderers + voice, serializes), `session.py`
   (`MeasurementSession` state machine), `bundles.py` (schema-versioned
-  durable evidence). Shipped, tested.
+  durable evidence and Room validation/policy). The common manifest writer and
+  reader live in `audio_measurement/bundles.py`. Shipped, tested.
 - **Shared browser-mic capture**: `deploy/assets/shared/js/measurement-audio.js`
   (mono 48 kHz, AGC/EC/NS hard-coded off) + `correction/browser_audio.py`.
 - **Active-speaker subsystem** (`jasper/active_speaker/`): commissioning
@@ -134,6 +498,16 @@ The product is three tiers:
   still own the actual DSP mutation, exact restore, read-back, writer exclusion,
   and capture transport. The exhaustive runner preflights and refuses above 25
   candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
+  `BoundedNullWalkSchedule` is the separate resumable-host scheduling contract:
+  it retains the seed and both aligned endpoints, chooses at most 25 symmetric
+  coarse coordinates, and adds only the two immediate fine-grid neighbors of
+  one explicit coarse refinement anchor. Its schedule is capped at 27 and
+  carries no selected-delay authority. `select_scheduled_delay()` is the
+  separate final evaluator: it requires exact scheduled-coordinate coverage
+  and delegates to the same quality, repeatability, plateau, and tie policy as
+  exhaustive `select_delay()`. Non-allocating fine-grid membership lets graph
+  proof validate one scheduled coordinate without bypassing the exhaustive
+  runner's refusal.
   `delay_graph.py` is the inert candidate graph-*content* seam beside that
   runner. Inside an outer exact-restore transaction, a host stages both delay
   lanes to numeric zero and supplies the same `DspPredecessor` the F1 runner
@@ -160,23 +534,40 @@ The product is three tiers:
   graphs remain an explicit integration gap, not admitted measurement
   authority. Emitted-file hashes are never compared with CamillaDSP's
   normalized/default-expanded graph. Production CamillaDSP/web/persistence
-  wiring is not shipped yet, and low-frequency bass walks require a separately
-  reviewed adaptive scheduler before they are executable.
+  wiring is not shipped yet; low-frequency hosts must consume the bounded
+  schedule explicitly before they are executable.
 - The relay level target is reusable state, not a long-lived live gain. A
   successful ramp restores the original listening volume immediately. Room,
   verification, and active-crossover adapters reassert the target only inside
   the serialized `measurement_window()` that owns playback, then restore it in
   that window's `finally` before renderers resume. The shared ensure/restore
-  transition lock makes concurrent cleanup idempotent and retryable. Room and
+  transition lock makes concurrent cleanup idempotent and retryable. **For an
+  isolated active-crossover driver sweep only (W2.1), "the target" reasserted
+  is no longer necessarily the raw ramp lock** — `CrossoverLevelLease`
+  (`jasper/web/correction_crossover_backend.py`) runs the closed-loop level
+  solver (`jasper.audio_measurement.level_solver`, documented in
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Level control and SNR") and reasserts its chosen `main_volume_db` when the
+  solve succeeds, falling back to the raw lock only when the solve cannot run
+  (no confirmed driver-safety ceilings, missing `gain_map_db`, and similar).
+  A summed sweep is unaffected — it still reasserts the raw quietest fixed-axis
+  lock across its required roles. Room and
   active-crossover adapters may accept the kernel's explicitly degraded
   `bounded_low_level` result only after its unchanged AGC, clip, liveness, SNR,
   spread, and shortfall gates pass; the relay establishes the SNR floor from a
   short rolling ambient median rather than one microphone-startup block.
   Room alone allows the listening-position ramp +15 dB of travel up to the
   unchanged 0 dB hard ceiling because its stimulus is already −12 dBFS;
-  crossover/near-field keeps the shared +12/−3 cap. Ramp snapshots retain
-  compact admission counts plus maximum observed RMS, peak, trust threshold,
-  and trust deficit for an exact zero-trusted-sample diagnosis.
+  crossover/near-field keeps the shared +12/−3 cap. Room's owning session also
+  shifts the shared −20 to −12 dBFS tone window down 6 dB for full-band ESS
+  headroom. This is deliberately not a shared-kernel or Active policy change.
+  Two 2026-07-15 JTS3 UMIK-2 runs reached full scale after locking in the shared
+  window and then in Room's initial 3 dB-lower window; the latter sweep was
+  −15.86 dBFS RMS with 0.1856% clipped samples and 25.49 dB estimated SNR. The
+  existing quality gate rejected both clipped inputs.
+  Ramp snapshots retain compact admission counts plus maximum observed RMS,
+  peak, trust threshold, and trust deficit for an exact zero-trusted-sample
+  diagnosis.
 - `active_speaker/driver_acoustics.py` **imports**
   `jasper.audio_measurement.{sweep, deconv, analysis, quality}` and the `DRIVER`
   quality profile — it reuses the shared DSP verbatim.
@@ -198,8 +589,10 @@ The product is three tiers:
   already there — that's why the refactor is low-risk.
 - **Active-crossover repeat + SNR controller (2026-07-12).** The protected
   level probe now owns only a safe, non-clipping playback level. Each driver
-  measurement holds a 14-second controlled quiet interval followed by a
-  role-sized ESS (woofer/subwoofer 12 s, midrange 8 s, tweeter 4 s), and
+  measurement holds a controlled quiet interval — right-sized per driver as of
+  2026-07-16 (that role's own sweep length + 2 s, so 14 s woofer/subwoofer down
+  to 6 s tweeter, not a fixed 14 s pause) — followed by a role-sized ESS
+  (woofer/subwoofer 12 s, midrange 8 s, tweeter 4 s), and
   compares deconvolved sweep-band magnitude against ambient passed through
   the same regularized inverse, signal-owned arrival window/reflection gate,
   and calibration domain (ambient noise never selects its own IR argmax).
@@ -229,6 +622,30 @@ The product is three tiers:
   them at reduced confidence; fewer than two refuses the set.
   This closes the prior live-hardware `acoustic.snr: null` path without making
   the probe's raw RMS an acoustic SNR verdict.
+- **Phantom noise-floor fix (2026-07-17).** The mechanism above — ambient
+  noise deconvolved through the SAME regularized inverse as the signal —
+  has a blind spot: outside the reference sweep's own excited range
+  `[f1, f2]` (a per-driver CONFIRMED safe band, routinely narrower than the
+  analysis' full canonical band table — e.g. a real woofer sweep's
+  `f1=60 Hz, f2=4000 Hz`), that inverse divides by a near-zero reference
+  spectrum — a well-known Tikhonov regularization "resonance" artifact, not
+  a measurement. Three real jts3 hardware captures showed `sub_bass`
+  (20-80 Hz, straddling `f1`) reporting a deconvolved noise floor
+  ~40-50 dB louder than the room's real ambient (independently verified via
+  a plain FFT of the same quiet window), driving a false "insufficient"
+  verdict even in a quiet room — the root cause behind the SNR-shortfall
+  correction cascade this section and "Level control and SNR" describe.
+  `snr_policy.excitation_covered_bands` flags any canonical band not
+  ENTIRELY inside `[f1, f2]`; `apply_noise_band_fallback` substitutes the
+  raw (non-deconvolved) robust ambient reading for those bands, unless that
+  raw reading is itself floor-clamped (no real precision to trust either —
+  the real hardware `treble` shape, entirely above a woofer's `f2`, where
+  phone-mic self-noise reads as pure digital silence, so it keeps its
+  pre-fix deconvolved value). Covered bands keep their reported level
+  unchanged (every band entry gains an additive diagnostic `basis` key
+  naming which path produced it). Full detail, the ground-truth validation
+  table, and doc cross-reference in
+  active-crossover-information-design.md "Level control and SNR".
 - **Lane B fixed-axis admission contract (2026-07-12).** Driver analysis no
   longer accepts `capture_geometry` from the browser. It derives near-field vs
   reference-axis from a complete relay proof revalidated against the active
@@ -258,7 +675,9 @@ The product is three tiers:
   reference-axis attempts have distinct durable controller identities and
   geometry-scoped level locks; neither can continue or complete the other.
   The fixed-axis level uses the listening-position `+15 dB` / hard `0 dB` cap,
-  and its exact reasserted lock is part of the played excitation ledger.
+  and its exact reasserted lock is part of the played excitation ledger — or,
+  for an isolated driver sweep, the level solver's chosen level in that same
+  ledger position (see the relay-level-target bullet above).
   Request geometry is only a hint until the route proves it equals the
   envelope's next action; the relay acknowledgement policy is the authority at
   playback and analysis. Both geometry stages participate in the correction
@@ -288,11 +707,14 @@ The product is three tiers:
   The measurement loop *is* wired. The live browser mic-capture surface is the
   HTTPS `/correction/crossover/` page through the Jasper relay:
   `/crossover/relay-capture` → `correction_crossover_backend` →
-  `web_measurement.record_driver_capture` /
-  `record_summed_capture`, which run `driver_acoustics`
-  (`record_driver_acoustic_capture` / `record_summed_acoustic_capture`) and
+  `web_measurement.record_driver_capture`, which runs `driver_acoustics`
+  (`record_driver_acoustic_capture`) and
   persist the real acoustic verdict block into measurement state (the 2026-06-19
-  audit inspected a pre-wiring snapshot — the wiring landed 2026-06-18). **L1
+  audit inspected a pre-wiring snapshot — the wiring landed 2026-06-18).
+  `kind=summed` now rejects every browser field except its discriminator, then
+  joins the recorder WAV to the Active-owned host; the host alone selects the
+  normal/reverse/delay operation and guarded graph. Legacy direct summed routes
+  still refuse before graph load. **L1
   then closed the level-match loop (2026-06-20):** each per-driver capture also
   records an **overlap-band level** at the crossover Fc, and
   `baseline_profile._measured_level_trims` chains the driver-to-driver overlap
@@ -624,10 +1046,10 @@ can never authorize a phase decision:
    / `captureMicWavBase64` just record a window while the tone plays), so a
    per-driver IR arrival delta is capture jitter, not acoustic time-of-flight — and
    the canonical method agrees IR "[is] not [a] substitute for phase-aware
-   summation". The delay *value* therefore comes from the timing-locked
-   reverse-polarity null **walk** (the deferred follow-up); the proposal surfaces a
-   delay *status* (`aligned` when the in-phase sum is flat, `needs_alignment` when a
-   deep null remains) so the maintainer knows whether to run it.
+   summation". The strict production path now obtains the delay *value* from the
+   playback-clock-locked reverse-polarity null **walk** owned by the internal
+   host. The older fail-soft proposal continues to surface only a delay status
+   and cannot authorize that value.
 5. **Preview, then apply through the existing measured path.**
    `GET /active-speaker/crossover-alignment` previews the proposal + the surfaced
    per-driver/summed FR curves (the maintainer tweaks Fc/slope by hand — this
@@ -635,12 +1057,17 @@ can never authorize a phase decision:
    automatic baseline composition may fold an admitted, complete normal/reverse
    pair's polarity decision into per-driver `corrections` (`inverted`) exactly
    like L1's measured level trim. It never consumes `delay_ms` from a capture;
-   the bounded Lane-F walk exclusively owns measured delay. The relay transport
-   preserves candidate polarity/Fc/delay metadata, but the current wizard
-   envelope does not yet expose the two per-region actions or load a transient
-   reverse-polarity graph. The playback boundary refuses reverse/delay
-   candidates before audio rather than persist unchanged playback under a false
-   label, so this is not yet a live end-to-end pair-capture UI.
+   the bounded Lane-F walk exclusively owns measured delay. The production
+   wizard exposes one generic combined-capture action; the host selects the two
+   per-region polarity stages and transient reverse/delay graphs. The Active
+   service invokes the strict evaluator after the last capture, persists and
+   reopens its exact result, and presents the candidate through the correction
+   envelope. A deterministic refusal is persisted and binds the existing
+   `measured -> blocked` lifecycle transition, so immutable refused evidence is
+   diagnosed once and the UI starts a fresh complete run instead of retrying it.
+   Candidate apply now reuses the baseline compiler and bounded
+   writer/readback/restore path; three admitted post-apply fixed-axis captures
+   must then pass before Active issues the Room-eligibility receipt.
    The recompiled baseline re-proves the
    runtime_contract tweeter guard; level stays L1's attenuation-only job and the 0 dB
    ceiling holds.
@@ -906,6 +1333,74 @@ to de-risk Phase 3.
 
 ---
 
-Last verified: 2026-07-13 (crossover adapter volume-lease participation and
-measurement-flow admission ownership rechecked
-against correction, balance, sync, and the coordinator mutex)
+Last verified: 2026-07-17 (added the closed-loop level solver's isolated-driver
+reassert override, checked hardware-free; bounded, cancellation-safe shared DSP-writer
+admission and contention observability checked hardware-free; Wave 2 neutral artifact-manifest, playback,
+admission-artifact, and guarded-playback ownership; exact Room byte/schema/path
+compatibility; Room playback shim; Active receipt-backed Room admission;
+deterministic tone bytes; bounded
+diagnostic/cleanup behavior; canonical admission marker and
+generation/playback path roles; crash-durable no-replace persistence;
+content-bound immutable-snapshot WAV emission; cancellation-drained playback
+re-admission with explicit pre-audio/possibly-started cancellation and failure
+outcomes carrying the persisted artifact; one authority per fresh session with
+unique attempt ids; closed guarded-playback terminal events; and
+no-bundle-migration/no-backfill boundaries plus Active isolated-driver adoption,
+server-owned capture handoff, legacy summed pre-audio refusal, and the
+recorder-only production summed relay checked hardware-free. Strict Active
+group-by-region normal/reverse/delay evidence
+values, typed run/attempt and geometry authority, the bounded low-frequency
+coarse-plus-refinement schedule and schedule-aware final evaluator,
+complete-plan replay guards, and receipt
+schema-v2 one-shot generation/playback roles were checked pure.
+Durable bundle-backed Active run identity, startup owner claim,
+stale-callback refusal, and fail-closed crossover status were checked hardware-
+free. The strict write-once commissioning evidence store, exact typed reopen,
+deep child-artifact verification, generation-scoped incomplete state, and
+run-scoped complete recovery plus the store-backed pure deterministic electrical
+candidate evaluator and Active-owned exact candidate persistence/readback were
+checked hardware-free. Active's reviewed candidate apply now exercises the
+existing shared writer lock and exact graph/path/volume snapshot/restore seams;
+failure, cancellation, ambiguous retained-write, and restart recovery were
+checked with injected runtime ports. No hardware behavior was revalidated.
+Wave 1 excitation/evidence identities remain the shared substrate rather than
+feature policy. Production post-apply verification/receipt and Room authority
+are Active-owned and hardware-free verified. Crossover adapter
+volume-lease participation and measurement-flow admission ownership rechecked
+against correction, balance, sync, and the coordinator mutex. Same-day
+follow-up: the level solver's W2.2 clip-aware correction (unified signed
+adjustment slot, measured-gain mic-clip ceiling override, two-write bound,
+`measurement_window_unreachable` refusal — full detail in
+active-crossover-information-design.md "Level control and SNR") checked
+hardware-free against the triggering run-18 numbers; not yet
+hardware-validated. Same-day follow-up: W2.3 completion-time correction
+(a repeat set can finalize with every attempt individually accepted yet
+the aggregate worst-band SNR still insufficient — the rejection path
+above never sees this shape) and the persistence lifecycle change
+(corrections now survive a level re-lock AND the between-set level-check
+restart — non-exhausted targets preserved through the endpoint's
+invalidate, exhausted targets cleared there for a fresh evaluation —
+clearing otherwise only on a sufficient finalization, a changed relay
+mic, or a true full reset; full detail in
+active-crossover-information-design.md "Level control and SNR") checked
+hardware-free against hardware run 19's numbers, including an
+endpoint-level restart repro through the real level-match handler; not
+yet hardware-validated. Same-day follow-up: W2.4 revised the
+between-set restart's preserve/clear discriminator (from "budget
+exhausted" to "a pre-flight refusal was shown for this target," any
+write count, exhausted subsumed — hardware run 20 found a
+room_too_noisy refusal below the exhausted bound surviving the
+restart and re-refusing identically with no tone played; full detail
+in active-crossover-information-design.md "Level control and SNR")
+checked hardware-free against hardware run 20's numbers, including an
+endpoint-level restart repro through the real level-match handler; not
+yet hardware-validated. Same-day follow-up (2026-07-17): the phantom
+noise-floor fix — the per-band ambient-noise estimator was overstating
+SNR by ~40-50 dB for any canonical band the reference sweep's own
+`[f1, f2]` did not fully excite, the root cause behind the SNR-shortfall
+correction cascade W2.1-W2.4 above were built to react to — checked
+against three real jts3 hardware captures (sub_bass moved from 13-16 dB
+"insufficient" to 62-66 dB "ok" on all three; every other band's reported
+level is bit-for-bit unchanged) and pinned by ground-truth fixtures plus
+synthetic protective-power cases; not yet hardware-validated on a live
+re-measure)

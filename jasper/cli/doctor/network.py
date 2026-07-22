@@ -15,6 +15,9 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
+
+from jasper.output_hardware import current_usb_data_role
+
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -568,9 +571,8 @@ def check_identity_coherence() -> CheckResult:
 
 
 # ----------------------------------------------------------------------
-# USB management network (docs/HANDOFF-usb-gadget.md) — the always-on
-# NCM link on usb0 that puts http://<JASPER_HOSTNAME>/ within reach even
-# with no WiFi. jasper/cli/doctor/usbsink.py owns whether the composite
+# USB management network (docs/HANDOFF-usb-gadget.md) — the NCM link on
+# usb0 when the resolved hardware role supports a gadget. jasper/cli/doctor/usbsink.py owns whether the composite
 # gadget's *functions* match intent (ncm.usb0 / uac2.usb0 presence); the
 # checks below own the *network* side of that same intent — the usb0
 # interface, its NetworkManager profile, the device-activated dnsmasq
@@ -654,17 +656,34 @@ def check_usbnet_interface() -> CheckResult:
                 "network function.",
             )
         return CheckResult(label, "ok", "network kill-switched (disabled)")
+    usb_role = current_usb_data_role()
+    if not usb_role.management_transport_available:
+        if _usbnet_iface_present():
+            return CheckResult(
+                label,
+                "fail",
+                f"{USBNET_IFACE} is present while the resolved USB hardware "
+                f"management transport is unavailable ({usb_role.reason}); stop "
+                "jasper-usbgadget.service.",
+            )
+        status = "warn" if usb_role.reboot_required else "ok"
+        return CheckResult(
+            label,
+            status,
+            f"{USBNET_IFACE} intentionally absent; USB management unavailable "
+            f"({usb_role.reason})",
+        )
     if not _usbnet_iface_present():
         if not _udc_present():
-            # No UDC: fresh install pre-reboot (dtoverlay set but the OTG
+            # No UDC: fresh install pre-reboot (peripheral role selected but the OTG
             # controller isn't peripheral yet), or non-gadget hardware. The
-            # gadget cannot bind, so usb0's absence is expected — the dtoverlay
-            # check (jasper.cli.doctor.usbsink.check_usbsink_dtoverlay) owns
+            # gadget cannot bind, so usb0's absence is expected — the USB-role
+            # check (jasper.cli.doctor.usbsink.check_usb_data_role) owns
             # that gap.
             return CheckResult(
                 label, "ok",
                 f"{USBNET_IFACE} absent, no UDC present — fresh install "
-                "pre-reboot or non-gadget hardware (see check_usbsink_dtoverlay)",
+                "pre-reboot or non-gadget hardware (see check_usb_data_role)",
             )
         # A UDC exists and the network is wanted, so the gadget should have
         # composed ncm.usb0 and bound → usb0 should exist. Its absence is a
@@ -697,10 +716,17 @@ def check_usbnet_interface() -> CheckResult:
         carrier = carrier_path.read_text().strip() == "1"
     except OSError:
         carrier = None
+    status = "warn" if usb_role.reboot_required else "ok"
+    suffix = (
+        "; retained only until the pending host-role reboot"
+        if usb_role.reboot_required
+        else ""
+    )
     return CheckResult(
-        label, "ok",
+        label, status,
         f"{USBNET_IFACE} has {USBNET_ADDRESS}"
-        + (f" (carrier={'up' if carrier else 'down'})" if carrier is not None else ""),
+        + (f" (carrier={'up' if carrier else 'down'})" if carrier is not None else "")
+        + suffix,
     )
 
 

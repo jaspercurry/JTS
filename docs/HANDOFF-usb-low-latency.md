@@ -12,7 +12,7 @@ claim only through measured route-latency evidence.
 > This doc owns the *route design + evidence gate*; that doc owns *how to measure
 > and what a fresh install ships*.
 
-## Current Production Route (2026-07-06)
+## Current Production Route (2026-07-14)
 
 `usb_low_latency_48k` is the claiming profile. On a ring-eligible USB gadget
 box, the product default is the shm-ring path. Since the aloop solo capture
@@ -108,15 +108,15 @@ invalidates the just-passed artifact's `config_match`, so doctor reads
 `config_mismatch` until ONE fresh re-cert run against 40/42 — its measured
 numbers clear the new gate with margin.
 
-The loopback path remains the fallback when the ring gates fail, the box is not
-ring-eligible, or an operator freezes the coupling. Its tuned Apple USB-C DAC
+The fan-in→Camilla loopback coupling remains the fallback when the ring gates
+fail, the box is not ring-eligible, or an operator freezes the coupling. USB
+ingress still uses fan-in DIRECT; there is no USB bridge fallback. Its tuned Apple USB-C DAC
 floor (the best values measured on jts.local — a hand-tuned reference, not the
 shipped code defaults; note the resampler warm-up cushion here is jts.local's
 `1536` box tuning, whereas the shipped default is `2048`) remains:
 
 | Layer | jts.local tuned floor | Rejected lower setting |
 |---|---:|---|
-| Rust USB bridge | 256 frames / 3 periods | 128 frames, 256/2 |
 | fan-in input buffer | 4096 frames | 512/1024/2048/3072 failed lock/acquisition |
 | fan-in USB resampler | target 512 + cushion 1536 (held target 2048) — code default cushion is 2048 | held target 1920 and below relocked/silenced |
 | CamillaDSP | chunksize 256 / target 1536 | target 1024 caused bridge playback xruns |
@@ -126,8 +126,6 @@ shipped code defaults; note the resampler warm-up cushion here is jts.local's
 Best values to keep for the Apple USB-C DAC loopback fallback:
 
 ```text
-JASPER_USBSINK_BLOCK_FRAMES=256
-JASPER_USBSINK_RING_PERIODS=3
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096
 JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512
 JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
@@ -182,8 +180,12 @@ for the architecture and the end-to-end quick/promotion walkthrough below.
 Run the artifact writer with `sudo` on the Pi because it must read root-owned
 runtime env files and write `/var/lib/jasper/audio-validation/*.json`. The writer
 binds the measured numbers to the live `jasper.audio_runtime_plan` route identity
-and updates `latest.json`. Raw sample inputs are recorded with source path,
-byte count, and SHA-256 of the parsed file. Aggregate-only inputs require
+and updates both the general `latest.json` pointer and the route-specific
+`latest-route-latency.json` pointer. Always-on health reads only the scoped
+pointer, with a one-file `latest.json` compatibility fallback when the scoped
+pointer is absent after upgrade, so its work stays constant as timestamped
+evidence accumulates. Raw sample inputs are recorded with source path, byte
+count, and SHA-256 of the parsed file. Aggregate-only inputs require
 `--harness-id` so the artifact cannot anonymously certify externally computed
 percentiles.
 
@@ -266,21 +268,32 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
   --require-pass
 ```
 
-Only pass `--route-health-ok` when the same measurement window had clean
-bridge/fan-in/outputd deltas: no bridge capture/playback xruns, no bridge
-underflow/overflow/drops, no fan-in USB resampler unlock/silence/overrun, and no
-outputd/fan-in xruns. Without that declaration, the artifact records
+Only pass `--route-health-ok` when the same measurement window had complete,
+clean fan-in/outputd telemetry: both live surfaces and the expected USB DIRECT
+lane/counter shape must be present, with no fan-in USB resampler
+unlock/silence/overrun and no outputd/fan-in xruns. The retired standalone
+bridge has no live telemetry; fan-in is the route-health authority. Without
+that declaration, the artifact records
 `route_health_anomaly` and doctor rejects the low-latency claim. With the
-declaration, the artifact writer and doctor still compare live Rust bridge
-period/ring state and fan-in USB resampler lock/target state against the route
-identity. The artifact writer is intentionally strict mid-stream: an unlocked
+declaration, the artifact writer and doctor still compare the live fan-in
+DIRECT period/negotiated-buffer state and USB resampler lock/target state
+against the route identity. The artifact writer is intentionally strict mid-stream: an unlocked
 resampler fails artifact creation. Doctor evaluates stored certification in the
 box's steady state: when fan-in explicitly reports the direct lane
 `health:"idle"`, `locked:false` is expected and does not invalidate the artifact;
 capturing, broken, or unknown lane health remains strict. Static identity,
 including the configured resampler target, must still match while idle.
+The route hash currently uses `ROUTE_CONFIG_HASH_SCHEMA_VERSION = 4`; changing
+that schema or any hashed active-route input invalidates older certification
+artifacts and requires one new measured run. The artifact also records the
+exact live `fanin_direct_negotiated_buffer_frames` observed during that run.
+Presence is mandatory, and doctor compares that stored result with the current
+fan-in direct lane: a runtime negotiation change (for example 768 to 1024)
+invalidates the certification even when all configured targets and the route
+hash are otherwise unchanged. Regenerate pre-schema-4 or negotiated-buffer-
+mismatched evidence; do not treat it as a compatible warning.
 `jasper-route-latency-harness analyze` prints exactly this delta (every
-nonzero usbsink/fan-in/outputd counter change across the measurement
+nonzero fan-in/outputd counter change across the measurement
 window) and states whether the declaration *would* be justified — it never
 asserts `--route-health-ok` on the operator's behalf; read the printed
 deltas and decide.
@@ -288,24 +301,24 @@ deltas and decide.
 ## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (P3: DEFAULT-ON on gadget boxes)
 
 > **Default status (P3 default-flip, landed).** The USB combo is now the SHIPPED
-> DEFAULT — but only on a box that BOTH (a) has the gadget stack available
-> (`dtoverlay=dwc2,dr_mode=peripheral` present — the always-on USB network adds it
-> fleet-wide, so this alone is NOT the gate) AND (b) has USB Audio Input turned ON
-> by the household (`jasper-usbsink.service` enabled — the same intent the
-> `/sources/` wizard toggles). The reconciler pass
+> DEFAULT — but only on a box that BOTH (a) has the hardware-resolved gadget
+> capability available (a boot overlay alone is not sufficient on a shared-port
+> Zero) AND (b) has USB Audio Input turned ON
+> by the household (the canonical USB key in
+> `/var/lib/jasper/source_intent.env`; `jasper-usbsink.service` enablement is
+> derived from it). The reconciler pass
 > `jasper-fanin-coupling-reconcile --auto` (run by
 > `jasper-fanin-coupling-auto.service` at boot + deploy, **and kicked live by the
-> `/sources/` USB toggle** so a fresh enable arms the combo this session instead
-> of only after the next reboot — the `/sources/` handler starts the reconciler
-> through the restart broker's `START_ONLY_UNITS` grant, and on a failed kick the
-> wizard row shows a "takes effect after reboot" notice) is the SINGLE writer of
-> BOTH combo halves: it writes the three fan-in keys (`JASPER_FANIN_USB_DIRECT` +
+> shared source coordinator after an actual USB lifecycle change** so a fresh
+> enable arms the combo this session instead of only after the next reboot;
+> grouping also kicks it after a follower/solo role apply). The effective gate is
+> canonical USB intent **and** current local-source role permission, so a
+> desired-On follower stays persisted On while its direct lane remains disarmed
+> until unpark. The reconciler is the SINGLE writer of
+> the three fan-in keys (`JASPER_FANIN_USB_DIRECT` +
 > `JASPER_FANIN_HOST_CLOCK` + `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` = `enabled`)
-> into `/var/lib/jasper/fanin.env` AND `JASPER_USBSINK_AUDIO_STANDBY=1` into
-> `/var/lib/jasper/usbsink.env`, then restarts jasper-usbsink so the bridge stands
-> down. Since the aloop solo path was deleted (2026-07-10) that STANDBY value is
-> written **unconditionally** `1` (armed or not) — the daemon is standby-only and
-> never captures `hw:UAC2Gadget`, so disarming does NOT promote a bridge capture.
+> into `/var/lib/jasper/fanin.env`. No separate USB audio bridge or capture-mode
+> overlay exists.
 > Off a combo box it writes the EXPLICIT fan-in off value
 > (`JASPER_FANIN_USB_DIRECT=disabled`, not unset — a stale `enabled` in
 > `/etc/jasper/jasper.env` loads first and would otherwise win); disarming that way
@@ -313,17 +326,18 @@ deltas and decide.
 > prose below still describes
 > HOW the combo works and its safety matrix; where it says "DEFAULT-OFF / hand-armed"
 > read that as the pre-P3 posture. **To revert:** set
-> `JASPER_FANIN_COUPLING_CHOICE=operator` and set the combo keys to their off values
-> (see `.env.example`) — the auto pass then no-ops and the revert sticks. The floor
+> `JASPER_FANIN_COUPLING_CHOICE=operator` to freeze the transport coupling (see
+> `.env.example`). USB direct/combo keys remain derived from canonical USB source
+> intent and hardware/role availability, so household Off still disarms capture. The floor
 > default is now the validated **576** (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`) so a
 > combo-armed default constructs.
 
-`JASPER_FANIN_USB_DIRECT=enabled` + `JASPER_USBSINK_AUDIO_STANDBY=1` removes the
-usbsink **bridge hop + the snd-aloop cable** (~25 ms measured) from the USB path:
+`JASPER_FANIN_USB_DIRECT=enabled` removes the retired usbsink **bridge hop + the
+snd-aloop cable** (~25 ms measured) from the USB path:
 fan-in captures `hw:UAC2Gadget` **directly** and narrows S32→S16 itself, feeding
-the SAME per-input `LaneResampler` the aloop path used. The bridge drops to
-state/watchdog-only standby (opens NO PCM and — since 2026-07-10 — has no
-`:8781` HTTP listener, leaving the gadget free), so the DSP /
+the SAME per-input `LaneResampler` the aloop path used. The bridge process was
+deleted; `jasper-usbsink.service` is now only a process-free readiness marker,
+so the DSP /
 crossover / correction / protection chain downstream of fan-in is unchanged. The
 one deliberate exception is source arbitration + renderer-state truth — see the
 arbitration caveat below the flag matrix.
@@ -335,10 +349,10 @@ UAC2 gadget capture
   → fan-in output → CamillaDSP → outputd  (unchanged)
 ```
 
-`JASPER_USBSINK_AUDIO_STANDBY` is now written UNCONDITIONALLY to `1` (the daemon
-is standby-only), so the one live arming literal is
-`JASPER_FANIN_USB_DIRECT=enabled`; anything else fails safe to the idle aloop
-fallback (`hw:Loopback,1,3`, unwritten → USB silent, no crash).
+The one live arming literal is `JASPER_FANIN_USB_DIRECT=enabled`; anything else
+fails safe to the idle aloop
+lane (`hw:Loopback,1,3`, unwritten → USB unavailable, no crash). The old bridge
+never promotes to a capture fallback.
 
 #### Combo re-arm is CamillaDSP-coordinated (RTTIME-SIGKILL fix)
 
@@ -400,45 +414,47 @@ restarts because it avoids even that gap being spliced mid-stream.
 
 ### Flag matrix (C6)
 
-> **Post-deletion (2026-07-10):** the bridge is standby-only, so
-> `JASPER_USBSINK_AUDIO_STANDBY` is written UNCONDITIONALLY to `1` and is no
-> longer a mode selector — the only live axis is `JASPER_FANIN_USB_DIRECT`. The
+> **Post-deletion (2026-07-14):** the bridge process is gone and the usbsink
+> systemd unit is a process-free readiness marker. The only live audio axis is
+> `JASPER_FANIN_USB_DIRECT`. The
 > old off/off "bridge bridges gadget→aloop" lane (and its byte-identical
 > fallback) is gone; there is no aloop solo capture anymore.
 
-| `FANIN_USB_DIRECT` | `USBSINK_STANDBY` | Result |
-|---|---|---|
-| `enabled` | `1` (always) | **Armed combo (product default).** Fan-in DIRECT-captures `hw:UAC2Gadget`; the bridge is standby-only (state/watchdog, no PCM). This is the sole USB pipeline. |
-| off (`disabled`) | `1` (always) | **Combo disarmed → USB unavailable.** Fan-in's `usbsink` lane falls back to the idle aloop (`hw:Loopback,1,3`), which nobody writes → USB source is SILENT until an `--auto` pass re-arms direct capture. No crash; observable as fan-in lane `source:"lane"`. |
+| `FANIN_USB_DIRECT` | Result |
+|---|---|
+| `enabled` | **Armed (product default when USB is allowed).** Fan-in DIRECT-captures `hw:UAC2Gadget`; the oneshot marker proves bounded composition/card readiness. This is the sole USB pipeline. |
+| off (`disabled`) | **Disarmed → USB unavailable.** Fan-in's `usbsink` lane falls back to the idle aloop (`hw:Loopback,1,3`), which nobody writes → USB source is SILENT until an `--auto` pass re-arms direct capture. No crash; observable as fan-in lane `source:"lane"`. |
 
-**Visibility gap — now CLOSED (combo silence gate).** In standby the bridge
-still writes `playing:false` on its OWN `state.json` (no audio loop; pinned by
-`test_usbsink_state.py`), but the rest of the system no longer reads that for a
-combo box — it derives combo USB playing from fan-in's DIRECT lane instead:
+**Visibility gap — now CLOSED (DIRECT-lane truth).** There is no bridge
+`state.json`. The system derives USB liveness directly from fan-in's identity-
+bound DIRECT lane:
 
-- **Mux DOES see USB playing.** `Mux._usbsink_playing` reads the DIRECT lane's
-  liveness counter (`usbsink_direct_frames_read`) AND its live per-period level
-  (`usbsink_direct_rms_dbfs`), and `step_combo_liveness` gates playing on
-  frames-advanced **AND** level above the shared `-60` dBFS
-  `USBSINK_PLAYING_RMS_DBFS` (the single Python-side definition in
-  `jasper/source_state.py` — the solo bridge's Rust anchor was deleted
-  2026-07-11; `test_usbsink_playing_rms_contract.py` pins the
-  mux ↔ source_state identity + value).
-  Latest-source-wins auto preemption fires on a real USB start, and — the point
-  of the level gate — a host connected but streaming digital silence (a muted
-  Zoom, an idle tab) reads `playing:false`, so it does **not** seize the speaker
-  or block auto-return to AirPlay/Spotify. fan-in's DIRECT lane keeps clocking
-  silence frames in that state, so a frames-only gate would have false-seized;
-  the level gate is what makes combo == solo.
-- **`/state.renderers.usbsink` reports the truth.** The combo projection derives
-  `playing` / `rms_dbfs` from the same fan-in DIRECT-lane level (not the standby
-  bridge's frozen `playing:false` / `rms_dbfs:-120`). See
+- **Mux DOES see USB streaming.** fan-in samples the DIRECT lane's existing
+  liveness counter at 20 Hz off the audio thread, publishes
+  `direct.streaming`, and sends an edge-only `NOTIFY usbsink` wake hint to mux.
+  Start detection is roughly 0–50 ms; 2 s of flat samples clears streaming.
+  `Mux._usbsink_playing` reads that published state, with
+  `usbsink_direct_frames_read` + `step_combo_liveness` retained as the
+  rolling-upgrade fallback for older fan-in STATUS shapes. There is **no
+  audio-level gate** (the
+  old `rms_dbfs > −60` combo silence gate was removed with the sticky-session
+  rework, 2026-07-17; see `docs/HANDOFF-usbsink.md` §3.3 "Sticky sessions" and
+  the `jasper.mux` module docstring). USB is a **passive** source: it wins when
+  streaming and no explicit session is active, and never preempts an in-progress
+  AirPlay/Spotify cast — so a host streaming digital silence (a muted Zoom) can't
+  seize the speaker, but a *faint* real sound (which a level gate wrongly
+  dropped) plays fine. `USBSINK_PLAYING_RMS_DBFS` (`jasper/source_state.py`)
+  survives as the `/state` level readout only; `test_usbsink_playing_rms_contract.py`
+  now pins that mux does NOT gate arbitration on it.
+- **`/state.renderers.usbsink` reports the truth.** The projection derives
+  `playing` / `rms_dbfs` from the same fan-in DIRECT-lane level. See
   `docs/HANDOFF-usbsink.md` §4.4 / §4.9.
 
 **Arbitration mechanism — now fan-in-native (combo).** mux has
-single-SELECTed the winner lane on every auto-mode tick since the source-
-selection hardening (`414adcd0`, 2026-05-27): `_reassert_auto_winner` re-sends
-`SELECT <winner>` each poll, the sum-all `AUTO` command (`Mux._fanin_auto`)
+single-SELECTed the winner lane on every auto-mode reconciliation since the
+source-selection hardening (`414adcd0`, 2026-05-27):
+`_reassert_auto_winner` re-sends `SELECT <winner>` on native alerts and on the
+fixed 1 Hz lost-alert patrol, the sum-all `AUTO` command (`Mux._fanin_auto`)
 has zero production callers, and the mixer boots at `selected_input_index=-2`
 (NONE — nothing sums but the correction/test lane). The DIRECT usbsink lane
 passes the exact same per-lane `input_selected`/`lane_mix_contributes` gate as
@@ -456,7 +472,8 @@ transition-logged observability (`event=fanin.lane_mute`,
 `/state.renderers.usbsink.muted`) — layered on top of an exclusion that was
 already structurally sound. Crucially the mute is applied at the SUM only:
 the direct lane keeps reporting its pre-mute `frames_read` / `rms_dbfs`, so
-mux's combo-liveness gate still sees a muted-but-streaming host as active (no
+the published `direct.streaming` state still sees a muted-but-streaming host as
+active (no
 mute→"stopped"→release flap; pinned by
 `lane_mix_contributes_mute_overrides_selection`). **Since 2026-07-10 the `:8781`
 preempt path is deleted** (with the aloop solo capture): every box is
@@ -488,7 +505,7 @@ Both ran the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
 one servo core; the per-daemon differences were the `event=` log prefix —
 `usbsink_audio` vs `fanin` — which `JASPER_*` keys each parsed, and the
 **observable mode** below). Combo mode pins the DIRECT lane's resampler fill at
-target, removing the standby-mode drift wander (the ~9 ms "standby gap" measured
+target, removing the free-running drift wander (the ~9 ms gap measured
 below). The setpoint is the resampler's HELD target
 (`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES +
 JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`) — one setpoint shared with
@@ -584,19 +601,9 @@ not a live signal.
 | `enabled` | off | **Inert, warned.** One `event=fanin.host_clock.noop reason=usb_direct_off`; zero ctl writes ever (fan-in owns the ctl only when it owns the direct capture). No thread spawned. |
 | `enabled` | `enabled`, but no direct-lane resampler | **Inert, warned.** One `event=fanin.host_clock.noop reason=no_direct_resampler` (resampler construction fell back to none — fail-soft). No thread. |
 
-**Double-enable misconfig (R5):** `JASPER_FANIN_HOST_CLOCK=enabled` +
-`JASPER_FANIN_USB_DIRECT=enabled` while the usbsink bridge is NOT in standby
-(both own-the-clock daemons armed at once). fan-in's direct open fails (the
-bridge holds `hw:UAC2Gadget`), so no session ever starts and the ladder holds
-neutral — but fan-in's **one** startup neutralize can stomp an active usbsink L0
-command once. usbsink self-recovers via its own probe / L2 machinery, and audio
-is unaffected either way. Fix by putting the bridge in standby
-(`JASPER_USBSINK_AUDIO_STANDBY=1`) — the intended combo posture.
-
-> **Post-deletion (2026-07-10).** With the aloop solo path gone, the usbsink
-> daemon is standby-only: it never opens `hw:UAC2Gadget` or the pitch ctl, so
-> **its `ExecStopPost` pitch-neutralize belt was DELETED entirely** (it existed
-> only for the deleted solo path where THIS daemon drove the pitch). Fan-in is the
+> **Post-deletion (2026-07-14).** The usbsink unit is a process-free readiness
+> marker: it never opens `hw:UAC2Gadget` or the pitch ctl and has no
+> `ExecStopPost` pitch-neutralize belt. Fan-in is the
 > sole owner of the gadget + its pitch ctl in combo mode, and the only unit that
 > carries a neutralize belt. The two-owner framing below is now archaeology.
 
@@ -610,7 +617,7 @@ because it never writes the ctl.
 | Unit | Belt gate | Fires when… |
 |---|---|---|
 | `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` **AND** `$JASPER_FANIN_USB_DIRECT = enabled` | fan-in owns the ctl (combo mode) |
-| ~~`jasper-usbsink.service`~~ | *(removed 2026-07-10)* | standby-only daemon never owns the ctl — no belt |
+| `jasper-usbsink.service` | none | process-free readiness marker never owns the ctl |
 
 - **fan-in's belt requires BOTH flags** (F2): fan-in owns the ctl only when
   `HOST_CLOCK` **and** `USB_DIRECT` are enabled (it resolves
@@ -618,9 +625,8 @@ because it never writes the ctl.
   `HOST_CLOCK` set — `noop reason=usb_direct_off`). Gating on `HOST_CLOCK` alone
   would fire the belt on a part-rolled-back combo box (unset `USB_DIRECT`, left
   `HOST_CLOCK=enabled`).
-- **usbsink is fully hands-off** (F1, now structural): the standby-only daemon
-  opens no ctl and has no host clock (`owns_host_clock_ctl()` and the whole solo
-  pitch ladder were deleted). A clean or unclean stop/start of the standby daemon
+- **usbsink is fully hands-off** (F1, now structural): the process-free marker
+  opens no ctl and has no host clock. A stop/start of the marker
   never touches fan-in's live combo command — there is no belt and no actuator to
   stomp it. (Historically, before the solo path was removed, usbsink DID drive the
   pitch and needed its own `STANDBY != 1`-gated belt; that is the archaeology the
@@ -632,6 +638,62 @@ Combo host-clock telemetry:
 curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
 ```
 
+### Capture/control generations and actuator self-heal
+
+The direct PCM and the pitch control are one logical actuator generation but
+remain thread-confined: the mixer thread owns capture and publishes its existing
+monotonic `direct.opens` counter as `capture_generation`; the `fanin-host-clock`
+thread owns the concrete `!Send` ALSA ctl handle and every pitch write. No ALSA
+handle crosses a thread boundary and the render loop does no lifecycle I/O.
+
+`L0_LOCKED` is trustworthy only while `capture_generation == control_generation`
+and the actuator is ready. A capture reopen invalidates the old ctl generation
+even if writes to that handle still report success. The host-clock thread then:
+
+1. best-effort neutralizes and drops the old handle;
+2. opens a fresh ctl against the rebuilt card;
+3. forces neutral on the new handle; and
+4. only then publishes the new `control_generation` as ready.
+
+Open, forced-neutral, or later pitch-write failure leaves the actuator unready,
+increments the corresponding counter, and retries opening at a fixed 1 Hz while
+capture exists. This is infrastructure unavailability, not evidence that the
+host ignores feedback: the controller holds neutral in `L2_FALLBACK` with
+`fallback_reason="actuator_unavailable"`, consumes no probe attempt, and
+automatically re-probes the same active stream when the matching control
+generation becomes ready. A host-caused terminal L2 remains latched for the
+stream; only an idle boundary or a genuinely new capture generation re-arms it.
+
+Every normal exit, idle edge, generation replacement, retry transition, and L2
+entry commands neutral. The systemd `ExecStopPost` belt remains the SIGKILL/OOM
+backstop. Successful write readback is diagnostic only; generation equality and
+the forced-neutral lifecycle are the correctness boundary.
+
+Stable transition logs are `event=fanin.host_clock_control_refresh_requested`,
+`..._control_refresh_succeeded`, `..._control_open_failure`,
+`..._control_neutral_failure`, `..._pitch_write_failure`, and
+`..._generation_mismatch`. Open/write failures are rate-limited; counters remain
+cumulative in STATUS.
+
+**Retry constant and 2026-07-13 hardware evidence.** `PROBE_RETRY_SETTLE_SECS=10`
+and `MAX_PROBE_ATTEMPTS=2` are fixed code constants, not environment knobs. On
+jts.local the rebuilt ctl was openable/neutral in 1–2 s, while the inner
+resampler correction needed roughly 10 s to leave the post-restart rail; 10 s is
+therefore the smallest measured whole-plant recovery interval with margin, and a
+single retry bounds total disturbance. A canonical deploy caught a dead capture
+handle and an old-ctl neutral write failing `ENODEV`; capture/control both advanced
+to generation 2 and attempt 1 passed (`response_ratio=1.115`). A coordinated
+active-stream fan-in restart reproduced the target false-fail signature exactly:
+attempt 1 saw baseline=step=−500 ppm (`response_ratio=0`), stayed nonterminal in
+`retry_wait`, then attempt 2 passed at 3.206 and returned to L0. A live gadget
+rebuild advanced direct `opens` 1→2 and control 1→2, then attempt 1 passed at
+0.963 without a fan-in restart. The independent control-node-negative test could
+not create "capture alive, ctl absent": ALSA needs that node to resolve the named
+`hw:UAC2Gadget` PCM, so the reversible outage correctly produced capture
+generation 0 and an unavailable-actuator doctor warning instead. Active-stream
+unavailable/recovery remains pinned by the fake actuator lifecycle tests; do not
+add a production fault-injection knob to manufacture it.
+
 ### Per-session probe and the await-lock gate
 
 **Per-session probe rationale**: the host OS or the playing application can
@@ -639,10 +701,13 @@ change between sessions (a Mac unplugged and a Windows box plugged in later;
 an app that opens the endpoint in a mode that pins the rate). Compliance is
 therefore re-measured on every `(host_connected && playing)` edge rather than
 trusted once at boot — a probe commands a bounded step (default +300 ppm for
-a 4 s baseline + 6 s step window) and measures the observable's response (the
+a 4 s baseline + 15 s step window in the surviving `Correction` mode) and
+measures the observable's response (the
 fill-slope in `Fill` mode, the resampler-correction mean in `Correction` mode —
-see "Observable mode" above); a response under half the commanded step demotes
-straight to `L2_FALLBACK` (neutral pitch) without ever entering `L0_LOCKED`.
+see "Observable mode" above). A response under half the commanded step is
+ambiguous once: attempt 1 neutralizes and enters a fixed 10 s `retry_wait`; only
+attempt 2 may produce terminal `L2_FALLBACK` without entering `L0_LOCKED`.
+Lifecycle failures abort a measurement without consuming an attempt.
 
 **The probe does NOT baseline at the session edge — it waits for the lane to
 leave its warmup ramp first.** A session begins the instant audio starts
@@ -681,17 +746,23 @@ for a real baseline/step measurement cut short.
 
 ### Ladder states
 
-`DISABLED -> PROBING (await-lock -> baseline -> step) -> L0_LOCKED <-> L1_WARN`,
-with any state falling to `L2_FALLBACK` on non-compliance evidence (probe
-failure, or a sustained saturated-command + adverse-slope condition
-mid-stream). The **await-lock** sub-phase holds neutral from the session rising
-edge until the lane leaves its warmup ramp (locked for the 2 s settle), so the
-baseline measures clock drift rather than the fill ramp; lock loss in any later
-sub-phase returns to await-lock (no demotion). `L2_FALLBACK` only re-attempts
-`PROBING` at the next idle boundary (stream stop / host disconnect) — it does
-not free-run a demonstrably non-compliant host mid-session. `L1_WARN` is a
-locked-but-watch state (unusually high sustained raw, unclamped demand) with no
-functional difference from `L0_LOCKED` beyond the doctor/telemetry surfacing.
+`DISABLED -> PROBING (await-lock -> baseline -> step -> optional retry_wait) ->
+L0_LOCKED <-> L1_WARN`, with terminal evidence falling to `L2_FALLBACK`. The
+**await-lock** sub-phase holds neutral from the session rising edge until the
+lane leaves its warmup ramp (locked for the 2 s settle), so the baseline measures
+clock drift rather than the fill ramp; lock loss in any later measurement phase
+returns to await-lock without spending an attempt. The first completed failed
+measurement is `last_attempt_result="retryable_fail"`, keeps `final_result`
+unset, holds neutral for the fixed 10 s recovery interval, then performs exactly
+one more attempt. There is no periodic probe loop.
+
+Terminal host evidence reports `fallback_reason="probe_noncompliant"` after the
+second failed attempt or `"lost_authority"` after a sustained saturated-command
++ adverse-slope condition mid-stream. Those causes stay latched until an idle
+boundary or a new capture generation. `"actuator_unavailable"` is the distinct
+infrastructure L2 described above and may recover on the same stream. `L1_WARN`
+is a locked-but-watch state with no functional difference from `L0_LOCKED`
+beyond doctor/telemetry surfacing.
 
 ### Host-compliance persistence — prime at floor (DEFAULT-OFF, rides the decay flag)
 
@@ -756,14 +827,24 @@ revalidation-failure escape below — it always re-acquires deep. The same
 re-samples at each rising edge (below), so the snap destination and the
 revalidation gate can never disagree.
 
-**Revalidation triggers (one strike for evidence, two for a probe measurement).**
-The servo's per-session probe (the #1142 post-lock `AwaitLock` gate) runs on EVERY
-session start — that IS the revalidation. For a floor-primed session, three
-triggers can revoke the proof: a LIVE probe FAIL, a DLL demotion to L2, and a
-CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
-`RevalidationTracker` (`host_compliance.rs`), driven each render period by
-`mixer::service_host_compliance` from the resampler's live `is_locked()` /
-`unlock_count()`.
+**Revalidation consumes the explicit fallback cause, not ladder shape.** The
+servo's per-session probe (the #1142 post-lock `AwaitLock` gate) runs on EVERY
+session start — that IS the revalidation. For a floor-primed session, host-caused
+`probe_noncompliant` is the existing retained-first/two-session strike,
+`lost_authority` is immediate positive evidence and revokes, and a CONFIRMED
+early-window CHURN cycle (below) still revokes. Infrastructure-caused
+`actuator_unavailable` is not host evidence: it raises the current session to the
+safe ceiling once, retains the proof and strike count, and recovery re-probes the
+same stream without turning the local outage into a churn revoke. The
+revalidation runs in the pure `RevalidationTracker` (`host_compliance.rs`),
+driven each render period by `mixer::service_host_compliance` from the resampler's
+live `is_locked()` / `unlock_count()` and the explicit `FallbackReason`.
+
+| `host_clock.fallback_reason` | Meaning | Current-session cushion | Persisted proof |
+|---|---|---|---|
+| `probe_noncompliant` | Both bounded attempts measured no pitch response | ceiling | retain on first failed session; revoke on second consecutive failed session |
+| `lost_authority` | L0 saturated with adverse slope | ceiling | revoke immediately |
+| `actuator_unavailable` | Local ctl open/neutral/write lifecycle failed or generations mismatch | ceiling once per outage episode | retain; do not change strike count |
 
 > **Two-strike probe fail (jts.local 2026-07-03).** A probe FAIL is a
 > MEASUREMENT, not proof the host changed — the lock-gated probe can spuriously
@@ -776,16 +857,18 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 > occurs. (An earlier CORRECTION-mode unrailed-settle guard also targeted this, but
 > was REMOVED 2026-07-05 — it deadlocked beyond-authority hosts whose correction
 > rails steady-state; see the settle-guard bullet in the productization section.)
-> Even so,
-> costing the household the ~2.5-min
-> descent on ONE ambiguous read is the wrong trade. So a probe fail is
-> handled by the pure `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
+> Even so, costing the household the ~2.5-min descent on ONE ambiguous read is
+> the wrong trade. There are now two bounded ambiguity layers: the first failed
+> measurement is retried once inside the same stream and never reaches persisted
+> compliance; only a terminal two-attempt `probe_noncompliant` verdict enters the
+> policy here. That terminal per-session fail is handled by the pure
+> `classify_strike` (`PROBE_FAIL_STRIKE_LIMIT = 2`): the FIRST
 > fail RETAINS the proof, persisting an incremented `consecutive_failures` (and
 > leaving `flag_present` TRUE), and only the SECOND consecutive fail — two
 > independent sessions disagreeing with the proof, which IS a host change worth
 > distrusting — deletes it. A probe PASS resets the counter to 0 (persisted, via
 > `on_pass_reset` on a live pass at L0, and also naturally via the clean
-> descent-settle re-write's `on_written`). **`DllDemotion` and a confirmed
+> descent-settle re-write's `on_written`). **`lost_authority` and a confirmed
 > `EarlyUnlock` churn cycle stay ONE-strike** — they are direct positive evidence
 > the floor itself is failing on this host, not an ambiguous probe read. The mixer
 > emits `event=fanin.host_compliance.strike_retained` (proof kept, counter bumped),
@@ -803,7 +886,8 @@ CONFIRMED early-window CHURN cycle (below). The revalidation runs in the pure
 > so its NEXT session's session-boundary snap still lands at the FLOOR and it primes
 > at the floor again. This is the point of the two-strike design: one bad
 > measurement must NOT cost the floor. `flag_present` is only cleared on an actual
-> REVOKE (delete) — the second consecutive fail, a DLL demotion, or a confirmed
+> REVOKE (delete) — the second consecutive failed session, explicit
+> `lost_authority`, or a confirmed
 > churn — after which the next snap lands at the ceiling and the session descends +
 > re-proves, exactly as before. STATUS surfaces the counter as
 > `resampler.compliance.consecutive_failures`.
@@ -977,10 +1061,10 @@ the one where `locked` is already false (a `locked`-only window gate would make 
 unreachable). Arming is gated on the unlock count actually ADVANCING, so an idle `reset()`
 (host pause — `unlock_count` unchanged) does not arm, and a subsequent resume-relock is a
 clean new session, not a confirmed churn. (2) A probe FAIL only revokes when it is LIVE —
-the servo leaves `probe_result=Fail` across a session boundary, so a fresh lock on a new
-compliant host reads the stale FAIL until its own probe runs; the tracker gates on the
-ladder sitting at L2 (which always accompanies a live fail) so a stale carryover FAIL
-(ladder back in `Probing`, `ladder_l2=false`) is ignored. (3) The revoke-before-relock
+the servo leaves attempt telemetry across a session boundary, so a fresh lock must not
+reinterpret stale state before its own probe runs; the tracker keys only on the explicit
+live `fallback_reason=probe_noncompliant`, never a generic `ladder_l2` boolean or inferred
+probe code. (3) The revoke-before-relock
 ORDERING is pinned (interaction with #1154's snap-destination SSOT): on the relock that
 CONFIRMS a churn strike, `step` latches `floor_primed=false` even though `floor_primed_now`
 is still true, because the mixer clears `flag_present` right after `step` returns. This
@@ -997,8 +1081,9 @@ resets on every fresh lock, so a re-proven session can strike again if the host 
 misbehaves — both are per-lock, not per-daemon-lifetime. On any strike the mixer snaps the
 held target back to the full ceiling via the **unconditional** escape
 (`snap_decay_to_ceiling`, distinct from the proof-honouring session-boundary snap). What it
-does to the FILE then depends on `classify_strike`: a DELETE revoke (DLL demotion, confirmed
-churn, or the SECOND consecutive probe fail) clears `flag_present`, removes the file, and
+does to the FILE then depends on `classify_strike`: a DELETE revoke (explicit
+`lost_authority`, confirmed churn, or the SECOND consecutive failed session) clears
+`flag_present`, removes the file, and
 logs `event=fanin.host_compliance.revoked reason=…`; a RETAIN strike (the FIRST probe fail)
 persists a bumped `consecutive_failures`, LEAVES `flag_present` true (so the next session
 still primes), and logs `event=fanin.host_compliance.strike_retained`. The normal descent
@@ -1179,18 +1264,17 @@ truth for the checklist.
 - Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
   every input gains `"source":"lane"|"direct"`; the direct lane also gains
   `"direct":{"device","present","health","opens","retries","reopens","card_gen_reopens"}`.
-  `health` is the coarse capture classification for the runtime-fallback watcher —
+  `health` is the coarse capture classification for fan-in's local recovery —
   `"capturing"` (present + flowing), `"idle"` (no host / attached-but-silent /
   (re)opening — never a failure), or `"broken"` (the flowing→dead zombie signature)
-  — see **"Runtime fallback — combo → aloop bridge on capture break"** in
-  [HANDOFF-usbsink.md](HANDOFF-usbsink.md), which owns the watcher that acts on
-  `health` + the `reopens`/`card_gen_reopens` churn to disarm the combo back to the
-  aloop bridge when the direct capture breaks at runtime.
+  — see **"Runtime capture recovery — local and non-destructive"** in
+  [HANDOFF-usbsink.md](HANDOFF-usbsink.md). The `health` and reopen-counter fields
+  are observability only; they never withdraw UAC2 or disarm direct capture.
   The lane's frames/xruns ride the existing `frames_read`/`xrun_count`; its
   rate-lock rides the existing `resampler{}` block. `reopens` is the ZOMBIE-handle
   forced-reopen counter (C): a growing value means the flowing→dead zero-avail latch
   caught a gadget rebuild — the handle had been feeding the lane, then `avail_update`
-  returned exactly 0 for ~2 s (UDC rebind / usbsink stop-start **while a stream was
+  returned exactly 0 for ~2 s (UDC rebind / gadget restart **while a stream was
   flowing**) — and the lane self-healed the deaf `Ok(0)`-forever capture handle
   instead of needing a manual fan-in restart. `card_gen_reopens` is its twin (C,
   defect 2026-07-06): the same self-heal but for a rebuild caught by the ~1 s
@@ -1203,13 +1287,25 @@ truth for the checklist.
   partition: which fires first for a given rebuild is timing-dependent (the ~1 s
   probe cadence is shorter than the ~2 s zero-avail threshold, so a rebuild under a
   live stream is usually caught by the probe first).
-- Bridge STATUS/state.json gains additive `"standby":true|false` (schema_version
-  stays 1); in standby `playing:false`, `rms_dbfs:-120`, ring/counters zero, and
-  `host_connected` is best-effort from sysfs (`/sys/class/udc/*/state ==
-  "configured"`). A misdirected harness run is diagnosable from `standby:true`.
+- `host_clock.actuator` reports `ready`, `capture_generation`,
+  `control_generation`, cumulative `refreshes` / `open_failures` /
+  `write_failures`, and best-effort `readback_ctl_value`. `host_clock.probe`
+  reports `phase`, `attempt`, `max_attempts`, last-attempt result/ratio, final
+  result/ratio, lifetime `retries`, and `waiting_for_lock`; the legacy
+  `last_result`/`response_ratio` pair remains additive compatibility telemetry and
+  carries only the final verdict. `host_clock.fallback_reason` is null outside L2
+  and otherwise one of `probe_noncompliant`, `lost_authority`, or
+  `actuator_unavailable`.
+- The flat `USB host clock` doctor check warns on an unavailable/mismatched
+  actuator or persistent L2 and names the exact cause and generations. A bounded
+  probe or `retry_wait` with a ready matching actuator is recovery, not a warning.
+- `/state.renderers.usbsink.host_connected` reads kernel UDC truth through the
+  import-light `jasper.usbgadget` helper (`/sys/class/udc/*/state == configured`);
+  activity/level/mute come from the identity-bound fan-in DIRECT lane. There is
+  no bridge STATUS/state file.
 - Transition logs: `event=fanin.usb_direct.present` / `.absent` (one line per
   presence change, device + errno + cumulative retries), `event=fanin.usb_direct.armed`
-  at config load, `event=usbsink_audio.standby active=true` at bridge start.
+  at config load.
   `event=fanin.usb_direct.reopen reason=zombie_handle` fires when a Present handle
   that had been feeding the lane goes deaf — `avail_update()` returns exactly 0 for
   ~2 s **after** frames had flowed on that handle (the gadget was rebuilt underneath
@@ -1226,8 +1322,8 @@ truth for the checklist.
   the THIRD signal, orthogonal to the flowing→dead latch. On a ~1 s housekeeping
   cadence (a `snd_pcm_status` ioctl is a real syscall, kept off the per-period hot
   path) the drain issues ONE STATUS ioctl on the open capture handle. When the UAC2
-  gadget FUNCTION is rebuilt underneath that handle (a UDC rebind / usbsink
-  stop-start), the kernel runs `snd_card_disconnect`, which swaps the stale file's
+  gadget FUNCTION is rebuilt underneath that handle (a UDC rebind / gadget
+  restart), the kernel runs `snd_card_disconnect`, which swaps the stale file's
   fops to the shutdown set — so `snd_pcm_status` (a real `SNDRV_PCM_IOCTL_STATUS`
   ioctl, never served from the mmap'd control page) deterministically returns
   `-ENODEV` or reports `State::Disconnected`. That is precisely why `avail_update`
@@ -1250,19 +1346,20 @@ truth for the checklist.
   `card_gen_reopens` counts one per real rebuild. **On-device obligation:** this
   premise (STATUS ioctl trips across a real rebuild while `avail_update` stays
   `Ok(0)`) is kernel behavior no unit test can pin — confirm `card_gen_reopens`
-  ticks across a `systemctl restart jasper-usbsink` on jts.local, and that the box
-  self-heals (no manual fan-in restart). The host-clock servo's ctl handle is NOT
-  poked from this edge (its `!Send` actuator lives in the `fanin-host-clock` thread
-  and never crosses a thread boundary); the same rebuild makes its next ctl write
-  fail with ENODEV, which drops the stale handle (`event=fanin.host_clock_ctl_error
-  ... action=drop_stale_handle`) so the next session edge re-opens it against the
-  rebuilt card — the ctl's independent self-heal, unchanged.
+  ticks across a gadget-function restart on jts.local, and that the box self-heals
+  (no manual fan-in restart). `direct.opens` is also the capture-generation signal
+  consumed by the host-clock thread. The mixer never touches the ctl handle; the
+  generation edge tells the owning thread to neutralize/drop/reopen/force-neutral
+  and publish a matching control generation. This remains correct even if the old
+  handle's next write appears successful. On the measured jts.local rebuild the
+  stale neutral write failed `ENODEV`, capture advanced 1→2, control advanced 1→2,
+  and the same stream re-probed to L0 without restarting fan-in.
 
 ### Impulse tap moves to fan-in (C4)
 
 In direct mode the certified route's ingress is fan-in's `hw:UAC2Gadget`
-capture, so the impulse tap is **relocated into fan-in** (ported verbatim from
-`jasper-usbsink-audio`: same JSONL schema, same detector, same arm validation).
+capture, so the impulse tap is **relocated into fan-in** (ported from the retired
+bridge with the same JSONL schema, detector, and arm validation).
 It runs inline in the direct read over the converted S16 slice, before the
 resampler. **The bridge's own tap is DELETED** (2026-07-10, with the bridge
 `:8781` listener), so the fan-in JSONL is the ONLY ingress evidence.
@@ -1279,7 +1376,7 @@ aloop solo path and its bridge `:8781` tap were deleted (2026-07-10), the fan-in
 DIRECT-capture tap is the only ingress, so `auto` always resolves to the fan-in
 tap (there is no usbsink bridge tap to fall back to). This measures the shipping
 route on any gadget box **with no extra flags**, closing the earlier gap where
-`auto` could arm the standby, never-firing usbsink tap and record zero
+`auto` could arm the retired bridge's never-firing tap and record zero
 detections. `run`
 prints the chosen ingress up front
 (`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`). Force the
@@ -1903,7 +2000,7 @@ speaker remains recoverable.
 
 | Legacy path | Status | Cleanup trigger |
 |---|---|---|
-| Python/PortAudio USB audio bridge | **DELETED** (USB dead-pipeline sweep) — the Rust `jasper-usbsink-audio` bridge is the sole data plane; only `volume_bridge.py` survives | done |
+| Python/PortAudio and Rust `jasper-usbsink-audio` bridges | **DELETED** (USB dead-pipeline sweep) — fan-in DIRECT capture is the sole USB ingress; only the host-volume observer in `volume_bridge.py` survives | done |
 | lean FIFO USB-only route (`JASPER_LEAN_LANE`, `USBSINK_OUTPUT_MODE=fifo`, lean RawFile capture) | **DELETED** (USB dead-pipeline sweep) — it was reachable only through the deleted Python bridge (the Rust daemon has no fifo mode) | done |
 | `transport_pipe` fan-in↔Camilla dual FIFO coupling | **DELETED** (2026-07-11) — the shm_ring SHM-ring pair replaced its diagnostic value as the frame-bounded low-latency default; fan-in Output::Fifo + outputd local_content_pipe + the reconciler arm/gate branches + the JASPER_FANIN_CAMILLA_PIPE/JASPER_OUTPUTD_LOCAL_CONTENT_PIPE env keys are gone | done |
 | outputd `rate_match` content bridge for USB | Rejected for this route; produced content xruns/EAGAIN/partials in tuning | Keep only as a DAC/content clock-slip lab tool, or delete once no active diagnostic depends on it |
@@ -2054,7 +2151,16 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-13 (re-verified the route artifact/doctor live-state
+Last verified: 2026-07-15 (direct-health and reopen fields were rechecked as
+fan-in recovery observability only, with no health-driven USB lifecycle action;
+the retired Rust bridge/state surface was removed;
+USB-toggle trigger ownership rechecked against
+`jasper.source_intent`; `/sources/` now requests intent and the shared source
+coordinator kicks coupling only after a real USB transition. See
+HANDOFF-source-lifecycle.md. Prior 2026-07-13 re-verified the host-clock capture/control generation
+lifecycle, bounded same-stream retry, explicit fallback causes, compliance
+actions, STATUS/doctor contract, canonical deploy, coordinated restart, and live
+gadget rebuild on jts.local; also re-verified the route artifact/doctor live-state
 contract against `jasper/audio_validation.py`, `jasper/cli/doctor/audio.py`, and
 fan-in's canonical `direct.health` idle/capturing/broken classifier; doctor now
 tolerates only the activity-dependent idle unlock while artifact creation stays

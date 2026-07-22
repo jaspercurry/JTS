@@ -21,7 +21,9 @@ from jasper.camilla_emit import (
     MONO_SUM_GAIN_DB,
     channel_select_sources,
     emit_channel_select_mixer,
+    emit_butterworth_highpass,
     emit_gain_filter,
+    emit_linkwitz_transform_biquad,
     mono_sum_sources,
     emit_linkwitz_riley,
     emit_master_gain_pipeline,
@@ -79,6 +81,35 @@ def test_linkwitz_riley_matches_active_speaker():
         "    parameters:",
         "      type: LinkwitzRileyLowpass",
         "      freq: 80.0000",
+        "      order: 4",
+    ]
+
+
+def test_bass_extension_filters_match_camilladsp_native_spelling():
+    assert emit_linkwitz_transform_biquad(
+        "bass_ext_lt",
+        freq_act=58.0,
+        q_act=0.72,
+        freq_target=58.0,
+        q_target=0.72,
+    ) == [
+        "  bass_ext_lt:",
+        "    type: Biquad",
+        "    parameters:",
+        "      type: LinkwitzTransform",
+        "      freq_act: 58.0000",
+        "      q_act: 0.7200",
+        "      freq_target: 58.0000",
+        "      q_target: 0.7200",
+    ]
+    assert emit_butterworth_highpass(
+        "bass_ext_subsonic", freq=22.0, order=4
+    ) == [
+        "  bass_ext_subsonic:",
+        "    type: BiquadCombo",
+        "    parameters:",
+        "      type: ButterworthHighpass",
+        "      freq: 22.0000",
         "      order: 4",
     ]
     assert emit_linkwitz_riley("x_hp", highpass=True, freq_hz=2000.0, order=2) == [
@@ -208,12 +239,22 @@ def test_emitters_parse_as_valid_yaml():
         emit_gain_filter("flat", 0.0)
         + emit_peaking_biquad("peq_1", freq=80.0, q=4.0, gain=-3.0)
         + emit_linkwitz_riley("sub_lp", highpass=False, freq_hz=80.0, order=4)
+        + emit_linkwitz_transform_biquad(
+            "bass_ext_lt",
+            freq_act=58.0,
+            q_act=0.72,
+            freq_target=58.0,
+            q_target=0.72,
+        )
+        + emit_butterworth_highpass("bass_ext_subsonic", freq=22.0, order=4)
     )
     parsed = yaml.safe_load("filters:\n" + filters)["filters"]
     assert parsed["flat"]["type"] == "Gain"
     assert parsed["peq_1"]["parameters"]["type"] == "Peaking"
     assert parsed["sub_lp"]["type"] == "BiquadCombo"
     assert parsed["sub_lp"]["parameters"]["order"] == 4
+    assert parsed["bass_ext_lt"]["parameters"]["type"] == "LinkwitzTransform"
+    assert parsed["bass_ext_subsonic"]["parameters"]["order"] == 4
 
     mixer = emit_mixer(
         "channel_select",

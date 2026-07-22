@@ -2,41 +2,50 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drift guard for the USB "playing" RMS gate.
+"""Guard for the USB audio-level threshold — now DISPLAY-ONLY.
 
-A host is treated as "playing" only when its audio level is above a shared
-threshold — so a Mac streaming digital silence (a muted Zoom, an idle tab) does
-NOT seize the speaker. The gate is Python-only now: `jasper.source_state.
-USBSINK_PLAYING_RMS_DBFS` is applied to fan-in's DIRECT-capture lane's reported
-`rms_dbfs` (the live USB path), gating mux's combo-liveness check
-(`usbsink_direct_audible` / `step_combo_liveness`) and the `/state` renderer
-level.
+History: this threshold used to gate mux's source arbitration ("a Mac streaming
+digital silence must not seize the speaker"). The sticky-session rework
+(2026-07-17) removed that gate — an explicit AirPlay/Spotify session simply
+outranks the passive USB stream, so a silently-streaming host can't steal a
+cast without any level check, and USB liveness is now purely frames-based (see
+`jasper.mux.step_combo_liveness`). Removing the gate fixed dropped faint audio
+and the level-driven quiet-passage dropouts on browser video (it did NOT change
+the ~1-2 s cold-start detect, which is the mux poll cadence).
 
-The Rust `jasper-usbsink-audio` daemon is standby-only (see main.rs) and opens
-no PCM, so it never computes a `playing` value of its own to drift from. It
-used to carry a `PLAYING_RMS_DBFS` anchor constant purely so this test could
-pin the two languages equal; that constant and the cross-language pin were
-deleted 2026-07-11 once there was no Rust-side gate left to guard against
-drifting. `jasper.mux` imports `USBSINK_PLAYING_RMS_DBFS` from
-`jasper.source_state` rather than declaring its own value, so the remaining
-single-source-of-truth risk is Python-internal: a future edit could give
-`jasper.mux` a local literal instead of importing the shared constant. This
-test pins that instead of a cross-language pair. See AGENTS.md.
+`jasper.source_state.USBSINK_PLAYING_RMS_DBFS` survives only as the level shown
+on the `/state` dashboard (via `usbsink_direct_audible`, read by
+`jasper.control.state_aggregate`). This test pins that it is (a) still a single
+shared definition and (b) NO LONGER referenced by the arbiter `jasper.mux`, so a
+future edit can't silently re-gate arbitration on audio level. See AGENTS.md and
+docs/HANDOFF-usbsink.md.
 """
 from __future__ import annotations
 
 from jasper import mux, source_state
-
-
-def test_usbsink_playing_rms_dbfs_is_a_single_shared_definition():
-    """`jasper.mux` must import the threshold, not re-declare its own copy.
-
-    Identity (`is`), not just equality — a future edit that gives mux.py a
-    local literal instead of importing `source_state.USBSINK_PLAYING_RMS_DBFS`
-    would silently fork the gate even if the value still matched today."""
-    assert mux.USBSINK_PLAYING_RMS_DBFS is source_state.USBSINK_PLAYING_RMS_DBFS
+from jasper.control import state_aggregate
 
 
 def test_usbsink_playing_rms_dbfs_value():
-    """Pin the actual threshold so a change to it is deliberate, not accidental."""
+    """Pin the display threshold so a change to it is deliberate, not accidental."""
     assert source_state.USBSINK_PLAYING_RMS_DBFS == -60.0
+
+
+def test_state_aggregate_is_the_display_consumer():
+    """The threshold's only remaining job is the /state level readout, via
+    `usbsink_direct_audible`. Pin that the display module still imports it so the
+    'display-only' rationale above stays true."""
+    assert hasattr(state_aggregate, "usbsink_direct_audible")
+    assert (
+        state_aggregate.usbsink_direct_audible
+        is source_state.usbsink_direct_audible
+    )
+
+
+def test_mux_no_longer_gates_arbitration_on_level():
+    """The arbiter must not reference the audio-level threshold at all — the
+    whole point of sticky sessions is that routing is level-independent. A
+    future edit that re-imports the gate into mux would resurrect the
+    dropped-faint-audio / startup-lag / quiet-dropout class this fixed."""
+    assert not hasattr(mux, "USBSINK_PLAYING_RMS_DBFS")
+    assert not hasattr(mux, "usbsink_direct_rms_dbfs")

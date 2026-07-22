@@ -82,6 +82,32 @@ def test_comparison_set_requires_all_drivers_and_recomputes_fingerprint(tmp_path
     assert comparison_set_valid(malformed) is False
 
 
+def test_quietest_locked_volume_is_exact_deterministic_and_fail_closed():
+    from jasper.active_speaker.capture_geometry import quietest_locked_main_volume
+
+    roles = frozenset({"woofer", "tweeter"})
+    assert quietest_locked_main_volume(
+        {"tweeter": -4.0, "woofer": -10.0}, roles
+    ) == ("woofer", -10.0)
+    assert quietest_locked_main_volume(
+        {"woofer": -10.0, "tweeter": -10.0}, roles
+    ) == ("tweeter", -10.0)
+    assert quietest_locked_main_volume({"woofer": -10.0}, roles) is None
+    assert (
+        quietest_locked_main_volume(
+            {"woofer": -10.0, "tweeter": -4.0, "mid": -6.0}, roles
+        )
+        is None
+    )
+    for invalid in (True, float("nan"), 0.1):
+        assert (
+            quietest_locked_main_volume(
+                {"woofer": -10.0, "tweeter": invalid}, roles
+            )
+            is None
+        )
+
+
 @pytest.mark.asyncio
 async def test_lease_requires_each_driver_and_summed_uses_quietest_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
@@ -857,9 +883,17 @@ def test_effective_excitation_includes_driver_main_lock():
     }) is None
 
 
-def test_sequential_envelope_names_next_driver_frequency_and_optional_calibration():
+def test_sequential_envelope_names_next_driver_frequency_and_optional_calibration(
+    monkeypatch,
+):
     from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from tests.test_web_correction_crossover_flow import _envelope_status
+
+    # This test asserts LEGACY per-driver envelope behavior; since W6 flipped
+    # the product default to the v2 conductor, the legacy path is opt-in.
+    # Goes away with the legacy flow in W5b.
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
 
     status = _envelope_status()
     status["level_match"] = {

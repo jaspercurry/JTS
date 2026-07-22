@@ -61,7 +61,6 @@ def _run_reconcile(
     initial_env: str | None = None,
     initial_outputd_env: str | None = None,
     initial_fanin_env: str | None = None,
-    initial_usbsink_env: str | None = None,
     initial_template: str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -87,13 +86,20 @@ def _run_reconcile(
         (tmp_path / "outputd.env").write_text(initial_outputd_env, encoding="utf-8")
     if initial_fanin_env is not None:
         (tmp_path / "fanin.env").write_text(initial_fanin_env, encoding="utf-8")
-    if initial_usbsink_env is not None:
-        (tmp_path / "usbsink.env").write_text(initial_usbsink_env, encoding="utf-8")
     if initial_template is not None:
         (tmp_path / "asoundrc.jasper.template").write_text(
             initial_template,
             encoding="utf-8",
         )
+    model = tmp_path / "model"
+    boot_config = tmp_path / "config.txt"
+    udc = tmp_path / "udc"
+    model.write_text("Raspberry Pi 5 Model B Rev 1.0", encoding="utf-8")
+    boot_config.write_text(
+        "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n",
+        encoding="utf-8",
+    )
+    (udc / "3f980000.usb").mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     env.update(
@@ -101,7 +107,6 @@ def _run_reconcile(
             "JASPER_ENV_FILE": str(tmp_path / "jasper.env"),
             "JASPER_OUTPUTD_ENV_FILE": str(tmp_path / "outputd.env"),
             "JASPER_FANIN_ENV_FILE": str(tmp_path / "fanin.env"),
-            "JASPER_USBSINK_ENV_FILE": str(tmp_path / "usbsink.env"),
             "JASPER_TTS_ENV_FILE": str(tmp_path / "tts.env"),
             "JASPER_ASOUND_SOURCE_TEMPLATE": str(source_template),
             "JASPER_ASOUND_TEMPLATE": str(tmp_path / "asoundrc.jasper.template"),
@@ -117,6 +122,9 @@ def _run_reconcile(
                 tmp_path / "output_hardware.json"
             ),
             "JASPER_OUTPUT_HARDWARE_PYTHON": sys.executable,
+            "JASPER_PI_MODEL_FILE": str(model),
+            "JTS_BOOT_CONFIG_FILE": str(boot_config),
+            "JASPER_UDC_CLASS_DIR": str(udc),
             # Hermetic active-graph gate inputs: point the cutover gate's
             # statefile + topology at tmp paths that are ABSENT unless a test
             # explicitly stages them via _active_graph_env(). Without this the
@@ -435,7 +443,14 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     commands = _systemctl_log(tmp_path)
     assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "start jasper-dac-init.service" in commands
-    assert "restart jasper-headphone-monitor.service" in commands
+    # The monitor is ensured idempotently, never restarted: this gate runs on
+    # every udev/reconcile pass and a deploy fires it repeatedly inside the
+    # unit's StartLimitIntervalSec. A restart-per-pass burned StartLimitBurst
+    # and parked the monitor 'start-limit-hit'. reset-failed clears any parked
+    # state; start is a no-op when it is already running.
+    assert "reset-failed jasper-headphone-monitor.service" in commands
+    assert "start jasper-headphone-monitor.service" in commands
+    assert "restart jasper-headphone-monitor.service" not in commands
     assert "stop jasper-voice.service" in commands
     assert "reset-failed jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
@@ -496,10 +511,6 @@ def test_env_writer_preserves_existing_jasper_env_ownership() -> None:
         in text
     )
     assert 'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750' in text
-    assert (
-        'jasper_env_file_repair_permissions "$USBSINK_ENV_FILE" 0640 0750'
-        in text
-    )
 
 
 def test_reconcile_preserves_asound_template_dir_mode(tmp_path: Path):
@@ -575,7 +586,6 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
             "JASPER_AUDIO_DAC_CARD=A\n"
         ),
         initial_outputd_env=outputd_env,
-        initial_usbsink_env="JASPER_USBSINK_OUTPUT_MODE=aloop\n",
         initial_template=rendered_template,
     )
 
@@ -601,15 +611,11 @@ def test_reconcile_applies_usb_low_latency_route_env(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     fanin_env = (tmp_path / "fanin.env").read_text(encoding="utf-8")
-    usbsink_env = (tmp_path / "usbsink.env").read_text(encoding="utf-8")
     assert "JASPER_FANIN_INPUT_RESAMPLER=enabled" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=4096" in fanin_env
-    assert "JASPER_USBSINK_AUDIO_IMPL" not in usbsink_env
-    assert "JASPER_USBSINK_BLOCK_FRAMES=256" in usbsink_env
-    assert "JASPER_USBSINK_RING_PERIODS=3" in usbsink_env
 
 
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
@@ -650,6 +656,9 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     state_text = (tmp_path / "output_hardware.json").read_text(encoding="utf-8")
     assert '"profile_id": "dual_apple_usb_c_dac_4ch"' in state_text
     assert '"apple_dac_count": 2' in state_text
+    usb_role = json.loads(state_text)["usb_data_role"]
+    assert usb_role["desired_role"] == "peripheral"
+    assert usb_role["gadget_available"] is True
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
     _assert_parked_outputd_dac_template(template)
     assert _render_log(tmp_path) == "render\n"
@@ -657,6 +666,11 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "event=audio_hardware_reconcile.dual_apple_detected" in result.stderr
+    assert (
+        "event=hardware.usb_role_resolved topology=separate_host_ports "
+        "desired=peripheral active=peripheral gadget_available=true "
+        "management_transport_available=true reason=available"
+    ) in result.stderr
 
 
 def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
@@ -1583,56 +1597,19 @@ def test_reconcile_operator_outputd_override_dropped_even_when_pre_seeded(
     )
 
 
-# --- defect D: split restart edge + storm breaker ----------------------------
-
-# The usbsink target values for the usb_low_latency route (from
-# route_owned_env_actions): pre-seeding these makes a run change ONLY fanin keys.
-_USBSINK_USB_LL_ENV = (
-    "JASPER_USBSINK_BLOCK_FRAMES=256\n"
-    "JASPER_USBSINK_RING_PERIODS=3\n"
-    "JASPER_USBSINK_LATENCY=low\n"
-    "JASPER_USBSINK_OUTPUT_MODE=aloop\n"
-)
-
-
-def test_fanin_only_route_change_does_not_restart_usbsink(tmp_path: Path):
-    # Defect D core fix: when only fanin.env keys move (usbsink.env already carries
-    # the route's usbsink values), fan-in restarts but jasper-usbsink MUST NOT —
-    # a usbsink restart rebuilds the gadget → udev → this reconciler → storm.
+def test_route_change_restarts_only_fanin_runtime(tmp_path: Path):
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
         "--reason",
         "test",
         initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
-        initial_usbsink_env=_USBSINK_USB_LL_ENV,
     )
     assert result.returncode == 0, result.stderr
     commands = _systemctl_log(tmp_path)
-    # fan-in was restarted (its resampler keys changed).
     assert "restart jasper-fanin.service" in commands
-    # jasper-usbsink was NOT try-restarted (no gadget rebuild → no storm).
     assert "try-restart jasper-usbsink.service" not in commands
-    assert "usbsink_restarted=0" in result.stderr
     assert "fanin_restarted=1" in result.stderr
-
-
-def test_route_change_touching_usbsink_keys_restarts_usbsink(tmp_path: Path):
-    # The mirror: a clean box adopting usb_low_latency moves BOTH fanin and usbsink
-    # keys, so both are restarted (the usbsink restart is legitimate here — the
-    # gadget genuinely needs the new block/ring geometry).
-    result = _run_reconcile(
-        tmp_path,
-        APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
-    )
-    assert result.returncode == 0, result.stderr
-    commands = _systemctl_log(tmp_path)
-    assert "restart jasper-fanin.service" in commands
-    assert "try-restart jasper-usbsink.service" in commands
-    assert "usbsink_restarted=1" in result.stderr
 
 
 def test_idempotent_second_run_makes_no_route_restart(tmp_path: Path):
@@ -1643,7 +1620,7 @@ def test_idempotent_second_run_makes_no_route_restart(tmp_path: Path):
     )
     first = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test", **common)
     assert first.returncode == 0, first.stderr
-    # Second run: fanin.env + usbsink.env already carry the route values from run 1.
+    # Second run: fanin.env already carries the route values from run 1.
     (tmp_path / "systemctl.log").write_text("", encoding="utf-8")
     second = _run_reconcile(
         tmp_path,
@@ -1652,76 +1629,8 @@ def test_idempotent_second_run_makes_no_route_restart(tmp_path: Path):
         "test",
         initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
         initial_fanin_env=(tmp_path / "fanin.env").read_text(encoding="utf-8"),
-        initial_usbsink_env=(tmp_path / "usbsink.env").read_text(encoding="utf-8"),
     )
     assert second.returncode == 0, second.stderr
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-fanin.service" not in commands
-    assert "try-restart jasper-usbsink.service" not in commands
     assert "fanin_restarted=0" in second.stderr
-    assert "usbsink_restarted=0" in second.stderr
-
-
-def test_usbsink_restart_is_rate_limited_within_window(tmp_path: Path):
-    # Storm breaker: two usbsink-changing runs in quick succession — the second is
-    # rate-limited (the state stamp from run 1 is < the window old), so the gadget
-    # is NOT rebuilt a second time and the storm is broken.
-    state = tmp_path / "usbsink-restart.stamp"
-    extra = {"JASPER_USBSINK_RESTART_STATE_FILE": str(state)}
-    first = _run_reconcile(
-        tmp_path,
-        APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
-        extra_env=extra,
-    )
-    assert first.returncode == 0, first.stderr
-    assert "try-restart jasper-usbsink.service" in _systemctl_log(tmp_path)
-    assert state.exists(), "the first usbsink restart must stamp the state file"
-
-    # Force a fresh usbsink change on run 2 (clear usbsink.env so the keys move
-    # again), same short window. The limiter must refuse the usbsink restart.
-    (tmp_path / "systemctl.log").write_text("", encoding="utf-8")
-    (tmp_path / "usbsink.env").write_text("", encoding="utf-8")
-    second = _run_reconcile(
-        tmp_path,
-        APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
-        extra_env=extra,
-    )
-    assert second.returncode == 0, second.stderr
-    commands = _systemctl_log(tmp_path)
-    assert "try-restart jasper-usbsink.service" not in commands, (
-        "the storm breaker must refuse a second gadget-rebuilding restart in the window"
-    )
-    assert "event=audio_hardware_reconcile.usbsink_restart_ratelimited" in second.stderr
-    # Defect D: the refusal must NAME the resulting env↔daemon drift (not a silent
-    # no-op) so it is observable in the journal — mirroring the doctor's
-    # check_usbsink_env_drift surface. usbsink.env is now ahead of the daemon.
-    assert "event=audio_hardware_reconcile.route_env_drift" in second.stderr
-
-
-def test_usbsink_restart_allowed_after_window_elapses(tmp_path: Path):
-    # The mirror: a stamp OLDER than the window does NOT block — a legitimate later
-    # restart proceeds (the limiter is a storm damper, not a permanent gate).
-    state = tmp_path / "usbsink-restart.stamp"
-    state.parent.mkdir(parents=True, exist_ok=True)
-    state.write_text("100\n", encoding="utf-8")  # epoch 100 = far in the past
-    result = _run_reconcile(
-        tmp_path,
-        APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
-        extra_env={
-            "JASPER_USBSINK_RESTART_STATE_FILE": str(state),
-            "JASPER_USBSINK_RESTART_MIN_INTERVAL_SEC": "600",
-        },
-    )
-    assert result.returncode == 0, result.stderr
-    assert "try-restart jasper-usbsink.service" in _systemctl_log(tmp_path)
-    # The stamp was refreshed to a recent epoch (not the stale 100).
-    assert state.read_text(encoding="utf-8").strip() != "100"

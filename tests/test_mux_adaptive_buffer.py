@@ -51,6 +51,9 @@ class _FakeVolumeCoordinator:
     async def finalize_source_handoff(self, handoff):
         return True
 
+    async def publish_volume_context(self):
+        pass
+
     async def aclose(self):
         pass
 
@@ -64,7 +67,11 @@ def patched_probes(monkeypatch):
     monkeypatch.setattr("jasper.mux.spotify_playing", spotify)
     monkeypatch.setattr("jasper.mux.airplay_playing", airplay)
     monkeypatch.setattr("jasper.mux.bluetooth_playing", bluetooth)
-    monkeypatch.setattr("jasper.mux.usbsink_playing", usbsink)
+
+    async def usb_probe(_mux):
+        return await usbsink()
+
+    monkeypatch.setattr(Mux, "_usbsink_playing", usb_probe)
     return SimpleNamespace(
         spotify=spotify, airplay=airplay, bluetooth=bluetooth, usbsink=usbsink,
     )

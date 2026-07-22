@@ -9,27 +9,22 @@
 //! endpoint (the writable ALSA control `"Capture Pitch 1000000"`, iface=PCM,
 //! numid=1) so the HOST (Mac / Windows PC) matches OUR local DAC rate, instead
 //! of a lane resampler having to reconcile a standing rate offset in software.
-//! The mechanism is a slow delay-locked loop over the gadget ring fill; the
-//! ladder around it is a per-session compliance probe that refuses to trust a
-//! host that ignores the feedback.
+//! The mechanism is a slow controller over the owning adapter's explicit
+//! observable (resampler correction in the live fan-in path); the ladder around
+//! it is a per-session compliance probe that refuses to trust a host that ignores
+//! the feedback.
 //!
 //! # Which daemon owns this
 //!
 //! This crate holds the pure, I/O-free ladder/servo ([`HostClock`]) plus the
 //! feature-gated ALSA actuator ([`AlsaPitchCtl`], behind `feature = "alsa"`).
-//! It was built as the shared home for either USB clock owner — whichever
-//! daemon owns the gadget capture drives it:
-//! - **solo (aloop) mode**: `jasper-usbsink-audio` used to own the gadget
-//!   capture and drive this from its state publisher
-//!   (`JASPER_USBSINK_HOST_CLOCK`). That path was deleted 2026-07-10 with the
-//!   aloop solo USB capture path (#1209); `jasper-usbsink-audio` is
-//!   standby-only now and has no dependency on this crate.
-//! - **combo (USB DIRECT) mode**: `jasper-fanin` owns the gadget capture and
-//!   drives this from a dedicated thread (`JASPER_FANIN_HOST_CLOCK`). This is
-//!   the sole live consumer today.
+//! `jasper-fanin` owns the gadget capture and drives this from a dedicated
+//! thread (`JASPER_FANIN_HOST_CLOCK`). It is the sole live consumer. The
+//! retired solo/aloop bridge used this crate before that path was deleted; that
+//! history is why the core remains daemon-agnostic.
 //!
-//! The invariant pinned across both: **the daemon that owns the gadget capture
-//! owns the pitch ctl.** Only one drives it at a time. The crate stays
+//! The invariant is: **the daemon that owns the gadget capture owns the pitch
+//! ctl.** The crate stays
 //! daemon-agnostic on purpose: any future second consumer would parse its own
 //! `JASPER_*` env keys and build a [`HostClockConfig`] the same way fan-in
 //! does, differing only in the `event=` log prefix (fan-in uses `fanin`; the
@@ -353,9 +348,84 @@ pub enum Ladder {
     L0Locked,
     /// Locked but the raw demand is unusually high (sustained). Warn only.
     L1Warn,
-    /// Probe failed, or mid-stream evidence the host stopped honoring the
-    /// command. Pitch neutral until the next idle boundary re-probes.
+    /// Terminal host evidence, or local actuator unavailability. Pitch is
+    /// neutral; host evidence stays latched for the stream, while an actuator
+    /// outage may recover and re-probe the same stream.
     L2Fallback,
+}
+
+/// Why the ladder is currently in [`Ladder::L2Fallback`]. This is deliberately
+/// separate from the ladder level: persisted host compliance must distinguish
+/// host evidence from a local actuator outage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    None,
+    /// Both bounded probe attempts showed that the host ignored the pitch step.
+    ProbeNoncompliant,
+    /// A host trusted in L0 stopped following a saturated command mid-stream.
+    LostAuthority,
+    /// The local pitch control is absent, stale, or failed a write.
+    ActuatorUnavailable,
+}
+
+impl FallbackReason {
+    /// Stable public token. `None` is serialized as JSON `null`.
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::ProbeNoncompliant => Some("probe_noncompliant"),
+            Self::LostAuthority => Some("lost_authority"),
+            Self::ActuatorUnavailable => Some("actuator_unavailable"),
+        }
+    }
+}
+
+/// Data-only snapshot of the owning adapter's pitch-control lifecycle. The
+/// shared controller never opens or reads hardware; fan-in publishes this
+/// snapshot so capture/control generation evidence stays visible alongside the
+/// ladder. `control_generation` is populated only after the named control has
+/// opened and a forced-neutral write has succeeded for that capture generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlStatus {
+    pub capture_generation: u64,
+    pub control_generation: Option<u64>,
+    pub refreshes: u64,
+    pub open_failures: u64,
+    pub write_failures: u64,
+    /// Diagnostic ALSA integer readback after the most recent successful write.
+    /// This is evidence only: a stale handle may self-consistently read dead
+    /// state, so generation binding remains the correctness mechanism.
+    pub readback_ctl_value: Option<i64>,
+}
+
+impl ControlStatus {
+    pub fn ready(self) -> bool {
+        self.capture_generation != 0 && self.control_generation == Some(self.capture_generation)
+    }
+
+    fn unavailable() -> Self {
+        Self {
+            capture_generation: 0,
+            control_generation: None,
+            refreshes: 0,
+            open_failures: 0,
+            write_failures: 0,
+            readback_ctl_value: None,
+        }
+    }
+
+    /// Always-ready fixture for the legacy `tick` entry point used by the
+    /// crate's pure servo tests. Production fan-in uses `tick_with_control`.
+    fn assumed_ready() -> Self {
+        Self {
+            capture_generation: 1,
+            control_generation: Some(1),
+            refreshes: 0,
+            open_failures: 0,
+            write_failures: 0,
+            readback_ctl_value: None,
+        }
+    }
 }
 
 impl Ladder {
@@ -384,8 +454,21 @@ enum ProbePhase {
     AwaitLock,
     /// Commanding neutral, measuring the host's natural rate slope.
     Baseline,
-    /// Commanding +probe_ppm, measuring the fill-slope response.
+    /// Commanding the signed probe step, measuring the selected response.
     Step,
+    /// First attempt failed; pitch is neutral during one fixed recovery dwell.
+    RetryWait,
+}
+
+impl ProbePhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitLock => "await_lock",
+            Self::Baseline => "baseline",
+            Self::Step => "step",
+            Self::RetryWait => "retry_wait",
+        }
+    }
 }
 
 /// Result of the most recent probe (contract §1 `probe.last_result`).
@@ -404,6 +487,29 @@ impl ProbeResult {
             ProbeResult::Pass => "pass",
             ProbeResult::Fail => "fail",
             ProbeResult::Aborted => "aborted",
+        }
+    }
+}
+
+/// Result of the most recently completed *attempt*. The first failed attempt
+/// is intentionally distinguishable from the terminal session verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeAttemptResult {
+    None,
+    Pass,
+    RetryableFail,
+    Fail,
+    Aborted,
+}
+
+impl ProbeAttemptResult {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Pass => "pass",
+            Self::RetryableFail => "retryable_fail",
+            Self::Fail => "fail",
+            Self::Aborted => "aborted",
         }
     }
 }
@@ -433,9 +539,10 @@ pub struct HostClockConfig {
     pub target_fill_frames: f64,
     /// Probe step magnitude in ppm. Default 300 (inside ±1000 with margin).
     pub probe_ppm: f64,
-    /// Probe step-phase duration in seconds. Default 6; a fixed 4 s neutral
-    /// baseline phase runs first, so the whole probe is `4 + probe_step_secs`
-    /// seconds — 10 s at the default, up to 14 s at the max (probe_step_secs 10).
+    /// Fill-mode probe step-phase duration in seconds. The surviving Correction
+    /// mode uses the fixed 15 s [`CORRECTION_PROBE_STEP_SECS`] after the 4 s
+    /// neutral baseline. A first failed measurement then gets one fixed 10 s
+    /// recovery dwell before the final attempt.
     pub probe_step_secs: u64,
     /// Which observable the probe + L0 servo run on (see [`ObsMode`]). Fan-in
     /// combo — the sole current consumer — passes [`ObsMode::Correction`]; the
@@ -731,6 +838,12 @@ pub struct HostClock {
     probe_step_ppm: f64,
     probe_result: ProbeResult,
     response_ratio: Option<f64>,
+    /// One-based attempt currently in flight (or most recently completed).
+    probe_attempt: u32,
+    last_attempt_result: ProbeAttemptResult,
+    last_attempt_ratio: Option<f64>,
+    /// Lifetime count of bounded second attempts actually scheduled.
+    probe_retries: u64,
     l1_high_ticks: u32,
     l2_evidence_ticks: u32,
     /// The most recent smoothed resampler correction ppm — the CORRECTION-mode
@@ -741,6 +854,13 @@ pub struct HostClock {
     // Session edge detection.
     session_active: bool,
     last_tick_ms: Option<u64>,
+
+    // Adapter-owned, data-only capture/control lifecycle snapshot. Generation
+    // equality and readiness gate every trusted/probing state transition.
+    control_status: ControlStatus,
+    /// Capture generation whose probe/L0 trust is currently being evaluated.
+    active_capture_generation: Option<u64>,
+    fallback_reason: FallbackReason,
 
     // Lifetime counters + last transition token.
     demotions: u64,
@@ -766,6 +886,16 @@ const PROBE_BASELINE_SECS: u64 = 4;
 /// testable and unaffected by the owning thread's wake jitter. Not env-tunable
 /// (contract §2 fixed-constant discipline); a `const` so a test can pin it.
 pub const PROBE_SETTLE_SECS: u64 = 2;
+
+/// Exactly one retry is allowed after a completed failed measurement.
+pub const MAX_PROBE_ATTEMPTS: u32 = 2;
+
+/// Neutral recovery dwell before attempt 2. The 2026-07-13 instrumentation
+/// canary measured capture/control refresh in 2 s; the correction-mode inner
+/// loop has an approximately 10 s dominant time constant. One full time
+/// constant lets restart acquisition settle without adding an unrailed gate.
+/// Fixed and test-pinned; this is not an operator tuning surface.
+pub const PROBE_RETRY_SETTLE_SECS: u64 = 10;
 
 impl HostClock {
     /// Build the ladder from validated config. The DLL is created with adaptive
@@ -803,11 +933,18 @@ impl HostClock {
             probe_step_ppm: 0.0,
             probe_result: ProbeResult::None,
             response_ratio: None,
+            probe_attempt: 1,
+            last_attempt_result: ProbeAttemptResult::None,
+            last_attempt_ratio: None,
+            probe_retries: 0,
             l1_high_ticks: 0,
             l2_evidence_ticks: 0,
             last_correction_ppm: 0.0,
             session_active: false,
             last_tick_ms: None,
+            control_status: ControlStatus::unavailable(),
+            active_capture_generation: None,
+            fallback_reason: FallbackReason::None,
             demotions: 0,
             transitions: 0,
             anti_windup_events: 0,
@@ -860,6 +997,15 @@ impl HostClock {
     pub fn probe_result(&self) -> ProbeResult {
         self.probe_result
     }
+    pub fn fallback_reason(&self) -> FallbackReason {
+        self.fallback_reason
+    }
+    pub fn probe_attempt(&self) -> u32 {
+        self.probe_attempt
+    }
+    pub fn probe_retries(&self) -> u64 {
+        self.probe_retries
+    }
     /// True iff a LIVE session's probe is in the pre-probe wait — `session_active`
     /// AND `Probing` AND holding neutral in [`ProbePhase::AwaitLock`] until the
     /// lane leaves its warmup ramp (locked for the settle window). Distinguishes
@@ -887,6 +1033,29 @@ impl HostClock {
     pub fn transitions(&self) -> u64 {
         self.transitions
     }
+
+    /// Publish the adapter-owned capture/control lifecycle snapshot. I/O-free;
+    /// the fan-in thread calls this before rendering the status fragment.
+    pub fn set_control_status(&mut self, status: ControlStatus) {
+        self.control_status = status;
+    }
+
+    /// Adapter notification after a concrete write failed during this tick.
+    /// This avoids publishing even a one-tick `L0 + actuator.ready=false`
+    /// contradiction. It performs no I/O; the adapter already invalidated the
+    /// handle and will force neutral as part of its next successful refresh.
+    pub fn invalidate_control(&mut self, status: ControlStatus) {
+        self.control_status = status;
+        if self.session_active
+            && !matches!(
+                self.fallback_reason,
+                FallbackReason::ProbeNoncompliant | FallbackReason::LostAuthority
+            )
+        {
+            let mut ignored_actions = Vec::new();
+            self.enter_actuator_fallback("pitch_write_failed", &mut ignored_actions);
+        }
+    }
     /// Lifetime count of outer-DLL anti-windup resets (diagnostic).
     pub fn anti_windup_events(&self) -> u64 {
         self.anti_windup_events
@@ -913,6 +1082,7 @@ impl HostClock {
     /// invariant holds even if the last command was already neutral.
     pub fn neutralize_for_exit(&mut self, reason: &'static str) -> Action {
         self.transition_to(Ladder::Disabled, reason);
+        self.fallback_reason = FallbackReason::None;
         self.commanded_ppm = 0.0;
         self.feed_forward_ppm = 0.0;
         self.correction_trim_ppm = 0.0;
@@ -927,6 +1097,20 @@ impl HostClock {
     /// tests). When the feature is disabled the ladder stays `Disabled` and this
     /// returns no actions after the startup neutralize — the loop is inert.
     pub fn tick(&mut self, obs: Obs, now_ms: u64) -> Vec<Action> {
+        self.tick_with_control(obs, now_ms, ControlStatus::assumed_ready())
+    }
+
+    /// Advance one tick with an adapter-owned capture/control snapshot.
+    /// Production fan-in uses this entry point. It remains I/O-free: generation
+    /// binding and readiness arrive as plain data, while returned actions are
+    /// executed by the owning adapter thread.
+    pub fn tick_with_control(
+        &mut self,
+        obs: Obs,
+        now_ms: u64,
+        control: ControlStatus,
+    ) -> Vec<Action> {
+        self.control_status = control;
         // Δt for slope scaling: the actual elapsed ticks (fake time in tests may
         // not be exactly 1 s). frames_per_tick = rate × Δt seconds.
         let dt_ms = match self.last_tick_ms {
@@ -962,9 +1146,15 @@ impl HostClock {
 
         // ---- Session-edge transitions (highest priority) --------------------
         if session && !self.session_active {
-            // (host_connected && playing && !preempted) rising edge → re-probe.
+            // A real session boundary resets the bounded attempt budget.
             self.session_active = true;
-            self.begin_probe(now_ms, &mut actions);
+            self.active_capture_generation = Some(control.capture_generation);
+            self.reset_probe_budget();
+            if control.ready() {
+                self.begin_probe(now_ms, "session_start", &mut actions);
+            } else {
+                self.enter_actuator_fallback("session_start_unavailable", &mut actions);
+            }
         } else if !session && self.session_active {
             // Session ended (stop / disconnect / preempt): pitch → neutral,
             // back to armed; L2 → PROBING only happens at THIS idle boundary.
@@ -985,6 +1175,60 @@ impl HostClock {
             return actions;
         }
 
+        // A successful capture reopen creates a new hardware epoch. Old probe or
+        // L0 trust cannot cross it, even if the stale control handle would still
+        // report successful writes. The adapter refreshes first; this pure layer
+        // sees only whether the replacement was neutralized and generation-bound.
+        if self.active_capture_generation != Some(control.capture_generation) {
+            let previous = self.active_capture_generation;
+            self.active_capture_generation = Some(control.capture_generation);
+            self.reset_probe_budget();
+            log::warn!(
+                "event={}.host_clock_generation_invalidated previous_capture_generation={} capture_generation={} control_generation={} ladder={}",
+                self.cfg.log_prefix,
+                previous.map_or_else(|| "none".to_string(), |v| v.to_string()),
+                control.capture_generation,
+                control.control_generation.map_or_else(|| "none".to_string(), |v| v.to_string()),
+                self.ladder.as_str(),
+            );
+            if control.ready() {
+                self.begin_probe(now_ms, "capture_generation_changed", &mut actions);
+            } else {
+                self.enter_actuator_fallback("capture_generation_unbound", &mut actions);
+            }
+            return actions;
+        }
+
+        // Missing, stale, or write-failed control is local infrastructure, never
+        // host evidence. A deliberately terminal host verdict remains latched in
+        // the same generation; otherwise park safely at neutral L2.
+        if !control.ready() {
+            if !matches!(
+                self.fallback_reason,
+                FallbackReason::ProbeNoncompliant | FallbackReason::LostAuthority
+            ) {
+                self.enter_actuator_fallback("actuator_unavailable", &mut actions);
+            }
+            return actions;
+        }
+
+        // Infrastructure fallback self-heals during the active stream once the
+        // adapter proves a generation-matched, neutralized handle. Preserve the
+        // attempt number: an actuator abort consumes no measurement attempt.
+        if self.ladder == Ladder::L2Fallback
+            && self.fallback_reason == FallbackReason::ActuatorUnavailable
+        {
+            log::info!(
+                "event={}.host_clock_infrastructure_recovered capture_generation={} control_generation={} attempt={}",
+                self.cfg.log_prefix,
+                control.capture_generation,
+                control.control_generation.unwrap_or(0),
+                self.probe_attempt,
+            );
+            self.begin_probe(now_ms, "actuator_recovered", &mut actions);
+            return actions;
+        }
+
         // ---- Active-session ladder step -------------------------------------
         match self.ladder {
             Ladder::Probing => self.tick_probe(obs, now_ms, &mut actions),
@@ -998,8 +1242,20 @@ impl HostClock {
 
     // ---- Probe -------------------------------------------------------------
 
-    fn begin_probe(&mut self, now_ms: u64, actions: &mut Vec<Action>) {
-        self.transition_to(Ladder::Probing, "session_start");
+    fn reset_probe_budget(&mut self) {
+        self.probe_attempt = 1;
+        self.last_attempt_result = ProbeAttemptResult::None;
+        self.last_attempt_ratio = None;
+        self.probe_result = ProbeResult::None;
+        self.response_ratio = None;
+        self.fallback_reason = FallbackReason::None;
+    }
+
+    fn begin_probe(&mut self, now_ms: u64, reason: &'static str, actions: &mut Vec<Action>) {
+        self.transition_to(Ladder::Probing, reason);
+        self.fallback_reason = FallbackReason::None;
+        self.probe_result = ProbeResult::None;
+        self.response_ratio = None;
         // Enter the pre-probe wait: hold neutral until the lane reports `locked`
         // for PROBE_SETTLE_SECS. `probe_started_ms` is (re)seated at the AwaitLock
         // → Baseline transition, so the 4 s baseline window is measured from lock,
@@ -1017,10 +1273,57 @@ impl HostClock {
         // Command neutral for the baseline measurement (forced write).
         self.command(0.0, true, actions);
         log::info!(
-            "event={}.host_clock_probe_wait reason=await_lock settle_s={} obs_mode={}",
+            "event={}.host_clock_probe_wait reason=await_lock settle_s={} obs_mode={} attempt={}",
             self.cfg.log_prefix,
             PROBE_SETTLE_SECS,
             self.cfg.obs_mode.as_str(),
+            self.probe_attempt,
+        );
+    }
+
+    /// Abort any in-flight measurement into local-infrastructure fallback. No
+    /// attempt or demotion is consumed. The adapter continues bounded refreshes;
+    /// a ready snapshot re-enters the same attempt during this active stream.
+    fn enter_actuator_fallback(
+        &mut self,
+        transition_reason: &'static str,
+        actions: &mut Vec<Action>,
+    ) {
+        if self.ladder == Ladder::L2Fallback
+            && self.fallback_reason == FallbackReason::ActuatorUnavailable
+        {
+            return;
+        }
+        if self.ladder == Ladder::Probing
+            && matches!(self.probe_phase, ProbePhase::Baseline | ProbePhase::Step)
+        {
+            self.last_attempt_result = ProbeAttemptResult::Aborted;
+            self.last_attempt_ratio = None;
+            log::warn!(
+                "event={}.host_clock_probe_aborted reason=actuator_unavailable attempt={} capture_generation={} control_generation={}",
+                self.cfg.log_prefix,
+                self.probe_attempt,
+                self.control_status.capture_generation,
+                self.control_status.control_generation.map_or_else(|| "none".to_string(), |v| v.to_string()),
+            );
+        }
+        self.fallback_reason = FallbackReason::ActuatorUnavailable;
+        self.probe_result = ProbeResult::None;
+        self.response_ratio = None;
+        self.feed_forward_ppm = 0.0;
+        self.correction_trim_ppm = 0.0;
+        self.l1_high_ticks = 0;
+        self.l2_evidence_ticks = 0;
+        self.dll.reset();
+        self.slope.rearm();
+        self.transition_to(Ladder::L2Fallback, transition_reason);
+        self.command(0.0, true, actions);
+        log::warn!(
+            "event={}.host_clock_infrastructure_fallback reason=actuator_unavailable capture_generation={} control_generation={} attempt={}",
+            self.cfg.log_prefix,
+            self.control_status.capture_generation,
+            self.control_status.control_generation.map_or_else(|| "none".to_string(), |v| v.to_string()),
+            self.probe_attempt,
         );
     }
 
@@ -1085,8 +1388,8 @@ impl HostClock {
         // back into its warmup regime — the measurement in flight is now
         // contaminated, so restart the wait rather than trust it. Handled first
         // so it takes priority over the phase's own elapsed-time checks.
-        if !obs.locked && self.probe_phase != ProbePhase::AwaitLock {
-            self.restart_probe_wait(actions);
+        if !obs.locked && matches!(self.probe_phase, ProbePhase::Baseline | ProbePhase::Step) {
+            self.restart_probe_wait("lock_lost", actions);
             return;
         }
 
@@ -1103,6 +1406,18 @@ impl HostClock {
         let step_ms = baseline_ms + step_secs * 1000;
 
         match self.probe_phase {
+            ProbePhase::RetryWait => {
+                if elapsed_ms >= PROBE_RETRY_SETTLE_SECS * 1000 {
+                    self.restart_probe_wait("retry_recovery_complete", actions);
+                    log::info!(
+                        "event={}.host_clock_probe_retry_start attempt={} max_attempts={} recovery_s={}",
+                        self.cfg.log_prefix,
+                        self.probe_attempt,
+                        MAX_PROBE_ATTEMPTS,
+                        PROBE_RETRY_SETTLE_SECS,
+                    );
+                }
+            }
             ProbePhase::AwaitLock => {
                 if self.settle_regime_ok(obs) {
                     // Track when the settle-eligible regime (locked) first became
@@ -1118,11 +1433,12 @@ impl HostClock {
                         self.probe_started_ms = now_ms;
                         self.slope.rearm();
                         log::info!(
-                            "event={}.host_clock_probe_start ppm={:.0} baseline_s={} step_s={}",
+                            "event={}.host_clock_probe_start ppm={:.0} baseline_s={} step_s={} attempt={}",
                             self.cfg.log_prefix,
                             self.cfg.probe_ppm,
                             PROBE_BASELINE_SECS,
                             step_secs,
+                            self.probe_attempt,
                         );
                     }
                 } else {
@@ -1184,7 +1500,7 @@ impl HostClock {
     /// must again hold for PROBE_SETTLE_SECS before baselining. Stays in
     /// [`Ladder::Probing`] (no L2 demotion — a warmup re-entry is not a
     /// compliance failure).
-    fn restart_probe_wait(&mut self, actions: &mut Vec<Action>) {
+    fn restart_probe_wait(&mut self, wait_reason: &'static str, actions: &mut Vec<Action>) {
         self.probe_phase = ProbePhase::AwaitLock;
         self.lock_since_ms = None;
         self.probe_baseline_obs_ppm = 0.0;
@@ -1196,9 +1512,11 @@ impl HostClock {
         self.correction_trim_ppm = 0.0;
         self.command(0.0, true, actions);
         log::info!(
-            "event={}.host_clock_probe_wait reason=lock_lost settle_s={}",
+            "event={}.host_clock_probe_wait reason={} settle_s={} attempt={}",
             self.cfg.log_prefix,
+            wait_reason,
             PROBE_SETTLE_SECS,
+            self.probe_attempt,
         );
     }
 
@@ -1230,9 +1548,12 @@ impl HostClock {
         } else {
             0.0
         };
-        self.response_ratio = Some(ratio);
+        self.last_attempt_ratio = Some(ratio);
         if ratio >= 0.5 {
+            self.last_attempt_result = ProbeAttemptResult::Pass;
             self.probe_result = ProbeResult::Pass;
+            self.response_ratio = Some(ratio);
+            self.fallback_reason = FallbackReason::None;
             // Feed-forward: seed the commanded bias to cancel the measured baseline
             // rate offset so coarse correction is immediate; the slow DLL only trims
             // the residual. Sign holds across modes: a host running FAST shows a
@@ -1248,21 +1569,54 @@ impl HostClock {
             self.transition_to(Ladder::L0Locked, "probe_pass");
             self.command(self.feed_forward_ppm, true, actions);
             log::info!(
-                "event={}.host_clock_probe_result result=pass obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
+                "event={}.host_clock_probe_result result=pass attempt={} obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
                 self.cfg.log_prefix,
+                self.probe_attempt,
+                self.cfg.obs_mode.as_str(),
+                ratio,
+                self.probe_baseline_obs_ppm,
+                self.probe_step_obs_ppm,
+            );
+        } else if self.probe_attempt < MAX_PROBE_ATTEMPTS {
+            // A completed first failure is non-terminal. Stay in Probing, force
+            // neutral, and schedule exactly one retry after the fixed dwell.
+            self.last_attempt_result = ProbeAttemptResult::RetryableFail;
+            let failed_attempt = self.probe_attempt;
+            self.probe_attempt += 1;
+            self.probe_retries = self.probe_retries.saturating_add(1);
+            self.probe_phase = ProbePhase::RetryWait;
+            self.probe_started_ms = self.last_tick_ms.unwrap_or(0);
+            self.lock_since_ms = None;
+            self.slope.rearm();
+            self.dll.reset();
+            self.feed_forward_ppm = 0.0;
+            self.correction_trim_ppm = 0.0;
+            self.command(0.0, true, actions);
+            log::warn!(
+                "event={}.host_clock_probe_retryable_failure attempt={} next_attempt={} max_attempts={} recovery_s={} obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
+                self.cfg.log_prefix,
+                failed_attempt,
+                self.probe_attempt,
+                MAX_PROBE_ATTEMPTS,
+                PROBE_RETRY_SETTLE_SECS,
                 self.cfg.obs_mode.as_str(),
                 ratio,
                 self.probe_baseline_obs_ppm,
                 self.probe_step_obs_ppm,
             );
         } else {
+            self.last_attempt_result = ProbeAttemptResult::Fail;
             self.probe_result = ProbeResult::Fail;
+            self.response_ratio = Some(ratio);
+            self.fallback_reason = FallbackReason::ProbeNoncompliant;
             self.demotions += 1;
             self.transition_to(Ladder::L2Fallback, "probe_fail");
             self.command(0.0, true, actions); // pitch → neutral
-            log::info!(
-                "event={}.host_clock_probe_result result=fail obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
+            log::warn!(
+                "event={}.host_clock_probe_terminal_failure reason=probe_noncompliant attempt={} max_attempts={} obs_mode={} response_ratio={:.3} baseline_obs_ppm={:.1} step_obs_ppm={:.1}",
                 self.cfg.log_prefix,
+                self.probe_attempt,
+                MAX_PROBE_ATTEMPTS,
                 self.cfg.obs_mode.as_str(),
                 ratio,
                 self.probe_baseline_obs_ppm,
@@ -1420,10 +1774,18 @@ impl HostClock {
         if self.l2_evidence_ticks >= L2_SUSTAIN_TICKS {
             self.l2_evidence_ticks = 0;
             self.demotions += 1;
+            self.fallback_reason = FallbackReason::LostAuthority;
             self.transition_to(Ladder::L2Fallback, "saturated_slope");
             self.feed_forward_ppm = 0.0;
             self.correction_trim_ppm = 0.0;
             self.command(0.0, true, actions); // pitch → neutral (forced)
+            log::warn!(
+                "event={}.host_clock_lost_authority reason=lost_authority capture_generation={} control_generation={} observable_ppm={:.1}",
+                self.cfg.log_prefix,
+                self.control_status.capture_generation,
+                self.control_status.control_generation.unwrap_or(0),
+                observable,
+            );
             return;
         }
 
@@ -1463,8 +1825,19 @@ impl HostClock {
                 }
                 ProbePhase::Baseline | ProbePhase::Step => {
                     self.probe_result = ProbeResult::Aborted;
+                    self.response_ratio = None;
+                    self.last_attempt_result = ProbeAttemptResult::Aborted;
+                    self.last_attempt_ratio = None;
                     log::info!(
                         "event={}.host_clock_probe_result result=aborted response_ratio=null baseline_slope_ppm=null step_slope_ppm=null",
+                        self.cfg.log_prefix
+                    );
+                }
+                ProbePhase::RetryWait => {
+                    self.probe_result = ProbeResult::Aborted;
+                    self.response_ratio = None;
+                    log::info!(
+                        "event={}.host_clock_probe_result result=retry_wait_ended response_ratio=null baseline_slope_ppm=null step_slope_ppm=null",
                         self.cfg.log_prefix
                     );
                 }
@@ -1474,8 +1847,13 @@ impl HostClock {
         self.correction_trim_ppm = 0.0;
         self.l1_high_ticks = 0;
         self.l2_evidence_ticks = 0;
+        self.probe_attempt = 1;
+        self.fallback_reason = FallbackReason::None;
+        self.active_capture_generation = None;
         // ANY → PROBING(await-lock) at the idle boundary; pitch → neutral. This
-        // is the ONLY place L2 re-promotes toward PROBING.
+        // rearms a terminal host-evidence L2 for the next session. The other
+        // legitimate rearm paths are a new capture generation (new hardware
+        // epoch) and same-generation recovery from actuator-unavailable L2.
         self.transition_to(Ladder::Probing, reason);
         self.probe_phase = ProbePhase::AwaitLock;
         self.lock_since_ms = None;
@@ -1562,11 +1940,33 @@ impl HostClock {
             Some(r) => format!("{r:.4}"),
             None => "null".to_string(),
         };
+        let last_attempt_ratio = match self.last_attempt_ratio {
+            Some(r) => format!("{r:.4}"),
+            None => "null".to_string(),
+        };
+        let fallback_reason = match self.fallback_reason.as_str() {
+            Some(reason) => format!("\"{reason}\""),
+            None => "null".to_string(),
+        };
+        let phase = if self.session_active && self.ladder == Ladder::Probing {
+            format!("\"{}\"", self.probe_phase.as_str())
+        } else {
+            "null".to_string()
+        };
+        let control_generation = match self.control_status.control_generation {
+            Some(generation) => generation.to_string(),
+            None => "null".to_string(),
+        };
+        let readback_ctl_value = match self.control_status.readback_ctl_value {
+            Some(value) => value.to_string(),
+            None => "null".to_string(),
+        };
         format!(
             concat!(
                 "{{",
                 "\"enabled\":{},",
                 "\"ladder\":\"{}\",",
+                "\"fallback_reason\":{},",
                 "\"obs_mode\":\"{}\",",
                 "\"pitch_ppm_commanded\":{:.1},",
                 "\"fill_frames\":{:.0},",
@@ -1574,7 +1974,8 @@ impl HostClock {
                 "\"fill_variance\":{:.2},",
                 "\"correction_ppm\":{:.2},",
                 "\"dll\":{{\"err_frames\":{:.2},\"locked\":{}}},",
-                "\"probe\":{{\"last_result\":\"{}\",\"response_ratio\":{},\"waiting_for_lock\":{}}},",
+                "\"actuator\":{{\"ready\":{},\"capture_generation\":{},\"control_generation\":{},\"refreshes\":{},\"open_failures\":{},\"write_failures\":{},\"readback_ctl_value\":{}}},",
+                "\"probe\":{{\"phase\":{},\"attempt\":{},\"max_attempts\":{},\"last_attempt_result\":\"{}\",\"last_attempt_response_ratio\":{},\"final_result\":\"{}\",\"final_response_ratio\":{},\"last_result\":\"{}\",\"response_ratio\":{},\"retries\":{},\"waiting_for_lock\":{}}},",
                 "\"demotions\":{},",
                 "\"transitions\":{},",
                 "\"last_transition_reason\":\"{}\"",
@@ -1582,6 +1983,7 @@ impl HostClock {
             ),
             json_bool(self.cfg.enabled),
             self.ladder.as_str(),
+            fallback_reason,
             self.cfg.obs_mode.as_str(),
             self.commanded_ppm,
             self.published_fill_frames(),
@@ -1590,8 +1992,23 @@ impl HostClock {
             self.published_correction_ppm(),
             self.dll_err_frames(),
             json_bool(self.dll_locked()),
+            json_bool(self.control_status.ready()),
+            self.control_status.capture_generation,
+            control_generation,
+            self.control_status.refreshes,
+            self.control_status.open_failures,
+            self.control_status.write_failures,
+            readback_ctl_value,
+            phase,
+            self.probe_attempt,
+            MAX_PROBE_ATTEMPTS,
+            self.last_attempt_result.as_str(),
+            last_attempt_ratio,
             self.probe_result.as_str(),
             ratio,
+            self.probe_result.as_str(),
+            ratio,
+            self.probe_retries,
             json_bool(self.probe_waiting_for_lock()),
             self.demotions,
             self.transitions,
@@ -1657,6 +2074,13 @@ pub trait PitchCtl {
     /// Write the raw ctl value (1_000_000 + round(ppm)). Errors are surfaced so
     /// the owning thread can rate-limit-log them; a failure must NOT crash.
     fn write(&mut self, value: i64) -> Result<(), String>;
+
+    /// Read the raw ctl integer when the backend supports it. Readback is
+    /// diagnostic only and must never substitute for capture/control generation
+    /// binding. Backends and test doubles that do not support it return `None`.
+    fn read(&mut self) -> Result<Option<i64>, String> {
+        Ok(None)
+    }
 }
 
 /// Convert a signed ppm bias to the ctl integer value, clamped to the hardware
@@ -1750,6 +2174,13 @@ mod alsa_ctl {
                 .map(|_| ())
                 .map_err(|e| format!("elem_write({value}): {e}"))
         }
+
+        fn read(&mut self) -> Result<Option<i64>, String> {
+            self.ctl
+                .elem_read(&mut self.value)
+                .map_err(|e| format!("elem_read: {e}"))?;
+            Ok(self.value.get_integer(0).map(i64::from))
+        }
     }
 }
 
@@ -1778,6 +2209,28 @@ mod tests {
             obs_mode: ObsMode::Correction,
             log_prefix: "fanin",
             ..enabled_cfg()
+        }
+    }
+
+    fn ready_control(generation: u64) -> ControlStatus {
+        ControlStatus {
+            capture_generation: generation,
+            control_generation: Some(generation),
+            refreshes: generation,
+            open_failures: 0,
+            write_failures: 0,
+            readback_ctl_value: Some(PITCH_NEUTRAL),
+        }
+    }
+
+    fn unavailable_control(generation: u64) -> ControlStatus {
+        ControlStatus {
+            capture_generation: generation,
+            control_generation: None,
+            refreshes: 0,
+            open_failures: 1,
+            write_failures: 0,
+            readback_ctl_value: None,
         }
     }
 
@@ -2025,7 +2478,7 @@ mod tests {
         // A host that ignores the pitch command: the real inner loop holds its
         // correction near the crystal offset regardless of the step ⇒
         // response_ratio ≈ 0 ⇒ fail ⇒ L2, pitch neutral, demotion counted.
-        let (hc, ..) = run_correction_real(250.0, false, 200, 0.0, 40);
+        let (hc, ..) = run_correction_real(250.0, false, 200, 0.0, 70);
         assert_eq!(
             hc.probe_result(),
             ProbeResult::Fail,
@@ -2285,6 +2738,8 @@ mod tests {
         assert_eq!(L2_SUSTAIN_TICKS, 10);
         assert_eq!(L2_SLOPE_FLOOR_PPM, 100.0);
         assert_eq!(ANTI_WINDUP_THRESHOLD_FRAMES, 128.0);
+        assert_eq!(MAX_PROBE_ATTEMPTS, 2);
+        assert_eq!(PROBE_RETRY_SETTLE_SECS, 10);
     }
 
     #[test]
@@ -2369,6 +2824,69 @@ mod tests {
         assert_eq!(hc.ladder(), Ladder::L0Locked);
         let ratio = hc.response_ratio().unwrap();
         assert!(ratio >= 0.5, "response_ratio should pass: {ratio}");
+        assert_eq!(hc.probe_attempt(), 1);
+        assert_eq!(hc.probe_retries(), 0);
+    }
+
+    #[test]
+    fn first_probe_failure_is_retryable_neutral_and_nonterminal() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap = 0u64;
+        let mut play = 0u64;
+        let mut failure_actions = Vec::new();
+        for t in 1u64..30 {
+            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
+            play += 48000;
+            let actions = hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+            if hc.last_attempt_result == ProbeAttemptResult::RetryableFail {
+                failure_actions = actions;
+                break;
+            }
+        }
+        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.probe_phase, ProbePhase::RetryWait);
+        assert_eq!(hc.probe_attempt(), 2);
+        assert_eq!(hc.probe_retries(), 1);
+        assert_eq!(hc.probe_result(), ProbeResult::None);
+        assert_eq!(hc.demotions(), 0);
+        assert_eq!(hc.fallback_reason(), FallbackReason::None);
+        assert!(matches!(
+            failure_actions.last(),
+            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+        ));
+    }
+
+    #[test]
+    fn second_attempt_can_pass_after_one_retry() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap = 0u64;
+        let mut play = 0u64;
+        let mut follow_command = false;
+        for t in 1u64..60 {
+            let host_ppm = 200.0
+                + if follow_command {
+                    hc.commanded_ppm()
+                } else {
+                    0.0
+                };
+            cap += (48000.0 * (1.0 + host_ppm / 1.0e6)) as u64;
+            play += 48000;
+            hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
+            if hc.last_attempt_result == ProbeAttemptResult::RetryableFail {
+                follow_command = true;
+            }
+            if hc.probe_result() == ProbeResult::Pass {
+                break;
+            }
+        }
+        assert_eq!(hc.probe_result(), ProbeResult::Pass);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        assert_eq!(hc.probe_attempt(), 2);
+        assert_eq!(hc.probe_retries(), 1);
+        assert_eq!(hc.demotions(), 0);
+        assert_eq!(hc.fallback_reason(), FallbackReason::None);
     }
 
     /// A NON-compliant host (ignores the pitch command) fails the probe → L2,
@@ -2381,7 +2899,7 @@ mod tests {
         let mut play: u64 = 0;
         // Host runs +200 ppm the WHOLE time — no response to the step command.
         let mut last_action_neutral = false;
-        for t in 1u64..14 {
+        for t in 1u64..40 {
             cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
             play += 48000;
             let actions = hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
@@ -2392,7 +2910,63 @@ mod tests {
         assert_eq!(hc.probe_result(), ProbeResult::Fail);
         assert_eq!(hc.ladder(), Ladder::L2Fallback);
         assert_eq!(hc.demotions(), 1);
+        assert_eq!(hc.probe_attempt(), MAX_PROBE_ATTEMPTS);
+        assert_eq!(hc.probe_retries(), 1);
+        assert_eq!(hc.fallback_reason(), FallbackReason::ProbeNoncompliant);
         assert!(last_action_neutral, "L2 must command neutral pitch");
+    }
+
+    #[test]
+    fn actuator_loss_aborts_measurement_without_consuming_attempt_and_recovers() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap = 0u64;
+        let mut play = 0u64;
+        let mut t = 1u64;
+        while hc.probe_phase != ProbePhase::Baseline {
+            cap += 48_000;
+            play += 48_000;
+            hc.tick_with_control(
+                obs(true, true, 400.0, cap, play),
+                t * 1000,
+                ready_control(1),
+            );
+            t += 1;
+        }
+        cap += 48_000;
+        play += 48_000;
+        let actions = hc.tick_with_control(
+            obs(true, true, 400.0, cap, play),
+            t * 1000,
+            unavailable_control(1),
+        );
+        assert_eq!(hc.ladder(), Ladder::L2Fallback);
+        assert_eq!(hc.fallback_reason(), FallbackReason::ActuatorUnavailable);
+        assert_eq!(hc.probe_attempt(), 1);
+        assert_eq!(hc.probe_retries(), 0);
+        assert_eq!(hc.demotions(), 0);
+        assert_eq!(hc.probe_result(), ProbeResult::None);
+        assert_eq!(hc.last_attempt_result, ProbeAttemptResult::Aborted);
+        assert!(matches!(
+            actions.last(),
+            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+        ));
+
+        t += 1;
+        cap += 48_000;
+        play += 48_000;
+        let recovered = hc.tick_with_control(
+            obs(true, true, 400.0, cap, play),
+            t * 1000,
+            ready_control(1),
+        );
+        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.fallback_reason(), FallbackReason::None);
+        assert_eq!(hc.probe_attempt(), 1);
+        assert!(matches!(
+            recovered.last(),
+            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+        ));
     }
 
     /// L2 does NOT re-probe mid-stream; it re-probes only at the idle boundary
@@ -2404,26 +2978,96 @@ mod tests {
         let mut cap: u64 = 0;
         let mut play: u64 = 0;
         // Drive to L2 via a failing probe.
-        for t in 1u64..14 {
+        for t in 1u64..40 {
             cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
             play += 48000;
             hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
         }
         assert_eq!(hc.ladder(), Ladder::L2Fallback);
         // Keep the session playing: still L2, no re-probe.
-        for t in 14u64..30 {
+        for t in 40u64..55 {
             cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
             play += 48000;
             hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
             assert_eq!(hc.ladder(), Ladder::L2Fallback, "no mid-stream re-probe");
         }
         // Stream stops (playing=false): idle boundary → Probing (armed).
-        let stop = hc.tick(obs(false, true, 400.0, cap, play), 30_000);
+        let stop = hc.tick(obs(false, true, 400.0, cap, play), 55_000);
         assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.probe_attempt(), 1, "idle resets the attempt budget");
         assert!(
             matches!(stop.last(), Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0),
             "idle boundary forces neutral pitch"
         );
+    }
+
+    #[test]
+    fn capture_generation_change_invalidates_l0_and_forces_fresh_probe() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        drive_to_l0(&mut hc, 100.0);
+        assert_eq!(hc.ladder(), Ladder::L0Locked);
+        let cap = hc_cap_start();
+        let actions = hc.tick_with_control(
+            obs(true, true, 400.0, cap + 48_000, cap + 48_000),
+            100_000,
+            ready_control(2),
+        );
+        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.probe_attempt(), 1);
+        assert_eq!(hc.probe_retries(), 0);
+        assert_eq!(hc.probe_result(), ProbeResult::None);
+        assert_eq!(hc.fallback_reason(), FallbackReason::None);
+        assert!(matches!(
+            actions.last(),
+            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+        ));
+    }
+
+    #[test]
+    fn terminal_host_l2_stays_latched_but_real_generation_change_rearms() {
+        let mut hc = HostClock::new(enabled_cfg());
+        hc.startup_neutralize();
+        let mut cap = 0u64;
+        let mut play = 0u64;
+        for t in 1u64..40 {
+            cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
+            play += 48_000;
+            hc.tick_with_control(
+                obs(true, true, 400.0, cap, play),
+                t * 1000,
+                ready_control(1),
+            );
+        }
+        assert_eq!(hc.ladder(), Ladder::L2Fallback);
+        assert_eq!(hc.fallback_reason(), FallbackReason::ProbeNoncompliant);
+
+        // Same generation and healthy actuator: no periodic re-probe.
+        for t in 40u64..50 {
+            cap += 48_000;
+            play += 48_000;
+            assert!(hc
+                .tick_with_control(
+                    obs(true, true, 400.0, cap, play),
+                    t * 1000,
+                    ready_control(1),
+                )
+                .is_empty());
+            assert_eq!(hc.ladder(), Ladder::L2Fallback);
+        }
+
+        // A real capture reopen is a new hardware epoch and resets the budget.
+        cap += 48_000;
+        play += 48_000;
+        let actions =
+            hc.tick_with_control(obs(true, true, 400.0, cap, play), 50_000, ready_control(2));
+        assert_eq!(hc.ladder(), Ladder::Probing);
+        assert_eq!(hc.probe_attempt(), 1);
+        assert_eq!(hc.fallback_reason(), FallbackReason::None);
+        assert!(matches!(
+            actions.last(),
+            Some(Action::WritePitch { ppm, reset: true }) if *ppm == 0.0
+        ));
     }
 
     /// Every new session re-probes (per-session compliance).
@@ -2669,14 +3313,17 @@ mod tests {
         // pinned rail passes. (A COMPLIANT railed host — one whose correction moves
         // off the rail under the away-from-rail step — is pinned separately in
         // `beyond_authority_railed_host_probes_pass_then_fail`.)
-        let window = PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + CORRECTION_PROBE_STEP_SECS + 3;
+        let window = (PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + CORRECTION_PROBE_STEP_SECS)
+            * MAX_PROBE_ATTEMPTS as u64
+            + PROBE_RETRY_SETTLE_SECS
+            + 5;
         // After the settle window (2 s), the probe must already have left AwaitLock.
         for step in 0..window {
             t += 1;
             cap += 48000;
             play += 48000;
             hc.tick(obs_corr(-500.0, cap, play), t * 1000);
-            if step >= PROBE_SETTLE_SECS {
+            if step == PROBE_SETTLE_SECS {
                 assert!(
                     !hc.probe_waiting_for_lock(),
                     "lock-only settle: a railed-but-locked correction leaves AwaitLock \
@@ -2733,7 +3380,10 @@ mod tests {
             hc.startup_neutralize();
             let mut cap: u64 = 1_000_000_000;
             let mut play: u64 = cap;
-            let total = PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + CORRECTION_PROBE_STEP_SECS + 4;
+            let total = (PROBE_SETTLE_SECS + PROBE_BASELINE_SECS + CORRECTION_PROBE_STEP_SECS)
+                * MAX_PROBE_ATTEMPTS as u64
+                + PROBE_RETRY_SETTLE_SECS
+                + 6;
             for t in 1u64..=total {
                 let applied = if compliant { hc.commanded_ppm() } else { 0.0 };
                 let corr = (excess_ppm + applied).clamp(-500.0, 500.0);
@@ -3489,7 +4139,7 @@ mod tests {
         let mut cap = 0u64;
         let mut play = 0u64;
         let mut demote_neutral = false;
-        for t in 1u64..14 {
+        for t in 1u64..40 {
             cap += (48000.0 * (1.0 + 200.0 / 1.0e6)) as u64;
             play += 48000;
             let actions = hc.tick(obs(true, true, 400.0, cap, play), t * 1000);
@@ -3574,7 +4224,7 @@ mod tests {
         let fragment = hc.status_fragment();
         assert_eq!(
             fragment,
-            r#"{"enabled":false,"ladder":"disabled","obs_mode":"fill","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"dll":{"err_frames":0.00,"locked":false},"probe":{"last_result":"none","response_ratio":null,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
+            r#"{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"fill","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"dll":{"err_frames":0.00,"locked":false},"actuator":{"ready":false,"capture_generation":0,"control_generation":null,"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},"probe":{"phase":null,"attempt":1,"max_attempts":2,"last_attempt_result":"none","last_attempt_response_ratio":null,"final_result":"none","final_response_ratio":null,"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
         );
         // And it parses as valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&fragment).unwrap();
@@ -3630,6 +4280,24 @@ mod tests {
         assert_eq!(ProbeResult::Pass.as_str(), "pass");
         assert_eq!(ProbeResult::Fail.as_str(), "fail");
         assert_eq!(ProbeResult::Aborted.as_str(), "aborted");
+        assert_eq!(ProbeAttemptResult::RetryableFail.as_str(), "retryable_fail");
+        assert_eq!(ProbePhase::AwaitLock.as_str(), "await_lock");
+        assert_eq!(ProbePhase::Baseline.as_str(), "baseline");
+        assert_eq!(ProbePhase::Step.as_str(), "step");
+        assert_eq!(ProbePhase::RetryWait.as_str(), "retry_wait");
+        assert_eq!(FallbackReason::None.as_str(), None);
+        assert_eq!(
+            FallbackReason::ProbeNoncompliant.as_str(),
+            Some("probe_noncompliant")
+        );
+        assert_eq!(
+            FallbackReason::LostAuthority.as_str(),
+            Some("lost_authority")
+        );
+        assert_eq!(
+            FallbackReason::ActuatorUnavailable.as_str(),
+            Some("actuator_unavailable")
+        );
     }
 
     // ---- Ctl-write serialization (mock) ------------------------------------

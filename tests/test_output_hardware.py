@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from jasper.audio_hardware import dac
+from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 import jasper.output_hardware as output_hardware
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -181,6 +182,70 @@ def test_output_hardware_state_from_mapping_tolerates_bad_numeric_fields() -> No
 
     assert state.physical_output_count == 0
     assert state.apple_dac_count == 1
+
+
+def test_output_hardware_state_round_trips_usb_data_role() -> None:
+    role = UsbPortRoleState(
+        board_model="Raspberry Pi Zero 2 W Rev 1.0",
+        board_topology="shared_otg_port",
+        desired_role="host",
+        configured_role="host",
+        active_role="host",
+        gadget_available=False,
+        reboot_required=False,
+        reason="shared_otg_usb_output_requires_host",
+        decision_reason="shared_otg_usb_output_requires_host",
+        management_transport_available=False,
+    )
+    original = OutputHardwareState(
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+        usb_data_role=role,
+    )
+
+    restored = OutputHardwareState.from_mapping(original.to_dict())
+
+    assert restored.usb_data_role == role
+    serialized_role = original.to_dict()["usb_data_role"]
+    assert "gadget_capable" not in serialized_role
+    assert "observed_output_profile_id" not in serialized_role
+
+
+def test_output_hardware_state_rejects_malformed_usb_data_role_fail_closed() -> None:
+    state = OutputHardwareState.from_mapping(
+        {
+            "profile_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+            "status": "ready",
+            "physical_output_count": 2,
+            "usb_data_role": {
+                "board_topology": "shared_otg_port",
+                "desired_role": "peripheral",
+                "gadget_available": True,
+            },
+        }
+    )
+
+    assert state.usb_data_role is None
+
+
+def test_output_hardware_state_rejects_impossible_usb_role() -> None:
+    raw = {
+        "board_model": "Raspberry Pi Zero 2 W Rev 1.0",
+        "board_topology": "shared_otg_port",
+        "desired_role": "host",
+        "configured_role": "host",
+        "active_role": "host",
+        "gadget_available": True,
+        "management_transport_available": False,
+        "reboot_required": False,
+        "reason": "shared_otg_defaults_host_without_i2s",
+        "decision_reason": "shared_otg_defaults_host_without_i2s",
+        "configured_i2s_overlays": [],
+    }
+
+    assert UsbPortRoleState.from_mapping(raw) is None
 
 
 def test_classify_single_apple_as_valid_two_channel_profile() -> None:

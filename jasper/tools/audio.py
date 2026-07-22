@@ -62,15 +62,15 @@ def _get_control_client() -> AsyncControlClient:
 
 def _pair_follower_active() -> bool:
     """True when this speaker is an ACTIVE bonded follower — the one shared
-    predicate (multiroom.config.follower_leader_addr), read fresh from the
-    tiny grouping.env each call. While bonded, the follower's own
+    effective-role predicate, read fresh each call. While bonded, the follower's own
     coordinator is INAUDIBLE (bonded content bypasses its CamillaDSP), so
     "Jarvis, louder" spoken to the follower must move the PAIR volume via
     the local control API — whose /volume* handlers already forward to the
     leader. One forwarding implementation total."""
-    from ..multiroom.config import follower_leader_addr, load_config
+    from ..multiroom.config import load_config
+    from ..multiroom.effective_role import effective_follower_leader_addr
 
-    return follower_leader_addr(load_config()) is not None
+    return effective_follower_leader_addr(load_config()) is not None
 
 
 def _percent_to_db(percent: int) -> float:

@@ -10,7 +10,9 @@ from dataclasses import replace
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
+import numpy as np
 import pytest
 import yaml as yaml_lib
 
@@ -26,11 +28,13 @@ from jasper.active_speaker.baseline_profile import (
     PROVENANCE_RECOMMENDED_START,
     _derive_corrections,
     _GAIN_SOURCE_TO_PROVENANCE,
+    active_layer_a_fingerprint,
     apply_baseline_profile,
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
     recompose_applied_baseline_yaml,
+    restore_applied_baseline_profile,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
@@ -40,8 +44,14 @@ from jasper.active_speaker.measurement import (
     record_summed_test_artifact,
     record_summed_validation,
 )
+from jasper.active_speaker.measured_crossover_candidate import (
+    MeasuredCrossoverAlignment,
+    MeasuredCrossoverCandidate,
+    MeasuredCrossoverCandidateError,
+)
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.camilla_config_contract import PeqFilter
+from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUMMARY
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
@@ -483,7 +493,11 @@ def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:
     assert "volume_limit: 0.0" in yaml
 
     # Keystone: the emitted sub-bearing graph re-proves as approved.
-    graph = classify_camilla_graph(topology=topology, text=yaml)
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
     assert graph.allowed is True, [i["code"] for i in graph.issues]
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.details["subwoofer_present"] is True
@@ -1295,6 +1309,264 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert recomposed == (tmp_path / "active_speaker_baseline.yml").read_text()
 
 
+async def test_apply_baseline_profile_preserves_only_current_sealed_bass_block(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jasper.bass_extension.profile import (
+        evaluate_bass_extension_profile,
+        save_bass_extension_profile,
+    )
+    from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+    from tests.test_active_speaker_runtime_contract import _sealed_profile
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    bass_path = tmp_path / "bass_extension_profile.json"
+    monkeypatch.setenv("JASPER_BASS_EXTENSION_PROFILE_STATE", str(bass_path))
+    loaded_graphs: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        loaded_graphs.append(Path(path).read_text(encoding="utf-8"))
+        return True
+
+    first = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+    profile = _sealed_profile(topology, first["profile"])
+    save_bass_extension_profile(profile, bass_path)
+
+    with mock.patch(
+        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        wraps=classify_bass_extension_graph,
+    ) as prove:
+        repeated = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            state_path=state_path,
+            config_path=config_path,
+            validate=_valid_config,
+        )
+
+    assert repeated["status"] == "applied"
+    assert "bass_ext_lt" in loaded_graphs[-1]
+    assert "bass_ext_subsonic" in loaded_graphs[-1]
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=repeated["profile"],
+    ).status == "accepted"
+    assert prove.call_args.kwargs["desired_profile"] == profile
+
+    deferred = replace(
+        profile,
+        enclosure={
+            "adapter_id": "ported_v1",
+            "adapter_version": 1,
+            "cabinet_fingerprint": "ported-cabinet",
+        },
+        natural={
+            "fb_hz": 43.1,
+            "knee_hz": 55.0,
+            "knee_slope_db_oct": 21.0,
+            "fit_rms_db": 0.4,
+            "natural_curve": {
+                "freqs_hz": np.geomspace(10.0, 500.0, 96).tolist(),
+                "magnitude_db": [0.0] * 96,
+            },
+            "notes": [],
+        },
+    )
+    save_bass_extension_profile(deferred, bass_path)
+    with mock.patch(
+        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        wraps=classify_bass_extension_graph,
+    ) as prove:
+        deferred_apply = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            state_path=state_path,
+            config_path=config_path,
+            validate=_valid_config,
+        )
+    assert deferred_apply["status"] == "applied"
+    assert "bass_ext_lt" not in loaded_graphs[-1]
+    assert prove.call_args.kwargs["desired_profile"] == deferred
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=deferred_apply["profile"],
+    ).status == "accepted"
+
+    bypassed = replace(profile, status="bypassed")
+    save_bass_extension_profile(bypassed, bass_path)
+    with mock.patch(
+        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        wraps=classify_bass_extension_graph,
+    ) as prove:
+        bypassed_apply = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            state_path=state_path,
+            config_path=config_path,
+            validate=_valid_config,
+        )
+    assert bypassed_apply["status"] == "applied"
+    assert "bass_ext_lt" not in loaded_graphs[-1]
+    assert prove.call_args.kwargs["desired_profile"] == bypassed
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=bypassed_apply["profile"],
+    ).status == "bypassed"
+
+    save_bass_extension_profile(profile, bass_path)
+    changed_manual = {
+        "drivers": [
+            {"role": "woofer", "gain_offset_db": 0.0},
+            {"role": "tweeter", "gain_offset_db": -7.0},
+        ],
+        "crossover_candidates": _research()["crossover_candidates"],
+    }
+    changed_draft = build_design_draft(
+        topology,
+        driver_research=_research(),
+        manual_settings=changed_manual,
+        created_at="2026-07-18T12:00:00Z",
+    )
+    changed_preview = build_crossover_preview(changed_draft)
+    with mock.patch(
+        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        wraps=classify_bass_extension_graph,
+    ) as prove:
+        changed = await apply_baseline_profile(
+            topology,
+            design_draft=changed_draft,
+            crossover_preview=changed_preview,
+            measurements=measurements,
+            load_config=load_config,
+            state_path=state_path,
+            config_path=config_path,
+            validate=_valid_config,
+        )
+
+    assert changed["status"] == "applied"
+    assert "bass_ext_lt" not in loaded_graphs[-1]
+    assert "bass_ext_subsonic" not in loaded_graphs[-1]
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=changed["profile"],
+    ).status == "stale"
+    assert prove.call_args.kwargs["desired_profile"] == profile
+
+
+async def test_apply_baseline_profile_refuses_failed_graph_proof_before_load(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jasper.active_speaker.runtime_contract import GRAPH_UNSAFE, GraphSafety
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    loads: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        loads.append(path)
+        return True
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        lambda *_args, **_kwargs: GraphSafety(
+            classification=GRAPH_UNSAFE,
+            allowed=False,
+            issues=({
+                "severity": "blocker",
+                "code": "injected_graph_refusal",
+                "message": "injected whole-graph refusal",
+            },),
+        ),
+    )
+
+    result = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert result["status"] == "blocked"
+    assert loads == []
+    assert "baseline_graph_safety_proof_failed" in {
+        issue["code"] for issue in result["issues"]
+    }
+
+
+async def test_apply_baseline_profile_driver_domain_path_remains_unchanged(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    loaded: list[str] = []
+    monkeypatch.setenv(
+        "JASPER_BASS_EXTENSION_PROFILE_STATE",
+        str(tmp_path / "missing_bass_profile.json"),
+    )
+
+    async def load_config(path: str) -> bool:
+        loaded.append(Path(path).read_text(encoding="utf-8"))
+        return True
+
+    result = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=tmp_path / "follower_state.json",
+        config_path=tmp_path / "follower_driver_domain.yml",
+        capture_device="hw:CARD=Loopback,DEV=1",
+        driver_domain=True,
+        program_channel="left",
+        validate=_valid_config,
+    )
+
+    assert result["status"] == "applied"
+    assert len(loaded) == 1
+    assert "emit_active_speaker_driver_domain_config" in loaded[0]
+    assert "# program_channel=left" in loaded[0]
+    assert "active_baseline_headroom" not in loaded[0]
+
+
 async def test_apply_baseline_profile_refuses_stale_reviewed_candidate(
     monkeypatch,
     tmp_path: Path,
@@ -1410,11 +1682,13 @@ async def test_apply_holds_writer_lock_and_refuses_config_race(
     )
     real_lock = baseline_profile_mod.dsp_writer_lock
     lock_held = False
+    observed_sources: list[str] = []
 
     @asynccontextmanager
-    async def observed_lock(config_dir):
+    async def observed_lock(config_dir, *, source):
         nonlocal lock_held
-        async with real_lock(config_dir):
+        observed_sources.append(source)
+        async with real_lock(config_dir, source=source):
             lock_held = True
             try:
                 yield
@@ -1461,6 +1735,7 @@ async def test_apply_holds_writer_lock_and_refuses_config_race(
     assert validations == 2
     assert loads == []
     assert lock_held is False
+    assert observed_sources == ["active_speaker_baseline_apply"]
 
 
 async def test_apply_baseline_profile_threads_capture_device(
@@ -2044,7 +2319,11 @@ def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
     assert pref_idx < mixer_idx
 
     # invariant 2 (keystone): the protection contract still holds.
-    graph = classify_camilla_graph(topology=topology, text=eq_yaml)
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=eq_yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True
 
@@ -2064,7 +2343,11 @@ def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
         trimmed_yaml,
     )
     assert trim_match is not None and float(trim_match.group(1)) == -4.0
-    assert classify_camilla_graph(topology=topology, text=trimmed_yaml).allowed is True
+    assert classify_camilla_graph(
+        topology=topology,
+        text=trimmed_yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    ).allowed is True
 
 
 def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
@@ -2116,9 +2399,202 @@ def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
         < pipeline.index("type: Mixer")
     )
 
-    graph = classify_camilla_graph(topology=topology, text=room_yaml)
+    graph = classify_camilla_graph(
+        topology=topology,
+        text=room_yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert graph.allowed is True, graph.issues
+
+
+def test_applied_room_and_reset_only_mutate_program_domain(tmp_path: Path) -> None:
+    """Room apply/reset preserve the exact immutable Layer-A suffix.
+
+    The production carrier calls ``recompose_applied_baseline_yaml`` for both
+    Room apply and the shared Reset/automatic-revert no-room target.  Compare
+    the parsed driver-domain graph, not just filter counts: routing, crossover
+    filters, polarity, delay, gain, and protection must remain identical while
+    Room PEQs and their headroom live only before the split mixer.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+
+    flat_yaml, flat_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+    )
+    room_yaml, room_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=[
+            PeqFilter(freq=45.0, q=5.0, gain=2.0),
+            PeqFilter(freq=80.0, q=6.0, gain=-4.0),
+        ],
+    )
+    reset_yaml, reset_issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+        room_peqs=[],
+    )
+
+    assert flat_issues == room_issues == reset_issues == []
+    assert flat_yaml is not None and room_yaml is not None
+    assert reset_yaml == flat_yaml
+    flat = yaml_lib.safe_load(flat_yaml)
+    room = yaml_lib.safe_load(room_yaml)
+
+    def driver_domain(document: dict) -> dict:
+        pipeline = document["pipeline"]
+        split_index = next(
+            index
+            for index, step in enumerate(pipeline)
+            if step.get("type") == "Mixer"
+        )
+        suffix = pipeline[split_index:]
+        driver_filter_names = {
+            name
+            for step in suffix
+            if step.get("type") == "Filter"
+            for name in step.get("names", [])
+        }
+        return {
+            "devices": document["devices"],
+            "mixers": document["mixers"],
+            "pipeline_suffix": suffix,
+            "filters": {
+                name: document["filters"][name]
+                for name in sorted(driver_filter_names)
+            },
+        }
+
+    assert driver_domain(room) == driver_domain(flat)
+    room_split_index = next(
+        index
+        for index, step in enumerate(room["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    assert any(
+        name.startswith("room_peq_")
+        for step in room["pipeline"][:room_split_index]
+        for name in step.get("names", [])
+    )
+    assert not any(
+        name.startswith("room_peq_")
+        for step in room["pipeline"][room_split_index:]
+        for name in step.get("names", [])
+    )
+
+
+def _applied_layer_a_yaml(tmp_path: Path) -> str:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    applied = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=_measurements(topology, tmp_path),
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    applied["status"] = "applied"
+    text, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=applied,
+    )
+    assert issues == []
+    assert text is not None
+    return text
+
+
+@pytest.mark.parametrize("mutation", ["playback", "mixer", "pipeline_suffix"])
+def test_layer_a_fingerprint_rejects_every_bound_domain_mutation(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    changed = yaml_lib.safe_load(baseline_yaml)
+    split_index = next(
+        index
+        for index, step in enumerate(changed["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    split_name = changed["pipeline"][split_index]["name"]
+    if mutation == "playback":
+        changed["devices"]["playback"]["device"] = "unexpected_output"
+    elif mutation == "mixer":
+        source = changed["mixers"][split_name]["mapping"][0]["sources"][0]
+        source["gain"] = float(source.get("gain", 0.0)) - 0.25
+    else:
+        driver_step = changed["pipeline"][split_index + 1]
+        driver_step["channels"] = [int(driver_step["channels"][0]) + 1]
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(changed)) != (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
+
+
+def test_layer_a_fingerprint_ignores_capture_only_mutation(tmp_path: Path) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    changed = yaml_lib.safe_load(baseline_yaml)
+    changed["devices"]["capture"] = {
+        "type": "Alsa",
+        "channels": 2,
+        "device": "alternate_program_capture",
+        "format": "S32_LE",
+    }
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(changed)) == (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
+
+
+def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
+    tmp_path: Path,
+) -> None:
+    baseline_yaml = _applied_layer_a_yaml(tmp_path)
+    readback = yaml_lib.safe_load(baseline_yaml)
+    readback["devices"].update({
+        "adjust_period": None,
+        "multithreaded": None,
+        "volume_ramp_time": None,
+    })
+    split_index = next(
+        index
+        for index, step in enumerate(readback["pipeline"])
+        if step.get("type") == "Mixer"
+    )
+    split_name = readback["pipeline"][split_index]["name"]
+    for step in readback["pipeline"][split_index:]:
+        step.update({"bypassed": None, "description": None})
+    for route in readback["mixers"][split_name]["mapping"]:
+        route["mute"] = None
+        for source in route["sources"]:
+            source.update({"mute": None, "scale": None})
+    for step in readback["pipeline"][split_index:]:
+        for name in step.get("names", []):
+            readback["filters"][name]["description"] = None
+            readback["filters"][name]["parameters"]["scale"] = None
+
+    assert active_layer_a_fingerprint(yaml_lib.safe_dump(readback)) == (
+        active_layer_a_fingerprint(baseline_yaml)
+    )
 
 
 def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
@@ -3577,4 +4053,655 @@ async def test_apply_baseline_profile_blocked_emits_no_apply_events(
     assert not any(
         r.getMessage().startswith("event=correction.crossover_apply_")
         for r in caplog.records
+    )
+
+
+# --- Wave 4 (crossover measurement v2 §5.8): MeasuredCrossoverCandidate -----
+#
+# The new v2 measured-crossover candidate (trims + optional delay/polarity,
+# jasper.active_speaker.measured_crossover_candidate) is a drop-in peer of
+# the legacy MeasuredElectricalCandidate for build_baseline_profile_candidate
+# / apply_baseline_profile's existing measured_candidate seam — same
+# apply-with-rollback transaction, same freshness gate, no new apply path.
+
+
+def _v2_candidate(
+    preset: ActiveSpeakerPreset,
+    *,
+    delay_us: float = 250.0,
+    delay_role: str = "tweeter",
+    polarity: str = "invert",
+    tweeter_gain_db: float = -2.0,
+) -> MeasuredCrossoverCandidate:
+    return MeasuredCrossoverCandidate(
+        program_id="prog-v2-1",
+        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": tweeter_gain_db},
+        alignment=MeasuredCrossoverAlignment(
+            delay_us=delay_us, delay_role=delay_role, polarity=polarity
+        ),
+    )
+
+
+def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+        created_at="2026-07-18T12:20:00Z",
+    )
+
+    assert payload["status"] == "ready_to_apply", payload.get("issues")
+    assert payload["corrections"] == {
+        "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+        "tweeter": {"gain_db": -2.0, "delay_ms": 0.25, "inverted": True},
+    }
+    config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
+    assert "delay: 0.2500" in config_text
+    assert payload["candidate_fingerprint"] is not None
+
+
+def test_build_baseline_profile_candidate_v2_candidate_requires_automatic(
+    tmp_path: Path,
+) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    with pytest.raises(ValueError, match="automatic tuning ownership"):
+        build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=False,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="manual",
+            measured_candidate=candidate,
+        )
+
+
+def test_v2_candidate_trims_only_matches_legacy_trims_only_shape(
+    tmp_path: Path,
+) -> None:
+    """Absent alignment is exactly today's trims-only apply behavior: the
+    compiled corrections carry zero delay and the preset's own (unchanged)
+    polarity, identical in shape to a plain gain-only candidate."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    trims_only = MeasuredCrossoverCandidate(
+        program_id="prog-v2-2",
+        analysis={"drift_ppm": 1.0},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=trims_only,
+        created_at="2026-07-18T12:20:00Z",
+    )
+
+    assert payload["status"] == "ready_to_apply", payload.get("issues")
+    assert payload["corrections"] == {
+        "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
+        "tweeter": {"gain_db": -2.0, "delay_ms": 0.0, "inverted": False},
+    }
+
+
+def test_build_baseline_profile_candidate_blocks_on_failed_alignment_proof(
+    monkeypatch, tmp_path: Path, caplog,
+) -> None:
+    """A failed delay_graph/graph_safety proof is a blocker issue, exactly like
+    a failed CamillaDSP validation — fail closed, no partial write reaches
+    "ready_to_apply" — and the refusal leaves a stable journal event for
+    triage."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    def _boom(*_args, **_kwargs):
+        raise MeasuredCrossoverCandidateError(
+            "delay_graph_proof_failed", "simulated proof failure"
+        )
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.measured_crossover_candidate.prove_candidate_config",
+        _boom,
+    )
+
+    with caplog.at_level(logging.ERROR, logger=_BASELINE_LOGGER):
+        payload = build_baseline_profile_candidate(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            write=True,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+        )
+
+    assert payload["status"] == "blocked"
+    assert payload["permissions"]["may_apply"] is False
+    issue_codes = {issue["code"] for issue in payload["issues"]}
+    assert "measured_candidate_alignment_proof_failed" in issue_codes
+    blocked_events = _events(caplog, "correction.crossover_alignment_proof_blocked")
+    assert len(blocked_events) == 1
+    assert "code=delay_graph_proof_failed" in blocked_events[0]
+    assert f"candidate_fingerprint={candidate.fingerprint}" in blocked_events[0]
+
+
+async def test_apply_baseline_profile_applies_v2_measured_candidate(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """End-to-end: publish a v2 candidate with delay+polarity, apply it through
+    the existing atomic DSP transaction, and confirm the emitted config
+    carries both — through the SAME rollback-capable apply_baseline_profile
+    used for every other candidate shape."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices:\n  volume_limit: 0\n", encoding="utf-8")
+    current_path = str(prior)
+    calls: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        calls.append(path)
+        current_path = path
+        return True
+
+    async def current_config_path() -> str:
+        return current_path
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+
+    assert payload["status"] == "applied"
+    assert payload["profile"]["corrections"]["tweeter"] == {
+        "gain_db": -2.0,
+        "delay_ms": 0.25,
+        "inverted": True,
+    }
+    config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
+    assert "as_tweeter_delay" in config_text
+    assert "delay: 0.2500" in config_text
+    assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
+
+
+async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from jasper.active_speaker.measured_crossover_candidate import (
+        prove_candidate_config,
+    )
+    from jasper.active_speaker.runtime_contract import (
+        classify_bass_extension_graph,
+    )
+    from jasper.bass_extension.profile import (
+        evaluate_bass_extension_profile,
+        save_bass_extension_profile,
+    )
+    from tests.test_active_speaker_runtime_contract import _sealed_profile
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    measured = _v2_candidate(preset)
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    bass_path = tmp_path / "bass_extension_profile.json"
+    monkeypatch.setenv("JASPER_BASS_EXTENSION_PROFILE_STATE", str(bass_path))
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    loaded_graphs: list[str] = []
+
+    async def load_config(path: str) -> bool:
+        loaded_graphs.append(Path(path).read_text(encoding="utf-8"))
+        return True
+
+    first = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=measured,
+    )
+    assert first["status"] == "applied"
+    profile = _sealed_profile(topology, first["profile"])
+    save_bass_extension_profile(profile, bass_path)
+
+    with (
+        mock.patch(
+            "jasper.active_speaker.measured_crossover_candidate."
+            "prove_candidate_config",
+            wraps=prove_candidate_config,
+        ) as prove_measured,
+        mock.patch(
+            "jasper.active_speaker.runtime_contract."
+            "classify_bass_extension_graph",
+            wraps=classify_bass_extension_graph,
+        ) as prove_graph,
+    ):
+        repeated = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=load_config,
+            state_path=state_path,
+            config_path=config_path,
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=measured,
+        )
+
+    assert repeated["status"] == "applied"
+    assert prove_measured.call_count == 1
+    assert prove_graph.call_count == 1
+    repeated_text = loaded_graphs[-1]
+    repeated_yaml = yaml_lib.safe_load(repeated_text)
+    assert prove_measured.call_args.args == (measured, repeated_text)
+    assert prove_graph.call_args.kwargs["graph_text"] == repeated_text
+    assert prove_graph.call_args.kwargs["desired_profile"] == profile
+    assert "bass_ext_lt" in repeated_yaml["filters"]
+    assert "bass_ext_subsonic" in repeated_yaml["filters"]
+    assert "delay: 0.2500" in repeated_text
+    assert repeated_yaml["filters"]["as_tweeter_baseline_gain"]["parameters"][
+        "inverted"
+    ] is True
+    assert repeated["profile"]["corrections"]["tweeter"] == {
+        "gain_db": -2.0,
+        "delay_ms": 0.25,
+        "inverted": True,
+    }
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=repeated["profile"],
+    ).status == "accepted"
+
+    changed_measured = MeasuredCrossoverCandidate(
+        program_id="prog-v2-2",
+        analysis={"drift_ppm": 4.0, "sweeps": ["w", "t", "w", "t"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
+        alignment=MeasuredCrossoverAlignment(
+            delay_us=375.0,
+            delay_role="tweeter",
+            polarity="keep",
+        ),
+    )
+    changed = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=changed_measured,
+    )
+
+    assert changed["status"] == "applied"
+    changed_text = loaded_graphs[-1]
+    changed_yaml = yaml_lib.safe_load(changed_text)
+    assert "bass_ext_lt" not in changed_text
+    assert "bass_ext_subsonic" not in changed_text
+    assert "delay: 0.3750" in changed_text
+    assert changed_yaml["filters"]["as_tweeter_baseline_gain"]["parameters"][
+        "inverted"
+    ] is False
+    assert changed["profile"]["corrections"]["tweeter"] == {
+        "gain_db": -3.0,
+        "delay_ms": 0.375,
+        "inverted": False,
+    }
+    assert evaluate_bass_extension_profile(
+        path=bass_path,
+        topology=topology,
+        applied_baseline_state=changed["profile"],
+    ).status == "stale"
+
+
+async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The candidate fingerprint covers the new alignment fields: reviewing
+    one delay_us and applying a candidate with a DIFFERENT delay_us is caught
+    by the existing expected_candidate_fingerprint staleness gate (#1423/#1441
+    apply-freshness hardening), unchanged."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    reviewed = _v2_candidate(preset, delay_us=250.0)
+    reviewed_fingerprint = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        tuning_owner="automatic",
+        measured_candidate=reviewed,
+    )["candidate_fingerprint"]
+
+    changed = _v2_candidate(preset, delay_us=999.0)
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+
+    async def load_config(_path: str) -> bool:
+        pytest.fail("load_config must not run against a stale reviewed candidate")
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=changed,
+        expected_candidate_fingerprint=reviewed_fingerprint,
+    )
+
+    assert payload["status"] == "blocked"
+    issue_codes = {issue["code"] for issue in payload["issues"]}
+    assert "baseline_candidate_fingerprint_mismatch" in issue_codes
+
+
+# --- v2 Undo — restore the pre-candidate applied profile (W6 run-8 Blocker Q) --
+#
+# The verify_fail screen's Undo posted to the LEGACY /crossover/restore, which
+# expects a pending commissioning-run candidate apply — a v2 apply never
+# creates one (it commits straight through apply_baseline_profile's own
+# atomic transaction), so the legacy path 500s ("there is no pending
+# candidate apply to restore") and the household is stuck on the bad-sounding
+# candidate. restore_applied_baseline_profile is the v2-aware fix: reload the
+# frozen pre-candidate applied_recomposition_profile through the SAME
+# apply_dsp_config transaction the forward apply rides, never recomposed.
+
+
+async def _apply_prior_then_run8(monkeypatch, tmp_path: Path):
+    """Apply one profile (the household's pre-existing crossover), then a
+    SECOND (the run-8-shaped measured candidate) over it. Returns
+    ``(state_path, config_path, load_config, current_config_path,
+    prior_payload, run8_payload, retained)`` — ``retained`` is the exact
+    frozen snapshot ``handle_v2_apply`` would have stashed as
+    ``pre_apply_profile`` at the moment of the run-8 apply."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    prior_candidate = _v2_candidate(preset, tweeter_gain_db=-2.0, delay_us=250.0)
+    prior_payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=prior_candidate,
+    )
+    assert prior_payload["status"] == "applied"
+
+    run8_candidate = _v2_candidate(
+        preset, tweeter_gain_db=-13.0327, delay_us=404.777,
+    )
+    # Captured BEFORE the run-8 apply below persists — exactly like
+    # handle_v2_apply's own read-only "reviewed_baseline" recompose, which
+    # runs before apply_baseline_profile commits. Capturing it AFTER the
+    # run-8 apply would read the run-8 profile's own (already-applied) state
+    # back as its "prior", not the profile it actually replaced.
+    retained = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=state_path,
+        config_path=config_path,
+        tuning_owner="automatic",
+        measured_candidate=run8_candidate,
+    )["applied_recomposition_profile"]
+    assert retained is not None
+    assert (
+        retained["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+
+    run8_payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=run8_candidate,
+    )
+    assert run8_payload["status"] == "applied"
+    run8_config_path = Path(run8_payload["profile"]["config"]["path"])
+    assert run8_config_path != config_path, "run-8 must land on a content-addressed sibling"
+    assert "applied_recomposition_profile" not in run8_payload["profile"]
+
+    return (
+        state_path, config_path, load_config, current_config_path,
+        prior_payload, run8_payload, retained,
+    )
+
+
+async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, load_config, current_config_path,
+        prior_payload, run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    prior_config_text = config_path.read_text(encoding="utf-8")
+    run8_config_text = Path(
+        run8_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+    # Sanity: the two profiles' own delay values are genuinely distinct
+    # before restoring, so a passing restore is proof of REVERSION, not a
+    # no-op.
+    assert "delay: 0.2500" in prior_config_text
+    assert "delay: 0.4048" in run8_config_text
+    assert "delay: 0.4048" not in prior_config_text
+
+    restore_payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    # Reloaded the PRIOR profile's own already-compiled file, unmutated —
+    # never recomposed, so the file's bytes are exactly what they were, and
+    # the run-8 candidate's delay is gone from the ACTIVE config.
+    assert config_path.read_text(encoding="utf-8") == prior_config_text
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert (
+        active["candidate_fingerprint"]
+        == prior_payload["profile"]["candidate_fingerprint"]
+    )
+    assert active["candidate_fingerprint"] != run8_payload["profile"]["candidate_fingerprint"]
+    assert active["config"]["path"] == str(config_path)
+
+
+async def test_restore_applied_baseline_profile_blocked_when_config_missing(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    config_path.unlink()
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_missing"}
+
+
+async def test_restore_applied_baseline_profile_blocked_on_invalid_snapshot(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    tampered = dict(retained)
+    tampered["candidate_fingerprint"] = "declared-wrong"
+
+    payload = await restore_applied_baseline_profile(
+        tampered,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "blocked"
+    assert {issue["code"] for issue in payload["issues"]} == {"restore_target_invalid"}
+
+
+async def test_restore_applied_baseline_profile_reports_restore_failed(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    (
+        state_path, config_path, _load_config, current_config_path,
+        _prior_payload, _run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+
+    async def failing_load_config(_path: str) -> bool:
+        return False
+
+    payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=failing_load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "restore_failed"
+    assert {issue["code"] for issue in payload["issues"]} == {"restore_apply_failed"}
+    # A failed restore must not clobber the currently-applied (run-8) SSOT.
+    active = load_applied_baseline_profile_state(state_path)
+    assert active is not None
+    assert (
+        active["candidate_fingerprint"]
+        != retained["candidate_fingerprint"]
     )

@@ -26,8 +26,11 @@ These tests pin the contract:
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from queue import Empty
+import struct
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -131,6 +134,22 @@ def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
     assert data["counters"]["frames_processed"] == 3
     assert data["counters"]["queue_drops"]["mic"] == 2
     assert data["counters"]["packets_sent_by_leg"]["on"] == 1
+
+
+def test_bridge_stats_snapshot_carries_negotiated_capture_geometry() -> None:
+    stats = aec_bridge._BridgeStats()
+    stats.set_capture_stream(
+        sample_rate_hz=16_000,
+        block_frames=320,
+        input_latency_seconds=0.08,
+    )
+
+    assert stats.snapshot()["capture_stream"] == {
+        "sample_rate_hz": 16_000,
+        "block_frames": 320,
+        "input_latency_seconds": 0.08,
+        "input_latency_frames": 1280,
+    }
 
 
 def test_drop_log_debouncer_aggregates_one_second_windows():
@@ -267,7 +286,7 @@ def test_aec_loop_emits_both_streams(monkeypatch):
     socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
     monkeypatch.setattr(real_socket, "socket", socket_factory)
 
-    # 8 frames of 320 samples each = 16 ms × 8 = 2 full 1280-sample
+    # 8 frames of 320 samples each = 20 ms × 8 = 2 full 1280-sample
     # batches per leg. Each mic frame is byte-distinct so we can
     # verify which bytes landed in which packet.
     mic_frames = [
@@ -362,6 +381,86 @@ def test_raw_port_overridable_via_env(monkeypatch):
     # Default AEC port unaffected; compatibility constant remains canonical.
     assert config.out_port == 9876
     assert aec_bridge.OUT_PORT_RAW == 9877
+
+
+def test_usb_mic_leg_config_defaults_and_parses_env(monkeypatch):
+    monkeypatch.delenv("JASPER_USB_MIC_LEG", raising=False)
+    assert aec_bridge.BridgeConfig.from_env().usb_mic_leg == "primary"
+
+    monkeypatch.setenv("JASPER_USB_MIC_LEG", "chip_aec_210")
+    assert aec_bridge.BridgeConfig.from_env().usb_mic_leg == "chip_aec_210"
+
+
+def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
+    from jasper.mics import xvf3800
+
+    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
+    assert aec_bridge._resolve_usb_mic_source(
+        "primary",
+        plan=plan,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+    ) == {
+        "selection": "primary",
+        "mode": "chip_aec",
+        "leg": "chip_aec_150",
+        "fallback_active": False,
+    }
+    assert aec_bridge._resolve_usb_mic_source(
+        "stale_plan_leg",
+        plan=plan,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+    ) == {
+        "selection": "primary",
+        "mode": "chip_aec",
+        "leg": "chip_aec_150",
+        "fallback_active": False,
+    }
+    assert aec_bridge._resolve_usb_mic_source(
+        "chip_aec_210",
+        plan=plan,
+        production_chip_aec_enabled=False,
+        chip_aec_primary_leg="chip_aec_150",
+    ) == {
+        "selection": "chip_aec_210",
+        "mode": "software_aec3",
+        "leg": "clean",
+        "fallback_active": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("low", "low"), ("0.04", "0.04"), ("", "")],
+)
+def test_capture_latency_parses_from_env(monkeypatch, configured, expected):
+    monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
+
+    config = aec_bridge.BridgeConfig.from_env()
+
+    assert config.capture_latency == expected
+
+
+@pytest.mark.parametrize(
+    "configured", ["fast", "0", "-0.1", "0.251", "nan", "inf"]
+)
+def test_capture_latency_invalid_values_fall_back_to_default(monkeypatch, configured):
+    monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
+    event = MagicMock()
+    monkeypatch.setattr(aec_bridge, "log_event", event)
+    test_logger = MagicMock()
+
+    config = aec_bridge.BridgeConfig.from_env(logger_=test_logger)
+
+    assert config.capture_latency == ""
+    event.assert_called_once_with(
+        test_logger,
+        "aec.capture_latency_invalid",
+        value=configured,
+        fallback="default",
+        level=aec_bridge.logging.WARNING,
+    )
 
 
 def test_raw0_port_default_9879():
@@ -992,6 +1091,457 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     ]
 
 
+def test_usb_host_mic_emitter_prepends_v2_header(monkeypatch):
+    from jasper.usb_mic import (
+        USB_MIC_HEADER_BYTES,
+        USB_MIC_HEADER_STRUCT,
+        USB_MIC_PACKET_MAGIC,
+        USB_MIC_PACKET_VERSION,
+    )
+
+    usb_sock = MagicMock()
+    usb = aec_bridge.TimestampedLegEmitter(
+        usb_sock,
+        (OUT_HOST, 9894),
+        bytearray(),
+        "usb_host_mic",
+        frame_samples=FRAME_SAMPLES,
+    )
+    timestamps = iter((1_000_000_000, 1_020_000_000))
+    clock_ids = []
+
+    def clock_gettime_ns(clock_id):
+        clock_ids.append(clock_id)
+        return next(timestamps)
+
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        clock_gettime_ns,
+    )
+    frames = (
+        b"\x11\x22" * FRAME_SAMPLES,
+        b"\x33\x44" * FRAME_SAMPLES,
+    )
+
+    for frame in frames:
+        usb.emit(frame)
+
+    assert usb_sock.sendto.call_count == 2
+    assert USB_MIC_HEADER_BYTES == 16
+    assert clock_ids == [aec_bridge.time.CLOCK_MONOTONIC] * 2
+    for seq, (call, frame, timestamp) in enumerate(zip(
+        usb_sock.sendto.call_args_list,
+        frames,
+        (1_000_000_000, 1_020_000_000),
+        strict=True,
+    )):
+        packet = call.args[0]
+        assert len(packet) == 656
+        assert struct.unpack(
+            USB_MIC_HEADER_STRUCT,
+            packet[:USB_MIC_HEADER_BYTES],
+        ) == (
+            USB_MIC_PACKET_MAGIC,
+            USB_MIC_PACKET_VERSION,
+            0,
+            seq,
+            timestamp,
+        )
+        assert packet[USB_MIC_HEADER_BYTES:] == frame
+        assert call.args[1] == (OUT_HOST, 9894)
+
+
+def test_usb_host_mic_sequence_wraps_u32(monkeypatch):
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
+
+    sock = MagicMock()
+    emitter = aec_bridge.TimestampedLegEmitter(
+        sock,
+        (OUT_HOST, 9894),
+        bytearray(),
+        "usb_host_mic",
+        frame_samples=FRAME_SAMPLES,
+    )
+    emitter._seq = 0xFFFFFFFF
+    monkeypatch.setattr(aec_bridge.time, "clock_gettime_ns", lambda _clock: 1)
+
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+
+    sequences = [
+        struct.unpack(
+            USB_MIC_HEADER_STRUCT,
+            call.args[0][:USB_MIC_HEADER_BYTES],
+        )[3]
+        for call in sock.sendto.call_args_list
+    ]
+    assert sequences == [0xFFFFFFFF, 0]
+
+
+def test_usb_host_mic_sequence_exposes_sender_drop(monkeypatch):
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
+
+    sock = MagicMock()
+    sock.sendto.side_effect = (BlockingIOError("full"), None)
+    emitter = aec_bridge.TimestampedLegEmitter(
+        sock,
+        (OUT_HOST, 9894),
+        bytearray(),
+        "usb_host_mic",
+        frame_samples=FRAME_SAMPLES,
+    )
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2)),
+    )
+
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+    emitter.emit(bytes(FRAME_SAMPLES * 2))
+
+    second_packet = sock.sendto.call_args_list[1].args[0]
+    second_header = struct.unpack(
+        USB_MIC_HEADER_STRUCT,
+        second_packet[:USB_MIC_HEADER_BYTES],
+    )
+    assert second_header[3] == 1
+    counters = aec_bridge._bridge_stats.snapshot()["counters"]
+    assert counters["udp_send_drops_by_leg"]["usb_host_mic"] == 1
+    assert counters["packets_sent_by_leg"]["usb_host_mic"] == 1
+
+
+@pytest.mark.parametrize("leg", ["on", "off", "raw0"])
+def test_wake_legs_wire_format_unchanged(leg: str):
+    sock = MagicMock()
+    emitter = aec_bridge.LegEmitter(
+        sock,
+        (OUT_HOST, OUT_PORT),
+        bytearray(),
+        leg,
+    )
+    pcm = b"\x12\x34" * aec_bridge.OUT_FRAME_SAMPLES
+
+    emitter.emit(pcm)
+
+    sock.sendto.assert_called_once_with(pcm, (OUT_HOST, OUT_PORT))
+
+
+def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
+    import socket as real_socket
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(
+        real_socket,
+        "socket",
+        MagicMock(side_effect=sockets),
+    )
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2, 3, 4)),
+    )
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    clean_frames = [bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    engine = MagicMock()
+    engine.process.side_effect = clean_frames
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        config=config,
+    )
+
+    on_sock, usb_sock, _raw_sock, _raw0_sock = sockets
+    on_sock.sendto.assert_called_once_with(
+        b"".join(clean_frames),
+        (config.out_host, config.out_port),
+    )
+    assert usb_sock.sendto.call_count == 4
+    sequences = []
+    for call, clean in zip(usb_sock.sendto.call_args_list, clean_frames, strict=True):
+        packet = call.args[0]
+        header = struct.unpack(
+            USB_MIC_HEADER_STRUCT,
+            packet[:USB_MIC_HEADER_BYTES],
+        )
+        sequences.append(header[3])
+        assert packet[USB_MIC_HEADER_BYTES:] == clean
+    assert sequences == [0, 1, 2, 3]
+
+
+def test_usb_host_mic_marks_requested_chip_leg_fallback_in_software_mode(
+    monkeypatch,
+):
+    import socket as real_socket
+    from jasper.mics import xvf3800
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(real_socket, "socket", MagicMock(side_effect=sockets))
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2, 3, 4)),
+    )
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+        usb_mic_leg="chip_aec_210",
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    clean_frames = [bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    engine = MagicMock()
+    engine.process.side_effect = clean_frames
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=False,
+        chip_aec_primary_leg="chip_aec_150",
+        config=config,
+    )
+
+    stats = aec_bridge._bridge_stats.snapshot()
+    assert stats["active_capture_plan"]["usb_mic_source"] == {
+        "selection": "chip_aec_210",
+        "mode": "software_aec3",
+        "leg": "clean",
+        "fallback_active": True,
+    }
+    assert stats["counters"]["usb_mic_source_fallback_frames"] == len(
+        clean_frames
+    )
+
+
+def test_usb_host_mic_selects_plan_beam_without_changing_voice_gain(
+    monkeypatch,
+):
+    import socket as real_socket
+    from jasper.mics import xvf3800
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.setenv("JASPER_AEC_MIC_GAIN_DB", "6")
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(real_socket, "socket", MagicMock(side_effect=sockets))
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2, 3, 4)),
+    )
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+        usb_mic_leg="chip_aec_210",
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    chip_150_frames = [
+        (np.full(FRAME_SAMPLES, 1000 + i, dtype=np.int16)).tobytes()
+        for i in range(4)
+    ]
+    chip_210_frames = [
+        (np.full(FRAME_SAMPLES, 2000 + i, dtype=np.int16)).tobytes()
+        for i in range(4)
+    ]
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        MagicMock(),
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ(chip_150_frames),
+            "chip_aec_210": _ScriptedMicQ(chip_210_frames),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+        config=config,
+    )
+
+    gain_lin = 10.0 ** (6.0 / 20.0)
+    expected_voice = b"".join(
+        aec_bridge._apply_mic_output_gain(frame, gain_lin)[0]
+        for frame in chip_150_frames
+    )
+    on_sock, usb_sock, _raw_sock, _raw0_sock = sockets
+    on_sock.sendto.assert_called_once_with(
+        expected_voice,
+        (config.out_host, config.out_port),
+    )
+    assert [
+        call.args[0][USB_MIC_HEADER_BYTES:]
+        for call in usb_sock.sendto.call_args_list
+    ] == [
+        aec_bridge._apply_mic_output_gain(frame, gain_lin)[0]
+        for frame in chip_210_frames
+    ]
+    assert aec_bridge._bridge_stats.snapshot()["active_capture_plan"][
+        "usb_mic_source"
+    ] == {
+        "selection": "chip_aec_210",
+        "mode": "chip_aec",
+        "leg": "chip_aec_210",
+        "fallback_active": False,
+    }
+
+
+def test_usb_host_mic_missing_selected_beam_falls_back_to_primary(monkeypatch):
+    import socket as real_socket
+    from jasper.mics import xvf3800
+    from jasper.usb_mic import USB_MIC_HEADER_BYTES
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    sockets = [_mock_socket() for _ in range(4)]
+    monkeypatch.setattr(real_socket, "socket", MagicMock(side_effect=sockets))
+    monkeypatch.setattr(
+        aec_bridge.time,
+        "clock_gettime_ns",
+        MagicMock(side_effect=(1, 2, 3, 4)),
+    )
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        emit_usb_host_mic=True,
+        usb_mic_leg="chip_aec_210",
+    )
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    primary_frames = [
+        bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        MagicMock(),
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ(primary_frames),
+            "chip_aec_210": _AlwaysEmptyQ(),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+        config=config,
+    )
+
+    _on_sock, usb_sock, _raw_sock, _raw0_sock = sockets
+    assert [
+        call.args[0][USB_MIC_HEADER_BYTES:]
+        for call in usb_sock.sendto.call_args_list
+    ] == primary_frames
+    stats = aec_bridge._bridge_stats.snapshot()
+    assert stats["active_capture_plan"]["usb_mic_source"] == {
+        "selection": "chip_aec_210",
+        "mode": "chip_aec",
+        "leg": "chip_aec_150",
+        "fallback_active": True,
+    }
+    assert stats["counters"]["usb_mic_source_fallback_frames"] == len(
+        primary_frames
+    )
+
+
+def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
+    stream = SimpleNamespace(
+        latency=0.025,
+        samplerate=15_990,
+        blocksize=319,
+    )
+
+    class InputStream:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return stream
+
+        def __exit__(self, *_args):
+            return False
+
+    input_stream = MagicMock(side_effect=InputStream)
+    monkeypatch.setattr(aec_bridge, "sd", SimpleNamespace(InputStream=input_stream))
+    event = MagicMock()
+    monkeypatch.setattr(aec_bridge, "log_event", event)
+    aec_bridge._shutdown.set()
+    config = replace(aec_bridge.BridgeConfig.from_env(), mic_device="test-mic")
+
+    aec_bridge._mic_thread(MagicMock(), config=config)
+
+    input_stream.assert_called_once()
+    assert input_stream.call_args.kwargs == {
+        "device": "test-mic",
+        "samplerate": aec_bridge.SAMPLE_RATE,
+        "channels": aec_bridge.MIC_CHANNELS,
+        "dtype": "int16",
+        "blocksize": aec_bridge.FRAME_SAMPLES,
+        "callback": input_stream.call_args.kwargs["callback"],
+    }
+    event.assert_called_once_with(
+        aec_bridge.logger,
+        "aec.mic_stream_latency",
+        latency_s=0.025,
+        requested_latency="default",
+        samplerate=15_990,
+        blocksize=319,
+    )
+    assert aec_bridge._bridge_stats.snapshot()["capture_stream"] == {
+        "sample_rate_hz": 15_990,
+        "block_frames": 319,
+        "input_latency_seconds": 0.025,
+        "input_latency_frames": 400,
+    }
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("low", "low"), ("0.04", 0.04)],
+)
+def test_mic_thread_passes_configured_capture_latency(
+    monkeypatch,
+    configured,
+    expected,
+):
+    stream = SimpleNamespace(
+        latency=0.02,
+        samplerate=aec_bridge.SAMPLE_RATE,
+        blocksize=aec_bridge.FRAME_SAMPLES,
+    )
+
+    class InputStream:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return stream
+
+        def __exit__(self, *_args):
+            return False
+
+    input_stream = MagicMock(side_effect=InputStream)
+    monkeypatch.setattr(aec_bridge, "sd", SimpleNamespace(InputStream=input_stream))
+    aec_bridge._shutdown.set()
+    config = replace(
+        aec_bridge.BridgeConfig.from_env(),
+        mic_device="test-mic",
+        capture_latency=configured,
+    )
+
+    aec_bridge._mic_thread(MagicMock(), config=config)
+
+    assert input_stream.call_args.kwargs["latency"] == expected
+
+
 def test_dtln_runtime_failure_degrades_once_and_primary_aec_continues(
     monkeypatch, caplog, tmp_path,
 ):
@@ -1240,6 +1790,11 @@ def test_bridge_stats_snapshot_carries_active_capture_plan(tmp_path):
             "mic_device": "Array",
             "ref_source": "outputd_udp",
         },
+        usb_mic_source={
+            "selection": "primary",
+            "mode": "chip_aec",
+            "leg": "chip_aec_150",
+        },
         mic_fingerprint="mic-a",
         dac_reference_fingerprint="dac-a",
     )
@@ -1256,6 +1811,11 @@ def test_bridge_stats_snapshot_carries_active_capture_plan(tmp_path):
     assert active["beam_plan"]["emitted_chip_legs"] == [
         "chip_aec_150", "chip_aec_210",
     ]
+    assert active["usb_mic_source"] == {
+        "selection": "primary",
+        "mode": "chip_aec",
+        "leg": "chip_aec_150",
+    }
     assert active["ports"]["chip_aec_210"] == 9888
     assert active["mic_fingerprint"] == "mic-a"
     assert active["dac_reference_fingerprint"] == "dac-a"

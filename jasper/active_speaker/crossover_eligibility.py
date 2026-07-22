@@ -69,6 +69,25 @@ class RepeatProgress:
     accepted: int
     target: int
     failure: Mapping[str, Any]
+    # The durable ledger's own terminal "completed" status (repeat_admission's
+    # ready -> completed transition, set once every accepted repeat has been
+    # played AND its final measurement was persisted). This is
+    # distinct from `failure`: a repeat set can complete every one of its
+    # bounded attempts and still fail to produce USABLE acoustic evidence
+    # (e.g. every accepted repeat's overlap-band SNR is "insufficient" per
+    # jasper.audio_measurement.snr_policy). Once completed, no further
+    # repeat can ever be reserved (repeat_admission.reserve() raises); a
+    # caller MUST stop offering "repeat N+1" and render the honest terminal
+    # instead of looping on an action that will fail at reservation.
+    completed: bool
+    # The most recent per-attempt result recorded on the ledger, when any
+    # exist — carries the accepted median's own SNR evidence
+    # (`estimated_snr_db`, `snr_verdict`, `snr_shortfall_db`,
+    # `worst_band_id`) even when that attempt was `accepted: True` (repeat
+    # acceptance is an outlier/consistency check, not an SNR gate — see
+    # `web_measurement.py`'s per-attempt `admission_result`). Callers use
+    # this to name the shortfall concretely instead of a generic message.
+    last_result: Mapping[str, Any]
 
 
 def repeat_progress(repeats: Any, target_id: str) -> RepeatProgress:
@@ -80,23 +99,23 @@ def repeat_progress(repeats: Any, target_id: str) -> RepeatProgress:
     attempts = nonnegative_int(entry.get("attempts"))
     accepted = nonnegative_int(entry.get("accepted"))
     target = nonnegative_int(entry.get("target"), default=3)
+    completed = entry.get("status") == "completed"
+    results = mapping_sequence(entry.get("results"))
+    last_result = results[-1] if results else {}
     if attempts > 4:
         attempts = 0
     if accepted > 3:
         accepted = 0
     if target != 3:
         target = 3
-    return RepeatProgress(attempts, accepted, target, failure)
+    return RepeatProgress(attempts, accepted, target, failure, completed, last_result)
 
 
 def render_repeat_progress(progress: RepeatProgress) -> str:
     """Render the shared near/fixed stationary-repeat status sentence."""
 
     if progress.attempts:
-        return (
-            f" Repeat {progress.attempts + 1}; {progress.accepted} of "
-            f"{progress.target} accepted so far."
-        )
+        return f" {progress.accepted} of {progress.target} measurements accepted."
     return f" JTS takes {progress.target} stationary repeats."
 
 
@@ -158,6 +177,54 @@ def driver_repeat_completed(
     )
 
 
+# `measurement.record_driver_measurement`'s `captured` flag additionally
+# requires this record's OWN played tone to be byte-identical to a
+# separately-recorded, earlier by-ear floor confirmation's playback
+# (`_floor_confirmation_issues`'s `driver_measurement_playback_mismatch`).
+# That equality holds for the legacy single-shot flow (one playback served
+# as both the ear-check and the mic capture), but is structurally
+# impossible for the sweep/repeat capture flow
+# (`commissioning_capture.record_driver_acoustic_capture`): every accepted
+# repeat plays its OWN sweep tone, always a *different* playback than the
+# driver's earlier, independently-durable by-ear confirmation
+# (`web_commissioning.confirm_driver_test`). So `record["captured"]` is
+# *always* False on an acoustic-bearing record produced by the repeat-set
+# flow, by design -- pinned by
+# tests/test_active_speaker_measurement.py::
+# test_sweep_evidence_never_clobbers_the_confirmation_gate. Gating
+# eligibility on `record.get("captured") is True` therefore refused every
+# real, fully-accepted driver forever (JTS3 run 22: 60 dB SNR,
+# repeats.accepted == 3, still reported "insufficient"). This constant
+# names the one issue family `_acoustic_capture_valid` below excludes so
+# every OTHER blocker (unverified identity, unknown target/outcome, no
+# floor ceremony at all) stays load-bearing.
+_FLOOR_REPLAY_MISMATCH_ISSUE_CODE = "driver_measurement_playback_mismatch"
+
+
+def _acoustic_capture_valid(record: Mapping[str, Any]) -> bool:
+    """Whether one durable driver-measurement record's own capture is sound.
+
+    Reproduces `captured`'s other guarantees -- the mic meter isn't
+    clipping/too_loud, and no blocker issue is present -- while excluding
+    the one issue family that can never apply to a repeat-set capture (see
+    the module comment above `_FLOOR_REPLAY_MISMATCH_ISSUE_CODE`).
+    `captured` also required ``outcome == "heard_correct_driver"``, but
+    that is not re-checked here: `driver_acoustic_usable`'s own
+    ``acoustic.get("verdict") == "present"`` check already establishes it
+    for every record `record_driver_acoustic_capture` writes (`outcome` is
+    derived 1:1 from the same analyzer verdict via
+    `commissioning_capture.DRIVER_VERDICT_TO_OUTCOME`).
+    """
+    meter = mapping(record.get("mic_meter"))
+    if meter.get("status") in {"clipping", "too_loud"}:
+        return False
+    return not any(
+        issue.get("severity") == "blocker"
+        and issue.get("code") != _FLOOR_REPLAY_MISMATCH_ISSUE_CODE
+        for issue in mapping_sequence(record.get("issues"))
+    )
+
+
 def driver_acoustic_usable(
     record: Mapping[str, Any],
     comparison_set: Mapping[str, Any],
@@ -181,7 +248,7 @@ def driver_acoustic_usable(
         and record.get("speaker_group_id") == group_id
         and str(record.get("role") or "").lower() == role
         and record.get("target_fingerprint") == target_fingerprint
-        and record.get("captured") is True
+        and _acoustic_capture_valid(record)
         and acoustic.get("capture_geometry") == capture_geometry
         and acoustic.get("verdict") == "present"
         and record.get("mic_clipping") is False

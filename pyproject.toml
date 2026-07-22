@@ -82,10 +82,11 @@ full = [
     # vendor-control interface for boot-time profile writes and diagnostics.
     "pyusb>=1.2",
     "libusb_package>=1.0",
-    # ALSA-native PCM access for jasper-aec-bridge — needed because
+    # ALSA-native PCM access for jasper-aec-bridge and jasper-usbmic — needed because
     # PortAudio (sounddevice's backend) only enumerates hw: devices,
     # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
-    # we capture the AEC reference from).
+    # we capture the AEC reference from), while the USB-mic relay needs
+    # nonblocking period writes and explicit gadget-ring occupancy control.
     "pyalsaaudio>=0.11; sys_platform == 'linux'",
     # jasper-{dial,satellite}-onboard: pyserial for USB CDC discovery
     # + Improv handshake; esptool for firmware flash. Both pure-Python
@@ -170,6 +171,7 @@ jasper-local-source-allowed = "jasper.local_sources.guard:main"
 jasper-aec-init = "jasper.cli.aec_init:main"
 jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
+jasper-usbmic = "jasper.cli.usb_mic:main"
 jasper-aec-sweep-config = "jasper.cli.aec_sweep_config:main"
 jasper-xvf-profile = "jasper.cli.xvf_profile:main"
 jasper-xvf-firmware-update = "jasper.cli.xvf_firmware_update:main"
@@ -177,6 +179,7 @@ jasper-audio-validate = "jasper.audio_validation:main"
 jasper-audio-hw-validate = "jasper.audio_validation:hardware_main"
 jasper-route-latency-artifact = "jasper.cli.route_latency_artifact:main"
 jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
+jasper-usb-mic-latency-artifact = "jasper.cli.usb_mic_latency_artifact:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
 jasper-usbsink-volume = "jasper.cli.usbsink_volume_main:main"
 jasper-dial-onboard = "jasper.cli.dial_onboard:main"
@@ -185,6 +188,7 @@ jasper-correction-web = "jasper.web.correction_setup:main"
 jasper-correction-bundle = "jasper.cli.correction_bundle:main"
 jasper-calibration-agent = "jasper.calibration_agent.cli:main"
 jasper-active-speaker = "jasper.cli.active_speaker:main"
+jasper-bass-extension-bench = "jasper.cli.bass_extension_bench:main"
 jasper-output-topology-reset = "jasper.cli.output_topology_reset:main"
 jasper-satellite-onboard = "jasper.cli.satellite_onboard:main"
 jasper-cues = "jasper.cues.cli:main"

@@ -19,15 +19,26 @@ explicit statefile writer helper at the bottom.
 
 from __future__ import annotations
 
+import asyncio
+import math
 import os
-from dataclasses import dataclass, field
+import json
+import hashlib
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Literal, Mapping
 
 import yaml
 
+from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
+
+if TYPE_CHECKING:
+    from jasper.bass_extension.profile import BassExtensionProfile
+from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.output_topology import (
     SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
@@ -46,6 +57,7 @@ from .graph_evidence import (
     channel_select_mixer_name as _channel_select_mixer_name,
     driver_baseline_gain_name as _baseline_gain_name,
     driver_baseline_limiter_name as _baseline_limiter_name,
+    driver_delay_name as _driver_delay_name,
     driver_limiter_name,
     filter_params as _filter_params,
     filter_type as _filter_type,
@@ -57,7 +69,9 @@ from .graph_evidence import (
     sub_startup_limiter_name as _sub_startup_limiter_name,
 )
 from .graph_safety import (
+    TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     GraphView,
+    bass_extension_block_valid,
     bass_management_corner_matched,
     filter_param_matches,
     float_value as _float_value,
@@ -81,7 +95,11 @@ from .path_safety import (
     target_assignment_signature,
     topology_target_signature,
 )
-from .staging import load_staged_startup_config
+from .profile import (
+    ADJACENT_PAIRS_BY_WAY,
+    SUB_CROSSOVER_ORDER,
+    SUPPORTED_LR_ORDERS,
+)
 
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
 # The ``shm_ring`` sibling of the flat outputd cutover config. A ring-armed box
@@ -100,6 +118,7 @@ GRAPH_FLAT_FULL_RANGE = "flat_full_range"
 GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
 GRAPH_GUARDED_COMMISSIONING = "guarded_commissioning"
 GRAPH_APPROVED_ACTIVE_RUNTIME = "approved_active_runtime"
+_BASS_PROFILE_EVIDENCE_OMITTED = object()
 GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
 # The active-leader's camilla#1 program bake: a flat (no-Layer-A) program graph
 # whose playback is a File/pipe sink, not a DAC. Allowed regardless of topology
@@ -109,6 +128,14 @@ GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
 GRAPH_PROGRAM_BAKE_PIPE = "program_bake_pipe"
 GRAPH_UNKNOWN = "unknown"
 GRAPH_UNSAFE = "unsafe"
+
+# Explicit evidence for frozen in-memory tests/composition inputs that prove an
+# ordinary no-profile baseline. Production persisted hosts obtain the same shape
+# only through :func:`classify_bass_extension_graph`.
+NO_BASS_EXTENSION_PROFILE_SUMMARY: Mapping[str, Any] = MappingProxyType({
+    "authority_valid": True,
+    "runtime_block_required": False,
+})
 
 ACTIVE_BASELINE_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config"
@@ -122,10 +149,11 @@ ACTIVE_DRIVER_DOMAIN_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config"
 )
 _DRIVER_DOMAIN_PAIR_TRIM = "pair_balance_trim"
-# Both baseline-shaped sources run every output live (no per-output commission
-# mute) through a protective per-driver chain; they differ only in the
-# pre-split prefix (program-domain headroom + preference EQ vs the inter-speaker
-# channel-select). The mute/role-isolation checks below skip for both.
+# Both emitted baseline-shaped sources run every output live through a
+# protective per-driver chain; they differ only in the pre-split prefix
+# (program-domain headroom + preference EQ vs inter-speaker channel-select).
+# Summed commissioning may derive a narrowly verified final mute tail from the
+# primary baseline source; the driver-domain source never may.
 _BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
 
 CONTRACT_UNCONFIGURED = "unconfigured"
@@ -751,6 +779,72 @@ def _driver_domain_pair_trim_between_select_and_split(
     return select_idx < trim_idx < min(split_idxs)
 
 
+def _filter_step_channels(step: dict[str, Any]) -> set[int] | None:
+    raw_channels = step.get("channels")
+    if not isinstance(raw_channels, list) or any(
+        isinstance(value, bool) for value in raw_channels
+    ):
+        return None
+    try:
+        return {int(value) for value in raw_channels}
+    except (TypeError, ValueError):
+        return None
+
+
+def _exact_filter_step_channels(
+    step: dict[str, Any], expected: set[int]
+) -> bool:
+    raw_channels = step.get("channels")
+    return (
+        isinstance(raw_channels, list)
+        and len(raw_channels) == len(expected)
+        and all(type(value) is int for value in raw_channels)
+        and set(raw_channels) == expected
+    )
+
+
+def _strict_finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _post_split_filter_names(
+    payload: dict[str, Any],
+    *,
+    channel: int,
+) -> tuple[str, ...]:
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ()
+    split_seen = False
+    out: list[str] = []
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") == "Mixer":
+            name = step.get("name")
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_seen = True
+            continue
+        if not split_seen or step.get("type") != "Filter":
+            continue
+        step_channels = _filter_step_channels(step)
+        if step_channels is None or channel not in step_channels:
+            continue
+        raw_names = step.get("names")
+        if not isinstance(raw_names, list):
+            continue
+        out.extend(
+            name if isinstance(name, str) else "<invalid-filter-name>"
+            for name in raw_names
+        )
+    return tuple(out)
+
+
 def _pipeline_names_for_channels(
     payload: dict[str, Any],
     *,
@@ -764,12 +858,8 @@ def _pipeline_names_for_channels(
         step = raw_step if isinstance(raw_step, dict) else {}
         if step.get("type") != "Filter":
             continue
-        raw_channels = step.get("channels")
-        if not isinstance(raw_channels, list):
-            continue
-        try:
-            step_channels = {int(channel) for channel in raw_channels}
-        except (TypeError, ValueError):
+        step_channels = _filter_step_channels(step)
+        if step_channels is None:
             continue
         # A Camilla filter step may intentionally apply one role's baseline
         # chain to multiple outputs at once, for example both stereo woofers.
@@ -779,6 +869,508 @@ def _pipeline_names_for_channels(
             continue
         out.extend(str(name) for name in step.get("names", []) if name is not None)
     return tuple(out)
+
+
+def _unsafe_post_split_gains(payload: dict[str, Any]) -> tuple[str, ...]:
+    """Gain filters after the active split must remain non-positive.
+
+    Program-domain preference EQ can legitimately boost before the split because
+    every driver limiter remains downstream. After the split, an added positive
+    Gain could sit behind that limiter and defeat the active-output ceiling.
+    """
+
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ()
+    split_seen = False
+    unsafe: set[str] = set()
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") == "Mixer":
+            name = step.get("name")
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_seen = True
+            continue
+        if not split_seen or step.get("type") != "Filter":
+            continue
+        names = step.get("names")
+        if not isinstance(names, list):
+            continue
+        for name in names:
+            if not isinstance(name, str) or _filter_type(payload, name) != "Gain":
+                continue
+            gain = _strict_finite_number(_filter_params(payload, name).get("gain"))
+            if gain is None or gain > 0.0:
+                unsafe.add(name)
+    return tuple(sorted(unsafe))
+
+
+def _safe_commissioning_tail_filter(payload: dict[str, Any], name: str) -> bool:
+    runtime_lane = name.startswith("as_commission_")
+    output_mute = False
+    if name.startswith("as_out") and name.endswith("_commission_mute"):
+        index_s = name.removeprefix("as_out").removesuffix("_commission_mute")
+        try:
+            index = int(index_s)
+        except ValueError:
+            pass
+        else:
+            output_mute = name == _commission_mute_name(index)
+    if not runtime_lane and not output_mute:
+        return False
+    filter_type = _filter_type(payload, name)
+    params = _filter_params(payload, name)
+    if filter_type == "Delay":
+        delay_ms = _strict_finite_number(params.get("delay"))
+        return (
+            params.get("unit") == "ms"
+            and delay_ms is not None
+            and 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
+        )
+    if filter_type == "Gain":
+        gain = _strict_finite_number(params.get("gain"))
+        return (
+            gain is not None
+            and gain <= 0.0
+            and type(params.get("inverted")) is bool
+            and type(params.get("mute")) is bool
+        )
+    return False
+
+
+def _post_limiter_tail_evidence(
+    payload: dict[str, Any],
+    *,
+    channel: int,
+    limiter_name: str,
+) -> tuple[int, tuple[str, ...]]:
+    """Count the post-split limiter and reject transforms placed behind it."""
+
+    names = _post_split_filter_names(payload, channel=channel)
+    limiter_count = names.count(limiter_name)
+    unsafe: set[str] = set()
+    if limiter_count:
+        start = names.index(limiter_name) + 1
+        for name in names[start:]:
+            if name != limiter_name and not _safe_commissioning_tail_filter(
+                payload, name
+            ):
+                unsafe.add(name)
+    return limiter_count, tuple(sorted(unsafe))
+
+
+def _post_split_delay_evidence(
+    payload: dict[str, Any],
+    *,
+    channel: int,
+) -> tuple[float, tuple[str, ...]]:
+    """Return cumulative physical delay and malformed lanes for one output."""
+
+    total_ms = 0.0
+    invalid: set[str] = set()
+    for name in _post_split_filter_names(payload, channel=channel):
+        if _filter_type(payload, name) != "Delay":
+            continue
+        params = _filter_params(payload, name)
+        delay_ms = _strict_finite_number(params.get("delay"))
+        if (
+            params.get("unit") != "ms"
+            or delay_ms is None
+            or delay_ms < 0.0
+        ):
+            invalid.add(name)
+            continue
+        total_ms += delay_ms
+    return total_ms, tuple(sorted(invalid))
+
+
+_WAY_COUNT_BY_MAIN_MODE = {
+    "full_range_passive": 1,
+    "active_2_way": 2,
+    "active_3_way": 3,
+}
+
+
+def _crossover_directions(assignment: OutputAssignment) -> tuple[str, ...] | None:
+    way_count = _WAY_COUNT_BY_MAIN_MODE.get(assignment.speaker_mode)
+    if way_count is None:
+        return None
+    directions: list[str] = []
+    for lower_role, upper_role in ADJACENT_PAIRS_BY_WAY[way_count]:
+        if assignment.role == lower_role:
+            directions.append("lowpass")
+        if assignment.role == upper_role:
+            directions.append("highpass")
+    return tuple(directions) or None
+
+
+def _crossover_filter_safe(
+    payload: dict[str, Any],
+    *,
+    name: str,
+    role: str,
+    direction: str,
+) -> bool:
+    suffix = "lp" if direction == "lowpass" else "hp"
+    params = _filter_params(payload, name)
+    order = params.get("order")
+    frequency = _strict_finite_number(params.get("freq"))
+    minimum_frequency = (
+        TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
+        if role == "tweeter" and direction == "highpass"
+        else 0.0
+    )
+    return (
+        name.startswith(f"as_{role}_")
+        and name.endswith(f"_{suffix}")
+        and _filter_type(payload, name) == "BiquadCombo"
+        and params.get("type") == f"LinkwitzRiley{direction.title()}"
+        and frequency is not None
+        and frequency > 0.0
+        and frequency >= minimum_frequency
+        and not isinstance(order, bool)
+        and isinstance(order, int)
+        and order in SUPPORTED_LR_ORDERS
+    )
+
+
+def _bass_management_filter_safe(
+    payload: dict[str, Any],
+    *,
+    name: str,
+    direction: str,
+) -> bool:
+    params = _filter_params(payload, name)
+    return (
+        _filter_type(payload, name) == "BiquadCombo"
+        and params.get("type") == f"LinkwitzRiley{direction.title()}"
+        and SUB_CROSSOVER_HZ_LO
+        <= (_strict_finite_number(params.get("freq")) or 0.0)
+        <= SUB_CROSSOVER_HZ_HI
+        and params.get("order") == SUB_CROSSOVER_ORDER
+    )
+
+
+def _baseline_gain_limiter_safe(
+    payload: dict[str, Any],
+    *,
+    gain_name: str,
+    limiter_name: str,
+    exact_baseline_limiter: bool = False,
+) -> bool:
+    gain_params = _filter_params(payload, gain_name)
+    gain = _strict_finite_number(gain_params.get("gain"))
+    limiter_params = _filter_params(payload, limiter_name)
+    clip_limit = _strict_finite_number(limiter_params.get("clip_limit"))
+    return (
+        _filter_type(payload, gain_name) == "Gain"
+        and gain is not None
+        and gain <= 0.0
+        and type(gain_params.get("inverted")) is bool
+        and gain_params.get("mute") is False
+        and _filter_type(payload, limiter_name) == "Limiter"
+        and clip_limit is not None
+        and (
+            clip_limit == BASELINE_LIMITER_CLIP_LIMIT_DB
+            if exact_baseline_limiter
+            else clip_limit <= 0.0
+        )
+        and limiter_params.get("soft_clip") is True
+    )
+
+
+def _baseline_output_chain(
+    payload: dict[str, Any],
+    *,
+    assignment: OutputAssignment,
+    channel: int,
+    bass_management_highpass: bool,
+    bass_extension: bool = False,
+) -> tuple[tuple[str, str], ...] | None:
+    """Prove the exact emitter-owned chain before the canonical limiter."""
+
+    names = _post_split_filter_names(payload, channel=channel)
+    if assignment.role == "subwoofer":
+        expected = (
+            _sub_lowpass_name(),
+            *(("bass_ext_lt", "bass_ext_subsonic") if bass_extension else ()),
+            _sub_baseline_gain_name(),
+            _sub_baseline_limiter_name(),
+        )
+        return (
+            ()
+            if (
+                names[: len(expected)] == expected
+                and _bass_management_filter_safe(
+                    payload,
+                    name=_sub_lowpass_name(),
+                    direction="lowpass",
+                )
+                and _baseline_gain_limiter_safe(
+                    payload,
+                    gain_name=_sub_baseline_gain_name(),
+                    limiter_name=_sub_baseline_limiter_name(),
+                    exact_baseline_limiter=bass_extension,
+                )
+            )
+            else None
+        )
+
+    limiter_name = _baseline_limiter_name(assignment.role)
+    if names.count(limiter_name) != 1:
+        return None
+    limiter_index = names.index(limiter_name)
+    chain = names[: limiter_index + 1]
+    cursor = 0
+    if bass_management_highpass:
+        bass_name = _bass_management_hp_name(assignment.role)
+        if (
+            not chain
+            or chain[0] != bass_name
+            or not _bass_management_filter_safe(
+                payload,
+                name=bass_name,
+                direction="highpass",
+            )
+        ):
+            return None
+        cursor += 1
+    directions = _crossover_directions(assignment)
+    if directions is None:
+        return None
+    crossovers: list[tuple[str, str]] = []
+    for direction in directions:
+        if cursor >= len(chain):
+            return None
+        name = chain[cursor]
+        if not _crossover_filter_safe(
+            payload,
+            name=name,
+            role=assignment.role,
+            direction=direction,
+        ):
+            return None
+        crossovers.append((direction, name))
+        cursor += 1
+    if bass_extension:
+        if tuple(chain[cursor : cursor + 2]) != (
+            "bass_ext_lt",
+            "bass_ext_subsonic",
+        ):
+            return None
+        cursor += 2
+    expected_tail = (
+        _driver_delay_name(assignment.role),
+        _baseline_gain_name(assignment.role),
+        limiter_name,
+    )
+    delay_params = _filter_params(payload, expected_tail[0])
+    delay_ms = _strict_finite_number(delay_params.get("delay"))
+    if (
+        chain[cursor:] != expected_tail
+        or _filter_type(payload, expected_tail[0]) != "Delay"
+        or delay_params.get("unit") != "ms"
+        or delay_ms is None
+        or not 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
+        or not _baseline_gain_limiter_safe(
+            payload,
+            gain_name=expected_tail[1],
+            limiter_name=limiter_name,
+            exact_baseline_limiter=bass_extension,
+        )
+    ):
+        return None
+    return tuple(crossovers)
+
+
+def _commissioning_output_chain(
+    payload: dict[str, Any],
+    *,
+    assignment: OutputAssignment,
+    channel: int,
+    bass_management_highpass: bool,
+) -> tuple[tuple[str, str], ...] | None:
+    """Prove one exact commissioning chain through its per-output mute."""
+
+    names = _post_split_filter_names(payload, channel=channel)
+    mute_name = _commission_mute_name(channel)
+    mute_params = _filter_params(payload, mute_name)
+    mute_gain = _strict_finite_number(mute_params.get("gain"))
+    mute_safe = (
+        _filter_type(payload, mute_name) == "Gain"
+        and mute_gain is not None
+        and mute_gain <= 0.0
+        and type(mute_params.get("inverted")) is bool
+        and type(mute_params.get("mute")) is bool
+    )
+    if assignment.role == "subwoofer":
+        limiter_name = _sub_startup_limiter_name()
+        expected = (_sub_lowpass_name(), limiter_name, mute_name)
+        limiter = _filter_params(payload, limiter_name)
+        clip_limit = _strict_finite_number(limiter.get("clip_limit"))
+        return (
+            ()
+            if (
+                names == expected
+                and mute_safe
+                and _bass_management_filter_safe(
+                    payload,
+                    name=_sub_lowpass_name(),
+                    direction="lowpass",
+                )
+                and _filter_type(payload, limiter_name) == "Limiter"
+                and clip_limit is not None
+                and clip_limit <= 0.0
+                and limiter.get("soft_clip") is True
+            )
+            else None
+        )
+
+    cursor = 0
+    if bass_management_highpass:
+        bass_name = _bass_management_hp_name(assignment.role)
+        if (
+            not names
+            or names[0] != bass_name
+            or not _bass_management_filter_safe(
+                payload,
+                name=bass_name,
+                direction="highpass",
+            )
+        ):
+            return None
+        cursor += 1
+    protective_name = protective_tweeter_hp_name(assignment.role)
+    if cursor < len(names) and names[cursor] == protective_name:
+        protective = _filter_params(payload, protective_name)
+        protective_order = protective.get("order")
+        if not (
+            _filter_type(payload, protective_name) == "BiquadCombo"
+            and protective.get("type") == "LinkwitzRileyHighpass"
+            and (
+                _strict_finite_number(protective.get("freq")) or 0.0
+            ) >= TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
+            and not isinstance(protective_order, bool)
+            and isinstance(protective_order, int)
+            and protective_order in SUPPORTED_LR_ORDERS
+        ):
+            return None
+        cursor += 1
+    directions = _crossover_directions(assignment)
+    if directions is None:
+        return None
+    crossovers: list[tuple[str, str]] = []
+    for direction in directions:
+        if cursor >= len(names):
+            return None
+        name = names[cursor]
+        if not _crossover_filter_safe(
+            payload,
+            name=name,
+            role=assignment.role,
+            direction=direction,
+        ):
+            return None
+        crossovers.append((direction, name))
+        cursor += 1
+    delay_name = _driver_delay_name(assignment.role)
+    limiter_name = driver_limiter_name(assignment.role)
+    expected_tail = (delay_name, limiter_name, mute_name)
+    delay = _filter_params(payload, delay_name)
+    delay_ms = _strict_finite_number(delay.get("delay"))
+    limiter = _filter_params(payload, limiter_name)
+    clip_limit = _strict_finite_number(limiter.get("clip_limit"))
+    if (
+        names[cursor:] != expected_tail
+        or not mute_safe
+        or _filter_type(payload, delay_name) != "Delay"
+        or delay.get("unit") != "ms"
+        or delay_ms is None
+        or not 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
+        or _filter_type(payload, limiter_name) != "Limiter"
+        or clip_limit is None
+        or clip_limit > 0.0
+        or limiter.get("soft_clip") is not True
+    ):
+        return None
+    return tuple(crossovers)
+
+
+def _canonical_chain_grouped(
+    payload: dict[str, Any],
+    *,
+    expected_channels: set[int],
+    expected_names: tuple[str, ...],
+) -> bool:
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return False
+    split_seen = False
+    matches = 0
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") == "Mixer":
+            name = step.get("name")
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_seen = True
+            continue
+        if not split_seen or step.get("type") != "Filter":
+            continue
+        raw_names = step.get("names")
+        if not isinstance(raw_names, list):
+            continue
+        names = tuple(name for name in raw_names if isinstance(name, str))
+        if (
+            _exact_filter_step_channels(step, expected_channels)
+            and names == expected_names
+        ):
+            matches += 1
+    return matches == 1
+
+
+def _crossover_pair_matches(
+    payload: dict[str, Any], lower_name: str, upper_name: str
+) -> bool:
+    lower = _filter_params(payload, lower_name)
+    upper = _filter_params(payload, upper_name)
+    return (
+        _strict_finite_number(lower.get("freq"))
+        == _strict_finite_number(upper.get("freq"))
+        and lower.get("order") == upper.get("order")
+    )
+
+
+def _mismatched_crossover_pairs(
+    payload: dict[str, Any],
+    crossovers_by_role: dict[str, tuple[tuple[str, str], ...]],
+    way_counts: set[int],
+) -> tuple[tuple[str, str], ...]:
+    mismatched: list[tuple[str, str]] = []
+    for way_count in sorted(way_counts):
+        for lower_role, upper_role in ADJACENT_PAIRS_BY_WAY.get(way_count, ()):
+            lower_name = next(
+                (
+                    name
+                    for direction, name in crossovers_by_role.get(lower_role, ())
+                    if direction == "lowpass"
+                ),
+                None,
+            )
+            upper_name = next(
+                (
+                    name
+                    for direction, name in crossovers_by_role.get(upper_role, ())
+                    if direction == "highpass"
+                ),
+                None,
+            )
+            if (
+                lower_name is None
+                or upper_name is None
+                or not _crossover_pair_matches(payload, lower_name, upper_name)
+            ):
+                mismatched.append((lower_role, upper_role))
+    return tuple(mismatched)
 
 
 def _driver_domain_pair_trim_safe(
@@ -826,6 +1418,128 @@ def _commission_mute_states(view: GraphView) -> dict[int, bool]:
             continue
         out[index] = bool(fdef.params.get("mute"))
     return out
+
+
+def _baseline_commissioning_pair(
+    contract: OutputContract,
+    unmuted_outputs: set[int],
+) -> tuple[str, tuple[str, str]] | None:
+    """Infer one exact adjacent pair in one active speaker group."""
+
+    if len(unmuted_outputs) != 2:
+        return None
+    by_output = _assignment_by_output(contract)
+    assignments = [by_output.get(index) for index in sorted(unmuted_outputs)]
+    if any(item is None for item in assignments):
+        return None
+    exact = [item for item in assignments if item is not None]
+    group_ids = {item.speaker_group_id for item in exact}
+    modes = {item.speaker_mode for item in exact}
+    if len(group_ids) != 1 or len(modes) != 1:
+        return None
+    mode = next(iter(modes))
+    way_count = _WAY_COUNT_BY_MAIN_MODE.get(mode)
+    if way_count not in {2, 3}:
+        return None
+    roles = {item.role for item in exact}
+    pair = next(
+        (
+            candidate
+            for candidate in ADJACENT_PAIRS_BY_WAY[way_count]
+            if set(candidate) == roles
+        ),
+        None,
+    )
+    if pair is None:
+        return None
+    return next(iter(group_ids)), pair
+
+
+def _baseline_commissioning_isolation_issues(
+    payload: dict[str, Any],
+    contract: OutputContract,
+    *,
+    graph_indexes: set[int],
+    mutes: dict[int, bool],
+    unmuted_outputs: set[int],
+) -> tuple[list[dict[str, str]], tuple[str, tuple[str, str]] | None]:
+    """Independently prove the runtime-owned final per-output mute tail."""
+
+    issues: list[dict[str, str]] = []
+    if set(mutes) != graph_indexes:
+        issues.append(_issue(
+            "blocker",
+            "active_baseline_commissioning_mute_set_invalid",
+            (
+                "summed commissioning baseline must define exactly one mute "
+                "filter for every graph output"
+            ),
+        ))
+    filters = payload.get("filters")
+    pipeline = payload.get("pipeline")
+    expected_steps: list[dict[str, Any]] = []
+    for index in sorted(graph_indexes):
+        name = _commission_mute_name(index)
+        is_audible = index in unmuted_outputs
+        expected_filter = {
+            "type": "Gain",
+            "parameters": {
+                "gain": 0.0 if is_audible else STARTUP_MUTE_GAIN_DB,
+                "inverted": False,
+                "mute": not is_audible,
+            },
+        }
+        definition = filters.get(name) if isinstance(filters, dict) else None
+        if definition != expected_filter:
+            issues.append(_issue(
+                "blocker",
+                "active_baseline_commissioning_mute_invalid",
+                (
+                    "summed commissioning output mute is not the exact canonical "
+                    f"state for DAC output {index + 1}"
+                ),
+            ))
+        expected_steps.append(
+            {"type": "Filter", "channels": [index], "names": [name]}
+        )
+        if not _canonical_chain_grouped(
+            payload,
+            expected_channels={index},
+            expected_names=(name,),
+        ):
+            issues.append(_issue(
+                "blocker",
+                "active_baseline_commissioning_mute_step_invalid",
+                (
+                    "summed commissioning must wire one exact output mute step "
+                    f"for DAC output {index + 1}"
+                ),
+            ))
+    tail = (
+        pipeline[-len(expected_steps):]
+        if isinstance(pipeline, list) and expected_steps
+        else []
+    )
+    if tail != expected_steps:
+        issues.append(_issue(
+            "blocker",
+            "active_baseline_commissioning_mute_tail_invalid",
+            (
+                "summed commissioning output mutes must be the final ordered "
+                "pipeline tail"
+            ),
+        ))
+    pair = _baseline_commissioning_pair(contract, unmuted_outputs)
+    if pair is None:
+        issues.append(_issue(
+            "blocker",
+            "active_baseline_commissioning_target_invalid",
+            (
+                "summed commissioning may unmute exactly two adjacent roles "
+                "within one active speaker group"
+            ),
+        ))
+    return issues, pair
 
 
 def _assignment_by_output(contract: OutputContract) -> dict[int, OutputAssignment]:
@@ -886,6 +1600,7 @@ def _active_graph_evidence(
     text: str,
     contract: OutputContract,
     summary: dict[str, Any],
+    bass_profile_summary: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     # Parse the text ONCE. `payload` gives the two distinct parse-error codes
@@ -932,6 +1647,16 @@ def _active_graph_evidence(
             (
                 f"active graph exposes {split_channels or 'unknown'} output channels; "
                 f"saved roleful topology requires {required_count}"
+            ),
+        ))
+    unsafe_output_gains = _unsafe_post_split_gains(payload)
+    if unsafe_output_gains:
+        issues.append(_issue(
+            "blocker",
+            "active_output_gain_positive",
+            (
+                "active graph has a positive or malformed Gain after the driver "
+                "split: " + ", ".join(unsafe_output_gains)
             ),
         ))
 
@@ -990,14 +1715,64 @@ def _active_graph_evidence(
     source = str(summary.get("source") or "")
     is_baseline = source == ACTIVE_BASELINE_SOURCE
     is_driver_domain = source == ACTIVE_DRIVER_DOMAIN_SOURCE
-    # Both baseline-shaped graphs run every output live through a protective
-    # per-driver chain (no per-output commission mute); the per-driver gain /
-    # limiter / tweeter-HP checks below are identical. They differ only in the
+    is_baseline_commissioning = is_baseline and bool(mutes)
+    if is_driver_domain and mutes:
+        issues.append(_issue(
+            "blocker",
+            "active_driver_domain_commission_mutes_present",
+            "driver-domain baseline must not carry runtime commissioning mutes",
+        ))
+    # Both baseline-shaped graphs retain the same protective per-driver chain;
+    # the primary baseline may additionally carry the exact runtime-owned
+    # summed-isolation tail proved below. They otherwise differ only in the
     # pre-split prefix, branched inside the `is_baseline_like` block.
     is_baseline_like = is_baseline or is_driver_domain
+    bass_owner_channels: set[int] = set()
+    if is_baseline_like:
+        if bass_profile_summary is None:
+            issues.append(_issue(
+                "blocker",
+                "bass_extension_evidence_missing",
+                "baseline-shaped graph requires explicit bass-extension profile evidence",
+            ))
+        else:
+            bass_evidence = bass_extension_block_valid(view, bass_profile_summary)
+            if not bass_evidence.valid:
+                issues.append(_issue(
+                    "blocker",
+                    bass_evidence.reason or "bass_extension_block_invalid",
+                    "baseline-shaped graph does not match its evaluated bass-extension profile",
+                ))
+            if bass_evidence.expected:
+                bass_owner_channels = set(bass_evidence.reference_channels)
+    mixer_names = _pipeline_mixer_names(payload)
+    active_way_counts = {
+        way_count
+        for item in contract.assignments
+        if (way_count := _WAY_COUNT_BY_MAIN_MODE.get(item.speaker_mode)) is not None
+    }
+    expected_split = (
+        f"split_active_{next(iter(active_way_counts))}way"
+        if len(active_way_counts) == 1
+        else None
+    )
+    expected_mixers = (
+        (_channel_select_mixer_name, expected_split)
+        if is_driver_domain and expected_split is not None
+        else ((expected_split,) if expected_split is not None else ())
+    )
+    if tuple(mixer_names) != expected_mixers:
+        issues.append(_issue(
+            "blocker",
+            "active_graph_mixer_sequence_invalid",
+            (
+                "active graph must retain the exact emitter mixer sequence with "
+                "one active split and no post-split mixer"
+            ),
+        ))
     unmuted_outputs = (
         set(graph_indexes)
-        if is_baseline_like
+        if is_baseline_like and not is_baseline_commissioning
         else {
             index for index in graph_indexes
             if index in mutes and mutes[index] is False
@@ -1008,6 +1783,18 @@ def _active_graph_evidence(
         if index in mutes and mutes[index] is True
     }
     all_muted = bool(required_indexes) and muted_outputs == required_indexes
+    baseline_commissioning_pair: tuple[str, tuple[str, str]] | None = None
+    if is_baseline_commissioning:
+        isolation_issues, baseline_commissioning_pair = (
+            _baseline_commissioning_isolation_issues(
+                payload,
+                contract,
+                graph_indexes=graph_indexes,
+                mutes=mutes,
+                unmuted_outputs=unmuted_outputs,
+            )
+        )
+        issues.extend(isolation_issues)
 
     tweeter_outputs = {
         int(item.physical_output_index)
@@ -1105,6 +1892,83 @@ def _active_graph_evidence(
                     ),
                 ))
 
+    if not is_baseline_like:
+        commissioning_crossovers: dict[str, tuple[tuple[str, str], ...]] = {}
+        for index in sorted(required_indexes):
+            assignment = by_output.get(index)
+            if assignment is None:
+                continue
+            role = assignment.role
+            crossovers = _commissioning_output_chain(
+                payload,
+                assignment=assignment,
+                channel=index,
+                bass_management_highpass=(
+                    contract.subwoofer_present and index in mains_low_outputs
+                ),
+            )
+            if crossovers is None:
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_chain_unrecognized",
+                    (
+                        "active graph does not use the exact ordered commissioning "
+                        f"chain through its mute on DAC output {index + 1} ({role})"
+                    ),
+                ))
+                continue
+            prior = commissioning_crossovers.setdefault(role, crossovers)
+            if prior != crossovers:
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_chain_unrecognized",
+                    f"active graph uses inconsistent {role} commissioning chains",
+                ))
+            role_channels = {
+                output for output, item in by_output.items() if item.role == role
+            }
+            post_split_names = _post_split_filter_names(payload, channel=index)
+            role_chain_names = post_split_names[:-1]
+            if index == min(role_channels) and not _canonical_chain_grouped(
+                payload,
+                expected_channels=role_channels,
+                expected_names=role_chain_names,
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_chain_not_grouped",
+                    (
+                        f"active graph must wire one exact grouped {role} "
+                        "commissioning chain across its current outputs"
+                    ),
+                ))
+            if not _canonical_chain_grouped(
+                payload,
+                expected_channels={index},
+                expected_names=(_commission_mute_name(index),),
+            ):
+                issues.append(_issue(
+                    "blocker",
+                    "active_commissioning_mute_step_invalid",
+                    (
+                        "active graph must end each physical output with one exact "
+                        f"commission mute step on DAC output {index + 1}"
+                    ),
+                ))
+        for lower_role, upper_role in _mismatched_crossover_pairs(
+            payload,
+            commissioning_crossovers,
+            active_way_counts,
+        ):
+            issues.append(_issue(
+                "blocker",
+                "active_commissioning_crossover_pair_mismatch",
+                (
+                    f"active graph {lower_role}/{upper_role} commissioning "
+                    "crossovers must share one finite corner and LR order"
+                ),
+            ))
+
     if is_baseline_like:
         if is_baseline:
             # Program-domain prefix: the shared headroom gain rides channels
@@ -1136,7 +2000,6 @@ def _active_graph_evidence(
             # leaked in (its presence would mean an un-relocated Layer B/C on
             # the follower). channel-select is a Mixer step, read from the
             # parsed pipeline order rather than the Filter-only GraphView.
-            mixer_names = _pipeline_mixer_names(payload)
             if _channel_select_mixer_name not in mixer_names:
                 issues.append(_issue(
                     "blocker",
@@ -1247,10 +2110,18 @@ def _active_graph_evidence(
                     ),
                     "full_range",
                 )
-                if not mains_highpass_present(
-                    view,
-                    channels=mains_low_outputs,
-                    highpass_name=_bass_management_hp_name(low_role),
+                bass_highpass_name = _bass_management_hp_name(low_role)
+                if (
+                    not mains_highpass_present(
+                        view,
+                        channels=mains_low_outputs,
+                        highpass_name=bass_highpass_name,
+                    )
+                    or not _bass_management_filter_safe(
+                        payload,
+                        name=bass_highpass_name,
+                        direction="highpass",
+                    )
                 ):
                     issues.append(_issue(
                         "blocker",
@@ -1284,17 +2155,118 @@ def _active_graph_evidence(
                             "one crossover (the crossover Fc has been split)"
                         ),
                     ))
+        crossovers_by_role: dict[str, tuple[tuple[str, str], ...]] = {}
         for index in sorted(required_indexes):
             assignment = by_output.get(index)
             if assignment is None:
                 continue
             role = assignment.role
             # The sub output's protection is proven by sub_guard_present above
-            # (its gain/limiter names are sub-specific, not role-derived), so skip
-            # the role-derived per-driver chain check here.
+            # (its gain/limiter names are sub-specific, not role-derived). Its
+            # post-limiter tail still needs the same fail-closed check as a main.
+            limiter_name = (
+                _sub_baseline_limiter_name()
+                if role == "subwoofer"
+                else _baseline_limiter_name(role)
+            )
+            crossovers = _baseline_output_chain(
+                payload,
+                assignment=assignment,
+                channel=index,
+                bass_management_highpass=(
+                    contract.subwoofer_present and index in mains_low_outputs
+                ),
+                bass_extension=index in bass_owner_channels,
+            )
+            if crossovers is None:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_driver_chain_unrecognized",
+                    (
+                        "active graph does not use the exact ordered emitter "
+                        f"chain on DAC output {index + 1} ({role})"
+                    ),
+                ))
+            else:
+                prior = crossovers_by_role.setdefault(role, crossovers)
+                if prior != crossovers:
+                    issues.append(_issue(
+                        "blocker",
+                        "active_output_driver_chain_unrecognized",
+                        f"active graph uses inconsistent {role} crossover chains",
+                    ))
+                role_channels = {
+                    output
+                    for output, item in by_output.items()
+                    if item.role == role
+                }
+                post_split_names = _post_split_filter_names(payload, channel=index)
+                limiter_index = post_split_names.index(limiter_name)
+                expected_names = post_split_names[: limiter_index + 1]
+                if index == min(role_channels) and not _canonical_chain_grouped(
+                    payload,
+                    expected_channels=role_channels,
+                    expected_names=expected_names,
+                ):
+                    issues.append(_issue(
+                        "blocker",
+                        "active_output_driver_chain_not_grouped",
+                        (
+                            f"active graph must wire one exact grouped {role} "
+                            "driver chain across its current outputs"
+                        ),
+                    ))
+            limiter_count, unsafe_tail = _post_limiter_tail_evidence(
+                payload,
+                channel=index,
+                limiter_name=limiter_name,
+            )
+            if limiter_count != 1:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_limiter_order_invalid",
+                    (
+                        "active graph must wire exactly one canonical limiter "
+                        f"after the active split on DAC output {index + 1}; "
+                        f"found {limiter_count}"
+                    ),
+                ))
+            if unsafe_tail:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_post_limiter_filter_unsafe",
+                    (
+                        "active graph has an unapproved filter after the canonical "
+                        f"limiter on DAC output {index + 1}: "
+                        + ", ".join(unsafe_tail)
+                    ),
+                ))
+            total_delay_ms, invalid_delays = _post_split_delay_evidence(
+                payload,
+                channel=index,
+            )
+            if invalid_delays:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_delay_invalid",
+                    (
+                        "active graph has a malformed post-split delay on DAC "
+                        f"output {index + 1}: " + ", ".join(invalid_delays)
+                    ),
+                ))
+            maximum_delay_ms = MAX_DSP_DELAY_US / 1000.0
+            if total_delay_ms > maximum_delay_ms:
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_delay_ceiling_exceeded",
+                    (
+                        "active graph cumulative post-split delay exceeds the "
+                        f"{maximum_delay_ms:g} ms ceiling on DAC output "
+                        f"{index + 1}: {total_delay_ms:g} ms"
+                    ),
+                ))
             if role == "subwoofer":
                 continue
-            limiter_name = _baseline_limiter_name(role)
             gain_name = _baseline_gain_name(role)
             names = _pipeline_names_for_channels(payload, channels={index})
             if limiter_name not in names or gain_name not in names:
@@ -1311,6 +2283,7 @@ def _active_graph_evidence(
             if (
                 _filter_type(payload, limiter_name) != "Limiter"
                 or limiter_clip is None
+                or not math.isfinite(limiter_clip)
                 or limiter_clip > 0.0
                 or not _truthy_bool(limiter_params.get("soft_clip"))
             ):
@@ -1323,7 +2296,7 @@ def _active_graph_evidence(
                     ),
                 ))
             gain = _float_value(_filter_params(payload, gain_name).get("gain"))
-            if gain is None or gain > 0.0:
+            if gain is None or not math.isfinite(gain) or gain > 0.0:
                 issues.append(_issue(
                     "blocker",
                     "active_baseline_gain_positive",
@@ -1350,6 +2323,19 @@ def _active_graph_evidence(
                             f"wired high-pass filter on DAC output {index + 1}"
                         ),
                     ))
+        for lower_role, upper_role in _mismatched_crossover_pairs(
+            payload,
+            crossovers_by_role,
+            active_way_counts,
+        ):
+            issues.append(_issue(
+                "blocker",
+                "active_output_crossover_pair_mismatch",
+                (
+                    f"active graph {lower_role}/{upper_role} low-pass and "
+                    "high-pass must share one finite corner and LR order"
+                ),
+            ))
 
     return {
         "safe": not issues,
@@ -1358,7 +2344,18 @@ def _active_graph_evidence(
         "unmuted_outputs": sorted(unmuted_outputs),
         "muted_outputs": sorted(muted_outputs),
         "all_muted": all_muted,
-        "baseline_candidate": is_baseline,
+        "baseline_candidate": is_baseline and not is_baseline_commissioning,
+        "baseline_commissioning_candidate": is_baseline_commissioning,
+        "baseline_commissioning_group": (
+            baseline_commissioning_pair[0]
+            if baseline_commissioning_pair is not None
+            else None
+        ),
+        "baseline_commissioning_roles": (
+            list(baseline_commissioning_pair[1])
+            if baseline_commissioning_pair is not None
+            else []
+        ),
         "driver_domain_candidate": is_driver_domain,
         "unmuted_roles": sorted(unmuted_roles),
         "tweeter_outputs": sorted(tweeter_outputs),
@@ -1407,8 +2404,11 @@ def _active_graph_allowed(
     config_path: str | None,
     summary: dict[str, Any],
     staged_config: dict[str, Any] | None,
+    bass_profile_summary: Mapping[str, Any] | None,
 ) -> GraphSafety:
-    evidence = _active_graph_evidence(text, contract, summary)
+    evidence = _active_graph_evidence(
+        text, contract, summary, bass_profile_summary
+    )
     issues = list(evidence.get("issues") or [])
     classification = GRAPH_UNSAFE
     if evidence.get("safe"):
@@ -1430,30 +2430,35 @@ def _active_graph_allowed(
         if isinstance(staged_config, dict)
         else False
     )
-    if (
-        classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
-        and staged_path
-        and config_path
-        and _path_matches(config_path, staged_path)
-        and not staged_match
-    ):
-        issues.append(_issue(
-            "blocker",
-            "active_staged_metadata_mismatch",
-            "all-muted active startup path no longer matches saved topology metadata",
-        ))
-    if (
-        classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
-        and staged_path
-        and config_path
-        and _path_matches(config_path, staged_path)
-        and not staged_guard_ready
-    ):
-        issues.append(_issue(
-            "blocker",
-            "active_staged_guard_not_ready",
-            "staged active startup metadata does not prove software guard readiness",
-        ))
+    staged_dependent = staged_config is not None and classification in {
+        GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+        GRAPH_GUARDED_COMMISSIONING,
+    }
+    if staged_dependent:
+        if not staged_path or not config_path:
+            issues.append(_issue(
+                "blocker",
+                "active_staged_metadata_missing",
+                "guarded active graphs require a staged locator and graph path",
+            ))
+        elif not _path_matches(config_path, staged_path):
+            issues.append(_issue(
+                "blocker",
+                "active_staged_locator_mismatch",
+                "guarded active graph path does not match staged metadata",
+            ))
+        if not staged_match:
+            issues.append(_issue(
+                "blocker",
+                "active_staged_metadata_mismatch",
+                "guarded active graph no longer matches saved topology metadata",
+            ))
+        if not staged_guard_ready:
+            issues.append(_issue(
+                "blocker",
+                "active_staged_guard_not_ready",
+                "staged active metadata does not prove software guard readiness",
+            ))
 
     allowed = classification in {
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
@@ -1483,6 +2488,7 @@ def classify_camilla_graph(
     *,
     text: str | None = None,
     staged_config: dict[str, Any] | None = None,
+    bass_profile_summary: Mapping[str, Any] | None = None,
 ) -> GraphSafety:
     """Return whether a CamillaDSP graph is legal for the saved topology."""
 
@@ -1490,10 +2496,6 @@ def classify_camilla_graph(
     contract = classify_output_contract(topology)
     issues: list[dict[str, str]] = list(contract.issues)
     path_s = str(config_path) if config_path is not None else None
-    if text is None and config_path is not None:
-        text, read_issue = _read_text(config_path)
-        if read_issue:
-            issues.append(read_issue)
     if text is None:
         return GraphSafety(
             classification=GRAPH_UNKNOWN,
@@ -1547,6 +2549,7 @@ def classify_camilla_graph(
             config_path=path_s,
             summary=summary,
             staged_config=staged_config,
+            bass_profile_summary=bass_profile_summary,
         )
     else:
         graph = GraphSafety(
@@ -1578,6 +2581,517 @@ def classify_camilla_graph(
             details=graph.details,
         )
     return graph
+
+
+def _unsafe_boundary(code: str, message: str) -> GraphSafety:
+    return GraphSafety(
+        classification=GRAPH_UNSAFE,
+        allowed=False,
+        issues=(_issue("blocker", code, message),),
+    )
+
+
+def _json_mapping(raw: bytes | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _normalized_graph_fingerprint(text: str) -> str | None:
+    try:
+        parsed = yaml.safe_load(text)
+        if not isinstance(parsed, dict) or not parsed:
+            return None
+        return NormalizedActiveRawIdentity(parsed).active_raw_fingerprint
+    except (RecursionError, UnicodeError, ValueError, yaml.YAMLError):
+        return None
+
+
+def _evaluated_profile_summary(
+    *,
+    topology: OutputTopology,
+    applied_baseline_state: Mapping[str, Any] | None,
+    profile_bytes: bytes | None,
+) -> dict[str, Any]:
+    """Translate exact profile bytes into disk-free graph evidence."""
+
+    if profile_bytes is None:
+        return {"authority_valid": True, "runtime_block_required": False}
+    raw = _json_mapping(profile_bytes)
+    if raw is None:
+        return {"authority_valid": True, "runtime_block_required": False}
+    try:
+        from jasper.bass_extension.profile import (
+            BassExtensionProfile,
+            evaluate_loaded_bass_extension_profile,
+        )
+
+        profile = BassExtensionProfile.from_dict(raw)
+        evaluation = evaluate_loaded_bass_extension_profile(
+            profile,
+            topology=topology,
+            applied_baseline_state=applied_baseline_state,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return {"authority_valid": True, "runtime_block_required": False}
+    if evaluation.status != "accepted":
+        return {"authority_valid": True, "runtime_block_required": False}
+    adapter_id = str(profile.enclosure["adapter_id"])
+    if adapter_id != "sealed_v1":
+        return {"authority_valid": True, "runtime_block_required": False}
+    natural = profile.targets[-1]
+    protected = all(target.subsonic is not None for target in profile.targets)
+    return {
+        "authority_valid": protected,
+        "runtime_block_required": True,
+        "bass_owner_channels": list(profile.bass_owner["channels"]),
+        "natural": {
+            "fp_hz": natural.fp_hz,
+            "qp": natural.qp,
+            "boost_headroom_db": natural.boost_headroom_db,
+            "subsonic": (
+                dict(natural.subsonic) if natural.subsonic is not None else None
+            ),
+        },
+    }
+
+
+def _intent_profile_bytes(
+    intent: Mapping[str, Any],
+    role: str,
+) -> bytes | None | object:
+    profiles = intent.get("profiles")
+    entry = profiles.get(role) if isinstance(profiles, Mapping) else None
+    if not isinstance(entry, Mapping) or type(entry.get("present")) is not bool:
+        return _INVALID_BYTES
+    text = entry.get("bytes")
+    digest = entry.get("sha256")
+    if entry["present"] is False:
+        return None if text is None and digest is None else _INVALID_BYTES
+    if not isinstance(text, str):
+        return _INVALID_BYTES
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _INVALID_BYTES
+    if digest != hashlib.sha256(raw).hexdigest():
+        return _INVALID_BYTES
+    return raw
+
+
+_INVALID_BYTES = object()
+
+
+def _snapshot_profile_summary(
+    *,
+    topology: OutputTopology,
+    graph_text: str,
+    applied_baseline_state: Mapping[str, Any] | None,
+    profile_bytes: bytes | None,
+    intent_bytes: bytes | None,
+    selected_config_path: str | None,
+) -> dict[str, Any]:
+    if intent_bytes is None:
+        return _evaluated_profile_summary(
+            topology=topology,
+            applied_baseline_state=applied_baseline_state,
+            profile_bytes=profile_bytes,
+        )
+    intent = _json_mapping(intent_bytes)
+    graph_fingerprint = _normalized_graph_fingerprint(graph_text)
+    if (
+        intent is None
+        or intent.get("kind") != "jts_bass_extension_apply_intent"
+        or type(intent.get("schema_version")) is not int
+        or intent.get("schema_version") != 1
+        or graph_fingerprint is None
+    ):
+        return {"authority_valid": False, "runtime_block_required": False}
+    graphs = intent.get("graphs")
+    config = intent.get("config")
+    operation_id = intent.get("operation_id")
+    if (
+        not isinstance(graphs, Mapping)
+        or not isinstance(config, Mapping)
+        or not isinstance(operation_id, str)
+        or len(operation_id) != 32
+        or any(ch not in "0123456789abcdef" for ch in operation_id)
+    ):
+        return {"authority_valid": False, "runtime_block_required": False}
+    try:
+        from jasper.audio_measurement.evidence_identity import ExactDspStateIdentity
+
+        ExactDspStateIdentity.from_mapping(intent.get("predecessor_identity"))
+        config_path = config["path"]
+        mode = config["mode"]
+        predecessor_graph = config["predecessor_bytes"]
+        desired_graph = config["desired_bytes"]
+    except (KeyError, TypeError, ValueError):
+        return {"authority_valid": False, "runtime_block_required": False}
+    if (
+        not isinstance(config_path, str)
+        or not config_path
+        or config_path.strip() != config_path
+        or type(mode) is not int
+        or mode < 0
+        or mode > 0o7777
+        or not isinstance(predecessor_graph, str)
+        or not isinstance(desired_graph, str)
+        or intent.get("boot_selector_target") != config_path
+        or selected_config_path != config_path
+    ):
+        return {"authority_valid": False, "runtime_block_required": False}
+    try:
+        predecessor_sha256 = hashlib.sha256(
+            predecessor_graph.encode("utf-8")
+        ).hexdigest()
+        desired_sha256 = hashlib.sha256(
+            desired_graph.encode("utf-8")
+        ).hexdigest()
+    except UnicodeEncodeError:
+        return {"authority_valid": False, "runtime_block_required": False}
+    if (
+        config.get("predecessor_sha256") != predecessor_sha256
+        or config.get("desired_sha256") != desired_sha256
+        or graphs.get("predecessor")
+        != _normalized_graph_fingerprint(predecessor_graph)
+        or graphs.get("desired") != _normalized_graph_fingerprint(desired_graph)
+    ):
+        return {"authority_valid": False, "runtime_block_required": False}
+    predecessor = _intent_profile_bytes(intent, "predecessor")
+    desired = _intent_profile_bytes(intent, "desired")
+    if (
+        predecessor is _INVALID_BYTES
+        or desired is _INVALID_BYTES
+        or desired is None
+        or profile_bytes not in (predecessor, desired)
+    ):
+        return {"authority_valid": False, "runtime_block_required": False}
+    matching_profiles = []
+    if graphs.get("predecessor") == graph_fingerprint:
+        matching_profiles.append(predecessor)
+    if graphs.get("desired") == graph_fingerprint:
+        matching_profiles.append(desired)
+    # A no-block replacement can legitimately have identical predecessor and
+    # desired graph fingerprints.  The exact persisted profile bytes select
+    # the corresponding evaluation without widening authority to a third pair.
+    if profile_bytes not in matching_profiles:
+        return {"authority_valid": False, "runtime_block_required": False}
+    return _evaluated_profile_summary(
+        topology=topology,
+        applied_baseline_state=applied_baseline_state,
+        profile_bytes=profile_bytes,
+    )
+
+
+def _classify_bass_extension_snapshot(
+    topology: OutputTopology,
+    *,
+    graph_text: str,
+    config_path: str | None,
+    applied_baseline_bytes: bytes | None,
+    applied_baseline_state: Mapping[str, Any] | None,
+    profile_bytes: bytes | None,
+    intent_bytes: bytes | None,
+    staged_metadata_bytes: bytes | None,
+) -> GraphSafety:
+    applied = (
+        dict(applied_baseline_state)
+        if isinstance(applied_baseline_state, Mapping)
+        else _json_mapping(applied_baseline_bytes)
+    )
+    # Canonical persisted snapshots always carry an explicit staged-authority
+    # mapping. Missing, malformed, or non-object bytes become stable empty
+    # evidence and cannot authorize staged-dependent graphs. Direct low-level
+    # in-memory composition calls retain ``staged_config=None`` and their
+    # independent graph-only proof.
+    staged = _json_mapping(staged_metadata_bytes) or {}
+    bass_summary = _snapshot_profile_summary(
+        topology=topology,
+        graph_text=graph_text,
+        applied_baseline_state=applied,
+        profile_bytes=profile_bytes,
+        intent_bytes=intent_bytes,
+        selected_config_path=config_path,
+    )
+    graph = classify_camilla_graph(
+        config_path,
+        topology,
+        text=graph_text,
+        staged_config=staged,
+        bass_profile_summary=bass_summary,
+    )
+    return replace(
+        graph,
+        details={
+            **graph.details,
+            "bass_extension_profile_summary": dict(bass_summary),
+        },
+    )
+
+
+def _read_optional_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _candidate_locator(
+    kind: str,
+    *,
+    explicit_path: Path | None,
+    applied_bytes: bytes | None,
+    staged_bytes: bytes | None,
+) -> Path | None:
+    if kind == "explicit":
+        return explicit_path
+    authority = _json_mapping(
+        applied_bytes if kind == "applied_baseline" else staged_bytes
+    )
+    config = authority.get("config") if isinstance(authority, Mapping) else None
+    raw = config.get("path") if isinstance(config, Mapping) else None
+    return Path(raw) if isinstance(raw, str) and raw.strip() == raw else None
+
+
+def classify_bass_extension_graph(
+    topology: OutputTopology,
+    *,
+    evidence_source: Literal["persisted_boot", "persisted_candidate", "desired"],
+    statefile_path: Path | None = None,
+    candidate_kind: Literal["explicit", "applied_baseline", "staged_all_muted"] | None = None,
+    candidate_path: Path | None = None,
+    graph_text: str | None = None,
+    applied_baseline_path: Path | None = None,
+    applied_baseline_state: Mapping[str, Any] | None = None,
+    profile_path: Path | None = None,
+    intent_path: Path | None = None,
+    staged_metadata_path: Path | None = None,
+    desired_profile: "BassExtensionProfile | None | object" = (
+        _BASS_PROFILE_EVIDENCE_OMITTED
+    ),
+) -> GraphSafety:
+    """Canonical synchronous graph/evidence boundary."""
+
+    if evidence_source == "desired":
+        from jasper.bass_extension.profile import BassExtensionProfile
+
+        if (
+            any(path is not None for path in (
+                statefile_path, candidate_path, applied_baseline_path,
+                profile_path, intent_path, staged_metadata_path,
+            ))
+            or candidate_kind is not None
+            or not isinstance(graph_text, str)
+            or not isinstance(applied_baseline_state, Mapping)
+            or not (
+                desired_profile is None
+                or isinstance(desired_profile, BassExtensionProfile)
+            )
+        ):
+            return _unsafe_boundary("bass_extension_source_invalid", "desired evidence is incomplete")
+        desired_bytes = None
+        if desired_profile is not None:
+            desired_bytes = (
+                json.dumps(desired_profile.to_dict(), indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+        return _classify_bass_extension_snapshot(
+            topology,
+            graph_text=graph_text,
+            config_path=None,
+            applied_baseline_bytes=None,
+            applied_baseline_state=applied_baseline_state,
+            profile_bytes=desired_bytes,
+            intent_bytes=None,
+            staged_metadata_bytes=None,
+        )
+
+    if (
+        graph_text is not None
+        or applied_baseline_state is not None
+        or desired_profile is not _BASS_PROFILE_EVIDENCE_OMITTED
+        or applied_baseline_path is None
+        or profile_path is None
+        or intent_path is None
+        or staged_metadata_path is None
+    ):
+        return _unsafe_boundary("bass_extension_source_invalid", "persisted evidence paths are incomplete")
+    if evidence_source == "persisted_boot":
+        if statefile_path is None or candidate_kind is not None or candidate_path is not None:
+            return _unsafe_boundary("bass_extension_source_invalid", "persisted boot evidence is invalid")
+    elif evidence_source == "persisted_candidate":
+        if statefile_path is not None or candidate_kind is None:
+            return _unsafe_boundary("bass_extension_source_invalid", "persisted candidate evidence is invalid")
+        if (candidate_kind == "explicit") != (candidate_path is not None):
+            return _unsafe_boundary("bass_extension_candidate_invalid", "candidate path provenance is invalid")
+    else:
+        return _unsafe_boundary("bass_extension_source_invalid", "unknown evidence source")
+
+    for _attempt in range(2):
+        try:
+            applied1 = _read_optional_bytes(applied_baseline_path)
+            intent1 = _read_optional_bytes(intent_path)
+            profile1 = _read_optional_bytes(profile_path)
+            staged1 = _read_optional_bytes(staged_metadata_path)
+            if evidence_source == "persisted_boot":
+                assert statefile_path is not None
+                selector1 = statefile_path.read_bytes()
+                selected1_s = parse_camilla_statefile_config_path(selector1.decode("utf-8"))
+                if not selected1_s:
+                    continue
+                selected_path = Path(selected1_s)
+            else:
+                assert candidate_kind is not None
+                selected_path = _candidate_locator(
+                    candidate_kind,
+                    explicit_path=candidate_path,
+                    applied_bytes=applied1,
+                    staged_bytes=staged1,
+                )
+                if selected_path is None:
+                    continue
+            selector1 = None
+            selected1 = selected_path.read_bytes()
+            selected2 = selected_path.read_bytes()
+            if evidence_source == "persisted_boot":
+                selector2 = statefile_path.read_bytes()
+                selected2_s = parse_camilla_statefile_config_path(selector2.decode("utf-8"))
+                if selected2_s != str(selected_path):
+                    continue
+            else:
+                selector2 = None
+            staged2 = _read_optional_bytes(staged_metadata_path)
+            profile2 = _read_optional_bytes(profile_path)
+            intent2 = _read_optional_bytes(intent_path)
+            applied2 = _read_optional_bytes(applied_baseline_path)
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if not all((
+            applied1 == applied2,
+            intent1 == intent2,
+            profile1 == profile2,
+            staged1 == staged2,
+            selected1 == selected2,
+        )):
+            continue
+        if evidence_source == "persisted_candidate":
+            locator2 = _candidate_locator(
+                str(candidate_kind),
+                explicit_path=candidate_path,
+                applied_bytes=applied2,
+                staged_bytes=staged2,
+            )
+            if locator2 != selected_path:
+                continue
+        try:
+            selected_text = selected1.decode("utf-8")
+        except UnicodeError:
+            continue
+        return _classify_bass_extension_snapshot(
+            topology,
+            graph_text=selected_text,
+            config_path=str(selected_path),
+            applied_baseline_bytes=applied1,
+            applied_baseline_state=None,
+            profile_bytes=profile1,
+            intent_bytes=intent1,
+            staged_metadata_bytes=staged1,
+        )
+    return _unsafe_boundary("bass_extension_snapshot_unstable", "graph authority changed while it was read")
+
+
+async def _invoke_active_graph_reader(
+    reader: Callable[[], Awaitable[str | None]],
+) -> str | None:
+    """Invoke a live reader inside a task so arbitrary failures become evidence."""
+
+    return await reader()
+
+
+async def classify_active_bass_extension_graph(
+    topology: OutputTopology,
+    *,
+    statefile_path: Path,
+    read_active_graph_text: Callable[[], Awaitable[str | None]],
+    applied_baseline_path: Path,
+    profile_path: Path,
+    intent_path: Path,
+    staged_metadata_path: Path,
+) -> GraphSafety:
+    """Canonical live-active boundary with readback inside the sandwich."""
+
+    for _attempt in range(2):
+        try:
+            applied1 = _read_optional_bytes(applied_baseline_path)
+            intent1 = _read_optional_bytes(intent_path)
+            profile1 = _read_optional_bytes(profile_path)
+            staged1 = _read_optional_bytes(staged_metadata_path)
+            selector1 = statefile_path.read_bytes()
+            selected1_s = parse_camilla_statefile_config_path(selector1.decode("utf-8"))
+            if not selected1_s:
+                continue
+            selected_path = Path(selected1_s)
+            selected1 = selected_path.read_bytes()
+        except (OSError, UnicodeError, ValueError):
+            continue
+
+        (active_result,) = await asyncio.gather(
+            _invoke_active_graph_reader(read_active_graph_text),
+            return_exceptions=True,
+        )
+        if isinstance(active_result, asyncio.CancelledError):
+            raise active_result
+        if isinstance(active_result, BaseException):
+            continue
+        active_text = active_result
+
+        try:
+            selected2 = selected_path.read_bytes()
+            selector2 = statefile_path.read_bytes()
+            selected2_s = parse_camilla_statefile_config_path(selector2.decode("utf-8"))
+            staged2 = _read_optional_bytes(staged_metadata_path)
+            profile2 = _read_optional_bytes(profile_path)
+            intent2 = _read_optional_bytes(intent_path)
+            applied2 = _read_optional_bytes(applied_baseline_path)
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if (
+            not isinstance(active_text, str)
+            or selected2_s != str(selected_path)
+            or not all((
+                applied1 == applied2,
+                intent1 == intent2,
+                profile1 == profile2,
+                staged1 == staged2,
+                selected1 == selected2,
+            ))
+        ):
+            continue
+        try:
+            selected_text = selected1.decode("utf-8")
+        except UnicodeError:
+            continue
+        if (
+            _normalized_graph_fingerprint(active_text) is None
+            or _normalized_graph_fingerprint(active_text)
+            != _normalized_graph_fingerprint(selected_text)
+        ):
+            continue
+        return _classify_bass_extension_snapshot(
+            topology,
+            graph_text=selected_text,
+            config_path=str(selected_path),
+            applied_baseline_bytes=applied1,
+            applied_baseline_state=None,
+            profile_bytes=profile1,
+            intent_bytes=intent1,
+            staged_metadata_bytes=staged1,
+        )
+    return _unsafe_boundary("bass_extension_active_snapshot_unstable", "live graph authority could not be proved")
 
 
 def _config_path_from_statefile_with_reason(
@@ -1633,7 +3147,10 @@ def outputd_active_lane_decision(
     crossover_statefile_path: str | Path | None = None,
     topology: OutputTopology | None = None,
     topology_path: str | Path | None = None,
-    staged_config: dict[str, Any] | None = None,
+    applied_baseline_path: str | Path | None = None,
+    profile_path: str | Path | None = None,
+    intent_path: str | Path | None = None,
+    staged_metadata_path: str | Path | None = None,
 ) -> OutputdActiveLaneDecision:
     """Decide whether outputd may open its active content lane.
 
@@ -1653,24 +3170,41 @@ def outputd_active_lane_decision(
             ok=False, width=None, reason=f"active_graph_cap_channels_invalid:{cap}",
         )
 
-    primary_statefile = statefile_path or DEFAULT_CAMILLA_STATEFILE
+    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
+    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
 
-    current_config, problem = _config_path_from_statefile_with_reason(
+    primary_statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
+    _selected, primary_problem = _config_path_from_statefile_with_reason(
         primary_statefile,
         missing="camilla_statefile_missing",
         unreadable="camilla_statefile_unreadable",
         config_missing="camilla_statefile_config_path_missing",
         target_missing="active_config_missing",
     )
-    if problem:
-        return OutputdActiveLaneDecision(ok=False, width=None, reason=problem)
-
+    if primary_problem:
+        return OutputdActiveLaneDecision(
+            ok=False,
+            width=None,
+            reason=primary_problem,
+        )
     topology = topology or load_output_topology_strict(topology_path)
-    staged = staged_config if isinstance(staged_config, dict) else load_staged_startup_config()
-    primary_graph = classify_camilla_graph(
-        current_config,
+    authority = {
+        "applied_baseline_path": Path(
+            applied_baseline_path or baseline_profile_state_path()
+        ),
+        "profile_path": Path(profile_path or DEFAULT_PROFILE_PATH),
+        "intent_path": Path(intent_path or BASS_EXTENSION_APPLY_INTENT_PATH),
+        "staged_metadata_path": Path(
+            staged_metadata_path or default_staged_path()
+        ),
+    }
+    primary_graph = classify_bass_extension_graph(
         topology,
-        staged_config=staged,
+        evidence_source="persisted_boot",
+        statefile_path=primary_statefile,
+        **authority,
     )
     width, problem = _outputd_endpoint_width(primary_graph, cap)
     if width is not None:
@@ -1684,6 +3218,16 @@ def outputd_active_lane_decision(
         )
 
     if primary_graph.classification != GRAPH_PROGRAM_BAKE_PIPE:
+        if not primary_graph.allowed:
+            _unused, authority_problem = _config_path_from_statefile_with_reason(
+                primary_statefile,
+                missing="camilla_statefile_missing",
+                unreadable="camilla_statefile_unreadable",
+                config_missing="camilla_statefile_config_path_missing",
+                target_missing="active_config_missing",
+            )
+            if authority_problem:
+                problem = authority_problem
         return OutputdActiveLaneDecision(
             ok=False,
             width=None,
@@ -1691,14 +3235,28 @@ def outputd_active_lane_decision(
             primary_graph=primary_graph,
         )
 
-    crossover_config, crossover_problem = _config_path_from_statefile_with_reason(
-        crossover_statefile_path or DEFAULT_CAMILLA2_STATEFILE,
-        missing="camilla2_statefile_missing",
-        unreadable="camilla2_statefile_unreadable",
-        config_missing="camilla2_statefile_config_path_missing",
-        target_missing="active_crossover_config_missing",
+    crossover_statefile = Path(
+        crossover_statefile_path or DEFAULT_CAMILLA2_STATEFILE
     )
-    if crossover_problem:
+    crossover_graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_boot",
+        statefile_path=crossover_statefile,
+        **authority,
+    )
+    if not crossover_graph.allowed:
+        _unused, crossover_problem = _config_path_from_statefile_with_reason(
+            crossover_statefile,
+            missing="camilla2_statefile_missing",
+            unreadable="camilla2_statefile_unreadable",
+            config_missing="camilla2_statefile_config_path_missing",
+            target_missing="active_crossover_config_missing",
+        )
+        crossover_problem = crossover_problem or (
+            crossover_graph.issues[0]["code"]
+            if crossover_graph.issues
+            else crossover_graph.classification
+        )
         return OutputdActiveLaneDecision(
             ok=False,
             width=None,
@@ -1706,11 +3264,6 @@ def outputd_active_lane_decision(
             primary_graph=primary_graph,
         )
 
-    crossover_graph = classify_camilla_graph(
-        crossover_config,
-        topology,
-        staged_config=staged,
-    )
     width, problem = _outputd_endpoint_width(
         crossover_graph,
         cap,
@@ -1744,7 +3297,12 @@ def safe_graph_for_current_topology(
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
     ring_flat_config_path: str | Path = DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
     coupling: str | None = None,
-    staged_config: dict[str, Any] | None = None,
+    applied_baseline_path: str | Path | None = None,
+    profile_path: str | Path | None = None,
+    intent_path: str | Path | None = None,
+    staged_metadata_path: str | Path | None = None,
+    consider_applied_baseline: bool = True,
+    staged_config: Mapping[str, Any] | None = None,
 ) -> SafeGraphDecision:
     """Select the only safe persisted CamillaDSP graph for this topology.
 
@@ -1758,24 +3316,65 @@ def safe_graph_for_current_topology(
     the flat (stereo/passive) branch is ring-aware; roleful/active topologies are
     P8's ring-v2 concern and always take the driver-domain path here."""
 
+    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
+    from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+    from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
+
+    if staged_config not in (None, {}):
+        raise TypeError(
+            "in-memory staged_config authority is no longer accepted; "
+            "pass staged_metadata_path"
+        )
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
-    staged_config = (
-        staged_config if isinstance(staged_config, dict) else load_staged_startup_config()
-    )
+    statefile = Path(statefile_path or DEFAULT_CAMILLA_STATEFILE)
+    applied_path = Path(applied_baseline_path or baseline_profile_state_path())
+    bass_path = Path(profile_path or DEFAULT_PROFILE_PATH)
+    apply_intent_path = Path(intent_path or BASS_EXTENSION_APPLY_INTENT_PATH)
+    staged_path_authority = Path(staged_metadata_path or default_staged_path())
 
-    current_path = str(current_config_path) if current_config_path else _statefile_config_path(statefile_path)
-    current_graph = (
-        classify_camilla_graph(current_path, topology, staged_config=staged_config)
-        if current_path
-        else None
-    )
-    preferred_path = str(preferred_config_path) if preferred_config_path else None
+    authority = {
+        "applied_baseline_path": applied_path,
+        "profile_path": bass_path,
+        "intent_path": apply_intent_path,
+        "staged_metadata_path": staged_path_authority,
+    }
+    if current_config_path:
+        current_path = str(current_config_path)
+        current_graph = classify_bass_extension_graph(
+            topology,
+            evidence_source="persisted_candidate",
+            candidate_kind="explicit",
+            candidate_path=Path(current_config_path),
+            **authority,
+        )
+    else:
+        current_graph = classify_bass_extension_graph(
+            topology,
+            evidence_source="persisted_boot",
+            statefile_path=statefile,
+            **authority,
+        )
+        current_path = current_graph.config_path
     preferred_graph = (
-        classify_camilla_graph(preferred_path, topology, staged_config=staged_config)
-        if preferred_path and not _path_matches(preferred_path, current_path)
+        classify_bass_extension_graph(
+            topology,
+            evidence_source="persisted_candidate",
+            candidate_kind="applied_baseline",
+            **authority,
+        )
+        if consider_applied_baseline
         else None
     )
+    preferred_path = preferred_graph.config_path if preferred_graph else None
+    if preferred_config_path and preferred_path and not _path_matches(
+        preferred_config_path, preferred_path
+    ):
+        preferred_graph = _unsafe_boundary(
+            "applied_baseline_locator_mismatch",
+            "preferred graph does not match the applied-baseline authority",
+        )
     if (
         current_graph
         and current_graph.allowed
@@ -1859,8 +3458,12 @@ def safe_graph_for_current_topology(
         if resolve_coupling(coupling) == COUPLING_SHM_RING and (
             topology_supports_shm_ring(topology)
         ):
-            ring_fallback = classify_camilla_graph(
-                ring_flat_config_path, topology, staged_config=staged_config
+            ring_fallback = classify_bass_extension_graph(
+                topology,
+                evidence_source="persisted_candidate",
+                candidate_kind="explicit",
+                candidate_path=Path(ring_flat_config_path),
+                **authority,
             )
             if ring_fallback.allowed:
                 return SafeGraphDecision(
@@ -1876,7 +3479,13 @@ def safe_graph_for_current_topology(
                     preferred_graph=preferred_graph,
                     fallback_graph=ring_fallback,
                 )
-        fallback = classify_camilla_graph(flat_config_path, topology, staged_config=staged_config)
+        fallback = classify_bass_extension_graph(
+            topology,
+            evidence_source="persisted_candidate",
+            candidate_kind="explicit",
+            candidate_path=Path(flat_config_path),
+            **authority,
+        )
         if fallback.allowed:
             return SafeGraphDecision(
                 status="select_flat",
@@ -1898,12 +3507,13 @@ def safe_graph_for_current_topology(
             issues=fallback.issues,
         )
 
-    staged_path = _staged_path(staged_config)
-    staged_graph = (
-        classify_camilla_graph(staged_path, topology, staged_config=staged_config)
-        if staged_path
-        else None
+    staged_graph = classify_bass_extension_graph(
+        topology,
+        evidence_source="persisted_candidate",
+        candidate_kind="staged_all_muted",
+        **authority,
     )
+    staged_path = staged_graph.config_path
     if (
         staged_graph
         and staged_graph.allowed

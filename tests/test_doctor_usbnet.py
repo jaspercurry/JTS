@@ -19,10 +19,27 @@ from __future__ import annotations
 import io
 import subprocess
 import urllib.error
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from jasper.cli import doctor
 from jasper.cli.doctor import network as doctor_network
+
+
+@pytest.fixture(autouse=True)
+def _available_usb_role(monkeypatch):
+    monkeypatch.setattr(
+        doctor_network,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(
+            gadget_available=True,
+            management_transport_available=True,
+            reboot_required=False,
+            reason="available",
+        ),
+    )
 
 
 def _stub_run(monkeypatch, table):
@@ -67,9 +84,9 @@ def test_usbnet_interface_kill_switched_but_iface_present_is_warn(monkeypatch, t
 
 
 def test_usbnet_interface_no_udc_pre_reboot_is_ok(monkeypatch, tmp_path):
-    """usb0 absent AND no UDC (fresh install pre-reboot / non-gadget hardware):
-    the gadget cannot bind, so usb0's absence is expected — ok, not a failure.
-    check_usbsink_dtoverlay owns the reboot prompt."""
+    """usb0 absent and no UDC on a gadget-capable pre-reboot install: the
+    gadget cannot bind, so usb0's absence is expected, not a failure.
+    check_usb_data_role owns the reboot prompt."""
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     monkeypatch.setattr(
         doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net",
@@ -98,6 +115,47 @@ def test_usbnet_interface_absent_with_udc_is_fail(monkeypatch, tmp_path):
     r = doctor.check_usbnet_interface()
     assert r.status == "fail"
     assert "compose/bind" in r.detail.lower() or "did not compose" in r.detail.lower()
+
+
+def test_usbnet_interface_intentional_host_role_is_ok(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
+    monkeypatch.setattr(
+        doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net"
+    )
+    monkeypatch.setattr(
+        doctor_network,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(
+            gadget_available=False,
+            management_transport_available=False,
+            reboot_required=False,
+            reason="shared_otg_usb_output_requires_host",
+        ),
+    )
+
+    result = doctor.check_usbnet_interface()
+
+    assert result.status == "ok"
+    assert "intentionally absent" in result.detail.lower()
+
+
+def test_usbnet_interface_role_change_pending_is_warn(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
+    monkeypatch.setattr(
+        doctor_network, "USBNET_SYS_CLASS_NET", tmp_path / "sys-class-net"
+    )
+    monkeypatch.setattr(
+        doctor_network,
+        "current_usb_data_role",
+        lambda: SimpleNamespace(
+            gadget_available=False,
+            management_transport_available=False,
+            reboot_required=True,
+            reason="role_change_pending_reboot",
+        ),
+    )
+
+    assert doctor.check_usbnet_interface().status == "warn"
 
 
 def test_usbnet_interface_present_with_address_is_ok(monkeypatch, tmp_path):
@@ -339,8 +397,8 @@ def test_usbnet_dhcp_unit_inactive_with_iface_absent_is_ok(monkeypatch, tmp_path
 
 
 def test_usbnet_dhcp_unit_iface_present_but_unit_inactive_is_fail(monkeypatch, tmp_path):
-    """usb0 exists (a host is plugged in) but dnsmasq never started —
-    the plugged-in host won't get a DHCP lease."""
+    """usb0 exists because NCM is composed, but dnsmasq never started, so a
+    host that connects will not get a DHCP lease."""
     monkeypatch.setattr(
         doctor_network.shutil, "which", lambda name: "/bin/systemctl",
     )
@@ -358,9 +416,9 @@ def test_usbnet_dhcp_unit_iface_present_but_unit_inactive_is_fail(monkeypatch, t
 
 
 def test_usbnet_dhcp_unit_iface_absent_but_unit_active_is_warn(monkeypatch, tmp_path):
-    """The mirror case: unit still active after usb0 disappeared — a
-    device-activation teardown drift, not a functional problem since
-    nothing is plugged in to use it."""
+    """The mirror case: the unit is still active after usb0 disappeared. This
+    is device-activation teardown drift, not a live link failure because no USB
+    network interface remains to serve."""
     monkeypatch.setattr(
         doctor_network.shutil, "which", lambda name: "/bin/systemctl",
     )

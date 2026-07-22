@@ -568,7 +568,7 @@ async def test_default_is_session_active_fails_safe_on_non_zero_exit(
 
 async def test_default_restart_invokes_systemctl_with_both_units(monkeypatch):
     """Pin the exact systemctl argv lists so a typo in unit names or
-    a missing --no-block flag surfaces in CI rather than the first
+    a missing recovery/--no-block flag surfaces in CI rather than the first
     time the wedge happens in the wild."""
     invocations: list[tuple] = []
 
@@ -595,6 +595,72 @@ async def test_default_restart_invokes_systemctl_with_both_units(monkeypatch):
             "shairport-sync.service", "nqptp.service",
         ),
     ]
+
+
+async def test_default_restart_can_recover_a_fully_inactive_desired_on_receiver(
+    monkeypatch,
+):
+    """The dead-unit bypass needs restart, not active-only try-restart."""
+    units_active = True
+    invocations = []
+
+    class _FakeProc:
+        def __init__(self, *, stop_before_return=False):
+            self.stop_before_return = stop_before_return
+
+        async def wait(self):
+            nonlocal units_active
+            if self.stop_before_return:
+                units_active = False
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        nonlocal units_active
+        invocations.append(args)
+        if args[1] == "reset-failed":
+            return _FakeProc(stop_before_return=True)
+        if args[2] == "restart":
+            units_active = True
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    await ShairportSupervisor().restart_shairport()
+
+    assert invocations[-1][2] == "restart"
+    assert units_active is True
+
+
+def test_refused_follower_solo_fallback_keeps_airplay_supervision(monkeypatch):
+    from jasper.multiroom.config import GroupingConfig
+    from jasper.multiroom.effective_role import grouping_request_fingerprint
+
+    cfg = GroupingConfig(
+        enabled=True,
+        role="follower",
+        channel="right",
+        bond_id="living-room",
+        leader_addr="jts1.local",
+        buffer_ms=400,
+        codec="flac",
+        error=None,
+    )
+    monkeypatch.setattr("jasper.multiroom.config.load_config", lambda: cfg)
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(
+        "jasper.multiroom.effective_role.read_current_boot_id",
+        lambda: boot_id,
+    )
+    monkeypatch.setattr(
+        "jasper.multiroom.effective_role.read_effective_role_status",
+        lambda: {
+            "requested_fingerprint": grouping_request_fingerprint(cfg),
+            "local_sources_allowed": True,
+            "boot_id": boot_id,
+        },
+    )
+
+    assert ShairportSupervisor().shairport_parked_by_role() is False
 
 
 async def test_default_probe_sends_rfc_2326_options():

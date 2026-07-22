@@ -19,6 +19,12 @@ export class RelayError extends Error {
   }
 }
 
+// The Pi refuses a level feed after eight seconds without a fresh batch.  Keep
+// each small control request well inside that safety window so a stalled fetch
+// cannot freeze the page's serialized meter loop. Blob uploads are intentionally
+// excluded; their bounded size and transfer time are a different contract.
+export const RELAY_CONTROL_TIMEOUT_MS = 3000;
+
 export class RelayClient {
   constructor({ baseUrl, sessionId, uploadToken, fetchImpl } = {}) {
     if (!baseUrl) throw new Error("baseUrl required");
@@ -67,6 +73,36 @@ export class RelayClient {
     return { Authorization: `Bearer ${this.uploadToken}`, ...(extra || {}) };
   }
 
+  async _controlFetch(
+    suffix,
+    init,
+    consume,
+    timeoutMs = RELAY_CONTROL_TIMEOUT_MS,
+  ) {
+    const controller = new AbortController();
+    const timeout = Math.max(250, Number(timeoutMs) || RELAY_CONTROL_TIMEOUT_MS);
+    // A named reason (not a bare `.abort()`) so a timed-out control request
+    // never surfaces the browser's default "signal is aborted without
+    // reason." to the household — that raw DOMException text was leaking
+    // through captureFailureMessage() verbatim (run-19 defect). Fetch
+    // rejects with this exact reason value per the AbortController spec.
+    const timer = setTimeout(
+      () => controller.abort(
+        new Error("timed out waiting for the speaker's measurement relay"),
+      ),
+      timeout,
+    );
+    try {
+      const res = await this._fetch(this._url(suffix), {
+        ...(init || {}),
+        signal: controller.signal,
+      });
+      return await consume(res);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async _failure(res) {
     let body = null;
     try {
@@ -97,7 +133,7 @@ export class RelayClient {
   }
 
   // Drop a relay-control event (e.g. {armed:true}) the Pi polls for.
-  async postEvent(event) {
+  async postEvent(event, { timeoutMs = RELAY_CONTROL_TIMEOUT_MS } = {}) {
     if (!this.capturePageIdentity) {
       throw new Error("capture page compatibility was not established");
     }
@@ -113,31 +149,41 @@ export class RelayClient {
         this._eventSequence,
       );
     }
-    const res = await this._fetch(this._url("/event"), {
+    return this._controlFetch("/event", {
       method: "POST",
       headers: this._authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
-    });
-    if (!res.ok) throw await this._failure(res);
-    return res.json();
+    }, async (res) => {
+      if (!res.ok) throw await this._failure(res);
+      return res.json();
+    }, timeoutMs);
   }
 
   // Poll Pi-side progress for this capture. This uses the upload token, so the
   // Worker returns only phone-safe progress state, never the Pi pull-token
   // integrity/blob details.
-  async fetchPhoneStatus() {
-    const res = await this._fetch(this._url("/phone-status"), {
+  async fetchPhoneStatus({ timeoutMs = RELAY_CONTROL_TIMEOUT_MS } = {}) {
+    return this._controlFetch("/phone-status", {
       method: "GET",
       headers: this._authHeaders(),
-    });
-    if (!res.ok) throw await this._failure(res);
-    return res.json();
+    }, async (res) => {
+      if (!res.ok) throw await this._failure(res);
+      return res.json();
+    }, timeoutMs);
   }
 
   // Upload IV‖ciphertext with the plaintext integrity the Pi verifies.
-  async putBlob(blob, plaintextLen, sha256Hex) {
+  // `captureIndex` (session-spanning capture plans, protocol v3, SPEC W2.3)
+  // is the 0-based relay blob slot for one admitted attempt
+  // (`capture_index = attempt - 1`); omitted/undefined keeps today's
+  // byte-identical single-capture request (no `?index=`, aliasing the
+  // Worker's legacy un-indexed key — see relay/src/worker.js's `blobKey`).
+  async putBlob(blob, plaintextLen, sha256Hex, captureIndex) {
     const bytes = blob instanceof Uint8Array ? blob : new Uint8Array(blob);
-    const res = await this._fetch(this._url("/blob"), {
+    const path = Number.isInteger(captureIndex) && captureIndex >= 0
+      ? `/blob?index=${captureIndex}`
+      : "/blob";
+    const res = await this._fetch(this._url(path), {
       method: "PUT",
       headers: this._authHeaders({
         "Content-Type": "application/octet-stream",

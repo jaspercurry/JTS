@@ -677,6 +677,33 @@ async def test_observe_spotify_same_level_clears_degraded_guard(tmp_path):
     assert record.main_volume_db == pytest.approx(0.0)
 
 
+async def test_equal_spotify_observation_publishes_only_when_guard_changes(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(100)
+    persistence.save_now(-25.0)
+    cam = _FakeCamilla(db=-25.0)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+        volume_context_publisher=publish,
+    )
+    coord._level = 100
+
+    await coord.observe_source_volume(Source.SPOTIFY, 100)
+    assert len(published) == 1
+    assert published[0].downstream_db == pytest.approx(0.0)
+
+    published.clear()
+    await coord.observe_source_volume(Source.SPOTIFY, 100)
+    assert published == []
+
+
 async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(
     tmp_path, monkeypatch,
 ):
@@ -1275,6 +1302,366 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
     assert cam.set_calls and cam.set_calls[-1] == pytest.approx(percent_to_db(50))
 
 
+async def test_fanin_voice_session_keeps_live_camilla_volume_control(tmp_path):
+    """Fan-in owns program ducking, not Camilla, so an in-session dial edit
+    must land immediately while source transitions remain session-gated."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-25.0)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    coord.note_voice_session(True, camilla_volume_locked=False)
+
+    await coord.set_listening_level(46)
+
+    assert cam.set_calls[-1] == pytest.approx(percent_to_db(46))
+    before_transition = list(cam.set_calls)
+    await coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)
+    assert cam.set_calls == before_transition
+
+
+async def test_dispatch_publishes_absolute_canonical_and_downstream_facts(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+        spotify_router=None,
+        volume_context_publisher=publish,
+        handoff_settle_sec=0.0,
+    )
+
+    await coord.set_listening_level(46)
+
+    assert len(published) == 2
+    assert all(
+        context.canonical_db == pytest.approx(percent_to_db(46))
+        for context in published
+    )
+    assert all(
+        context.downstream_db == pytest.approx(0.0)
+        for context in published
+    )
+    assert all(context.muted is False for context in published)
+
+
+async def test_nonzero_intent_publishes_before_slow_spotify_dispatch(tmp_path):
+    published = []
+    cloud_started = asyncio.Event()
+    release_cloud = asyncio.Event()
+
+    async def publish(context):
+        published.append(context)
+
+    async def blocked_spotify(_level: int) -> bool:
+        cloud_started.set()
+        await release_cloud.wait()
+        return True
+
+    coord = VolumeCoordinator(
+        camilla=_FakeCamilla(db=0.0),
+        persistence=VolumePersistence(str(tmp_path / "speaker_volume.json")),
+        backend=_FakeBackend(active={"spotactive": True}),
+        volume_context_publisher=publish,
+    )
+    coord._set_spotify = blocked_spotify
+
+    operation = asyncio.create_task(coord.set_listening_level(67))
+    await cloud_started.wait()
+
+    assert len(published) == 1
+    assert published[0].canonical_db == pytest.approx(percent_to_db(67))
+    assert published[0].muted is False
+
+    release_cloud.set()
+    assert await operation == 67
+    assert len(published) == 2
+    assert published[-1].canonical_db == pytest.approx(percent_to_db(67))
+    assert published[-1].muted is False
+
+
+async def test_mute_intent_is_local_and_published_before_slow_spotify(
+    tmp_path,
+):
+    published = []
+    cloud_started = asyncio.Event()
+    release_cloud = asyncio.Event()
+
+    async def publish(context):
+        published.append(context)
+
+    async def blocked_spotify(_level: int) -> bool:
+        cloud_started.set()
+        await release_cloud.wait()
+        return True
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    cam = _FakeCamilla(db=0.0)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+        volume_context_publisher=publish,
+    )
+    coord._set_spotify = blocked_spotify
+
+    operation = asyncio.create_task(coord.mute())
+    await cloud_started.wait()
+
+    assert cam.muted is True
+    assert len(published) == 1
+    assert published[0].muted is True
+
+    release_cloud.set()
+    assert await operation == 59
+    assert len(published) == 2
+    assert published[-1].muted is True
+
+
+async def test_mute_context_publishes_before_blocked_camilla_backstop(
+    tmp_path,
+):
+    published = []
+    camilla_started = asyncio.Event()
+    release_camilla = asyncio.Event()
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    cam = _FakeCamilla(db=percent_to_db(59))
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        volume_context_publisher=publish,
+    )
+    real_set_mute = coord._set_camilla_main_mute
+    first_call = True
+
+    async def blocked_set_mute(target: bool, *, context: str) -> bool:
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            camilla_started.set()
+            await release_camilla.wait()
+        return await real_set_mute(target, context=context)
+
+    coord._set_camilla_main_mute = blocked_set_mute
+
+    operation = asyncio.create_task(coord.mute())
+    await camilla_started.wait()
+
+    assert len(published) == 1
+    assert published[0].muted is True
+
+    release_camilla.set()
+    assert await operation == 59
+    assert published[-1].muted is True
+
+
+async def test_overlapping_push_writes_keep_source_persistence_and_context_aligned(
+    tmp_path,
+):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(50)
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"spotactive": True})
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    applied = []
+    published = []
+
+    async def push(level: int) -> bool:
+        if level == 20:
+            first_started.set()
+            await release_first.wait()
+        applied.append(level)
+        return True
+
+    async def publish(context):
+        published.append(context)
+
+    first = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=backend,
+        volume_context_publisher=publish,
+    )
+    second = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=backend,
+        volume_context_publisher=publish,
+    )
+    first._set_spotify = push
+    second._set_spotify = push
+
+    older = asyncio.create_task(first.set_listening_level(20))
+    await first_started.wait()
+    assert await second.set_listening_level(80) == 80
+    release_first.set()
+    assert await older == 20
+
+    record = persistence.load()
+    assert record is not None
+    newest_context = max(published, key=lambda context: context.stamp_boot_ns)
+    assert applied[-1] == 20
+    assert record.listening_level == 20
+    assert newest_context.canonical_db == pytest.approx(percent_to_db(20))
+
+
+async def test_persisted_mute_intent_wins_stale_unmuted_camilla(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    persistence.save_pre_mute_level(59)
+    cam = _FakeCamilla(db=percent_to_db(59))
+    cam.muted = False
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+    )
+
+    context = await coord.effective_volume_context()
+
+    assert context.canonical_db == pytest.approx(percent_to_db(59))
+    assert context.muted is True
+
+
+async def test_persisted_mute_intent_survives_unreadable_camilla(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    persistence.save_pre_mute_level(59)
+    coord = VolumeCoordinator(
+        camilla=_FakeCamilla(db=-20.0),
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+    )
+
+    async def unreadable():
+        return None, None
+
+    coord._read_camilla_volume_and_mute = unreadable
+    assert (await coord.effective_volume_context()).muted is True
+
+
+async def test_unmute_and_push_mode_nonzero_publish_unmuted_context(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(59)
+    persistence.save_pre_mute_level(59)
+    cam = _FakeCamilla(db=percent_to_db(59))
+    cam.muted = True
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+        volume_context_publisher=publish,
+    )
+    await coord.unmute()
+    assert published[-1].muted is False
+
+    push = VolumeCoordinator(
+        camilla=_FakeCamilla(db=0.0),
+        persistence=persistence,
+        backend=_FakeBackend(active={"spotactive": True}),
+    )
+    assert (await push.effective_volume_context()).muted is False
+
+
+async def test_publisher_failure_never_breaks_volume_operation(tmp_path):
+    async def fail(_context):
+        raise OSError("fanin unavailable")
+
+    coord, _cam, _persistence = _coord(tmp_path)
+    coord._volume_context_publisher = fail
+    assert await coord.set_listening_level(47) == 47
+
+
+async def test_context_snapshot_retries_after_concurrent_volume_change(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(30)
+    cam = _FakeCamilla(db=percent_to_db(30))
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+    )
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    real_read = coord._read_camilla_volume_and_mute
+    first = True
+
+    async def blocked_read():
+        nonlocal first
+        if first:
+            first = False
+            read_started.set()
+            await release_read.wait()
+        return await real_read()
+
+    coord._read_camilla_volume_and_mute = blocked_read
+    snapshot = asyncio.create_task(coord.effective_volume_context())
+    await read_started.wait()
+    await coord.set_listening_level(80)
+    release_read.set()
+    context = await snapshot
+
+    assert context.canonical_db == pytest.approx(percent_to_db(80))
+    assert context.downstream_db == pytest.approx(percent_to_db(80))
+
+
+async def test_context_snapshot_stamp_is_bound_before_slow_probe(
+    tmp_path, monkeypatch
+):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(30)
+    coord = VolumeCoordinator(
+        camilla=_FakeCamilla(db=percent_to_db(30)),
+        persistence=persistence,
+        backend=_FakeBackend(active={}),
+    )
+
+    stamp_bound = False
+
+    def bind_stamp():
+        nonlocal stamp_bound
+        stamp_bound = True
+        return 123
+
+    real_read = coord._read_camilla_volume_and_mute
+
+    async def verify_stamp_precedes_probe():
+        assert stamp_bound is True
+        return await real_read()
+
+    monkeypatch.setattr(
+        "jasper.volume_coordinator.volume_context_stamp_boot_ns",
+        bind_stamp,
+    )
+    coord._read_camilla_volume_and_mute = verify_stamp_precedes_probe
+
+    context = await coord.effective_volume_context()
+
+    assert context.stamp_boot_ns == 123
+
+
 # ---- cross-daemon duck-active probe -------------------------------------
 #
 # jasper-control builds a fresh VolumeCoordinator per HTTP request, so the
@@ -1289,7 +1676,7 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
 # Replaces the prior dB-comparison heuristic that conflated "user spinning
 # fast" with "duck active" (a fast 3-detent dial spin = +6 dB request,
 # above the old 5 dB threshold, used to defer spuriously and poison
-# listening_level — see docs/HANDOFF-volume.md "Cross-daemon defer signal").
+# listening_level — see docs/HANDOFF-volume.md "Cross-daemon Camilla ownership signal").
 
 
 async def test_set_camilla_deferred_when_probe_returns_true(tmp_path):
@@ -2101,6 +2488,30 @@ async def test_observe_usbsink_same_level_repairs_camilla_drift(tmp_path):
     assert persistence.load().main_volume_db == pytest.approx(percent_to_db(0))
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
     assert cam.mute_calls[-1] is True
+
+
+async def test_equal_usbsink_observation_publishes_repaired_downstream(tmp_path):
+    published = []
+
+    async def publish(context):
+        published.append(context)
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    persistence.save_listening_level(50)
+    persistence.save_now(-20.0)
+    cam = _FakeCamilla(db=-20.0)
+    coord = VolumeCoordinator(
+        camilla=cam,
+        persistence=persistence,
+        backend=_FakeBackend(active={"usbsinkactive": True}),
+        volume_context_publisher=publish,
+    )
+    coord._level = 50
+
+    await coord.observe_source_volume(Source.USBSINK, 50)
+
+    assert len(published) == 1
+    assert published[0].downstream_db == pytest.approx(percent_to_db(50))
 
 
 async def test_observe_usbsink_same_level_repairs_mute_drift(tmp_path):

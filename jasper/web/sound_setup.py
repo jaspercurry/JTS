@@ -180,15 +180,15 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
-    "/apply",
-    "/audition",
-    "/live-draft",
-    "/settings",
-    "/volume-floor/audition",
-    "/volume-floor/stop",
-    "/profiles/save",
-    "/profiles/rename",
-    "/profiles/delete",
+        "/apply",
+        "/audition",
+        "/live-draft",
+        "/settings",
+        "/volume-floor/audition",
+        "/volume-floor/stop",
+        "/profiles/save",
+        "/profiles/rename",
+        "/profiles/delete",
 })
 
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
@@ -1443,7 +1443,7 @@ async def _live_draft_profile(
             current_epoch=dsp_write_epoch(),
         )
 
-    async with dsp_writer_lock(config_path):
+    async with dsp_writer_lock(config_path, source="sound_live_draft"):
         current_epoch = dsp_write_epoch()
         if expected_dsp_write_epoch != current_epoch:
             log_event(
@@ -1783,6 +1783,7 @@ def _active_speaker_calibration_level_payload(
         load_calibration_level_state,
         update_calibration_level_state,
     )
+    from jasper.active_speaker.safe_playback import load_safe_playback_state
 
     if raw is None:
         return load_calibration_level_state()
@@ -1790,11 +1791,16 @@ def _active_speaker_calibration_level_payload(
         raise ValueError("calibration level request must be an object")
     action = str(raw.get("action") or "set")
     level = raw.get("level_dbfs", raw.get("requested_level_dbfs"))
+    # Bind the persisted level to the current commissioning run (the active
+    # safe_playback session) so a previous session's test level can never
+    # seed this one — see docs/HANDOFF-active-speaker-dsp.md "Stage 5".
+    run_id = load_safe_playback_state().get("session_id")
     payload = update_calibration_level_state(
         action=action,
         requested_level_dbfs=level,
         observed_mic_dbfs=raw.get("observed_mic_dbfs"),
         mic_clipping=bool(raw.get("mic_clipping")),
+        run_id=run_id,
     )
     log_event(
         logger,
@@ -1820,7 +1826,9 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
     playback = stop_tone_playback(reason="operator_stop")
     state = dict(stop_safe_playback_session())
     try:
-        state["calibration_level"] = update_calibration_level_state(action="stop")
+        state["calibration_level"] = update_calibration_level_state(
+            action="stop", run_id=state.get("session_id")
+        )
     except Exception as e:  # noqa: BLE001
         log_event(
             logger,
@@ -1909,13 +1917,66 @@ def _active_speaker_design_draft_payload() -> dict[str, Any]:
 
     from jasper.active_speaker.design_draft import load_design_draft
 
-    payload = load_design_draft()
+    payload = load_design_draft(topology=load_output_topology())
     log_event(
         logger,
         "sound.active_speaker_design_draft",
         status=str(payload.get("status")),
         driver_count=str((payload.get("summary") or {}).get("driver_count")),
-        candidate_count=str((payload.get("summary") or {}).get("crossover_candidate_count")),
+        candidate_count=str(
+            (payload.get("summary") or {}).get("crossover_candidate_count")
+        ),
+    )
+    return payload
+
+
+def _active_speaker_driver_research_request_payload(
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the silent, target-bound research request and copyable prompt."""
+
+    from jasper.active_speaker.driver_safety import (
+        build_driver_research_prompt,
+        build_driver_research_request,
+    )
+    from jasper.active_speaker.design_draft import (
+        normalise_manual_settings,
+        normalise_operator_inputs,
+    )
+
+    if not isinstance(raw, dict):
+        raise ValueError("driver research request must be an object")
+    allowed = {"operator_inputs", "manual_settings"}
+    unknown = sorted(str(key) for key in raw if key not in allowed)
+    if unknown:
+        raise ValueError(
+            "driver research request has unknown fields: " + ", ".join(unknown)
+        )
+    topology = load_output_topology()
+    operator_inputs = normalise_operator_inputs(raw.get("operator_inputs"))
+    manual_settings = normalise_manual_settings(raw.get("manual_settings"))
+    request = build_driver_research_request(
+        topology,
+        operator_inputs,
+        manual_settings,
+    )
+    payload = {
+        "request": request,
+        "prompt": build_driver_research_prompt(request),
+        "safety": {
+            "no_audio": True,
+            "loads_camilla": False,
+            "applies_filters": False,
+            "authorizes_playback": False,
+            "research_is_advisory": True,
+        },
+    }
+    log_event(
+        logger,
+        "sound.active_speaker_driver_research_request",
+        topology_id=topology.topology_id,
+        target_count=len(request.get("targets") or []),
+        request_fingerprint=str(request.get("request_fingerprint")),
     )
     return payload
 
@@ -1927,14 +1988,43 @@ def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, 
 
     if not isinstance(raw, dict):
         raise ValueError("design draft request must be an object")
+    allowed = {
+        "driver_research_request",
+        "driver_research",
+        "manual_settings",
+        "operator_inputs",
+        "confirm_safety_profile",
+        "expected_revision",
+    }
+    unknown = sorted(str(key) for key in raw if key not in allowed)
+    if unknown:
+        raise ValueError(
+            "design draft request has unknown fields: " + ", ".join(unknown)
+        )
+    if "expected_revision" not in raw:
+        raise ValueError("design draft request requires expected_revision")
+    expected_revision = raw.get("expected_revision")
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        raise ValueError("expected_revision must be a non-negative integer")
+    if "confirm_safety_profile" in raw and not isinstance(
+        raw.get("confirm_safety_profile"), bool
+    ):
+        raise ValueError("confirm_safety_profile must be boolean")
     topology, _guards_changed = _active_speaker_request_missing_software_guards(
         load_output_topology()
     )
     payload = save_design_draft(
         topology,
+        driver_research_request=raw.get("driver_research_request"),
         driver_research=raw.get("driver_research"),
         manual_settings=raw.get("manual_settings"),
         operator_inputs=raw.get("operator_inputs"),
+        confirm_safety_profile=raw.get("confirm_safety_profile") is True,
+        expected_revision=expected_revision,
     )
     log_event(
         logger,
@@ -1942,11 +2032,18 @@ def _active_speaker_design_draft_save_payload(raw: dict[str, Any]) -> dict[str, 
         status=str(payload.get("status")),
         topology_id=topology.topology_id,
         driver_count=str((payload.get("summary") or {}).get("driver_count")),
-        candidate_count=str((payload.get("summary") or {}).get("crossover_candidate_count")),
-        manual_driver_count=str((payload.get("summary") or {}).get("manual_driver_count")),
-        manual_candidate_count=str((payload.get("summary") or {}).get(
-            "manual_crossover_candidate_count"
-        )),
+        candidate_count=str(
+            (payload.get("summary") or {}).get("crossover_candidate_count")
+        ),
+        manual_driver_count=str(
+            (payload.get("summary") or {}).get("manual_driver_count")
+        ),
+        manual_candidate_count=str(
+            (payload.get("summary") or {}).get("manual_crossover_candidate_count")
+        ),
+        safety_profile_status=str(
+            (payload.get("driver_safety_profile") or {}).get("status")
+        ),
         issues=len(payload.get("issues") or []),
     )
     return payload
@@ -1963,9 +2060,9 @@ def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
         logger,
         "sound.active_speaker_crossover_preview",
         status=str(payload.get("status")),
-        active_crossover_count=str((payload.get("summary") or {}).get(
-            "active_crossover_count"
-        )),
+        active_crossover_count=str(
+            (payload.get("summary") or {}).get("active_crossover_count")
+        ),
         blocker_count=str((payload.get("summary") or {}).get("blocker_count")),
     )
     return payload
@@ -1975,28 +2072,33 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
     """Persist a no-audio crossover preview from the saved design draft."""
 
     from jasper.active_speaker.crossover_preview import save_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
+    from jasper.active_speaker.design_draft import build_design_draft, load_design_draft
 
     draft = load_design_draft()
     if draft.get("status") not in {"not_saved", "unreadable"}:
+        saved_revision = draft.get("revision", 0)
         topology, _guards_changed = _active_speaker_request_missing_software_guards(
             load_output_topology()
         )
-        draft = save_design_draft(
+        draft = build_design_draft(
             topology,
+            driver_research_request=draft.get("driver_research_request"),
             driver_research=draft.get("driver_research"),
             manual_settings=draft.get("manual_settings"),
             operator_inputs=draft.get("operator_inputs"),
+            prior_safety_profile=draft.get("driver_safety_profile"),
+            created_at=draft.get("created_at"),
         )
+        draft["revision"] = saved_revision
     payload = save_crossover_preview(draft)
     log_event(
         logger,
         "sound.active_speaker_crossover_preview_save",
         status=str(payload.get("status")),
         topology_id=str((payload.get("source") or {}).get("topology_id")),
-        active_crossover_count=str((payload.get("summary") or {}).get(
-            "active_crossover_count"
-        )),
+        active_crossover_count=str(
+            (payload.get("summary") or {}).get("active_crossover_count")
+        ),
         blocker_count=str((payload.get("summary") or {}).get("blocker_count")),
     )
     return payload
@@ -3985,11 +4087,11 @@ def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str,
         role=str(raw.get("role")),
         outcome=str(raw.get("outcome")),
         captured=str(bool(
-            (summary.get("latest_driver_measurements") or {})
-            .get(f"{raw.get('speaker_group_id')}:{raw.get('role')}", {})
-            .get("captured")
-        )
-        if isinstance(summary.get("latest_driver_measurements"), dict)
+                (summary.get("latest_driver_measurements") or {})
+                .get(f"{raw.get('speaker_group_id')}:{raw.get('role')}", {})
+                .get("captured")
+            )
+            if isinstance(summary.get("latest_driver_measurements"), dict)
         else False),
         drivers="%s/%s"
         % (summary.get("captured_driver_count"), summary.get("required_driver_count")),
@@ -4288,11 +4390,11 @@ def _active_speaker_summed_validation_payload(raw: dict[str, Any]) -> dict[str, 
         group_id=str(raw.get("speaker_group_id")),
         outcome=str(raw.get("outcome")),
         validated=str(bool(
-            (summary.get("latest_summed_validations") or {})
-            .get(str(raw.get("speaker_group_id") or ""), {})
-            .get("validated")
-        )
-        if isinstance(summary.get("latest_summed_validations"), dict)
+                (summary.get("latest_summed_validations") or {})
+                .get(str(raw.get("speaker_group_id") or ""), {})
+                .get("validated")
+            )
+            if isinstance(summary.get("latest_summed_validations"), dict)
         else False),
         summed="%s/%s"
         % (
@@ -4620,7 +4722,7 @@ async def _active_speaker_finish_commissioning_payload(
         "sound.active_speaker_finish_commissioning",
         status=str(payload.get("status")),
         apply_result=str((payload.get("apply") or {}).get("result")
-        if isinstance(payload.get("apply"), dict)
+            if isinstance(payload.get("apply"), dict)
         else None),
         safety_muted=str((payload.get("output_safety") or {}).get("safety_muted")),
         issue_count=len(payload.get("issues") or []),
@@ -4931,6 +5033,7 @@ def _make_handler(
                 "/volume-floor/audition",
                 "/volume-floor/stop",
                 "/active-speaker/design-draft",
+                "/active-speaker/driver-research-request",
                 "/active-speaker/crossover-preview",
                 "/active-speaker/stop",
                 "/active-speaker/calibration-level",
@@ -5024,8 +5127,16 @@ def _make_handler(
                     self._send_json(_active_speaker_stage_config_payload(raw))
                     return
                 if path == "/active-speaker/design-draft":
+                    from jasper.active_speaker.design_draft import (
+                        ActiveSpeakerDesignDraftRevisionConflict,
+                    )
+
                     try:
                         self._send_json(_active_speaker_design_draft_save_payload(raw))
+                    except ActiveSpeakerDesignDraftRevisionConflict as e:
+                        payload = _active_speaker_design_draft_payload()
+                        payload["error"] = str(e)
+                        self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except OSError as e:
                         log_event(
                             logger,
@@ -5036,6 +5147,11 @@ def _make_handler(
                             error=type(e).__name__,
                         )
                         self._send_json({"error": str(e)}, status=502)
+                    return
+                if path == "/active-speaker/driver-research-request":
+                    self._send_json(
+                        _active_speaker_driver_research_request_payload(raw)
+                    )
                     return
                 if path == "/active-speaker/crossover-preview":
                     try:
@@ -5128,11 +5244,11 @@ def _make_handler(
                                 reason="active_summed_test_running",
                                 group_id=str(conflict.get("speaker_group_id")),
                                 active_playback_id=str((
-                                    conflict.get("active_summed_test", {})
-                                    if isinstance(
-                                        conflict.get("active_summed_test"), dict
-                                    )
-                                    else {}
+                                        conflict.get("active_summed_test", {})
+                                        if isinstance(
+                                            conflict.get("active_summed_test"), dict
+                                        )
+                                        else {}
                                 ).get("playback_id")),
                             )
                             self._send_json(conflict, status=HTTPStatus.CONFLICT)

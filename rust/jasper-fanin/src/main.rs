@@ -25,6 +25,7 @@
 //! in steady state. If future measurement shows audible source-handover
 //! clicks, add ramping in the mixer with tests and doctor visibility.
 
+mod assistant_reference;
 mod config;
 mod host_clock;
 mod host_compliance;
@@ -34,6 +35,7 @@ mod lane_resampler;
 mod loudness;
 mod mixer;
 mod playout;
+mod source_notify;
 mod state;
 mod tts;
 mod watchdog;
@@ -133,31 +135,53 @@ fn main() -> Result<()> {
         })
         .context("spawning xrun-log writer thread")?;
 
-    let (tts_input, tts_metrics) = if let Some(socket_path) = &config.tts_socket_path {
-        let (tts_tx, tts_rx, tts_flush_tx, tts_flush_rx, metrics, epoch) =
-            tts_channels(config.tts_max_pending_frames);
-        spawn_tts_server(
-            PathBuf::from(socket_path),
-            tts_tx,
-            tts_flush_tx,
-            epoch,
-            metrics.clone(),
-        )?;
-        (
-            Some(TtsInput {
-                rx: tts_rx,
-                flush_rx: tts_flush_rx,
-                metrics: metrics.clone(),
-                max_pending_frames: config.tts_max_pending_frames,
-                program_duck_db: config.tts_program_duck_db,
-                assistant_loudness: config.assistant_loudness,
-            }),
-            Some(metrics),
-        )
-    } else {
-        info!("event=fanin.tts_socket.disabled");
-        (None, None)
-    };
+    let (tts_input, tts_metrics, assistant_reference_writer) =
+        if let Some(socket_path) = &config.tts_socket_path {
+            let assistant_reference = crate::assistant_reference::load(std::path::Path::new(
+                &config.assistant_reference_path,
+            ));
+            let (assistant_reference_tx, assistant_reference_writer) =
+                match crate::assistant_reference::spawn_writer(
+                    PathBuf::from(&config.assistant_reference_path),
+                    assistant_reference,
+                ) {
+                    Ok((tx, handle)) => (Some(tx), Some(handle)),
+                    Err(error) => {
+                        warn!(
+                            "event=fanin.assistant_reference.writer_unavailable path={} detail={}",
+                            config.assistant_reference_path, error
+                        );
+                        (None, None)
+                    }
+                };
+            let (tts_tx, tts_rx, tts_flush_tx, tts_flush_rx, metrics, epoch) =
+                tts_channels(config.tts_max_pending_frames);
+            spawn_tts_server(
+                PathBuf::from(socket_path),
+                tts_tx,
+                tts_flush_tx,
+                epoch,
+                metrics.clone(),
+            )?;
+            (
+                Some(TtsInput {
+                    rx: tts_rx,
+                    flush_rx: tts_flush_rx,
+                    metrics: metrics.clone(),
+                    max_pending_frames: config.tts_max_pending_frames,
+                    program_duck_db: config.tts_program_duck_db,
+                    cue_duck_db: config.tts_cue_duck_db,
+                    assistant_loudness: config.assistant_loudness,
+                    assistant_reference,
+                    assistant_reference_tx,
+                }),
+                Some(metrics),
+                assistant_reference_writer,
+            )
+        } else {
+            info!("event=fanin.tts_socket.disabled");
+            (None, None, None)
+        };
 
     // Open ALSA: N input PCMs + 1 output PCM. Every configured input is
     // required in the production fan-in topology; a missing lane means
@@ -169,6 +193,7 @@ fn main() -> Result<()> {
         mixer.input_count(),
         config.input_pcms.len(),
     );
+    let source_notify_signals = mixer.source_notify_signals();
 
     // Impulse-tap writer thread (C4) — the SINGLE JSONL writer for the USB
     // DIRECT ingress tap. Default-disarmed, so this thread idles at a 100 ms
@@ -188,13 +213,33 @@ fn main() -> Result<()> {
         })
         .context("spawning fanin-tap-writer thread")?;
 
+    // USB source-flow wake adapter. It samples the direct lane's existing
+    // frame counter on a non-audio helper thread and sends edge-only hints to
+    // mux. Mux owns policy and patrol recovery; fan-in never selects a source.
+    // Spawn before mlockall, like every other helper thread in this process.
+    let source_notify_thread = source_notify_signals
+        .map(|signals| {
+            let mux_socket = PathBuf::from(
+                std::env::var("JASPER_MUX_CONTROL_SOCKET")
+                    .unwrap_or_else(|_| "/run/jasper-mux/control.sock".to_string()),
+            );
+            let notify_shutdown = Arc::clone(&shutdown);
+            std::thread::Builder::new()
+                .name("fanin-source-notify".into())
+                .spawn(move || {
+                    crate::source_notify::run(signals, &mux_socket, notify_shutdown);
+                })
+                .context("spawning fanin-source-notify thread")
+        })
+        .transpose()?;
+
     // Combo-mode host-slaved USB clock (C5). DEFAULT-OFF. When
     // JASPER_FANIN_HOST_CLOCK=enabled AND USB DIRECT is armed, a dedicated
     // `fanin-host-clock` thread steers the gadget's Capture Pitch ctl toward the
     // DAC clock (the shared jasper_host_clock ladder). The direct-off gate is
     // resolved HERE so a `enabled`+direct-off box logs one noop line and never
-    // opens the ctl (in aloop mode the usbsink bridge owns the clock — the
-    // "daemon that owns the capture owns the pitch ctl" invariant).
+    // opens the ctl (the process that owns direct gadget capture also owns its
+    // pitch control).
     //
     // The STATUS fragment Arc is created regardless (initialized to the
     // disabled block) so /state carries a definite host_clock from boot; the
@@ -205,8 +250,8 @@ fn main() -> Result<()> {
     // never disagree about whether the revalidating DLL is live).
     let host_clock_enabled_effective = config.host_clock_servo_armed();
     if config.host_clock_enabled && !host_clock_enabled_effective {
-        // enabled + direct-off: inert, one warn, zero ctl writes. In aloop mode
-        // the usbsink bridge owns the gadget capture and its clock.
+        // enabled + direct-off: inert, one warn, zero ctl writes. No process
+        // owns direct gadget capture or its clock in this state.
         warn!("event=fanin.host_clock.noop reason=usb_direct_off");
     }
     // The setpoint is the resampler's HELD target (target + warmup cushion),
@@ -231,7 +276,6 @@ fn main() -> Result<()> {
     let host_clock_config = crate::host_clock::build_config(
         host_clock_enabled_effective,
         config.host_clock_probe_ppm,
-        config.host_clock_probe_secs,
         host_clock_setpoint,
     );
     let host_clock_fragment = Arc::new(std::sync::Mutex::new(crate::host_clock::initial_fragment(
@@ -251,8 +295,10 @@ fn main() -> Result<()> {
             let hc_fragment = Arc::clone(&host_clock_fragment);
             let hc_shutdown = Arc::clone(&shutdown);
             info!(
-                "event=fanin.host_clock.armed probe_ppm={} probe_secs={} setpoint_frames={}",
-                config.host_clock_probe_ppm, config.host_clock_probe_secs, host_clock_setpoint,
+                "event=fanin.host_clock.armed probe_ppm={} correction_probe_secs={} setpoint_frames={}",
+                config.host_clock_probe_ppm,
+                jasper_host_clock::CORRECTION_PROBE_STEP_SECS,
+                host_clock_setpoint,
             );
             Some(
                 std::thread::Builder::new()
@@ -279,7 +325,6 @@ fn main() -> Result<()> {
             let disabled = crate::host_clock::build_config(
                 false,
                 config.host_clock_probe_ppm,
-                config.host_clock_probe_secs,
                 host_clock_setpoint,
             );
             *host_clock_fragment
@@ -350,9 +395,15 @@ fn main() -> Result<()> {
     // best-effort timeout — if either hangs, systemd's
     // TimeoutStopSec=5s will SIGKILL us anyway.
     drop(mixer);
+    if let Some(handle) = assistant_reference_writer {
+        let _ = handle.join();
+    }
     let _ = state_thread.join();
     let _ = xrun_writer.join();
     let _ = tap_writer.join();
+    if let Some(handle) = source_notify_thread {
+        let _ = handle.join();
+    }
     // Join the host-clock thread last: its loop exited on the shutdown flag and
     // forced a neutral pitch write on the way out (the neutrality invariant),
     // so by the time we return the host is un-slaved. `None` when the feature

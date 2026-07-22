@@ -15,6 +15,7 @@ from jasper.camilla_config_contract import (
     total_positive_boost_db,
 )
 
+
 def test_camilla_latency_knobs_default_to_literals_when_unset():
     """G7: with the env vars unset and no profile floor the resolvers return the
     shipped literals. ``profile_floor=None`` pins the no-floor path so this tests
@@ -431,7 +432,12 @@ def test_guard_flags_async_resampler_on_snd_aloop_capture():
 
 
 def test_guard_ignores_stale_raw_file_capture_config():
-    """The snd-aloop guard ignores a stale legacy RawFile capture config."""
+    """The snd-aloop guard ignores a stale legacy RawFile capture config.
+
+    The emitters no longer produce this shape (the producerless
+    ``capture_pipe_path`` lean lane was removed), but an un-reconciled lab box
+    could still have one on disk — the guard must key off the capture DEVICE,
+    not just presence of a resampler block."""
     file_capture = """devices:
   samplerate: 48000
   enable_rate_adjust: true

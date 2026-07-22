@@ -19,26 +19,35 @@
 > (`RelayCaptureKind` + `_run_relay_capture` in `correction_setup.py`); a new kind
 > is a descriptor, not a new handler. **A USB-C measurement mic plugged into the
 > phone is supported:** the room level-check page runs a guided setup on
-> `capture.jasper.tech` (permission → mic choice → calibration choice → position
-> count). Level-ramp specs set `setup_validation=true`, so vendor serial lookup
+> `capture.jasper.tech` (permission → mic choice → calibration choice). Room's
+> position count is speaker-owned and is not collected from the phone.
+> Level-ramp specs set `setup_validation=true`, so vendor serial lookup
 > / calibration-file parsing preflights through the Pi before the phone shows
 > Start. The full setup is sent exactly once and frozen under a session-scoped
-> SHA-256 binding; meter batches and later capture-only room links carry only
-> that compact identity. Raw serials/calibration text are not persisted in
-> browser storage or repeated through the relay. Calibration is still applied
+> SHA-256 binding for the level stream. Later Room links are signed capture-only
+> specs carrying the Pi-owned position/total; their authenticated `armed` event
+> reports the realized device, which the Pi compares with the level-check
+> microphone and calibration before sound. Raw serials/calibration text are not
+> persisted in browser storage or repeated through the relay. Crossover retains
+> its compact setup binding under the Active-owned flow. Calibration is still
+> applied
 > **Pi-side during analysis, never at record
-> time** (it's a post-hoc FR correction in `MeasurementSession._smooth_capture`);
+> time** (it's a post-hoc FR correction in
+> `jasper.correction.acoustic_quality.analyze_capture`);
 > the phone records raw and reports *which* mic it used in the opaque `armed`
-> event. A device-aware gate (`_relay_device_calibration_block`, POST-capture)
-> refuses a vendor curve on the phone's built-in mic but allows it for the
-> matching USB mic. Supported measurement-mic model options are Pi-owned data in
+> event. A device-aware gate (`_relay_device_calibration_block`, before playback
+> and again after capture) refuses a vendor curve on the phone's built-in mic but
+> allows it for the matching USB mic. Supported measurement-mic model options
+> are Pi-owned data in
 > the `CaptureSpec`, derived from `SUPPORTED_MODELS`, so adding a mic is a Pi
 > registry change rather than a separate Cloudflare page edit. The phone also
 > records a passive noise-floor window before the Pi plays anything, and the Pi
 > publishes `sweep_complete` so the phone stops from real sweep progress rather
 > than a fixed timer.
-> The crossover kind additionally holds a 14-second controlled quiet interval
-> before every role-sized ESS and carries the entire raw WAV back to the Pi.
+> The crossover kind additionally holds a controlled quiet interval — sized to
+> that role's own sweep length + 2 s (2026-07-16; 14 s woofer/subwoofer down to
+> 6 s tweeter, not a fixed 14 s pause) — before every role-sized ESS and
+> carries the entire raw WAV back to the Pi.
 > A bounded signal locator selects separate, real, equal-length signal and
 > quiet crops after relay latency. The Pi runs both through the same regularized inverse,
 > applies the signal-owned arrival window and reflection gate to both (ambient
@@ -66,6 +75,25 @@
 > “armed but never uploaded” so `/status.relay` and structured logs preserve
 > the failed phase.
 >
+> **Cooperative host Stop — LANDED (2026-07-14):** Crossover level and sweep
+> relays expose one host Stop control. Stop sets the owning run to `stopping`
+> and signals the same worker that owns polling and the armed callback. The
+> global relay slot remains held while that worker cancels/reaps playback,
+> completes graph and exact-or-emergency volume restoration, drains its relay
+> cleanup, and exits. Only then may the host publish terminal `stopped` and
+> admit another action. A Stop observed before or after a relay poll prevents a
+> later armed callback. A meter-only level ramp atomically chooses Stop or
+> non-stoppable `committing` after its protected ramp and volume restoration; it
+> has no WAV upload phase. A sweep instead chooses Stop or non-stoppable
+> `finishing` after playback and rollback while the phone closes, encrypts, and
+> uploads; this prevents host DELETE from racing an in-flight relay PUT. A
+> verified upload then moves `finishing` to non-stoppable `committing` until
+> evidence persistence is terminal. Explicit operator Stop is expected control
+> flow: a level ramp posts terminal `ramp.state="cancelled"`, a sweep posts
+> `sweep_cancelled`, both are logged as `capture_relay.stopped`, and neither
+> plays a failure cue. Timeout, phone abort, integrity failure, and failed
+> cleanup remain failures under §12.
+>
 > **Crossover relay kind — LANDED (P7, 2026-07-03):** `POST
 > /correction/crossover/relay-capture` (the third `RelayCaptureKind` caller)
 > plays the driver/summed capture sweep on `armed` — reading the play payload's
@@ -75,21 +103,22 @@
 > server-computed twice (refused at POST while room/balance/sync is active,
 > re-checked at armed time); the `crossover_sweep` spec floors the phone's hard
 > recording deadline at 30 s (`hard_timeout_ms`, the `room_sweep` contract).
-> Lane D raises the crossover-only floor to 45 s so its controlled 14 s quiet
-> capture, per-driver sweep, config load, and `sweep_complete` round trip cannot
+> Lane D raises the crossover-only floor to 45 s so its controlled quiet
+> capture (per-driver: that role's sweep + 2 s, worst case 14 s for
+> woofer/subwoofer), per-driver sweep, config load, and `sweep_complete`
+> round trip cannot
 > race the phone deadline; the room and sync relay floors remain 30 s. The
 > preceding near-field level step owns microphone
 > and calibration setup; its identity is bound to the protected applied speaker
-> profile. Driver/summed capture reuses that Pi-side calibration and validates
-> the phone-reported realized device before recording acoustic evidence. The
-> relay preserves summed-capture `expect_null`, region Fc, polarity, and delay
-> candidate metadata through both playback and record adapters. That is
-> transport fidelity only: the current crossover envelope exposes one combined
-> capture and the playback backend still loads the immutable applied graph; it
-> does not yet offer per-region normal/reverse actions or a transient reverse-
-> polarity graph. The playback boundary refuses reverse/delay candidates before
-> audio rather than persist unchanged playback under the requested label. The
-> bounded alignment lane owns that graph mutation.
+> profile. Driver capture reuses that in-memory binding. The production summed
+> branch reopens the same calibration id and recorder SHA-256 from the durable
+> comparison set, validates the phone-reported realized device, and records the
+> authenticated `summed_reference_axis_v1` acknowledgement. Its browser body is
+> exactly `{kind:"summed"}`: region, polarity, graph, delay, attempt, ordinal,
+> and admission remain server-owned. The shared crossover relay transport owns
+> phone liveness, Stop/drain/purge, and finishing/commit phases; the existing
+> Active commissioning host owns the normal/reverse/bounded-delay sequence and
+> transient graphs. Legacy direct summed routes remain pre-audio refused.
 > The
 > acoustic proof (real-driver sweep + phone `getUserMedia`/CSP) is parked as
 > H2. **Sync relay fixed in the same pass (pre-existing):**
@@ -234,13 +263,15 @@ speaker + the brain** — it *plays* the stimulus and *analyzes*. The Pi does **
 record** anything; it already knows the stimulus because it generated it, and it
 aligns the phone's recording against that known stimulus.
 
-**Guided setup once, then one Start tap per capture.** The speaker page is
+**Guided level setup once, then one Start tap per capture.** The speaker page is
 intentionally simple and exposes one server-owned next action. The jasper.tech page
 owns the phone-only setup the Pi page cannot do reliably: microphone permission,
-input choice, calibration choice (none / vendor serial / uploaded file), and
-measurement count. The automatic level stage validates and freezes setup through
-the Pi before playing its quiet-start tone. Each later room link verifies the
-compact binding and opens directly on **Start measurement**; that tap does both:
+input choice, and calibration choice (none / vendor serial / uploaded file).
+Room's measurement count remains Pi-owned. The automatic level stage validates
+and freezes the mic/calibration setup through the Pi before playing its
+quiet-start tone. Each later Room link carries signed Pi-owned position metadata,
+checks the realized mic against the level identity, and opens directly on
+**Start measurement**; that tap does both:
 
 1. records a short passive room-noise floor, then starts the sweep recording
    **locally** on the phone (instant — `getUserMedia`),
@@ -260,7 +291,7 @@ audio. Full sequence:
 1. **Pi** mints the session + capture-spec, registers it with the relay, shows
    the tap-link on `jts.local`.
 2. **Phone** opens the level-ramp page, asks for microphone permission, and lets
-   the user pick mic/calibration/count once.
+   the user pick the microphone/calibration once. The Pi retains the Room count.
 3. **Phone** verifies that the spec's `capture_protocol_version` is in the
    public page's `supported_capture_protocol_versions`, then includes the page
    build/protocol identity in every control event. The Pi validates that identity
@@ -270,12 +301,15 @@ audio. Full sequence:
    the Pi validates/applies it and replies `host_event.phase="setup_validated"`.
    The phone then streams compact level batches, and the Pi raises software gain
    gradually from quiet until stable, restores listening volume, and retains the
-   target for sweeps. Unsupported/unknown AGC is refused before the tone.
-5. **Phone** opens a capture-only room link, records passive room noise, starts
-   the sweep recording, and drops `armed` plus the compact setup binding in the
-   relay.
-6. **Pi** — already polling `GET /sessions/:id/status` — verifies the binding,
-   sees `armed`, reasserts the retained target inside the measurement window,
+   target for sweeps. AGC explicitly reported on is refused before the tone;
+   unattested (unknown) AGC proceeds and is verified empirically from the
+   ramp's own staircase — see §9.
+5. **Phone** opens a signed capture-only Room link carrying the Pi-owned
+   position/total, records passive room noise, starts the sweep recording, and
+   drops authenticated `armed` metadata with the realized device in the relay.
+6. **Pi** — already polling `GET /sessions/:id/status` — sees `armed`, verifies
+   the device/calibration against the level-check identity, reasserts the
+   retained target inside the measurement window,
    publishes `host_event.phase="sweep_started"`,
    and **plays the stimulus** through the speaker.
 7. In the room, the phone's mic (still recording) captures it.
@@ -286,6 +320,15 @@ audio. Full sequence:
 10. **Pi** polls, sees `ready`, pulls the blob, decrypts, verifies, and
    **cross-correlates** against the stimulus it knows it played → aligned
    measurement.
+
+For a Crossover sweep, the speaker page may request Stop while the host is waiting,
+preparing, playing, or restoring. The cooperative signal crosses both the relay
+polling loop and playback watchdog; `stopping` withholds the next action until
+the exact worker and cleanup finish. Once playback and rollback complete, the
+host atomically chooses `stopping` or `finishing`. The latter hides Stop while
+the phone closes, encrypts, and uploads, then advances to `committing` only for
+the synchronous evidence write. This is distinct from `sweep_complete`, which
+ends the phone's recorder window but is not evidence authority.
 
 The Pi's existing status-poll loop (it already polls to learn when the audio is
 ready) carries the "armed, go play" signal too — **one loop, two jobs.**
@@ -318,8 +361,8 @@ page understanding. (Same pure-data-registry boundary used elsewhere in JTS; see
 [extensibility.md](extensibility.md).) An acceptance criterion (§15) enforces the
 boundary so it cannot erode.
 
-For room correction, `duration_ms` is now the hard recording timeout; the normal
-stop condition is the Pi's `host_event.phase="sweep_complete"` plus
+For room correction, `duration_ms` is now the hard recording timeout; normal
+recorder completion is the Pi's `host_event.phase="sweep_complete"` plus
 `post_roll_ms`.
 
 ```
@@ -327,9 +370,12 @@ capture_spec:
   kind: "room_sweep" | "balance_burst" | "sync_marker" | "crossover_sweep" | "noise_floor" | <string>
   sample_rate_hz: 48000
   channels: 1
-  duration_ms: 30000          # hard timeout; normal stop waits for Pi sweep_complete
+  duration_ms: 30000          # hard timeout; normal completion waits for sweep_complete
   pre_roll_ms: 500            # legacy/fallback margin; Pi still plays only after armed
   post_roll_ms: 650
+  position: 1                  # optional signed, Pi-owned display progress
+  total_positions: 6          # supplied as a pair with position
+  presentation_variant: "trust_repeat"  # copy only; never state authority
   constraints:                # measurement-critical: do NOT let the browser process the signal
     echoCancellation: false
     autoGainControl: false
@@ -345,6 +391,31 @@ capture_spec:
       - { type: "steps",   items: ["Stand at the couch", "Hold the phone up", "Stay quiet for 10s"] }
       - { type: "level_meter", source: "mic" }
       - { type: "button",  label: "Start", action: "begin_capture" }
+  default_setup:              # OPTIONAL household-mic prefill hint (Wave-2
+    calibration:              # persistence, jasper/correction/household_mic.py):
+      mode: "serial"          # "serial" | "upload"; the model key, a last-4
+      model: "minidsp_umik2"  # serial display form, and the calibration_id
+      serial_display: "8494"  # of the mic the household last used.
+      calibration_id: "..."   # The 2026-07 Wave-2 capture page renders a
+      resolvable: true        # one-tap "Using {label} · {serial_display} —
+                              # one tap to confirm" screen (main.js's
+                              # renderCalibrationConfirm) with a "Use a
+                              # different microphone" fallback. Confirm
+                              # SUBMITS setup.calibration = {mode: "stored",
+                              # calibration_id} (+ model, display-only) for
+                              # the Pi to resolve via the household-mic
+                              # record — gated on `resolvable: true`, the
+                              # marker the Pi-side stored-mode branch (the
+                              # mode="stored" arm of
+                              # _relay_calibration_from_setup) mints when
+                              # the ID currently resolves. Without the
+                              # marker (older Pi) the page renders the plain
+                              # full picker; a rejection of a gone-stale
+                              # stored record also falls back to the picker
+                              # with a plain sentence — never a dead end. An
+                              # older page still ignores unknown spec
+                              # fields, so this is safe in every deploy
+                              # order.
   output:
     format: "wav"             # mono 16-bit PCM WAV at sample_rate_hz
   max_upload_bytes: 33554432  # 32 MB cap; mirror the Pi backend limit
@@ -388,6 +459,129 @@ CSS-variable allowlist).
 **Why DATA and not executable HTML/CSS/JS — this is a security boundary, not a
 style choice. See §8.**
 
+### Session-spanning capture plans — protocol v3 (SPEC W2.3)
+
+Protocol v3 lets **one relay session carry a driver's whole repeat SET** so a
+3-repeat crossover driver needs zero wizard interactions after the initial
+"Measure" click. The spec gains an optional `capture_plan` block plus the
+`capture_protocol_version: 3` capability marker (both in
+`jasper/capture_relay/spec.py`; `CapturePlan`):
+
+```
+capture_plan:
+  schema_version: 1
+  capture_target: 3    # accepted captures that finish the set
+  max_attempts: 4      # total admitted attempts, retries included (<= 8)
+```
+
+Choreography per capture N (`run_capture_plan` in
+`jasper/capture_relay/session.py`): the phone posts an authenticated
+`begin_capture {index, attempt}` event (`index` = 1-based slot of
+`capture_target`; `attempt` = 1-based admission attempt) → the Pi validates it
+with the **Pi-owned** admission ledger (`repeat_admission` — the phone NEVER
+decides budget; a refused begin gets a named `capture_refused` host event) →
+the Pi ACKs `capture_authorized {index, attempt}` → the phone records and posts
+`armed` carrying the same begin context (page identity + placement
+acknowledgement validated per capture, exactly as v2) → the Pi plays the
+stimulus → the phone uploads its blob at relay **`capture_index = attempt - 1`**
+(each attempt gets its own key; attempt 1 aliases the legacy un-indexed key) →
+the Pi pulls/decrypts/verifies, analyzes, and posts `capture_result {index,
+attempt, accepted, verdict fields}` → the phone renders "Measurement N of
+{target} ✓ — Next" (or Retry: same index, attempt k+1). The set terminates with
+`capture_set_complete` or `capture_set_exhausted`. Out-of-order / replayed /
+malformed begins are refused loudly; per-event replay is already blocked by the
+protocol-v2 authenticated-envelope sequence.
+
+**Per-capture entries (plan `schema_version: 2` — dormant).** `capture_plan`
+may additionally carry an `entries` table (one `{index, kind_label,
+duration_ms, screen}` per capture: declared acoustic length + phone-side
+prompt copy for a heterogeneous set), and admission gained a NON-terminal
+`capture_deferred` host phase — a soft-hold the phone auto-retries, unlike
+the terminal `capture_refused`. No shipped builder emits entries yet; the
+crossover v2 flow (W5) will. Design:
+[crossover-measurement-productization-design.md](crossover-measurement-productization-design.md) §5.7.
+
+**Page side (Wave-2 batch):** the 2026-07 capture page
+(`capture-page/js/main.js`'s `onPlanStart`/`runPlanCapture`) implements the
+full v3 choreography, and its `version.json` advertises
+`supported_capture_protocol_versions: [1, 2, 3]`. The Pi side
+(`jasper/capture_relay/session.py`'s `run_capture_plan`) has understood v3
+since the earlier PR in this series.
+
+**Host orchestrator (Wave-2 Pi finale — the flip):**
+`jasper/web/correction_crossover_flow.py`'s
+`build_crossover_relay_plan_run_and_consume` drives a driver's whole
+repeat SET over one relay session — `authorize_begin` wraps the SAME
+`repeat_admission` reservation seam the v2 per-capture path uses (budget stays
+Pi-owned, unchanged), and `consume_capture` calls the SAME
+`correction_crossover_backend.record_driver_capture` analysis/record path, so
+the closed-loop level solver (#1543/#1552) and the completion-time correction
+(#1555) run identically per capture index. `jasper/web/correction_setup.py`'s
+`_handle_crossover_relay_capture` now builds every DRIVER capture spec with a
+`capture_plan` (`capture_target=3`, `max_attempts=4`, matching
+`commissioning_capture.DEFAULT_REPEAT_TARGET` /
+`repeat_admission.MAX_ATTEMPTS` exactly) — **the marker is emitted
+unconditionally, no env gate.** Summed/verification captures and `level_ramp`
+stay on the v2 per-capture path untouched. `CapturePlan` progress (`{role,
+capture_target, accepted}`) publishes into the relay status snapshot
+(`correction_setup._publish_crossover_capture_plan_progress`) so the wizard
+envelope's passive "N of {target} done" mirror
+(`crossover_envelope._plan_measuring_verdict`, landed dormant with #1550) has
+live data once a v3 session is running.
+
+**Deploy sequencing is the only remaining gate — no code flag.** Every piece
+is now merged in code: Pi session machinery (#1550), Worker indexed blobs
+(#1550, not yet wrangler-deployed), page v3 loop + version advertisement
+(#1560), and the host flip (this PR). The coordinator sequences the actual
+rollout: Worker → page publish → **the Pi build carrying the host flip
+deploys LAST**. A v3 spec against an OLDER (pre-Wave-2) deployed page fails
+the page-identity check (`validate_capture_page`) loudly before any tone
+plays — a safe, visible failure, but the wrong order: deploying the Pi flip
+before the page publish would make every driver-sweep capture request error
+until the page catches up.
+
+**Hardware blocker found and fixed (run 21, jts3 @ 62af5b206): the v3 order
+was never validated against the wizard's own envelope-derivation guard.**
+`_assert_crossover_driver_action` / `_assert_crossover_reference_axis_level_action`
+(`jasper/web/correction_setup.py`) re-derive "is this the server-owned next
+step" from `build_crossover_envelope` a second time, independent of
+`authorize_begin`'s `repeat_admission` reservation — built for the v2 order
+(guard → reserve → capture). Protocol v3 flips that order (reserve → phone
+arms → guard): by the time `on_armed` calls the guard, the SAME attempt's
+own reservation is live in the ledger, and the guard's envelope recompute
+(which blanks `relay` to avoid seeing its own session) reads that live
+reservation as an orphaned one — so it vetoed the plan's own authorized
+capture, deterministically, on every driver sweep. Fixed by
+`_plan_admission_matches`: when the CURRENT session's capture-plan
+reservation is the live, matching (speaker_group_id, role, capture_geometry)
+admission, it — not a second envelope-derivation — is treated as the
+server-owned admission, and the redundant guard is skipped for exactly that
+capture. This covers **both** near-field AND reference-axis driver captures
+(both run v3 and both reserve). The guard is unchanged for every
+wizard-initiated v2/direct request (a stale tab racing a fresher
+server-driven step still refuses).
+
+The sibling **fixed-axis LEVEL-CHECK** guard
+(`_assert_crossover_reference_axis_level_action`) needs no such exemption,
+for a structural reason: the level check holds **no `repeat_admission`
+reservation of its own** — its handler
+(`_handle_crossover_relay_level_match`) only ever calls
+`repeat_admission.invalidate()`, never `reserve()` — so there is no in-flight
+reservation for its own envelope recompute to misread. (Reference-axis driver
+*captures* do reserve, but they are guarded by the driver guard above, which
+is already fixed.)
+
+Both guards now raise a typed `ServerOwnedNextStepMismatch` (a `ValueError`
+subclass) carrying `code`/`user_message`, so the refusal maps to one
+household sentence — never the raw "…is not the server-owned next step"
+string — on every reachable household surface: the async wizard status line
+(`_relay_failure_message` in `_run_relay_capture`), the **synchronous
+POST-time dispatch** (`_dispatch_crossover`, which previously returned
+`str(exc)` verbatim on a stale-tab re-POST), and the phone capture page's
+`sweep_failed` host event (`correction_crossover_flow._phone_failure_text`).
+The raw string stays in the `event=capture_relay.server_owned_step_mismatch`
+structured log only.
+
 ---
 
 ## 7. Relay API (minimal, stateless, opaque)
@@ -404,20 +598,38 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   `level_batch` events during automatic leveling, and later posts `{armed:true}`
   so the Pi can trigger the stimulus (auth: upload_token). Capture events include
   passive `noise_floor`, phone-reported `device`, and only the frozen setup
-  binding — not raw calibration contents.
+  binding — not raw calibration contents. A `crossover_sweep` capture's `armed`
+  event ALSO carries `ambient_stats` (Wave 2, `capture-page/js/ambient-stats.js`
+  → `jasper.audio_measurement.level_solver.parse_ambient_stats_event`):
+  per-octave-band RMS dBFS over the same quiet window `noise_floor` summarizes,
+  `{schema, run_token, duration_s, clipped, bands:[{lo_hz,hi_hz,rms_dbfs}]}`
+  (≤64 bands). It rides the SAME already-awaited `armed` post rather than a
+  separate event — the relay's phone-event slot is last-write-wins, so a
+  standalone post would almost always be overwritten before the Pi's ~0.75s
+  poll ever saw it. No shipped Pi caller reads it from the event yet (the
+  solver only consumes it when a caller passes `ambient_bands=`), so it is
+  presently inert — the emission is forward-compatible plumbing, not a wired
+  feature.
 - `GET    /sessions/:id/phone-status` — phone polls `{state, host_event}` (auth:
   upload_token) so it can wait for Pi progress, especially `sweep_complete`,
   without seeing pull-only blob/integrity fields.
 - `POST   /sessions/:id/host-event` — Pi posts bounded progress metadata such as
   `{phase:"sweep_started"}` / `{phase:"sweep_complete"}` / `{phase:"sweep_failed"}`
   (auth: pull_token).
-- `PUT    /sessions/:id/blob` — phone uploads `IV ‖ ciphertext` + integrity
-  `{plaintext_len, sha256}` (auth: upload_token); enforce `max_upload_bytes` +
-  Content-Type at the Worker; set state `ready`.
+- `PUT    /sessions/:id/blob[?index=N]` — phone uploads `IV ‖ ciphertext` +
+  integrity `{plaintext_len, sha256}` (auth: upload_token); enforce
+  `max_upload_bytes` + Content-Type at the Worker; set state `ready`. The
+  optional `index` (0..7 — one slot per admitted attempt,
+  `capture_index = attempt - 1` under the 8-attempt plan cap; absent = 0 = the
+  legacy key) stores one blob per admitted attempt of a protocol-v3 capture
+  plan; one upload per index.
 - `GET    /sessions/:id/status` — Pi polls `{state, size, integrity, event,
-  host_event}` (auth: pull_token).
-- `GET    /sessions/:id/blob` — Pi pulls ciphertext (auth: pull_token).
-- `DELETE /sessions/:id` — Pi purges (auth: pull_token).
+  host_event}` (auth: pull_token) plus, once an indexed upload landed, the
+  additive per-index `blobs` summary (`{"<index>": {size, integrity}}`).
+- `GET    /sessions/:id/blob[?index=N]` — Pi pulls ciphertext (auth:
+  pull_token), per index for capture plans.
+- `DELETE /sessions/:id` — Pi purges (auth: pull_token), indexed blobs
+  included.
 
 ---
 
@@ -528,11 +740,30 @@ mode for a tool whose entire job is a trustworthy result.
   rather than warn; let the spec set refuse-vs-warn **per kind**. Keep the raw
   source-track width as diagnostics, but do not confuse a multi-channel USB
   source with the mono channel-zero artifact produced by `createMonoRecorder`.
-- **Level-ramp AGC is stricter.** Automatic leveling requires explicit realized
-  `autoGainControl === false`. Missing/unknown is not treated as false: the phone
-  posts a token-scoped refusal and the Pi never starts the tone. A future manual
-  lock mode needs its own acknowledged protocol; it must not be inferred from
-  AGC-compressed samples.
+- **Level-ramp AGC is verified, not just attested (2026-07-16).** An explicit
+  realized `autoGainControl === true` still posts a token-scoped refusal and
+  the Pi never starts the tone — a browser-confirmed time-varying gain cannot
+  be interpreted as a stable acoustic gain map. But `undefined`/`null` (every
+  WebKit/iOS build — `getSettings()` never reports the setting) is NOT treated
+  the same as a proven AGC-on: the phone proceeds as *unattested*
+  (`agc_frozen:false` + `agc_unattested:true` on every level batch), and
+  `RampController` (`jasper/audio_measurement/ramp.py`) verifies chain
+  linearity **empirically** from the ramp's own quiet-start staircase instead
+  — a time-varying AGC gain flattens the reported response toward the
+  staircase (slope well under 1), so regressing reported `rms_dbfs` against
+  the commanded `main_volume_db` across `agc_slope_min_span_db` (default
+  6.0 dB) of commanded-level span plus `agc_slope_min_steps` (default 3)
+  distinct levels and requiring slope `>= agc_slope_threshold` (default 0.7)
+  is direct evidence the whole mic→USB→OS→browser chain held its gain fixed.
+  (Span is the primary gate — a few adjacent 0.75 dB steps give too little
+  x-leverage for the slope to be robust under real mic jitter.) A verified
+  chain locks with semantics identical to an attested one; a slope failure
+  aborts closed (`error="agc_suspected"`) still at deeply quiet levels, and a
+  lock-time-indeterminate verdict (insufficient span/steps — no AGC observed)
+  aborts closed under the distinct `error="agc_indeterminate"` so the phone
+  can render honest non-AGC copy — never trusting an unproven lock. A
+  future manual lock mode still needs its own acknowledged protocol; it must
+  not be inferred from AGC-compressed (verified-untrustworthy) samples.
 - **…with a device-capability fallback.** Because some iOS builds *cannot* honor
   `echoCancellation:false`, a hard refuse could refuse every iPhone. Instead probe
   the realized constraints and, if clean capture is impossible on this device,
@@ -610,6 +841,19 @@ dependency **only at commissioning**; an outage breaks **new** measurements only
 is unreachable. Pre-tone setup/ambient failures publish the same token-scoped
 terminal ramp error as in-ramp failures and remain observable briefly before
 relay cleanup, so the phone cannot be left waiting on a purged session.
+Explicit operator Stop is not a failure: it emits stopped lifecycle events and
+phone/UI state without a failure cue. Level ramps publish terminal
+`ramp.state="cancelled"`; sweeps publish `sweep_cancelled`. The host first
+exposes `stopping`, retains the one relay slot through playback/graph/volume/
+purge cleanup, and only then publishes terminal `stopped`. A level ramp
+atomically enters `committing` after its restored ramp. After a sweep's
+cancellable audio boundary, `finishing` owns phone close/encrypt/upload and
+`committing` owns evidence persistence; both are visible, non-stoppable phases
+with no forward action. If a cancelled
+finalizer exceeds the 45-second recovery warning threshold, the host emits the critical
+`correction.async_cancel_drain_timeout` event and remains fail-closed until the
+finalizer actually exits. A timeout or cleanup failure remains a failure and
+keeps its normal logging and cue policy.
 
 ---
 
@@ -709,22 +953,63 @@ pairing proof, not a guess based on the Pages dashboard.
 
 ---
 
-Last updated: 2026-07-12 — active-crossover capture now uses role-sized sweeps,
-a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR, and the
-server-owned three-repeat admission loop; selecting a UMIK-2 preselects only
-the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
+Last updated: 2026-07-16 — §9's level-ramp AGC gate now verifies chain
+linearity empirically for an unattested (undefined `autoGainControl`) phone
+instead of refusing it client-side; see "Level-ramp AGC is verified, not just
+attested" above and `jasper/audio_measurement/ramp.py`. Prior 2026-07-15 —
+Room defaults are speaker-owned (six positions,
+flat target, balanced strategy, and an automatic main-seat trust repeat). The
+Room level check no longer collects a phone-owned position count; later Room
+links carry signed position/total metadata and authenticate the realized
+microphone against the Pi-retained level identity before playback. The trust
+repeat uses the same Room relay handler and state machine; its generic
+`presentation_variant` changes phone copy only and cannot own sequencing,
+timeout, or admission. Repo-pinned capture page build 20260715.3 adds the
+repeat-specific phone copy and renders host sweep cancellation as expected
+control flow; the page entry and relay-client import carry the matching
+`20260715-3` cache key. A transient phone-side status-poll failure no longer aborts a
+bounded level walk; small page-side control requests abort after three seconds
+through response-body parsing, so returned headers with a stalled body cannot
+freeze mic batches. The Pi uses a separate 1.5-second level-control socket
+timeout plus an async wall-clock deadline,
+publishes at most one queued host event before the next status refresh, and
+bounds one retry plus that status read to 4.75 seconds inside the default
+eight-second feed-loss guard. Those bounded requests share one FIFO worker, and
+a write that outlives the awaiting deadline stays ordered ahead of newer
+writes; an older progress event therefore cannot complete after and replace a
+newer terminal event in the relay's last-write-wins slot. The Pi gives
+idempotent host-progress writes one retry after a timeout, 429, or relay 5xx.
+The level pump still refreshes status after an unconfirmed host-event response;
+slow acknowledgements cannot starve fresh microphone samples and manufacture
+the eight-second feed-loss condition. Delivery degradation and recovery are
+latched in the journal rather than logged on every poll.
+Room sweep-start/complete events use the same narrow, ordered path. An
+unconfirmed response does not discard the capture because the write may already
+have committed; the authenticated ready blob is the completion proof and the
+ordinary upload deadline still detects a truly undelivered terminal event. A
+final relay 4xx, including 429 after the bounded retry, is different: the Worker
+rejects it before commit, so Room aborts before sweep playback instead of
+mislabeling it as ambiguous. Transport timeouts/OSErrors and relay 5xx remain
+the ambiguity-tolerant cases.
+A 2026-07-15 JTS3 UMIK-2 trust repeat exercised that exact case: the
+`sweep_complete` response timed out while the capture page uploaded the WAV.
+External publication is intentionally pending coordinator release.
+Active-crossover capture uses
+role-sized sweeps,
+a signal-bounded controlled quiet crop, paired-window deconvolved per-band SNR,
+and the server-owned three-repeat admission loop; selecting a UMIK-2 preselects
+only the miniDSP UMIK-2 model/mode. Browser labels do not contain a trustworthy
 serial, so the operator must still enter and validate it once; there is no
 automatic calibration-file match. Capture specs are MAC-bound to their fragment
 links and protocol-v2 phone events are authenticated end to end before any
 correctness-critical field can reach playback; protocol 1 remains compatible
-but cannot satisfy v2 evidence. The level stage now preflights and freezes microphone,
-calibration, and room-count setup once; successful leveling restores listening
-volume immediately, sweeps assert the retained target only inside their guarded
-playback windows, and later room links are capture-only with compact binding and
-a sliding 20-minute idle / fixed two-hour absolute browser-storage lifetime;
-the page/Pi compatibility version is checked before tone and published at
-`capture.jasper.tech/version.json` with a page-before-Pi release contract;
-the crossover page is a serialized single-next-action relay flow;
+but cannot satisfy v2 evidence. The level stage preflights and freezes the
+microphone/calibration setup; successful leveling restores listening volume
+immediately, and sweeps assert the retained target only inside their guarded
+playback windows. Crossover retains its compact setup binding and bounded
+browser-storage lifetime. The page/Pi compatibility version is checked before
+tone and published at `capture.jasper.tech/version.json` with a page-before-Pi
+release contract; the crossover page is a serialized single-next-action flow;
 blank legacy `JASPER_CAPTURE_RELAY_BASE` / `JASPER_CAPTURE_ORIGIN` values now
 migrate to the public relay defaults on install/update; explicit
 `disabled`/`off`/`0`/`none` remains the persistent on-Pi fallback opt-out. Prior

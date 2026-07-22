@@ -81,7 +81,9 @@ JASPER_SERVICE_GROUPS = {
     "jasper-fanin.service": "Audio",
     "jasper-outputd.service": "Audio",
     "jasper-mux.service": "Audio",
+    "jasper-usbgadget.service": "Audio",
     "jasper-usbsink.service": "Audio",
+    "jasper-usbsink-volume.service": "Audio",
     "jasper-control.service": "Control",
     "jasper-web.service": "Control",
     "jasper-system-web.service": "Control",
@@ -278,6 +280,19 @@ class SystemSampler:
                 # memory.current, not process RSS; None means unreadable
                 # (race with cgroup teardown). 100% = 1 core saturated.
                 "services": list(self._services_snapshot),
+            }
+
+    def service_states_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Return the already-cached 30 s systemd state without re-probing.
+
+        Audio health uses this narrow view to distinguish an idle source from
+        a failed renderer. It intentionally shares this sampler's systemctl
+        work instead of adding another always-on subprocess cadence.
+        """
+        with self._lock:
+            return {
+                unit: dict(state)
+                for unit, state in self._service_state_snapshot.items()
             }
 
     def _run(self) -> None:

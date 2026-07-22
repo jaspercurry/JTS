@@ -32,6 +32,18 @@ COMPARISON_SET_SCHEMA_VERSION = 2
 PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
 
+# Capture protocol versions with the acknowledgement machinery a placement
+# proof depends on (protocol 1 has none -- see
+# jasper.capture_relay.spec._validate_acknowledgement's "acknowledgement
+# requires capture protocol 2"). Protocol 3 (SPEC W2.3's session-spanning
+# capture plan) still authenticates the SAME per-capture acknowledgement
+# through the SAME validate_capture_acknowledgement/on_armed choreography
+# v2 uses -- it only changes how many captures share one relay session, not
+# what proves placement -- so a v3-sourced proof is equally trustworthy.
+# Explicit allowlist (not >= 2): a future protocol 4 must be a deliberate
+# addition here, never a silent pass-through.
+PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
+
 # Capture geometry is speaker policy, never browser input. The relay verifies
 # one of these policy ids before playback and persists it in placement_proof;
 # analysis derives the DSP geometry from that server-owned proof. Lane B's
@@ -478,6 +490,35 @@ def driver_level_lock(
     return value if _driver_level_lock_valid(target_id, value) else None
 
 
+def quietest_locked_main_volume(
+    locked_volume_by_role: Mapping[str, Any],
+    required_roles: set[str] | frozenset[str],
+) -> tuple[str, float] | None:
+    """Return the deterministic quietest complete role lock.
+
+    This is the one reduction shared by the live level lease and the internal
+    commissioning host.  Callers still own where their locks came from; this
+    helper only proves a complete, finite, non-positive role set and chooses
+    the most attenuated value.
+    """
+
+    roles = frozenset(str(role).strip().lower() for role in required_roles)
+    if not roles or set(locked_volume_by_role) != roles:
+        return None
+    normalized: dict[str, float] = {}
+    for role in roles:
+        value = locked_volume_by_role.get(role)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) > 0.0
+        ):
+            return None
+        normalized[role] = float(value)
+    return min(normalized.items(), key=lambda item: (item[1], item[0]))
+
+
 def normalized_placement_proof(
     *,
     policy_id: str,
@@ -585,7 +626,8 @@ def placement_proof_shape_valid(
         )
         and isinstance(proof.get("relay_session_id"), str)
         and proof.get("relay_session_id")
-        and proof.get("capture_protocol_version") == 2
+        and proof.get("capture_protocol_version")
+        in PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS
         and isinstance(proof.get("capture_page_build"), str)
         and re.fullmatch(r"[0-9]{8}\.[0-9]+", proof["capture_page_build"])
         and proof.get("speaker_group_id") == speaker_group_id

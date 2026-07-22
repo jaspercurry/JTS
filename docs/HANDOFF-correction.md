@@ -1,19 +1,369 @@
 # HANDOFF — correction measurement hub at `/correction/`
 
-> If you are picking this up across sessions: this is the canonical
-> planning + design document for the HTTPS correction measurement surface. Read
-> the **Status** and **Architecture decisions** sections first. The
-> phased plan is the work tracker — when a phase ships, mark it ✅ and
-> update the Status. The "Things to ignore" sections are deliberate
-> scope discipline, not omissions.
+> This is the canonical operational reference for the HTTPS correction
+> measurement surface: read **Status** first for what ships, current runtime
+> boundaries, and hardware evidence. Intended Room product states, whole-page
+> visibility, defaults, and language are canonical in
+> [`room-correction-information-design.md`](room-correction-information-design.md).
+> Historical phase narratives below remain useful as implementation
+> archaeology, not current planning authority.
 
 > The crossover builder's user journey, manual/automatic replacement semantics,
 > and parameter ownership are canonical in
 > [`active-crossover-information-design.md`](active-crossover-information-design.md).
-> This handoff owns the HTTPS measurement surface and room-correction behavior.
+> This handoff owns shipped HTTPS measurement and room-correction behavior.
 
 ## Status
 
+- ✅ **Crossover measurement is now the v2 conductor flow (default flipped
+  2026-07-19).** The `/correction/crossover/` measurement + tuning flow is
+  the three-capture conductor (CHECK → MEASURE → automatic APPLYING →
+  VERIFY, one mic position). Its canonical operational truth — how to run it, the file
+  map, invariants, failure taxonomy, session-state paths, and the W6 bug
+  catalog — lives in
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+  this doc does not restate it. The **legacy per-driver crossover flow is
+  deprecated**: reachable only via the explicit opt-out
+  `JASPER_CROSSOVER_FLOW=legacy`, and scheduled for deletion (design-doc
+  wave W5b). The legacy per-driver measurement details that remain below
+  (level-match ramps, near-field/reference-axis geometry, `/crossover/*`
+  per-driver endpoints, scoped reset) describe that deprecated path.
+- 🧱 **Wave-2 household-mic persistence — loop complete (Pi record + phone
+  one-tap confirm).** Before this, nothing about the measurement mic
+  survived across sessions: the phone relay's setup validates against a
+  per-run `setup_binding_id` (a fresh `session_id`/`context_id` every run),
+  and an uploaded calibration is stored with `serial=None`
+  (`store_calibration(provider="manual_upload", ...)`), so the vendor-cache
+  lookup keyed by `serial_hash` + model + orientation could never reach it.
+  Every session made the household re-type a serial or re-upload a file.
+  `jasper.correction.household_mic` now owns one durable record —
+  `/var/lib/jasper/correction/household_mic.json`, atomic tempfile+rename,
+  mode 0644, no secrets (a `serial_hash` plus an optional last-4
+  `serial_display`) — written after every SUCCESSFULLY established
+  calibration AND after every stored-mode re-confirm (the one-tap below),
+  from both the phone-relay flow (room and crossover share
+  `_relay_calibration_from_setup` in `jasper/web/correction_setup.py`) and
+  the local/laptop flow (`/calibration/fetch`, `/calibration/upload`).
+  `jasper.audio_measurement.calibration.find_stored_calibration_by_content_hash`
+  is the additive lookup that makes an upload (no serial) resolvable again
+  purely from its content hash. Two consumers read the record: the
+  `CaptureSpec.default_setup.calibration` OPTIONAL prefill hint
+  (`jasper/capture_relay/spec.py`) and the local `/correction/` wizard's
+  server-rendered "Using {label} — change" banner. The phone side SHIPPED
+  (#1560): the capture page's one-tap "Using {label} · {serial_display} —
+  one tap to confirm" screen (`capture-page/js/main.js`'s
+  `renderCalibrationConfirm`) reads the hint and submits
+  `setup.calibration = {mode: "stored", calibration_id, model}`, which the
+  Pi resolves via `resolve_household_mic_calibration` in the
+  `mode="stored"` branch of `_relay_calibration_from_setup` — gated on the
+  hint's `resolvable: true` marker, minted only when the `calibration_id`
+  resolves on disk at spec-build time (a second, fresh resolver call). No
+  marker (older Pi build, or a record gone stale) → the page renders its
+  plain full picker; a stale record rejected at submit time falls back to
+  the same picker with a plain sentence — never a dead end. An older
+  capture page still ignores unknown spec fields, so every deploy order is
+  safe. A session that establishes a DIFFERENT mic is never blocked; the
+  new success replaces the record
+  (`event=correction.household_mic_replaced`).
+- 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
+  2026-07-19).** Every v2 crossover capture logged
+  `crossover_v2_uncalibrated_capture` even with a resolvable stored mic
+  (e.g. a UMIK-2 by serial). Root cause: the hint above only ever reached
+  `level_ramp`/`room_sweep` specs — the ONLY screen that reads
+  `spec.default_setup.calibration` is `renderCalibration`'s one-tap confirm,
+  which a `crossover_sweep` capture (legacy per-driver OR the v2
+  capture-plan session) never renders (`boot()` goes straight to the fixed
+  DATA screen for that kind). The legacy per-driver flow gets away with this
+  because its calibration choice comes from the `level_ramp` level-match
+  page the household visits FIRST in the same phone tab (the capture page's
+  `setupState` module variable survives the in-tab hash navigation into the
+  driver sweeps that follow); a v2 session has no preceding page — by
+  design, CHECK's own pilot pairs solve gain, so the old level-match step
+  doesn't exist — so it never had a carrier for the hint. Fix:
+  `build_crossover_sweep_spec` gained the same `default_setup_calibration`
+  parameter `build_level_ramp_spec` already has;
+  `jasper.web.correction_crossover_v2.default_setup_calibration_for_v2()`
+  resolves it (reusing `_default_setup_calibration_for_spec`) and threads it
+  into `build_v2_session_spec`/`build_v2_verify_session_spec` via their
+  existing `**spec_kwargs` forward; the capture page applies it SILENTLY
+  (`applyDefaultCalibrationHintSilently`) — no extra tap, since a v2 session
+  is designed around a minimal, fixed tap count and there is no picker
+  screen to hang a confirm on. Never overrides an explicit choice already
+  present for the page load.
+- 🧱 **v2 calibration handoff, page half (W6.13, 2026-07-19).** Round-5
+  hardware evidence showed `crossover_v2_uncalibrated_capture phase=check`
+  even with the W6.12 fix above deployed: the silently-applied calibration
+  never reached the wire until the plan loop's `armed` event
+  (`runPlanCapture`), which posts well AFTER the first `begin_capture` is
+  authorized and the mic starts recording — a v2 session has no
+  `validateSetupBeforeContinue`-style confirm-screen post (unlike
+  `level_ramp`) to carry it earlier. Fix: `setup: setupWirePayload()` now
+  PIGGYBACKS on every `begin_capture` post
+  (`beginAndAwaitAuthorization`) — not a separate standalone event, because
+  the relay's phone-event slot is last-write-wins and a standalone setup
+  post would be overwritten by the begin within one write-RTT, usually
+  before the Pi's ~0.75 s poll saw it (the same overwrite class the
+  ambient_stats piggyback avoids). `jasper.capture_relay.session.
+  run_capture_plan`'s sticky `PollState.setup` accumulator therefore has
+  the household-mic choice from round 1 (CHECK) no matter which event a Pi
+  poll lands on; `armed` still carries the same setup redundantly.
+  Diagnostic riding along (Pi side): the
+  `crossover_v2_uncalibrated_capture` WARN now carries
+  `setup_mode`/`setup_calibration_id` (redacted-safe — never a serial or an
+  uploaded file body; `_setup_calibration_observation` in
+  `jasper/web/correction_crossover_v2.py`), so the next live CHECK settles
+  empirically whether the phone sent nothing (`setup_mode=absent`) or a
+  choice that didn't resolve. `capture_page_build` bumped to `20260719.4` —
+  needs a Cloudflare Pages deploy to reach phones. Note the round-5
+  mechanism is not fully proven: the `armed` event has carried setup since
+  the phone-relay flow shipped, so on-device round-6 confirmation (with the
+  new WARN fields) is owed.
+- 🧱 **Wave 2 playback core extracted; Room behavior retained.**
+  `jasper.audio_measurement.playback` now owns policy-free WAV-process cleanup
+  and deterministic sine-WAV generation. This Room module keeps
+  `correction_substream`, `/var/lib/jasper/correction/tones`, and the historical
+  public call/exception surface in `jasper.correction.playback`. Generated tone
+  names and PCM bytes are pinned unchanged. The shared entry points require an
+  explicit device, timeout, and cache; they do not choose an excitation or prove
+  current admission. No browser/Active flow changed, and no hardware behavior
+  was revalidated.
+- 🧱 **Production isolated and summed Active evidence ingress reachable; legacy raw summed routes closed.**
+  The correction relay's driver leg now receives a unique, persisted
+  playback-role handoff from Active's Shared-admission adapter and passes it to
+  capture persistence as an explicit server-owned argument. One bounded DSP
+  writer lock covers transient graph load, fresh graph/volume proof, exact WAV
+  playback, and restoration; cancellation cannot release the boundary before
+  restore finishes. Historical bundles without the authority marker are never
+  upgraded. Legacy direct summed routes still refuse before graph load with
+  `active_summed_persisted_admission_unavailable`. The production relay accepts
+  only `kind=summed`, then passes the real recorder WAV and authenticated
+  fixed-axis acknowledgement to Active's typed host; browser payloads cannot
+  select a region, polarity, graph, delay, attempt, ordinal, or admission. The
+  Crossover page persists explicit signed geometry per plan region. Calibration
+  and recorder identity reopen from the durable comparison set, so service
+  restart does not weaken the binding. Each transient live mutation
+  has a durable exact predecessor pointer and terminal restore marker. A
+  crash-released execution mutex spans runtime through canonical commit; restart
+  restores a pending predecessor before new work or leaves the run durably
+  `blocked_live_state_unknown`. The same exact run plan now has a strict
+  run-scoped isolated-driver aggregate requiring three fresh admitted captures
+  per physical driver and deep child/admission verification. The current
+  production fixed-axis relay now populates that authority from its real WAV,
+  calibration, live graph, and one-shot generation/playback admissions. Each
+  physical driver keeps one resumable durable attempt; `/crossover/status`
+  projects accepted/required progress and the final aggregate fingerprint,
+  refuses a thin fixed-axis terminal set, and idempotently finishes derived
+  anchors after an interrupted typed-capture publication. Repeated presentation
+  polls read typed complete anchors only; live geometry/capture/evaluator
+  boundaries still verify every child byte and admission.
+  Current fail-soft driver records are not migrated into it. This is a
+  software-only change; no sound or
+  hardware was exercised.
+- 🧱 **Wave 3 Active run authority is durable and visible; internal measured
+  progression is hardware-free.** When crossover level finalization publishes a
+  fresh authoritative comparison set with a production bundle session id,
+  correction-web now starts one Active commissioning run bound to that exact
+  session and comparison fingerprint. The bounded atomic store retains the run
+  id, process-owner generation, immutable generation-bound attempt slots, and a
+  sequenced nine-state transition journal. Service startup independently
+  claims the repeat, level-run, and commissioning-run owners; a failure in one
+  claim does not skip the others, and prior-generation callbacks are stale.
+  `/crossover/status` exposes only safe `commissioning_run` status: `not_started`,
+  exact `current`, comparison-`stale`, or fail-closed `unavailable`, plus the
+  run/lifecycle summary without process owner id or evidence payloads. `current`
+  additionally requires the comparison's complete schema/fingerprint and exact
+  current topology/protected-profile binding. A failure to start the durable
+  run revokes the just-published comparison/repeat authority. The original
+  Wave 3 slice stopped at an `unconfigured` web-created run and an internal
+  synthetic host. That boundary is now superseded by the production isolated
+  and summed relay, exact candidate publication/review, and reviewed
+  apply/readback/restore and post-apply receipt integration described in the
+  current Active→Room status below. No sound, live graph mutation, or hardware
+  was exercised while wiring those software paths.
+- ✅ **Room R1 — envelope v9 owns whole-page visibility, truthful entry
+  failures, and disclosed run defaults (hardware-free;
+  real-device browser pass pending).** `jasper.correction.envelope` now emits
+  one exact ordered `sections` list from a closed 15-name Room vocabulary.
+  The browser validates schema `9`, screen, unique known sections, bounded
+  blocker/failure codes, safe recovery paths, and the action endpoint before
+  rendering; a missing, old, future, or
+  malformed envelope clears every section and forward action, shows one
+  generic refresh sentence, and spends at most one retry credit. There is no
+  browser screen-to-section map or state-to-action fallback. Unknown session
+  states fail closed instead of becoming idle/Start. Report discovery is
+  limited to idle/result envelope edges and never enters the active 900 ms
+  poll. Idle entry facts refresh every 10 seconds through the lightweight
+  `/entry-status` route because external speaker readiness, current correction,
+  or a Room run in another tab can change without a local state transition.
+  The relay panel/dead Start, open placement disclosure, Advanced
+  disclosure, mic-panel wrapper, unconditional reports wrapper, certificate
+  install disclosure, old measure mega-wrapper, and duplicate forward buttons
+  were deleted; required mechanics moved into the envelope-owned roots. The
+  local backup keeps only one certificate-warning sentence. Because local mic
+  permission now follows Start, `POST /local-capture/setup` binds the realized
+  device/calibration to the parked live session before level matching and the
+  first noise upload. The human-paced permission step suspends the stranded-
+  capture watchdog; it stays suspended through microphone setup and the human-
+  paced level walk, then re-arms on the session's asyncio loop immediately
+  before the first noise body is read. Cancel remains available in the
+  persistent wizard chrome throughout setup, including while a running local
+  level walk also exposes its scoped Lock/Cancel controls. Reset and failure
+  paths cancel and await that ramp's listening-volume restore before graph
+  rollback; terminal level authority is published only after tone and volume
+  cleanup finish. Exact
+  identity retries are idempotent; ambiguous bind responses are retried from
+  the same per-tab identity, while relay, later-position, identity-changing,
+  unsafe, and stale-run mutations fail before capture. The upload and
+  autolevel routes enforce the completed local binding as an admission gate.
+  The local-browser auto-lock keeps Room's fixed −26…−18 dBFS ESS-headroom
+  window, starts watching only after the server confirms the bounded tone/ramp,
+  and additionally requires RMS at least the shared
+  `MeasurementRamp.from_env().trust_margin_db` above the measured ambient.
+  If room noise makes both conditions impossible, automatic lock stays off and
+  the visible manual Lock/retry controls remain available.
+  The persistent shell also exposes **Stop measurement** throughout
+  preparation/sweep/verification audio; the server cancels and reaps the exact
+  playback task (including `aplay`) before restoring the graph. CPU-only
+  analysis remains non-cancellable so its worker cannot mutate a reset session.
+  Crossover relay level and sweep screens expose the same visible Stop via
+  `POST /crossover/relay-cancel`. The shared relay slot reports `stopping` and
+  withholds every forward action until the polling worker, protected playback,
+  graph/volume rollback, and relay cleanup have drained; only then does it
+  publish terminal `stopped`. Explicit Stop is expected control flow and emits
+  terminal `ramp.state="cancelled"` for level runs or `sweep_cancelled` for
+  sweeps, with no failure cue. A restored level ramp atomically enters
+  `committing`; after sweep playback/rollback, non-stoppable `finishing`
+  protects phone close/encrypt/upload from a relay DELETE race before verified
+  persistence uses `committing`. The full lifecycle and exact Stop boundary are canonical in
+  [phone-mic-relay-plan.md](phone-mic-relay-plan.md).
+  `_run_async` likewise cancels on its caller deadline and waits for the
+  coroutine's finalizer before returning the timeout. If the existing
+  45-second recovery warning threshold is exceeded, it logs critical
+  `event=correction.async_cancel_drain_timeout` and remains fail-closed until
+  cleanup exits. A terminal HTTP/relay result must not stand in for cleanup
+  that is still running.
+  Idle envelopes consume the Active-owned, versioned setup decision. They admit
+  passive/not-required, an explicitly applied manual profile, or automatic
+  verified-receipt authority. Missing, malformed, incomplete, or unknown
+  authority withholds Start; Room never reconstructs graph or measurement
+  evidence and never relabels automatic tuning as manual. Manual authority is
+  positive only when Active's semantic Layer-A fingerprint of CamillaDSP's
+  fresh running `active_raw` readback matches a recomposition from the
+  immutable applied snapshot on the solo active runtime. Active derives the
+  grouped scope from fresh grouping membership, for both leaders and
+  followers; it does not depend on a `# Source:` comment that CamillaDSP's
+  `active_raw` readback removes. Grouped active is an explicit v1 unsupported
+  decision because the leader program bake is not the driver-domain Layer A;
+  `/rooms/` is the recovery path, and a later
+  Active-owned identity must bind both Camilla daemons before Room can support
+  that runtime. The
+  fingerprint includes output-device settings and the complete driver-domain
+  mixer/pipeline/filter suffix, while deliberately excluding the mutable
+  pre-split Room/preference prefix. A mismatch or unreadable graph withholds
+  Room Start and asks for an explicit crossover reapply; ordinary volume and
+  grouping readiness are not redefined by this Room-specific binding. A valid Active
+  recovery path is carried through; otherwise **Check again** reloads the Room
+  entry. `/start` repeats the same check before reading the body or reserving a
+  session, carries Active's opaque loaded Layer-A identity, and compares a fresh
+  Active decision again inside the locked measurement-baseline preparation.
+  Apply repeats that comparison inside its shared writer boundary, so a later
+  legal DSP writer cannot substitute a different crossover during a Room run.
+  Reset and automatic revert remain independently available exact restoration
+  paths and do not require fresh Room authority. At Start, Room snapshots
+  CamillaDSP's running `active_raw` into a unique, safety-checked, validated
+  artifact; the reported durable predecessor filename remains provenance only
+  because an Active candidate build may rewrite that name without loading it.
+  A mid-flight cancellation restores the immutable artifact while Camilla still
+  runs Room's measurement graph, or while fresh `active_raw` proves that the
+  same-name predecessor is still the graph captured at Start. If a legal Active
+  apply has replaced it, or for an applied/verified correction, reversal
+  snapshots the fresh running graph and emits Layer B removal into a separate
+  unique candidate. A failed or rejected re-emit cannot alter the running
+  filename or become its own fallback; it may retain only the pre-emit immutable
+  snapshot when that snapshot is managed and already contains no Room filters.
+  They resolve that target only after acquiring the shared
+  DSP-writer lock, so a concurrent legal Active apply cannot be overwritten by
+  a target built from stale Layer A. Measurement-baseline load, Apply, Reset,
+  and automatic revert wait for a terminal result after writer admission.
+  Camilla transport attempts and shared writer-lock admission are
+  bounded; a cancelled or timed-out waiter cannot acquire later. Room does not
+  apply an outer deadline after admission that could cancel between graph
+  mutation and rollback/state persistence.
+  Active's
+  `unknown` status remains retryable/503,
+  not mislabeled as ordinary incomplete setup. `jasper.correction.failures`
+  owns stable homeowner codes/copy for Start, relay, tuning, session, apply,
+  and restore failures; raw HTTP/session/provider details remain in structured
+  diagnostics and forensic reports, not primary wizard panels. Fail-severity
+  review evidence rejects both normal Apply and tuning-proposal Apply at the
+  HTTP mutation seam as well as withholding their browser actions, while
+  an exactly failed automatic revert still says the correction is **STILL
+  APPLIED**. The same envelope now owns a typed `run_defaults` block. A fresh
+  run is six positions against the flat target with the balanced strategy and
+  an automatic same-seat trust repeat; the bounded household choices are one,
+  three, or six positions and safe or balanced strategy. The page renders that
+  summary before sound, and `/start` resolves and validates the same
+  server-owned policy instead of accepting browser fallbacks. Relay is the
+  default transport when configured, while the same-device path remains an
+  explicit local backup. The phone's setup position count is never Room
+  authority. Follow-up relay sweeps use signed capture-only specs carrying
+  position/total metadata, then authenticate the actual microphone against the
+  level-check identity before playback. The automatic trust repeat uses the
+  same `/relay/capture` route and Room session state machine; it does not
+  introduce another browser timeout authority. `/status` adds the compatible
+  `local_capture_setup_bound` mechanic,
+  and the existing bundle `info.json` is refreshed with the realized local
+  microphone/calibration binding. Shared-owned bundle/playback code, DSP
+  design/apply safety, bundle schema, raw audio artifacts, and relay protocol
+  bytes are unchanged.
+- ✅ **Room result presentation has one owner (hardware-free; real-device
+  browser pass pending).** `POST /upload-capture` now acknowledges only the
+  committed session/mechanism state. The browser then refreshes the Room
+  envelope and renders its exact sections, verdict, action, already-smoothed
+  curves, and classified helped/hurt fill. The main flow no longer carries a
+  second `/status`-derived result contract, client smoothing, recommended-next-
+  action logic, or duplicate confidence/runtime/design/PEQ panels. Those full
+  evidence records remain persisted; the useful trust summary remains visible
+  in the read-only session report. The optional tuning assistant and all three
+  `/interpret`, `/propose`, and `/propose/apply` routes are unchanged;
+  deterministic acceptance, apply, verification, and automatic revert remain
+  the authorities.
+- ✅ **Active→Room receipt authority is production-wired (hardware-free; live
+  JTS3 pass pending).** Active owns a strict positive
+  `CommissioningEligibilityReceipt` type whose required combined-speaker
+  targets are derived only from a current, evaluated-`verified`
+  `OutputTopology`; blocked or physically unverified output maps cannot create
+  positive target authority. Each required target
+  must carry a passing post-apply verdict over exactly three distinct,
+  excitation-admitted, fixed-reference-axis captures from one commissioning
+  session and threshold profile. The receipt also binds the confirmed driver
+  safety profile, exact applied candidate, expected and freshly read-back
+  normalized graph, exact predecessor state, and an honest retained-apply
+  rollback outcome bound to that same operation, mutation, and observed applied
+  graph. An attempted/unknown mutation, a failed restore, or even a
+  successful rollback cannot mint this positive receipt.
+
+  Active's production flow now collects the required repeats from the retained
+  applied graph without another mutation, persists and reopens the receipt,
+  and transitions the exact run to `verified`. `active_speaker.setup_status`
+  exposes one explicit authority kind: `manual_applied_profile` for the manual
+  path or `automatic_commissioning_receipt` for this automatic path. Room
+  consumes that decision before session reservation; it neither parses the
+  receipt nor inspects historical B2b evidence. The nine-state
+  lifecycle now has a separate durable, bundle-backed current-run store and a
+  fail-closed `commissioning_run` projection on `/crossover/status`; startup
+  claims its owner generation so stale callbacks cannot commit. No browser route
+  reserves evidence attempts, and this status is not Room authority. The typed
+  internal host can reserve generation-bound region attempts and advance an
+  exact synthetic-admitted composition through `protected` to `measured`, with
+  cross-process issuance CAS and exact restore/restart recovery. The Active
+  integration now also compiles and applies the exact reviewed candidate under
+  the existing DSP writer lock, persists fresh protected graph/path/volume
+  readback proof, and either retains it as `applied_unverified` or restores the
+  exact predecessor before unlock. No generic graph
+  transaction landed; exact rollback state reuses
+  `audio_measurement.null_walk.DspPredecessor`. No hardware behavior was changed
+  or revalidated by this slice.
 - ✅ **P2 — relay-closed level-match ramp (hardware + software complete).**
   The settle-based `RampController` /
   `MeasurementRamp` kernel lives in
@@ -34,7 +384,15 @@
   preferred-window shortfall. Room's listening-position owner allows a
   +15 dB rise up to the unchanged 0 dB hard ceiling because its measurement
   stimulus is already −12 dBFS; crossover/near-field keeps the shared +12/−3
-  cap. The owning flow surfaces the shortfall and
+  cap. Both relay and local-browser Room capture target the same-width −26 to
+  −18 dBFS microphone window, 6 dB below the shared continuous-tone window.
+  That Room-owned reserve was pinned after two 2026-07-15 JTS3 UMIK-2 runs: a
+  −17.15 dBFS level-tone lock let the following full-band ESS clip, and the
+  initial 3 dB-lower Room window still produced a −15.86 dBFS RMS sweep with
+  0.1856% clipped samples. Its 25.49 dB estimated SNR left room for the extra
+  attenuation, while the capture gate correctly refused both clipped inputs.
+  Active near-field commissioning keeps the shared window.
+  The owning flow surfaces the shortfall and
   downstream sweep-quality gates still decide whether the evidence is usable.
   The
   correction adapter
@@ -52,8 +410,63 @@
   this is per-run — an overlapping run is refused, never a stomped
   slot) and exposes `lock_level_match` / `cancel_level_match`, so a
   manual controller seams remain available to trusted adapters, while the
-  shipped phone flow refuses *before playing a tone* when the browser cannot
-  prove AGC is disabled. The relay validates the selected mic/calibration once,
+  shipped phone flow refuses *before playing a tone* only when the browser
+  AFFIRMATIVELY reports AGC on (`autoGainControl === true`). A browser that
+  never reports the setting either way (`undefined`/`null` — every WebKit/iOS
+  build; `getSettings()` omits the key) is no longer refused: it proceeds as
+  *unattested*, posting `agc_frozen=false` + `agc_unattested=true` on every
+  level batch, and `RampController` verifies chain linearity **empirically**
+  from the ramp's own quiet-start staircase instead of trusting a browser flag
+  iOS never supplies — regress reported `rms_dbfs` against the commanded
+  `main_volume_db` (both dB) once evidence covers `agc_slope_min_span_db`
+  (default 6.0 dB) of commanded-level span (the primary gate — span is the
+  regression's x-leverage; a few adjacent steps under real mic jitter could
+  push a genuinely linear chain under threshold by chance) AND
+  `agc_slope_min_steps` (default 3) distinct commanded levels (the secondary
+  floor); a slope `>= agc_slope_threshold` (default 0.7) verifies the chain
+  (`RampData.agc_verified = True`, lock semantics identical to attested — see
+  `RampData.agc_trusted`); a lower slope on the FIRST evidence window is held
+  open, not terminal — the 2026-07-16 jts3 finding: a 3-step/6.65 dB-span
+  estimate at slope 0.644 (just under 0.70) refused a mic that passed
+  cleanly with more evidence (4 steps) in a different flow twenty minutes
+  later, so a single marginal estimate is not enough to refuse a
+  measurement. `RampController._update_agc_evidence` records the marginal
+  `(slope, steps)` in `_LoopVars.agc_marginal` and logs `ramp_agc_marginal`
+  (INFO, single emitter), then holds `agc_verified` at `None` until the
+  staircase produces at least one more distinct commanded level; only a
+  SECOND failing evaluation — guaranteeing >= 4 distinct commanded levels —
+  sets `agc_verified = False` and the run's own `_terminal(...)` call fires
+  the single `ramp_agc_suspected` emission (a 2026-07-16 pre-fix bug had this
+  event logged TWICE, from both `_update_agc_evidence` and the terminal, with
+  two different field orders — now one emitter, one order), still at deeply
+  quiet levels (now ~span+two-steps of where reports first cleared the trust
+  floor). `RampData.error_detail` carries both measured slopes and the final
+  step count (e.g. `"slopes 0.64, 0.61 over 4 steps"`) so the refusal names
+  its evidence, not just its code — the SAME threshold, lock windows, ramp
+  rates, and safety timeout are unchanged. The homeowner-facing translation
+  of `(error, error_detail)` lives in exactly one place,
+  `jasper.correction.level_match.describe_ramp_refusal` — the relay web
+  adapter raises the typed `LevelMatchRefused(code, user_message)` instead of
+  a bare `ValueError(detail)` (the phone terminal and
+  `capture_relay.adapter_failed`'s `reason=` used to carry the raw code / the
+  exception class name with no translation), and the Room envelope
+  (`jasper.correction.envelope._level_match_refusal_failure`) surfaces the
+  same mapped message as `failure` instead of silently showing nothing while
+  the level is unlocked. Insufficient span/steps by lock
+  time (INDETERMINATE, e.g. a driver capped early) also fails closed — under
+  the DISTINCT wire code `error="agc_indeterminate"` for an ordinary window
+  lock (no AGC was observed, only insufficient evidence, and the phone
+  renders different copy for the two), or to the pre-existing
+  `bounded_low_evidence_insufficient` `MAXED_OUT` for the degraded cap policy
+  — never a silently-trusted lock either way. `agc_unattested=true` is encoded
+  ALONGSIDE `agc_frozen=false` (never `agc_frozen=true`) specifically so an
+  older Pi that has not learned the new field still falls back to its
+  pre-existing "never trust an AGC-compressed sample" behavior instead of
+  silently trusting an unproven chain — the capture page and the Pi deploy
+  independently, and this is what keeps a new-page/old-server window safe (an
+  old-page/new-server window is trivially safe too, since the old page still
+  refuses undefined-AGC client-side before ever posting a batch). The relay
+  validates the selected mic/calibration once,
   freezes a compact setup binding, and waits for a token-scoped rolling ambient
   median (ten finite 200 ms samples / two seconds) before the tone starts. A
   failed ramp exposes received/finite/trusted/drop counts plus maximum observed
@@ -64,11 +477,45 @@
   target but restores the user's original listening volume immediately. Each
   room/verify/crossover sweep reasserts the target only inside
   `measurement_window()` and restores the original in that window's `finally`,
-  before renderers resume. Ensure/restore share one async transition lock;
+  before household music lanes resume. Ensure/restore share one async transition lock;
   safety does not depend on an in-memory expiry timer. All
   synthetic — H1 (on-device settle cadence + iOS/Android AGC-freeze
   confirmation) supplies the real threshold values; the `JASPER_RAMP_*`
   env knobs in `.env.example` are documented placeholders until then.
+  **Phone false-timeout on a locked ramp — root-caused 2026-07-15 (JTS3
+  tweeter driver ramp).** The server locked at 33.8 s (well inside its 58 s
+  safety timeout) but the phone showed "did not finish the level check
+  before the timeout". Journal + code forensics: the relay worker's
+  `postEvent`/`postHostEvent` each write back the WHOLE session meta from
+  their own request-start read, so a phone batch post that read the meta
+  just before the Pi's terminal write reverts `host_event` when it lands.
+  The Pi's terminal re-post latch used to STOP on the first confirmed
+  read-back (the tweeter confirmed within ~1.5 s; the woofer coincidentally
+  re-posted for ~4 s and survived) — after that one revert, nobody re-posted,
+  the phone never saw the terminal, and its own deadline eventually fired.
+  Three changes landed: (1) the latch in `LevelMatchSession.run_for_geometry`
+  ([`jasper/correction/level_match.py`](../jasper/correction/level_match.py))
+  now always runs the full bounded `TERMINAL_POST_ATTEMPTS` schedule — the
+  read-back is observability (`level_match_done terminal_echoed=`), not an
+  exit; (2) the phone's `runLevelRampProtocol` deadline is per-phase: armed
+  at Start for the arming phase and RE-ARMED once when the Pi's ramp first
+  becomes visible for this run token, so pre-ramp overhead (setup echo,
+  ambient baseline, DSP commissioning load) no longer shrinks the ramp's
+  budget — matching the server's ramp_start-anchored safety timeout; (3) the
+  crossover level-match relay spec's `hard_timeout_ms` is now derived —
+  `CrossoverLevelLease.phone_hard_timeout_ms(geometry)`
+  ([`jasper/web/correction_crossover_backend.py`](../jasper/web/correction_crossover_backend.py))
+  computes it from the SAME `MeasurementRamp` config `run_level_match`
+  executes plus `crossover_level_run.PHONE_TRANSPORT_GRACE_S` (30 s), so the
+  client budget tracks env-tuned ramp knobs instead of a flat constant.
+  The durable fix for the revert race — per-field storage in the relay worker,
+  separate R2 keys `event/<id>` / `hostevent/<id>` instead of both living
+  inside `meta/<id>` — has landed in code
+  ([`relay/src/worker.js`](../relay/src/worker.js); see "Storage layout" in
+  [`relay/README.md`](../relay/README.md)), pending the relay Worker deploy
+  (tracked separately from a JTS Pi deploy). Residual (flagged, not fixed):
+  Room's listening-position spec still carries the flat `hard_timeout_ms`
+  default (benign under the per-phase re-arm, which Room shares).
   Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
 - 🧪 **P4 — deterministic verify-acceptance loop (hardware-free complete,
@@ -129,7 +576,8 @@
   then continue to Room. The browser is a thin
   renderer/dispatcher: it has no local recorder and reads one envelope snapshot,
   so relay state and the one next action cannot disagree. `POST
-  /crossover/relay-capture` carries driver/summed sweeps over the **same**
+  /crossover/relay-capture` carries driver sweeps (and retains the summed
+  transport shape, currently fail-closed before playback) over the **same**
   phone-mic relay transport + `record_*_capture` analysis seam the room/sync
   flows use. The consume path
   reads the play payload's REAL shape (top-level `status` + nested
@@ -140,17 +588,41 @@
   obsolete raw-WAV `POST /crossover/driver-capture` route was deleted when
   the repeat controller landed: it had no product caller and could provide
   neither the relay's controlled pre-sweep quiet interval nor its server-owned repeat
-  sequence. Driver evidence has one production ingress; the direct summed
-  diagnostic route remains separate.
+  sequence. Driver evidence has one production ingress. Both legacy direct
+  summed routes now return 409 before reading a body, creating a backend, or
+  touching volume/graph/audio; the summed relay leg parses only its bounded JSON
+  discriminator before the same pre-session refusal.
   `crossover_sweep` capture spec's stimulus length derives from the
   kernel-side per-driver signal plan (12 s woofer/subwoofer, 8 s midrange,
   4 s tweeter; one sweep definition — the phone copy matches the sweep the Pi plays; the
   deconv reference always regenerated from the played `sweep_meta`, so
-  phone is a pure recorder). Driver recordings include a 14-second controlled
-  quiet interval before playback and their hard deadline is 45 s; the phone's
-  `duration_ms` remains only a backstop because normal completion follows the
-  Pi's `sweep_complete` event. The generic builder retains the 30 s floor like `room_sweep`'s
-  `hard_timeout_ms` (the normal stop is the Pi's `sweep_complete` relay
+  phone is a pure recorder). Driver recordings include a controlled quiet
+  interval before playback, right-sized per driver (that driver's own sweep
+  duration + 2 s — 14 s woofer/subwoofer, 10 s midrange, 6 s tweeter; see
+  `test_signal_plan.driver_ambient_duration_s`, landed 2026-07-16 to replace a
+  fixed 14 s pause that made every driver — including a 4 s tweeter sweep —
+  sit through the longest driver's silence) and their hard deadline is 45 s;
+  the phone's `duration_ms` remains only a backstop because normal completion
+  follows the Pi's `sweep_complete` event. The pre-tone quiet phase now
+  renders a live countdown on the phone (`ambient_started`'s host event
+  carries `duration_s`) instead of an unexplained silent wait, and the phone
+  can Stop a driver sweep or level ramp itself — a new "stop" screen action
+  wired to the same abort() path the visibility-abort case already used
+  (`capture-page/js/main.js`'s `stopCapture`). **W2.6 (2026-07-17):**
+  `ambient_started` now fires from INSIDE the play sequence
+  (`correction_crossover_flow._play`), immediately after `prepare_play`'s
+  solve/volume-acquire work finishes and right before the real
+  `asyncio.sleep(ambient_duration_s)` — not synchronously in `on_armed`
+  before `prepare_play` even starts. PR #1552's own investigation
+  ("Countdown finding") traced hardware run 18's missing countdown plus
+  ~4-5s extra arm→tone latency to exactly this gap; the fix threads the
+  post through as a callback `_play` fires itself (backward-compatible: a
+  `play_sequence` that does not accept the callback, e.g. the
+  summed-commissioning host's own `_play_sequence` in
+  `correction_setup.py`, keeps the old eager-post ordering — see
+  `_play_sequence_accepts_ambient_ready` in `correction_crossover_flow.py`).
+  The generic builder retains the 30 s floor like `room_sweep`'s
+  `hard_timeout_ms` (normal recorder completion is the Pi's `sweep_complete` relay
   event; the deadline is only the backstop). During the quiet interval and
   playback, an authenticated phone-activity watchdog cancels on backgrounding,
   early recorder completion, or loss of armed state. Cancellation kills/reaps
@@ -172,10 +644,67 @@
   and the gain lease is context-bound to the current protected baseline. The
   L0 emit gate + graph safety + commission ramp Stop-gates remain intact. **H2**
   is the acoustic proof only — the
-  phone-mic `getUserMedia`/CSP path + the driver/summed sweep playback
+  phone-mic `getUserMedia`/CSP path + the driver and future re-enabled summed sweep playback
   on real drivers are not exercised hardware-free (same status as the
   room/sync relay). Design of record:
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
+  **Session-spanning capture protocol v3 (SPEC W2.3, Wave-2 Pi finale,
+  2026-07-17):** driver-sweep relay captures now build their spec with a
+  `capture_plan` (`capture_target=3`, `max_attempts=4` — the SAME numbers
+  `commissioning_capture.DEFAULT_REPEAT_TARGET` /
+  `repeat_admission.MAX_ATTEMPTS` already enforce) and are driven by
+  `correction_crossover_flow.build_crossover_relay_plan_run_and_consume`
+  instead of the v2 per-capture runner — one relay session now carries a
+  driver's whole 3-repeat set, the phone requesting each capture itself over
+  the authenticated relay event channel (`jasper.capture_relay.session
+  .run_capture_plan`, landed dormant with #1550). `authorize_begin` wraps the
+  SAME `repeat_admission` reservation seam the v2 path used (budget stays
+  Pi-owned, unchanged); `consume_capture` calls the SAME
+  `record_driver_capture` analysis/record path, so per-capture solve
+  escalation and the completion-time correction (#1555) are unchanged —
+  they are the identical function call, just invoked from inside the plan
+  loop instead of once per wizard POST. Session progress publishes into the
+  relay status snapshot so the wizard envelope's passive "N of 3 done"
+  mirror (`crossover_envelope._plan_measuring_verdict`) has live data.
+  Summed/verification captures and `level_ramp` are untouched (still v2,
+  one session per capture). **The marker (`capture_protocol_version: 3`) is
+  emitted unconditionally in code for every driver capture — there is no env
+  gate.** Dormancy now rests on deploy sequencing alone (the in-repo Wave-2
+  page declares protocols `[1, 2, 3]` since #1560): a v3 spec against an
+  OLDER pre-Wave-2 DEPLOYED page fails the page-identity check
+  (`validate_capture_page`) before any tone plays, so the rollout order is
+  Worker → page publish → the Pi build carrying this flip deploys last. See
+  [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
+  capture plans" section for the wire choreography.
+  **Hardware blocker fixed (run 21, jts3):** the v3 order (reserve → phone
+  arms → guard) made `on_armed`'s envelope-derivation guard
+  (`_assert_crossover_driver_action`, built for v2's guard → reserve → capture
+  order) veto every driver capture's own `authorize_begin` admission — an
+  in-flight `repeat_admission` reservation made the guard's independent
+  envelope recompute treat the plan's own live attempt as orphaned. Fixed by
+  `_plan_admission_matches` (`jasper/web/correction_setup.py`): a matching,
+  live capture-plan reservation for the exact (speaker_group_id, role,
+  capture_geometry) IS the server-owned admission, so the redundant
+  envelope-derivation guard is skipped for that one capture (near-field AND
+  reference-axis driver captures both covered); every wizard-initiated
+  v2/direct request still runs the full guard unchanged. The refusal is a
+  typed `ServerOwnedNextStepMismatch` so it maps to one household sentence on
+  every reachable surface — wizard status line, the synchronous POST-time
+  dispatch, and the phone `sweep_failed` event — never the raw string. See
+  [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
+  capture plans" section for the full mechanism.
+
+  **W2.6 fix landed in the same PR:** the exhausted-budget
+  `measurement_window_unreachable` refusal's `required_db`/`available_db`
+  now read coherently with `room_too_noisy`'s (required = the worst band's
+  needed SNR via `level_solver.driver_solve_requirement_db`, available =
+  what the ceilings could actually deliver, derived from the SAME
+  `solve_level` call the non-exhausted path already ran) — previously it
+  paired `level_solver.MIC_TARGET_PEAK_DBFS` (a dBFS mic-peak target) with a
+  raw measured mic peak (also dBFS, not a dB SNR figure), a unit mismatch
+  flagged in #1552's review. See
+  `correction_crossover_backend._exhausted_refusal_snr_terms`.
+
   The first JTS3 H2 attempt exposed and closed a comparison-validity bug:
   the migrated relay screen had weakened the canonical per-driver placement
   from the same ~2–5 cm near-field geometry to merely “close to the speaker
@@ -211,15 +740,51 @@
   tweeter or horn mouth, and remains fixed across the normal/reverse pair. The prior
   listening-position policy remains historical only and cannot authorize an
   alignment proposal. The
-  public page release that implements this contract, including UMIK-2
+  public page release that implements this crossover contract, including UMIK-2
   model/mode preselection (the
   serial is still entered and validated once; there is no automatic
   calibration-file match), is `capture_page_build=20260712.3`, supporting
-  protocols 1 and 2. The repo version and public
-  `https://capture.jasper.tech/version.json` both reported `20260712.3` on
-  2026-07-12; there is no pending capture-page publish gate for this contract.
+  protocols 1 and 2. The public
+  `https://capture.jasper.tech/version.json` reported `20260712.3` on
+  2026-07-12. Repo build 20260715.3 adds the Room-specific trust-repeat copy,
+  renders host `sweep_cancelled` as expected Stop control flow, and keeps a
+  safely bounded level walk alive across a transient relay status-poll failure;
+  the page entry and relay-client import both use the matching `20260715-3`
+  cache key.
+  Page-side control requests abort after three seconds through response-body
+  parsing, so stalled headers cannot freeze mic batches. Pi-side level control
+  uses a separate 1.5-second socket timeout plus an async wall-clock deadline,
+  publishes at most one queued host event before refreshing status, and bounds
+  one retry plus that status read to 4.75 seconds inside the default
+  eight-second feed-loss guard. Those bounded control requests share one FIFO
+  worker. A write that outlives the awaiting deadline remains ahead of newer
+  writes, so a late progress event cannot replace a newer terminal event in the
+  relay's last-write-wins slot.
+  The level pump always performs its next status refresh even when the preceding
+  host-event response is unconfirmed; otherwise repeated slow acknowledgements
+  can starve fresh microphone samples and manufacture the eight-second feed-loss
+  condition. A latched warning/recovery pair keeps that degraded control path
+  observable without journal spam.
+  The Pi retries one idempotent host-progress write after a timeout, 429, or
+  relay 5xx. Room sweep-start/complete events use that same narrow, ordered
+  path. A timed-out response does not abort capture because the event may
+  already have committed; the relay's authenticated ready blob remains the
+  completion proof, and the ordinary upload deadline still fails a genuinely
+  undelivered event. A final 4xx (including 429 after the retry) is a definitive
+  Worker pre-commit refusal and aborts Room before sweep playback; only
+  transport ambiguity and relay 5xx are tolerated. The 2026-07-15 JTS3 UMIK-2
+  repeat smoke pinned the timeout case after a
+  `sweep_complete` response timed out while the capture page uploaded the valid
+  WAV. The repo build is
+  intentionally not published by this hardware-free lane, so that external
+  release artifact remains pending.
   Crossover level and sweep volume transitions now use one durable backend
-  intent for both near-field and fixed-axis work. If restart or failed readback
+  intent for both near-field and fixed-axis work. For an isolated driver
+  sweep, the reasserted level is the closed-loop level solver's choice, not
+  necessarily the raw level-match lock — see
+  [active-crossover-information-design.md](active-crossover-information-design.md)
+  "Level control and SNR" (W2.1); the volume-transition/recovery machinery
+  below is unchanged. If restart or failed readback
   leaves the volume unconfirmed, `GET /crossover/envelope` exposes only
   **Recover safe listening volume**; `POST /crossover/recover-volume` attempts
   confirmed exact restore and then the −60 dB fallback. All other crossover
@@ -235,9 +800,10 @@
   placement, and auto-level, then restores a fresh bound for the actual room
   capture. Every room-relay completion page (level, position sweep, and verify)
   returns directly to `/correction/room/`; `/correction/` remains only the
-  legacy local-microphone preflight. Room verification's armed callback is
-  state-aware (a required `state` parameter), so the relay passes the frozen
-  setup binding through the zero-argument compatibility seam before playback.
+  legacy local-microphone preflight. Modern Room sweep/verify links are signed
+  capture-only specs: the Pi supplies position progress and verifies the
+  realized microphone/calibration against the level-check identity before
+  playback. Active crossover retains its own compact setup binding.
 - ✅ **Phone-mic capture relay path (fresh-install default,
   JTS3-verified).** As of 2026-07-02 fresh installs default to an
   alternative capture transport that moves the room capture setup/recording page
@@ -255,13 +821,14 @@
   fragile on iOS and blocked for microphone access by Android Chrome.
   The transport + the `correction_setup.py` adapter
   (`jasper/capture_relay/correction_adapter.py`) are hardware-free tested; the
-  room relay now guides mic choice, calibration choice, and position count on the
-  phone during the level check. The Pi validates the full setup once; later
-  position links carry only its bounded digest and open directly on one Start
-  action, so calibration contents and the position count are not re-entered or
-  re-posted per sweep. Successful capture-only positions slide a 20-minute idle
-  expiry, while a fixed two-hour absolute privacy lifetime tied to the setup
-  binding never moves. The page publishes its build and supported wire versions
+  room relay guides mic and calibration choice on the phone during the level
+  check; the phone never chooses Room's position count. The Pi validates setup
+  once. Later Room links carry signed Pi-owned position/total fields and open
+  directly on one Start action, so calibration contents are not re-entered or
+  re-posted per sweep. Their authenticated `armed` event reports the realized
+  device for a pre-playback identity check. Active crossover retains the compact
+  setup binding and bounded browser-storage lifetime. The page publishes its
+  build and supported wire versions
   at `https://capture.jasper.tech/version.json`; every phone event carries that
   identity and the Pi refuses/logs an incompatible page before a setup or armed
   callback can play a tone. Publish the compatible Pages build and verify that
@@ -287,8 +854,30 @@
   `deploy/assets/correction/js/main.js` intact. `/correction/crossover/`
   is a correction-native active-crossover microphone surface: correction
   web modules own HTTPS/browser routing, while
-  `jasper.active_speaker.web_commissioning` owns safe driver and optional summed
-  playback orchestration and `jasper.active_speaker.web_measurement`
+  `jasper.active_speaker.web_commissioning` owns safe admitted driver playback;
+  the typed internal Active host owns production summed operation selection,
+  guarded playback, persistence, and restoration. The web layer supplies only
+  signed geometry, the comparison-bound recorder/calibration identity, and relay
+  WAV bytes. After the final summed capture, the Active service invokes the
+  store-backed evaluator, persists and reopens one exact candidate, binds the
+  durable run's `candidate_ready` transition to that artifact, and projects the
+  retained crossover design plus measured attenuation, polarity proof, delay,
+  and evidence identities for review. Status polling reopens only typed anchors
+  and the compact candidate; it does not rescore child WAVs. A deterministic
+  evaluator refusal persists one generation-scoped failure artifact, advances
+  the existing lifecycle to `blocked` with `candidate_scoring_failed`, and
+  offers a fresh complete measurement run instead of retrying the same evidence.
+  The review now has one explicit Apply action. Active reopens the exact
+  candidate fingerprint, rechecks current target/safety authority inside the
+  shared writer lock, compiles it through the baseline emitter, and requires a
+  fresh protected graph/path/volume readback before `applied_unverified`.
+  Cancellation, mutation/readback failure, or an unproved retained write
+  restores the exact predecessor; `/status` exposes retry/finalize/restore as
+  one server-owned next action. Post-apply fixed-axis capture now admits three
+  exact current-graph repeats: all-pass evidence issues the receipt and unlocks
+  Room, while a usable acoustic failure is persisted, stops capture, and keeps
+  Room locked.
+  `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic
   crossover tuning. A safe applied manual crossover is a valid Layer-A
@@ -415,7 +1004,7 @@
   per-session bundle metadata (`input_device`, `mic_calibration`,
   `bundle_schema_version`). Calibration files normalize to one
   internal additive `correction_db` curve and are applied in
-  `MeasurementSession._smooth_capture` before target normalization
+  `jasper.correction.acoustic_quality.analyze_capture` before target normalization
   and PEQ design. Storage lives under
   `/var/lib/jasper/correction/calibration_mics/`.
 - ✅ **Phase 2.4 — observability and quality floor.**
@@ -462,14 +1051,15 @@
   correction band, and strategy gates for `safe` / `balanced` /
   `assertive`. The report is persisted into `info.json` /
   `result.json`, embedded in the design audit, returned from the
-  upload/status path, and exposed through the read-only
+  status path, and exposed through the read-only
   calibration-agent intake tools. This is deliberately a v1
   instrument panel; SNR, repeatability, and research-tuned thresholds
   remain future refinements.
 - ✅ **Phase 2.7 — confidence UI + per-position analysis artifact.**
-  Implemented 2026-05-26. Adds a simple `/correction/` confidence
-  card showing score, findings, position-variance summary, and
-  allowed/blocked correction strategies. Each completed design now
+  Implemented 2026-05-26. The original `/correction/` confidence card was
+  retired from the primary flow on 2026-07-15 when the envelope became the
+  sole result-presentation contract; its full evidence remains in Reports.
+  Each completed design still
   writes `position_analysis.json` with per-position magnitude curves,
   spatial average, and per-frequency variance arrays so future FIR and
   LLM tooling can inspect seat-to-seat behavior without re-running
@@ -489,23 +1079,22 @@
   deterministic preflight report built from `getUserMedia()`
   metadata: sample rate, mono channel count, processing flags, granted
   input-device identity, and calibrated-mic presence. The report is
-  shown inline in `/correction/`, returned from start/status/upload
-  endpoints, server-enforced at `/start`, persisted in `info.json` /
+  shown inline in `/correction/`, returned from start/status endpoints,
+  server-enforced at `/start`, persisted in `info.json` /
   `result.json`, and folded into the confidence model so browser
   processing or sample-rate failures block correction before a user
   wastes time measuring. This is still metadata confidence, not an
   acoustic loopback proof; real phone/Pi capture smoke testing remains
   outstanding.
 - ✅ **Phase 2.10 — correction visualization + confidence UX.**
-  Implemented 2026-05-28. `/correction/` results now expose the
-  measurement facts that already drive the deterministic engine:
-  display smoothing controls, correction-band shading, spatial-spread
-  overlay, filter-effect overlay, measured/target/predicted/verify
-  curves, PEQ markers, rejected-feature markers, band-confidence
-  summaries, confidence/strategy gates, runtime-integrity status, and a
-  deterministic recommended next action. The implementation stays
-  dependency-free in the socket-activated web process: one canvas and
-  small JSON summaries rather than a plotting framework.
+  Implemented 2026-05-28, then deliberately narrowed on 2026-07-15. The
+  primary result now draws the envelope's already-smoothed
+  measured/target/predicted/verify curves, server-classified helped/hurt fill,
+  and an optional filter-effect overlay. Client smoothing, correction-band and
+  spatial-spread controls, PEQ/rejected-feature markers, confidence/strategy
+  cards, runtime-integrity panel, design audit, and client-recommended next
+  action were removed from the main flow. The underlying evidence remains in
+  durable artifacts and Reports; the canvas remains dependency-free.
 - ✅ **Phase 2.11 — durable evidence bundle contract + runtime integrity.**
   Implemented 2026-05-28. Every new measurement session is a
   self-describing, replayable evidence packet rather than a set of
@@ -514,9 +1103,10 @@
   provenance, dependencies, sensitivity, and recomputability flags for
   raw captures and derived artifacts. They also write
   `runtime_integrity.json`: system load/memory snapshots,
-  capture sample-count sanity, fan-in xrun deltas, and CamillaDSP
-  runtime counters around each sweep/verify pass. Runtime warnings and
-  failures feed the same confidence report and bundle validator.
+  capture sample-count sanity, fan-in and outputd content/DAC xrun
+  deltas, and CamillaDSP runtime counters around each sweep/verify
+  pass. Runtime warnings and failures feed the same confidence report
+  and bundle validator.
   Treat `captures/p<N>.wav` and `verify.wav` as canonical private raw
   evidence; every curve, confidence report, PEQ, and future FIR/agent
   judgment should be reproducible from those recordings plus sweep
@@ -724,7 +1314,13 @@
     device label (`iMM-6`/`UMM-6`/`UMIK`), and remembers the serial of a
     successful fetch in the browser's `localStorage` (raw serials stay off the
     Pi) — auto-filling and auto-fetching it next time so a repeat measurement
-    needs no re-typing or Fetch tap.
+    needs no re-typing or Fetch tap. This `localStorage` memory is
+    per-browser and serial-only; it predates and is now supplemented by the
+    server-side, cross-browser, cross-session household-mic record
+    described in Status above, which additionally covers uploaded
+    calibrations (never serial-keyed) and pre-selects the model + shows a
+    "Using {label} — change" banner on landing when a household default
+    exists.
   - **Relay guided-setup preflight.** The public capture page still cannot talk
     directly to `jts.local`; it posts `{setup_validate:true, setup:{...}}` through
     the relay and waits for the Pi to answer with
@@ -927,11 +1523,11 @@ Current operational truth for that composition lives in
 [docs/HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md) and
 [docs/HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md).
 
-**Outstanding Phases 0-2.12 hardware verification** (see "Hardware
-test checklist" below) — the math is validated on synthetic IRs;
+**Current Wave 4 hardware verification** (see "Hardware test checklist"
+below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before
-declaring v2 shippable.
+declaring the current Room flow hardware-validated.
 
 ## Goal
 
@@ -960,13 +1556,13 @@ them; design **with** them.
 
 | Constraint | Source | What it forces |
 |---|---|---|
-| Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ is comfortable. FIR stays 1 GB-aware and research-gated: pause renderers during expensive generation, measure real memory before enabling mixed-phase / FDW paths. |
+| Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ is comfortable. FIR stays 1 GB-aware and research-gated: measure peak memory with ordinary source daemons still running before enabling mixed-phase / FDW paths. |
 | **Apple USB-C dongle**, stereo, 48 kHz | [README.md](../README.md) Hardware table | Filters are 2-channel. No multi-driver crossover work in scope. |
 | Pure ALSA: **snd-aloop + fan-in + outputd**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `correction_substream`, a dedicated fan-in lane. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on summed `hw:Loopback,1,7`), processes, writes to `outputd_content_playback`, and jasper-outputd owns the DAC. |
 | `master_gain` mixer **already exists** as identity | [deploy/camilladsp/outputd-cutover.yml](../deploy/camilladsp/outputd-cutover.yml) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
 | CamillaDSP websocket **no auth, 127.0.0.1 only** | [PLAN.md](../PLAN.md) | `pycamilladsp` calls stay loopback. Web UI never proxies CamillaDSP WS to the LAN. |
 | Volume coordination is **canonical and persistent** | [docs/HANDOFF-volume.md](HANDOFF-volume.md), [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) | Sweep playback should set its own absolute level (not via VolumeCoordinator), restore previous on exit. |
-| `Ducker` is **the only writer** to `main_volume` for voice | [jasper/camilla.py](../jasper/camilla.py) + `Ducker` | Measurement coordinator must coexist; voice session during measurement should be impossible (we pause WakeLoop). |
+| Voice-side Camilla ownership is explicit session state | [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) + [jasper/camilla.py](../jasper/camilla.py) | Normal fan-in speech leaves `main_volume` with `VolumeCoordinator`. Only the legacy Camilla `Ducker` asserts `camilla_volume_locked` and defers coordinator writes. Measurement still pauses WakeLoop before taking absolute sweep-level ownership. |
 | Existing settings pages on **plain HTTP port 80** | [deploy/nginx-jasper.conf](../deploy/nginx-jasper.conf) | We add HTTPS as an additive 443 server block. Existing routes stay HTTP. |
 | `getUserMedia` **requires HTTPS** (browser policy) | Web spec | Cannot avoid TLS for this one feature. Private CA + iOS trust profile is the path. |
 | Existing web wizards are **stdlib `ThreadingHTTPServer`** | [jasper/web/voice_setup.py](../jasper/web/voice_setup.py), [jasper/web/dial_setup.py](../jasper/web/dial_setup.py) | We mirror this — no FastAPI / aiohttp. Browser state uses polling today. |
@@ -1086,7 +1682,8 @@ GET  /crossover/status       active-speaker targets + measurement evidence
                              full_range_passive speaker, Layer A hidden})
 GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              {schema_version, screen, active, steps,
-                             verdict_text, nudges, next_action, progress, relay}
+                             verdict_text, nudges, next_action, progress, relay,
+                             candidate_review}; schema v4
 GET  /bass                   read-only bass-management display page
 GET  /bass/status            read-only active bass-management corner/status
 GET  /balance                stereo-pair acoustic balance page
@@ -1100,14 +1697,30 @@ GET  /status                 session + currently-loaded correction snapshot
                              correction_strategy, design_report,
                              current_correction: {path, session_id,
                              applied_at_epoch, peq_count} | null})
-GET  /envelope               room-correction screen envelope (dumb frontend)
+GET  /entry-status           lightweight idle refresh: Active-owned readiness
+                             blocker + current-correction presentation + Room
+                             screen/state identity; does not discover reports
+                             or rebuild screen policy
+GET  /envelope               room-correction envelope schema v9; exact ordered
+                             `sections` plus closed `blocker`/`failure` blocks
+                             own whole-page visibility and safe entry copy;
+                             typed `run_defaults` owns the disclosed run summary
+                             (reports discovered only on idle/result)
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
-POST /start                  first checks setup_status.room_correction_allowed
-                             (passive speakers allowed; incomplete active Layer A
-                             gets 409 + /correction/crossover/ before reservation),
-                             then resets to base config, begins noise capture, returns session_id;
+POST /start                  first checks the setup-status active/passive flag,
+                             room_correction_allowed, and matching acoustic status
+                             plus its versioned authority (passive/not-required
+                             and solo manual-applied are allowed; grouped active
+                             is explicitly unsupported in v1; automatic remains
+                             typed 409 until exact receipt authority lands;
+                             unknown/malformed authority
+                             gets retryable 503 before reservation),
+                             then loads a topology-preserving measurement
+                             baseline (Room/preference EQ removed; protected
+                             speaker DSP retained), begins noise capture, and
+                             returns session_id;
                              body: {total_positions, target_choice,
                              strategy_choice?, noise_floor_db?,
                              calibration_id?, input_device?,
@@ -1115,7 +1728,13 @@ POST /start                  first checks setup_status.room_correction_allowed
 POST /next-position          advance to position[N+1] pre-sweep noise capture
 POST /repeat-position        play the optional same-seat repeat sweep
 POST /upload-noise           body = WAV (audio/wav); pre-sweep room noise
-POST /upload-capture         body = WAV (audio/wav); per-position, repeat, OR verify capture
+                             (local capture requires bound setup first)
+POST /upload-capture         body = WAV (audio/wav); per-position, repeat, OR verify capture;
+                             response is mechanism ACK only, then the browser
+                             refreshes GET /envelope for presentation
+POST /local-capture/setup    bind the realized local mic/calibration to the
+                             parked session before level match/noise upload;
+                             identical retries are idempotent
 POST /calibration/fetch      body: {model, serial, orientation?}; server-side
                              Dayton/miniDSP lookup, normalized + stored
 POST /calibration/upload     body: {filename, content, model?, label?,
@@ -1125,7 +1744,8 @@ POST /reset                  → SetConfig(topology-safe reset graph) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
 POST /relay/level-match      ambient-baselined, gradual listening-position ramp;
                              stores a bounded gain lease or restores on failure
-POST /relay/capture          relay room sweep using the bound mic + gain lease
+POST /relay/capture          relay room sweep or automatic main-seat trust repeat
+                             using the level-checked mic + gain lease
 POST /relay/verify           relay post-apply sweep; restores the lease and lands
                              on the terminal result (or pending-confirm loop)
 POST /session/delete         delete one historical measurement bundle
@@ -1163,31 +1783,189 @@ POST /crossover/level-match  guided mic/calibration + server-selected per-driver
                              near-field or fixed-reference-axis automatic level
 POST /crossover/recover-volume recover a durable unconfirmed listening volume;
                               exact prior level first, then confirmed −60 dB
+POST /crossover/region-geometry body: {expected_target_fingerprint,
+                              signed_acoustic_path_difference_mm}; persist the
+                              server's current region geometry attestation
+POST /crossover/candidate    resume exact candidate publication if execution
+                             stopped after measured evidence became durable
 POST /crossover/apply        atomically apply measured Layer A; restore gain lease
+POST /crossover/restore      restore or finalize the exact pre-apply DSP state
 POST /crossover/driver-test  start one protected per-driver audible test
 POST /crossover/driver-confirm record the protected driver-test result
 POST /crossover/driver-abort stop the driver test and restore the graph
 POST /crossover/summed-test  run the protected combined-driver listening test
 POST /crossover/driver-capture-sweep start a bounded per-driver capture stimulus
-POST /crossover/summed-capture-sweep start a bounded combined-driver stimulus
-POST /crossover/summed-capture body = WAV (audio/wav); analyze + record
-                             active-speaker summed-crossover evidence
-POST /crossover/relay-capture body: {kind: driver|summed, speaker_group_id,
-                             role?, capture_geometry?}; phone-mic relay transport for one
-                             crossover sweep and the only production driver
-                             evidence ingress (same record_*_capture analysis;
-                             driver geometry must equal the server envelope's
-                             next action at POST and armed time;
-                             refuses while room/balance/sync
-                             is active — server-computed at POST and
-                             re-checked when the phone arms). ON-DEVICE:
-                             not exercised hardware-free — H2.
+POST /crossover/summed-capture-sweep legacy direct summed route; always 409
+                             before body/backend/volume/graph/audio
+POST /crossover/summed-capture legacy direct raw-WAV route; always 409 before
+                             body/backend/volume/graph/audio
+POST /crossover/relay-capture driver body: {kind: driver, speaker_group_id,
+                             role, capture_geometry}; summed body exactly
+                             {kind: summed}. Phone-mic relay transport for one
+                             crossover sweep. Driver geometry must equal the
+                             server envelope's next action at POST and armed
+                             time. Summed capture accepts recorder bytes and
+                             fixed-axis acknowledgement only; Active owns its
+                             region, graph, polarity, delay, attempt, ordinal,
+                             and admission. Both refuse while another
+                             measurement is active and re-check mutable
+                             authority when the phone arms. ON-DEVICE: summed
+                             playback/capture not exercised hardware-free — H2.
+POST /crossover/relay-cancel cooperatively stop the active crossover level/sweep
+                             relay; reports `stopping` until exact cleanup drains
+                             and refuses Stop during `finishing`/`committing`
+POST /crossover/reset        scoped in-flow "start over": stops any active relay/
+                             level-match, clears the driver/summed measurement
+                             evidence and compiled candidate, and returns a fresh
+                             envelope. Keeps driver research and the SOLO applied
+                             crossover; a bonded speaker fails safe to solo on its
+                             next re-prove — see "Scoped crossover reset" below
+POST /crossover/v2/session   v2 conductor flow (JASPER_CROSSOVER_FLOW=v2, W5a):
+                             open ONE relay session spanning CHECK→MEASURE→VERIFY
+                             (3-entry capture plan); refuses under the legacy flow
+POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session after
+                             apply (§5.2 re-verify); refuses under the legacy flow
+POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
+                             through the existing atomic apply transaction (W4
+                             measured_candidate seam); arms the deferred VERIFY
+POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
+                             pre-candidate applied profile handle_v2_apply
+                             stashed at apply time and clear the durable v2
+                             applied/candidate/failure state (W6 run-8
+                             Blocker Q: the legacy /crossover/restore expects a
+                             pending commissioning-run apply a v2 apply never
+                             creates, and 500s)
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 
-Browser polls `GET /status` every 500 ms; SSE was considered but never
-landed because polling is simpler in stdlib and the latency budget
-allows it.
+### Scoped crossover reset — "Start over" (2026-07-17)
+
+`/correction/crossover/` previously had no in-flow reset: leaving it over
+half-measured evidence to start clean meant going to `/sound/` Advanced
+setup and hitting its RESET control — a device-perspective detour, and
+that control is nuclear (`jasper.web.sound_setup._reset_output_topology_payload`
+→ `jasper.active_speaker.reset.clear_active_speaker_setup_state()` +
+`jasper.cli.output_topology_reset.reset_to_detected_passive()`): it
+unlinks the driver research/manual-settings design draft AND resets output
+topology to passive, so "start over" meant losing the driver setup and
+going silent.
+
+`POST /crossover/reset` is the scoped sibling. It clears ONLY the
+measurement journey — comparison set, level locks
+(`CrossoverLevelLease.invalidate_comparison_context`), driver/summed
+captures, and the compiled-but-not-loaded protected-startup candidate —
+via `jasper.active_speaker.reset.clear_active_speaker_measurement_journey()`.
+It deliberately does **not** touch:
+
+- `design_draft` — driver research, manual crossover settings, topology
+  intent. Losing it would force re-researching drivers, not just
+  re-measuring them.
+- `baseline_profile` — the **solo** applied Layer-A anchor. Once a baseline
+  has been applied, this file's `applied_recomposition_profile` is the sole
+  durable record of the corrections the solo speaker is playing, read as the
+  "what is currently applied" SSOT by `jasper.sound.graph_carrier` and
+  `jasper-doctor`.
+- `startup_load` — the load/rollback bookkeeping for whichever protected
+  candidate CamillaDSP is currently running. Hardware-verified on JTS3
+  (2026-07-17): this file's `previous_config_path` was, at that moment,
+  the only recorded path back to the config playing before the flow's
+  muted candidate load. Clearing it would not stop any audio by itself,
+  but would strand the rollback pointer.
+
+**Multiroom is NOT protected by keeping `baseline_profile` — it needs
+re-measurement after a scoped reset (fail-safe to solo).** The
+active-leader/follower builders
+(`jasper/multiroom/active_leader_config.py` / `follower_config.py`) never
+read `baseline_profile`; they REBUILD the driver-domain graph from
+`design_draft` (KEPT) plus `crossover_preview` + `measurements` (both
+CLEARED) via `build_baseline_profile_candidate(driver_domain=True)`. So a
+scoped reset keeps the solo applied audio, but a bonded speaker's next
+re-prove sees empty measurements → `may_apply=False` →
+`ActiveLeaderError`/`ActiveFollowerError` → the grouping reconciler's
+readiness gate fails **safe to solo-active** (no mute, no loud output;
+self-recovers when the household re-measures and re-groups). The "Start
+over" confirm copy is therefore grouping-aware: for an active group member
+(`is_active_leader`/`is_bonded_follower`, read fresh from `grouping.env`
+and carried on the envelope as `grouping_member`) it says the speaker will
+fall back to a plain solo crossover on the next group re-form until
+re-measured; for a solo speaker it keeps the accurate "the crossover that's
+playing now stays exactly as it is" copy.
+
+The KEEP/CLEAR split (all nine artifacts `active_speaker_setup_state_paths()`
+enumerates) lives as a comment on
+`jasper.active_speaker.reset._MEASUREMENT_JOURNEY_ARTIFACT_IDS`; the tests
+in `tests/test_active_speaker_reset.py` and `tests/test_correction_crossover_reset.py`
+pin it.
+
+**W6.11 (2026-07-19): the next v2 session start re-arms the cleared
+preview.** Before this fix, nothing regenerated `crossover_preview` after
+Start-over — or after a fresh `/correction/` visit that never touched
+`/sound/`'s Preview button at all. Every measured candidate baked its
+`source_preset` against `resolve_capture_preset`'s generic bundled-preset
+fallback, which could never match a preview generated later, so Apply
+refused `measured_candidate_preset_mismatch` forever.
+`resolve_conductor_context` — the shared entry both `POST
+/crossover/v2/session` and `POST /crossover/v2/verify` resolve through —
+now calls `jasper.web.correction_crossover_v2.ensure_crossover_preview_ready()`
+before resolving the capture preset: an already-`ready_for_protected_staging`
+preview for the CURRENT design draft is reused byte-untouched; anything else
+(absent — including right after Start-over — stale, or blocked) is
+regenerated through the SAME machinery `/sound/`'s Preview button drives
+(`jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft`
+→ `crossover_preview.save_crossover_preview`). If the design draft still
+cannot produce a ready preview, session start refuses by name
+(`CrossoverV2Refused`) instead of leaving the surprise for apply time.
+
+Endpoint shape mirrors `/crossover/relay-cancel`: same
+`_POST_ROUTES`/`guard_mutating_request`/CSRF path, plus the existing
+`volume_sensitive_routes` gate (refuses while the crossover listening
+volume is unresolved). `_handle_crossover_reset` in `correction_setup.py`
+best-effort stops any crossover-owned relay first (an unstarted relay is
+the common case, unlike Stop), then
+`correction_crossover_backend.reset_measurement_journey()` invalidates the
+lease and clears the journey files, failing closed
+(`MeasurementJourneyResetRefused`) if a level match is still draining or
+volume safety is unresolved. The response is the same envelope shape as
+`GET /crossover/envelope` (so the page re-renders in one round trip) plus
+a `reset: {status, cleared, missing, errors, kept}` summary that reports
+the ACTUAL outcome, not the static intent — `status` is `partial` (and
+`errors` names the files) when any unlink fails, and the page branches its
+message on `status !== "cleared"` rather than always painting green. UI: a
+ghost "Start over" button in the header info-card, gated by
+`jtsConfirm(…, {danger: true})`
+(`deploy/assets/correction/js/crossover/main.js`), next to a subordinate
+link to `/sound/` labeled "Remove the active crossover entirely" for the
+still-nuclear path.
+
+**Relationship to Wave-3 kit W3.2.**
+[`docs/correction-ux-wave3/w3.2-one-crossover-surface.md`](correction-ux-wave3/w3.2-one-crossover-surface.md)
+plans a larger page-surface move: relocating the *entire* `/sound/`
+active-speaker setup section (driver layout, LLM research/import, manual
+settings, staging preview, and the **nuclear** RESET control) into
+`/correction/crossover/` over HTTPS, byte-identical behavior preserved.
+This change is narrower and lands first: it adds a new scoped action W3.2
+never specified (W3.2's RESET is explicitly the same nuclear
+`clear_active_speaker_setup_state` call, relocated, not a scoped
+alternative), so it does not fulfill or conflict with W3.2 — but it does
+mean the "Remove the active crossover entirely" link this PR ships as a
+stopgap should become an in-flow nuclear action once W3.2's Stage B route
+surface lands, rather than staying an out-link to `/sound/`. Whoever picks
+up W3.2 should read this section before touching the crossover page's
+reset affordances.
+
+Browser polls `GET /status` every 500 ms only while a Room operation is in
+flight, then stops in terminal/static states. The presentation envelope polls
+at 900 ms on active capture screens. Idle uses `GET /entry-status` every 10
+seconds to refresh external speaker readiness and the current-correction
+banner together; it rebuilds the full envelope only when readiness or the
+logical screen changed, keeping report discovery off the steady-state cadence.
+After a local capture upload, the client reads the acknowledgement, refreshes
+mechanism state once without triggering a competing edge refresh, and fetches
+one envelope concurrently for all result presentation. The chart consumes the
+envelope's
+already-smoothed curves directly; no client-side smoothing pass remains.
+SSE was considered but never landed because bounded polling is simpler in
+stdlib and the latency budget allows it.
 
 ### Decision 3 — URL: `/correction/`, plus entry on the landing page
 
@@ -1233,16 +2011,30 @@ The HTTP coordinator at `jasper/correction/coordinator.py` is an
 async context manager:
 ```python
 async with measurement_window():
-    # 1. systemctl stop librespot shairport-sync bluealsa-aplay
+    # 1. mux TEST_SELECT correction correction-measurement; require owner + gate
     # 2. UDS MEASURE_PAUSE → voice_daemon
-    # 3. yield (caller does the sweep + analysis + filter design)
-    # 4. UDS MEASURE_RESUME → voice_daemon  (in finally)
-    # 5. systemctl start librespot shairport-sync bluealsa-aplay
+    # 3. renew the 60 s mux lease and 120 s voice lease while healthy
+    # 4. yield (caller does the sweep + analysis + filter design)
+    # 5. UDS MEASURE_RESUME + verified owner-scoped TEST_RELEASE (finally)
 ```
 
 **Why not a new `jasper-coordinator` daemon?** The patterns we
 need already exist:
-- "Pause renderers" = `systemctl stop`. Done.
+- `jasper-mux` already owns fan-in routing. The coordinator uses its existing
+  owner-scoped diagnostic gate (`correction-measurement`), which excludes every
+  music lane (including fan-in's live USB DIRECT lane) while always admitting
+  the correction lane. Mux confirms the landed owner/state and reasserts it
+  each tick. The closed owner vocabulary also prevents active-speaker
+  commissioning from stealing or releasing an in-flight correction gate, and
+  makes cleanup safe after a lost response. Correction never becomes a second
+  writer of USB's policy mute.
+- Music source daemons stay running and fan-in continues draining their private
+  lanes. This avoids process churn, preserves source intent exactly, and means
+  a killed web worker cannot strand enabled sources manually stopped. Mux's
+  60-second monotonic owner lease is the external crash-recovery boundary;
+  correction renews it every 20 seconds. If renewal stays unconfirmed for 40
+  seconds, the renewal task cancels the owning measurement and `finally`
+  restores voice/gate state before mux could reopen music into a live sweep.
 - "Pause voice loop" = UDS command (mirrors `/cue/play` shape).
 - "Pause AEC bridge" = if enabled, the bridge re-converges in
   ~200 ms after the sweep stops; no pause needed.
@@ -1269,14 +2061,11 @@ shows insufficient free memory *after* pausing.
 **Why not require 2 GB?** User decision (2026-05-09): "see how
 far we can get on 1 GB."
 
-**Concrete RAM budget on 1 GB after pause:** Per the explore-agent
-audit of running processes, steady total is 500-620 MB. Pausing
-librespot, shairport-sync, bluez-alsa, and the Gemini Live SDK
-(via `MEASURE_PAUSE` + `systemctl stop`) frees an estimated
-130-200 MB. That's enough headroom for PEQ (negligible) and likely
-enough for short minimum-phase FIR prototypes, but Phase 5 should
-measure peak memory before enabling mixed-phase or FDW generation in
-the user-facing flow.
+**Concrete RAM budget on 1 GB:** The source processes deliberately remain alive;
+the design does not count speculative process-stop savings as FIR headroom.
+PEQ remains negligible. Phase 5 must measure real steady-state and peak memory
+with the ordinary household stack running before enabling mixed-phase or FDW
+generation in the user-facing flow.
 
 **Defaults that keep us safely on the safe side:**
 - Match range: 20-350 Hz (project-safe modal/transition-region
@@ -1401,6 +2190,8 @@ mid-sweep would attenuate the sweep itself.
 ```
 jasper/
 ├── active_speaker/
+│   ├── commissioning_run.py              durable exact run/owner/attempt/
+│   │                                    lifecycle-journal control plane
 │   ├── crossover_envelope.py            commissioning screen envelope (aligned
 │   │                                    with the room envelope pattern; passive
 │   │                                    gate) — composes commissioning_coordinator
@@ -1419,13 +2210,16 @@ jasper/
 │   ├── quality.py                       capture quality gates + issue schema
 │   ├── quality_model.py                 parameterized capture-quality thresholds
 │   │                                    shared across tuning layers
+│   ├── playback.py                      policy-free WAV/tone process mechanics;
+│   │                                    explicit device/cache, bounded cleanup
 │   └── ramp.py                          settle-based level-match ramp controller
 │                                        (shared measurement kernel, P2)
 │
 ├── correction/
 │   ├── __init__.py
 │   ├── coordinator.py                   measurement_window() async CM
-│   ├── playback.py                      sweep → correction_substream via aplay
+│   ├── playback.py                      Room compatibility/default wrapper around
+│   │                                    audio_measurement.playback
 │   ├── peq.py                           greedy PEQ design (≤5 filters, cuts)
 │   ├── target.py                        Harman / flat / house-curve interpolant
 │   ├── bundles.py                       debug-bundle listing / validation helpers
@@ -1433,7 +2227,8 @@ jasper/
 │   ├── runtime_integrity.py             Pi/runtime health evidence around sweeps
 │   ├── runtime_safety.py                runtime graph safety re-checked against the
 │   │                                    saved output topology contract
-│   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
+│   ├── acoustic_quality.py              admitted capture analysis plus
+│   │                                    SNR/repeatability/direct-arrival trust evidence
 │   ├── replay_artifacts.py              compact derived IR/response artifacts
 │   ├── artifacts.py                     per-session bundle writer / manifest owner
 │   ├── status.py                        current-config + status/bundle payload serializers
@@ -1455,9 +2250,9 @@ jasper/
 │   │                                    multi-position measurements
 │   ├── strategy.py                      correction strategy and target-profile
 │   │                                    orchestration (raw math -> product policy)
-│   └── session.py                       measurement state machine + DSP orchestration
-│                                        (delegates auto-level ramping, state guards,
-│                                        and status serialization)
+│   └── session.py                       measurement state machine + DSP/replay orchestration
+│                                        (delegates capture analysis, auto-level ramping,
+│                                        state guards, and status serialization)
 │
 ├── cli/
 │   └── doctor.py                        correction socket / bundle / config checks
@@ -1468,10 +2263,13 @@ jasper/
 │   ├── correction_crossover_backend.py  active-speaker acoustic evidence bridge
 │   ├── correction_crossover_flow.py     /correction/crossover/ page + routes
 │   ├── correction_bass_flow.py          /correction/bass/ placeholder
+│   ├── correction_tuning.py              paid-call throttle/provider/spend owner;
+│   │                                    no acceptance or live-apply authority
 │   └── correction_setup.py              mirrors voice_setup.py shape
 │                                        ThreadingHTTPServer on 127.0.0.1:8770
 │                                        polling status, POST for upload+apply,
-│                                        and correction subflow dispatch
+│                                        correction subflow dispatch, and thin
+│                                        tuning HTTP adapters
 │
 ├── voice_daemon.py                      MEASURE_PAUSE / MEASURE_RESUME
 │                                        UDS commands; gate WakeLoop +
@@ -1560,10 +2358,10 @@ sees a chart, taps "Apply," next song plays through corrected DSP.
 
 Concrete changes:
 - `jasper/correction/coordinator.py`: `measurement_window()` async
-  context manager. Calls `systemctl stop` on all music source daemons
-  that can write into fan-in. Sends `MEASURE_PAUSE` over UDS to voice_daemon.
-  On exit (including exceptions): sends `MEASURE_RESUME`,
-  `systemctl start ...`.
+  context manager. Acquires mux's owner-scoped, leased correction gate, which
+  excludes all music lanes without stopping their daemons. Sends
+  `MEASURE_PAUSE` over UDS to voice_daemon. On exit (including exceptions):
+  sends `MEASURE_RESUME` and strictly releases its own mux gate.
 - `jasper/voice_daemon.py`: handle `MEASURE_PAUSE` / `MEASURE_RESUME`
   in `_handle_command()`. Set `self._measurement_active = asyncio.Event()`.
   WakeLoop's main loop awaits `not self._measurement_active.is_set()`
@@ -1573,8 +2371,9 @@ Concrete changes:
   swept-sine, 10 s, 20 Hz - 20 kHz, -12 dBFS, S16_LE WAV output.
   Cache on disk — it's deterministic. (Moved out of `jasper/correction/`
   into the shared measurement kernel in P1b; all three tuning layers reuse it.)
-- `jasper/correction/playback.py`: shell out to
-  `aplay -D correction_substream sweep.wav`. Wait for completion.
+- `jasper/audio_measurement/playback.py`: bounded `aplay` process mechanics
+  behind explicit device/timeout arguments. `jasper/correction/playback.py`
+  retains the Room-owned `correction_substream` compatibility surface.
 - `jasper/audio_measurement/deconv.py`: take phone-uploaded WAV + sweep
   metadata, perform regularized FFT inversion → mono float32 IR.
 - `jasper/audio_measurement/analysis.py`: 1/48-octave magnitude smoothing
@@ -1855,10 +2654,12 @@ What can actually go wrong, ordered by likelihood × impact.
    that loads our emitted YAML, runs the existing
    [test_camilla_ducker.py](../tests/test_camilla_ducker.py) tests
    against it.
-4. **measurement_window() leaves a music source daemon in a stopped
-   state on crash.** Mitigation: `try/finally` in coordinator;
-   systemd restart policies on the renderers; explicit
-   `jasper-doctor` checks for source-daemon health.
+4. **measurement_window() loses its web worker while music is isolated.**
+   Mitigation: mux owns a closed owner vocabulary and a 60-second monotonic
+   lease. Same-owner selection renews it; another feature cannot steal/release
+   it; expiry strictly restores the current manual/auto/NONE gate and retains
+   ownership for retry if that low-level restore fails. Source processes and
+   household intent are never changed by correction.
 5. **iOS user gives up on cert trust dance.** Mitigation: extremely
    clear onboarding instructions (screenshots, not just text) on
    the port-80 landing page. Cert download served at HTTP-only URL
@@ -1877,7 +2678,7 @@ What can actually go wrong, ordered by likelihood × impact.
 These items can only be verified on real hardware. Deploy with
 `bash scripts/deploy-to-pi.sh`, then run on the Pi:
 
-### Phase 0 (TLS + skeleton)
+### Entry, TLS, and disclosed defaults
 - [ ] `systemctl is-active jasper-correction-web.socket` → `active`
       (the service itself may be inactive when idle; socket
       activation is the liveness contract).
@@ -1886,51 +2687,86 @@ These items can only be verified on real hardware. Deploy with
 - [ ] `curl http://jts.local/correction/` returns the preflight page.
 - [ ] `curl -k https://jts.local/correction/healthz` → `ok`.
 - [ ] `nginx -t` → ok.
-- [ ] On iPhone after cert trust: page loads with no "Connection
-      not private" warning; mic permission prompt appears on first
-      tap; constraint table reads `✓ ok` for all 5 rows.
+- [ ] The ready Room page shows **Measuring 6 positions with the flat
+      target — Change**, discloses the automatic main-seat trust repeat, and
+      shows **Start measuring** as its only primary forward action. **Change**
+      leaves relay/phone capture as the configured default, offers **Use this
+      device's microphone** as the local alternative, and names **Balanced**
+      as the recommended strategy.
+- [ ] On the normal relay path, opening Room and choosing **Start measuring**
+      does not request microphone permission in the management browser. A
+      bounded level-check handoff appears; **Open phone capture** opens the
+      signed phone page, and the phone-reported position count cannot change
+      the Pi-owned six-position run.
+- [ ] On a desktop/tablet browser width, the same handoff also shows a QR
+      code next to **Open phone capture**, open by default; scanning it with
+      a phone camera opens the identical signed capture page (the fragment
+      carrying the E2E key must ride into the scanned link intact). On a
+      phone-width browser the QR is present but collapsed under **Show QR
+      code** — the tap link stays the primary, default-visible path there.
+
+### Relay-first six-position run and verification
+- [ ] Complete the phone microphone/calibration setup and level check. The
+      speaker raises the test signal only within the bounded level walk, music
+      pauses while required, and the prior listening volume and renderers
+      return without a glitch. Watch `journalctl -u jasper-voice` for
+      `MEASURE_PAUSE` / `MEASURE_RESUME` events.
+- [ ] **Measure this position** creates the capture for position 1. The phone
+      records and uploads the sweep cleanly, the speaker completes playback in
+      roughly 10 seconds, and the management page advances only after the Pi
+      accepts the capture.
+- [ ] Move the phone for each subsequent instruction. The page shows the
+      correct position number out of six, and **Measure next position**
+      advances positions 2 through 6. Each follow-up link carries the Pi-owned
+      position/total metadata and authenticates the realized microphone
+      against the level-check identity before sound.
+- [ ] After position 6, the run automatically requires one main-seat trust
+      repeat. **Repeat the main seat** performs that capture through the same
+      Room relay route; it is identified as a trust check and is not counted as
+      a seventh listening position.
+- [ ] After the repeat, the averaged measured curve and proposed adjustments
+      render. **Apply room correction** swaps the CamillaDSP config without an
+      audio dropout (verify by playing music continuously across the apply
+      boundary, for example with
+      `aplay -D correction_substream white_noise.wav` in another shell).
+- [ ] Return the phone to the main seat and choose **Verify correction**. The
+      fresh like-for-like capture completes, the verification curve overlays
+      the chart, and the RMS/max-deviation summary appears without treating an
+      applied correction as verified before the capture is accepted.
+- [ ] **Audibility check**: play a familiar bass-heavy track before and after
+      **Apply room correction** — a repeatable modal peak should audibly
+      tighten. The measured verification result, not this subjective check,
+      remains acceptance authority.
+- [ ] Tap **Reset correction** on a normal full-range stereo topology →
+      CamillaDSP removes room PEQs cleanly while preserving the current sound
+      profile. As a regression check with an already-corrected active graph,
+      verify reset keeps the active speaker baseline and only clears room PEQs;
+      a solo manual-applied profile may enter Room, grouped active is explicitly
+      unsupported in v1, and automatic entry must earn Active's verified receipt;
+      without that exact receipt Room remains fail-closed.
+- [ ] AEC bridge interaction (if enabled): routing resumes after measurement
+      without permanent drift; allow the adaptive filter its normal convergence
+      window described in [HANDOFF-aec.md](HANDOFF-aec.md).
+
+### Local backup and bounded choices
+- [ ] Before **Start measuring**, open **Change** and choose **Use this device's
+      microphone**. After **Start measuring**, **Allow microphone** requests
+      permission and binds the realized device/calibration to the parked Room
+      session. If the first grant is discovery-only, select the exact mic and
+      choose **Allow microphone** again. The constraint table then reads
+      `✓ ok` for all five rows.
       **Critical**: if `echoCancellation` / `noiseSuppression` /
       `autoGainControl` read `✗ bad`, that's an iOS Safari version
       regression we have to work around — file an issue.
-
-### Phase 1 (single-position end-to-end)
-- [ ] Tap **Run measurement** → music pauses, sweep audible at the
-      speaker, completes in ~10 s, no audio glitch when renderers
-      come back. Watch `journalctl -u jasper-voice` for
-      `MEASURE_PAUSE` / `MEASURE_RESUME` events.
-- [ ] AudioWorklet capture uploads cleanly (browser network tab
-      shows POST /upload-capture with audio/wav body).
-- [ ] Chart renders within ~5 s of upload; PEQ list shows 0-5
-      filters with reasonable freq/Q/gain.
-- [ ] Tap **Apply** → CamillaDSP swaps config without audio dropout
-      (verify by playing music continuously across the apply
-      boundary, e.g. `aplay -D correction_substream white_noise.wav`
-      in another shell).
-- [ ] **Audibility check**: play a familiar bass-heavy track
-      before/after Apply — modal peak should audibly tighten.
-- [ ] Tap **Reset correction** on a normal full-range stereo topology →
-      CamillaDSP removes room PEQs cleanly while preserving the current sound
-      profile. On saved active/protected topology, verify reset keeps the
-      active speaker baseline and only clears room PEQs.
-- [ ] AEC bridge interaction (if enabled): no permanent drift after
-      a measurement; bridge re-converges in ~200 ms.
-
-### Phase 2 (multi-position + verify)
-- [ ] 5-position flow: NEEDS_NEXT_POSITION prompt visible after
-      each capture; **Continue** advances to next sweep with
-      ~3-5 s of dead air (renderer pause/restart cycle).
-- [ ] Move phone between positions; verify the prompt shows the
-      correct position number.
-- [ ] After 5 positions: PEQ design produces a result; chart shows
-      the AVERAGED measured curve (not the last-position one).
-- [ ] **Verify with re-measurement** after Apply: new measurement
-      runs, purple dashed curve overlays on chart, RMS / max
-      deviation summary appears.
-- [ ] Verify deviation should be SMALLER post-correction than
-      pre-correction was. If it isn't, the correction didn't work
-      — check journals for clues.
-- [ ] Target choice: flat vs warm produces different PEQ sets and
-      audibly different results.
+- [ ] Complete **Check measurement level**, then **Measure this position**.
+      AudioWorklet capture uploads cleanly (the browser network panel shows an
+      `audio/wav` upload), and the local path follows the same six-position,
+      main-seat-repeat, **Apply room correction**, and **Verify correction**
+      product flow as relay.
+- [ ] In separate bounded-choice runs, select one or three positions, a
+      non-default named target, and **Safe** strategy. The disclosed summary,
+      session, report, and designed result use exactly those choices; the
+      automatic main-seat trust repeat remains enabled for both transports.
 
 ### Phase 2.4 (observability + quality)
 - [ ] Deliberately quiet capture warns in the UI and bundle instead
@@ -2114,9 +2950,10 @@ than teaching browser routes to recompute DSP facts.
 Runtime health is lightweight and bounded, not a new monitoring daemon.
 `runtime_integrity.json` records a small per-measurement health packet:
 monotonic/wall-clock timing, CPU/load and memory snapshots, CamillaDSP
-config/status where available, fan-in xrun deltas, and capture
-sample-count sanity. This feeds a separate **runtime integrity**
-verdict, distinct from **capture quality** and **acoustic quality**.
+config/status where available, fan-in and outputd content/DAC xrun
+deltas, and capture sample-count sanity. This feeds a separate
+**runtime integrity** verdict, distinct from **capture quality** and
+**acoustic quality**.
 Hard capture failures such as clipping, sample-rate mismatch, or
 too-short WAV still block analysis; runtime warnings lower confidence
 unless they directly prove the recording is invalid.
@@ -2296,7 +3133,104 @@ Internal:
 
 ---
 
-Last verified: 2026-07-13 (full GET/POST route inventory rechecked against
+Last verified: 2026-07-19 (v2 calibration handoff page-side fix, W6.13 — see
+the new Status bullet above: `setup` now piggybacks on every
+`begin_capture` post so the household-mic hint reaches
+`resolve_relay_calibration` from the CHECK-phase capture onward, and the
+uncalibrated-capture WARN now names the observed `setup_mode`/
+`setup_calibration_id`; `capture_page_build` bumped to `20260719.4`.
+Hardware-free tests only — round-6 on-device confirmation still owed.)
+Prior 2026-07-17 (in-flow scoped crossover reset added —
+`POST /crossover/reset` / `clear_active_speaker_measurement_journey`; see
+the new "Scoped crossover reset" section above. KEEP/CLEAR split for
+`startup_load`/`baseline_profile` confirmed against read-only JTS3 state
+(`active_speaker_startup_load.json`, `active_speaker_baseline_profile.json`);
+hardware-free tests only for the new endpoint itself — on-device exercise
+of the "Start over" button still owed.) Prior 2026-07-17 (hardware run 21, jts3 @ 62af5b206: the v3
+session-spanning driver-capture guard/reservation SSOT conflict fixed —
+`_plan_admission_matches` in `jasper/web/correction_setup.py` — see the
+"Session-spanning capture protocol v3" bullet above and
+[phone-mic-relay-plan.md](phone-mic-relay-plan.md). Hardware-free tests
+only; on-device revalidation of the fix still owed.) Prior 2026-07-17
+(Wave-2 household-mic Status bullet updated to the
+completed loop: the phone one-tap confirm shipped in the capture page's
+2026-07 Wave-2 batch and the Pi's `mode="stored"` branch +
+`default_setup.calibration.resolvable` marker complete it; the stored-mode
+re-confirm is now a household-record write trigger alongside newly
+established calibrations. Checked against `_relay_calibration_from_setup` /
+`_default_setup_calibration_for_spec` in `jasper/web/correction_setup.py`,
+`jasper/capture_relay/spec.py`'s `DefaultSetupCalibration`, and
+`capture-page/js/main.js`'s `renderCalibrationConfirm`; hardware-free tests
+only.) Prior 2026-07-16 (voice-side Camilla ownership rechecked against
+`VolumeCoordinator.note_voice_session`, the legacy `Ducker`, and measurement
+pause; jts3 hardware finding: a single marginal
+`agc_suspected` estimate — 0.644 slope over 3 steps — refused a measurement
+whose mic later passed cleanly with more evidence. The gate now holds a
+first failing estimate open for one more staircase step before any
+terminal, guaranteeing >= 4 steps of evidence for a real refusal, and
+`RampData.error_detail` names the measured slopes/steps; the double
+`ramp_agc_suspected` log emission is deduped to one; and every relay
+level-match refusal is translated through one mapping,
+`jasper.correction.level_match.describe_ramp_refusal`, into a typed
+`LevelMatchRefused(code, user_message)` — the phone terminal, the
+`capture_relay.adapter_failed` log `reason=`, and the Room envelope's
+`failure` block all read the same homeowner copy instead of a raw code or
+nothing at all. Checked against `jasper.audio_measurement.ramp
+.RampController._update_agc_evidence`, `jasper.correction.level_match
+.describe_ramp_refusal`, `jasper.correction.envelope
+._level_match_refusal_failure`, and hardware-free tests; no hardware
+behavior revalidated). Prior 2026-07-16 (empirical AGC slope verification for unattested
+level-ramp chains — undefined `autoGainControl` on iOS/WebKit no longer
+refuses client-side; `RampController` regresses the staircase's reported vs
+commanded dB and locks only once verified, aborting `agc_suspected` on a
+failed or indeterminate verdict — checked against `jasper.audio_measurement
+.ramp.RampController`, `jasper.correction.level_match.MeasurementLevelLock
+.from_ramp`, `capture-page/js/{main,level-events}.js`, and hardware-free
+tests; no hardware behavior revalidated). Prior 2026-07-15 (Room upload
+acknowledgement, envelope-only result
+presentation, and single-pass server-smoothed chart rendering checked against
+`correction_setup._handle_upload_capture`, `jasper.correction.envelope`,
+`deploy/assets/correction/js/main.js`, and focused contract tests; proposal /
+apply routes and deterministic acceptance/revert were unchanged. Measurement
+isolation rechecked against mux's
+closed owner vocabulary, transactional release acknowledgement, response-loss
+rollback, monotonic crash lease, and no source-process mutation; shared DSP-writer admission deadline/cancellation
+semantics checked against Room's terminal mutation policy; Active isolated-driver
+persisted admission, server-owned capture handoff, legacy summed pre-audio
+refusal, the recorder-only production summed relay, exact measured-candidate
+publication/readback, `candidate_ready` binding, and review projection checked
+hardware-free; the explicit reviewed apply, baseline compiler handoff, fresh
+protected graph/path/volume proof, exact failure/cancellation/restart restore,
+retained-state finalization, and browser apply/restore projection were also
+checked through injected runtime seams;
+Active's signed geometry and durable calibration/device binding, typed internal
+summed evidence host, exact
+graph/capture/restore runtime, durable artifacts, and deterministic measured
+progression were also checked with synthetic admitted fixtures; Active's durable bundle-backed commissioning-run start,
+startup owner-generation claim, stale-callback refusal, and fail-closed
+crossover status, post-apply verification/receipt, and the Active-owned Room
+decision were also checked hardware-free; no live crossover graph was changed. Wave 2 paid tuning backend extraction checked the
+shared cross-route throttle, fresh household spend gate, exact provider
+arguments, unchanged result payloads, fail-soft ledger writes, and thin HTTP
+error translation without moving proposal acceptance or live apply. Acoustic-
+trust kernels and admitted capture analysis extraction checked against exact
+status/artifact bytes, quality issue logging, calibration-before-normalization,
+and replay orchestration. Neutral
+playback extraction and the Room compatibility wrapper checked against current
+callers and deterministic tone bytes. Room envelope v9
+section/action/blocker/failure/default ownership,
+six/flat/balanced/automatic-repeat policy, relay-first transport resolution,
+capture-only positioned relay specs, and pre-playback level-microphone checks;
+manual-applied and automatic verified-receipt readiness admission plus `/start`
+defense,
+typed Start/relay/tuning/session/apply failures, static-edge report discovery,
+local capture setup binding, and the
+deleted legacy/certificate surfaces checked hardware-free against
+`jasper.correction.envelope`, `jasper.correction.failures`,
+`MeasurementSession.bind_local_capture_setup`, `correction_setup._POST_ROUTES`,
+and `deploy/assets/correction/js/main.js`; real-device browser behavior remains
+pending. Active eligibility-receipt production and Room consumption were
+checked hardware-free; no hardware behavior revalidated. Full GET/POST route inventory rechecked against
 `correction_setup._POST_ROUTES` and `Handler.do_GET`; durable crossover-volume
 recovery and route gating; per-driver fixed-reference-axis orchestration;
 geometry-scoped repeats/apply gate; summed fixed-axis placement and relay metadata

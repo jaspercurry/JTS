@@ -26,10 +26,14 @@ from jasper.renderer import (
 # ----------------------------------------------------------------------
 
 @pytest.fixture
-def renderer(tmp_path):
+def renderer(tmp_path, monkeypatch):
     # Per-test state file path. Tests write fixture JSON into it
     # (or leave it absent) to control what source_state.spotify_playing
     # observes via active_renderers.
+    monkeypatch.setattr(
+        "jasper.renderer.usbsink_playing",
+        AsyncMock(return_value=False),
+    )
     return RendererClient(
         librespot_state_path=str(tmp_path / "librespot.state.json"),
     )
@@ -66,12 +70,20 @@ async def test_active_renderers_all_inactive(renderer):
         "aplactive": False,
         "btactive": False,
         "spotactive": False,
-        # USB sink probe reads /run/jasper-usbsink/state.json — under
-        # the test harness there's no daemon publishing, so the
-        # FileNotFoundError path resolves to False (matching the
-        # fail-soft convention of the other probes).
+        # The fixture pins fan-in USB activity inactive.
         "usbsinkactive": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_active_renderers_reports_fanin_usb_activity(renderer):
+    with (
+        patch("asyncio.create_subprocess_exec", new=_mock_subprocess(stdout=b"")),
+        patch("jasper.renderer.usbsink_playing", new=AsyncMock(return_value=True)),
+    ):
+        result = await renderer.active_renderers()
+
+    assert result["usbsinkactive"] is True
 
 
 @pytest.mark.asyncio

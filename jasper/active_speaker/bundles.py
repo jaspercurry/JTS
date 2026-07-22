@@ -13,38 +13,36 @@ capture — it is not evidence for later forensics, corpus review, or "what
 actually happened during commissioning?" questions.
 
 This module is the missing append-only half, ported from the room-correction
-session-bundle pattern ([`jasper.correction.bundles`](../correction/bundles.py)):
+session-bundle pattern:
 one durable, hashed, retention-bounded directory per commissioning attempt
 (a "bundle"), holding the fingerprints, captures, and apply transaction that
 produced (or failed to produce) a baseline. It reuses
-``jasper.correction.bundles``'s generic manifest primitives
-(:func:`~jasper.correction.bundles.record_artifact`,
-:func:`~jasper.correction.bundles.write_json_artifact`,
-:func:`~jasper.correction.bundles.read_artifact_manifest`) directly rather than
+``jasper.audio_measurement.bundles``'s neutral manifest primitives
+(:func:`~jasper.audio_measurement.bundles.record_artifact`,
+:func:`~jasper.audio_measurement.bundles.write_json_artifact`,
+:func:`~jasper.audio_measurement.bundles.read_artifact_manifest`) directly rather than
 forking them. The primitives resolve the owning bundle schema from ``info.json``;
 only the active-speaker-specific shape (its fields, retention policy, and the
 active core-artifact list) lives here.
 
-Two invariants keep this module safe to bolt onto an already-shipped flow:
+Two invariants keep ownership explicit:
 
-- **Direction.** This module may import ``measurement.py``,
-  ``capture_geometry.py``, and friends. Nothing in ``measurement.py`` imports
-  this module, and the bundle is never read back as an input to any decision
-  path (baseline compilation, apply gating, proposal) — it is forensic
-  evidence only. The one join key between the two is ``session_id``: a
-  measurement record's optional ``bundle`` field
-  (``{session_id, artifact_path}``) points at a bundle; the bundle never
-  points back the other way except by the same id.
-- **Fail-soft everywhere.** Every public write entry point catches
-  ``OSError`` / :class:`~jasper.correction.bundles.BundleError` (plus a stray
+- **Split authority.** Capture, proposal, and apply payloads in ``info.json``
+  remain a fail-soft forensic mirror and are never reconstructed into
+  measurement or candidate authority. A *fresh* bundle directory additionally
+  owns Shared's exact admission marker and immutable generation/playback
+  artifacts. The Active playback adapter reopens those strict artifacts by
+  ``session_id``; missing or historical markers refuse audible production work.
+  Nothing in ``measurement.py`` imports this module.
+- **Fail-soft forensic writes.** Every public write entry point catches
+  ``OSError`` / :class:`~jasper.audio_measurement.bundles.BundleError` (plus a stray
   ``ValueError`` normalized the same way), logs one
   ``active_speaker.bundle_write_failed`` WARNING via
   :func:`jasper.log_event.log_event`, and returns ``None`` instead of
-  raising. A bundle-write failure must never block capture recording or a
-  baseline apply — see the ``No silent failure paths`` / resilience rules in
-  ``AGENTS.md``. Callers treat ``None`` as "no bundle evidence recorded this
-  time" and carry on; the measurement/apply path they are threading through
-  has already (or will already) succeed or fail on its own terms.
+  raising. A forensic mirror failure does not undo an otherwise valid capture
+  or apply. Failure to create/reopen the admission authority is different: the
+  comparison flow may continue as non-admitted diagnostic evidence, but no
+  production playback or later positive authority may be minted from it.
 """
 
 from __future__ import annotations
@@ -59,12 +57,18 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.correction.bundles import (
+from jasper.audio_measurement.bundles import (
     BundleError,
-    _sha256_file,
     read_artifact_manifest,
     record_artifact,
+    sha256_file,
     write_json_artifact,
+)
+from jasper.audio_measurement.excitation_artifacts import (
+    AdmissionArtifactError,
+    AdmissionAuthority,
+    create_admission_authority,
+    open_admission_authority,
 )
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
@@ -77,6 +81,12 @@ logger = logging.getLogger(__name__)
 
 BUNDLE_SCHEMA_VERSION = 1
 BUNDLE_KIND = "jts_active_speaker_commissioning_bundle"
+
+# Before the manifest primitive moved out of Room, an Active partial-bundle
+# write with no info.json inherited Room's fallback schema header. Preserve
+# those bytes until partial-bundle writes always seed info.json; ordinary
+# Active bundles continue to resolve schema 1 from their owning info.json.
+LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION = 5
 
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/active_speaker/sessions")
 SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
@@ -149,7 +159,7 @@ def _fail_soft(op: str):
         def wrapper(*args, **kwargs):
             try:
                 return fn(*args, **kwargs)
-            except (OSError, BundleError, ValueError) as exc:
+            except (OSError, BundleError, AdmissionArtifactError, ValueError) as exc:
                 bundle_dir = kwargs.get("bundle_dir")
                 if bundle_dir is None and args and isinstance(args[0], Path):
                     bundle_dir = args[0]
@@ -238,7 +248,7 @@ def _calibration_sha256(calibration_id: str) -> str | None:
     if sha:
         return str(sha)
     try:
-        return _sha256_file(Path(record.raw_path))
+        return sha256_file(Path(record.raw_path))
     except OSError:
         return None
 
@@ -312,6 +322,32 @@ def _iter_bundle_dirs(root: Path) -> list[Path]:
     return [bundle_dir for _, _, bundle_dir in candidates]
 
 
+def _iter_retention_dirs(root: Path) -> list[Path]:
+    """All bundle-shaped directories, including interrupted partial creates."""
+
+    if not root.is_dir():
+        return []
+    candidates: list[tuple[float, str, Path]] = []
+    for sub in root.iterdir():
+        if not sub.is_dir():
+            continue
+        started_at: float | None = None
+        if _info_path(sub).exists():
+            try:
+                info = _read_info(sub)
+                started_at = float(info.get("started_at") or 0.0)
+            except (BundleError, TypeError, ValueError):
+                started_at = None
+        if started_at is None:
+            try:
+                started_at = sub.stat().st_mtime
+            except OSError:
+                started_at = 0.0
+        candidates.append((started_at, sub.name, sub))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [bundle_dir for _, _, bundle_dir in candidates]
+
+
 def _abandon_open_bundles(root: Path) -> None:
     """Mark every currently-``open`` bundle ``abandoned`` (at most one open)."""
 
@@ -357,11 +393,13 @@ def open_bundle(
 
     Returns the info payload (with ``session_id`` and ``bundle_dir`` — a
     string — merged in) or ``None`` on any I/O failure (WARN-logged; see
-    :func:`_fail_soft`). Bundle evidence is forensic-only, so a failure here
-    must never block the comparison-set/level-match flow that called it.
+    :func:`_fail_soft`). The comparison-set flow may continue diagnostically
+    after ``None``, but the resulting historical evidence cannot enter the
+    admitted playback/candidate path because it has no exact authority.
     """
 
     root = sessions_dir if sessions_dir is not None else _default_sessions_dir()
+    root.mkdir(parents=True, exist_ok=True)
     _abandon_open_bundles(root)
 
     session_id = uuid.uuid4().hex[:12]
@@ -401,6 +439,14 @@ def open_bundle(
     except (AttributeError, TypeError, KeyError) as exc:
         raise BundleError(f"malformed output topology: {exc}") from exc
 
+    # Establish production authority only after every pure input has validated.
+    # A malformed caller therefore cannot leave a marker-only directory behind.
+    create_admission_authority(
+        bundle_dir,
+        bundle_kind=BUNDLE_KIND,
+        bundle_id=session_id,
+    )
+
     info = {
         "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
         "kind": BUNDLE_KIND,
@@ -435,12 +481,34 @@ def open_bundle(
         "rollback_target": None,
         "verification": None,
     }
-    bundle_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(bundle_dir, 0o750)
     _write_info(bundle_dir, info)
     result = {**info, "bundle_dir": str(bundle_dir)}
     enforce_retention(root)
     return result
+
+
+def open_bundle_admission_authority(
+    bundle_dir: str | Path,
+    *,
+    expected_session_id: str,
+) -> AdmissionAuthority:
+    """Open only a new commissioning bundle with exact Shared authority.
+
+    Bundles created before production admission have no authority marker and
+    remain historical evidence.  This function never creates or repairs a
+    marker on an existing directory.
+    """
+
+    target = Path(bundle_dir)
+    info = _read_info(target)
+    if info.get("kind") != BUNDLE_KIND or info.get("session_id") != expected_session_id:
+        raise BundleError("commissioning bundle identity does not match its session")
+    return open_admission_authority(
+        target,
+        expected_bundle_kind=BUNDLE_KIND,
+        expected_bundle_id=expected_session_id,
+    )
 
 
 @_fail_soft("attach_comparison_set")
@@ -578,6 +646,11 @@ def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None
         sensitivity="private_raw_audio",
         recomputable=False,
         generated_by="active_speaker.bundles",
+        bundle_schema_version=(
+            BUNDLE_SCHEMA_VERSION
+            if (bundle_dir / "info.json").exists()
+            else LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
+        ),
     )
 
 
@@ -721,6 +794,11 @@ def append_repeat_capture(
         sensitivity="derived",
         recomputable=True,
         generated_by="active_speaker.bundles",
+        bundle_schema_version=(
+            BUNDLE_SCHEMA_VERSION
+            if (bundle_dir / "info.json").exists()
+            else LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
+        ),
         dependencies=[rel_path],
         schema_version=BUNDLE_SCHEMA_VERSION,
         file_mode=BUNDLE_FILE_MODE,
@@ -931,11 +1009,13 @@ def enforce_retention(
 ) -> None:
     """Delete oldest whole bundles once storage exceeds the configured cap.
 
-    Every unfinished bundle (``state`` in ``open``/``proposal_ready``) plus
-    the single newest bundle overall are protected, so a live or
-    just-completed session can never be evicted by its own size. Deletion is
-    whole-bundle (``shutil.rmtree``), oldest-``started_at``-first among the
-    unprotected set. Fail-soft: any I/O error during the sweep is
+    Every unfinished complete bundle (``state`` in
+    ``open``/``proposal_ready``) plus the single newest complete bundle are
+    protected, so a live or just-completed session can never be evicted by its
+    own size. Interrupted directories without parseable ``info.json`` still
+    count against both caps and are never protected. Deletion is whole-bundle
+    (``shutil.rmtree``), oldest-``started_at``-first among the unprotected set.
+    Fail-soft: any I/O error during the sweep is
     WARN-logged and the sweep simply stops — this is always called from
     :func:`open_bundle`'s own fail-soft wrapper, but is public and
     independently fail-soft so a future direct caller (a maintenance script)
@@ -962,12 +1042,13 @@ def enforce_retention(
 
 
 def _enforce_retention(root: Path, *, max_bytes: int, max_bundles: int) -> None:
-    bundle_dirs = _iter_bundle_dirs(root)  # newest-first
+    bundle_dirs = _iter_retention_dirs(root)  # newest-first, including partials
     if not bundle_dirs:
         return
 
-    protected: set[Path] = {bundle_dirs[0]}
-    for bundle_dir in bundle_dirs:
+    complete_dirs = _iter_bundle_dirs(root)
+    protected: set[Path] = {complete_dirs[0]} if complete_dirs else set()
+    for bundle_dir in complete_dirs:
         try:
             info = _read_info(bundle_dir)
         except BundleError:

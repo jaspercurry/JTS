@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import json
+
 from jasper.active_speaker.calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     DEFAULT_TEST_LEVEL_DBFS,
     MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
+    TEST_LEVEL_STEP_DB,
     calibration_level_payload,
     clamp_test_level_dbfs,
     classify_mic_meter,
@@ -172,3 +175,66 @@ def test_calibration_level_observation_clipping_resets_to_floor(tmp_path) -> Non
     assert clipped["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
     assert clipped["mic_meter"]["status"] == "clipping"
     assert clipped["issues"][0]["code"] == "mic_clipping_reset_to_floor"
+
+
+def test_calibration_level_same_run_round_trips(tmp_path) -> None:
+    path = tmp_path / "level.json"
+
+    first = update_calibration_level_state(
+        action="raise", state_path=path, run_id="run-a"
+    )
+    second = update_calibration_level_state(
+        action="raise", state_path=path, run_id="run-a"
+    )
+    loaded = load_calibration_level_state(state_path=path, run_id="run-a")
+
+    assert first["run_id"] == "run-a"
+    assert second["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS + 2 * TEST_LEVEL_STEP_DB
+    )
+    assert loaded["test_signal"]["requested_level_dbfs"] == second["test_signal"][
+        "requested_level_dbfs"
+    ]
+    assert loaded["run_id"] == "run-a"
+
+
+def test_calibration_level_different_run_id_starts_at_floor(tmp_path) -> None:
+    path = tmp_path / "level.json"
+
+    update_calibration_level_state(action="raise", state_path=path, run_id="run-a")
+    update_calibration_level_state(action="raise", state_path=path, run_id="run-a")
+
+    loaded_other_run = load_calibration_level_state(state_path=path, run_id="run-b")
+    next_step = update_calibration_level_state(
+        action="raise", state_path=path, run_id="run-b"
+    )
+
+    assert loaded_other_run["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS
+    )
+    assert loaded_other_run["last_action"] == "default_floor"
+    # A fresh run's first "raise" steps up from the floor, not from run-a's
+    # accumulated level, even though run-a's level is still on disk.
+    assert next_step["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS + TEST_LEVEL_STEP_DB
+    )
+    assert next_step["run_id"] == "run-b"
+
+
+def test_calibration_level_legacy_stateless_file_starts_at_floor(tmp_path) -> None:
+    path = tmp_path / "level.json"
+    # Simulate a pre-fix statefile: a valid payload with no "run_id" key.
+    legacy = update_calibration_level_state(action="raise", state_path=path)
+    legacy.pop("run_id", None)
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = load_calibration_level_state(state_path=path, run_id="run-new")
+    unscoped = load_calibration_level_state(state_path=path)
+
+    assert loaded["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
+    assert loaded["last_action"] == "default_floor"
+    # A caller that doesn't pass run_id (existing read-only call sites) still
+    # sees the unscoped persisted value, preserving prior behavior.
+    assert unscoped["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS + TEST_LEVEL_STEP_DB
+    )

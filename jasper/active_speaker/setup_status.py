@@ -20,9 +20,11 @@ from typing import Any, Mapping
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from .baseline_profile import (
+    active_layer_a_fingerprint,
     baseline_profile_state_path,
     build_baseline_profile_candidate,
     load_applied_baseline_profile_state,
+    recompose_applied_baseline_yaml,
 )
 from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
@@ -35,6 +37,12 @@ from .design_draft import load_design_draft
 from .measurement import load_measurement_state
 
 SETUP_STATUS_KIND = "jts_active_speaker_setup_status"
+ROOM_ELIGIBILITY_SCHEMA_VERSION = 1
+ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED = "passive_not_required"
+ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE = "manual_applied_profile"
+ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT = (
+    "automatic_commissioning_receipt"
+)
 
 _CAMILLA_STATEFILE_ENV = "JASPER_CAMILLA_STATEFILE"
 _DEFAULT_CAMILLA_STATEFILE = "/var/lib/camilladsp/outputd-statefile.yml"
@@ -42,6 +50,50 @@ _STAGED_CONFIG_BASENAMES = {
     "active_speaker_staged_startup.yml",
     "active_speaker_commissioning.yml",
 }
+IN_SEQUENCE_CAPTURE_ANCHOR_REASON = "active_speaker_commissioning_config_loaded"
+
+
+def setup_blocked_only_by_in_sequence_anchor(
+    status: Mapping[str, Any],
+) -> bool:
+    """Whether a blocked setup status is the capture sequence's own anchor.
+
+    ``status`` is the composed crossover status payload
+    (``correction_crossover_backend.status_payload()``), which carries both
+    the ``setup`` artifact this module produces and the backend-composed
+    ``capture_entry_pending`` flag.
+
+    PR #1523 keeps the persisted CamillaDSP path anchored on the all-muted
+    staged config *between* capture attempts within a single automatic
+    measurement sequence (crash-safe posture — a crash/reboot mid-sequence
+    comes back muted, never loud; production is restored exactly once at
+    sequence end/idle-exit via the capture-entry stash).
+    :func:`read_active_speaker_setup_status` sees that staged path and
+    correctly reports ``blocked``/``active_speaker_commissioning_config_loaded``
+    in isolation — but any readiness gate that requires exact ``"ready"``
+    wedges the flow permanently mid-sequence (JTS3 punch #24: the envelope;
+    run 10: the level-match and sweep endpoint gates blocked tweeter lock
+    2/2 the same way). That state is "anchored mid-sequence by design", not
+    "setup unproven".
+
+    The capture-entry stash (``jasper.active_speaker.capture_entry_anchor``)
+    is the discriminator rather than a heuristic: its lifecycle *is* the
+    sequence boundary — written once when a sequence de-anchors production,
+    cleared by every restore path (sequence end, idle-exit, the
+    service-start claim). The service-start claim boundary runs that
+    restore *before* any envelope or endpoint serves, so a stale stash can
+    never make a post-crash, genuinely-unfinished setup read as ready.
+    Every other blocked reason, and this reason without a pending stash,
+    must gate exactly as a plain blocked status.
+    """
+
+    setup = status.get("setup")
+    setup = setup if isinstance(setup, Mapping) else {}
+    return bool(
+        setup.get("status") == "blocked"
+        and setup.get("reason") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
+        and status.get("capture_entry_pending") is True
+    )
 _READINESS_DERIVATION_ERRORS = (
     OSError,
     RuntimeError,
@@ -50,6 +102,10 @@ _READINESS_DERIVATION_ERRORS = (
     KeyError,
 )
 _CROSSOVER_SETUP_HREF = "/correction/crossover/"
+_ROOMS_SETUP_HREF = "/rooms/"
+_PROGRAM_BAKE_SOURCE = (
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config"
+)
 
 
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
@@ -61,6 +117,14 @@ def _active_group_count(topology: Any) -> int:
         1 for group in getattr(topology, "speaker_groups", ())
         if getattr(group, "mode", "") in {"active_2_way", "active_3_way"}
     )
+
+
+def _grouped_active_runtime() -> bool:
+    """Fresh Active-owned scope fact for both bonded leaders and followers."""
+
+    from jasper.multiroom.config import is_active_member, load_config
+
+    return is_active_member(load_config())
 
 
 def _nonnegative_int(value: Any) -> int:
@@ -94,13 +158,17 @@ def _acoustic_commissioning_status(
     profile: Mapping[str, Any] | None,
     applied_profile: Mapping[str, Any] | None,
     measurements: Mapping[str, Any],
+    layer_a_binding: Mapping[str, Any],
+    receipt_authority: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Room-correction prerequisite for an active Layer-A graph.
 
-    Room correction operates on the Layer-A graph that is actually applied. Its
-    prerequisite is therefore the immutable, topology-current applied snapshot
-    — not whether that crossover was tuned manually or with the microphone.
-    Mutable measurements remain quality evidence and observability only.
+    Room correction operates on the Layer-A graph that is actually applied. An
+    immutable, topology-current manual snapshot is sufficient solo-runtime
+    operator authority; grouped active remains explicitly unsupported until
+    Active can bind its distributed Layer A. An automatic snapshot additionally
+    needs Active's strict commissioning receipt. Mutable measurements remain
+    quality evidence and observability only and cannot stand in for that receipt.
     """
     summary = _mapping(measurements.get("summary"))
     latest_summed = _mapping(summary.get("latest_summed_validations"))
@@ -148,6 +216,8 @@ def _acoustic_commissioning_status(
         and _nonnegative_int(level_match.get("groups_measured"))
         >= required_active_groups
     )
+    authority: str | None = None
+    setup_href = _CROSSOVER_SETUP_HREF
     if not setup_ready:
         reason = "active_speaker_setup_not_ready"
         detail = "Apply the active speaker profile before starting room correction."
@@ -159,23 +229,80 @@ def _acoustic_commissioning_status(
             if reason == "active_applied_profile_snapshot_missing"
             else str(applied_state["detail"])
         )
-    else:
+    elif layer_a_binding.get("status") == "distributed_active_unsupported":
+        reason = "active_grouped_room_correction_not_supported"
+        detail = (
+            "Room correction for a grouped active speaker is not available "
+            "yet. Turn grouping off to measure the solo active speaker."
+        )
+        setup_href = _ROOMS_SETUP_HREF
+    elif layer_a_binding.get("matches") is not True:
+        reason = (
+            "active_applied_profile_graph_mismatch"
+            if layer_a_binding.get("status") == "mismatch"
+            else "active_applied_profile_graph_unverifiable"
+        )
+        detail = (
+            "The crossover currently loaded on this speaker does not match the "
+            "applied manual profile. Apply that crossover again before Room "
+            "correction."
+            if reason == "active_applied_profile_graph_mismatch"
+            else "JTS could not verify the loaded crossover against the applied "
+            "profile. Apply the crossover again before Room correction."
+        )
+    elif tuning_owner == "manual":
         reason = None
+        authority = ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE
         detail = f"The applied {tuning_owner} crossover is ready for room correction."
+    elif (
+        tuning_owner == "automatic"
+        and receipt_authority.get("allowed") is True
+        and receipt_authority.get("authority") == "automatic_verified_receipt"
+    ):
+        reason = None
+        authority = ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
+        detail = "The verified automatic crossover is ready for room correction."
+    else:
+        # An automatic applied snapshot remains playback authority, but it is
+        # not the receipt-backed commissioning authority Room requires.  Do
+        # not infer that receipt from mutable measurements or from the graph
+        # having been applied successfully; the strict receipt integration is
+        # a separate Active-owned authority chain.
+        reason = "active_automatic_commissioning_receipt_missing"
+        detail = (
+            "Finish receipt-backed automatic crossover commissioning, or "
+            "explicitly apply the current crossover as a manual profile."
+        )
 
     allowed = reason is None
     return {
+        "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
+        "authority": authority,
+        # Opaque Active-owned identity for the exact loaded driver-domain
+        # graph admitted by this decision. Room may compare this value at its
+        # writer boundaries; it must not reconstruct Layer A itself.
+        "layer_a_identity": (
+            str(layer_a_binding.get("loaded_fingerprint"))
+            if allowed and layer_a_binding.get("loaded_fingerprint")
+            else None
+        ),
         "required": True,
         "status": "ready" if allowed else "incomplete",
         "allowed": allowed,
         "reason": reason,
         "detail": detail,
-        "setup_href": _CROSSOVER_SETUP_HREF,
+        "setup_href": setup_href,
+        "receipt_fingerprint": (
+            receipt_authority.get("receipt_fingerprint")
+            if authority == ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
+            else None
+        ),
         "applied_profile": {
             "available": isinstance(applied_profile, Mapping),
             "measured_level_match_applied": applied_measured,
             "tuning_owner": tuning_owner or None,
             "snapshot_valid": bool(applied_state["valid"]),
+            "graph_matches_loaded": layer_a_binding.get("matches") is True,
         },
         "drivers": {
             "required_groups": required_active_groups,
@@ -378,9 +505,70 @@ def active_config_path_from_statefile(
     return match.group(1).strip().strip("'\"")
 
 
+def _applied_layer_a_binding(
+    topology: Any,
+    *,
+    applied_profile: Mapping[str, Any] | None,
+    active_config_path: str | None,
+    active_config_text: str | None,
+) -> dict[str, Any]:
+    """Bind Active's immutable applied snapshot to the loaded Layer-A graph."""
+
+    unavailable = {
+        "status": "unverifiable",
+        "matches": False,
+        "expected_fingerprint": None,
+        "loaded_fingerprint": None,
+    }
+    if not isinstance(applied_profile, Mapping) or (
+        active_config_text is None and not active_config_path
+    ):
+        return unavailable
+    try:
+        loaded_yaml = (
+            active_config_text
+            if active_config_text is not None
+            else Path(str(active_config_path)).read_text(encoding="utf-8")
+        )
+        # A bonded active leader's primary Camilla instance carries only the
+        # program-domain File→Snapcast bake; its driver-domain Layer A lives on
+        # the crossover instance. The solo v1 fingerprint cannot honestly bind
+        # that distributed graph, so Active emits one explicit unsupported
+        # decision instead of a misleading crossover-reapply mismatch. A later
+        # distributed authority must remain Active-owned and bind both daemons.
+        if (
+            _grouped_active_runtime()
+            or f"Source: {_PROGRAM_BAKE_SOURCE}" in loaded_yaml
+        ):
+            return {
+                "status": "distributed_active_unsupported",
+                "matches": False,
+                "expected_fingerprint": None,
+                "loaded_fingerprint": None,
+            }
+        expected_yaml, expected_issues = recompose_applied_baseline_yaml(
+            topology,
+            applied_profile=applied_profile,
+        )
+        if expected_yaml is None or expected_issues:
+            return unavailable
+        expected = active_layer_a_fingerprint(expected_yaml)
+        loaded = active_layer_a_fingerprint(loaded_yaml)
+    except _READINESS_DERIVATION_ERRORS:
+        return unavailable
+    matches = expected == loaded
+    return {
+        "status": "current" if matches else "mismatch",
+        "matches": matches,
+        "expected_fingerprint": expected,
+        "loaded_fingerprint": loaded,
+    }
+
+
 def read_active_speaker_setup_status(
     *,
     active_config_path: str | None = None,
+    active_config_text: str | None = None,
     baseline_state_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Return the authoritative active-speaker setup readiness snapshot.
@@ -388,7 +576,9 @@ def read_active_speaker_setup_status(
     For a passive/ordinary speaker, active setup is not required and both
     ``volume_allowed`` and ``grouping_allowed`` are true. For an active speaker,
     the durable baseline profile must be applied and the active CamillaDSP config
-    must not be one of the commissioning/staged safety graphs.
+    must not be one of the commissioning/staged safety graphs. Room supplies a
+    fresh CamillaDSP ``active_raw`` readback as ``active_config_text``; other
+    callers retain the durable statefile-path fallback.
 
     Total + fail-closed for active-output safety: an unreadable topology or
     unreadable baseline profile returns a blocked snapshot instead of silently
@@ -424,6 +614,8 @@ def read_active_speaker_setup_status(
             "grouping_allowed": False,
             "room_correction_allowed": False,
             "acoustic_commissioning": {
+                "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
+                "authority": None,
                 "required": True,
                 "status": "unknown",
                 "allowed": False,
@@ -458,6 +650,8 @@ def read_active_speaker_setup_status(
             "grouping_allowed": True,
             "room_correction_allowed": True,
             "acoustic_commissioning": {
+                "decision_schema_version": ROOM_ELIGIBILITY_SCHEMA_VERSION,
+                "authority": ROOM_AUTHORITY_PASSIVE_NOT_REQUIRED,
                 "required": False,
                 "status": "not_required",
                 "allowed": True,
@@ -488,7 +682,7 @@ def read_active_speaker_setup_status(
     elif config_basename in _STAGED_CONFIG_BASENAMES:
         issues.append(_issue(
             "blocker",
-            "active_speaker_commissioning_config_loaded",
+            IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
             "active speaker setup/commissioning graph is loaded",
         ))
 
@@ -690,6 +884,14 @@ def read_active_speaker_setup_status(
             current_source.get("topology_fingerprint") or ""
         ) or None,
     )
+    layer_a_binding = _applied_layer_a_binding(
+        topology,
+        applied_profile=applied_profile,
+        active_config_path=config_path,
+        active_config_text=active_config_text,
+    )
+    if protected_profile_summary is not None:
+        protected_profile_summary["layer_a_binding"] = layer_a_binding
     manual_preservation = legacy_manual_preservation_state(
         applied_profile,
         current_source_fingerprint=str(current_source.get("fingerprint") or "") or None,
@@ -730,12 +932,25 @@ def read_active_speaker_setup_status(
         if issues
         else "active speaker baseline is applied and output control is ready"
     )
+    receipt_authority = {
+        "allowed": False,
+        "authority": "automatic_verified_receipt",
+        "reason": "active_commissioning_receipt_unavailable",
+        "receipt_fingerprint": None,
+    }
+    if applied_crossover.get("owner") == "automatic":
+        # Manual/passive status stays free of the recorder/analyzer stack.
+        from .commissioning_verification import read_commissioning_room_authority
+
+        receipt_authority = read_commissioning_room_authority(topology)
     acoustic_commissioning = _acoustic_commissioning_status(
         topology,
         setup_ready=not blocked,
         profile=profile,
         applied_profile=applied_profile,
         measurements=measurements,
+        layer_a_binding=layer_a_binding,
+        receipt_authority=receipt_authority,
     )
     commissioning = commissioning_summary(
         topology,

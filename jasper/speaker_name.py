@@ -14,8 +14,11 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from .atomic_io import read_regular_bytes_nofollow
 
 DEFAULT_SPEAKER_NAME = "JTS"
 ENV_VAR = "JASPER_SPEAKER_NAME"
@@ -102,6 +105,34 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     return key, value
 
 
+def _state_from_lines(lines: list[str]) -> SpeakerNameState:
+    """Parse canonical identity state from already-bounded text lines."""
+
+    found_name: str | None = None
+    room = ""
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parsed = _parse_env_line(line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        if key == ENV_VAR:
+            try:
+                found_name = validate_name(value)
+            except SpeakerNameError:
+                pass
+        elif key == ENV_VAR_ROOM:
+            try:
+                room = validate_room(value)
+            except SpeakerNameError:
+                room = ""
+    if found_name is not None:
+        return SpeakerNameState(found_name, room, "state")
+    return SpeakerNameState(DEFAULT_SPEAKER_NAME, room, "default")
+
+
 def read_state(path: str = STATE_FILE) -> SpeakerNameState:
     """Read the persisted display name + room, defaulting to ``JTS``/no room.
 
@@ -110,35 +141,32 @@ def read_state(path: str = STATE_FILE) -> SpeakerNameState:
     default; a present-but-invalid room falls back to "" (unset), each
     independently — one bad line never blanks the other field.
     """
-    found_name: str | None = None
-    room = ""
+
     try:
         with open(path, encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parsed = _parse_env_line(line)
-                if parsed is None:
-                    continue
-                key, value = parsed
-                if key == ENV_VAR:
-                    try:
-                        found_name = validate_name(value)
-                    except SpeakerNameError:
-                        pass
-                elif key == ENV_VAR_ROOM:
-                    try:
-                        room = validate_room(value)
-                    except SpeakerNameError:
-                        room = ""
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
-    if found_name is not None:
-        return SpeakerNameState(found_name, room, "state")
-    return SpeakerNameState(DEFAULT_SPEAKER_NAME, room, "default")
+            return _state_from_lines(list(f))
+    except (FileNotFoundError, OSError, UnicodeError):
+        return SpeakerNameState(DEFAULT_SPEAKER_NAME, "", "default")
+
+
+def read_untrusted_state(
+    path: str = STATE_FILE,
+    *,
+    max_bytes: int = 64 * 1024,
+) -> SpeakerNameState:
+    """Read management-writable identity state for a privileged boundary.
+
+    One descriptor-held, nonblocking, no-follow read rejects symlinks and
+    non-regular files and enforces the byte cap while reading. Any rejection,
+    malformed UTF-8, or invalid value falls back to the safe default.
+    """
+
+    try:
+        raw = read_regular_bytes_nofollow(path, max_bytes=max_bytes)
+        text = raw.decode("utf-8")
+    except (FileNotFoundError, OSError, UnicodeError, ValueError):
+        return SpeakerNameState(DEFAULT_SPEAKER_NAME, "", "default")
+    return _state_from_lines(text.splitlines())
 
 
 def runtime_name(*, environ: dict[str, str] | None = None, path: str = STATE_FILE) -> str:
@@ -221,3 +249,23 @@ def write_state(
         except FileNotFoundError:
             pass
     return cleaned
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Print one canonical name for privileged shell boundaries.
+
+    The caller supplies the identity-state path as data. ``read_state`` owns
+    quoting, character, and length validation and falls back to ``JTS`` for a
+    missing, unreadable, or malformed value.
+    """
+
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 1:
+        print("usage: python -m jasper.speaker_name STATE_FILE", file=sys.stderr)
+        return 2
+    print(read_untrusted_state(args[0]).name)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

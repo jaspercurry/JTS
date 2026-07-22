@@ -288,27 +288,7 @@ def _print_runtime_safe_graph_summary(
         print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
 
 
-def _applied_baseline_config_path(state_path: str | None = None) -> str | None:
-    path = baseline_profile_state_path(state_path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or payload.get("status") != "applied":
-        return None
-    config = payload.get("config")
-    raw_path = config.get("path") if isinstance(config, dict) else None
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        return None
-    return raw_path.strip()
-
-
 def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
-    preferred_config_path = (
-        None
-        if args.no_applied_baseline
-        else _applied_baseline_config_path(args.applied_baseline_state)
-    )
     # The persisted fan-in coupling decides the flat fallback: a ring-armed box
     # (shm_ring) re-seeds the ring flat config, not the loopback one (finding 5).
     # --coupling lets install.sh pass the live value explicitly; when omitted we
@@ -323,11 +303,14 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
         load_output_topology_strict(args.topology),
         statefile_path=args.statefile,
         current_config_path=args.current_config,
-        preferred_config_path=preferred_config_path,
         flat_config_path=args.flat_config,
         ring_flat_config_path=args.ring_flat_config,
         coupling=coupling,
-        staged_config=load_staged_startup_config(metadata_path=args.staged_metadata),
+        applied_baseline_path=baseline_profile_state_path(
+            args.applied_baseline_state
+        ),
+        staged_metadata_path=args.staged_metadata,
+        consider_applied_baseline=not args.no_applied_baseline,
     )
     wrote = False
     if args.write_statefile and decision.ok:

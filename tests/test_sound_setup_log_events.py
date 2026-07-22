@@ -36,8 +36,8 @@ def _sound_event_calls() -> list[ast.Call]:
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
 
-    assert len(calls) == 92
-    assert len({call.args[1].value for call in calls}) == 38
+    assert len(calls) == 93
+    assert len({call.args[1].value for call in calls}) == 39
 
     levels: Counter[str] = Counter()
     for call in calls:
@@ -56,11 +56,11 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
         else:
             assert "exc_info" not in keywords
 
-    assert levels == {"INFO": 53, "WARNING": 10, "ERROR": 29}
+    assert levels == {"INFO": 54, "WARNING": 10, "ERROR": 29}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 110 affected parent `%s` positions, not hand-picked examples."""
+    """Pin all 112 affected parent `%s` positions, not hand-picked examples."""
     wrapped_fields: list[str] = []
     for call in _sound_event_calls():
         event = call.args[1].value
@@ -81,9 +81,9 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # The digest catches a missed, swapped, or newly invented wrapper while
     # keeping this contract readable instead of checking in a 199-line tuple.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 110
+    assert len(wrapped_fields) == 112
     assert hashlib.sha256(signature).hexdigest() == (
-        "5d9c799926e828828f307c302fa3c5ae28967c7307d832d77edb199aa2139e3f"
+        "120c125fe8b111c74761574335ea8c314a46c334cc87ada5cd5375c6335ffba7"
     )
 
 

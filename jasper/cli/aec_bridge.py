@@ -48,7 +48,8 @@ Topology:
        ▼                                                          ▼
     UDP 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876)      UDP 127.0.0.1:JASPER_AEC_UDP_PORT_RAW
        │  one packet per 1280 samples (80 ms, matches             │  (default 9877)
-       │  MicCapture frame size)                                  │  same packet shape
+       │  MicCapture frame size; optional USB host mic             │  same packet shape
+       │  consumer uses one 320-sample / 20 ms frame)             │
        ▼                                                          ▼
     jasper-voice's UdpMicCapture (binds 9876)             jasper-voice's second
                                                           UdpMicCapture (binds 9877)
@@ -87,11 +88,13 @@ Caveats this implementation does NOT yet address:
 from __future__ import annotations
 
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+import math
 import os
 import socket
 import signal
+import struct
 import sys
 import threading
 import time
@@ -128,6 +131,16 @@ from jasper.wake_corpus.capture_plan import (
     PLAN_ID_ENV,
 )
 from jasper.log_event import log_event
+from jasper.usb_mic import (
+    INTENT_PATH as USB_MIC_INTENT_PATH,
+    USB_HOST_MIC_UDP_PORT,
+    USB_MIC_HEADER_STRUCT,
+    USB_MIC_LEG_KEY,
+    USB_MIC_PACKET_MAGIC,
+    USB_MIC_PACKET_VERSION,
+    USB_MIC_PRIMARY_LEG,
+    usb_mic_enabled,
+)
 from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
@@ -266,7 +279,8 @@ USB_MIC_RATE = 0
 OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
-BRIDGE_STATS_SCHEMA_VERSION = 2
+BRIDGE_STATS_SCHEMA_VERSION = 3
+CAPTURE_LATENCY_MAX_SECONDS = 0.25
 
 # Drop-frame threshold. If queues fill faster than they drain,
 # something's wrong (CPU starvation, clock drift exceeded our
@@ -279,6 +293,7 @@ _shutdown = threading.Event()
 @dataclass(frozen=True)
 class BridgeConfig:
     mic_device: str
+    capture_latency: str
     out_host: str
     out_port: int
     out_port_raw: int
@@ -294,6 +309,9 @@ class BridgeConfig:
     emit_chip_aec_210: bool
     out_port_xvf_raw0_webrtc_aec3: int
     out_port_xvf_raw0_dtln: int
+    out_port_usb_host_mic: int
+    emit_usb_host_mic: bool
+    usb_mic_leg: str
     outputd_ref_udp_host: str
     outputd_ref_udp_port: int
     ref_source: str
@@ -348,12 +366,32 @@ class BridgeConfig:
         corpus_chip_aec_enabled = _env_bool(
             "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
         )
+        capture_latency = os.environ.get("JASPER_AEC_CAPTURE_LATENCY", "").strip()
+        if capture_latency and capture_latency.lower() != "low":
+            try:
+                capture_latency_seconds = float(capture_latency)
+            except ValueError:
+                capture_latency_seconds = 0.0
+            if (
+                not math.isfinite(capture_latency_seconds)
+                or capture_latency_seconds <= 0
+                or capture_latency_seconds > CAPTURE_LATENCY_MAX_SECONDS
+            ):
+                log_event(
+                    log,
+                    "aec.capture_latency_invalid",
+                    value=capture_latency,
+                    fallback="default",
+                    level=logging.WARNING,
+                )
+                capture_latency = ""
 
         return cls(
             mic_device=os.environ.get(
                 "JASPER_AEC_MIC_DEVICE",
                 _mic_profile.alsa_card_name(),
             ),
+            capture_latency=capture_latency.lower(),
             out_host=os.environ.get("JASPER_AEC_UDP_HOST", OUT_HOST),
             out_port=_env_leg_port("JASPER_AEC_UDP_PORT", "on"),
             out_port_raw=_env_leg_port("JASPER_AEC_UDP_PORT_RAW", "off"),
@@ -400,6 +438,16 @@ class BridgeConfig:
             out_port_xvf_raw0_dtln=_env_leg_port(
                 "JASPER_AEC_UDP_PORT_XVF_RAW0_DTLN",
                 "xvf_raw0_dtln",
+            ),
+            # Product wiring, not an operator knob: the relay owns the paired
+            # listener constant and accessories are regression-guarded from it.
+            out_port_usb_host_mic=USB_HOST_MIC_UDP_PORT,
+            emit_usb_host_mic=usb_mic_enabled(
+                os.environ.get("JASPER_USB_MIC_INTENT_PATH", USB_MIC_INTENT_PATH)
+            ),
+            usb_mic_leg=(
+                os.environ.get(USB_MIC_LEG_KEY, USB_MIC_PRIMARY_LEG).strip()
+                or USB_MIC_PRIMARY_LEG
             ),
             outputd_ref_udp_host=os.environ.get(
                 "JASPER_AEC_OUTPUTD_REF_UDP_HOST",
@@ -505,9 +553,11 @@ class _BridgeStats:
             self._started_epoch_sec = time.time()
             self._leg_engines = {}
             self._active_capture_plan: dict[str, object] = {}
+            self._capture_stream: dict[str, object] = {}
             self._counters = {
                 "frames_processed": 0,
                 "ref_starved_frames": 0,
+                "usb_mic_source_fallback_frames": 0,
                 "queue_drops": {
                     "mic": 0,
                     "chip": 0,
@@ -517,6 +567,25 @@ class _BridgeStats:
                 },
                 "udp_send_drops_by_leg": _zero_leg_counters(aec3_sweep_variants),
                 "packets_sent_by_leg": _zero_leg_counters(aec3_sweep_variants),
+            }
+
+    def set_capture_stream(
+        self,
+        *,
+        sample_rate_hz: int,
+        block_frames: int,
+        input_latency_seconds: float,
+    ) -> None:
+        """Publish the PortAudio geometry negotiated by the live XVF stream."""
+
+        with self._lock:
+            self._capture_stream = {
+                "sample_rate_hz": sample_rate_hz,
+                "block_frames": block_frames,
+                "input_latency_seconds": input_latency_seconds,
+                "input_latency_frames": round(
+                    input_latency_seconds * sample_rate_hz
+                ),
             }
 
     def set_leg_engine(
@@ -551,6 +620,7 @@ class _BridgeStats:
         beam_plan: dict[str, object],
         ports: dict[str, int],
         mic_reference_identity: dict[str, object],
+        usb_mic_source: dict[str, object] | None = None,
         mic_fingerprint: str = "",
         dac_reference_fingerprint: str = "",
     ) -> None:
@@ -563,9 +633,27 @@ class _BridgeStats:
                 "beam_plan": dict(beam_plan),
                 "ports": dict(ports),
                 "mic_reference_identity": dict(mic_reference_identity),
+                "usb_mic_source": dict(usb_mic_source or {}),
                 "mic_fingerprint": mic_fingerprint,
                 "dac_reference_fingerprint": dac_reference_fingerprint,
             }
+
+    def set_usb_mic_effective_source(
+        self,
+        *,
+        mode: str,
+        leg: str,
+        fallback_active: bool,
+    ) -> None:
+        """Publish the source actually exported, not just configured intent."""
+
+        with self._lock:
+            source = self._active_capture_plan.get("usb_mic_source")
+            if not isinstance(source, dict):
+                return
+            source["mode"] = mode
+            source["leg"] = leg
+            source["fallback_active"] = fallback_active
 
     def mark_leg_unavailable(self, leg: str, *, error: str) -> None:
         """Atomically withdraw a failed runtime leg from live bridge truth.
@@ -606,6 +694,7 @@ class _BridgeStats:
             counters = json.loads(json.dumps(self._counters))
             leg_engines = json.loads(json.dumps(self._leg_engines))
             active_capture_plan = json.loads(json.dumps(self._active_capture_plan))
+            capture_stream = json.loads(json.dumps(self._capture_stream))
             started = self._started_epoch_sec
         return {
             "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
@@ -617,6 +706,7 @@ class _BridgeStats:
             "out_frame_samples": OUT_FRAME_SAMPLES,
             "counters": counters,
             "leg_engines": leg_engines,
+            "capture_stream": capture_stream,
             "active_capture_plan": active_capture_plan,
             "wake_corpus_plan_id": active_capture_plan.get(
                 "wake_corpus_plan_id", "",
@@ -643,6 +733,23 @@ def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:
     _bridge_stats.write_snapshot(path)
 
 
+def _send_packet(
+    *,
+    sock: socket.socket,
+    dest: tuple[str, int],
+    packet: bytes,
+    leg: str,
+) -> None:
+    """Send one non-blocking leg packet and preserve drop-newest stats."""
+
+    try:
+        sock.sendto(packet, dest)
+        _bridge_stats.inc_nested("packets_sent_by_leg", leg)
+    except BlockingIOError:
+        _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
+        logger.warning("udp %s sendto would block, dropping frame", leg)
+
+
 def emit_packet(
     *,
     sock: socket.socket,
@@ -650,17 +757,18 @@ def emit_packet(
     batch: bytearray,
     pcm: bytes,
     leg: str,
+    frame_bytes: int = OUT_FRAME_BYTES,
 ) -> None:
     batch.extend(pcm)
-    if len(batch) < OUT_FRAME_BYTES:
+    if len(batch) < frame_bytes:
         return
-    try:
-        sock.sendto(bytes(batch[:OUT_FRAME_BYTES]), dest)
-        _bridge_stats.inc_nested("packets_sent_by_leg", leg)
-    except BlockingIOError:
-        _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
-        logger.warning("udp %s sendto would block, dropping frame", leg)
-    del batch[:OUT_FRAME_BYTES]
+    _send_packet(
+        sock=sock,
+        dest=dest,
+        packet=bytes(batch[:frame_bytes]),
+        leg=leg,
+    )
+    del batch[:frame_bytes]
 
 
 @dataclass
@@ -669,6 +777,7 @@ class LegEmitter:
     dest: tuple[str, int]
     batch: bytearray
     stats_key: str
+    frame_samples: int = OUT_FRAME_SAMPLES
     engine_token: str | None = None
 
     def emit(self, pcm: bytes) -> None:
@@ -678,10 +787,46 @@ class LegEmitter:
             batch=self.batch,
             pcm=pcm,
             leg=self.stats_key,
+            frame_bytes=self.frame_samples * 2,
         )
 
     def close(self) -> None:
         self.sock.close()
+
+
+@dataclass
+class TimestampedLegEmitter(LegEmitter):
+    """Packetize the isolated USB-host mic leg with emit-time metadata.
+
+    ``t_capture_mono_ns`` in the wire header is deliberately a bridge-emit
+    timestamp: it measures bridge emit -> relay sink, while PortAudio's input
+    latency is observed separately when the capture stream opens.
+    """
+
+    _seq: int = field(default=0, init=False, repr=False)
+
+    def emit(self, pcm: bytes) -> None:
+        frame_bytes = self.frame_samples * 2
+        self.batch.extend(pcm)
+        if len(self.batch) < frame_bytes:
+            return
+        seq = self._seq
+        self._seq = (self._seq + 1) & 0xFFFFFFFF
+        header = struct.pack(
+            USB_MIC_HEADER_STRUCT,
+            USB_MIC_PACKET_MAGIC,
+            USB_MIC_PACKET_VERSION,
+            0,
+            seq,
+            time.clock_gettime_ns(time.CLOCK_MONOTONIC),
+        )
+        _send_packet(
+            sock=self.sock,
+            dest=self.dest,
+            packet=header + bytes(self.batch[:frame_bytes]),
+            leg=self.stats_key,
+        )
+        del self.batch[:frame_bytes]
 
 
 class BridgeStalled(RuntimeError):
@@ -731,6 +876,21 @@ _out_total_samples = 0
 _ref_starved_frames = 0
 
 
+def _apply_mic_output_gain(
+    pcm: bytes,
+    gain_lin: float,
+) -> tuple[bytes, int, int]:
+    """Apply the shared post-AEC gain/soft-limit and return clip counters."""
+
+    if gain_lin == 1.0:
+        return pcm, 0, 0
+    arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) * gain_lin
+    clipped = int(np.sum(np.abs(arr) > 32767))
+    # tanh soft-clip: smoothly asymptotic to ±32767 instead of hard-clipping.
+    arr = 32767.0 * np.tanh(arr / 32767.0)
+    return arr.astype(np.int16).tobytes(), clipped, len(arr)
+
+
 def _env_bool(name: str, default: str) -> bool:
     return os.environ.get(name, default).strip().lower() in (
         "1", "true", "yes", "on",
@@ -759,6 +919,55 @@ def _chip_aec_primary_leg(
         level=logging.WARNING,
     )
     return fallback
+
+
+def _resolve_usb_mic_source(
+    requested: str,
+    *,
+    plan: _mic_profile.ChipBeamPlan | None,
+    production_chip_aec_enabled: bool,
+    chip_aec_primary_leg: str,
+) -> dict[str, object]:
+    """Resolve the configured selector to the physical stream being emitted."""
+
+    allowed = {USB_MIC_PRIMARY_LEG, *(plan.leg_tokens if plan else ())}
+    selection = requested if requested in allowed else USB_MIC_PRIMARY_LEG
+    if selection != requested:
+        log_event(
+            logger,
+            "usb_mic.leg_invalid",
+            value=repr(requested),
+            fallback=USB_MIC_PRIMARY_LEG,
+            beam_plan=plan.plan_id if plan else "none",
+            level=logging.WARNING,
+        )
+    if not production_chip_aec_enabled:
+        fallback_active = selection != USB_MIC_PRIMARY_LEG
+        if fallback_active:
+            log_event(
+                logger,
+                "usb_mic.leg_unavailable",
+                leg=selection,
+                fallback="clean",
+                mode="software_aec3",
+                level=logging.WARNING,
+            )
+        return {
+            "selection": selection,
+            "mode": "software_aec3",
+            "leg": "clean",
+            "fallback_active": fallback_active,
+        }
+    return {
+        "selection": selection,
+        "mode": "chip_aec",
+        "leg": (
+            chip_aec_primary_leg
+            if selection == USB_MIC_PRIMARY_LEG
+            else selection
+        ),
+        "fallback_active": False,
+    }
 
 
 def _cfg_value(
@@ -1448,10 +1657,30 @@ def _mic_thread(
                     _bridge_stats.inc_nested("queue_drops", "chip")
                     pass
 
-    with sd.InputStream(
+    input_stream_kwargs = dict(
         device=config.mic_device, samplerate=SAMPLE_RATE, channels=MIC_CHANNELS,
         dtype="int16", blocksize=FRAME_SAMPLES, callback=cb,
-    ):
+    )
+    if config.capture_latency:
+        input_stream_kwargs["latency"] = (
+            "low"
+            if config.capture_latency == "low"
+            else float(config.capture_latency)
+        )
+    with sd.InputStream(**input_stream_kwargs) as stream:
+        log_event(
+            logger,
+            "aec.mic_stream_latency",
+            latency_s=stream.latency,
+            requested_latency=config.capture_latency or "default",
+            samplerate=int(stream.samplerate),
+            blocksize=int(stream.blocksize),
+        )
+        _bridge_stats.set_capture_stream(
+            sample_rate_hz=int(stream.samplerate),
+            block_frames=int(stream.blocksize),
+            input_latency_seconds=float(stream.latency),
+        )
         _shutdown.wait()
 
 
@@ -1674,6 +1903,15 @@ def _aec_loop(  # noqa: PLR0915
     import wave
     if production_chip_aec_enabled and (not chip_aec_qs or not chip_beam_plan):
         raise RuntimeError("chip-AEC mode requires a validated chip beam plan")
+    usb_mic_choice_plan = chip_beam_plan or _mic_profile.chip_beam_plan_from_env(
+        os.environ,
+    )
+    usb_mic_source = _resolve_usb_mic_source(
+        config.usb_mic_leg,
+        plan=usb_mic_choice_plan,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+        chip_aec_primary_leg=chip_aec_primary_leg,
+    )
     # UDP output: localhost, non-blocking sendto. Replaces the old
     # PortAudio RawOutputStream writing to hw:LoopbackAEC,0. `sendto`
     # never blocks on `lo` at our rate (~256 kbps), so the main
@@ -1687,12 +1925,15 @@ def _aec_loop(  # noqa: PLR0915
         port: int,
         *,
         engine_token: str | None = None,
+        frame_samples: int = OUT_FRAME_SAMPLES,
+        emitter_cls: type[LegEmitter] = LegEmitter,
     ) -> LegEmitter:
-        emitter = LegEmitter(
+        emitter = emitter_cls(
             sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
             dest=(config.out_host, port),
             batch=bytearray(),
             stats_key=leg,
+            frame_samples=frame_samples,
             engine_token=engine_token,
         )
         emitter.sock.setblocking(False)
@@ -1700,6 +1941,20 @@ def _aec_loop(  # noqa: PLR0915
         return emitter
 
     on_emitter = add_emitter("on", config.out_port)
+    # Dedicated non-wake consumer for the optional USB host microphone.  This
+    # duplicate keeps jasper-voice's frozen :9876 ownership intact; the
+    # jasper-usbmic service may bind/unbind independently with no effect on the
+    # primary wake/session carrier.
+    usb_host_mic_emitter = (
+        add_emitter(
+            "usb_host_mic",
+            config.out_port_usb_host_mic,
+            frame_samples=FRAME_SAMPLES,
+            emitter_cls=TimestampedLegEmitter,
+        )
+        if config.emit_usb_host_mic
+        else None
+    )
     # Secondary socket carries the chip-direct mic (pre-AEC3),
     # batched and packetized identically to the primary AEC ON
     # stream. See OUT_PORT_RAW comment above for the rationale.
@@ -1967,6 +2222,14 @@ def _aec_loop(  # noqa: PLR0915
             )
 
     output_parts = [f"aec={config.out_host}:{config.out_port}"]
+    if usb_host_mic_emitter is not None:
+        output_parts.append(
+            f"usb_host_mic={config.out_host}:{config.out_port_usb_host_mic}"
+        )
+        output_parts.append(
+            "usb_host_mic_source="
+            f"{usb_mic_source['mode']}:{usb_mic_source['leg']}"
+        )
     if production_chip_aec_enabled:
         output_parts.append(f"aec_source={chip_aec_primary_leg}")
     else:
@@ -2038,6 +2301,7 @@ def _aec_loop(  # noqa: PLR0915
             "usb_mic_device": config.usb_mic_device,
             "aec3_sweep_input_source": config.aec3_sweep_input_source,
         },
+        usb_mic_source=usb_mic_source,
         mic_fingerprint=config.wake_corpus_mic_fingerprint,
         dac_reference_fingerprint=config.wake_corpus_dac_fingerprint,
     )
@@ -2045,9 +2309,10 @@ def _aec_loop(  # noqa: PLR0915
         "udp outputs: %s frame=%d samples (%d bytes)",
         " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
-    # Each LegEmitter aggregates four 320-sample frames into one
-    # 1280-sample UDP packet so voice's UdpMicCapture sees the same
-    # chunk size it gets from the PortAudio path.
+    # Voice/wake LegEmitters aggregate four 320-sample frames into one
+    # 1280-sample UDP packet so UdpMicCapture keeps its established wire
+    # contract. The dedicated USB host-mic consumer emits each 320-sample
+    # frame immediately; it is latency-sensitive and has no voice consumer.
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     # Cold-start value for ref carry-forward. Used only until the first
     # real ref frame arrives — after that, last_ref_bytes always holds
@@ -2056,6 +2321,9 @@ def _aec_loop(  # noqa: PLR0915
     last_ref_bytes = silence
     frames_processed = 0
     chip_primary_missing_log = _DropLogDebouncer()
+    usb_mic_leg_missing_log = _DropLogDebouncer()
+    usb_mic_effective_leg = str(usb_mic_source["leg"])
+    usb_mic_fallback_active = bool(usb_mic_source["fallback_active"])
 
     # Optional debug WAV writers — see `_aec_loop` docstring.
     debug_dir = os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
@@ -2278,6 +2546,46 @@ def _aec_loop(  # noqa: PLR0915
             # "attenuation" to reflect what AEC actually accomplished,
             # not how much the post-gain stage amplified the residual.
             clean_aec_only = clean
+            usb_mic_aec_only = clean_aec_only
+            usb_mic_uses_clean = True
+            selected_usb_leg = str(usb_mic_source["leg"])
+            effective_usb_leg = selected_usb_leg
+            fallback_active = bool(usb_mic_source["fallback_active"])
+            if (
+                production_chip_aec_enabled
+                and selected_usb_leg != chip_aec_primary_leg
+            ):
+                selected_usb_frame = chip_frames.get(selected_usb_leg, b"")
+                if selected_usb_frame:
+                    usb_mic_aec_only = selected_usb_frame
+                    usb_mic_uses_clean = False
+                else:
+                    effective_usb_leg = chip_aec_primary_leg
+                    fallback_active = True
+                    if outcome := usb_mic_leg_missing_log.record(time.monotonic()):
+                        drops, window_sec = outcome
+                        log_event(
+                            logger,
+                            "usb_mic.leg_missing",
+                            leg=selected_usb_leg,
+                            fallback=chip_aec_primary_leg,
+                            frames=drops,
+                            window_sec=f"{window_sec:.1f}",
+                            level=logging.WARNING,
+                        )
+            if fallback_active:
+                _bridge_stats.inc("usb_mic_source_fallback_frames")
+            if (
+                effective_usb_leg != usb_mic_effective_leg
+                or fallback_active != usb_mic_fallback_active
+            ):
+                _bridge_stats.set_usb_mic_effective_source(
+                    mode=str(usb_mic_source["mode"]),
+                    leg=effective_usb_leg,
+                    fallback_active=fallback_active,
+                )
+                usb_mic_effective_leg = effective_usb_leg
+                usb_mic_fallback_active = fallback_active
 
             # DTLN-aec parallel processing path (optional 3rd UDP leg).
             # Runs AFTER the AEC3 engine.process so the wake loop's
@@ -2373,15 +2681,24 @@ def _aec_loop(  # noqa: PLR0915
                 except OSError as e:
                     logger.error("debug wav write failed: %s", e)
                     mic_wav = aec_wav = ref_wav = None
-            if mic_gain_lin != 1.0:
-                arr = np.frombuffer(clean, dtype=np.int16).astype(np.float32) * mic_gain_lin
-                _out_clipped_samples += int(np.sum(np.abs(arr) > 32767))
-                _out_total_samples += len(arr)
-                # tanh soft-clip: smoothly asymptotic to ±32767 instead
-                # of hard-clipping. Below ±~26000 it's near-linear.
-                arr = 32767.0 * np.tanh(arr / 32767.0)
-                clean = arr.astype(np.int16).tobytes()
+            clean, clipped_samples, total_samples = _apply_mic_output_gain(
+                clean_aec_only,
+                mic_gain_lin,
+            )
+            _out_clipped_samples += clipped_samples
+            _out_total_samples += total_samples
             on_emitter.emit(clean)
+            if usb_host_mic_emitter is not None:
+                usb_mic_clean = clean
+                if not usb_mic_uses_clean:
+                    # USB beam selection is downstream-only, but it must keep
+                    # the same output-level contract as the primary clean leg.
+                    # Its clipping does not belong in voice's out_clip metric.
+                    usb_mic_clean, _clipped, _total = _apply_mic_output_gain(
+                        usb_mic_aec_only,
+                        mic_gain_lin,
+                    )
+                usb_host_mic_emitter.emit(usb_mic_clean)
             frames_processed += 1
             _bridge_stats.inc("frames_processed")
             if heartbeat is not None:

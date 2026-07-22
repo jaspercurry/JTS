@@ -317,23 +317,28 @@ detected passive hardware draft, kicks audio-hardware reconcile, and clears the
 active-speaker setup/evidence JSON artifacts so stale staged configs,
 measurements, or baseline candidates cannot masquerade as current after the
 topology reset. It does not emit sound or delete generated CamillaDSP YAML.
-The crossover-settings card stores the product-visible starting values for
-active-crossover planning: driver names, sensitivity, safe low test limits,
-per-driver level trim, crossover point, filter family, slope, and build notes.
-It also offers an optional **Use AI to fill these settings** helper. That
-helper derives the expected active-crossover driver-role fields from the saved
-output map, generates a precise prompt for an external assistant, and accepts a
-bounded JSON response with kind `jts_active_crossover_driver_research`. A routed
-local subwoofer remains configured by the subwoofer card's bass-management
-corner; it is listed in the topology but is not required driver research for
-the active-main crossover preview. Importing
-that JSON fills the visible fields for operator review; saving persists the
-visible manual settings as first-class draft input and may also preserve the
-bounded research JSON as evidence. Per-driver notes are capped at 2048
-characters so they stay a safety-relevant summary; full research reports
-belong outside the design draft. Hidden imported values never override
-user-edited visible settings, and the draft still does not apply filters,
-reload CamillaDSP, or authorize sound.
+The crossover-settings card stores a versioned working draft per physical
+output. Visible fields include driver identity/sensitivity, hard never-test-
+beyond frequency edges, narrower measurement and crossover-search bands,
+required high/low-pass cutoff and slope, cabinet facts, level/duration limits,
+trim, crossover candidates, and build notes. The operator can explicitly
+confirm the current safety profile; confirmation records the confirmation time,
+is invalidated by a visible safety edit or topology change, and still grants no
+playback authority. Saves use an optimistic revision. If another tab wins, the
+browser keeps local unsaved edits, adopts the fresh server revision, and asks
+the operator to review and save again instead of silently replacing their work.
+
+**Use AI to fill these settings** asks the server to generate one exact,
+fingerprinted request from the current topology, per-output models, visible
+safety context, cabinet facts, and build notes. The bounded v2 response must
+echo that request and every physical target; additions, removals, or edits to
+the current request context make old research stale. Imported research remains
+advisory: it prefills visible fields and preserves bounded provenance/unknowns
+for review, while operator-edited targets stop displaying stale provenance. A
+routed local subwoofer remains owned by the subwoofer card's bass-management
+corner and is not required research for the active-main preview. Per-driver
+notes are capped at 2048 characters; full reports belong outside the draft.
+Nothing in this flow applies filters, reloads CamillaDSP, or authorizes sound.
 Choosing an active driver in **Confirm outputs** calls the commission
 route family: `commission-load`, `commission-ramp-step`,
 `commission-ramp-ack`, and `commission-ramp-abort`. The browser does not expose
@@ -442,7 +447,8 @@ and it still does not emit audio or authorize playback.
   generated-config inspector. It must stay import-cheap; do not import
   NumPy/SciPy here.
 - `jasper/dsp_apply.py` — import-cheap shared DSP apply substrate:
-  typed CamillaDSP validation, config reload, rollback, file locking,
+  typed CamillaDSP validation, config reload, rollback, bounded
+  cancellation-safe writer-lock admission with a required feature identity,
   compact last-result persistence, and the durable DSP write epoch used
   to fence stale live updates.
 - `jasper/sound/runtime.py` — shared durable sound-profile runtime:
@@ -823,7 +829,9 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-07-12 (active-speaker file inventory and commission-ramp /
+Last verified: 2026-07-14 (sound writer call sites checked against bounded,
+cancellation-safe shared admission; target-bound research, confirmation/revision behavior,
+active-speaker file inventory, and commission-ramp /
 summed-planner ownership checked after obsolete readiness removal; prior
 2026-06-25 pass covered active-leader program-bake carrier support
 for `/sound` and `/correction/start` on JTS5; active-crossover combined-test

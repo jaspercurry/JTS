@@ -328,9 +328,12 @@ def _parked_as_bonded_follower() -> bool:
     NOT-parked: a broken read must never silently mask a real failure on
     a solo speaker."""
     try:
-        from ...multiroom.config import is_bonded_follower, load_config
+        from ...multiroom.config import load_config
+        from ...multiroom.effective_role import (
+            effective_local_sources_park_reason,
+        )
 
-        return is_bonded_follower(load_config())
+        return effective_local_sources_park_reason(load_config()) is not None
     except Exception:  # noqa: BLE001 — fail-open
         return False
 
@@ -356,7 +359,6 @@ _RUNTIME_STATE_UNITS = (
     # `systemctl --failed` + the journal; tracking them here makes it
     # doctor-visible.
     "jasper-fanin-coupling-auto.service",
-    "jasper-fanin-combo-health.service",
 )
 
 # Type=oneshot members of the tracked set: `activating` is their NORMAL
@@ -367,7 +369,6 @@ _RUNTIME_STATE_UNITS = (
 # moves it to `failed`, which this check then surfaces on the next run.
 _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
-    "jasper-fanin-combo-health.service",
 })
 
 def _service_runtime_states() -> dict[str, dict[str, object]] | None:

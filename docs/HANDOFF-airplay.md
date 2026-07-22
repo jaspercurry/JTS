@@ -237,21 +237,30 @@ A tight cluster (most events within ~3 ms of each other, around 0.118 s) — com
 
 ### System dashboard readout
 
-`/system/` has an AirPlay card backed by
-[`jasper/control/airplay_health.py`](../jasper/control/airplay_health.py).
-It is a recent-health view, not a full diagnostics runner:
+`/system/audio/` includes AirPlay in the normalized audio-health projection in
+[`jasper/control/audio_health.py`](../jasper/control/audio_health.py). The
+projection consumes the bounded observations from
+[`jasper/control/airplay_health.py`](../jasper/control/airplay_health.py), keeps
+AirPlay synchronization separate from USB's low-latency route contract, and
+moves common fan-in/Camilla/outputd facts into shared-path or collapsed
+technical sections instead of presenting them as AirPlay-only problems. When
+AirPlay is selected, those honest source/processing/output/sync/reliability
+facts appear in the current-stream diagnostic; otherwise AirPlay is one compact
+readiness row. It is a recent-health view, not a full diagnostics runner:
 
 - Fan-in `STATUS` is sampled every 5 s over UDS with a short timeout.
-  The card uses `airplay.frames_read` deltas for "currently receiving
+  The sampler uses `airplay.frames_read` deltas for "currently receiving
   frames", `airplay.xrun_count` deltas for AirPlay input recovery
   events, output `xrun_count` deltas for downstream pressure, the
   configured fan-in buffers, and watchdog progress age.
-- The same card includes the outputd final-output snapshot from
-  `/run/jasper-outputd/control.sock` plus `jasper-outputd.service`
-  cgroup memory from the system sampler, so outputd RAM drift is visible
-  next to the AirPlay/output chain it affects. Outputd xrun counters
-  are labelled content/DAC and include last-xrun age plus
-  uptime-normalized rate when non-zero.
+- The dashboard calls AirPlay the current stream only when the selected mux
+  lane and `jasper-mux STATUS.sources.airplay.playing` agree. Mux owns that
+  canonical MPRIS-plus-metadata predicate, so a free-running silent lane or a
+  phantom macOS SETUP session does not create a fake dashboard session.
+- Outputd final-output state is classified once as part of the shared audio
+  path. Raw content/DAC xrun age, buffer, and rate context is available under
+  the Audio view's collapsed technical details; it is not repeated as the
+  AirPlay card's primary content.
 - Shairport and CamillaDSP journals are scanned incrementally every
   30 s and classified into the same patterns this document uses:
   packet drops / packet order, large sync corrections, shairport ALSA
@@ -260,15 +269,20 @@ It is a recent-health view, not a full diagnostics runner:
   (for example 1016-1023 frames returned for a 1024-frame request):
   CamillaDSP immediately loops to fill the rest of the chunk, and these
   sub-1% partials appear on the healthy plug/dsnoop/rate-adjust path
-  without shairport, fan-in, outputd, or playback underruns. Use the
+  without shairport, fan-in, outputd, or playback underruns. The normalized
+  household-facing health projection does not promote an otherwise-inaudible
+  short-read storm into an audio failure. Use the
   fast log scan above when you need raw Camilla journal counts.
 - MPRIS and CamillaDSP live probes run at the slower 30 s cadence.
   Camilla context includes buffer level, rate adjust, active config
   basename, and the active config's target/chunk values when the YAML is
   readable. These are useful context, not the hot-path truth source.
-- History is in-memory only: 10 s buckets for 30 min plus a small
-  recent-event ring. There is no database and no dashboard-poll-time
-  journal scan. The socket-activated `jasper-system-web` process only
+- Raw AirPlay history stays in memory: 10 s buckets for 30 min plus a small
+  recent-event ring. The normalized audio dashboard separately persists an
+  allowlisted ring of at most 20 incident freeze-frames so a control-service
+  restart does not erase recent troubleshooting context; it stores no audio or
+  track metadata. Neither path uses a database or performs a journal scan at
+  dashboard-poll time. The socket-activated `jasper-system-web` process only
   formats the already-digested `/system/snapshot` payload.
 - The canonical deploy wrapper writes a bounded maintenance marker at
   `/run/jasper-airplay-health-suppress-until`. While it is active, the
@@ -278,7 +292,8 @@ It is a recent-health view, not a full diagnostics runner:
   deploy-induced restarts from polluting reliability data without
   hiding the post-deploy live state.
 
-Status meanings:
+The legacy `airplay_health` snapshot remains in `/system/snapshot` for existing
+consumers and technical detail. Its raw status meanings are:
 
 | Status | Meaning |
 |---|---|
@@ -288,8 +303,8 @@ Status meanings:
 | `issue` | Recent recovery event in the last 5 m, fan-in input buffer below 4096, stale fan-in watchdog, shairport sync/drop/underrun event, fan-in xrun, Camilla playback underrun, or shairport reports playing while fan-in is not receiving frames. |
 | `unknown` | The sampler cannot read fan-in state, `/system/snapshot` caught an AirPlay-health sampler failure, shairport `PlaybackStatus` is unavailable, or the sampler is still waiting for its first fan-in frame-rate baseline after startup. If it persists beyond one sample interval, check `jasper-fanin.service` and the control socket before interpreting higher-level AirPlay symptoms. |
 
-Use the card for "is anything happening right now / recently?" If it
-shows `watch` or `issue`, use the fast scan above or the full polling
+Use the AirPlay source card for "is anything happening right now / recently?"
+If it shows a warning or issue, use the fast scan above or the full polling
 diagnostic below to prove the mechanism before changing shairport,
 CamillaDSP, WiFi, or buffer settings.
 
@@ -1089,7 +1104,11 @@ The Tier 3 supervisor at
 catches this without manual intervention. Detection latency is ~90 s
 (3 consecutive RTSP-`OPTIONS` failures at 30 s cadence) plus a ~2 s
 restart. Gated on `PlaybackStatus != "Playing"` so a live session is
-never disrupted; rate-limited to one restart per 10 minutes.
+never disrupted; rate-limited to one restart per 10 minutes. Its final
+mutation is an ordinary `systemctl restart`, so a desired-On receiver that has
+gone fully inactive can recover. The unit's final source-intent ExecCondition
+is the last gate: a concurrent AirPlay Off or follower park makes the restart
+skip instead of reviving the source.
 
 Design rationale: [docs/HANDOFF-resilience.md (Tier 3)](HANDOFF-resilience.md).
 Disable knob: `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
@@ -1562,7 +1581,8 @@ path):
   to accommodate an offset" warning is classified by the AirPlay-health
   sampler (`classify_journal_line` →
   `type=shairport_offset_too_short`, severity `issue`) so it lands in the
-  existing `/system` AirPlay-health event ring with no new journal reads,
+  existing AirPlay-health event ring with no new journal reads, then reaches
+  `/system/audio/` through the normalized recent-issues projection,
   and rolls into the `shairport_events` counter (like
   `shairport_oos`/`shairport_broken_pipe`) so it also moves the
   AirPlay-health status verdict, not just the raw event list.
@@ -1811,7 +1831,14 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-06-29 (JTS2 Apple-dongle AirPlay path checked at
+Last verified: 2026-07-15 (Tier-3 recovery final mutation rechecked as an
+inactive-capable `restart` guarded by the unit's final source-intent
+ExecCondition so concurrent Off/role parking wins;
+`/system/audio/` normalized AirPlay projection,
+current-stream/readiness presentation, source-specific sync timing, legacy
+snapshot compatibility, and the
+short-read non-escalation boundary rechecked against
+`jasper/control/{audio_health,airplay_health}.py`). Prior 2026-06-29 (JTS2 Apple-dongle AirPlay path checked at
 CamillaDSP 256/1536, fan-in output 1024, outputd DAC 512; counters clean
 but computer-video AirPlay lip-sync still user-observed as wrong, so A/V
 sync remains open. Camilla short-read diagnostic note rechecked 2026-06-26;

@@ -4,12 +4,63 @@
 
 from __future__ import annotations
 
-from jasper import audio_runtime_plan
+from jasper import audio_runtime_plan, audio_validation
 from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from jasper.control import state_aggregate
 
 
-def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
+def test_route_latency_state_uses_constant_work_legacy_pointer_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            ),
+        },
+        profile_id=APPLE_USB_C_DONGLE_ID,
+        route_mode="solo",
+    )
+    observed: list[object] = []
+
+    def fake_load(path, *, max_age):
+        observed.append(path)
+        if path.name == audio_validation.ROUTE_LATENCY_POINTER_NAME:
+            return audio_validation.ArtifactLoadResult(
+                state="missing",
+                path=path,
+                errors=("artifact file does not exist",),
+            )
+        return audio_validation.ArtifactLoadResult(
+            state="loaded",
+            path=path,
+            artifact=object(),  # fake assessor below owns this test boundary
+        )
+
+    def fake_assess(result, **_kwargs):
+        assert result.state == "loaded"
+        return {"status": "pass", "reason": "legacy pointer accepted"}
+
+    monkeypatch.setattr(audio_validation, "artifact_directory", lambda: tmp_path)
+    monkeypatch.setattr(audio_validation, "load_artifact", fake_load)
+    monkeypatch.setattr(
+        audio_validation,
+        "assess_route_latency_artifact",
+        fake_assess,
+    )
+
+    state = state_aggregate.route_latency_artifact_state(plan)
+
+    assert state is not None
+    assert state["status"] == "pass"
+    assert observed == [
+        tmp_path / audio_validation.ROUTE_LATENCY_POINTER_NAME,
+        tmp_path / audio_validation.LATEST_POINTER_NAME,
+    ]
+
+
+def test_audio_graph_state_aggregates_route_artifact_fanin_and_outputd(
     monkeypatch,
 ):
     plan = audio_runtime_plan.build_audio_runtime_plan(
@@ -36,17 +87,11 @@ def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
     )
     monkeypatch.setattr(
         state_aggregate,
-        "_route_latency_artifact_state",
+        "route_latency_artifact_state",
         lambda observed_plan: artifact,
     )
 
     graph = state_aggregate._audio_graph_state(
-        usbsink_raw={
-            "implementation": "rust",
-            "period_frames": 256,
-            "ring": {"fill_periods": 1, "capacity_periods": 3},
-            "counters": {"playback_xruns": 0, "underflow_periods": 0},
-        },
         fanin_status={
             "inputs": [
                 {"label": "spotify", "xrun_count": 2},
@@ -79,18 +124,7 @@ def test_audio_graph_state_aggregates_route_artifact_bridge_fanin_and_outputd(
     assert graph["route"]["claim_status"] == "warn"
     assert graph["route"]["route_config_hash"] == plan.route_config_hash
     assert graph["artifact"] == artifact
-    # host_clock is absent from the usbsink_raw shape — the standby-only bridge no
-    # longer emits a host_clock block (the solo host clock was removed with the
-    # aloop path), so the aggregator surfaces rust_bridge.host_clock as None. The
-    # LIVE combo host clock is fanin.host_clock, covered by
-    # tests/test_fanin_host_clock_contract.py.
-    assert graph["rust_bridge"] == {
-        "implementation": "rust",
-        "period_frames": 256,
-        "ring": {"fill_periods": 1, "capacity_periods": 3},
-        "counters": {"playback_xruns": 0, "underflow_periods": 0},
-        "host_clock": None,
-    }
+    assert "rust_bridge" not in graph
     assert graph["fanin"]["resampler"]["locked"] is True
     assert graph["fanin"]["resampler"]["target_fill_frames"] == 2048
     assert graph["outputd"]["dac_delay_ms"] == 10.333
@@ -175,7 +209,7 @@ def test_coupling_state_fail_soft_on_read_error(monkeypatch):
         "coherent": True,
         "live_transport": None,
         "choice": "auto",
-        "combo": {"state": "disarmed", "fallback": None},
+        "combo": {"state": "disarmed"},
     }
 
 
@@ -221,7 +255,7 @@ def test_coupling_state_choice_defaults_to_auto(monkeypatch, tmp_path):
     assert block["choice"] == "auto"
 
 
-# ---- combo runtime-fallback state (defect 2026-07-10) ----------------------
+# ---- combo resolved state --------------------------------------------------
 
 
 def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
@@ -247,30 +281,12 @@ def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
 
 
 def test_combo_state_armed(monkeypatch, tmp_path):
-    from jasper.fanin import combo_health as ch
-
     _patch_coupling_reads(monkeypatch, tmp_path, armed=True)
-    monkeypatch.setattr(ch, "read_fallback_marker", lambda *a, **k: None)
     block = state_aggregate._coupling_state(fanin_status=None)
-    assert block["combo"] == {"state": "armed", "fallback": None}
+    assert block["combo"] == {"state": "armed"}
 
 
 def test_combo_state_disarmed(monkeypatch, tmp_path):
-    from jasper.fanin import combo_health as ch
-
     _patch_coupling_reads(monkeypatch, tmp_path, armed=False)
-    monkeypatch.setattr(ch, "read_fallback_marker", lambda *a, **k: None)
     block = state_aggregate._coupling_state(fanin_status=None)
-    assert block["combo"] == {"state": "disarmed", "fallback": None}
-
-
-def test_combo_state_fallback_reports_reason(monkeypatch, tmp_path):
-    from jasper.fanin import combo_health as ch
-
-    _patch_coupling_reads(monkeypatch, tmp_path, armed=True)  # armed env, but...
-    marker = ch.FallbackMarker(reason="capture broke x2", at_epoch=42.0)
-    monkeypatch.setattr(ch, "read_fallback_marker", lambda *a, **k: marker)
-    block = state_aggregate._coupling_state(fanin_status=None)
-    # The marker wins over the armed env — the box is on the fallback path.
-    assert block["combo"]["state"] == "fallback"
-    assert block["combo"]["fallback"] == {"reason": "capture broke x2", "at_epoch": 42.0}
+    assert block["combo"] == {"state": "disarmed"}

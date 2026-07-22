@@ -11,6 +11,7 @@ the unbond restore (which must always restore an ACTIVE graph, never passive).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ import pytest
 import yaml
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
+import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
@@ -50,6 +52,33 @@ from jasper.multiroom.reconcile import (
     GROUPING_LOOPBACK_CAPTURE_FORMAT,
 )
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_bass_extension_profile import _profile
+
+_REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH = fc._prove_live_bass_extension_graph
+
+
+@pytest.fixture(autouse=True)
+def _stable_live_graph_authority(monkeypatch):
+    async def prove(
+        cam,
+        *,
+        expected_config_path,
+        expected_classification,
+        **_kwargs,
+    ):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        assert await cam.get_config_file_path() == str(expected_config_path)
+        assert expected_classification in {
+            runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE,
+            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+        }
+        return runtime_contract_mod.GraphSafety(
+            classification=expected_classification,
+            allowed=True,
+            config_path=str(expected_config_path),
+        )
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
 
 
 def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
@@ -98,7 +127,9 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
 
 
 def _fake_apply_dsp_config():
-    async def _apply(*, load_config, candidate_path, **_kw):
+    async def _apply(*, load_config, candidate_path, acquire_lock, **_kw):
+        assert acquire_lock is False
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         await load_config(str(candidate_path))
         return SimpleNamespace(to_dict=lambda: {"result": "applied"})
 
@@ -121,7 +152,23 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    sealed = replace(
+        _profile(topology=topology),
+        bass_owner={"kind": "woofer_way", "roles": ["woofer"], "channels": [0]},
+    )
+    monkeypatch.setattr(
+        baseline_profile_mod,
+        "evaluate_bass_extension_profile",
+        lambda **_kwargs: SimpleNamespace(status="accepted", profile=sealed),
+    )
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    real_write_stash = fc._write_stash
+
+    def write_stash_while_locked(value, *, path):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        real_write_stash(value, path=path)
+
+    monkeypatch.setattr(fc, "_write_stash", write_stash_while_locked)
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     applied = asyncio.run(
@@ -133,15 +180,65 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     # The driver-domain config was emitted, re-proven, and loaded into CamillaDSP.
     assert applied == fc.FOLLOWER_CONFIG_PATH
     assert cam.loaded == [fc.FOLLOWER_CONFIG_PATH]
-    yaml = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
-    assert "emit_active_speaker_driver_domain_config" in yaml
-    assert "# program_channel=left" in yaml
-    assert 'device: "hw:Loopback,1,6"' in yaml  # the round-trip loopback capture (shared pair 6)
-    assert "active_baseline_headroom" not in yaml  # no leader-baked program domain
+    yaml_text = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
+    assert "emit_active_speaker_driver_domain_config" in yaml_text
+    assert "# program_channel=left" in yaml_text
+    assert 'device: "hw:Loopback,1,6"' in yaml_text  # the round-trip loopback capture (shared pair 6)
+    assert "active_baseline_headroom" not in yaml_text  # no leader-baked program domain
+    document = yaml.safe_load(yaml_text)
+    woofer_chain = next(
+        step["names"]
+        for step in document["pipeline"]
+        if step.get("type") == "Filter" and step.get("channels") == [0]
+    )
+    assert woofer_chain.index("bass_ext_lt") < woofer_chain.index(
+        "bass_ext_subsonic"
+    ) < woofer_chain.index("as_woofer_delay")
     # The prior solo-active config was stashed for the unbond restore.
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == (
         "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
     )
+
+
+def test_apply_live_proof_failure_rolls_back_before_unlock(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        fc,
+        "FOLLOWER_CONFIG_PATH",
+        str(tmp_path / "grouping_follower.yml"),
+    )
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    prior = str(tmp_path / "active_speaker_baseline.yml")
+
+    async def refuse(
+        cam,
+        *,
+        expected_config_path,
+        expected_classification,
+        **_kwargs,
+    ):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        assert expected_config_path == fc.FOLLOWER_CONFIG_PATH
+        assert (
+            expected_classification
+            == runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+        )
+        assert await cam.get_config_file_path() == fc.FOLLOWER_CONFIG_PATH
+        raise RuntimeError("candidate proof refused")
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    cam = _FakeCamilla(current=prior)
+
+    with pytest.raises(fc.ActiveFollowerError) as exc:
+        asyncio.run(fc.apply_prebuilt_follower_config(camilla_factory=lambda: cam))
+
+    assert exc.value.reason == "graph_unprovable"
+    assert cam.loaded == [fc.FOLLOWER_CONFIG_PATH, prior]
+    assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) is None
+    assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is None
 
 
 def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> None:
@@ -198,13 +295,18 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-    # Force the re-proof to reject (e.g. a hypothetical emitter regression).
+    import jasper.active_speaker.camilla_yaml as camilla_yaml
+
+    original = camilla_yaml._driver_baseline_filter_chain
+
+    def omit_woofer_crossover(preset, role, *args, **kwargs):
+        names = original(preset, role, *args, **kwargs)
+        if role == "woofer":
+            return [name for name in names if not name.endswith("_lp")]
+        return names
+
     monkeypatch.setattr(
-        runtime_contract_mod,
-        "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=False, classification="unsafe", issues=[{"code": "forced"}],
-        ),
+        camilla_yaml, "_driver_baseline_filter_chain", omit_woofer_crossover
     )
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
@@ -262,12 +364,70 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     monkeypatch.setattr(
         output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
     )
+
+    def decide(_topology, *, current_config_path=None, **_kwargs):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        graph = SimpleNamespace(
+            allowed=allowed,
+            classification="x" if allowed else "unsafe",
+            issues=[],
+        )
+        return SimpleNamespace(
+            current_graph=graph,
+            selected_config_path=(str(current_config_path) if allowed else None),
+        )
+
     monkeypatch.setattr(
-        runtime_contract_mod, "classify_camilla_graph",
-        lambda *a, **k: SimpleNamespace(
-            allowed=allowed, classification="x" if allowed else "unsafe", issues=[],
-        ),
+        runtime_contract_mod, "safe_graph_for_current_topology", decide
     )
+
+
+@pytest.mark.parametrize(
+    ("actual_path", "actual_classification"),
+    [
+        ("/tmp/wrong.yml", runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE),
+        (None, runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE),
+        (
+            "/tmp/expected.yml",
+            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+        ),
+    ],
+    ids=["wrong-path", "missing-path", "wrong-classification"],
+)
+def test_live_proof_requires_exact_candidate_path_and_classification(
+    monkeypatch,
+    actual_path,
+    actual_classification,
+) -> None:
+    monkeypatch.setattr(
+        output_topology_mod,
+        "load_output_topology_strict",
+        lambda: object(),
+    )
+
+    async def classify(*_args, **_kwargs):
+        return runtime_contract_mod.GraphSafety(
+            classification=actual_classification,
+            allowed=True,
+            config_path=actual_path,
+        )
+
+    monkeypatch.setattr(
+        runtime_contract_mod,
+        "classify_active_bass_extension_graph",
+        classify,
+    )
+
+    with pytest.raises(RuntimeError, match="live bass-extension graph proof failed"):
+        asyncio.run(
+            _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH(
+                _FakeCamilla(current="/tmp/expected.yml"),
+                expected_config_path="/tmp/expected.yml",
+                expected_classification=(
+                    runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                ),
+            )
+        )
 
 
 def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
@@ -278,6 +438,13 @@ def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
     solo = tmp_path / "active_speaker_baseline.yml"
     solo.write_text("# solo active baseline\n", encoding="utf-8")
     fc._write_stash(str(solo), path=fc.FOLLOWER_PRIOR_STASH)
+    real_clear_stash = fc._clear_stash
+
+    def clear_stash_while_locked(path):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        real_clear_stash(path)
+
+    monkeypatch.setattr(fc, "_clear_stash", clear_stash_while_locked)
 
     cam = _FakeCamilla(current=fc.FOLLOWER_CONFIG_PATH)
     restored = asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
@@ -285,6 +452,50 @@ def test_restore_prefers_stash(monkeypatch, tmp_path) -> None:
     assert restored == str(solo)
     assert cam.loaded == [str(solo)]
     assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) is None  # cleared on success
+
+
+def test_restore_live_proof_failure_rolls_back_and_keeps_stash(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        fc,
+        "FOLLOWER_CONFIG_PATH",
+        str(tmp_path / "grouping_follower.yml"),
+    )
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    _patch_restore_reproof(monkeypatch, allowed=True)
+    solo = tmp_path / "active_speaker_baseline.yml"
+    solo.write_text("# solo active baseline\n", encoding="utf-8")
+    fc._write_stash(str(solo), path=fc.FOLLOWER_PRIOR_STASH)
+
+    async def refuse(
+        cam,
+        *,
+        expected_config_path,
+        expected_classification,
+        **_kwargs,
+    ):
+        assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
+        assert expected_config_path == str(solo)
+        assert (
+            expected_classification
+            == runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME
+        )
+        assert await cam.get_config_file_path() == str(solo)
+        raise RuntimeError("restore proof refused")
+
+    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    cam = _FakeCamilla(current=fc.FOLLOWER_CONFIG_PATH)
+
+    with pytest.raises(fc.ActiveFollowerError) as exc:
+        asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
+
+    assert exc.value.reason == "restore_graph_unprovable"
+    assert cam.loaded == [str(solo), fc.FOLLOWER_CONFIG_PATH]
+    assert fc.read_stash(fc.FOLLOWER_PRIOR_STASH) == str(solo)
+    assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is None
 
 
 def test_restore_refuses_unprovable_candidate_never_loads_passive(
@@ -313,6 +524,41 @@ def test_restore_refuses_unprovable_candidate_never_loads_passive(
 
     assert restored is None
     assert cam.loaded == []  # NEVER loaded the unprovable config onto the active sink
+
+
+def test_restore_refuses_candidate_when_reproof_has_no_graph(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
+    monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
+    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
+    monkeypatch.setattr(
+        output_topology_mod, "load_output_topology_strict", lambda *a, **k: object()
+    )
+    from jasper.active_speaker import baseline_profile as bp_mod
+    monkeypatch.setattr(
+        bp_mod, "baseline_config_path", lambda *a, **k: tmp_path / "no_baseline.yml"
+    )
+    monkeypatch.setattr(
+        runtime_contract_mod,
+        "safe_graph_for_current_topology",
+        lambda *_a, **_k: SimpleNamespace(
+            current_graph=None,
+            selected_config_path=None,
+            issues=({"code": "candidate_unavailable"},),
+        ),
+    )
+    candidate = tmp_path / "active_speaker_baseline.yml"
+    candidate.write_text("# candidate with unavailable proof\n", encoding="utf-8")
+    fc._write_stash(str(candidate), path=fc.FOLLOWER_PRIOR_STASH)
+
+    cam = _FakeCamilla(current=fc.FOLLOWER_CONFIG_PATH)
+    restored = asyncio.run(fc.restore_active_follower_solo(camilla_factory=lambda: cam))
+
+    assert restored is None
+    assert cam.loaded == []
+    assert "classification=unavailable" in caplog.text
+    assert "candidate_unavailable" in caplog.text
 
 
 def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> None:

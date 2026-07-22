@@ -23,6 +23,7 @@ from .assistant_loudness import (
     profile_for_outputd,
     update_profile_from_measurement,
 )
+from .assistant_volume import EffectiveVolumeContext, serialize_volume_context
 from .log_event import log_event
 from .tts_routing import FANIN_TTS_SOCKET
 
@@ -619,14 +620,29 @@ class TtsPlayout:
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
+        tts_envelope_lufs: float,
+        canonical_volume_db: float | None = None,
+        downstream_volume_db: float | None = None,
+        context_tts_envelope_lufs: float | None = None,
+        muted: bool | None = None,
+        context_stamp_boot_ns: int | None = None,
     ) -> None:
         """Freeze final-output loudness context before a turn starts.
 
         No-op for the legacy sounddevice path. Outputd overrides this
         because it owns content metering and final assistant gain.
         """
-        _ = (provider, model, voice, silence_target_lufs)
+        _ = (
+            provider,
+            model,
+            voice,
+            tts_envelope_lufs,
+            canonical_volume_db,
+            downstream_volume_db,
+            context_tts_envelope_lufs,
+            muted,
+            context_stamp_boot_ns,
+        )
         return None
 
     async def pause_content_meter(self) -> None:
@@ -928,7 +944,8 @@ class _OutputdStreamAdapter:
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
+        tts_envelope_lufs: float,
+        volume_context: EffectiveVolumeContext | None = None,
     ) -> None:
         if not (
             _outputd_token_ok(provider)
@@ -942,12 +959,18 @@ class _OutputdStreamAdapter:
             )
             return
         with self._lock:
-            self._sendall_locked(
-                (
-                    f"PREPARE_ASSISTANT {provider} {model} {voice} "
-                    f"{float(silence_target_lufs):.2f}\n"
-                ).encode("ascii")
-            )
+            payload = bytearray()
+            if volume_context is not None:
+                payload.extend(serialize_volume_context(volume_context))
+            parts = [
+                "PREPARE_ASSISTANT",
+                provider,
+                model,
+                voice,
+                f"{float(tts_envelope_lufs):.2f}",
+            ]
+            payload.extend((" ".join(parts) + "\n").encode("ascii"))
+            self._sendall_locked(bytes(payload))
 
     def pause_content_meter(self) -> None:
         with self._lock:
@@ -1147,7 +1170,12 @@ class OutputdTtsPlayout(TtsPlayout):
         provider: str,
         model: str,
         voice: str,
-        silence_target_lufs: float,
+        tts_envelope_lufs: float,
+        canonical_volume_db: float | None = None,
+        downstream_volume_db: float | None = None,
+        context_tts_envelope_lufs: float | None = None,
+        muted: bool | None = None,
+        context_stamp_boot_ns: int | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -1160,12 +1188,29 @@ class OutputdTtsPlayout(TtsPlayout):
             if prepare is None:
                 return
             try:
+                prepare_kwargs = {
+                    "provider": provider,
+                    "model": model,
+                    "voice": voice,
+                    "tts_envelope_lufs": tts_envelope_lufs,
+                }
+                if (
+                    canonical_volume_db is not None
+                    and downstream_volume_db is not None
+                    and context_tts_envelope_lufs is not None
+                    and muted is not None
+                    and context_stamp_boot_ns is not None
+                ):
+                    prepare_kwargs["volume_context"] = EffectiveVolumeContext(
+                        canonical_db=canonical_volume_db,
+                        downstream_db=downstream_volume_db,
+                        tts_envelope_lufs=context_tts_envelope_lufs,
+                        muted=muted,
+                        stamp_boot_ns=context_stamp_boot_ns,
+                    )
                 await asyncio.to_thread(
                     prepare,
-                    provider=provider,
-                    model=model,
-                    voice=voice,
-                    silence_target_lufs=silence_target_lufs,
+                    **prepare_kwargs,
                 )
                 return
             except OSError as e:

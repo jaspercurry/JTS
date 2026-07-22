@@ -34,8 +34,8 @@ EXPECTED: dict[str, int] = {
     "jasper-fanin": -800,       # renderer audio convergence point
     "jasper-aec-bridge": -700,  # real-time mic processing
     "jasper-control": -600,     # recovery surface (HTTP dashboard)
-    "jasper-usbsink": -600,     # optional USB-audio intent/liveness owner
     "jasper-voice": -500,       # largest blast radius (LLM session)
+    "jasper-usbmic": -300,      # optional relay; restartable, export stops if killed
     "jasper-camilla-crossover": -500,  # reconciler-gated active crossover
     "nginx": -450,              # management front door; recoverable
     "jasper-mux": -300,         # transient-graceful (latest-source-wins)

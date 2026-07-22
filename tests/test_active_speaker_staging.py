@@ -419,6 +419,37 @@ def test_compile_preset_from_crossover_preview_omits_polarity_and_delay_by_defau
     assert region.delay_target_driver is None
 
 
+def test_legacy_manual_role_rows_keep_stereo_preview_additive_but_not_confirmed() -> None:
+    topology = _stereo_two_way_topology()
+    legacy = _driver_research(frequency_hz=2500, way_count=2)
+    draft = build_design_draft(
+        topology,
+        manual_settings={
+            "drivers": legacy["drivers"],
+            "crossover_candidates": legacy["crossover_candidates"],
+        },
+        created_at="2026-06-10T12:00:00Z",
+    )
+    preview = build_crossover_preview(
+        draft,
+        created_at="2026-06-10T12:30:00Z",
+    )
+    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        topology,
+        preview,
+    )
+
+    assert draft["status"] == "ready_for_review"
+    assert draft["summary"]["missing_driver_info_target_ids"] == []
+    assert draft["driver_safety_profile"]["status"] == "incomplete"
+    assert {
+        target["target_values_binding"]
+        for target in draft["driver_safety_profile"]["targets"]
+    } == {"missing"}
+    assert preview["status"] == "ready_for_protected_staging"
+    assert preset is not None, issues
+
+
 def test_compile_preset_from_crossover_preview_stereo_polarity_mismatch_blocks() -> None:
     topology = _stereo_two_way_topology()
     preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)

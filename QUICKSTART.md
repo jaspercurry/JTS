@@ -267,17 +267,18 @@ you actually observed.
      bash scripts/onboard.sh 10.12.194.1 --adopt
      ```
 
-   **This isn't just a first-boot trick.** Once JTS is installed, the
-   same USB-C port keeps carrying its own always-on management network
-   (independent of Raspberry Pi OS's own rescue-gadget mechanism above,
-   and independent of the optional USB Audio Input source) — plug a
+   **This isn't just a first-boot trick where gadget hardware is available.**
+   Once JTS is installed, the same USB-C port carries its own default-on
+   management network (independent of Raspberry Pi OS's rescue gadget and the
+   optional USB Audio Input source). A Zero-class product instead reserves its
+   single OTG data port for a USB output DAC unless a registered I²S DAC leaves
+   it free. On a gadget-capable product, plug a
    laptop in at any time, any day, and `http://<JASPER_HOSTNAME>/`
    (e.g. `http://jts.local/`) resolves over the USB link, with
    `http://10.12.194.1/` as the documented IP fallback, even if the Pi
    has no Wi-Fi at all. See
    [docs/HANDOFF-usb-gadget.md](docs/HANDOFF-usb-gadget.md) for the
-   design and how the two mechanisms coexist without contending for
-   the Pi's single USB controller.
+   hardware-role policy and how the two mechanisms avoid controller contention.
 
 ### "Onboarding says no SSH key was found"
 

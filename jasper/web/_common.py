@@ -153,25 +153,26 @@ def toggle_html(
 # shared primitives live in app.css. This is the seam every migrated
 # wizard reuses.
 
-_asset_version_cache: str | None = None
+_ASSET_VERSION_PATH = "/var/lib/jasper/build.txt"
 
 
 def _asset_version() -> str:
-    """Cache-busting token for /assets/app.css.
+    """Current cache-busting token for canonical design assets.
 
     nginx serves /assets/ with `immutable, max-age=1y`, so the linked URL
     must change when the stylesheet does. We key it on the deployed build
     SHA (written to /var/lib/jasper/build.txt by install.sh) — a new
     deploy is exactly when app.css can change. Fail-soft: a missing or
-    unreadable file yields "dev", a still-valid (un-busted) URL. Read
-    once per process; the socket-activated web server is short-lived and
-    a deploy restarts it, so the cache can't go stale in practice."""
-    global _asset_version_cache
-    if _asset_version_cache is not None:
-        return _asset_version_cache
+    unreadable file yields "dev", a still-valid (un-busted) URL.
+
+    Read on each HTML render rather than caching for the process lifetime.
+    A wizard can be socket-activated during the install window before the
+    verified manifest is written; that long-lived process must notice the
+    final atomic manifest replacement. This is one tiny local read per page
+    navigation, never part of a wizard's polling/data path."""
     version = "dev"
     try:
-        with open("/var/lib/jasper/build.txt") as f:
+        with open(_ASSET_VERSION_PATH) as f:
             for raw in f:
                 line = raw.strip()
                 if line.startswith("JASPER_GIT_SHA="):
@@ -181,7 +182,6 @@ def _asset_version() -> str:
                     break
     except OSError:
         pass
-    _asset_version_cache = version
     return version
 
 
@@ -553,24 +553,31 @@ def restart_systemd_units(*units: str) -> None:
 
 
 def bonded_follower_active() -> bool:
-    """True when this speaker is an ACTIVE bonded multiroom FOLLOWER —
-    the dumb-follower profile parks voice/AEC/renderers while paired.
-    The ONE shared predicate (multiroom.config.is_bonded_follower),
-    fail-open to False so a broken read never blocks a solo wizard."""
-    try:
-        from ..multiroom.config import is_bonded_follower, load_config
+    """True when a requested follower role actually remains effective.
 
-        return is_bonded_follower(load_config())
+    The grouping reconciler may refuse an unsafe bond and land solo without
+    erasing the household's request.  Its fingerprinted status distinguishes
+    that safe fallback from an active follower; missing/stale status keeps a
+    requested follower parked until reconciliation proves otherwise.
+    """
+    try:
+        from ..multiroom.config import load_config
+        from ..multiroom.effective_role import (
+            effective_local_sources_park_reason,
+        )
+
+        return effective_local_sources_park_reason(load_config()) is not None
     except Exception:  # noqa: BLE001 — fail-open
         return False
 
 
 def bonded_follower_leader_addr() -> str:
-    """Return the bonded follower's configured leader address, if readable."""
+    """Return the effective follower's leader address, if readable."""
     try:
-        from ..multiroom.config import follower_leader_addr, load_config
+        from ..multiroom.config import load_config
+        from ..multiroom.effective_role import effective_follower_leader_addr
 
-        return follower_leader_addr(load_config()) or ""
+        return effective_follower_leader_addr(load_config()) or ""
     except Exception:  # noqa: BLE001 — fail-open
         return ""
 

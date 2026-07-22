@@ -20,9 +20,15 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
+
+import yaml as yaml_parser
 
 from jasper.atomic_io import atomic_write_text
+from jasper.bass_extension.profile import (
+    BassExtensionProfile,
+    evaluate_bass_extension_profile,
+)
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -53,6 +59,7 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
 )
 from .crossover_preview import crossover_preview_fingerprint
+from .level_trim import LevelTrimError, attenuation_from_group_deltas
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -66,6 +73,10 @@ from .staging import (
     topology_is_passive_mains_with_sub,
 )
 
+if TYPE_CHECKING:
+    from .measured_candidate import MeasuredElectricalCandidate
+    from .measured_crossover_candidate import MeasuredCrossoverCandidate
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
@@ -74,6 +85,7 @@ DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_baseline_profile.json"
 DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
+_DEFAULT_PERSISTED_BASS_PROFILE = object()
 
 # Sensitivity deltas below this magnitude (dB) are treated as level-matched and
 # get no derived trim, so the least-sensitive (reference) driver and any ties
@@ -104,6 +116,35 @@ _GAIN_SOURCE_TO_PROVENANCE: dict[str, str] = {
     "estimate": PROVENANCE_RECOMMENDED_START,
     "sensitivity": PROVENANCE_RECOMMENDED_START,
 }
+
+
+def _bass_extension_graph_summary(
+    profile: BassExtensionProfile | None,
+) -> dict[str, Any]:
+    """Freeze authority evidence beside one just-emitted composition."""
+
+    if (
+        profile is None
+        or profile.status != "accepted"
+        or profile.enclosure["adapter_id"] != "sealed_v1"
+    ):
+        return {"authority_valid": True, "runtime_block_required": False}
+    natural = profile.targets[-1]
+    protected = all(target.subsonic is not None for target in profile.targets)
+    return {
+        "authority_valid": protected,
+        "runtime_block_required": True,
+        "bass_owner_channels": list(profile.bass_owner["channels"]),
+        "natural": {
+            "fp_hz": natural.fp_hz,
+            "qp": natural.qp,
+            "boost_headroom_db": natural.boost_headroom_db,
+            "subsonic": (
+                dict(natural.subsonic) if natural.subsonic is not None else None
+            ),
+        },
+    }
+
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -153,11 +194,121 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
     })
 
 
+def _canonicalize_camilla_defaults(value: Any) -> Any:
+    """Remove representation-only null defaults from Camilla readback.
+
+    CamillaDSP's ``active_raw`` re-serialization writes omitted optional
+    mapping fields back as explicit YAML nulls.  Omitted and null mean the same
+    default to Camilla, so they must not make a safely loaded Layer-A graph
+    appear different from the immutable YAML that produced it.  Non-null
+    values and list positions remain exact and therefore hardware-bound.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _canonicalize_camilla_defaults(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_canonicalize_camilla_defaults(item) for item in value]
+    return value
+
+
+def active_layer_a_fingerprint(config_text: str) -> str:
+    """Fingerprint the exact driver-domain suffix of one active graph.
+
+    Room and preference EQ are allowed to change the program-domain filter
+    prefix before the active split.  Everything from the split onward, plus
+    the output-side device contract, is Layer A: routing, crossover filters,
+    polarity, delay, gain, and protection.  This projection lets Active bind
+    its immutable applied snapshot to the graph Room is about to preserve
+    without making Room reconstruct crossover evidence.
+    """
+
+    try:
+        raw = yaml_parser.safe_load(config_text)
+    except yaml_parser.YAMLError as exc:
+        raise ActiveSpeakerConfigError(
+            "active Layer-A graph must be parseable YAML"
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A graph must be an object")
+
+    pipeline = raw.get("pipeline")
+    if not isinstance(pipeline, list):
+        raise ActiveSpeakerConfigError("active Layer-A graph pipeline is missing")
+    split_index = next(
+        (
+            index
+            for index, step in enumerate(pipeline)
+            if isinstance(step, Mapping) and step.get("type") == "Mixer"
+        ),
+        None,
+    )
+    if split_index is None:
+        raise ActiveSpeakerConfigError("active Layer-A driver split is missing")
+    suffix = pipeline[split_index:]
+
+    filters = raw.get("filters")
+    filter_map = filters if isinstance(filters, Mapping) else {}
+    referenced_filters: dict[str, Any] = {}
+    for step in suffix:
+        if not isinstance(step, Mapping) or step.get("type") != "Filter":
+            continue
+        names = step.get("names")
+        if not isinstance(names, list) or any(
+            not isinstance(name, str) or not name for name in names
+        ):
+            raise ActiveSpeakerConfigError(
+                "active Layer-A filter step has invalid names"
+            )
+        for name in names:
+            definition = filter_map.get(name)
+            if not isinstance(definition, Mapping):
+                raise ActiveSpeakerConfigError(
+                    f"active Layer-A filter {name!r} is missing"
+                )
+            referenced_filters[name] = definition
+
+    devices = raw.get("devices")
+    if not isinstance(devices, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A devices are missing")
+    output_devices = {
+        str(key): value
+        for key, value in devices.items()
+        if key != "capture"
+    }
+    mixers = raw.get("mixers")
+    if not isinstance(mixers, Mapping):
+        raise ActiveSpeakerConfigError("active Layer-A mixers are missing")
+    referenced_mixers: dict[str, Any] = {}
+    for step in suffix:
+        if not isinstance(step, Mapping) or step.get("type") != "Mixer":
+            continue
+        name = step.get("name")
+        definition = mixers.get(name) if isinstance(name, str) else None
+        if not name or not isinstance(definition, Mapping):
+            raise ActiveSpeakerConfigError("active Layer-A mixer is missing")
+        referenced_mixers[name] = definition
+
+    return _fingerprint(_canonicalize_camilla_defaults({
+        "schema_version": 1,
+        "domain": "jts_active_layer_a_v1",
+        "output_devices": output_devices,
+        "mixers": referenced_mixers,
+        "pipeline_suffix": suffix,
+        "filters": referenced_filters,
+    }))
+
+
 def _source_payload(
     topology: OutputTopology,
     design_draft: Mapping[str, Any],
     crossover_preview: Mapping[str, Any],
     measurements: Mapping[str, Any],
+    *,
+    measured_candidate_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     measurement_summary = (
         measurements.get("summary")
@@ -188,6 +339,8 @@ def _source_payload(
         "measurements_updated_at": measurements.get("updated_at"),
         "measurement_summary_fingerprint": _fingerprint(measurement_summary),
     }
+    if measured_candidate_fingerprint is not None:
+        source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
     return {**source, "fingerprint": _fingerprint(source)}
 
 
@@ -304,7 +457,7 @@ def _measured_level_trims(
         ):
             by_group.setdefault(group_id, {})[role] = record
 
-    per_group_trims: list[dict[str, float]] = []
+    per_group_delta_chains: list[list[tuple[str, str, float]]] = []
     deltas: list[dict[str, Any]] = []
     incomparable_groups: list[dict[str, Any]] = []
     for group_id, group_records in sorted(by_group.items()):
@@ -345,7 +498,7 @@ def _measured_level_trims(
             })
             continue
         assert all(value is not None for value in excitation_by_role.values())
-        raw: dict[str, float] = {roles[0]: 0.0}
+        adjacent_deltas: list[tuple[str, str, float]] = []
         group_deltas: list[dict[str, Any]] = []
         usable = True
         for region in regions:
@@ -364,11 +517,10 @@ def _measured_level_trims(
                 if measured_up is not None
                 else None
             )
-            if level_lo is None or level_up is None or lo_role not in raw:
+            if level_lo is None or level_up is None:
                 usable = False
                 break
-            # effective[U] == effective[L]  =>  trim[U] = trim[L] + L_lo - L_up
-            raw[up_role] = raw[lo_role] + level_lo - level_up
+            adjacent_deltas.append((lo_role, up_role, level_up - level_lo))
             group_deltas.append({
                 "speaker_group_id": group_id,
                 "crossover_fc_hz": fc,
@@ -380,18 +532,14 @@ def _measured_level_trims(
                     up_role: round(float(excitation_by_role[up_role]), 2),
                 },
             })
-        if not usable or set(raw) != set(roles):
+        if not usable:
             continue
-        offset = max(raw.values())  # quietest driver becomes the 0 dB reference
-        per_group_trims.append({
-            role: max(round(raw[role] - offset, 1), _MAX_ATTENUATION_DB)
-            for role in roles
-        })
+        per_group_delta_chains.append(adjacent_deltas)
         deltas.extend(group_deltas)
 
     meta: dict[str, Any] = {
         "groups_total": len(by_group),
-        "groups_measured": len(per_group_trims),
+        "groups_measured": len(per_group_delta_chains),
         "measured_group_ids": sorted({
             str(item["speaker_group_id"])
             for item in deltas
@@ -407,18 +555,15 @@ def _measured_level_trims(
         ),
         "incomparable_groups": incomparable_groups,
     }
-    if not per_group_trims:
+    if not per_group_delta_chains:
         return {}, meta
 
-    averaged = {
-        role: sum(group[role] for group in per_group_trims) / len(per_group_trims)
-        for role in roles
-    }
-    offset = max(averaged.values())
-    trims = {
-        role: max(round(averaged[role] - offset, 1), _MAX_ATTENUATION_DB)
-        for role in roles
-    }
+    try:
+        trims = attenuation_from_group_deltas(
+            roles, per_group_delta_chains, minimum_db=_MAX_ATTENUATION_DB
+        )
+    except LevelTrimError:
+        return {}, meta
     meta["trims"] = dict(trims)
     return trims, meta
 
@@ -1038,10 +1183,14 @@ def build_baseline_profile_candidate(
     driver_domain_pair_trim_db: float = 0.0,
     tuning_owner: str = "manual",
     preserved_applied_profile: Mapping[str, Any] | None = None,
+    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
+        None
+    ),
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
     created_at: str | None = None,
+    bass_extension_profile: BassExtensionProfile | None = None,
 ) -> dict[str, Any]:
     """Build or write a baseline candidate from current accepted evidence.
 
@@ -1069,6 +1218,19 @@ def build_baseline_profile_candidate(
     """
     if tuning_owner not in TUNING_OWNERS:
         raise ValueError(f"unsupported crossover tuning owner: {tuning_owner!r}")
+    if measured_candidate is not None:
+        from .measured_candidate import MeasuredElectricalCandidate
+        from .measured_crossover_candidate import MeasuredCrossoverCandidate
+
+        if not isinstance(
+            measured_candidate, (MeasuredElectricalCandidate, MeasuredCrossoverCandidate)
+        ):
+            raise TypeError(
+                "measured_candidate must be MeasuredElectricalCandidate or "
+                "MeasuredCrossoverCandidate"
+            )
+        if tuning_owner != "automatic":
+            raise ValueError("measured_candidate requires automatic tuning ownership")
     if driver_domain and program_channel not in DRIVER_DOMAIN_PROGRAM_CHANNELS:
         raise ValueError(
             "driver_domain requires program_channel in "
@@ -1078,7 +1240,15 @@ def build_baseline_profile_candidate(
     state_target = baseline_profile_state_path(state_path)
     config_target = baseline_config_path(config_path)
     now = created_at or _utc_now()
-    source = _source_payload(topology, design_draft, crossover_preview, measurements)
+    source = _source_payload(
+        topology,
+        design_draft,
+        crossover_preview,
+        measurements,
+        measured_candidate_fingerprint=(
+            measured_candidate.fingerprint if measured_candidate is not None else None
+        ),
+    )
     resolved_playback_device, playback_device_source = (
         resolve_active_playback_device(
             topology,
@@ -1099,6 +1269,9 @@ def build_baseline_profile_candidate(
         ),
         "capture_device": capture_device,
         "capture_format": capture_format,
+        "measured_candidate_fingerprint": (
+            measured_candidate.fingerprint if measured_candidate is not None else None
+        ),
     }
     saved_snapshot = (
         saved.get("recomposition_snapshot")
@@ -1185,14 +1358,18 @@ def build_baseline_profile_candidate(
 
     issues: list[dict[str, str]] = []
     summary = measurements.get("summary") if isinstance(measurements.get("summary"), Mapping) else {}
-    driver_target_proof_complete = bool(
+    driver_target_proof_complete = measured_candidate is not None or bool(
         summary.get("driver_checks_complete")
         or summary.get("driver_measurements_complete")
     )
     driver_target_proof_source = (
-        "measurements" if driver_target_proof_complete else "missing"
+        "measured_candidate"
+        if measured_candidate is not None
+        else ("measurements" if driver_target_proof_complete else "missing")
     )
-    summed_validation_complete = bool(summary.get("summed_validation_complete"))
+    summed_validation_complete = measured_candidate is not None or bool(
+        summary.get("summed_validation_complete")
+    )
     # A passive-mains + local-subwoofer topology has NO inter-driver crossover, so
     # it never produces an active crossover preview and has no per-driver / summed
     # active-crossover measurements to complete. It is still roleful (bass
@@ -1267,7 +1444,8 @@ def build_baseline_profile_candidate(
                 "confirm each driver with a quiet test before saving the active profile",
             ))
         summed_validation_complete = (
-            bool(summary.get("summed_validation_complete"))
+            measured_candidate is not None
+            or bool(summary.get("summed_validation_complete"))
             or (
                 driver_target_proof_complete
                 and _summed_validation_evidence_complete(summary)
@@ -1300,6 +1478,21 @@ def build_baseline_profile_candidate(
                     "active profile compiler could not build speaker preset intent",
                 )
             ],
+            status="blocked",
+            config_path=config_target,
+            playback_device=resolved_playback_device,
+            playback_device_source=playback_device_source,
+        ))
+
+    if measured_candidate is not None and measured_candidate.source_preset != preset:
+        return finalize(_blocked_payload(
+            topology=topology,
+            source=source,
+            issues=[_issue(
+                "blocker",
+                "measured_candidate_preset_mismatch",
+                "the reviewed measured candidate no longer equals the saved crossover",
+            )],
             status="blocked",
             config_path=config_target,
             playback_device=resolved_playback_device,
@@ -1348,14 +1541,43 @@ def build_baseline_profile_candidate(
         if preset_matches_applied_profile(preset, applied_anchor)
         else ""
     )
-    corrections, correction_issues, correction_meta = _derive_corrections(
-        preset,
-        crossover_preview,
-        measurements,
-        tuning_owner=tuning_owner,
-        expected_profile_context_id=expected_profile_context_id or None,
-        applied_profile_context=applied_anchor,
-    )
+    if measured_candidate is not None:
+        corrections = measured_candidate.driver_corrections()
+        roles = required_driver_roles(preset.way_count)
+        measured_group_count = sum(
+            group.mode in {"active_2_way", "active_3_way"}
+            for group in topology.speaker_groups
+        )
+        correction_issues: list[dict[str, str]] = []
+        correction_meta = {
+            "sources": {role: "measured" for role in roles},
+            "gain_provenance": {role: "measured" for role in roles},
+            "provisional": False,
+            "level_match": {
+                "groups_total": measured_group_count,
+                "groups_measured": measured_group_count,
+                "comparison": "strict_measured_candidate",
+                "incomparable_groups": [],
+                "applied": True,
+            },
+            "corrections_provenance": {
+                role: {
+                    "gain_db": PROVENANCE_MEASURED,
+                    "delay_ms": PROVENANCE_MEASURED,
+                    "inverted": PROVENANCE_MEASURED,
+                }
+                for role in roles
+            },
+        }
+    else:
+        corrections, correction_issues, correction_meta = _derive_corrections(
+            preset,
+            crossover_preview,
+            measurements,
+            tuning_owner=tuning_owner,
+            expected_profile_context_id=expected_profile_context_id or None,
+            applied_profile_context=applied_anchor,
+        )
     issues.extend(correction_issues)
     if preserved_applied_profile is not None:
         preserved_corrections = (
@@ -1426,16 +1648,29 @@ def build_baseline_profile_candidate(
                 "manual_crossover_preserved",
                 "preserved the currently applied manual crossover corrections",
             ))
-    automatic_candidate = automatic_candidate_readiness(
-        required_group_ids=(
-            group.id
-            for group in topology.speaker_groups
-            if group.mode in {"active_2_way", "active_3_way"}
-        ),
-        level_match=correction_meta["level_match"],
-        measurement_summary=summary,
-        active_comparison_set=measurements.get("active_comparison_set"),
+    required_group_ids = sorted(
+        group.id
+        for group in topology.speaker_groups
+        if group.mode in {"active_2_way", "active_3_way"}
     )
+    if measured_candidate is not None:
+        automatic_candidate = {
+            "ready": True,
+            "reason": None,
+            "detail": "The exact reviewed measured candidate is ready to apply.",
+            "required_group_ids": required_group_ids,
+            "measured_group_ids": required_group_ids,
+            "summed_group_ids": required_group_ids,
+            "measurement_comparable": True,
+            "excitation_comparable": True,
+        }
+    else:
+        automatic_candidate = automatic_candidate_readiness(
+            required_group_ids=required_group_ids,
+            level_match=correction_meta["level_match"],
+            measurement_summary=summary,
+            active_comparison_set=measurements.get("active_comparison_set"),
+        )
     if tuning_owner == "automatic" and not automatic_candidate["ready"]:
         issues.append(_issue(
             "blocker",
@@ -1443,10 +1678,26 @@ def build_baseline_profile_candidate(
             str(automatic_candidate["detail"]),
         ))
     provisional = bool(correction_meta.get("provisional"))
+    if driver_domain and bass_extension_profile is None:
+        applied_bass_anchor = load_applied_baseline_profile_state()
+        evaluation = evaluate_bass_extension_profile(
+            topology=topology,
+            applied_baseline_state=applied_bass_anchor,
+        )
+        if evaluation.status == "accepted":
+            bass_extension_profile = evaluation.profile
     validation = {"status": "skipped", "reason": "not_written"}
     if write:
         config_target.parent.mkdir(parents=True, exist_ok=True)
         if driver_domain:
+            # v2 measured candidates (measured_crossover_candidate) are not
+            # routed through the driver_domain (wireless-follower) emit today
+            # — only the multiroom reconciler passes driver_domain=True, and
+            # it never supplies a measured_candidate. If W5+ ever applies a
+            # measured delay/polarity candidate to a follower, the alignment
+            # proof below (the else-branch prove_candidate_config call) must
+            # be added to this branch too, against the follower's channel
+            # map.
             assert program_channel is not None  # validated above
             yaml = emit_active_speaker_driver_domain_config(
                 preset,
@@ -1458,6 +1709,7 @@ def build_baseline_profile_candidate(
                 capture_format=capture_format,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+                bass_extension_profile=bass_extension_profile,
             )
         else:
             yaml = emit_active_speaker_baseline_config(
@@ -1468,7 +1720,44 @@ def build_baseline_profile_candidate(
                 capture_format=capture_format,
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
+                bass_extension_profile=bass_extension_profile,
             )
+            # A v2 measured candidate carrying delay/polarity re-proves its
+            # exact requested delay binding against the freshly compiled text
+            # before this candidate can ever reach "ready_to_apply" — the
+            # delay_graph + graph_safety proofs named in the crossover
+            # measurement v2 design (§5.8). A failed proof is a blocker issue,
+            # exactly like a failed CamillaDSP validation below: fail closed,
+            # no partial write reaches "ready". Scoped to the new candidate
+            # type only (isinstance), so a legacy MeasuredElectricalCandidate
+            # or a plain trims candidate is completely unaffected.
+            from .measured_crossover_candidate import (
+                MeasuredCrossoverCandidate,
+                MeasuredCrossoverCandidateError,
+                prove_candidate_config,
+            )
+
+            if (
+                isinstance(measured_candidate, MeasuredCrossoverCandidate)
+                and measured_candidate.alignment.delay_role is not None
+            ):
+                try:
+                    prove_candidate_config(measured_candidate, yaml)
+                except MeasuredCrossoverCandidateError as exc:
+                    log_event(
+                        logger,
+                        "correction.crossover_alignment_proof_blocked",
+                        level=logging.ERROR,
+                        code=exc.code,
+                        detail=exc.detail,
+                        candidate_fingerprint=measured_candidate.fingerprint,
+                        delay_role=measured_candidate.alignment.delay_role,
+                    )
+                    issues.append(_issue(
+                        "blocker",
+                        "measured_candidate_alignment_proof_failed",
+                        str(exc),
+                    ))
         validation = validate(config_target).to_dict()
         if not validation.get("ok_to_apply") and validation.get("status") not in {
             "valid",
@@ -1582,6 +1871,13 @@ def build_baseline_profile_candidate(
             **candidate_graph_context,
         },
     }
+    if driver_domain:
+        # The bond precheck consumes this immutable sidecar in the independent
+        # whole-graph verifier. It comes from the already-evaluated profile
+        # passed to the emitter, never from filter-name inference or caller I/O.
+        payload["bass_extension_profile_summary"] = (
+            _bass_extension_graph_summary(bass_extension_profile)
+        )
     payload = finalize(payload)
     payload["candidate_fingerprint"] = baseline_candidate_fingerprint(payload)
     if write:
@@ -1602,6 +1898,9 @@ def recompose_applied_baseline_yaml(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
+    bass_extension_profile: BassExtensionProfile | None | object = (
+        _DEFAULT_PERSISTED_BASS_PROFILE
+    ),
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit Layer A strictly from the immutable applied-profile snapshot.
 
@@ -1645,6 +1944,14 @@ def recompose_applied_baseline_yaml(
                 "output topology; reapply speaker setup first"
             ),
         )]
+    if bass_extension_profile is _DEFAULT_PERSISTED_BASS_PROFILE:
+        evaluation = evaluate_bass_extension_profile(
+            topology=topology,
+            applied_baseline_state=applied_profile,
+        )
+        bass_extension_profile = (
+            evaluation.profile if evaluation.status == "accepted" else None
+        )
     try:
         preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
     except (ActiveSpeakerConfigError, TypeError, ValueError) as exc:
@@ -1682,6 +1989,11 @@ def recompose_applied_baseline_yaml(
         baseline_id=str(
             applied_profile.get("baseline_id")
             or f"baseline-{_safe_id(topology.topology_id)}"
+        ),
+        bass_extension_profile=(
+            bass_extension_profile
+            if isinstance(bass_extension_profile, BassExtensionProfile)
+            else None
         ),
     )
     return yaml, []
@@ -1856,6 +2168,56 @@ async def _record_apply_outcome_into_bundle(
     )
 
 
+def persist_applied_baseline_profile(
+    candidate: Mapping[str, Any],
+    *,
+    apply_state: Mapping[str, Any],
+    state_path: str | Path | None = None,
+    applied_at: str | None = None,
+) -> dict[str, Any]:
+    """Persist one already-read-back compiler candidate as the Layer-A SSOT."""
+
+    if (
+        candidate.get("kind") != BASELINE_PROFILE_KIND
+        or candidate.get("status") not in {"ready_to_apply", "applied"}
+        or not isinstance(candidate.get("recomposition_snapshot"), Mapping)
+        or apply_state.get("result") != "success"
+        or baseline_candidate_fingerprint(candidate)
+        != candidate.get("candidate_fingerprint")
+    ):
+        raise ValueError(
+            "baseline candidate and successful apply proof are required"
+        )
+    target = baseline_profile_state_path(state_path)
+    existing = _load_saved_state(target)
+    candidate_identity = baseline_candidate_fingerprint(candidate)
+    if (
+        isinstance(existing, Mapping)
+        and existing.get("status") == "applied"
+        and baseline_candidate_fingerprint(existing) == candidate_identity
+    ):
+        return dict(existing)
+    now = applied_at or _utc_now()
+    applied = {
+        **candidate,
+        "status": "applied",
+        "applied_at": now,
+        "updated_at": now,
+        "apply": dict(apply_state),
+        "revalidation": {"required": False, "status": "not_required"},
+    }
+    applied.pop("applied_recomposition_profile", None)
+    applied["permissions"] = dict(applied.get("permissions") or {})
+    applied["permissions"]["may_apply"] = False
+    atomic_write_text(
+        target,
+        json.dumps(applied, indent=2, sort_keys=True) + "\n",
+        mode=0o640,
+        group_from_parent=True,
+    )
+    return applied
+
+
 async def apply_baseline_profile(
     topology: OutputTopology,
     *,
@@ -1875,6 +2237,9 @@ async def apply_baseline_profile(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
+        None
+    ),
     refresh_inputs: Callable[
         [],
         tuple[
@@ -1888,9 +2253,20 @@ async def apply_baseline_profile(
         validate_camilla_config
     ),
 ) -> dict[str, Any]:
-    """Serialize candidate proof, compile, load, confirmation, and rollback."""
+    """Serialize candidate proof, compile, load, confirmation, and rollback.
 
-    async with dsp_writer_lock(baseline_config_path(config_path).parent):
+    ``measured_candidate`` is optional and defaults to ``None`` so every
+    existing caller is byte-identical; passing one threads
+    :func:`build_baseline_profile_candidate`'s ``measured_candidate`` seam
+    through this same atomic apply-with-rollback transaction (see
+    ``jasper.active_speaker.measured_crossover_candidate`` for the v2 measured
+    candidate that carries optional delay/polarity).
+    """
+
+    async with dsp_writer_lock(
+        baseline_config_path(config_path).parent,
+        source="active_speaker_baseline_apply",
+    ):
         if refresh_inputs is not None:
             topology, design_draft, crossover_preview, measurements = refresh_inputs()
         return await _apply_baseline_profile_locked(
@@ -1911,6 +2287,7 @@ async def apply_baseline_profile(
             preserved_applied_profile=preserved_applied_profile,
             expected_candidate_fingerprint=expected_candidate_fingerprint,
             on_candidate_verified=on_candidate_verified,
+            measured_candidate=measured_candidate,
             validate=validate,
         )
 
@@ -1934,6 +2311,9 @@ async def _apply_baseline_profile_locked(
     preserved_applied_profile: Mapping[str, Any] | None = None,
     expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
+    measured_candidate: "MeasuredElectricalCandidate | MeasuredCrossoverCandidate | None" = (
+        None
+    ),
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -1951,11 +2331,19 @@ async def _apply_baseline_profile_locked(
     from the candidate builder. The follower branch of the multiroom reconciler
     passes follower-specific ``state_path`` / ``config_path`` alongside these so
     the solo baseline state is not overwritten.
+
+    ``measured_candidate`` forwards unchanged to
+    :func:`build_baseline_profile_candidate`; ``None`` (the default) keeps
+    every existing caller byte-identical.
     """
 
     state_target = baseline_profile_state_path(state_path)
 
-    def build_candidate(*, write: bool) -> dict[str, Any]:
+    def build_candidate(
+        *,
+        write: bool,
+        bass_extension_profile: BassExtensionProfile | None = None,
+    ) -> dict[str, Any]:
         return build_baseline_profile_candidate(
             topology,
             design_draft=design_draft,
@@ -1971,7 +2359,9 @@ async def _apply_baseline_profile_locked(
             driver_domain_pair_trim_db=driver_domain_pair_trim_db,
             tuning_owner=tuning_owner,
             preserved_applied_profile=preserved_applied_profile,
+            measured_candidate=measured_candidate,
             validate=validate,
+            bass_extension_profile=bass_extension_profile,
         )
 
     def matches_expected(candidate: Mapping[str, Any]) -> bool:
@@ -2004,12 +2394,26 @@ async def _apply_baseline_profile_locked(
             "issues": refused["issues"],
         }
 
+    reviewed_candidate = build_candidate(write=False)
+    candidate_bass_emission_profile = None
+    candidate_bass_proof_profile = None
+    if not driver_domain:
+        bass_evaluation = evaluate_bass_extension_profile(
+            topology=topology,
+            applied_baseline_state=reviewed_candidate,
+        )
+        candidate_bass_proof_profile = bass_evaluation.profile
+        if bass_evaluation.status == "accepted":
+            candidate_bass_emission_profile = bass_evaluation.profile
+
     if expected_candidate_fingerprint is not None:
-        reviewed_candidate = build_candidate(write=False)
         if not matches_expected(reviewed_candidate):
             return await refuse_stale(reviewed_candidate)
 
-    candidate = build_candidate(write=True)
+    candidate = build_candidate(
+        write=True,
+        bass_extension_profile=candidate_bass_emission_profile,
+    )
     if expected_candidate_fingerprint is not None and not matches_expected(candidate):
         return await refuse_stale(candidate)
     snapshot_state = crossover_snapshot_state(
@@ -2038,6 +2442,53 @@ async def _apply_baseline_profile_locked(
             mode=0o640,
             group_from_parent=True,
         )
+    if not driver_domain and candidate.get("permissions", {}).get("may_apply"):
+        from jasper.active_speaker.runtime_contract import (
+            GRAPH_APPROVED_ACTIVE_RUNTIME,
+            classify_bass_extension_graph,
+        )
+
+        try:
+            candidate_graph_text = Path(
+                str((candidate.get("config") or {}).get("path") or "")
+            ).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            graph_proof = None
+            proof_detail = f"the emitted active graph is unreadable: {type(exc).__name__}"
+        else:
+            graph_proof = classify_bass_extension_graph(
+                topology,
+                evidence_source="desired",
+                graph_text=candidate_graph_text,
+                applied_baseline_state=candidate,
+                desired_profile=candidate_bass_proof_profile,
+            )
+            proof_detail = (
+                graph_proof.issues[0].get("message")
+                if graph_proof.issues
+                else "the emitted active graph failed whole-graph proof"
+            )
+        if (
+            graph_proof is None
+            or not graph_proof.allowed
+            or graph_proof.classification != GRAPH_APPROVED_ACTIVE_RUNTIME
+        ):
+            candidate["status"] = "compiled_apply_blocked"
+            candidate["permissions"]["may_apply"] = False
+            candidate["issues"] = [
+                *candidate.get("issues", []),
+                _issue(
+                    "blocker",
+                    "baseline_graph_safety_proof_failed",
+                    proof_detail,
+                ),
+            ]
+            atomic_write_text(
+                state_target,
+                json.dumps(candidate, indent=2, sort_keys=True) + "\n",
+                mode=0o640,
+                group_from_parent=True,
+            )
     if not candidate.get("permissions", {}).get("may_apply"):
         await _record_apply_outcome_into_bundle(
             measurements,
@@ -2139,24 +2590,10 @@ async def _apply_baseline_profile_locked(
             "issues": failed["issues"],
         }
 
-    applied = {
-        **candidate,
-        "status": "applied",
-        "applied_at": _utc_now(),
-        "updated_at": _utc_now(),
-        "apply": apply_state.to_dict(),
-        "revalidation": {"required": False, "status": "not_required"},
-    }
-    # The newly applied profile is now the one SSOT; retaining the predecessor
-    # would create two plausible Layer-A owners.
-    applied.pop("applied_recomposition_profile", None)
-    applied["permissions"] = dict(applied.get("permissions") or {})
-    applied["permissions"]["may_apply"] = False
-    atomic_write_text(
-        state_target,
-        json.dumps(applied, indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-        group_from_parent=True,
+    applied = persist_applied_baseline_profile(
+        candidate,
+        apply_state=apply_state.to_dict(),
+        state_path=state_target,
     )
     log_event(
         logger,
@@ -2188,3 +2625,94 @@ async def _apply_baseline_profile_locked(
         "apply": apply_state.to_dict(),
         "issues": applied.get("issues", []),
     }
+
+
+async def restore_applied_baseline_profile(
+    retained_profile: Mapping[str, Any],
+    *,
+    load_config: Callable[[str], Awaitable[bool]],
+    get_current_config_path: Callable[[], Awaitable[str | None]] | None = None,
+    state_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+    validate: Callable[[str | Path], CamillaConfigValidationResult] = (
+        validate_camilla_config
+    ),
+) -> dict[str, Any]:
+    """Restore one previously-applied baseline profile snapshot (the v2 Undo).
+
+    ``retained_profile`` is the frozen ``applied_recomposition_profile`` a
+    later apply preserved before overwriting the Layer-A SSOT (see
+    :func:`build_baseline_profile_candidate`'s ``finalize`` /
+    ``_frozen_applied_profile``). Its ``config.path`` still points at that
+    prior profile's own already-compiled, already-validated YAML — composing
+    a NEW candidate never overwrites a config file an applied anchor still
+    points to (``build_baseline_profile_candidate`` gives the new candidate a
+    content-addressed sibling instead). This reloads THAT exact file — never
+    recomposed — through the same atomic validate-load-confirm-rollback
+    transaction (:func:`jasper.dsp_apply.apply_dsp_config`)
+    :func:`apply_baseline_profile` rides, then persists it back as the
+    applied SSOT via :func:`persist_applied_baseline_profile`.
+
+    Never raises for an ordinary refusal: returns a ``status`` in
+    ``{"restored", "blocked", "restore_failed"}`` the caller maps to an HTTP
+    code, mirroring :func:`apply_baseline_profile`'s own contract.
+    """
+    if (
+        retained_profile.get("kind") != BASELINE_PROFILE_KIND
+        or retained_profile.get("status") != "applied"
+        or not isinstance(retained_profile.get("recomposition_snapshot"), Mapping)
+        or baseline_candidate_fingerprint(retained_profile)
+        != retained_profile.get("candidate_fingerprint")
+    ):
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_invalid",
+                "the previous crossover profile is not a valid applied snapshot",
+            )],
+        }
+    config = retained_profile.get("config")
+    candidate_path = (
+        str(config.get("path") or "") if isinstance(config, Mapping) else ""
+    )
+    candidate_sha256 = (
+        str(config.get("sha256") or "") if isinstance(config, Mapping) else ""
+    )
+    if not candidate_path or not candidate_sha256 or not Path(candidate_path).is_file():
+        return {
+            "status": "blocked",
+            "issues": [_issue(
+                "blocker",
+                "restore_target_missing",
+                "the previous crossover configuration could not be found on "
+                "disk; a full remeasure is required",
+            )],
+        }
+
+    async with dsp_writer_lock(
+        baseline_config_path(config_path).parent,
+        source="active_speaker_baseline_restore",
+    ):
+        try:
+            apply_state = await apply_dsp_config(
+                source="active_speaker_baseline_restore",
+                candidate_path=candidate_path,
+                load_config=load_config,
+                get_current_config_path=get_current_config_path,
+                acquire_lock=False,
+                expected_candidate_sha256=candidate_sha256,
+                validate=validate,
+            )
+        except DspApplyError as exc:
+            return {
+                "status": "restore_failed",
+                "issues": [_issue("blocker", "restore_apply_failed", str(exc))],
+            }
+        restored = persist_applied_baseline_profile(
+            dict(retained_profile),
+            apply_state=apply_state.to_dict(),
+            state_path=state_path,
+        )
+
+    return {"status": "restored", "profile": restored, "apply": apply_state.to_dict()}

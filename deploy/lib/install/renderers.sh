@@ -6,7 +6,7 @@
 
 # Renderer install steps for deploy/install.sh: librespot (raspotify
 # .deb), nqptp + shairport-sync (AirPlay 2) source builds, bluez
-# config, the USB gadget dtoverlay, and the AirPlay WiFi power-save
+# config, the hardware-aware USB data role, and the AirPlay WiFi power-save
 # tweak.
 #
 # Extracted verbatim from install.sh (the installer remains the only
@@ -156,9 +156,10 @@ install_renderers() {
     #   - __AIRPLAY_NAME__ from /var/lib/jasper/speaker_name.env
     #   - __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__ from the active CamillaDSP
     #     samplerate/chunksize/target_level.
-    # shairport-sync.service's ExecStartPre re-renders on every restart, so
-    # toggling the mode (via /airplay/ web UI or jasper-airplay-mode CLI) is
-    # just an env-file write + systemctl restart shairport-sync.
+    # shairport-sync.service's ExecStartPre re-renders on every active-only
+    # try-restart, so toggling the mode (via /airplay/ web UI or
+    # jasper-airplay-mode CLI) is an env-file write + try-restart. A household
+    # Off source stays stopped.
     install -m 0644 \
         "${REPO_DIR}/deploy/shairport-sync.conf.template" \
         /etc/shairport-sync.conf.template
@@ -198,75 +199,22 @@ install_renderers() {
     bash "${REPO_DIR}/deploy/configure-bluez.sh"
 }
 
-set_usb_gadget_mode() {
-    # Write the two config.txt settings a USB-C gadget box needs: (1) the
-    # dtoverlay that puts the board's OTG-capable USB controller into
-    # peripheral mode so it can present as a USB gadget to a connected host,
-    # and (2) usb_max_current_enable so a Pi 5 actually boots when powered
-    # through a USB-C power/data splitter that doesn't pass PD negotiation
-    # (see step 2 below for the full rationale). This is the precondition for
-    # the jasper-usbsink feature — a fourth music source where a computer
-    # plugged into the Pi via an appropriate power/data splitter sees the
-    # configured speaker name as a USB audio output device.
-    #
-    # We only set the dtoverlay here. libcomposite / the ConfigFS gadget are
-    # composed by jasper-usbgadget.service (enabled by install.sh for the
-    # always-on USB management network). USB *audio* stays gated behind the
-    # /sources/ wizard toggle. When both the network is kill-switched and audio
-    # is off, jasper-usbgadget's ExecCondition skips the unit and libcomposite
-    # never loads, so RAM stays at baseline (~50 KB dwc2 kernel module).
-    #
-    # Requires a reboot to take effect — the dwc2 module is loaded by
-    # the kernel via the dtoverlay at boot. Subsequent runs of
-    # install.sh are no-ops once the line is present.
-    #
-    # Side effect to document: the OTG data port is no longer available
-    # for ordinary USB host devices while this overlay is active. On a
-    # Pi 5 the USB-A ports remain host-mode outputs; on a Zero-class
-    # board this can conflict with using the same OTG port for a USB DAC
-    # unless the operator has a powered/split-role hardware topology that
-    # proves both legs work.
+reconcile_usb_data_role() {
+    # The Pi Zero's one OTG data port cannot be host (USB output DAC) and
+    # peripheral (USB input/management gadget) at the same time. Resolve that
+    # role from the board model plus a configured, registered I2S DAC overlay;
+    # never from the temporary presence/absence of a USB device. Pi 4/5 boards
+    # retain peripheral mode because their separate USB-A host ports can carry
+    # the output DAC. The Python resolver owns the sentinel-delimited config
+    # block and emits desired/active/reboot observability.
     local cfg="${JTS_BOOT_CONFIG_FILE:-/boot/firmware/config.txt}"
     if [[ ! -f "$cfg" ]]; then
-        echo "  $cfg not present; skipping USB gadget dtoverlay."
+        echo "  $cfg not present; skipping USB data-role reconciliation."
         return 0
     fi
-    # 1. Peripheral dtoverlay — the gadget precondition.
-    if grep -qE '^[[:space:]]*dtoverlay=dwc2,dr_mode=peripheral' "$cfg"; then
-        echo "  USB gadget dtoverlay already present in $cfg."
-    else
-        cat >> "$cfg" <<'EOF'
-
-# JTS install — required for the composite USB gadget (management network +
-# optional audio). Puts the board's OTG-capable USB controller into peripheral
-# mode so a connected host can reach this speaker over USB and (when USB audio
-# is enabled) see it as a USB audio output device. jasper-usbgadget.service
-# modprobes libcomposite on demand and composes the descriptor; when both the
-# network is kill-switched and audio is off, its ExecCondition skips and
-# libcomposite never loads, so RAM stays at baseline. On Zero-class
-# streamboxes this is intentionally allowed for
-# powered splitter validation, but the same OTG port may be needed for
-# the DAC unless the hardware topology proves both roles can coexist.
-# Reboot required to take effect. See docs/HANDOFF-usbsink.md.
-[all]
-dtoverlay=dwc2,dr_mode=peripheral
-EOF
-        echo "  USB gadget dtoverlay added to $cfg (reboot required to apply)."
-    fi
-
-    # 2. usb_max_current_enable — checked INDEPENDENTLY of the dtoverlay above so
-    #    a box that already had the overlay from a prior install still picks this
-    #    up on a re-run (that early-return used to skip it). On a Pi 5 the USB-C
-    #    port both powers the board AND carries the gadget data; when power comes
-    #    through a USB-C power/data splitter, the splitter typically does NOT pass
-    #    the USB-C PD negotiation, so the Pi 5 cannot confirm a 5A supply, runs
-    #    power-restricted, and can halt at the firmware stage before the OS boots
-    #    (solid red LED, no journal) even with a capable PSU behind the splitter.
-    #    This flag tells the firmware to allow full USB current without that PD
-    #    confirmation, letting a gadget box boot through the splitter. No-op on a
-    #    box powered by a normal PD supply (PD negotiates 5A anyway); safe as long
-    #    as the supply is genuinely capable — the Pi's own undervoltage detection
-    #    still guards a marginal one. Verified on jts.local 2026-07-06.
+    # usb_max_current_enable is a power fix, not a data-role selector. Keep it
+    # independent so Pi 5 splitter-powered products retain the verified boot
+    # behavior even as the role policy evolves.
     if grep -qE '^[[:space:]]*usb_max_current_enable=1' "$cfg"; then
         echo "  usb_max_current_enable already present in $cfg."
     else
@@ -276,13 +224,22 @@ EOF
 # gadget box boots when powered through a USB-C power/data splitter (which
 # doesn't pass PD negotiation). No-op with a normal PD supply; safe with a
 # capable supply — undervoltage protection still guards a marginal one.
-# Reboot required to take effect. See set_usb_gadget_mode() +
+# Reboot required to take effect. See reconcile_usb_data_role() +
 # docs/HANDOFF-usbsink.md.
 [all]
 usb_max_current_enable=1
 EOF
         echo "  usb_max_current_enable=1 added to $cfg (reboot required to apply)."
     fi
+
+    # Keep the owned data-role block last so the role parser sees one final,
+    # deterministic [all] decision and a second install is byte-identical.
+    local python="${JASPER_SYSTEM_PYTHON:-python3}"
+    PYTHONPATH="${REPO_DIR}" "$python" -m jasper.audio_hardware.usb_port_role \
+        --reconcile-boot \
+        --model-file "${JASPER_PI_MODEL_FILE:-/proc/device-tree/model}" \
+        --boot-config "$cfg" \
+        --udc-class-dir "${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
 }
 
 tune_wifi_for_airplay() {

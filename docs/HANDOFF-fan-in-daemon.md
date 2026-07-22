@@ -127,8 +127,9 @@ addressed but had two unanticipated consequences:
    loopback; `-EBUSY` was the kernel's enforcement of "latest source wins"
    even when `jasper-mux`'s explicit pause path failed. After the dmix,
    nothing prevents two renderers from mixing audibly. PR #216 added a
-   Tier 2 escalation (`systemctl restart librespot`) to compensate, but
-   it's a workaround for a property the topology used to provide for free.
+   Tier 2 escalation (`systemctl try-restart librespot`) to compensate. Its
+   active-only mutation preserves a concurrent household Off or follower park,
+   but it's a workaround for a property the topology used to provide for free.
 
 The structural insight that wasn't obvious at the time: **snd-aloop has 8
 substream pairs, each with independent rate state, format state, and
@@ -406,11 +407,23 @@ line command:
 `NONE`. The fan-in daemon does not decide what source should win and
 does not know about volume policy; it only executes the cheap audio
 gate. It starts in `NONE`, and mux keeps it in `NONE` while no source
-has a guarded winner so a renderer that starts between mux polls cannot
+has a guarded winner so a renderer that starts before mux reconciles cannot
 leak through at stale volume. Mux prepares the safe volume carrier
 before moving the gate. The `correction` lane is always mixed so
 room-correction/test sweeps still work while a household source is
 manually selected or while the mux has temporarily selected `NONE`.
+
+The control listener is nonblocking but readiness-driven: `poll(2)` wakes as
+soon as a connection is queued and uses a 500 ms timeout only to re-check the
+shutdown flag. The retired blind `sleep(500 ms)` on `WouldBlock` was measured
+adding about 500 ms to short-lived STATUS/SELECT handoffs.
+
+On the USB DIRECT lane, `fanin-source-notify` samples the already-published
+host-input frame counter every 50 ms off the audio thread. A false→true edge
+publishes `direct.streaming=true` immediately; 40 flat samples (2 s) publish
+false. Each edge best-effort sends `NOTIFY usbsink` to mux. This is only a wake
+adapter: fan-in never chooses a winner, failed delivery is counted, and mux's
+fixed 1 Hz patrol re-reads `direct.streaming` to repair a lost notification.
 
 `STATUS` JSON:
 
@@ -444,6 +457,11 @@ manually selected or while the mux has temporarily selected `NONE`.
   }
 }
 ```
+
+The USB DIRECT input's optional `direct` block also exposes `streaming`,
+`stream_starts`, `stream_stops`, `notify_attempts`, and `notify_failures`.
+Together with mux's reconcile trigger/counters, these distinguish producer
+edges, delivery failures, and patrol repairs without journal guesswork.
 
 `jasper/control/server.py:_get_state` adds a new top-level `"fanin"` key,
 following the same 2 s timeout / fail-soft pattern used for the other
@@ -513,6 +531,9 @@ JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024                           # ~21 ms output
 JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
 JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
+JASPER_FANIN_ASSISTANT_REFERENCE_PATH=/var/lib/jasper/assistant_volume_reference.json # last achieved assistant speaker loudness; fan-in is sole writer
+JASPER_FANIN_HELD_CONTENT_TTL_SEC=600                             # sustained silence before the most recent music reference expires
+JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU=8                 # symmetric limit on learned quiet-room envelope calibration
 JASPER_FANIN_INPUT_RESAMPLER=                                     # DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane; only "enabled" arms it. See "Per-input resampler" below.
 JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink                         # which lane label the resampler arms on when enabled
 JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512                    # base ring-fill target for the armed lane (~10.7 ms at 48 k)
@@ -529,15 +550,40 @@ entries. Discovered via the chunk 2 smoke test; regression-tested
 in `config::tests::pipe_delimiter_preserves_commas_inside_hw_pcm_names`.
 
 The TTS socket speaks the same line protocol as outputd's TTS
-socket (`GAIN`, `PREPARE_ASSISTANT`, `SEGMENT_START`, `AUDIO`,
-`FLUSH_SYNC`, `CLOSE`) plus `PROGRAM_DUCK_ON/OFF`. Fan-in drains those
+socket (`GAIN`, `VOLUME_CONTEXT`, `PREPARE_ASSISTANT`, `SEGMENT_START`, `AUDIO`,
+`SEGMENT_END`, `FLUSH_SYNC`, `CLOSE`) plus `PROGRAM_DUCK_ON/OFF`. Fan-in drains those
 commands at period boundaries, drops excess queued audio over the
 pending-frame budget, applies program ducking only to renderer lanes,
 then mixes TTS/cues into the summed buffer before writing toward
-CamillaDSP. `PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
-drive the same content-loudness/profile/peak-cap gain decision used by
-outputd; the latest values are exposed under `tts.assistant_loudness` in
-the STATUS response alongside `tts.program_duck_active`. Voice's current
+CamillaDSP. The program duck is **ramped, not stepped**: the mixer
+glides the applied renderer-lane gain toward its target
+(1.0 ↔ `JASPER_FANIN_TTS_PROGRAM_DUCK_DB`) per sample over
+`JASPER_FANIN_TTS_DUCK_ATTACK_MS` (engage, default 15) and
+`JASPER_FANIN_TTS_DUCK_RELEASE_MS` (release, default 150). A hard
+per-period step of a ~25 dB duck injected a broadband click and a "pump"
+into music playing under a short earcon/cue; the ramp removes both.
+Steady-state (fully ducked) stays a flat per-period multiply, and the
+fully-un-ducked path is skipped, so the ramp only costs work on the
+engage/release edges (`mixer::ramp_program_duck`,
+`mixer::tests::ramp_program_duck_*`).
+
+`PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
+drive fan-in's content-loudness/profile/peak-cap gain decision.
+`VOLUME_CONTEXT` is standalone FIFO state, not a PREPARE field. Voice writes it
+immediately before PREPARE on the same connection; every publisher uses one
+serializer. It supplies absolute canonical-user dB, downstream-Camilla dB,
+final quiet-room TTS-envelope LUFS, mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured
+after the snapshot. Fan-in accepts equal/newer stamps, rejects older state, and
+logs `event=fanin.volume_context_rejected`. For music references it applies the
+residual canonical-minus-downstream delta to already-queued raw assistant
+blocks; for quiet-room references it applies the envelope-minus-downstream
+delta. Both use a 100 ms ramp and the existing per-segment peak cap.
+
+The latest decision is exposed under `tts.assistant_loudness` in STATUS with
+`reference_kind`, `target_speaker_lufs`, the accepted context and stamp, held
+content/assistant records, and `volume_context_rejected`. The same object is
+available verbatim through `/state.fanin`; `tts.program_duck_active` remains a
+sibling field. Voice's current
 fanin ducker is intentionally one-shot — it sends `PROGRAM_DUCK_ON` and
 closes, then sends `PROGRAM_DUCK_OFF` from a later connection — so fan-in
 does **not** treat TTS socket EOF as duck ownership release. A stuck
@@ -548,11 +594,37 @@ duck. `PROGRAM_DUCK_OFF` is still allowed to release a duck even after an
 audio flush advances the TTS epoch; stale `PROGRAM_DUCK_ON` is not
 allowed to relatch after a flush.
 
-On an active multiroom bond member, voice bypasses this socket
+The no-music assistant reference is a separate versioned record at
+`JASPER_FANIN_ASSISTANT_REFERENCE_PATH`. First use is exactly the final gentle
+quiet-room envelope derived from `listening_level`; the ordinary assistant
+offset applies only to music-relative references. A completed assistant segment
+learns only its achieved offset from that envelope, clamps it symmetrically to
+`JASPER_FANIN_ASSISTANT_ENVELOPE_OFFSET_LIMIT_LU` (default ±8 LU), and replays
+it as `envelope(current level) + offset`. Knob tracking therefore follows the
+same gentle envelope slope instead of Camilla's steeper music-volume curve.
+Fan-in loads this record fail-soft at boot and persists it atomically from a
+non-audio writer thread. A normal `SEGMENT_END` commits even if the audio queue
+drained just before the command arrived; cues, chirps, muted speech, and flushed
+or unheard tails never overwrite it.
+
+Qualified music remains the higher-priority reference, but it is not immortal.
+Fan-in retains the most recent ≥3 s music window only until
+`JASPER_FANIN_HELD_CONTENT_TTL_SEC` (default 600 s) of sustained content
+silence. After expiry, no-music speech returns to the held assistant envelope
+offset, or offset zero on first use.
+
+On a passive multiroom bond member, voice bypasses this socket
 entirely: the grouping reconciler points it at outputd's TTS server
 (`rust/jasper-outputd/src/tts.rs`; the wire vocabulary + parser are the
 shared `rust/jasper-tts-protocol` crate both daemons import) so assistant
-audio mixes post-round-trip instead of riding the synced stream. One
+audio mixes post-round-trip instead of riding the synced stream. The reconciler
+also writes `JASPER_TTS_MIX_STAGE=post_dsp`; that explicit fact disables every
+voice/coordinator volume-context publisher for this route. Outputd therefore
+keeps the pre-volume-context behavior and does not claim fan-in parity for
+mute, downstream compensation, or live knob re-gain. The follow-up
+[Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
+must make mix stage an explicit gain-policy input, add post-DSP mute semantics,
+and re-gain queued speech in outputd's mix loop before parity can be claimed. One
 contract delta to know when comparing acks: both daemons now return a
 per-segment playout ledger in the `FLUSH_SYNC` ack (provider item id,
 flushed frames, `max_audio_played_ms`, `events[]`) — the ack KEY shape is a
@@ -620,8 +692,9 @@ still owns the actual env-file write, daemon restart, and
 rollback-on-restart-failure ladder; the plan owns the policy so the doctor,
 operator explain CLI, and writer cannot drift. As of the P3/P4 default-flip the
 reconciler also has an `--auto` mode (`jasper.fanin.coupling_auto`) that resolves
-the SHIPPED default coupling (`shm_ring` on a ring-eligible box, else loopback)
-and the USB combo flags on deploy + boot, unless the operator-choice marker
+the SHIPPED default coupling (`shm_ring` on a validated full-profile,
+ring-eligible box; loopback on streambox or any failed gate) and the independent
+USB combo flags on deploy + boot, unless the operator-choice marker
 `JASPER_FANIN_COUPLING_CHOICE=operator` freezes the box — see
 [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
 
@@ -842,9 +915,13 @@ pcm.librespot_substream {
 
 pcm.shairport_substream  → hw:Loopback,0,1  (same pinned plug shape)
 pcm.bluealsa_substream   → hw:Loopback,0,2  (same pinned plug shape)
-pcm.usbsink_substream    → hw:Loopback,0,3  (same pinned plug shape)
 pcm.correction_substream → hw:Loopback,0,4  (same pinned plug shape)
 ```
+
+USB Audio Input has no playback alias or resident bridge: fan-in directly
+captures `hw:UAC2Gadget` when the source coordinator arms that lane. Its
+positionally reserved `hw:Loopback,1,3` input is only the silent fallback while
+USB DIRECT is off.
 
 The `plug:` wrapper is what handles each renderer's native rate/format
 conversion to 48 kHz S16_LE — same role the old `jasper_renderer_in`
@@ -885,7 +962,9 @@ Each renderer's `--device` / `output_device` flag shifts from
 | librespot | `--device jasper_renderer_in` | `--device librespot_substream` |
 | shairport-sync | `output_device = "jasper_renderer_in"` | `output_device = "shairport_substream"` |
 | bluealsa-aplay | `--pcm=jasper_renderer_in` | `--pcm=bluealsa_substream` |
-| jasper-usbsink | `JASPER_USBSINK_PLAYBACK_DEVICE=jasper_renderer_in` | `JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream` |
+
+USB no longer has a renderer device: `jasper-usbsink.service` is a process-free
+readiness marker and fan-in owns the direct gadget capture.
 
 `jasper-doctor`'s `check_renderer_device_resolvable` (the codified post-PR-#223
 check) verifies each renderer can open its new device as its runtime
@@ -965,8 +1044,8 @@ maintainability. Rust wins on all three.
   or auto/null. Mux owns "current primary", renderer probing,
   source-specific preemption APIs, and user source selection. Current
   examples: AirPlay loses via shairport-sync MPRIS `Stop`, Spotify via
-  Web API pause or librespot restart fallback, and USB sink via its
-  local silence endpoint.
+  Web API pause or active-only librespot try-restart fallback, and USB via
+  fan-in's lane-level MUTE/UNMUTE command.
 - **Not PipeWire.** Per the AGENTS.md "architecture is fixed; swap the
   engine, not the topology" rule (scoped to AEC but spirit applies to
   the bus): this is the smallest viable shape, not a bus rewrite.
@@ -988,7 +1067,7 @@ Current deploy behavior:
 - `deploy/alsa/asoundrc.jasper` is the fan-in asoundrc.
 - renderer units point directly at their private lanes
   (`librespot_substream`, `shairport_substream`,
-  `bluealsa_substream`, `usbsink_substream`).
+  `bluealsa_substream`); USB is direct-captured from `hw:UAC2Gadget`.
 - `install.sh` enables `jasper-fanin.service` directly.
 - `install.sh` archives/removes stale
   `/var/lib/jasper/audio_topology.env` and removes any installed
@@ -1174,7 +1253,11 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-07-12 (rechecked the fan-in source/module layout, checked-in
+Last verified: 2026-07-16 (stamped standalone volume context, gentle-envelope calibration offset, held-content expiry, drained-before-end reference commit, and expanded STATUS observability checked against PR #1542; prior pass covered bounded raw-block queue and live gain ramp; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
+stays loopback while the independent USB DIRECT decision still runs;
+librespot Tier-2 recovery final mutation rechecked
+as active-only `try-restart`, including concurrent Off/role parking;
+rechecked the fan-in source/module layout, checked-in
 Cargo lock and provenance posture, current xrun JSONL schema, single-writer
 append/crash-tail behavior, and the existing `usb_low_latency_48k` ownership
 and 4096/1024 fan-in buffer contract. Prior jts.local tuning found 512/1024

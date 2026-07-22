@@ -15,9 +15,10 @@ restores on exit. Used by the room-correction wizard:
 
 What gets paused (and why):
 
-  - Music source daemons via `systemctl stop`. We need silence on the
-    fan-in music chain so the sweep is the only signal hitting the
-    loopback.
+  - Every music lane at fan-in's existing diagnostic gate. ``jasper-mux`` is
+    the sole owner of that gate: ``TEST_SELECT correction`` excludes AirPlay,
+    Spotify, Bluetooth, and USB while continuing to admit the measurement
+    lane. This avoids a second writer for USB's policy mute.
   - voice_daemon's WakeLoop + outputd content meter via the
     `MEASURE_PAUSE` UDS command (see jasper/voice_daemon.py). The
     WakeLoop drops mic frames during the window — no wake events
@@ -30,17 +31,19 @@ What does NOT get paused:
   - jasper-camilla itself. The sweep MUST go through CamillaDSP so
     the measurement reflects the same DSP path music takes. Any
     correction we generate then acts on the same chain we measured.
-  - jasper-mux (the renderer arbiter). With the renderers stopped,
-    there's nothing for mux to arbitrate — leaving it running is
-    harmless and avoids one more thing to restart.
+  - jasper-mux (the renderer arbiter). It remains alive and reasserts the
+    diagnostic gate while the window is open.
   - jasper-aec-bridge (if enabled). It taps the music chain via
     dsnoop and the sweep going through the chain temporarily drives
     the AEC reference. The bridge re-converges in ~200 ms after the
     sweep ends; disabling+re-enabling the bridge would take longer.
 
 Robustness:
-  - Restoration runs in `finally` — exceptions don't strand the
-    speaker in "everything stopped" state.
+  - Music daemons keep running and fan-in keeps draining their private lanes;
+    only mux's selected-input gate changes. A web crash therefore cannot leave
+    enabled household sources manually stopped.
+  - Gate and voice restoration run in ``finally`` and both have independent
+    crash-recovery leases.
   - The voice-daemon RESUME has a server-side 2-minute auto-clear safety timer
     (see voice_daemon.py). A healthy long-running window renews that lease every
     minute; a coordinator crash (kill -9) stops renewal and still recovers
@@ -54,21 +57,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from ..control import restart_broker
+from ..control.uds import _mux_socket_command
+from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-
-# Renderers paused for the measurement window.
-DEFAULT_RENDERERS_TO_PAUSE: tuple[str, ...] = (
-    "librespot.service",
-    "shairport-sync.service",
-    "bluealsa-aplay.service",
-    "jasper-usbsink.service",
-)
 
 DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
 # Refresh the voice-side 120 s crash-recovery timer while a valid measurement
@@ -76,10 +73,18 @@ DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
 # renewal preserves that legitimate window without weakening crash recovery.
 MEASUREMENT_LEASE_REFRESH_SEC = 60.0
 MEASUREMENT_LEASE_RETRY_SEC = 5.0
+MEASUREMENT_FANIN_LABEL = "correction"
+MEASUREMENT_GATE_OWNER = "correction-measurement"
+MEASUREMENT_GATE_REFRESH_SEC = 20.0
+MEASUREMENT_GATE_RETRY_SEC = 0.1
+# Abort the owning window before mux's 60 s availability lease can expire and
+# reopen music. Each failed acquire is itself bounded at 3 s, leaving >15 s of
+# recovery margin at the default.
+MEASUREMENT_GATE_ABORT_SEC = 40.0
 
 # Mutual-exclusion flag for measurement_window(). Only one window may be open
 # at a time: a second concurrent window would let whichever exits FIRST send
-# MEASURE_RESUME and restart the renderers while the other is still measuring,
+# MEASURE_RESUME and release the mux gate while the other is still measuring,
 # corrupting its capture. All callers run on jasper-web's single background
 # event loop, so a plain check-and-set before the first await is atomic — no
 # asyncio.Lock, which would bind to one loop and break the per-test
@@ -88,34 +93,126 @@ _window_active = False
 
 
 class MeasurementWindowError(RuntimeError):
-    """A precondition failed (active voice session, voice daemon
-    unreachable, etc.). The window did not open and nothing was
-    paused."""
+    """A precondition failed or isolation could not be proven/restored."""
 
 
-async def _systemctl(action: str, service: str) -> None:
-    """Stop/start a renderer for the measurement window via jasper-control's
-    restart broker. Logs but doesn't raise on failure — we'd rather proceed
-    with an imperfectly-paused chain than abort the measurement entirely.
-    Failed pauses surface as audible artifacts in the captured sweep, which
-    is the signal the user needs to investigate.
+class MeasurementAbortTarget:
+    """Redirectable cancel target for the gate-lease abort (held windows).
 
-    WS1 Phase 3: routed through the broker (off-thread, the client is
-    blocking) so the correction wizard needs no privilege of its own. While
-    it is still root the broker client falls back to a direct systemctl if
-    the broker is unreachable."""
-    resp = await asyncio.to_thread(
-        restart_broker.manage_units,
-        service, verb=action, reason="room correction pause",
-        no_block=False, timeout=10.0,
+    The refresh task's default isolation-loss abort cancels the task that
+    ENTERED the window. That is right for the per-sweep flows (the entering
+    task is the playing task), but a flow that holds one window for a whole
+    multi-capture session (the v2 crossover conductor, W6.1) enters it from
+    its long-lived session task while each play runs as its OWN task — the
+    default cancel would not stop the actual in-flight sweep. Such a holder
+    passes one of these to :func:`measurement_window`:
+
+    * the per-play path ``register()``s the current play task while playing
+      and ``clear()``s it after;
+    * on a renew failure the refresh task calls :meth:`abort`, which latches
+      ``failed`` (the holder's next play must check it and refuse honestly)
+      and cancels the registered play task if one is live, else the fallback
+      (the entering task — the pre-existing behavior).
+    """
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task | None = None
+        self.failed = False
+
+    def register(self, task: asyncio.Task) -> None:
+        self._task = task
+
+    def clear(self) -> None:
+        self._task = None
+
+    def abort(self, fallback: asyncio.Task | None) -> None:
+        self.failed = True
+        task = self._task if self._task is not None else fallback
+        if task is not None:
+            task.cancel()
+
+
+def _measurement_gate_held(payload: dict) -> bool:
+    return (
+        payload.get("test_source") == MEASUREMENT_FANIN_LABEL
+        and payload.get("active_source") == MEASUREMENT_FANIN_LABEL
+        and payload.get("test_owner") == MEASUREMENT_GATE_OWNER
     )
-    if not resp.get("ok"):
-        logger.warning(
-            "systemctl %s %s failed: %s",
-            action, service, resp.get("error") or f"rc={resp.get('rc')}",
+
+
+async def _acquire_measurement_gate() -> None:
+    """Ask mux to exclude every music lane and verify the landed state."""
+
+    try:
+        payload = await _mux_socket_command(
+            "TEST_SELECT "
+            f"{MEASUREMENT_FANIN_LABEL} {MEASUREMENT_GATE_OWNER}",
+            timeout=3.0,
         )
-    else:
-        logger.debug("systemctl %s %s ok", action, service)
+    except (OSError, RuntimeError, ValueError, asyncio.TimeoutError) as exc:
+        raise MeasurementWindowError(
+            f"Could not isolate the measurement lane: {exc}"
+        ) from exc
+    if not _measurement_gate_held(payload):
+        raise MeasurementWindowError(
+            "Mux did not confirm the isolated measurement lane."
+        )
+    log_event(logger, "correction.measurement_gate", action="acquire", result="ok")
+
+
+async def _release_measurement_gate(*, allow_other_owner: bool = False) -> None:
+    """Release our mux gate, retrying and requiring owner-aware landed state.
+
+    ``allow_other_owner`` is only for cleanup after an indeterminate acquire.
+    It permits a concurrently held commissioning gate to remain untouched.
+    """
+
+    last_error = "mux did not confirm release"
+    for attempt in range(3):
+        try:
+            payload = await _mux_socket_command(
+                f"TEST_RELEASE {MEASUREMENT_GATE_OWNER}", timeout=3.0,
+            )
+            if (
+                payload.get("test_source") is None
+                and payload.get("test_owner") is None
+            ):
+                log_event(
+                    logger,
+                    "correction.measurement_gate",
+                    action="release",
+                    result="ok",
+                )
+                return
+            last_error = "mux still reports a selected test lane"
+        except (OSError, RuntimeError, ValueError, asyncio.TimeoutError) as exc:
+            last_error = str(exc)
+            # A lost RELEASE response may still have landed. STATUS also lets
+            # indeterminate-acquire cleanup distinguish another feature's
+            # owner without ever releasing that owner's gate.
+            try:
+                status = await _mux_socket_command("STATUS", timeout=3.0)
+            except (OSError, RuntimeError, ValueError, asyncio.TimeoutError):
+                status = None
+            if isinstance(status, dict):
+                owner = status.get("test_owner")
+                if owner is None and status.get("test_source") is None:
+                    return
+                if allow_other_owner and owner != MEASUREMENT_GATE_OWNER:
+                    return
+        if attempt < 2:
+            await asyncio.sleep(MEASUREMENT_GATE_RETRY_SEC)
+    log_event(
+        logger,
+        "correction.measurement_gate",
+        action="release",
+        result="failed",
+        reason=last_error,
+        level=logging.ERROR,
+    )
+    raise MeasurementWindowError(
+        f"Could not release the isolated measurement lane: {last_error}"
+    )
 
 
 async def _voice_uds_command(
@@ -173,24 +270,25 @@ async def _check_no_active_voice_session(
 async def measurement_window(
     *,
     voice_socket_path: str = DEFAULT_VOICE_SOCKET_PATH,
-    renderers_to_pause: tuple[str, ...] = DEFAULT_RENDERERS_TO_PAUSE,
     skip_voice_pause: bool = False,
-    skip_renderer_pause: bool = False,
+    skip_music_isolation: bool = False,
+    abort_target: MeasurementAbortTarget | None = None,
 ) -> AsyncIterator[None]:
-    """Pause renderers + voice loop, yield, restore.
+    """Isolate fan-in's correction lane + pause voice, yield, restore.
 
     Args:
       voice_socket_path: voice_daemon's UDS path. Default matches
         what jasper-voice writes to.
-      renderers_to_pause: systemd unit names to stop for the window.
-        Stopped via `systemctl stop`, restarted via `systemctl start`.
       skip_voice_pause: don't send MEASURE_PAUSE/RESUME. For tests
         running without a voice daemon.
-      skip_renderer_pause: don't touch systemctl. For tests / dev.
+      skip_music_isolation: don't acquire mux's diagnostic gate. Tests only.
+      abort_target: redirectable cancel target for the isolation-loss abort
+        (see :class:`MeasurementAbortTarget`). ``None`` keeps the default —
+        cancel the task that entered the window.
 
     Raises:
-      MeasurementWindowError: a precondition failed before any
-        services were touched. Nothing to restore.
+      MeasurementWindowError: a precondition failed or mux isolation could not
+        be proven/restored.
     """
     # Mutual exclusion (see _window_active). Check-and-set BEFORE the first
     # await so it's atomic on the single background loop. A second concurrent
@@ -204,7 +302,10 @@ async def measurement_window(
         )
     _window_active = True
 
-    paused_services: list[str] = []
+    measurement_gate_cleanup_required = False
+    measurement_gate_acquired = False
+    measurement_gate_refresh_task: asyncio.Task[None] | None = None
+    measurement_gate_lease_error: MeasurementWindowError | None = None
     voice_paused = False
     lease_refresh_task: asyncio.Task[None] | None = None
 
@@ -215,10 +316,58 @@ async def measurement_window(
         if not skip_voice_pause:
             await _check_no_active_voice_session(voice_socket_path)
 
-        if not skip_renderer_pause:
-            for svc in renderers_to_pause:
-                await _systemctl("stop", svc)
-                paused_services.append(svc)
+        if not skip_music_isolation:
+            # Gate first: even a renderer that races its subsequent stop cannot
+            # enter the mix. Mux remains the single writer and reasserts this
+            # diagnostic selection once per tick for the whole window.
+            # Cleanup responsibility is established BEFORE the command: if the
+            # selection lands but its response is lost, finally still releases
+            # this exact owner and can never release commissioning's gate.
+            measurement_gate_cleanup_required = True
+            await _acquire_measurement_gate()
+            measurement_gate_acquired = True
+            measurement_owner_task = asyncio.current_task()
+
+            async def _refresh_measurement_gate_lease() -> None:
+                nonlocal measurement_gate_lease_error
+                delay = MEASUREMENT_GATE_REFRESH_SEC
+                last_confirmed = time.monotonic()
+                while True:
+                    await asyncio.sleep(delay)
+                    try:
+                        await _acquire_measurement_gate()
+                    except MeasurementWindowError as exc:
+                        logger.warning(
+                            "measurement gate lease refresh failed: %s",
+                            exc,
+                        )
+                        if (
+                            time.monotonic() - last_confirmed
+                            >= MEASUREMENT_GATE_ABORT_SEC
+                        ):
+                            measurement_gate_lease_error = MeasurementWindowError(
+                                "Measurement isolation could not be renewed; "
+                                "the sweep was stopped before household music "
+                                "could re-enter the mix. Check System status "
+                                "and try again."
+                            )
+                            if abort_target is not None:
+                                # Held-window holder (v2 session): cancel the
+                                # ACTUAL in-flight play task (or latch for the
+                                # next play) — cancelling the entering task
+                                # would not stop the sweep (W6.1 gate fix).
+                                abort_target.abort(measurement_owner_task)
+                            elif measurement_owner_task is not None:
+                                measurement_owner_task.cancel()
+                            return
+                        delay = MEASUREMENT_LEASE_RETRY_SEC
+                    else:
+                        last_confirmed = time.monotonic()
+                        delay = MEASUREMENT_GATE_REFRESH_SEC
+
+            measurement_gate_refresh_task = asyncio.create_task(
+                _refresh_measurement_gate_lease()
+            )
 
         if not skip_voice_pause:
             try:
@@ -278,22 +427,27 @@ async def measurement_window(
                     e,
                 )
 
-        logger.info(
-            "measurement window OPEN (renderers=%d voice_paused=%s)",
-            len(paused_services), voice_paused,
-        )
+        logger.info("measurement window OPEN (voice_paused=%s)", voice_paused)
         yield
     finally:
         # Release the mutex in an INNER finally — after the restore I/O, but
         # guaranteed even if it raises. Timing matters on the single
         # background loop: clearing the flag BEFORE these awaits would let a
-        # queued second window run during the restore, `systemctl stop` the
-        # renderers this one is mid-`systemctl start` of (the corruption the
-        # mutex exists to prevent). Clearing it AFTER but only on the success
+        # queued second window run during gate/voice restoration (the
+        # corruption the mutex exists to prevent). Clearing it AFTER but only
+        # on the success
         # path would re-strand the flag True forever if a restore step raised
         # (e.g. systemctl missing). The inner finally gives both: serialized
         # against the restore, and never leaked.
         try:
+            if measurement_gate_refresh_task is not None:
+                measurement_gate_refresh_task.cancel()
+                try:
+                    await measurement_gate_refresh_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001
+                    logger.exception("measurement gate refresh task failed")
             if lease_refresh_task is not None:
                 lease_refresh_task.cancel()
                 try:
@@ -302,12 +456,9 @@ async def measurement_window(
                     pass
                 except Exception:  # noqa: BLE001
                     # Renewal is resilience-only. Never let a dead background
-                    # task bypass MEASURE_RESUME or renderer restoration.
+                    # task bypass MEASURE_RESUME or mux-gate restoration.
                     logger.exception("measurement lease refresh task failed")
-            # Restore voice FIRST so wake events can resume the moment the
-            # user is ready to interact, even before the renderers have
-            # fully come back. Then restart the renderers — they spin up
-            # in parallel.
+            # Restore voice first, then release mux's music-isolation gate.
             if voice_paused:
                 try:
                     await _voice_uds_command(
@@ -319,12 +470,20 @@ async def measurement_window(
                         "auto-clear safety timer will recover in ~2 min",
                         e,
                     )
-            # Restart renderers in parallel — `systemctl start` is fast,
-            # the actual service startup is async on the systemd side.
-            if paused_services:
-                await asyncio.gather(*[
-                    _systemctl("start", svc) for svc in paused_services
-                ])
+            gate_release_error: MeasurementWindowError | None = None
+            if measurement_gate_cleanup_required:
+                try:
+                    await _release_measurement_gate(
+                        allow_other_owner=not measurement_gate_acquired,
+                    )
+                except MeasurementWindowError as exc:
+                    # If release truly did not land, the still-held mux gate
+                    # keeps music silent; surface the action required.
+                    gate_release_error = exc
             logger.info("measurement window CLOSED")
+            if measurement_gate_lease_error is not None:
+                raise measurement_gate_lease_error
+            if gate_release_error is not None:
+                raise gate_release_error
         finally:
             _window_active = False

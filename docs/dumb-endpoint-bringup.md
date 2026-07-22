@@ -83,10 +83,10 @@ PI_HOST=192.168.1.162 JASPER_HOSTNAME=jts4.local JASPER_INSTALL_PROFILE=streambo
 
 `onboard.sh --adopt` sets up SSH/laptop state; `deploy-to-pi.sh` runs
 the install, reboots once if the cgroup/zram boot contract needs it,
-and verifies the management surface. A box that is already an active
-bonded follower parks its brain at runtime via the multiroom
-reconciler — there is no separate satellite-only install profile to
-choose.
+and verifies the management surface. A box that is already an active bonded
+follower parks its brain through the multiroom role plan and its sources
+through the canonical source coordinator — there is no separate
+satellite-only install profile to choose.
 
 For manual deploys, the normal deploy path is still valid. On a fresh
 Raspberry Pi Zero 2 W with no persisted profile marker, the installer
@@ -137,9 +137,9 @@ do not need migration.
 In the friendly first-run product flow, a newly imaged Zero 2 W starts as
 the streambox-capable endpoint: quiet, safe, visible at `http://<host>/`,
 and able to run local sources and local content DSP without becoming a
-voice/AI brain. If another speaker bonds it as a follower, the grouping
-reconciler changes the runtime role: local source renderers are parked,
-the paired leader owns content DSP, and the shared UI hides or redirects
+voice/AI brain. If another speaker bonds it as a follower, grouping changes the
+runtime role and waits on the canonical source coordinator to park local
+renderers; the paired leader owns content DSP, and the shared UI hides or redirects
 the controls that no longer apply while paired.
 
 The satellite landing page and `/system/` page follow the same
@@ -477,7 +477,9 @@ Zero-class hardware, and 2.4 GHz Wi-Fi stay reliable inside 512 MB.
 Treat it as a measured role, not as a partial full install. The USB
 source is allowed on JTS4-style hardware for powered-splitter validation;
 the hardware result decides whether it remains part of the Zero-class
-streambox default.
+streambox default. The coupling owner runs so that USB DIRECT can arm, but its
+separate install-profile gate keeps fan-in↔Camilla on `loopback`: installed ring
+assets are not evidence that P4 is safe on Zero-class hardware.
 
 **Open question: active-crossover topology.** Any role that drives
 woofer/tweeter amps needs local driver DSP. That topology should install
@@ -496,8 +498,9 @@ a place the work will otherwise drift or wedge:
   grouping vocabulary stays exactly `{leader, follower}` — do NOT add
   an `endpoint` role to `grouping.env`, `validate_grouping`, or the
   bond fan-out. The normal Zero tier is `streambox`; when it becomes a
-  bonded follower, the grouping reconciler parks local source renderers
-  and the shared UI hides/redirects leader-owned controls. The
+  bonded follower, grouping lands the role and synchronously hands it to the
+  canonical source coordinator, which parks local source renderers; the
+  shared UI hides/redirects leader-owned controls. The
   satellite-only `endpoint` tier is reserved for the deliberately tiny
   follower image, where stop/start intents for never-installed units are
   no-ops. If an endpoint-tier member is accidentally configured as
@@ -516,7 +519,7 @@ a place the work will otherwise drift or wedge:
 - **Pairing is not a package conversion.** A streambox that joins a pair
   should not reinstall itself as `endpoint`; it should accept
   `role=follower` grouping state, park local AirPlay/Spotify/Bluetooth/
-  USB input through the reconciler, and expose pair volume/health rather
+  USB input through the source coordinator, and expose pair volume/health rather
   than advertising independent sender targets in the same room. Unpairing
   removes that runtime state, so the streambox source and DSP surfaces
   return without another install.
@@ -609,11 +612,12 @@ engine the endpoint tier reuses, and it ships household value on its own
 cannot honestly play).
 
 This phase is the dumb-follower increment tracked in
-[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md): the grouping reconciler
-parks the renderer stack (shairport-sync, nqptp, librespot,
-bluealsa-aplay, bt-agent, mux, usbsink) on role=follower — stop, never
-disable; `/sources/` keeps enable/disable as the household's intent and
-restore is start-if-enabled. `jasper-aec-reconcile` (already the single
+[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md): grouping lands
+role=follower, then the canonical source coordinator parks the renderer stack
+(shairport-sync, nqptp, librespot, bluealsa-aplay, bt-agent, mux, usbsink) —
+effective stop, never household-intent loss; `/sources/` keeps the desired
+choice and the same coordinator restores allowed sources after unpair.
+`jasper-aec-reconcile` (already the single
 owner of voice/bridge unit state, with an existing park concept) gains
 one new park condition: bonded-active-follower. Doctor, dashboard, and
 `/state` surfaces become role-aware ("parked (bonded follower)" is
@@ -907,4 +911,6 @@ not the complete product. The durable path (phases above) still needs:
 Until those land, treat the Zero 2 W roles as measured lab/productization
 paths, not as shippable wireless-speaker defaults.
 
-Last verified: 2026-06-14
+Last verified: 2026-07-14 (current streambox source-role handoff, fresh-install
+mux startup, and loopback-versus-USB-DIRECT profile boundary rechecked; the
+historical bring-up narrative below remains preserved.)

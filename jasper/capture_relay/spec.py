@@ -32,6 +32,7 @@ Two boundaries are load-bearing and tested:
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -45,8 +46,32 @@ SCHEMA_VERSION = 1
 # schema: additive spec fields may remain schema-compatible while choreography
 # changes (for example, setup binding or a level stream) require a matching
 # public page before the Pi is allowed to play a tone.
+#
+# Protocol 3 (SPEC W2.3) is the session-spanning capture protocol: one relay
+# session covers a driver's whole repeat SET, choreographed by a `capture_plan`
+# (below). The Pi validates and runs v3 sessions; `build_crossover_sweep_spec`
+# itself stays dormant-by-default (`capture_plan=None`), but the Wave-2 Pi
+# host path (`jasper/web/correction_setup.py`'s driver-sweep relay-capture
+# handler) now DOES pass one unconditionally in code — no env gate. The
+# Wave-2 capture page (capture-page/js/main.js) implements the v3 loop and
+# advertises protocol 3, so once the Worker and page are DEPLOYED, a Pi
+# build carrying the host flip goes live for real; against an older
+# deployed page the v3 spec fails the page-identity check loudly before any
+# tone can play. The coordinator's deploy sequencing (worker → page publish
+# → the Pi host flip last) is the rollout gate — there is no code-level
+# flag. Summed/verification/level_ramp builders are untouched and stay on
+# protocol 1/2.
 CAPTURE_PROTOCOL_VERSION = 1
-SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2)
+SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION = 3
+SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
+
+# Hard ceiling on a capture plan's attempt budget. Each admission attempt's
+# blob rides its own relay key (capture_index = attempt - 1), so the storable
+# blob indexes are EXACTLY 0..MAX_CAPTURE_PLAN_ATTEMPTS-1: the Worker applies
+# this same value to indexes with a strict inequality (index >= cap rejected).
+# Keep in lockstep with `MAX_CAPTURE_PLAN_ATTEMPTS` in relay/src/worker.js
+# (pinned by tests/test_capture_relay_spec.py).
+MAX_CAPTURE_PLAN_ATTEMPTS = 8
 
 # The capture/upload contract mirrors the existing Pi backend so a relay-pulled
 # WAV drops into the same analysis as today's same-origin upload
@@ -68,13 +93,29 @@ DEFAULT_THEME = {"accent": "sage", "font": "figtree"}
 # Server-driven-UI component vocabulary. The page renderer draws exactly these
 # types; anything else is rejected on both sides.
 UI_COMPONENT_TYPES = ("heading", "steps", "level_meter", "button", "note")
-UI_BUTTON_ACTIONS = ("begin_capture", "retry")
+UI_BUTTON_ACTIONS = ("begin_capture", "retry", "stop")
 UI_METER_SOURCES = ("mic",)
 CALIBRATION_MODEL_KEYS = ("key", "label", "aliases")
 
 # Per-kind measurement-validity policy vocabulary (consumed in build steps 6+).
 CLEAN_CAPTURE_POLICIES = ("refuse", "warn")
 CLOCK_DRIFT_MODES = ("ignore", "single_window", "critical")
+
+# `default_setup.calibration.mode` vocabulary — mirrors the phone relay's own
+# setup.calibration.mode values (jasper/web/correction_setup.py's
+# `_relay_calibration_from_setup`): "serial" for a vendor lookup, "upload"
+# for a bring-your-own file. There is no "none" here — a household record is
+# only ever written after a calibration successfully established, so the
+# hint is either present and actionable or absent entirely (`default_setup`
+# stays `None`). This vocabulary describes how the ORIGINAL calibration was
+# established, not what the phone echoes back — the phone's one-tap "Using
+# {mic} — confirm" (gated on `resolvable`, below) replies with its OWN
+# `setup.calibration.mode = "stored"`, a third value `_relay_calibration_from_setup`
+# accepts but that never appears in this outbound hint.
+DEFAULT_SETUP_CALIBRATION_MODES = ("serial", "upload")
+DEFAULT_SETUP_CALIBRATION_KEYS = (
+    "mode", "model", "serial_display", "calibration_id", "resolvable",
+)
 
 # The Pi is the only stimulus player today; the phone never plays anything.
 STIMULUS_PLAYERS = ("pi",)
@@ -236,6 +277,249 @@ class CaptureAcknowledgement:
         )
 
 
+@dataclass(frozen=True)
+class DefaultSetupCalibration:
+    """A household's remembered measurement-mic calibration, offered to the
+    phone page as an OPTIONAL prefill hint — never binding.
+
+    Populated from ``jasper.correction.household_mic`` (Wave-2 household-mic
+    persistence) when a prior session on this speaker established a
+    calibration. The capture page (2026-07 Wave-2 batch,
+    ``capture-page/js/main.js``'s ``renderCalibrationConfirm``) reads this
+    field and shows a one-tap "Using {label} · {serial_display} — one tap to
+    confirm" screen with a "Use a different microphone" fallback to the full
+    picker. Confirm SUBMITS ``setup.calibration = {mode: "stored",
+    calibration_id, model}`` (``model`` is display-only there) for the Pi to
+    resolve via the household-mic record — but ONLY when the hint carries
+    ``resolvable: true``, the marker minted by the ``mode="stored"`` branch
+    of ``_relay_calibration_from_setup`` in
+    ``jasper/web/correction_setup.py`` when the ``calibration_id`` currently
+    resolves on disk. A hint without the marker (an older Pi build predating
+    ``stored`` mode, or a household calibration that has since gone missing
+    from disk) still ships the rest of the hint, so the page renders its
+    plain full picker instead — the pre-Wave-2 behavior, safe in every
+    deploy order; a page-side rejection of a gone-stale stored record (the
+    record changed in the narrow window between spec mint and tap) falls
+    back to the same picker rather than dead-ending. An OLDER capture page
+    (pre-Wave-2) still ignores this field entirely — it parses the spec as
+    an opaque JSON object and never rejects unknown top-level keys (see
+    ``capture-page/js/transport-integrity.js``'s ``verifyAndParseCaptureSpec``,
+    which only checks it is a non-array object) — so shipping this field is
+    safe against any deployed page, old or new.
+
+    ``resolvable`` is a SEPARATE, freshly-checked flag from the fact that
+    this hint exists at all: the Pi re-resolves ``calibration_id`` against
+    the calibration store a second time at spec-build time (see
+    ``jasper.web.correction_setup._default_setup_calibration_for_spec``) and
+    only sets it ``True`` when THAT resolves cleanly, rather than trusting
+    that an earlier resolve (used to build the hint's other fields) is still
+    good. Defaults ``False`` and is omitted from the wire JSON in that
+    case — the existing 4-key shape is unchanged for every caller that
+    predates this field.
+    """
+
+    mode: str
+    model: str = ""
+    serial_display: str = ""
+    calibration_id: str = ""
+    resolvable: bool = False
+
+    def to_dict(self) -> dict[str, str | bool]:
+        data: dict[str, str | bool] = {
+            "mode": self.mode,
+            "model": self.model,
+            "serial_display": self.serial_display,
+            "calibration_id": self.calibration_id,
+        }
+        if self.resolvable:
+            data["resolvable"] = True
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> DefaultSetupCalibration:
+        if not isinstance(data, Mapping):
+            raise CaptureSpecError("default_setup.calibration must be an object")
+        extra = set(data) - set(DEFAULT_SETUP_CALIBRATION_KEYS)
+        if extra:
+            raise CaptureSpecError(
+                f"default_setup.calibration has unknown keys: {sorted(extra)}"
+            )
+        return cls(
+            mode=str(data.get("mode") or ""),
+            model=str(data.get("model") or ""),
+            serial_display=str(data.get("serial_display") or ""),
+            calibration_id=str(data.get("calibration_id") or ""),
+            resolvable=_as_bool(data, "resolvable", default=False),
+        )
+
+
+CAPTURE_PLAN_KEYS = ("schema_version", "capture_target", "max_attempts", "entries")
+CAPTURE_PLAN_ENTRY_KEYS = ("index", "kind_label", "duration_ms", "screen")
+# schema_version 1 is the pre-entries shape (no `entries`, byte-identical to
+# the original v3 contract); 2 is additive — per-capture heterogeneity
+# (crossover-measurement-productization-design.md §5.7). A plan's
+# schema_version and its `entries` presence are kept in strict lockstep by
+# validation (`_validate_capture_plan_entries`) so a reader never has to
+# re-derive one from the other.
+CAPTURE_PLAN_SCHEMA_VERSIONS = (1, 2)
+CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION = 2
+# Per-entry presentation copy is OPAQUE like `presentation_variant` — the
+# schema bounds its size and value types, never its keys/vocabulary — but a
+# size ceiling keeps a spec from smuggling an oversized payload through the
+# relay's opaque-spec contract.
+MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES = 4096
+
+
+@dataclass(frozen=True)
+class CapturePlanEntry:
+    """One capture's identity/timing/copy inside a heterogeneous v3 plan.
+
+    Wave 3 (crossover-measurement-productization-design.md §5.7) extends the
+    session-spanning ``CapturePlan`` from "N repeats of ONE spec" to N
+    captures that may each be a DIFFERENT kind of measurement (e.g. a
+    conductor-model CHECK -> MEASURE -> VERIFY sequence) inside the SAME
+    relay session.
+
+    ``index`` is 0-based (``0..capture_target-1``) — deliberately distinct
+    from the wire protocol's 1-based ``begin_capture.index`` (SPEC W2.3);
+    :meth:`CapturePlan.entry_for_index` does that 1-based -> 0-based lookup
+    so callers never repeat the arithmetic.
+
+    - ``kind_label`` — a short slug naming what this capture measures (e.g.
+      ``"check"`` / ``"measure"`` / ``"verify"``). Display/telemetry only,
+      like ``CaptureStimulus.label`` — never trusted for logic.
+    - ``duration_ms`` — THIS capture's DECLARED acoustic length (the design
+      doc's CHECK ~25s / MEASURE ~20s / VERIFY ~15s can differ per index).
+      Presentation + analysis data — phone-side progress/countdown copy and
+      the analysis side's per-entry locator windows (design §5.7) — NEVER a
+      hard deadline: the session runner's recording+upload backstop stays
+      its own session-level ``timeout_s`` for every plan, entries or not.
+    - ``screen`` — optional phone-side prompt copy for this capture (a
+      string-to-string mapping such as ``{"title": ..., "body": ...}``).
+      Opaque like ``presentation_variant``: the schema bounds size and value
+      types, never the keys — the capture page decides what to render.
+    """
+
+    index: int
+    kind_label: str
+    duration_ms: int
+    screen: Mapping[str, str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "index": self.index,
+            "kind_label": self.kind_label,
+            "duration_ms": self.duration_ms,
+        }
+        if self.screen is not None:
+            data["screen"] = dict(self.screen)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> CapturePlanEntry:
+        if not isinstance(data, Mapping):
+            raise CaptureSpecError("capture_plan.entries[] must be an object")
+        extra = set(data) - set(CAPTURE_PLAN_ENTRY_KEYS)
+        if extra:
+            raise CaptureSpecError(
+                f"capture_plan.entries[] has unknown keys: {sorted(extra)}"
+            )
+        screen_raw = data.get("screen")
+        if screen_raw is not None and not isinstance(screen_raw, Mapping):
+            raise CaptureSpecError(
+                "capture_plan.entries[].screen must be an object or null"
+            )
+        return cls(
+            index=_as_int(data, "index"),
+            kind_label=str(data.get("kind_label") or ""),
+            duration_ms=_as_int(data, "duration_ms"),
+            screen=(
+                {str(k): str(v) for k, v in screen_raw.items()}
+                if isinstance(screen_raw, Mapping)
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CapturePlan:
+    """Session-spanning capture plan (capture protocol v3, SPEC W2.3).
+
+    One relay session covers a driver's whole repeat SET instead of one
+    capture per session: the phone requests each capture with an authenticated
+    ``begin_capture {index, attempt}`` event, the Pi admits it (budget stays
+    Pi-owned — ``repeat_admission`` — never phone-decided), and each admitted
+    attempt's blob rides its own relay key (``capture_index = attempt - 1``).
+
+    - ``capture_target`` — accepted captures required to finish the set
+      (e.g. 3 driver repeats).
+    - ``max_attempts`` — total admission attempts the set may consume,
+      including rejected/retried ones (e.g. 4). Bounded by
+      ``MAX_CAPTURE_PLAN_ATTEMPTS`` so a plan can never authorize a blob index
+      past the Worker's key ceiling.
+    - ``entries`` (schema_version 2, additive) — one ``CapturePlanEntry`` per
+      capture index for a HETEROGENEOUS plan (§5.7). ``None``
+      (schema_version 1) is the pre-entries shape: "N repeats of ONE spec",
+      byte-identical to the original v3 contract.
+
+    Carried as DATA in the spec so a single spec drives both sides."""
+
+    capture_target: int
+    max_attempts: int
+    schema_version: int = 1
+    entries: tuple[CapturePlanEntry, ...] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "schema_version": self.schema_version,
+            "capture_target": self.capture_target,
+            "max_attempts": self.max_attempts,
+        }
+        if self.entries is not None:
+            data["entries"] = [entry.to_dict() for entry in self.entries]
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> CapturePlan:
+        if not isinstance(data, Mapping):
+            raise CaptureSpecError("capture_plan must be an object")
+        extra = set(data) - set(CAPTURE_PLAN_KEYS)
+        if extra:
+            raise CaptureSpecError(
+                f"capture_plan has unknown keys: {sorted(extra)}"
+            )
+        entries_raw = data.get("entries")
+        entries: tuple[CapturePlanEntry, ...] | None = None
+        if entries_raw is not None:
+            if not isinstance(entries_raw, Sequence) or isinstance(
+                entries_raw, (str, bytes)
+            ):
+                raise CaptureSpecError("capture_plan.entries must be a list")
+            entries = tuple(
+                CapturePlanEntry.from_dict(item) for item in entries_raw
+            )
+        return cls(
+            capture_target=_as_int(data, "capture_target"),
+            max_attempts=_as_int(data, "max_attempts"),
+            schema_version=_as_int(data, "schema_version", default=1),
+            entries=entries,
+        )
+
+    def entry_for_index(self, index: int) -> CapturePlanEntry | None:
+        """The entry for a 1-based ``begin_capture.index`` (SPEC W2.3).
+
+        ``entries`` is keyed 0-based; the wire protocol is 1-based. Returns
+        ``None`` for a plan with no entry table (schema_version 1) or —
+        never reachable once ``validate()`` has run on the owning spec — an
+        index with no match."""
+        if self.entries is None:
+            return None
+        for entry in self.entries:
+            if entry.index == index - 1:
+                return entry
+        return None
+
+
 # --- Server-driven-UI builders (data, never markup) ---------------------------
 
 
@@ -295,19 +579,35 @@ class CaptureSpec:
     # Whether the phone page should preflight its guided setup (notably vendor
     # mic serial lookup) through the Pi before advancing to the Start step.
     setup_validation: bool = False
-    # Opaque session binding shared by the guided level stage and its later
-    # capture-only room links. The relay does not interpret it; the phone and Pi
-    # use it to reject stale setup identities.
+    # Opaque setup binding used by flows that retain browser-side setup identity
+    # (notably Active crossover). Modern Room follow-up links instead carry
+    # Pi-owned placement fields and authenticate the realized level-check mic.
     setup_binding_id: str = ""
     # Whether the guided setup asks for the room position count. Crossover level
     # matching uses the same setup flow without that room-only question.
     setup_collect_positions: bool = False
+    # Optional Pi-owned placement progress. The public capture page already
+    # consumes these fields when a capture-only Room link has no persisted
+    # browser setup; carrying them in the signed spec keeps position authority
+    # on the speaker.
+    position: int | None = None
+    total_positions: int | None = None
+    # Optional kind-owned presentation variant. It may change capture-page copy
+    # only; the owning flow still controls sequencing, timeouts, and admission.
+    # The shared schema validates its shape without enumerating per-kind values.
+    presentation_variant: str = ""
     acknowledgement: CaptureAcknowledgement | None = None
     # Optional per-run nonce (additive, empty for kinds that don't use it). The
     # level_ramp flow mints one per ramp run; the phone echoes it in every
     # level_batch so the Pi's feed can distinguish THIS run's events from a
     # previous run's persisted relay slot (see level_match.RelayLevelFeed).
     run_token: str = ""
+    # Optional household-mic prefill hint (Wave-2 persistence). See
+    # `DefaultSetupCalibration` — never binding, ignored by the current page.
+    default_setup_calibration: DefaultSetupCalibration | None = None
+    # Session-spanning capture plan (protocol v3, SPEC W2.3). `None` for every
+    # shipped builder today — presence requires (and is required by) protocol 3.
+    capture_plan: CapturePlan | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
@@ -347,10 +647,37 @@ class CaptureSpec:
             "setup_validation": self.setup_validation,
             "setup_binding_id": self.setup_binding_id,
             "setup_collect_positions": self.setup_collect_positions,
+            **(
+                {
+                    "position": self.position,
+                    "total_positions": self.total_positions,
+                }
+                if self.position is not None
+                else {}
+            ),
+            **(
+                {"presentation_variant": self.presentation_variant}
+                if self.presentation_variant
+                else {}
+            ),
             "acknowledgement": (
                 self.acknowledgement.to_dict() if self.acknowledgement else None
             ),
             "run_token": self.run_token,
+            **(
+                {
+                    "default_setup": {
+                        "calibration": self.default_setup_calibration.to_dict()
+                    }
+                }
+                if self.default_setup_calibration is not None
+                else {}
+            ),
+            **(
+                {"capture_plan": self.capture_plan.to_dict()}
+                if self.capture_plan is not None
+                else {}
+            ),
             "output": {"format": self.output_format},
             "max_upload_bytes": self.max_upload_bytes,
         }
@@ -384,6 +711,24 @@ class CaptureSpec:
             acknowledgement_raw, Mapping
         ):
             raise CaptureSpecError("acknowledgement must be an object or null")
+        default_setup_raw = data.get("default_setup")
+        default_setup_calibration: DefaultSetupCalibration | None = None
+        if default_setup_raw is not None:
+            if not isinstance(default_setup_raw, Mapping):
+                raise CaptureSpecError("default_setup must be an object")
+            extra_default_setup = set(default_setup_raw) - {"calibration"}
+            if extra_default_setup:
+                raise CaptureSpecError(
+                    f"default_setup has unknown keys: {sorted(extra_default_setup)}"
+                )
+            calibration_raw = default_setup_raw.get("calibration")
+            if calibration_raw is not None:
+                default_setup_calibration = DefaultSetupCalibration.from_dict(
+                    calibration_raw
+                )
+        capture_plan_raw = data.get("capture_plan")
+        if capture_plan_raw is not None and not isinstance(capture_plan_raw, Mapping):
+            raise CaptureSpecError("capture_plan must be an object or null")
         spec = cls(
             kind=str(data.get("kind", "")),
             duration_ms=_as_int(data, "duration_ms"),
@@ -419,12 +764,29 @@ class CaptureSpec:
             setup_collect_positions=_as_bool(
                 data, "setup_collect_positions", default=False
             ),
+            position=(
+                _as_int(data, "position")
+                if data.get("position") is not None
+                else None
+            ),
+            total_positions=(
+                _as_int(data, "total_positions")
+                if data.get("total_positions") is not None
+                else None
+            ),
+            presentation_variant=data.get("presentation_variant", ""),
             acknowledgement=(
                 CaptureAcknowledgement.from_dict(acknowledgement_raw)
                 if isinstance(acknowledgement_raw, Mapping)
                 else None
             ),
             run_token=str(data.get("run_token") or ""),
+            default_setup_calibration=default_setup_calibration,
+            capture_plan=(
+                CapturePlan.from_dict(capture_plan_raw)
+                if isinstance(capture_plan_raw, Mapping)
+                else None
+            ),
             capture_protocol_version=_as_int(
                 data,
                 "capture_protocol_version",
@@ -493,6 +855,10 @@ class CaptureSpec:
             self.acknowledgement,
             capture_protocol_version=self.capture_protocol_version,
         )
+        _validate_capture_plan(
+            self.capture_plan,
+            capture_protocol_version=self.capture_protocol_version,
+        )
         if self.setup_binding_id and not re.fullmatch(
             r"[A-Za-z0-9_-]{12,160}", self.setup_binding_id
         ):
@@ -502,6 +868,37 @@ class CaptureSpec:
         if self.setup_collect_positions and not self.setup_validation:
             raise CaptureSpecError(
                 "setup_collect_positions requires setup_validation=true"
+            )
+        if (self.position is None) != (self.total_positions is None):
+            raise CaptureSpecError(
+                "position and total_positions must be supplied together"
+            )
+        if self.position is not None:
+            if (
+                not isinstance(self.position, int)
+                or isinstance(self.position, bool)
+                or not isinstance(self.total_positions, int)
+                or isinstance(self.total_positions, bool)
+            ):
+                raise CaptureSpecError(
+                    "position and total_positions must be integers"
+                )
+            if (
+                self.position <= 0
+                or self.total_positions <= 0
+                or self.position > self.total_positions
+            ):
+                raise CaptureSpecError(
+                    "position must be within 1..total_positions"
+                )
+        if not isinstance(self.presentation_variant, str) or (
+            self.presentation_variant
+            and not re.fullmatch(
+                r"[a-z][a-z0-9_-]{0,63}", self.presentation_variant
+            )
+        ):
+            raise CaptureSpecError(
+                "presentation_variant must be an empty or 1..64-character slug"
             )
         if (
             not isinstance(self.max_upload_bytes, int)
@@ -520,6 +917,7 @@ class CaptureSpec:
             )
         _validate_validity(self.validity)
         _validate_calibration_models(self.calibration_models)
+        _validate_default_setup_calibration(self.default_setup_calibration)
         _validate_theme(self.theme)
         _validate_screen(self.screen)
         if self.acknowledgement is not None and not any(
@@ -594,6 +992,23 @@ def _validate_calibration_models(models: Sequence[Mapping[str, Any]]) -> None:
             raise CaptureSpecError(
                 f"calibration_models[{index}].aliases must be a list of strings"
             )
+
+
+def _validate_default_setup_calibration(
+    default_setup_calibration: DefaultSetupCalibration | None,
+) -> None:
+    if default_setup_calibration is None:
+        return
+    if default_setup_calibration.mode not in DEFAULT_SETUP_CALIBRATION_MODES:
+        raise CaptureSpecError(
+            "default_setup.calibration.mode must be one of "
+            f"{DEFAULT_SETUP_CALIBRATION_MODES}, "
+            f"got {default_setup_calibration.mode!r}"
+        )
+    if not default_setup_calibration.calibration_id:
+        raise CaptureSpecError(
+            "default_setup.calibration.calibration_id is required"
+        )
 
 
 def _validate_theme(theme: Mapping[str, str]) -> None:
@@ -684,6 +1099,131 @@ def _validate_acknowledgement(
         raise CaptureSpecError("acknowledgement.label must be 1..360 characters")
 
 
+def _validate_capture_plan(
+    capture_plan: CapturePlan | None,
+    *,
+    capture_protocol_version: int,
+) -> None:
+    if capture_plan is None:
+        if capture_protocol_version >= SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION:
+            raise CaptureSpecError(
+                "capture protocol 3 requires a capture_plan"
+            )
+        return
+    if capture_protocol_version < SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION:
+        raise CaptureSpecError("capture_plan requires capture protocol 3")
+    if capture_plan.schema_version not in CAPTURE_PLAN_SCHEMA_VERSIONS:
+        raise CaptureSpecError(
+            "capture_plan.schema_version must be one of "
+            f"{CAPTURE_PLAN_SCHEMA_VERSIONS}"
+        )
+    for name, value in (
+        ("capture_target", capture_plan.capture_target),
+        ("max_attempts", capture_plan.max_attempts),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise CaptureSpecError(f"capture_plan.{name} must be an integer")
+    if not 1 <= capture_plan.capture_target <= capture_plan.max_attempts:
+        raise CaptureSpecError(
+            "capture_plan.capture_target must be in 1..max_attempts"
+        )
+    if capture_plan.max_attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
+        raise CaptureSpecError(
+            f"capture_plan.max_attempts must be <= {MAX_CAPTURE_PLAN_ATTEMPTS}"
+        )
+    _validate_capture_plan_entries(capture_plan)
+
+
+def _validate_capture_plan_entries(capture_plan: CapturePlan) -> None:
+    """Reciprocal contract: schema_version 2 <=> entries present.
+
+    v1 payloads without entries stay exactly as strict as before this field
+    existed (``entries is None`` and ``schema_version == 1`` is the only
+    legal pre-Wave-3 shape). A plan that DOES carry entries must cover every
+    index ``0..capture_target-1`` exactly once — contiguous, unique — so the
+    session runner can always resolve "the entry for capture N" with no gaps.
+    """
+    entries = capture_plan.entries
+    if entries is None:
+        if capture_plan.schema_version >= CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION:
+            raise CaptureSpecError(
+                f"capture_plan.schema_version {CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION} "
+                "requires entries"
+            )
+        return
+    if capture_plan.schema_version < CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION:
+        raise CaptureSpecError(
+            "capture_plan.entries requires capture_plan.schema_version >= "
+            f"{CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION}"
+        )
+    if not isinstance(entries, tuple):
+        raise CaptureSpecError("capture_plan.entries must be a tuple")
+    seen_indexes: set[int] = set()
+    for position, entry in enumerate(entries):
+        if not isinstance(entry, CapturePlanEntry):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}] must be a CapturePlanEntry"
+            )
+        if isinstance(entry.index, bool) or not isinstance(entry.index, int):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].index must be an integer"
+            )
+        if entry.index in seen_indexes:
+            raise CaptureSpecError(
+                f"duplicate capture_plan.entries index: {entry.index}"
+            )
+        seen_indexes.add(entry.index)
+        if isinstance(entry.duration_ms, bool) or not isinstance(
+            entry.duration_ms, int
+        ):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].duration_ms must be an integer"
+            )
+        if entry.duration_ms <= 0:
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].duration_ms must be positive"
+            )
+        if not isinstance(entry.kind_label, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_]{0,31}", entry.kind_label
+        ):
+            raise CaptureSpecError(
+                f"capture_plan.entries[{position}].kind_label must be a short "
+                "lowercase slug"
+            )
+        _validate_capture_plan_entry_screen(entry.screen, position)
+    if seen_indexes != set(range(capture_plan.capture_target)):
+        raise CaptureSpecError(
+            "capture_plan.entries must cover indexes 0..capture_target-1 "
+            "exactly, contiguous and unique"
+        )
+
+
+def _validate_capture_plan_entry_screen(
+    screen: Mapping[str, str] | None, position: int
+) -> None:
+    if screen is None:
+        return
+    if not isinstance(screen, Mapping):
+        raise CaptureSpecError(
+            f"capture_plan.entries[{position}].screen must be an object or null"
+        )
+    if not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in screen.items()
+    ):
+        raise CaptureSpecError(
+            f"capture_plan.entries[{position}].screen must map strings to strings"
+        )
+    if (
+        len(json.dumps(screen, separators=(",", ":")))
+        > MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES
+    ):
+        raise CaptureSpecError(
+            f"capture_plan.entries[{position}].screen exceeds "
+            f"{MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES} bytes"
+        )
+
+
 def _validate_return_url(return_url: str) -> None:
     if not isinstance(return_url, str):
         raise CaptureSpecError("return_url must be a string")
@@ -741,6 +1281,7 @@ def build_room_sweep_spec(
     calibration_models: Sequence[Mapping[str, Any]] | None = None,
     guided_setup: bool = True,
     setup_binding_id: str = "",
+    presentation_variant: str = "",
 ) -> CaptureSpec:
     """Build the `kind="room_sweep"` capture spec (plan §6, build step 1).
 
@@ -763,6 +1304,10 @@ def build_room_sweep_spec(
         raise CaptureSpecError("stimulus_duration_ms must be positive")
     if pre_roll_ms < 0 or post_roll_ms < 0:
         raise CaptureSpecError("pre_roll_ms / post_roll_ms must be >= 0")
+    if presentation_variant not in {"", "trust_repeat"}:
+        raise CaptureSpecError(
+            "room_sweep presentation_variant must be empty or trust_repeat"
+        )
     duration_ms = max(
         pre_roll_ms + stimulus_duration_ms + post_roll_ms,
         int(hard_timeout_ms),
@@ -812,9 +1357,12 @@ def build_room_sweep_spec(
         # Mic choice + calibration are session setup, not per-position work.
         # The first level-check link validates and freezes them on the Pi; later
         # position links are intentionally capture-only and report the realized
-        # device for the Pi's identity check after upload.
+        # device for the Pi's identity check before playback and after upload.
         setup_validation=guided_setup,
         setup_binding_id=setup_binding_id,
+        position=position,
+        total_positions=total_positions,
+        presentation_variant=presentation_variant,
     )
     return spec.validate()
 
@@ -953,6 +1501,8 @@ def build_crossover_sweep_spec(
     font: str = "figtree",
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ambient_duration_ms: int = 0,
+    capture_plan: CapturePlan | None = None,
+    default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work. Same acoustic shape as `room_sweep` (a clean log sweep,
@@ -978,6 +1528,37 @@ def build_crossover_sweep_spec(
     the Pi's ``sweep_complete`` relay event and the deadline is only the
     backstop — never the working margin. Pinned by
     ``tests/test_capture_relay_kinds.py``.
+
+    ``capture_plan`` opts the spec into the session-spanning capture protocol
+    (v3, SPEC W2.3): one relay session for the driver's whole repeat set, the
+    phone requesting each capture with an authenticated ``begin_capture``
+    event. **Default (``None``) is byte-identical to the pre-plan builder** —
+    ``jasper/web/correction_setup.py``'s driver-sweep relay-capture handler
+    is the one production caller that passes it (unconditionally, for every
+    driver capture; summed/verification callers never do). The Wave-2
+    capture page implements the matching v3 loop; the coordinator's deploy
+    sequencing (worker → page publish → the Pi host flip last), not a code
+    flag, gates the rollout — see the module docstring. A plan requires an
+    ``acknowledgement_binding`` (placement gates run per capture, exactly as
+    today).
+
+    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
+    (Wave-2 persistence, ``jasper.correction.household_mic`` — same field
+    ``build_level_ramp_spec`` already carries). W6.12: unlike ``level_ramp``,
+    a ``crossover_sweep`` capture (legacy per-driver OR the v2 capture-plan
+    session) has NO calibration-picker screen of its own — the legacy flow's
+    calibration comes from the ``level_ramp`` level-match page the household
+    visits FIRST in the same phone tab (its choice survives in the page's
+    module state across the in-tab hash navigation into the driver sweeps
+    that follow); v2 has no such preceding page, so its capture always
+    carried ``setup.calibration.mode == "none"`` and every v2 capture logged
+    ``crossover_v2_uncalibrated_capture`` even when the household had a
+    resolvable stored mic. The capture page applies this hint SILENTLY (no
+    extra tap — a v2 session is designed around a minimal, fixed tap count)
+    when nothing has already been chosen for this page load. Omitted by
+    default so every existing caller (including the two legacy handlers in
+    ``jasper/web/correction_setup.py``, which resolve calibration through the
+    preceding level-match page instead) stays byte-identical.
     """
     if stimulus_duration_ms is None:
         # Lazy import: the kernel module pulls numpy/scipy, and the socket-
@@ -1052,6 +1633,10 @@ def build_crossover_sweep_spec(
         if acknowledgement_binding
         else None
     )
+    if capture_plan is not None and acknowledgement is None:
+        raise CaptureSpecError(
+            "a crossover capture_plan requires an acknowledgement_binding"
+        )
     return CaptureSpec(
         kind="crossover_sweep",
         duration_ms=duration_ms,
@@ -1084,11 +1669,20 @@ def build_crossover_sweep_spec(
             ),
             ui_level_meter("mic"),
             ui_button(button_label, action="begin_capture"),
+            ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the recording."),
         ),
         max_upload_bytes=max_upload_bytes,
         acknowledgement=acknowledgement,
-        capture_protocol_version=2 if acknowledgement else CAPTURE_PROTOCOL_VERSION,
+        capture_plan=capture_plan,
+        default_setup_calibration=default_setup_calibration,
+        capture_protocol_version=(
+            SESSION_SPANNING_CAPTURE_PROTOCOL_VERSION
+            if capture_plan is not None
+            else 2
+            if acknowledgement
+            else CAPTURE_PROTOCOL_VERSION
+        ),
     ).validate()
 
 
@@ -1107,6 +1701,7 @@ def build_level_ramp_spec(
     calibration_models: Sequence[Mapping[str, Any]] | None = None,
     setup_binding_id: str = "",
     setup_collect_positions: bool = False,
+    default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="level_ramp"` — the relay-closed level-match ramp (§3.1, P2).
 
@@ -1137,6 +1732,13 @@ def build_level_ramp_spec(
     listening-position step. ``placement_instruction`` optionally supplies the
     exact Pi-owned geometry copy; the page renders that same instruction after
     microphone setup instead of inventing a second placement description.
+
+    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
+    (Wave-2 persistence, ``jasper.correction.household_mic``) — see
+    ``DefaultSetupCalibration``. Omitted by default so existing callers are
+    unaffected; the room and crossover level-match handlers in
+    ``jasper/web/correction_setup.py`` pass one when a household record
+    exists.
     """
     duration_ms = max(pre_roll_ms + post_roll_ms + 1000, int(hard_timeout_ms))
     if calibration_models is None:
@@ -1173,14 +1775,100 @@ def build_level_ramp_spec(
             ),
             ui_level_meter("mic"),
             ui_button("Start level check", action="begin_capture"),
+            ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the level match."),
         ),
         calibration_models=tuple(calibration_models),
         setup_validation=True,
         setup_binding_id=(setup_binding_id or (f"level-{run_token}" if run_token else "")),
         setup_collect_positions=setup_collect_positions,
+        default_setup_calibration=default_setup_calibration,
         max_upload_bytes=max_upload_bytes,
         capture_protocol_version=2,
+    ).validate()
+
+
+def build_bass_nearfield_spec(
+    *,
+    driver_label: str = "woofer",
+    stimulus_duration_ms: int = 12000,
+    pre_roll_ms: int = 800,
+    post_roll_ms: int = 700,
+    hard_timeout_ms: int = 30000,
+    accent: str = "sage",
+    font: str = "figtree",
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+) -> CaptureSpec:
+    """`kind="bass_nearfield"` — near-field low-frequency response for the
+    bass-extension bench runner.
+
+    Same measurement-clean acoustic shape as `crossover_sweep` (48 kHz, mono,
+    EC/AGC/NS off, WAV upload, magnitude FR so drift-insensitive with alignment
+    as a hard gate), scoped to a single near-field woofer capture.
+
+    The capture GEOMETRY is **server-derived**, never operator/browser-supplied:
+    it is fixed to ``near_field`` here — there is deliberately no geometry
+    parameter a request could set — exactly like the crossover builder's
+    near-field handling (capture geometry is speaker policy, see
+    ``jasper.active_speaker.capture_geometry``). The near-field placement copy is
+    single-sourced from ``driver_placement_instruction`` so it never drifts from
+    the crossover / level-match wording.
+
+    ``duration_ms`` is the phone's HARD recording deadline; like
+    ``crossover_sweep`` the acoustic window is **floored by ``hard_timeout_ms``**
+    so the normal stop stays the Pi's ``sweep_complete`` relay event and the
+    deadline is only the backstop. Pinned by
+    ``tests/test_capture_relay_bass_nearfield.py``.
+    """
+    if stimulus_duration_ms <= 0:
+        raise CaptureSpecError("stimulus_duration_ms must be positive")
+    if pre_roll_ms < 0 or post_roll_ms < 0:
+        raise CaptureSpecError("pre_roll_ms / post_roll_ms must be >= 0")
+    duration_ms = max(
+        pre_roll_ms + stimulus_duration_ms + post_roll_ms,
+        int(hard_timeout_ms),
+    )
+    # Capture geometry is speaker policy, never browser input. A bass near-field
+    # capture is always near_field; the placement copy is the server-owned
+    # near-field instruction for this driver (single-sourced, not restated here).
+    from jasper.active_speaker.capture_geometry import driver_placement_instruction
+
+    seconds = round(stimulus_duration_ms / 1000)
+    placement_instruction = driver_placement_instruction(driver_label)
+    return CaptureSpec(
+        kind="bass_nearfield",
+        duration_ms=duration_ms,
+        pre_roll_ms=pre_roll_ms,
+        post_roll_ms=post_roll_ms,
+        constraints=CaptureConstraints(),  # all false → measurement-clean
+        stimulus=CaptureStimulus(
+            played_by="pi", label=f"bass near-field sweep — {driver_label}"
+        ),
+        validity=CaptureValidity(
+            clean_capture="refuse",
+            allow_capability_fallback=True,
+            require_alignment=True,
+            clock_drift="ignore",
+        ),
+        theme=build_theme(accent=accent, font=font),
+        screen=(
+            ui_heading(f"Bass near-field — {driver_label}"),
+            ui_steps(
+                [
+                    placement_instruction,
+                    f"Tap Start, then stay quiet for about {seconds} seconds",
+                    "Keep the phone still until the sweep finishes",
+                ]
+            ),
+            ui_level_meter("mic"),
+            ui_button(
+                f"I’ve positioned the mic — measure {driver_label}",
+                action="begin_capture",
+            ),
+            ui_button("Stop", action="stop"),
+            ui_note("Keep the screen on — leaving this page stops the recording."),
+        ),
+        max_upload_bytes=max_upload_bytes,
     ).validate()
 
 
@@ -1193,6 +1881,7 @@ SHIPPED_KINDS = (
     "sync_marker",
     "crossover_sweep",
     "level_ramp",
+    "bass_nearfield",
 )
 
 BUILDERS = {
@@ -1201,4 +1890,5 @@ BUILDERS = {
     "sync_marker": build_sync_marker_spec,
     "crossover_sweep": build_crossover_sweep_spec,
     "level_ramp": build_level_ramp_spec,
+    "bass_nearfield": build_bass_nearfield_spec,
 }

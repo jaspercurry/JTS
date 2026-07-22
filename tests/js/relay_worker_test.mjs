@@ -601,6 +601,212 @@ async function testTtlExpiry() {
   ok("TTL expiry self-cleans");
 }
 
+async function testEventDoesNotClobberHostEvent() {
+  // THE RACE, pinned. Reproduces the 2026-07-15 JTS3 false phone timeout:
+  // request handling reads `meta` at request start; pre-fix, postEvent and
+  // postHostEvent each wrote the WHOLE meta object back, so a phone POST
+  // /event whose request-start read predates the Pi's terminal POST
+  // /host-event erases that terminal when the phone's (stale) write lands
+  // afterward. Structural fix: event/host_event now live in their own keys,
+  // so postEvent never touches host_event at all, regardless of timing.
+  //
+  // Deterministic construction (no real concurrency needed): wrap the store
+  // so the phone's request-start `getMeta` call captures its snapshot NOW
+  // (before the Pi writes), but does not RETURN that snapshot until the test
+  // releases a gate. While the gate is held, the Pi's POST /host-event runs
+  // to completion against the real store. Releasing the gate then lets the
+  // phone's POST /event proceed using a meta snapshot that predates the
+  // Pi's write — exactly the race window.
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+
+  let armPhoneRead = false;
+  let releaseGate;
+  const gate = new Promise((resolve) => {
+    releaseGate = resolve;
+  });
+  const racingStore = {
+    ...store,
+    async getMeta(id) {
+      if (armPhoneRead && id === reg.session_id) {
+        armPhoneRead = false;
+        const snapshot = await store.getMeta(id); // read BEFORE the Pi's write
+        await gate; // held until the test releases it, below
+        return snapshot; // stale: predates the Pi's host-event write
+      }
+      return store.getMeta(id);
+    },
+  };
+
+  armPhoneRead = true;
+  const phonePromise = handle(
+    req("POST", `/sessions/${reg.session_id}/event`, {
+      token: reg.upload_token,
+      body: { armed: true },
+    }),
+    racingStore,
+    env,
+  );
+
+  // The Pi's terminal host-event completes fully while the phone's request
+  // is blocked holding its stale snapshot.
+  const hostRes = await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, {
+      token: reg.pull_token,
+      body: { phase: "sweep_complete", terminal: true },
+    }),
+    store,
+    env,
+  );
+  assert.equal(hostRes.status, 200, "Pi host-event lands first");
+
+  releaseGate();
+  const phoneRes = await phonePromise;
+  assert.equal(phoneRes.status, 200, "phone event also lands");
+
+  const res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  const j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "sweep_complete", terminal: true },
+    "Pi's terminal host_event survives the interleaved phone event post",
+  );
+  assert.deepEqual(j.event, { armed: true }, "phone event still lands in its own key");
+  ok("race: interleaved phone event does not clobber Pi host_event");
+}
+
+async function testLegacyMetaFallback() {
+  // Read-fallback for the <=900s compat window: a session created by
+  // pre-deploy code has event/host_event embedded directly in meta (no split
+  // key was ever written for it). Both pull-side /status and phone-side
+  // /phone-status must still surface those values.
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+  const meta = await store.getMeta(reg.session_id);
+  meta.event = { armed: true, legacy: true };
+  meta.host_event = { phase: "sweep_complete", legacy: true };
+  await store.putMeta(reg.session_id, meta);
+
+  let res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  let j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "sweep_complete", legacy: true },
+    "status falls back to legacy meta.host_event when no split key exists",
+  );
+  assert.deepEqual(
+    j.event,
+    { armed: true, legacy: true },
+    "status falls back to legacy meta.event when no split key exists",
+  );
+
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/phone-status`, {
+      token: reg.upload_token,
+      origin: ORIGIN,
+    }),
+    store,
+    env,
+  );
+  j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "sweep_complete", legacy: true },
+    "phone-status falls back to legacy meta.host_event",
+  );
+
+  // A post-deploy write creates the split key, which then wins over the
+  // stale legacy meta field for good — no version flag needed, TTL retires
+  // the legacy shape.
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, {
+      token: reg.pull_token,
+      body: { phase: "new_terminal" },
+    }),
+    store,
+    env,
+  );
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  j = await res.json();
+  assert.deepEqual(
+    j.host_event,
+    { phase: "new_terminal" },
+    "split key takes precedence once any post-deploy write lands",
+  );
+  ok("legacy meta fallback for event/host_event");
+}
+
+async function testExpiryPurgesSplitKeys() {
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration({ ttl_s: 60 });
+  await register(store, env, reg);
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/event`, { token: reg.upload_token, body: { armed: true } }),
+    store,
+    env,
+  );
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, { token: reg.pull_token, body: { phase: "x" } }),
+    store,
+    env,
+  );
+  assert.ok(store._rawEvent.has(reg.session_id), "event key exists before expiry");
+  assert.ok(store._rawHostEvent.has(reg.session_id), "hostevent key exists before expiry");
+
+  env._setNow(1_000_000 + 61_000);
+  const res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  assert.equal(res.status, 404, "expired session is gone");
+  assert.equal(store._rawEvent.has(reg.session_id), false, "expired event key purged");
+  assert.equal(store._rawHostEvent.has(reg.session_id), false, "expired hostevent key purged");
+  ok("expiry purges split event/host_event keys");
+}
+
+async function testDeleteSessionPurgesSplitKeys() {
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/event`, { token: reg.upload_token, body: { armed: true } }),
+    store,
+    env,
+  );
+  await handle(
+    req("POST", `/sessions/${reg.session_id}/host-event`, { token: reg.pull_token, body: { phase: "x" } }),
+    store,
+    env,
+  );
+  await handle(
+    req("DELETE", `/sessions/${reg.session_id}`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  assert.equal(store._rawEvent.has(reg.session_id), false, "DELETE purges event key");
+  assert.equal(store._rawHostEvent.has(reg.session_id), false, "DELETE purges hostevent key");
+  ok("DELETE purges split event/host_event keys");
+}
+
 async function testRegistrationGuards() {
   const store = makeMemoryStore();
   const env = fixedEnv();
@@ -677,10 +883,242 @@ const tests = [
   testRegistrationRateLimited,
   testEventRequiresContentLength,
   testTtlExpiry,
+  testEventDoesNotClobberHostEvent,
+  testLegacyMetaFallback,
+  testExpiryPurgesSplitKeys,
+  testDeleteSessionPurgesSplitKeys,
   testRegistrationGuards,
   testMethodAndPath,
   testCors,
+  testIndexedBlobLifecycle,
+  testIndexedBlobBadIndexRejected,
+  testLegacyUploadKeepsPreIndexStatusShape,
+  testDeleteAndExpiryPurgeIndexedBlobs,
+  testV3HostEventPhasesRelayVerbatim,
 ];
+
+// === Session-spanning capture plans (Pi protocol v3): indexed blobs =========
+
+// PUT one blob at ?index=N (or unindexed when index === null).
+async function putBlobAt(store, env, reg, index, bytes, plaintextLen = 3) {
+  const sha = await sha256Hex(new Uint8Array([7, index === null ? 0 : index, 7]));
+  const suffix = index === null ? "" : `?index=${index}`;
+  const res = await handle(
+    req("PUT", `/sessions/${reg.session_id}/blob${suffix}`, {
+      token: reg.upload_token,
+      raw: bytes,
+      headers: {
+        "X-Plaintext-Length": String(plaintextLen),
+        "X-Plaintext-Sha256": sha,
+      },
+      origin: ORIGIN,
+    }),
+    store,
+    env,
+  );
+  return { res, sha };
+}
+
+async function testIndexedBlobLifecycle() {
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+
+  // Attempt 1 rides an EXPLICIT index 0 — it aliases the legacy slot.
+  const b0 = new Uint8Array([10, 10, 10, 10]);
+  let { res, sha } = await putBlobAt(store, env, reg, 0, b0);
+  assert.equal(res.status, 200, "index 0 put 200");
+  let j = await res.json();
+  assert.equal(j.state, "ready", "index 0 keeps the legacy ready response");
+  const sha0 = sha;
+
+  // Attempts 2 and 3 ride their own keys; the session state stays untouched.
+  const b1 = new Uint8Array([11, 11, 11, 11, 11]);
+  ({ res, sha } = await putBlobAt(store, env, reg, 1, b1));
+  assert.equal(res.status, 200, "index 1 put 200");
+  j = await res.json();
+  assert.equal(j.capture_index, 1);
+  const sha1 = sha;
+  const b2 = new Uint8Array([12, 12]);
+  ({ res } = await putBlobAt(store, env, reg, 2, b2));
+  assert.equal(res.status, 200, "index 2 put 200");
+
+  // Status: legacy fields intact + the additive per-index summary.
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  j = await res.json();
+  assert.equal(j.state, "ready");
+  assert.equal(j.size, 4, "legacy size is index 0's");
+  assert.deepEqual(j.integrity, { plaintext_len: 3, sha256: sha0 });
+  assert.equal(Object.keys(j.blobs).length, 3, "blobs summary has all indexes");
+  assert.equal(j.blobs["1"].size, 5);
+  assert.deepEqual(j.blobs["1"].integrity, { plaintext_len: 3, sha256: sha1 });
+
+  // Pull side: unindexed GET serves index 0; ?index=N serves its own bytes
+  // with ITS integrity claim.
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/blob`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [...b0]);
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/blob?index=1`, {
+      token: reg.pull_token,
+    }),
+    store,
+    env,
+  );
+  assert.equal(res.status, 200, "indexed blob get 200");
+  assert.equal(res.headers.get("X-Plaintext-Sha256"), sha1);
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [...b1]);
+
+  // One upload per index: duplicates 409 for indexed AND legacy slots.
+  ({ res } = await putBlobAt(store, env, reg, 1, b1));
+  assert.equal(res.status, 409, "duplicate indexed upload rejected");
+  ({ res } = await putBlobAt(store, env, reg, 0, b0));
+  assert.equal(res.status, 409, "duplicate index-0 upload rejected");
+
+  // An index nobody uploaded is not ready — never falls back to another blob.
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/blob?index=3`, {
+      token: reg.pull_token,
+    }),
+    store,
+    env,
+  );
+  assert.equal(res.status, 409, "missing indexed blob 409");
+  j = await res.json();
+  assert.equal(j.error, "not_ready");
+  ok("indexed blob lifecycle");
+}
+
+async function testIndexedBlobBadIndexRejected() {
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+  const bytes = new Uint8Array([1, 2, 3]);
+  // At/above the bound, negative, non-integer, junk: 400 on both directions,
+  // so a hostile index can never mint an R2 key no attempt could ever be
+  // authorized for. "8" is the exact boundary: valid indexes are 0..7
+  // (capture_index = attempt - 1, attempt <= MAX_CAPTURE_PLAN_ATTEMPTS = 8).
+  for (const bad of ["8", "9", "-1", "1.5", "abc", "01"]) {
+    const { res } = await putBlobAt(store, env, reg, bad, bytes);
+    assert.equal(res.status, 400, `put index=${bad} rejected`);
+    assert.equal((await res.json()).error, "bad_capture_index");
+    const getRes = await handle(
+      req("GET", `/sessions/${reg.session_id}/blob?index=${bad}`, {
+        token: reg.pull_token,
+      }),
+      store,
+      env,
+    );
+    assert.equal(getRes.status, 400, `get index=${bad} rejected`);
+  }
+  // The last authorizable slot (attempt 8 → index 7) is accepted.
+  const { res: topRes } = await putBlobAt(store, env, reg, 7, bytes);
+  assert.equal(topRes.status, 200, "index 7 (attempt cap - 1) accepted");
+  ok("bad capture index rejected");
+}
+
+async function testLegacyUploadKeepsPreIndexStatusShape() {
+  // A pre-v3 phone never sends ?index= — its session's status must keep the
+  // exact historical shape (no `blobs` field appears).
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+  const { res } = await putBlobAt(store, env, reg, null, new Uint8Array([1, 2]));
+  assert.equal(res.status, 200);
+  const statusRes = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  const j = await statusRes.json();
+  assert.equal(j.state, "ready");
+  assert.equal("blobs" in j, false, "legacy status carries no blobs field");
+  ok("legacy upload keeps pre-index status shape");
+}
+
+async function testDeleteAndExpiryPurgeIndexedBlobs() {
+  // DELETE path.
+  let store = makeMemoryStore();
+  let env = fixedEnv();
+  let reg = registration();
+  await register(store, env, reg);
+  await putBlobAt(store, env, reg, 0, new Uint8Array([1]));
+  await putBlobAt(store, env, reg, 2, new Uint8Array([2]));
+  assert.equal(store._rawBlob.size, 2, "two blob keys stored");
+  let res = await handle(
+    req("DELETE", `/sessions/${reg.session_id}`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  assert.equal(res.status, 204);
+  assert.equal(store._rawBlob.size, 0, "DELETE purges every indexed blob");
+
+  // TTL-expiry path.
+  store = makeMemoryStore();
+  env = fixedEnv();
+  reg = registration({ ttl_s: 60 });
+  await register(store, env, reg);
+  await putBlobAt(store, env, reg, 0, new Uint8Array([1]));
+  await putBlobAt(store, env, reg, 1, new Uint8Array([2]));
+  env._setNow(1_000_000 + 61_000);
+  res = await handle(
+    req("GET", `/sessions/${reg.session_id}/status`, { token: reg.pull_token }),
+    store,
+    env,
+  );
+  assert.equal(res.status, 404, "expired session gone");
+  assert.equal(store._rawBlob.size, 0, "expiry purges every indexed blob");
+  ok("delete/expiry purge indexed blobs");
+}
+
+async function testV3HostEventPhasesRelayVerbatim() {
+  // The v3 choreography events (capture_authorized / capture_result /
+  // capture_refused / set terminals) are ordinary opaque host events to the
+  // relay — stored and served verbatim, never parsed. Zero relay knowledge of
+  // the new vocabulary is the invariant.
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const reg = registration();
+  await register(store, env, reg);
+  const events = [
+    { phase: "capture_authorized", index: 1, attempt: 1 },
+    { phase: "capture_result", index: 1, attempt: 1, accepted: true, estimated_snr_db: 30.5 },
+    { phase: "capture_refused", index: 2, attempt: 2, code: "repeat_admission_refused", error: "budget spent" },
+    { phase: "capture_set_complete", accepted: 3, capture_target: 3 },
+  ];
+  for (const event of events) {
+    let res = await handle(
+      req("POST", `/sessions/${reg.session_id}/host-event`, {
+        token: reg.pull_token,
+        body: event,
+      }),
+      store,
+      env,
+    );
+    assert.equal(res.status, 200);
+    res = await handle(
+      req("GET", `/sessions/${reg.session_id}/phone-status`, {
+        token: reg.upload_token,
+        origin: ORIGIN,
+      }),
+      store,
+      env,
+    );
+    const j = await res.json();
+    assert.deepEqual(j.host_event, event, `${event.phase} relayed verbatim`);
+  }
+  ok("v3 host-event phases relay verbatim");
+}
 
 let failure = null;
 for (const t of tests) {

@@ -17,14 +17,16 @@
 //! This is the protocol-compatible twin of `rust/jasper-fanin/src/tts.rs`
 //! (whose own header states the match is intentional "so Python can keep
 //! one playout implementation"): newline-framed text commands (GAIN /
-//! PREPARE_ASSISTANT / SEGMENT_START / AUDIO n + raw S16_LE bytes /
+//! VOLUME_CONTEXT / PREPARE_ASSISTANT / SEGMENT_START / AUDIO n + raw S16_LE bytes /
 //! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
 //! `audio_io.py` speaks it unchanged — the reconciler only flips the
 //! socket path per grouping role. The wire layer itself (command
 //! vocabulary + `read_command` parser) lives ONCE in the shared
 //! `jasper-tts-protocol` crate, imported by both daemons — the twins
-//! structurally cannot drift when the protocol grows.
+//! structurally cannot drift when the protocol grows. Outputd deliberately
+//! parses but ignores VOLUME_CONTEXT because its lane is post-DSP; applying
+//! fan-in's downstream-Camilla compensation there would double-compensate.
 //!
 //! ## What is NOT duplicated: the engine
 //!
@@ -490,7 +492,9 @@ impl TtsBridge {
             // always safe.
             let is_restore = matches!(
                 &queued.command,
-                TtsCommand::ProgramDuckOff | TtsCommand::ContentMeterResume
+                TtsCommand::ProgramDuckOff
+                    | TtsCommand::ContentMeterResume
+                    | TtsCommand::VolumeContext(_)
             );
             if queued.epoch != self.active_epoch && !is_restore {
                 continue; // pre-flush stale command
@@ -503,9 +507,15 @@ impl TtsBridge {
                     provider,
                     model,
                     voice,
-                    silence_target_lufs,
+                    tts_envelope_lufs,
                 } => {
-                    core.prepare_assistant_context(provider, model, voice, silence_target_lufs);
+                    core.prepare_assistant_context(provider, model, voice, tts_envelope_lufs);
+                }
+                TtsCommand::VolumeContext(_context) => {
+                    // This socket is post-DSP: Camilla's gain is not
+                    // downstream of this lane. Keep wire compatibility with
+                    // fan-in, but never apply pre-DSP compensation here.
+                    eprintln!("event=outputd.volume_context_ignored reason=post_dsp");
                 }
                 TtsCommand::ContentMeterPause => core.pause_content_meter(),
                 TtsCommand::ContentMeterResume => core.resume_content_meter(),
@@ -631,6 +641,53 @@ mod tests {
         bridge.drain(&mut core);
         assert!(core.pending_assistant_frames() > 0);
         assert!(bridge.open_segment.is_some());
+    }
+
+    #[test]
+    fn post_dsp_bridge_ignores_pre_dsp_volume_context_compensation() {
+        let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
+        send(
+            &tx,
+            0,
+            TtsCommand::VolumeContext(jasper_tts_protocol::VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: -30.0,
+                tts_envelope_lufs: -41.0,
+                muted: false,
+                stamp_boot_ns: 1,
+            }),
+        );
+        send(
+            &tx,
+            0,
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                tts_envelope_lufs: -41.0,
+            },
+        );
+        send(
+            &tx,
+            0,
+            TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("post_dsp".to_string()),
+                profile: Some(jasper_tts_protocol::AssistantProfile {
+                    provider: "openai".to_string(),
+                    model: "gpt-realtime-2".to_string(),
+                    voice: "marin".to_string(),
+                    source_lufs: Some(-41.0),
+                    source_peak_dbfs: Some(-20.0),
+                    confidence: 1.0,
+                }),
+            },
+        );
+
+        bridge.drain(&mut core);
+
+        let segment = bridge.open_segment.expect("assistant segment");
+        assert_eq!(core.ledger().segment(segment).gain, 0.0);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Make the USB-gadget device name (as a connected Mac/PC shows it in its
-# audio device list) track the speaker's configured Speaker Name.
+# Make the USB-gadget output name track the configured Speaker Name and its
+# input name track "<Speaker Name> Mic" in a connected Mac/PC audio list.
 #
 # Background: the host displays the UAC2 AudioStreaming interface string,
 # which the kernel hardcodes as "Playback Inactive" in usb_f_uac2.ko and
@@ -19,9 +19,9 @@
 #   - rename via /system wizard  (name changed in marker -> rebuild + reload)
 #   - kernel update + reboot     (new kernel, no override -> rebuild)
 #
-# Idempotent and cheap in steady state: a marker (kernel ver + name +
-# stock-module hash) lets an unchanged boot exit in milliseconds without
-# touching the module tree, running depmod, or reloading anything.
+# Idempotent and cheap in steady state: a marker (patch schema + kernel ver +
+# speaker name + mic name + stock-module hash) lets an unchanged boot exit in
+# milliseconds without touching the module tree, running depmod, or reloading.
 #
 # Mirrors the deploy/bin/jasper-wifi-guardian self-heal idiom: oneshot,
 # structured event= logs, no-op steady state, degrade-don't-break.
@@ -30,12 +30,18 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHER="${SELF_DIR}/uac2_name_patch.py"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
+SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}"
+MODULES_ROOT="${JASPER_MODULES_ROOT:-/lib/modules}"
 
 KVER="$(uname -r)"
-MODDIR="/lib/modules/${KVER}"
+MODDIR="${MODULES_ROOT}/${KVER}"
 UPDATES_DIR="${MODDIR}/updates"
 OVERRIDE="${UPDATES_DIR}/usb_f_uac2.ko"
 MARKER="${UPDATES_DIR}/.jasper-usbsink-name.marker"
+# Bump whenever the byte-transform contract changes. Schema 3 gives the
+# Capture alt-setting strings their derived "<Speaker Name> Mic" label; an
+# older marker must rebuild even when the kernel/name/hash are unchanged.
+PATCH_SCHEMA=3
 
 emit() {  # emit <outcome> [k=v ...]
     local outcome="$1"; shift || true
@@ -43,15 +49,18 @@ emit() {  # emit <outcome> [k=v ...]
 }
 
 # --- desired name -----------------------------------------------------
-# Seed from the inherited environment (systemd loads speaker_name.env via
-# EnvironmentFile=) so a transiently-unreadable file still yields the real
-# name; then re-source the file as the single source of truth so it wins.
-NAME="${JASPER_SPEAKER_NAME:-JTS}"
-if [[ -r "${SPEAKER_NAME_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${SPEAKER_NAME_FILE}" 2>/dev/null || true
-    NAME="${JASPER_SPEAKER_NAME:-JTS}"
+# Management-writable identity state is untrusted at this root boundary. The
+# canonical reader owns env quoting plus the 32-character printable-name
+# policy before a value reaches module labels, markers, or structured logs.
+# Never source/eval/pre-read the path. The reader performs one descriptor-held,
+# no-follow, nonblocking, 64 KiB-capped read so FIFO/symlink/replacement races
+# fail safely to JTS.
+NAME="JTS"
+canonical_name="$("${SPEAKER_NAME_READER}" -m jasper.speaker_name "${SPEAKER_NAME_FILE}" 2>/dev/null || true)"
+if [[ -n "${canonical_name}" ]]; then
+    NAME="${canonical_name}"
 fi
+MIC_NAME="${NAME} Mic"
 
 # --- locate the STOCK module (always under kernel/, never updates/) ---
 STOCK="$(find "${MODDIR}/kernel" -name 'usb_f_uac2.ko*' 2>/dev/null | head -n1)"
@@ -66,7 +75,7 @@ if [[ ! -r "${PATCHER}" ]]; then
 fi
 
 STOCK_HASH="$(sha256sum "${STOCK}" 2>/dev/null | awk '{print $1}')"
-DESIRED_MARKER="${KVER}	${NAME}	${STOCK_HASH}"
+DESIRED_MARKER="${PATCH_SCHEMA}	${KVER}	${NAME}	${MIC_NAME}	${STOCK_HASH}"
 
 # --- steady-state fast path ------------------------------------------
 if [[ -f "${OVERRIDE}" && -f "${MARKER}" ]] \
@@ -101,7 +110,9 @@ summary="$(/usr/bin/python3 "${PATCHER}" "${RAW}" "${NAME}" "${OUT_TMP}" 2>&1)"
 rc=$?
 
 if [[ ${rc} -ne 0 ]]; then
-    # Primary string not found (rc=3) or error — leave stock in charge.
+    # Any playback/capture string missing or ambiguous (rc=3), or another
+    # error — leave stock in charge. Schema 3 is all-or-nothing so the marker
+    # can never claim distinct input/output labels for a partial override.
     # Drop any stale override so the unpatched module autoloads and the
     # host shows the default label rather than a wrong/old name.
     emit "patch_failed" "rc=${rc} ${summary}"

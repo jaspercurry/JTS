@@ -16,14 +16,13 @@ Keep two concepts separate:
 * effective runtime permission: whether the current role may run/advertise
   local sources at all.
 
-USB Audio Input is the sharp edge: the audio bridge process and the composite
-ConfigFS gadget are separate units, and the gadget now carries an always-on USB
-management network in ADDITION to the wizard-toggled audio function. So parking
-a follower must STOP the audio bridge units but only RECOMPOSE (restart) the
-gadget owner — the host-visible audio device disappears while the network
-function persists. That distinction is expressed declaratively here
-(``park_restart_units`` / ``restore_restart_units``); the reconciler stays
-source-agnostic and never special-cases usbsink.
+This is an inventory, not a generic lifecycle executor. It declares shared
+defaults and the ordinary runtime/guard/health resources used by status,
+installer, and safety checks. Source-specific mechanics remain in the one
+host-owned source coordinator. For example, USB Audio Input needs ordered
+fan-in arming and ConfigFS recomposition; those operations are deliberately
+implemented by ``jasper.source_intent`` rather than encoded as increasingly
+powerful registry callbacks.
 """
 from __future__ import annotations
 
@@ -36,80 +35,67 @@ from ..music_sources import Source
 class LocalSourceLifecycle:
     """Operational resources owned by one local music source.
 
-    ``intent_unit`` is the unit whose enabled state represents the user's
-    /sources choice for systemd-backed sources. Bluetooth is runtime-only
-    DBus power, so it has no persistent intent unit here. ``park_units`` are
-    stopped while local sources are role-parked. ``restore_units`` are started
-    only if enabled when the role un-parks, preserving systemd-backed intent.
+    ``default_enabled`` is the shipped household intent used when the wizard
+    has not written an override. ``intent_unit`` is the unit whose enabled
+    state mirrors that intent for systemd-backed sources. Bluetooth has no
+    single intent unit: its radio and dependent units are reconciled together.
+    ``health_units`` are the source-critical units whose failure means the
+    source needs attention. A helper belongs there when the source's On
+    contract requires it; Bluetooth pairing is a product capability, so its
+    agent is health-critical even though it does not carry audio frames.
+    ``park_units`` are stopped while local sources are role-parked.
 
-    ``park_restart_units`` / ``restore_restart_units`` are units that must be
-    RESTARTED (not stopped/started) on park / restore — the shape a composite
-    unit needs when parking should tear down only *part* of what it owns. The
-    USB gadget is the sole user: on park it recomposes without the audio
-    function (host-visible audio device gone) but keeps the always-on USB
-    network; on restore it recomposes to add the audio function back iff USB
-    audio is enabled. Restart-on-both keeps the reconciler declarative.
+    Special source mechanisms are intentionally absent. The canonical source
+    coordinator owns those concrete appliers so this inventory stays small and
+    cannot become a second orchestration framework.
     """
 
     source: Source
+    default_enabled: bool
     intent_unit: str | None
     runtime_units: tuple[str, ...]
+    health_units: tuple[str, ...]
     park_units: tuple[str, ...]
-    restore_units: tuple[str, ...]
     advertise_units: tuple[str, ...] = ()
     audio_refresh_units: tuple[str, ...] = ()
-    park_restart_units: tuple[str, ...] = ()
-    restore_restart_units: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class LocalSourceInfrastructureLifecycle:
-    """Operational resources shared by local music sources.
-
-    These are not one source's intent unit, so they stay out of the
-    per-source lifecycle table. They still park with local sources because
-    their work is meaningful only when local source inputs may run.
-    """
-
-    name: str
-    runtime_units: tuple[str, ...]
-    park_units: tuple[str, ...]
-    restore_units: tuple[str, ...]
 
 
 _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
     LocalSourceLifecycle(
         source=Source.AIRPLAY,
+        default_enabled=True,
         intent_unit="shairport-sync.service",
         runtime_units=("shairport-sync.service", "nqptp.service"),
+        health_units=("shairport-sync.service", "nqptp.service"),
         park_units=("shairport-sync.service", "nqptp.service"),
-        restore_units=("shairport-sync.service", "nqptp.service"),
         advertise_units=("shairport-sync.service",),
         audio_refresh_units=("shairport-sync.service",),
     ),
     LocalSourceLifecycle(
         source=Source.SPOTIFY,
+        default_enabled=True,
         intent_unit="librespot.service",
         runtime_units=("librespot.service",),
+        health_units=("librespot.service",),
         park_units=("librespot.service",),
-        restore_units=("librespot.service",),
         advertise_units=("librespot.service",),
         audio_refresh_units=("librespot.service",),
     ),
     LocalSourceLifecycle(
         source=Source.BLUETOOTH,
+        default_enabled=True,
         intent_unit=None,
         runtime_units=(
             "bluealsa-aplay.service",
             "bluealsa.service",
             "bt-agent.service",
         ),
-        park_units=(
+        health_units=(
             "bluealsa-aplay.service",
             "bluealsa.service",
             "bt-agent.service",
         ),
-        restore_units=(
+        park_units=(
             "bluealsa-aplay.service",
             "bluealsa.service",
             "bt-agent.service",
@@ -119,43 +105,32 @@ _LIFECYCLES: tuple[LocalSourceLifecycle, ...] = (
     ),
     LocalSourceLifecycle(
         source=Source.USBSINK,
+        default_enabled=False,
         intent_unit="jasper-usbsink.service",
         runtime_units=(
             "jasper-usbgadget.service",
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",
         ),
-        # Park the AUDIO bridge units only. The composite gadget owner is NOT
-        # stopped here — stopping it would also drop the always-on USB
-        # management network. It is recomposed instead (park_restart_units).
+        health_units=(
+            "jasper-usbgadget.service",
+            "jasper-usbsink.service",
+        ),
+        # Park the audio readiness marker and volume observer only. The composite
+        # gadget owner is NOT stopped here — where hardware permits, stopping
+        # it would also drop the USB management network. The source coordinator
+        # separately recomposes it to remove UAC2 while preserving NCM.
         park_units=(
             "jasper-usbsink.service",
             "jasper-usbsink-volume.service",
         ),
-        # Restore only the household intent unit. Requires= brings the gadget
-        # up when USB Audio Input is intentionally enabled.
-        restore_units=("jasper-usbsink.service",),
         advertise_units=("jasper-usbgadget.service",),
         audio_refresh_units=("jasper-usbsink.service", "jasper-usbsink-volume.service"),
-        # Recompose the gadget on park: it drops the uac2 (audio) function
-        # because the bridge is now parked, but keeps ncm (network) up — the
-        # host-visible audio device disappears while USB networking persists.
-        park_restart_units=("jasper-usbgadget.service",),
-        # On un-park, recompose again so the audio function comes back iff USB
-        # audio is enabled (gadget-up reads the intent). Mirrors the park side.
-        restore_restart_units=("jasper-usbgadget.service",),
     ),
 )
 
 
-_INFRASTRUCTURE: tuple[LocalSourceInfrastructureLifecycle, ...] = (
-    LocalSourceInfrastructureLifecycle(
-        name="source-arbiter",
-        runtime_units=("jasper-mux.service",),
-        park_units=("jasper-mux.service",),
-        restore_units=("jasper-mux.service",),
-    ),
-)
+_SHARED_PARK_UNITS = ("jasper-mux.service",)
 
 
 def _unique(units: tuple[str, ...]) -> tuple[str, ...]:
@@ -181,26 +156,15 @@ def local_source_lifecycle(source: Source) -> LocalSourceLifecycle:
     raise KeyError(source)
 
 
-def _flatten(
-    attr: str,
-    *,
-    include_infrastructure: bool,
-) -> tuple[str, ...]:
+def _flatten(attr: str) -> tuple[str, ...]:
     units: list[str] = []
     for lifecycle in _LIFECYCLES:
         units.extend(getattr(lifecycle, attr))
-    if include_infrastructure:
-        for infrastructure in _INFRASTRUCTURE:
-            units.extend(getattr(infrastructure, attr))
     return _unique(tuple(units))
 
 
 def local_source_park_units() -> tuple[str, ...]:
-    return _flatten("park_units", include_infrastructure=True)
-
-
-def local_source_restore_units() -> tuple[str, ...]:
-    return _flatten("restore_units", include_infrastructure=True)
+    return _unique((*_flatten("park_units"), *_SHARED_PARK_UNITS))
 
 
 def local_source_audio_refresh_units() -> tuple[str, ...]:
@@ -210,18 +174,4 @@ def local_source_audio_refresh_units() -> tuple[str, ...]:
     sources, especially USB Audio Input, must not be resurrected by a
     dashboard audio restart.
     """
-    return _flatten("audio_refresh_units", include_infrastructure=False)
-
-
-def local_source_park_restart_units() -> tuple[str, ...]:
-    """Units RESTARTED (recomposed) rather than stopped when local sources
-    park. Today only the composite USB gadget: parking recomposes it without
-    the audio function while keeping the always-on USB network."""
-    return _flatten("park_restart_units", include_infrastructure=False)
-
-
-def local_source_restore_restart_units() -> tuple[str, ...]:
-    """Units RESTARTED (recomposed) rather than started when local sources
-    un-park. Mirror of :func:`local_source_park_restart_units`; the gadget
-    recomposes to add the audio function back iff USB audio is enabled."""
-    return _flatten("restore_restart_units", include_infrastructure=False)
+    return _flatten("audio_refresh_units")

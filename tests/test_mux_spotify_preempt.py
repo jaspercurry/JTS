@@ -5,10 +5,10 @@
 """Tests for the two-tier Spotify-preempt escalation in jasper.mux.
 
 Tier 1 (existing): Spotify Web API `PUT /me/player/pause` via spotipy.
-Tier 2 (added 2026-05-22): `systemctl restart librespot.service` if
-Tier 1 fails. Tier 2 still matters after the fan-in cutover: an
-un-pauseable librespot owns its private fan-in lane, stays alive, and
-is summed with the new winner until it releases that lane.
+Tier 2 (added 2026-05-22): `systemctl try-restart librespot.service` if
+Tier 1 fails and librespot is still active. Tier 2 still matters after the
+fan-in cutover: an un-pauseable librespot owns its private fan-in lane, stays
+alive, and is summed with the new winner until it releases that lane.
 The user's contract ("we cannot have both played at the same time")
 requires us to force a release.
 
@@ -79,9 +79,8 @@ async def test_pause_spotify_web_api_succeeds_no_restart(mux):
 # ----------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_pause_spotify_web_api_fails_escalates_to_restart(mux):
-    """Tier 1 returns False → Tier 2 must ask the broker to restart
-    librespot.service."""
+async def test_pause_spotify_web_api_fails_escalates_to_active_only_restart(mux):
+    """Tier 1 returns False → Tier 2 may restart only active librespot."""
     _stub_web_api_result(mux, ok=False)
     fake, captured = _mock_broker(ok=True)
     with patch("jasper.control.restart_broker.manage_units", side_effect=fake):
@@ -89,7 +88,31 @@ async def test_pause_spotify_web_api_fails_escalates_to_restart(mux):
     assert len(captured["calls"]) == 1
     units, kwargs = captured["calls"][0]
     assert units == ("librespot.service",)
-    assert kwargs["verb"] == "restart"
+    assert kwargs["verb"] == "try-restart"
+
+
+@pytest.mark.asyncio
+async def test_spotify_recovery_cannot_resurrect_concurrently_stopped_source(mux):
+    """A source Off/park landing before the final mutation must remain Off."""
+    unit_active = False  # source coordinator won the race before broker call
+    calls = []
+
+    def fake_broker(*units, **kwargs):
+        nonlocal unit_active
+        calls.append((units, kwargs))
+        if kwargs["verb"] == "restart":
+            unit_active = True
+        # systemctl try-restart is a successful no-op while inactive.
+        return {"ok": True}
+
+    with patch(
+        "jasper.control.restart_broker.manage_units",
+        side_effect=fake_broker,
+    ):
+        assert await mux._spotify_force_restart_librespot() is True
+
+    assert calls[0][1]["verb"] == "try-restart"
+    assert unit_active is False
 
 
 # ----------------------------------------------------------------------
@@ -109,12 +132,12 @@ async def test_pause_spotify_off_switch_disables_escalation(mux, monkeypatch):
 
 
 # ----------------------------------------------------------------------
-# A failed restart doesn't raise — log and continue
+# A failed try-restart doesn't raise — log and continue
 # ----------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_pause_spotify_restart_nonzero_does_not_raise(mux):
-    """A non-zero restart result is logged but not raised; the mux tick must
+    """A non-zero try-restart result is logged but not raised; the mux tick must
     continue. (Retrying every tick would just create log noise.)"""
     _stub_web_api_result(mux, ok=False)
     fake, _ = _mock_broker(ok=False, rc=1)

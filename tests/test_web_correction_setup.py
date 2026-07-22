@@ -15,12 +15,24 @@ so a static render needs no hardware.
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 import threading
 
 import pytest
 
 from jasper.web import correction_setup
+
+
+_CORRECTION_MODULE = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "assets" / "correction" / "js" / "main.js"
+)
+
+
+def _module_js() -> str:
+    return _CORRECTION_MODULE.read_text()
 
 
 def test_run_async_timeout_cancels_loop_task():
@@ -38,6 +50,38 @@ def test_run_async_timeout_cancels_loop_task():
     with pytest.raises(concurrent.futures.TimeoutError):
         correction_setup._run_async(never_finishes(), timeout=0.01)
     assert cancelled.wait(timeout=2)
+
+
+def test_room_graph_mutation_has_no_cancelling_outer_deadline(monkeypatch):
+    import asyncio
+
+    seen = {}
+
+    async def operation():
+        return "done"
+
+    def run(coro, *, timeout):
+        seen["timeout"] = timeout
+        return asyncio.run(coro)
+
+    monkeypatch.setattr(correction_setup, "_run_async", run)
+
+    assert correction_setup._run_graph_mutation(operation()) == "done"
+    assert seen == {"timeout": None}
+
+
+def test_all_room_graph_mutation_callers_use_terminal_runner():
+    import inspect
+
+    callers = (
+        correction_setup._handle_start,
+        correction_setup._handle_apply,
+        correction_setup._handle_reset,
+        correction_setup._maybe_auto_revert,
+    )
+    for caller in callers:
+        source = inspect.getsource(caller)
+        assert "_run_graph_mutation(" in source
 
 
 # ---------------------------------------------------------------------------
@@ -124,37 +168,115 @@ def test_render_back_link_is_absolute_http():
     assert 'href="http://jts.local/"' in html
 
 
-def test_render_preserves_workflow_anchors():
-    """Every DOM id the relocated module drives must still be present in the
-    server-rendered shell."""
+def test_render_has_one_root_for_each_envelope_section():
     html = _render()
-    for anchor in (
-        'id="start"',
-        'id="current-correction"',
-        'id="input-device-select"',
-        'id="mic-model-select"',
-        'id="constraints"',
-        'id="measure-section"',
-        'id="state-badge"',
-        'id="run-measurement"',
-        'id="autolevel"',
-        'id="apply-correction"',
-        'id="verify-correction"',
-        'id="reset-correction"',
-        'id="chart"',
-        'id="peq-list"',
-        'id="measurement-reports"',
-        'id="session-report"',
+    section_ids = {
+        "current-correction", "run-defaults", "readiness-blocker",
+        "capture-handoff", "placement", "capture-setup",
+        "local-certificate-warning", "level-check", "position-capture",
+        "measurement-review", "apply-status", "verification",
+        "result-proof", "tuning", "reports",
+    }
+    for section_id in section_ids:
+        assert html.count(f'data-envelope-section="{section_id}"') == 1
+
+    for deleted_id in (
+        "relay-panel", "relay-start-capture", "advanced-correction-options",
+        "mic-panel", "measurement-reports", "measure-section",
+        "run-measurement", "apply-correction", "verify-correction",
+        "repeat-position", "continue-position", "start",
     ):
-        assert anchor in html, anchor
+        assert f'id="{deleted_id}"' not in html
 
 
-def test_render_keeps_cert_install_disclosure():
-    """The Safari "Not Private" cert-install help is load-bearing for the
-    HTTPS-only page and must survive the restyle."""
+def test_render_keeps_only_plain_local_certificate_warning():
     html = _render()
-    assert "/jts-root-ca.crt" in html
-    assert "Certificate Trust Settings" in html
+    assert "browser will warn about the speaker's local certificate" in html
+    assert "/jts-root-ca.crt" not in html
+    assert "Certificate Trust Settings" not in html
+    assert "mkcert" not in html
+    assert 'id="readiness-blocker-action" class="btn hidden" href=""' in html
+    assert 'id="readiness-blocker-action" class="btn" href="/sound/"' not in html
+
+
+def test_render_leaves_household_default_copy_to_the_envelope():
+    html = _render()
+
+    assert '<p id="run-defaults-summary"></p>' in html
+    assert "Measuring 6 positions with the flat target" not in html
+    assert html.count('id="change-run-defaults"') == 1
+    assert 'aria-controls="measurement-options"' in html
+    assert 'aria-expanded="false"' in html
+    assert (
+        '<option value="6" data-summary-label="6 positions" selected>'
+        '6 positions — recommended</option>'
+    ) in html
+    assert '<option value="5" selected>' not in html
+    assert "MMM averaging" not in html
+    assert "Assertive" not in html
+    assert 'id="repeat-main-position"' not in html
+    assert (
+        '<p id="repeat-main-position-disclosure" class="hint"></p>'
+        in html
+    )
+    assert "automatically repeats the main-seat measurement once" not in html
+    assert html.index('id="repeat-main-position-disclosure"') < html.index(
+        'id="measurement-options" class="hidden"'
+    )
+    assert "house-curve tilt" not in html
+    assert "PEQ policy" not in html
+    assert "WebKit Bug" not in html
+    assert "Safari" not in html
+    assert "RMS:" not in html
+    assert "dBFS" not in html
+    assert "1 kHz" not in html
+    assert "software volume" not in html
+    assert "amplifier gain" not in html
+    assert "analog gain" not in html
+    assert "preference EQ" not in html
+    assert "raw room" not in html
+
+
+def test_browser_has_no_screen_visibility_or_forward_action_policy_mirror():
+    js = _module_js()
+    assert "SCREEN_SECTIONS" not in js
+    assert "WIZARD_FORWARD_ACTION_BY_STATE" not in js
+    assert "wizardProvidesForwardAction" not in js
+    assert "showScreenSections" not in js
+    assert "SUPPORTED_ENVELOPE_SCHEMA = 9" in js
+
+
+def test_browser_failure_presentation_matches_server_catalog():
+    import json
+    import re
+
+    from jasper.correction import failures
+
+    js = _module_js()
+    block = re.search(
+        r"var KNOWN_FAILURES = \{(?P<body>.*?)\n  \};",
+        js,
+        re.DOTALL,
+    )
+    assert block is not None
+    entries = re.findall(
+        r'^\s*([a-z][a-z0-9_]*): \{text: ("(?:[^"\\]|\\.)*"), '
+        r"retryable: (true|false)\},?$",
+        block["body"],
+        re.MULTILINE,
+    )
+    browser = {
+        code: (json.loads(text), retryable == "true")
+        for code, text, retryable in entries
+    }
+    server = {
+        code: (
+            failures.public_failure(code)["text"],
+            failures.public_failure(code)["retryable"],
+        )
+        for code in failures.FAILURE_CODES
+    }
+    assert browser == server
 
 
 def test_render_escapes_hostname():
@@ -221,6 +343,8 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b"/assets/correction/js/crossover/main.js" in resp
     assert b'id="crossover-verdict"' in resp
     assert b'id="crossover-steps"' in resp
+    assert b'id="crossover-review"' in resp
+    assert b'id="crossover-review-body"' in resp
     assert b'id="crossover-action"' in resp
     assert b'id="mic-support"' not in resp
 
@@ -246,6 +370,68 @@ def test_get_healthz_ok():
     resp = _drive("/healthz")
     assert b"200" in resp.split(b"\r\n", 1)[0]
     assert b"ok" in resp
+
+
+def test_get_entry_status_routes_to_lightweight_handler(monkeypatch):
+    import json
+
+    payload = {
+        "screen": "idle",
+        "state": "idle",
+        "readiness_blocker": None,
+        "current_correction_presentation": {"tone": "flat"},
+    }
+    monkeypatch.setattr(
+        correction_setup,
+        "_handle_entry_status",
+        lambda _handler: payload,
+    )
+
+    resp = _drive("/entry-status")
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == payload
+
+
+def test_entry_status_reads_lightweight_entry_facts_without_reports(monkeypatch):
+    from jasper.correction import bundles
+
+    presentation = {
+        "tone": "flat",
+        "message_template": "No JTS room correction is applied.",
+        "applied_at_epoch": None,
+        "reset_allowed": False,
+    }
+    session = SimpleNamespace(
+        state=SimpleNamespace(value="idle"),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: session,
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_current_config_presentation",
+        lambda sess: ({"kind": "flat"}, presentation)
+        if sess is session
+        else pytest.fail("unexpected session"),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_readiness",
+        lambda: SimpleNamespace(blocker={"code": "speaker_setup_incomplete"}),
+    )
+    monkeypatch.setattr(
+        bundles,
+        "list_bundles",
+        lambda *_args, **_kwargs: pytest.fail("entry status scanned reports"),
+    )
+
+    assert correction_setup._handle_entry_status(None) == {
+        "screen": "idle",
+        "state": "idle",
+        "readiness_blocker": {"code": "speaker_setup_incomplete"},
+        "current_correction_presentation": presentation,
+    }
 
 
 def test_unknown_get_route_404():
@@ -275,6 +461,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/start", "/next-position", "/repeat-position", "/verify",
         "/test-tone", "/autolevel/start", "/autolevel/lock",
         "/autolevel/cancel", "/upload-noise", "/upload-capture",
+        "/local-capture/setup",
         "/calibration/fetch", "/calibration/upload", "/apply", "/reset",
         "/session/delete", "/relay/level-match", "/relay/capture",
         "/relay/verify",
@@ -284,8 +471,15 @@ def test_known_post_routes_reach_csrf_guard():
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/relay-capture", "/sync/apply", "/sync/stop", "/sync/reset",
         "/crossover/level-match", "/crossover/recover-volume",
-        "/crossover/apply",
-        "/crossover/relay-capture", "/crossover/driver-test",
+        "/crossover/region-geometry", "/crossover/candidate",
+        "/crossover/apply", "/crossover/restore",
+        "/crossover/relay-capture", "/crossover/relay-cancel",
+        "/crossover/reset",
+        # v2 conductor flow (Wave 5a) — registered unconditionally; each
+        # handler refuses fail-closed unless JASPER_CROSSOVER_FLOW=v2.
+        "/crossover/v2/session", "/crossover/v2/verify", "/crossover/v2/apply",
+        "/crossover/v2/restore",
+        "/crossover/driver-test",
         "/crossover/driver-confirm", "/crossover/driver-abort",
         "/crossover/summed-test", "/crossover/driver-capture-sweep",
         "/crossover/summed-capture-sweep", "/crossover/summed-capture",
@@ -317,6 +511,161 @@ def test_known_post_routes_reach_csrf_guard():
     assert b"404" in response.split(b"\r\n", 1)[0]
 
 
+def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
+    """W6 finding: a refused v2 session/verify start (CrossoverV2Refused or any
+    other precondition ValueError) mapped straight to a 400 with NO journal
+    signal — the failed session-start was invisible in journalctl. The 400
+    response is correct for the browser; the gap was purely observability."""
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    caplog.set_level(logging.WARNING, logger=correction_setup.logger.name)
+
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    records = [
+        r for r in caplog.records
+        if r.getMessage().startswith("event=correction.crossover_v2_refused")
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "route=/crossover/v2/session" in message
+    assert "phone-mic relay capture is not configured" in message
+
+
+def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
+    """Finding N (a): a blocked apply must not read as success. Before this
+    fix, /crossover/v2/apply always answered 200 regardless of payload
+    contents — a household's browser had no signal that tapping Apply
+    silently did nothing (run6-apply-blocked.log: 200 OK on every attempt)."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: {
+            "status": "blocked",
+            "profile": {"status": "blocked"},
+            "apply": None,
+            "issues": [{
+                "severity": "blocker",
+                "code": "measured_candidate_preset_mismatch",
+                "message": (
+                    "the reviewed measured candidate no longer equals the "
+                    "saved crossover"
+                ),
+            }],
+            "issue": {
+                "id": "measured_candidate_preset_mismatch",
+                "message": (
+                    "the reviewed measured candidate no longer equals the "
+                    "saved crossover"
+                ),
+            },
+        },
+    )
+
+    resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+
+    assert b"409" in resp.split(b"\r\n", 1)[0]
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    assert b"measured_candidate_preset_mismatch" in body
+
+
+def test_apply_applied_status_still_maps_to_200(monkeypatch):
+    """The 409 mapping is status-content-driven, not blanket — a successful
+    apply must still read 200."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: {"status": "applied", "profile": {}},
+    )
+
+    resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+
+
+def test_restore_refusal_maps_to_400_not_500(monkeypatch):
+    """W6 run-8 Blocker Q regression pin: the v2-aware Undo endpoint must
+    answer a named 400 for an ordinary refusal, never the legacy path's bare
+    500 ("there is no pending candidate apply to restore")."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+
+    def _refuse(run_async, camilla_factory):
+        raise v2host_mod.CrossoverV2Refused(
+            "nothing is applied to undo; measure and apply a crossover first"
+        )
+
+    monkeypatch.setattr(v2host_mod, "handle_v2_restore", _refuse)
+
+    resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
+
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    assert b"nothing is applied to undo" in body
+
+
+def test_restore_blocked_status_maps_to_409(monkeypatch):
+    """Mirrors the apply endpoint's status-content-driven mapping: a refused
+    (blocked/restore_failed) restore payload must not read as success."""
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_restore",
+        lambda run_async, camilla_factory: {
+            "status": "blocked",
+            "issues": [{
+                "severity": "blocker",
+                "code": "restore_target_missing",
+                "message": "the previous crossover configuration could not "
+                "be found on disk",
+            }],
+        },
+    )
+
+    resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
+
+    assert b"409" in resp.split(b"\r\n", 1)[0]
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    assert b"restore_target_missing" in body
+
+
+def test_restore_restored_status_maps_to_200(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(
+        v2host_mod,
+        "handle_v2_restore",
+        lambda run_async, camilla_factory: {"status": "restored", "profile": {}},
+    )
+
+    resp = _drive("/crossover/v2/restore", method="POST", body=b"{}")
+
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+
+
 # ---------------------------------------------------------------------------
 # Public surface unchanged.
 # ---------------------------------------------------------------------------
@@ -337,6 +686,248 @@ def test_public_surface_present():
     assert callable(correction_setup._make_handler)
 
 
+def test_service_start_claims_all_crossover_state_owners(monkeypatch):
+    from jasper.active_speaker import repeat_admission, web_commissioning
+    from jasper.web import correction_crossover_backend
+
+    claims = []
+    monkeypatch.setattr(
+        repeat_admission, "claim_owner", lambda: claims.append("repeat")
+    )
+    monkeypatch.setattr(
+        correction_crossover_backend,
+        "claim_level_run_owner",
+        lambda: claims.append("level"),
+    )
+    monkeypatch.setattr(
+        correction_crossover_backend,
+        "claim_commissioning_run_owner",
+        lambda: claims.append("commissioning"),
+    )
+
+    # The abandoned-sequence convergence hook: a capture sequence the previous
+    # process left on the all-muted staged anchor must be offered its
+    # production restore at this same single-owner lifecycle boundary.
+    async def restore_capture_entry(*, camilla_factory):
+        del camilla_factory
+        claims.append("capture_entry")
+        return {"status": "idle"}
+
+    monkeypatch.setattr(
+        web_commissioning,
+        "restore_pending_capture_entry_config",
+        restore_capture_entry,
+    )
+
+    correction_setup._claim_crossover_state_owners()
+
+    assert claims == ["repeat", "level", "commissioning", "capture_entry"]
+
+
+def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
+    """The idle exit converges an abandoned capture sequence to production.
+
+    The common abandon is the user closing the tab mid-sequence:
+    correction-web idles out minutes later, and (being socket-activated) will
+    not run again until someone revisits /correction/. Without this hook the
+    speaker would stay parked on the all-muted staged anchor until then.
+    """
+
+    from jasper.active_speaker import web_commissioning
+
+    calls = []
+
+    async def restore(*, camilla_factory):
+        del camilla_factory
+        calls.append("restore")
+        return {"status": "restored", "config_path": "/tmp/prod.yml"}
+
+    monkeypatch.setattr(
+        web_commissioning, "restore_pending_capture_entry_config", restore
+    )
+
+    correction_setup._idle_exit_restore_capture_entry()
+    assert calls == ["restore"]
+
+    # A failing restore is swallowed (the process is about to exit; the
+    # durable stash survives for the service-start claim boundary).
+    async def broken(*, camilla_factory):
+        del camilla_factory
+        calls.append("broken")
+        raise RuntimeError("camilla went away")
+
+    monkeypatch.setattr(
+        web_commissioning, "restore_pending_capture_entry_config", broken
+    )
+    correction_setup._idle_exit_restore_capture_entry()
+    assert calls == ["restore", "broken"]
+
+
+def test_main_wires_idle_tracker_to_capture_entry_restore(monkeypatch):
+    """main() hands the capture-entry restore to the IdleShutdownTracker."""
+
+    from jasper.web import _systemd
+
+    captured = {}
+
+    class FakeTracker:
+        def __init__(self, *_args, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            pass
+
+    class FakeServer:
+        RequestHandlerClass = object
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        correction_setup, "_claim_crossover_state_owners", lambda: None
+    )
+    monkeypatch.setattr(
+        correction_setup, "make_server", lambda *_a, **_kw: FakeServer()
+    )
+    monkeypatch.setattr(_systemd, "adopt_systemd_sockets", lambda: [])
+    monkeypatch.setattr(_systemd, "IdleShutdownTracker", FakeTracker)
+    monkeypatch.setattr(_systemd, "install_request_idle_bump", lambda *_a: None)
+    monkeypatch.setattr(_systemd, "notify_ready", lambda: None)
+    monkeypatch.setattr(_systemd, "notify_stopping", lambda: None)
+
+    assert correction_setup.main(["--host", "127.0.0.1", "--port", "0"]) == 0
+    assert (
+        captured.get("on_idle_exit")
+        is correction_setup._idle_exit_restore_capture_entry
+    )
+
+
+def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
+    from jasper.active_speaker import repeat_admission
+    from jasper.web import correction_crossover_backend
+
+    claims = []
+
+    def fail_repeat():
+        raise OSError("repeat state unavailable")
+
+    monkeypatch.setattr(repeat_admission, "claim_owner", fail_repeat)
+    monkeypatch.setattr(
+        correction_crossover_backend,
+        "claim_level_run_owner",
+        lambda: claims.append("level"),
+    )
+    monkeypatch.setattr(
+        correction_crossover_backend,
+        "claim_commissioning_run_owner",
+        lambda: claims.append("commissioning"),
+    )
+
+    correction_setup._claim_crossover_state_owners()
+
+    assert claims == ["level", "commissioning"]
+
+
+def test_comparison_start_publishes_repeat_then_commissioning_authority(monkeypatch):
+    from jasper.active_speaker import measurement, repeat_admission
+    from jasper.web import correction_crossover_backend
+
+    comparison = {
+        "bundle_session_id": "session-1",
+        "fingerprint": "a" * 64,
+    }
+    calls = []
+    monkeypatch.setattr(
+        repeat_admission,
+        "activate",
+        lambda value: calls.append(("repeat", value)),
+    )
+    monkeypatch.setattr(
+        correction_crossover_backend,
+        "begin_commissioning_run",
+        lambda value: calls.append(("commissioning", value)),
+    )
+    monkeypatch.setattr(
+        measurement,
+        "clear_active_comparison_set",
+        lambda _topology: calls.append(("clear", None)),
+    )
+    monkeypatch.setattr(
+        repeat_admission,
+        "invalidate",
+        lambda: calls.append(("invalidate", None)),
+    )
+
+    correction_setup._activate_crossover_comparison_authorities(
+        object(), comparison
+    )
+
+    assert calls == [("repeat", comparison), ("commissioning", comparison)]
+
+
+def test_comparison_start_without_bundle_keeps_lifecycle_unstarted(monkeypatch):
+    from jasper.active_speaker import repeat_admission
+    from jasper.web import correction_crossover_backend
+
+    comparison = {"bundle_session_id": None, "fingerprint": "a" * 64}
+    calls = []
+    monkeypatch.setattr(
+        repeat_admission,
+        "activate",
+        lambda value: calls.append(("repeat", value)),
+    )
+    monkeypatch.setattr(
+        correction_crossover_backend,
+        "begin_commissioning_run",
+        lambda _value: calls.append(("commissioning", None)),
+    )
+
+    correction_setup._activate_crossover_comparison_authorities(
+        object(), comparison
+    )
+
+    assert calls == [("repeat", comparison)]
+
+
+def test_commissioning_run_start_failure_revokes_comparison_authority(monkeypatch):
+    from jasper.active_speaker import measurement, repeat_admission
+    from jasper.web import correction_crossover_backend
+
+    comparison = {
+        "bundle_session_id": "session-1",
+        "fingerprint": "a" * 64,
+    }
+    calls = []
+    topology = object()
+    monkeypatch.setattr(
+        repeat_admission,
+        "activate",
+        lambda _value: calls.append("repeat"),
+    )
+    monkeypatch.setattr(
+        correction_crossover_backend,
+        "begin_commissioning_run",
+        lambda _value: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(
+        measurement,
+        "clear_active_comparison_set",
+        lambda value: calls.append("clear") if value is topology else None,
+    )
+    monkeypatch.setattr(
+        repeat_admission,
+        "invalidate",
+        lambda: calls.append("invalidate"),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        correction_setup._activate_crossover_comparison_authorities(
+            topology, comparison
+        )
+
+    assert calls == ["repeat", "clear", "invalidate"]
+
+
 # ---------------------------------------------------------------------------
 # P4 auto-revert wiring (the verify-upload handler → session.auto_revert).
 # ---------------------------------------------------------------------------
@@ -346,8 +937,9 @@ class _FakeSession:
     """Minimal stand-in for the auto-revert helper: it exposes just the
     verdict accessor and an async auto_revert that records the target."""
 
-    def __init__(self, verdict: str | None) -> None:
+    def __init__(self, verdict: str | None, config_dir: Path) -> None:
         self._verdict = verdict
+        self.cfg = SimpleNamespace(config_dir=config_dir)
         self.revert_calls: list[str | None] = []
 
     @property
@@ -370,14 +962,13 @@ def _patch_no_op_camilla(monkeypatch) -> None:
 
     monkeypatch.setattr(correction_setup, "_camilla", lambda: _FakeCam())
     # Resolve target without touching the topology-aware carrier.
-    monkeypatch.setattr(
-        correction_setup,
-        "_resolve_reset_target",
-        lambda sess, cam: "/etc/camilladsp/no-room.yml",
-    )
+    async def resolve(_sess, _cam):
+        return Path("/etc/camilladsp/no-room.yml")
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
 
 
-def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch):
+def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch, tmp_path):
     import asyncio
 
     _patch_no_op_camilla(monkeypatch)
@@ -391,16 +982,16 @@ def test_maybe_auto_revert_acts_only_on_confirmed_revert(monkeypatch):
     )
 
     for verdict in ("accept", "surface", "revert_pending_confirm", None):
-        sess = _FakeSession(verdict)
+        sess = _FakeSession(verdict, tmp_path)
         assert correction_setup._maybe_auto_revert(sess) is False
         assert sess.revert_calls == []  # never touched CamillaDSP
 
-    sess = _FakeSession("revert")
+    sess = _FakeSession("revert", tmp_path)
     assert correction_setup._maybe_auto_revert(sess) is True
-    assert sess.revert_calls == ["/etc/camilladsp/no-room.yml"]
+    assert sess.revert_calls == [Path("/etc/camilladsp/no-room.yml")]
 
 
-def test_maybe_auto_revert_swallows_errors(monkeypatch):
+def test_maybe_auto_revert_swallows_errors(monkeypatch, tmp_path):
     """A revert failure is logged and returns False — it never 500s the verify
     upload (the correction is left applied for manual undo)."""
     import asyncio
@@ -418,7 +1009,7 @@ def test_maybe_auto_revert_swallows_errors(monkeypatch):
             coro
         ),
     )
-    sess = _FailSession("revert")
+    sess = _FailSession("revert", tmp_path)
     assert correction_setup._maybe_auto_revert(sess) is False
 
 
@@ -513,18 +1104,23 @@ def test_upload_handler_runs_auto_revert_on_confirmed_regression(
         correction_setup, "_read_wav_body", lambda handler: wav_bytes,
     )
     monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
-    monkeypatch.setattr(
-        correction_setup,
-        "_resolve_reset_target",
-        lambda s, c: "/tmp/no-room-test.yml",
-    )
+    async def resolve(_sess, _cam):
+        return Path("/tmp/no-room-test.yml")
+
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
 
     resp = correction_setup._handle_upload_capture(object())
 
-    # The response tells the truth about what just happened...
-    assert resp["acceptance"]["verdict"] == "revert"
+    # The upload response is mechanism-only; the envelope owns presentation.
+    assert set(resp) == {
+        "session_id",
+        "state",
+        "current_position",
+        "total_positions",
+        "auto_reverted",
+    }
     assert resp["auto_reverted"] is True
-    # ...and the revert genuinely ran through the shared reset target.
+    # The revert genuinely ran through the shared reset target.
     assert sess.state.value == "idle"
     assert cam.loads == ["/tmp/no-room-test.yml"]
     assert sess.auto_revert_outcome["result"] == "ok"
@@ -544,14 +1140,20 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     )
     monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
 
-    def _boom(s, c):
+    async def _boom(s, c):
         raise RuntimeError("target resolution exploded")
 
-    monkeypatch.setattr(correction_setup, "_resolve_reset_target", _boom)
+    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", _boom)
 
     resp = correction_setup._handle_upload_capture(object())
 
-    assert resp["acceptance"]["verdict"] == "revert"
+    assert set(resp) == {
+        "session_id",
+        "state",
+        "current_position",
+        "total_positions",
+        "auto_reverted",
+    }
     assert resp["auto_reverted"] is False
     assert cam.loads == []  # nothing was loaded
     assert sess.state.value == "verified"  # correction still applied
@@ -563,3 +1165,92 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     env = build_envelope(sess)
     assert "STILL APPLIED" in env["verdict_text"]
     assert "Reset" in env["verdict_text"]
+
+
+# --- W6.1 Findings D + E2: v2 relay visibility + recover-volume routing ----------
+
+
+class _CleanSessionVolumePlan:
+    """A benign session-volume plan for GET-envelope drives (no drain, no
+    recovery) so the lazy-ceiling read + status block stay no-ops."""
+
+    needs_recovery = False
+
+    def stale_active(self, now=None) -> bool:
+        return False
+
+
+def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
+    """Finding D: /crossover/envelope's relay lookup must match crossover_v2:* —
+    it filtered only crossover_sweep:/level_ramp:crossover, so ``relay`` came
+    back null during an awaiting-phone v2 session and a page reload lost the tap
+    link (and the failure copy never reached the household)."""
+    import json
+
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
+    correction_setup._set_relay_capture({
+        "tap_link": "https://capture.test/#s=cap_x",
+        "status": "waiting",
+        "kind": v2host.V2_RELAY_KIND_SESSION,
+    })
+    try:
+        resp = _drive("/crossover/envelope")
+        assert b"200" in resp.split(b"\r\n", 1)[0]
+        body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+        assert body["relay"] is not None
+        assert body["relay"]["tap_link"] == "https://capture.test/#s=cap_x"
+        assert body["relay"]["kind"] == "crossover_v2:session"
+    finally:
+        correction_setup._set_relay_capture(None)
+        v2host.set_volume_plan_for_tests(None)
+
+
+def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
+    """Finding E2: when the v2 conductor owns the unresolved session volume, the
+    recover-volume endpoint must drive SessionVolumePlan.recover_unresolved — the
+    legacy-lease path 409'd crossover_volume_recovery_not_required (the volume
+    holds no lease-unresolved state), leaving the recovery button dead."""
+    import json
+
+    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
+    from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    drained: list = []
+
+    class _V2Plan:
+        needs_recovery = True
+
+        async def recover_unresolved(self, set_v, get_v):
+            await set_v(-15.0)
+            await get_v()
+            drained.append(True)
+            return SessionVolumeRestoreResult.EXACT_RESTORED
+
+    v2host.set_volume_plan_for_tests(_V2Plan())
+
+    class _Cam:
+        async def set_volume_db(self, db, best_effort=False):
+            return True
+
+        async def get_volume_db(self, best_effort=False):
+            return -15.0
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: _Cam())
+    try:
+        resp = _drive("/crossover/recover-volume", method="POST", body=b"{}")
+        assert b"200" in resp.split(b"\r\n", 1)[0]
+        body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+        assert body["status"] == "recovered"
+        assert body["recovery"] == "exact_restored"
+        assert drained == [True]
+    finally:
+        v2host.set_volume_plan_for_tests(None)

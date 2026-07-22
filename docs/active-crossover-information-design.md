@@ -7,9 +7,136 @@
 > [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md); shared capture
 > and analysis primitives remain canonical in
 > [`HANDOFF-audio-measurement-core.md`](HANDOFF-audio-measurement-core.md); room
-> correction remains canonical in [`HANDOFF-correction.md`](HANDOFF-correction.md).
+> correction's shipped operational behavior remains canonical in
+> [`HANDOFF-correction.md`](HANDOFF-correction.md), while its intended product
+> behavior is canonical in
+> [`room-correction-information-design.md`](room-correction-information-design.md).
 > Those documents should link here for crossover-builder product behavior rather
 > than restating it.
+
+> **Wave 1 implementation boundary (2026-07-13): contract-only.** JTS now has
+> silent contracts for target-bound hardware research, operator-confirmed driver
+> safety profiles, exact excitation admission, neutral measurement identities,
+> an Active-owned commissioning lifecycle, and an exact positive eligibility
+> receipt. These types have no live playback, CamillaDSP mutation, persistence,
+> or automatic-receipt producer. The existing Active setup projection now emits
+> a versioned Room authority that keeps manual applied-profile authority
+> separate from automatic commissioning: an explicitly applied manual profile
+> is eligible on the solo active runtime, while an automatic profile remains
+> blocked until the later integration lane issues, persists, and exposes the
+> strict receipt. Room
+> consumes that one Active decision and does not inspect the underlying graph or
+> evidence. Grouped active is explicitly outside this v1 authority: the leader
+> program bake does not expose the driver-domain Layer A carried by Camilla #2.
+
+> **Wave 3 lifecycle boundary (2026-07-14; hardware-free).** A
+> fresh authoritative comparison set that carries a production bundle session
+> id now starts one durable Active commissioning run. The control-plane store
+> persists the exact session fingerprint, run id, process-owner generation,
+> immutable target-attempt reservations, and a bounded, sequenced journal of
+> the nine-state transitions. Correction-web claims that owner at service start,
+> making prior-generation callbacks stale, and
+> `/correction/crossover/status` reports its `commissioning_run` block as
+> `not_started`, exact
+> `current`, comparison-`stale`, or fail-closed `unavailable` state. This is
+> lifecycle identity, not acoustic or apply authority. Correction-web still
+> starts the run at `unconfigured`; only the typed internal evidence host below
+> may reserve region-scoped attempts and advance through `protected` to
+> `measured` after exact persisted evidence exists.
+
+> **Wave 3 region-evidence boundary (2026-07-14; hardware-free).**
+> `jasper.active_speaker.commissioning_evidence` now derives an immutable
+> group-by-region plan from the exact typed durable-run handle, topology, preset, protected profile,
+> comparison set, threshold profile, and commissioning session. Its strict pure
+> values require separate normal, reverse, and delay identities for every
+> crossover region (including both regions of a three-way); exactly three fresh
+> one-shot stationary captures for normal and reverse; and five fresh one-shot
+> captures at every coordinate of the exact Shared bounded schedule. The
+> schedule keeps the exhaustive fine grid capped at 25 measurements and, when
+> that grid is larger, binds at most 25 symmetric coarse coordinates plus the
+> two adjacent fine coordinates around one explicit coarse refinement anchor.
+> The schedule makes no winning-delay claim. Shared's separate
+> `select_scheduled_delay()` final evaluator requires exact scheduled evidence
+> and applies the same repeatability, plateau, and tie policy as the exhaustive
+> selector without relaxing its 25-point limit. Capture
+> planning requires the preset's exact group set: one mono active group for a
+> mono preset, or exactly left and right active groups for a stereo preset, all
+> using the preset's way-count mode and complete driver-role set. Capture
+> contexts retain the typed reserved-attempt handle (including owner generation,
+> attempt number, and reserved target), exact graph, placement, and both
+> generation and playback protection proofs. An explicit per-region operator
+> attestation supplies the signed geometry seed; even `0.0` cannot be assumed.
+> A complete aggregate requires exactly one region value per plan target and
+> makes artifact paths, admissions, and attempts globally unique.
+>
+> The Active-owned `CommissioningEvidenceHost` now makes this evidence path
+> reachable behind a typed internal server boundary. It authors one deterministic
+> next operation, reuses that operation's durable attempt for same-process
+> retries while requiring new one-shot capture/admission identities, persists
+> and reopens every capture and aggregate before progress, captures coarse
+> delay evidence before deriving refinement coordinates, and runs the separate
+> schedule-aware selector only after the exact schedule is complete. The joined
+> runtime holds the existing writer lock through server-derived graph apply,
+> admitted playback/capture, and exact graph/path/listening-volume restoration.
+> Each transient graph hard-caps `devices.volume_limit` at the quieter of its
+> inherited ceiling and the admitted measurement volume; playback re-admission
+> freshly proves that ceiling. The capture transport's play closure expires
+> when transport returns, raises, or is cancelled, so no retained callback can
+> emit audio after the guarded transaction.
+> The plan fingerprints the normalized applied baseline plus microphone
+> calibration once for the complete program; every fresh operation must still
+> match it. Normal, reverse, and every delay coordinate—including zero—must
+> retain distinct live-graph identities.
+> Cleanup restores the potentially louder predecessor listening volume only
+> after fresh graph and path readback prove the exact predecessor; otherwise the
+> attenuated measurement volume remains and recovery fails closed.
+> One crash-released run-store execution mutex spans that transaction through
+> canonical capture commit, so a concurrent caller cannot reinterpret a live
+> restored window as restart recovery.
+> Before apply, a bounded run-store sidecar points at an exact immutable
+> predecessor artifact; fresh restore readback gets its own terminal artifact.
+> A process restart restores a still-pending predecessor before issuing another
+> operation, or durably enters `blocked_live_state_unknown` and requires an
+> exact-restore transition before collection can resume.
+> Internal host status reports whether a capture transport is configured,
+> `hardware_capture_status=hardware_validation_required`, the current live-mutation
+> state, and whether exact recovery is required; it does not imply hardware
+> readiness from synthetic evidence. The polling projection reopens typed
+> complete anchors and proves current program/lifecycle fingerprints without
+> rehashing every child WAV; mutation, evaluator, and commit boundaries retain
+> the strict full-child reopen.
+> Incomplete prior owner generations are abandoned; a run-scoped complete
+> artifact written before its lifecycle transition is recoverable on restart.
+> **Production region-capture boundary (2026-07-15; hardware-free).** The
+> Crossover page now accepts one explicit signed path-difference attestation per
+> region and offers one generic next combined-capture action. The production
+> relay accepts only `kind=summed`; the browser cannot supply region, polarity,
+> delay, graph, attempt, ordinal, or admission. It contributes a real recorder
+> WAV, the authenticated `summed_reference_axis_v1` acknowledgement, and
+> non-authoritative diagnostics. The existing `CommissioningEvidenceHost`
+> remains the sole sequencer and runs normal, reverse, and bounded-delay graphs
+> through its existing writer/readback/restore transaction. Status never reserves
+> attempts or live mutations and reports `server_selected` instead of
+> reconstructing that schedule.
+> Calibration and recorder identity reopen from the durable comparison set;
+> completed isolated evidence may cross owner generations only for the same
+> exact program, while geometry and live attempts remain generation-specific.
+> Production entry is launch-gated to a two-way preset on a DAC profile that
+> declares `supports_active_crossover_commissioning`; only the base DAC8x
+> profile declares it today. Three-way and other DAC paths fail before capture.
+> Legacy raw/direct summed routes remain refused. This slice still makes no
+> candidate, apply, receipt, or Room eligibility decision, and no live hardware
+> was used.
+>
+> **Wave 3 relay Stop boundary (2026-07-14; hardware-free).** The Crossover
+> page exposes one Stop action for active relay level and sweep work through
+> `/correction/crossover/relay-cancel`. While cancellation and exact cleanup are
+> in flight, the server envelope reports `stopping` and withholds forward
+> actions; terminal `stopped` appears only after the owning worker has drained.
+> The subsequent phone-upload and persistence phases are visibly non-stoppable.
+> User Stop is cancellation, not a measurement failure or failure-cue event.
+> The exact boundary and operational mechanics are canonical in
+> [`phone-mic-relay-plan.md`](phone-mic-relay-plan.md).
 
 ## Product goal
 
@@ -249,6 +376,37 @@ prefill the visible fields. Prefill is advice. The visible working crossover is
 the source of truth, and the backend validates the resulting graph before it
 can emit sound.
 
+The existing `/sound/` research helper is the only research entry point. Its
+legacy version-1 JSON remains accepted only as advisory prefill. A version-2
+result must echo the exact server-authored request fingerprint plus every
+physical target id, target fingerprint, role, and make/model; a mismatch or
+stale request is refused. Both versions are untrusted proposals, not playback
+permission. Before an
+automatic isolated-driver measurement can run, every physical driver target
+must have a separately versioned, explicitly confirmed safety profile bound to
+the current topology target. That profile distinguishes:
+
+- the hard minimum and maximum excitation frequencies;
+- required high/low-pass protection, including cutoff and minimum slope;
+- a conservative measurement band inside the hard excitation band;
+- a crossover-search band inside the measurement band;
+- bounded level, duration, repeat, and cooldown policy; and
+- cabinet/radiator capability needed for any low-frequency reconstruction.
+
+`usable_frequency_range_hz` is descriptive product information, not a hard
+safety boundary. A filter cutoff is not a brick wall either: required filter
+slope and the hard excitation edge remain separate facts. Missing, unknown,
+unconfirmed, stale, or target-mismatched safety facts refuse new automatic
+isolated-driver audio. They do not mute an already working normal-playback
+graph merely because the newer commissioning profile has not been created.
+Every profile field is visible and editable in `/sound/`; confirmation freezes
+the normalized visible values, their target/value binding, code-owned policy
+snapshot, unknowns, and field provenance. Any target, topology, output,
+driver-style, make/model, or visible safety-value change invalidates the prior
+confirmation. The profile always reports `authorizes_playback=false`: a later
+adapter must still compose and freshly prove the stricter excitation and live
+graph authorities.
+
 ### Step 3A: manual crossover
 
 Manual mode exposes, per crossover region:
@@ -400,7 +558,249 @@ the woofer's bottom octave is a NORMAL outcome in evening and urban rooms —
 residential noise is heavily low-frequency-weighted — so the shortfall path
 is ordinary product behavior, not an error state: name the actionable lever
 (quiet the room, accept reduced low-frequency confidence, or raise the level
-within the envelope).
+automatically within the envelope — see the closed-loop level solver below).
+
+**The closed-loop level solver (W2.1) chooses the sweep level automatically,
+before any tone plays.** Hardware session 2026-07-16 (jts3) measured driver
+sweeps running roughly 24 dB below the driver-safety effective-peak ceiling
+in a noisy room — worst-band SNR 11.0-16.1 dB against the 20 dB floor above,
+a deterministic "insufficient" result every time, even though every input
+needed to pick a louder, still-safe level was already known before the tone
+played. `jasper.audio_measurement.level_solver` closes that gap: given the
+driver's level-match lock (`gain_map_db`, the ramp's dynamic `cap_db`), the
+room's ambient noise (a per-band phone measurement when available, else the
+ramp's broadband `noise_floor_dbfs` plus a conservative low-frequency
+weighting margin — low-frequency room noise routinely reads louder than a
+broadband average suggests), and the confirmed driver-safety ceilings (the
+same `max_effective_peak_dbfs` admission itself enforces), it picks the
+QUIETEST `(main_volume_db, commissioning_gain_db)` pair that clears the 20 dB
+floor plus a 6 dB solver margin. `main_volume_db` climbs first, bounded by
+the ramp's cap; `commissioning_gain_db` only rises off its current baseline
+(never below it) when volume alone, at its cap, still cannot reach the
+target — the case an insensitive driver (e.g. a tweeter whose role gain
+already floors it well below the ceiling) needs. When even that best effort
+cannot clear the bare 20 dB floor, the solver refuses with a typed
+`room_too_noisy_for_safe_measurement` result BEFORE any tone plays, naming
+the failing band and the two levers (quiet the room, move the microphone
+closer) — the refusal itself does not invalidate the driver's level lock,
+though the remedy the UI offers today re-runs the guided level check from
+the start (ambient is currently a ramp byproduct; a retained-locks
+re-measure is the planned seam for the phone ambient-stats follow-up).
+`commissioning_gain_db` stays governed by the same non-positive,
+`DriverSweepGeneratorPlan`-validated invariant as before — the solver
+proposes, commissioning admission still validates every ceiling exactly as
+it always has (defense in depth). The phone-side per-band `ambient_stats`
+event is a follow-up page change; until it ships, every solve takes the
+broadband-fallback path.
+
+**Bounded correction (W2.2) is ONE signed per-target adjustment, applied
+to the solver's assumed ambient, with up to two writes per target per
+comparison set.** Hardware run 18 (2026-07-16, jts3) exposed a second
+failure mode the W2.1 escalation didn't cover: a woofer sweep solved with
+`gain_map_db` from the level-match ramp's single 250 Hz lock tone,
+predicted a comfortably safe mic peak, and clipped the mic at 0 dBFS
+anyway — a single-frequency tone can underestimate a full sweep's hottest
+band by double digits of dB, and a clip rejection carries no
+`snr_shortfall_db` (the W2.1 escalation's only trigger), so the same
+doomed level replayed identically on every bounded repeat attempt. Two
+independent, complementary fixes:
+
+1. **SNR-shortfall rejections still raise the assumed ambient** (unchanged
+   sign/mechanism), and **clip rejections now lower it** — a de-escalation
+   sized from the clipped capture's OWN measured mic peak, targeting a
+   `MIC_TARGET_PEAK_DBFS` of −12 dBFS (well below the −6 dBFS hard mic-clip
+   ceiling) with a `CLIP_UNDERESTIMATE_ALLOWANCE_DB` of 3 dB folded in,
+   since a clamped/clipped mic reading understates the true acoustic peak.
+   Both triggers write into the SAME signed adjustment slot, so a
+   target's correction always reflects its most recent evidence regardless
+   of which direction it came from.
+2. **Once ANY capture — accepted or rejected — exists for a target, the
+   driver's own measured chain gain (measured mic peak minus that
+   attempt's played level) replaces the tone's `gain_map_db` for the
+   solver's mic-clip ceiling specifically** (not the SNR-target math, which
+   still reads the tone-derived `gain_map_db` unchanged) — a full-sweep
+   measurement is strictly better evidence about the driver's hottest band
+   than one lock-tone frequency. When the capture that produced the
+   reading clipped, the same `CLIP_UNDERESTIMATE_ALLOWANCE_DB` is folded
+   into the stored gain so every later use inherits the same conservatism.
+
+**Completion-time correction (W2.3, hardware run 19) covers a third failure
+mode neither W2.1 nor W2.2 saw: a repeat set can finalize with every
+individual attempt accepted — each attempt's topology-overlap region was
+clean, so the per-attempt rejection path above never fires — yet the
+finalized winner capture's own aggregate worst-band SNR still reads
+"insufficient".** Two full woofer repeat sets at the tester's stationary
+desk placement measured exactly this: all 3 attempts `accepted=true` each
+time, per-attempt `snr_verdict=insufficient` (13.7/14.2/13.2 dB, then
+16.3/13.4/7.8 dB after the household restarted the level check) — zero
+`level_solve_corrected` events, because the correction only ever wired from
+a rejection. The completion path now extracts the finalized winner's own
+measured worst-band SNR and, when the aggregate verdict is insufficient,
+writes a correction sized from the solver's own required threshold (the 20
+dB floor plus the 6 dB solver margin, i.e. the same 26 dB the solve itself
+gates on) minus what was actually measured — not the bare per-band
+acceptance floor those individual bands were gated against.
+
+At most two corrections write per target (any trigger, combined); a third
+rejection or completed-insufficient finalization past the bound does not
+guess a third level — the next solve attempt refuses pre-flight with a
+typed `measurement_window_unreachable` result (same "fires before any tone
+plays, never invalidates the level lock" contract as
+`room_too_noisy_for_safe_measurement`), naming the physical lever: move
+the phone closer to the driver being measured, then measure again.
+
+**As of W2.3, the adjustment and the measured gain persist per (target,
+relay microphone identity) across a fresh ramp lock — including the
+between-set level-check restart, the household's only mechanical path out
+of both terminals** — hardware run 19's two repeat sets measured
+near-identical solve inputs before and after the household restarted the
+level check (set 1 solved −26.25 dB effective, set 2 solved −27.9 dB,
+quieter only because the fresh ambient baseline happened to read lower), so
+clearing the correction on every re-lock or restart just replayed the same
+doomed level. The two restarts are distinguished by **stored state**, never
+by request shape (both terminals POST the same level-match endpoint with
+the same body).
+
+**W2.4 (hardware run 20, 2026-07-17) revised the discriminator from
+"exhausted budget" to "a pre-flight refusal was shown for this target."**
+Run 19's terminal state (completed-insufficient, no pre-flight solve ever
+refused) and W2.2's exhausted-budget refusal are not the only way a
+household reaches the between-set restart: run 20 showed set 1 finalizing
+insufficient (writing a +shortfall correction, one write — not exhausted),
+set 2 solving louder from that correction, and THEN genuinely refusing
+`room_too_noisy_for_safe_measurement` before any tone played — still one
+write below the exhausted bound. The household followed the refusal
+screen's own "Redo the quick level check" action, relocked both drivers
+cleanly, and tapped measure — and the identical refusal came back in about
+5 seconds, no pre-roll, no tone: the old "not exhausted → preserve" rule
+kept the SAME adjustment in place across the restart, so the fresh solve
+against a freshly re-measured (near-identical) room reproduced the exact
+same refusal. An honest instruction ("redo the level check to measure
+again") led to a dead loop, because nothing about the correction had
+changed to make the next solve different — the correction and the
+refusal it produced disagreed about whether the household's own new
+attempt was new evidence.
+
+The revised rule:
+
+- a target with **no pre-flight refusal pending** keeps its signed
+  adjustment, write count, measured gain, and mic-identity binding across
+  the restart — this is the completed-insufficient path (every individual
+  attempt accepted; the aggregate SNR verdict alone triggered the
+  correction) and is what makes that terminal's "JTS will play the next
+  measurement louder" promise come true;
+- a target with **a pre-flight refusal pending** — either a genuine
+  `room_too_noisy_for_safe_measurement` solve refusal at ANY write count,
+  or the synthesized `measurement_window_unreachable` refusal once the
+  budget is exhausted (exhausted is always a refusal; it is subsumed, not
+  a separate case) — clears completely on the restart: a fresh evaluation,
+  so the refusal cannot latch, and if the physics truly didn't change the
+  machinery re-converges to the refusal within the bounded write budget
+  instead of looping on one identical solve with no audio ever played.
+  Every restart after a refusal now plays a real baseline sweep and
+  re-measures reality — the household relocking cleanly is itself new
+  evidence the solver had never seen — which converges or honestly
+  oscillates with real measurements, never a canned replay.
+
+Both surfaces read the same two stored facts — the lease's most recent
+pre-flight solve refusal (`_solve_refusal`) and the bounded-correction
+write count (`_correction_budget_exhausted`) — through separate readers:
+the between-set restart via `CrossoverLevelLease._target_refusal_pending`
+(direct reads), the envelope's refusal rendering via
+`level_match_snapshot()`'s `solve_refusal` / `solve_correction.exhausted`
+projections of those same facts
+(`crossover_envelope._active_level_solve_refusal`). Because the readers
+are separate code paths, their agreement about "was a refusal shown for
+this target" is pinned by a parity regression
+(`test_refusal_pending_predicate_parity_with_envelope_rendering`) across
+the representative states (refusal pending below the bound, exhausted
+without a fresh solve refusal, neither) rather than assumed
+structurally.
+
+Beyond the refusal-pending restart case, a target's correction state
+clears only on: its repeat set finalizing with a *sufficient* aggregate
+verdict, the relay microphone changing (a different mic is different
+physics), or a true full reset (`invalidate_comparison_context` without
+the between-set-restart flag). As of 2026-07-17 this IS called by a
+production surface — the in-flow "Start over" control
+(`POST /crossover/reset` →
+`correction_crossover_backend.reset_measurement_journey`, see
+docs/HANDOFF-correction.md "Scoped crossover reset") — the whole-flow reset
+this contract anticipated. It never clears on a
+terminal refusal (insufficient accepted repeats), since that failure
+mode's physical cause is very likely still present on the next attempt.
+`measurement.level_solved` carries the signed `adjustment_db` (the
+persisted running total, so it reflects every prior write across re-locks
+and restarts) and a `gain_source` of `tone_gain_map` or
+`measured_band_peak` so the journal names which evidence a solve actually
+used; `correction.crossover_level_context_invalidated` names the preserved
+and cleared (`cleared_refused_targets`) targets on every between-set
+restart.
+
+The household-facing copy for a level-solve refusal is one code → sentence
+mapping (`describe_level_solve_refusal`, in
+`jasper.active_speaker.crossover_envelope`), and the raise site
+(`LevelSolveRefused` in `jasper.web.correction_crossover_backend`) builds
+its own `str(exc)` from that SAME mapping — mirroring
+`jasper.correction.level_match.LevelMatchRefused` — so a caller that only
+does `str(exc)` (the phone's `sweep_failed` host event, the wizard's
+generic relay-failure fallback) can never render the raw
+`"level_solve_refused code=... band=...Hz"` diagnostic string to the
+household; both surfaces showed exactly that string, in red, before this
+fix. The envelope also no longer renders the generic
+`crossover_repeat_rejected` nudge (built from the durable repeat ledger's
+last-result entry, independent of the eventual screen) alongside the
+`level_solve_refused` screen — that nudge's "nothing to fix in the room,
+try again" copy flatly contradicted the refusal's own verdict.
+
+**The per-band noise estimate must match measured reality (phantom
+noise-floor fix, hardware forensics 2026-07-17).** W2.1-W2.3 above were all
+built on an unquestioned input: the per-band SNR the ambient-noise
+deconvolution reported. Forensics on three real jts3 captures (sessions
+293cc36331f7, 70819cab996b, f44ecc33d071 — driver=main woofer, sweep
+f1=60 Hz/f2=4000 Hz) found that input itself was wrong. `sub_bass` (20-80
+Hz) straddles the sweep's own `f1` — the reference carries almost no
+deliberate energy there — so the regularized deconvolution
+(`jasper.audio_measurement.deconv.regularized_deconvolution_full`, a fixed,
+frequency-independent Tikhonov epsilon) was dividing by a near-zero
+reference spectrum: a well-known "resonance" artifact of that kind of
+regularization, not a measurement. Independent FFT analysis of the same raw
+quiet windows put the room's true `sub_bass` ambient at about −75 dBFS,
+stable across all three sessions; the deconvolved noise term the estimator
+reported was about −25 dBFS — **the reported per-band SNR was overstated by
+roughly 40-50 dB.** Every "insufficient" verdict W2.1's escalation, W2.2's
+clip correction, and W2.3's completion-time correction were built to react
+to — across the runs 1-20 correction/refusal cascade this section
+documents — was chasing that phantom, not real room noise: true `sub_bass`
+SNR was roughly 63-66 dB, comfortably "ok".
+
+Fix: `jasper.audio_measurement.snr_policy.excitation_covered_bands` flags
+any canonical band not ENTIRELY inside the reference sweep's `[f1, f2]`
+(no margin — widening the check to "give the fade some berth" would also
+flag bands that read fine today, trading a real bug for an unforced
+regression). `apply_noise_band_fallback` substitutes the raw
+(non-deconvolved) robust ambient reading — grounded truth for what the room
+actually did, already computed for the small robust-minus-baseline
+non-stationarity delta but previously unused for gating — for exactly those
+uncovered bands, UNLESS that raw reading is itself floor-clamped at
+`snr_policy.DBFS_FLOOR` (no real precision left to trust either; the real
+hardware `treble` shape, entirely above a woofer's `f2=4000 Hz`, where the
+phone mic's own noise floor at 4-12 kHz reads as pure digital silence — that
+band keeps its pre-fix deconvolved value rather than reporting a clamped
+number as a real measurement). Covered bands (bass/upper_bass/transition/mid
+in the real captures, and every band on the DEFAULT 20 Hz-20 kHz
+single-driver sweep) keep their reported level unchanged — the fix only adds
+the additive diagnostic `basis` key (`"deconvolved"` vs
+`"raw_ambient_fallback"`) each band entry now carries.
+This is scoped to the noise TERM only: the signal-side magnitude
+computation, the verdict vocabulary, and every consumer of the SNR block
+(`band_snr_verdicts`, `worst_band_verdict`, the W2.1-W2.3 completion-
+correction machinery above) are unchanged — their inputs simply became
+truthful. Ground-truth fixtures (compact per-band numeric tables, not WAV
+blobs) and the synthetic protective-power cases (a genuinely noisy quiet
+window must still read "insufficient") are pinned in
+`tests/test_audio_measurement_snr_policy.py` and
+`tests/test_active_speaker_driver_acoustics.py`.
 
 ### Measurement validity: gating and the low-frequency floor
 
@@ -425,6 +825,364 @@ as SNR:
 - a proposal whose frequency the room prevented measuring is marked
   reduced-confidence or refused with "the room prevented a low-frequency
   decision here", never silently emitted.
+
+#### Low-frequency reconstruction contract: sealed single radiator v1
+
+The first reconstruction success path is deliberately narrower than the
+ordinary `near_field` capture label. That label and its placement proof are
+useful for repeat identity and level diagnostics, but they attest an operator
+instruction rather than a measured microphone distance. They are not by
+themselves reconstruction evidence.
+
+`sealed_single_radiator_v1` is the only admitted cabinet model. It requires all
+of the following immutable, positive geometry:
+
+- `enclosure_kind = sealed` and `radiator_count = 1`, with no port, passive
+  radiator, coupled second cone, or other acoustic source;
+- effective circular radiating diameter `D`, front-baffle width `w`, and
+  front-baffle height `h`, all in millimetres;
+- a near-field microphone distance `r_nf`, measured from the diaphragm/dust-cap
+  centre to the microphone capsule; and
+- a reference-axis distance `r_ff`, measured from the baffle plane to the
+  microphone capsule, and a known reflection-free validity floor, using the
+  same microphone/calibration identity and immutable applied crossover as the
+  near-field capture.
+
+The frozen version-1 safety profile remains the authority for enclosure kind,
+source count, effective diameter, and baffle width; it is not silently extended
+with baffle height. Height lives in a separately versioned, operator-confirmed
+`jts_active_speaker_reconstruction_geometry` artifact bound to the exact target
+id/fingerprint, topology fingerprint, and confirmed safety-profile
+fingerprint. Both distances live in immutable
+`jts_active_speaker_reconstruction_placement_proof` artifacts bound to their
+exact capture identity and the same context. They are numeric ruler
+measurements entered by the operator, not sensor claims. The current
+operator-attestation placement proof and its nominal 3 cm instruction cannot
+be reinterpreted or upgraded into either artifact.
+
+The model uses `a = D/2`, metres for the equations below, and `c = 343 m/s`.
+The near-field sample is valid only when `0 < r_nf < a/20`; the far-field
+sample is valid only when `r_ff > 6a`; and reconstructed near-field bins stop
+at `ka = 2πfa/c <= 0.8`. The distance rules follow the conservative ARTA
+free-field reconstruction procedure; the `ka <= 0.8` product threshold keeps
+a 20% margin inside Keele's low-frequency piston condition `ka < 1`. An
+operator acknowledgement without the persisted numeric ruler value, a nominal
+instruction, a driver model's frame diameter, or an inferred phone dimension
+never substitutes for a measurement.
+
+The selected cabinet correction is ARTA's rectangular-baffle low-frequency
+diffraction approximation. Define the square-equivalent baffle dimension
+
+`d_eq = w (h/w)^(1/3)`
+
+and `f0 = 34.16/d_eq` with metres and hertz. Convert the half-space near-field
+response to an on-axis full-space magnitude estimate with
+
+`B_db(f) = 20 log10 |(1 + j f/f0) / (2 + j f/f0)|`.
+
+This is a broad 4π-to-2π baffle-step model: its magnitude approaches -6 dB at
+low frequency and 0 dB at high frequency. It is not an edge-diffraction-ripple,
+off-axis, directivity, or arbitrary-box simulator. No fitted frequency-shaped
+correction may be learned from the overlap. A different enclosure/source shape
+needs its own reviewed reconstruction contract rather than a permissive flag.
+The spliced product is magnitude evidence only. It cannot supply relative
+phase, polarity, delay-walk, reverse-null, or shared-clock evidence; those stay
+separate prerequisites for candidate evaluation. Do not synthesize the model's
+complex phase. The later scalar overlap alignment subsumes absolute
+near-to-far distance scaling. The ARTA approximation is admitted only in its
+stated source-size domain, `1/40 <= (a/d_eq)^2 <= 1/10`.
+
+Splicing is deterministic and fail closed:
+
+1. Let `L` be the greatest of `1.25 * f_valid_floor` and both responses' lower
+   support bounds. Let `U` be the least of the near-field `ka = 0.8` limit and
+   both responses' upper support bounds. Refuse unless `U/L >= 2`.
+2. Select exactly one octave: `f_lo = min(max(f0, L), U/2)`, `f_hi = 2 f_lo`.
+   Refuse unless its overlap with the model transition `[f0, 2f0]` spans at
+   least 1/12 octave:
+   `log2(min(f_hi, 2f0) / max(f_lo, f0)) >= 1/12`. Resample both calibrated
+   responses at exactly the 13 points
+   `f_i = f_lo * 2^(i/12)`, for integer `i` from 0 through 12. Missing or
+   non-finite coverage is not extrapolated.
+3. Add `B_db` to the near-field level, then align it to the far-field
+   response with exactly one scalar: the median far-field-minus-corrected-
+   near-field level over the overlap. Do not peak-normalize either response.
+4. After scalar alignment, refuse unless the overlap residual has RMS no more
+   than 1.5 dB, maximum absolute error no more than 3.0 dB, and absolute
+   ordinary-least-squares slope against `log2(f)` no more than 1.5 dB/octave.
+   These are admission thresholds, not optimizer penalties. Both captures must
+   also carry affirmative admission/quality verdicts and at least 25 dB
+   magnitude-decision SNR throughout the selected octave.
+5. Blend level in dB across the complete overlap with
+   `x = log(f/f_lo) / log(f_hi/f_lo)` and
+   `w(x) = (1 - cos(πx))/2`: corrected near field has weight `1-w`, gated far
+   field has weight `w`. Below the overlap use corrected near field; above it
+   use gated far field. Preserve the source identities, scalar offset, model
+   version, bounds, residuals, and thresholds in the replay result.
+
+A successful reconstruction serializes these labels exactly:
+
+- `model_id = sealed_single_radiator_v1`;
+- `response_domain = magnitude_db_only`;
+- `amplitude_reference = played_excitation_normalized`;
+- `peak_normalized = false`;
+- `active_electrical_crossover_included = true`;
+- `natural_driver_plant_isolated = false`;
+- `phase_available = false`;
+- `authority = admitted`; and
+- `threshold_set_id = sealed_single_radiator_v1`.
+
+The result fingerprint covers those labels plus the numeric thresholds and
+input identities. `authority = admitted` is limited to the reconstructed
+magnitude evidence and does not confer candidate, apply, verification, receipt,
+or playback authority.
+
+The reconstruction capability exposes stable typed refusal slugs:
+
+- `reconstruction_profile_unconfirmed`, `reconstruction_profile_stale`,
+  `reconstruction_target_mismatch`, `reconstruction_topology_mismatch`,
+  `reconstruction_geometry_binding_mismatch`,
+  `reconstruction_placement_binding_mismatch`,
+  `reconstruction_applied_crossover_mismatch`, and
+  `reconstruction_calibration_mismatch`;
+- `reconstruction_capture_not_admitted`,
+  `reconstruction_capture_quality_refused`, and
+  `reconstruction_capture_snr_insufficient`;
+- `reconstruction_enclosure_unsupported`,
+  `reconstruction_source_count_unsupported`, `reconstruction_geometry_missing`,
+  and `reconstruction_geometry_model_domain_unsupported`;
+- `reconstruction_near_field_distance_missing`,
+  `reconstruction_near_field_distance_out_of_range`,
+  `reconstruction_far_field_distance_missing`, and
+  `reconstruction_far_field_distance_out_of_range`;
+- `reconstruction_far_field_validity_floor_unknown`,
+  `reconstruction_overlap_missing`, `reconstruction_overlap_too_narrow`,
+  `reconstruction_overlap_transition_uncovered`, and
+  `reconstruction_overlap_non_finite`;
+- `reconstruction_overlap_rms_exceeded`,
+  `reconstruction_overlap_peak_exceeded`,
+  `reconstruction_overlap_slope_exceeded`, and
+  `reconstruction_decision_band_uncovered`.
+
+A candidate decision that needs reconstructed lower-driver data must have
+continuous admitted coverage across its complete `[Fc/2, 2Fc]` scoring band.
+A refusal never falls back to an uncorrected near-field curve.
+
+Wave 2's historical B2b captures are permanently non-admitted legacy
+replay/debugging evidence. A strict replay may replay the exact current applied
+winner from its immutable WAV, excitation, calibration snapshot,
+placement proof, and applied crossover, normalizing only the declared scalar
+playback gain. That replay must say `authoritative = false`, must not synthesize
+the missing measured-distance or admission evidence, and cannot authorize a
+splice, candidate, apply, verification, or eligibility receipt. Synthetic
+fully admitted fixtures may exercise a pure candidate evaluator, but they do
+not change current product readiness: until real captures satisfy every gate,
+`ready = false`, no automatic candidate is persisted, and the UI does not
+offer **Replace with measured crossover**.
+
+Wave 2 deliberately stopped before implementing a score. Its typed input contract
+pins the prerequisites that must precede any future frequency/family evaluation:
+three distinct admitted stationary captures per required driver/normal/reverse
+target, five distinct admitted null captures per graph-confirmed delay, a
+50–100 µs walk bounded by declared geometry ± half a crossover period, and a
+profile intersection tightened by measured per-band validity and SNR. Placement
+is stable per topology-derived speaker group, not falsely global across stereo
+cabinets. The future graph proof is topology-wide and exact: routing, complete
+filter chains, gains, permanent protection, and `devices.volume_limit <= 0` all
+belong to the same proof. Fresh persisted admission must be issued from Active's
+exact current safety plan and independently rechecked by the playback backend.
+The first Wave 3 production slice adopts those Shared boundaries for an
+**isolated driver capture only**. `active_speaker.commissioning_admission`
+turns the former preparation-only plan into the trusted adapter: it intersects
+the code and confirmed-profile frequency/level/duration/repeat limits, binds the
+exact current topology, applied profile, comparison session, volume lock, and
+fresh running-graph fingerprint, then proves the required directional filters,
+per-output limiter, exact admitted per-output commissioning gain, capture route,
+audible/mute mask, headroom, and a `devices.volume_limit` no higher than the
+locked listening volume from a non-best-effort CamillaDSP readback. That
+transient ceiling makes the output envelope independent of a racing dial or
+control-process main-volume write; a fresh post-play volume read rejects any
+remaining quieter drift without issuing capture authority. The profile's
+minimum cooldown is enforced as a cancellation-safe pre-play wait on every
+one-shot attempt; values above the bounded five-second automatic ceiling are
+refused rather than clipped. That ceiling is derived from the phone relay's
+armed-to-sweep deadline after reserving the controlled ambient interval, the
+longest protected sweep, and nine seconds for graph/relay operations. The
+browser cannot supply protection or capture-admission authority.
+
+Every fresh commissioning bundle is created once as the exact Shared admission
+authority. Existing directories without its marker remain historical and the
+reopen path never repairs or upgrades them. Each driver attempt mints a unique
+`admission_id`, persists generation admission before allocating PCM, writes one
+no-replace role-bounded WAV, and binds its exact bytes. Active holds one bounded
+Shared DSP-writer lock across transient graph load, both live readbacks,
+`play_admitted_wav()`, fan-in cleanup, and production-graph restoration. The
+playback issuer rebuilds the current plan and protection evidence under that
+same lock, so profile, topology, comparison, applied-profile, pre/post volume, graph,
+filter, route, or target drift refuses before audio. A persisted playback-role
+artifact—not the generation decision—is threaded through the server-side relay
+flow and revalidated before capture persistence. Cancellation cannot bypass
+restoration; after playback admission has persisted, timeout, cancellation, or
+failure returns typed possible-audio authority and consumes the one-shot
+identity.
+
+Positive schema-v2 receipt validation treats every post-apply raw,
+analysis-input, quality, generation-admission, and playback-admission identity
+and relative path as one global namespace across all required speaker groups.
+Cross-target reuse is refused even when a colliding raw path names different
+bytes.
+
+The isolated-driver playback slice does **not** make the candidate ready.
+The production fixed-axis relay does now populate the strict isolated-driver
+side of the plan: every accepted real recorder WAV retains its unique issued
+live-graph proof, generation/playback admissions, calibration, gated analysis,
+quality decision, and durable semantic attempt. Exactly three accepted repeats
+complete one driver; only exact coverage of every planned physical driver
+publishes `CompleteIsolatedDriverEvidence`. The bounded fourth attempt refuses
+below three accepted fixed-axis captures, and status idempotently finishes
+derived driver/run anchors left incomplete after typed capture publication.
+Historical and fail-soft records remain forensic and non-promotable.
+The later Wave 3 control-plane integration now starts and exposes a durable
+`unconfigured` commissioning run only from the fresh bundle-backed comparison
+set, claims its process owner at correction-web startup, and classifies a
+different active comparison as stale. The isolated-driver browser route now
+owns exact per-driver attempts and the first `protected` transition; summed
+collection now uses that same host through a recorder-only relay. The typed internal
+evidence host now reserves deterministic region attempts, persists and reopens
+exact admitted normal/reverse/delay sets, evaluates the bounded measured delay
+schedule, and advances the exact run from `unconfigured` through `protected`
+to `measured`. A store-backed pure deterministic evaluator can now reopen exact
+complete isolated and summed evidence and derive an
+attenuation/polarity/delay-only electrical candidate. The production Active
+service now invokes it after the final summed capture, persists and strictly
+reopens one generation-scoped candidate, and advances the exact run to
+`candidate_ready` with the artifact identity as transition evidence. The
+correction envelope projects one server-owned review containing retained
+Fc/family/order, measured per-role attenuation and absolute delay, retained
+polarity proof, and exact isolated/summed provenance. Graph mutation/apply,
+verification/receipt, and Room authority were not part of that candidate slice.
+If the deterministic evaluator refuses otherwise complete evidence, Active
+persists a generation-scoped refusal artifact and binds it to the lifecycle's
+existing `candidate_scoring_failed` blocked transition. The browser offers one
+fresh full measurement run; it does not retry immutable evidence that must
+produce the same refusal.
+Legacy direct browser/raw combined-capture routes remain permanently pre-audio
+refused with `active_summed_persisted_admission_unavailable`. The production
+relay's recorder-only `kind=summed` branch now supplies real WAVs and explicit
+signed/fixed-axis geometry to the typed internal host without granting the
+browser scheduling or DSP authority. Historical B2b captures remain
+permanently non-admitted. Current projections expose only the exact measured
+candidate review and the apply/recovery states described below. Automatic Room
+authority remains unavailable until the retained graph passes three admitted
+post-apply fixed-axis captures and Active persists the exact receipt. That gate
+is separate from the operator-owned, explicitly applied manual-profile Room path
+described below.
+
+The production measured-candidate apply boundary is now wired hardware-free.
+The review's explicit Apply action posts the exact candidate fingerprint; the
+Active service reopens that candidate and its current target/safety authority,
+then rechecks all of it inside the existing DSP writer lock. The baseline
+compiler retains the reviewed preset exactly and emits only the candidate's
+attenuation, normal/reverse polarity result, and playback-clock delay. Apply
+uses the existing loader/readback/rollback path plus Active's exact
+graph/path/listening-volume snapshot. A freshly classified protected graph and
+write-once applied proof resolve the run sidecar as `retained`; only then may
+the applied Layer-A snapshot and `applied_unverified` transition finalize.
+Before that point any failure or cancellation restores the exact predecessor
+before writer-lock release. Crash windows resume from the same sidecar and
+artifacts as either pre-mutation release, exact restore, or bookkeeping-only
+retained finalization. The browser projects one current state and action; it
+does not reproduce the apply state machine. No live JTS3 graph was mutated by
+this implementation slice.
+
+### Wave 2 level-run correlation and timeout boundary
+
+`jasper.active_speaker.crossover_level_run` owns schema-v1 identity and durable
+progress for crossover level checks. This state is deliberately separate from
+the durable listening-volume safety latch. Run correlation answers *which exact
+request is this callback about?*; the volume latch remains the only authority
+for exact restore or emergency attenuation after a possible volume mutation.
+Neither state may stand in for the other.
+
+Before relay transport opens, Active freezes one
+`jts_active_crossover_level_run_request` containing the exact topology id,
+confirmed protected-profile fingerprint, physical target id and fingerprint,
+canonical capture geometry, and the complete replayable `MeasurementRamp`
+configuration. The request and ramp config each have a canonical SHA-256
+fingerprint. The Pi safety timeout is `ceil(ramp.safety_timeout * 1000)`; the
+phone hard timeout is
+`ceil((ramp.safety_timeout + 30 seconds transport/setup grace) * 1000)`. The
+30-second grace is a conservative hardware-unverified Wave 2 value, not a
+measured latency claim; Wave 4 must test the real phone/relay tail. Planning and
+execution consume that same serialized ramp config. A changed environment after
+claim cannot silently change the executing ramp.
+
+The durable current-run phases are exactly `awaiting_phone`, `running`,
+`succeeded`, `failed`, and `interrupted`. One atomic claim mints the run id; that
+same id is the existing token-scoped relay `run_token`. An identical active
+request returns `duplicate_active`; an identical current success returns
+`duplicate_succeeded` only while the same service owner still holds the
+process-local level result; invalidating the comparison context or discarding
+that exact driver result removes the in-memory success marker, so the next
+identical claim is new. Neither duplicate disposition may dispatch transport or
+backend work. A different request cannot replace active work. Backend start is
+also single flight. Only exact-current-run callbacks may mutate state; stale
+terminal callbacks are ignored. At service startup, a nonterminal prior-owner
+run becomes
+`interrupted/service_restarted` before any retry may claim the slot. A prior
+owner's terminal success does not deduplicate because the corresponding level
+lock is process-local and must be reacquired after restart.
+
+A token-matched armed batch advances the run to `running`. A token-matched
+`phone_timeout` **before** backend start terminally refuses the run as
+`failed/phone_aborted`: the live phone feed and clip guard have ended, so audio
+must not start. A timeout recorded **after** backend start is an observation, not
+premature proof of backend failure: the same already-bounded action may still
+complete its final persistence. If that exact run later succeeds, it is stored
+as `late_success=true`. The relay poll may observe an already-posted same-token
+timeout just after success persistence; that exact-current-owner callback may
+annotate the terminal success as late, but never reopens or redispatches it.
+Unrelated or stale success cannot be relabeled. Success is allowed only after
+both token-matched phone arming and single-flight backend start, and only after
+the complete crossover action—including level-lock or comparison-set
+finalization—has returned. Ordinary action exceptions become a typed terminal
+failure at the adapter. The durable file and public status retain no tap link,
+pull token, relay credential, raw phone events, or calibration payload;
+`/state.level_match.run` exposes only safe bindings, timing fields, phase,
+timeout observations, terminal reason, late-success status, and whether the
+same process still holds the result needed for terminal deduplication.
+
+The required Room-owned `correction_setup.py` transport adapter is intentionally
+not part of Active's Wave 2 changes. Its exact integration is:
+
+1. after the existing current topology/profile/target validation, call
+   `CrossoverLevelLease.claim_level_match_run`; bind Room's process-local relay
+   holder to both kind `level_ramp:crossover` and `claim.run_id`; if
+   `should_dispatch` is false, return the existing run/status plus a tap link
+   only when **both** those values match, without calling `_run_relay_capture`
+   (the existing kind-prefix-only lookup is insufficient and must not return a
+   prior same-kind run's link);
+2. pass `claim.run_id` to `build_level_ramp_spec` as `run_token` and
+   `claim.phone_hard_timeout_ms` as `hard_timeout_ms`; also pass the same id
+   explicitly through `_run_relay_level_match(..., level_run_id=claim.run_id)`
+   to `CrossoverLevelLease.run_level_match`; the Active lease never infers
+   claimed authority from public status, and any explicit stale/mismatched id
+   refuses instead of falling back to current environment config;
+3. while polling, notify `mark_level_run_phone_armed` once for the matching armed
+   batch and `mark_level_run_phone_timeout` only when the matching batch's abort
+   reason is `phone_timeout`;
+4. call `mark_level_run_succeeded` only after the complete `_run` callback and
+   its lock/comparison-set persistence return; call `mark_level_run_failed` for
+   ordinary exceptions, including foreground relay registration failure, before
+   re-raising, using the matching `CrossoverLevelRunFailure` member
+   (`RELAY_REGISTRATION_FAILED`, `PHONE_ABORTED`,
+   `LEVEL_MATCH_ACTION_FAILED`, or `FINALIZATION_FAILED`); and
+5. call `correction_crossover_backend.claim_level_run_owner()` beside the
+   existing repeat-admission owner claim at correction-web service startup.
+
+`_run_relay_capture`, relay credentials, capture-page lifecycle, and the generic
+phone transport remain Room-owned. Active supplies only the narrow claim,
+notification, terminal, status, and frozen-config consumer APIs.
 
 Single-position capture also cannot observe vertical lobing: off-axis and
 directivity behavior are outside the single-position tier's evidence (First
@@ -519,6 +1277,13 @@ Apply uses the existing shared DSP transaction. It must:
 6. confirm that the runtime loaded the expected graph; and
 7. roll back if compilation, loading, or runtime confirmation fails.
 
+Wave 1 did not add a generic graph-transaction framework. The exact rollback
+state identity reuses the existing
+`jasper.audio_measurement.null_walk.DspPredecessor` JSON/fingerprint convention.
+Holding the live writer lock,
+applying, reading back, and restoring that exact predecessor remain the owning
+Active adapter's later integration work.
+
 After apply, JTS measures the combined crossover again at the same fixed
 reference position (same axis and height as the commissioning captures).
 Verification compares like with like and records the result
@@ -544,7 +1309,9 @@ become an acoustics engine.
 | Concern | Owner | Must not own |
 |---|---|---|
 | Editable and applied crossover semantics | `jasper.active_speaker` preset/profile models | Browser-only settings or relay state |
+| Research proposal and confirmed driver-safety profile | `jasper.active_speaker` | Applying DSP, authorizing audio, or hiding imported values from operator review |
 | Safe driver probe/sweep plan | `jasper.active_speaker.test_signal_plan` and graph-safety policy | Page-specific frequency branches |
+| Pure excitation-admission decision | `jasper.audio_measurement` | Speaker topology, research parsing, live DSP mutation, or product sequencing |
 | Sweep generation, deconvolution, calibration, quality math | `jasper.audio_measurement` | Product sequencing or profile application |
 | Driver, overlap, summed-response, and alignment analysis | `jasper.active_speaker.driver_acoustics` / alignment modules | HTTP, relay transport, or live DSP mutation |
 | Durable commissioning run and evidence identity | Active-speaker measurement/session layer | Filter compilation |
@@ -553,7 +1320,160 @@ become an acoustics engine.
 | Phone/browser capture transport | Jasper capture relay | Tone selection, analysis, or product policy |
 | CamillaDSP emission | Existing active-speaker compiler | Inferring measurements or user intent |
 | Atomic apply and rollback | Shared DSP transaction/runtime boundary | Editing working drafts |
+| Verified active-crossover eligibility receipt | `jasper.active_speaker` | Room-owned inference or relabeling of crossover state |
 | Room correction | `jasper.correction` | Driver-domain crossover repair |
+
+### Hardware research and confirmed safety profile
+
+The existing `jts_active_crossover_driver_research` packet evolves in place; do
+not create a parallel Room-owned research wizard or let an LLM write a live
+graph. JTS binds a research request to the current physical target identities,
+the returned packet echoes those identities and uses explicit unknowns, and the
+server strictly validates it. Every safety-relevant value is visible and
+editable. Confirmation freezes the normalized values and their field-level
+provenance into an immutable fingerprint; any topology/output assignment or
+value change requires confirmation again.
+
+The version distinction is intentional: version 1 is legacy advisory research;
+version 2 is bound to a current server request. Neither is authority. The
+confirmed `jts_active_speaker_driver_safety_profile` is also distinct from the
+older code-owned `driver_protection_profile` tone/ramp envelope and from
+`/sound/active-speaker/channel-protection`'s physical/software-guard fact. Later
+playback must satisfy all applicable layers; none may be relabeled as another.
+
+A tweeter's declared `driver_style` (dome, AMT, planar, ribbon, compression
+driver, supertweeter) sets `driver_protection_profile`'s minimum protective
+high-pass floor — 2000 Hz for a compression driver versus the 5000 Hz
+conservative default for an undeclared/unrecognised style. `driver_style` is
+topology-owned, not part of the research/manual-settings schema: it lives on
+`SpeakerChannel` next to `physical_output_index`, set on the layout step's DAC
+output card (tweeter roles only) and saved through the existing
+`/output-topology` writer, the same one that owns every other topology field.
+`build_driver_safety_profile` reads it straight off the topology channel, so
+it folds into the safety profile's confirmation fingerprint automatically —
+changing it invalidates a prior `operator_reviewed_visible_values`
+confirmation exactly like any other topology/output change, and the declared
+style (or its absence) is rendered on the driver research/review card before
+that confirmation. An undeclared style is fail-safe: it behaves identically
+to today's pre-existing conservative floor, never a stricter or looser one by
+accident.
+
+The protected starting graph, excitation plans, captures, candidates, apply
+records, verification records, and downstream eligibility receipt all reference
+that fingerprint. Research may recommend a conservative starting crossover,
+but deterministic acoustic evidence owns any automatic replacement. Research
+can tighten global code-owned limits; it can never raise them.
+
+Cabinet capability is explicit. The first low-frequency splice success path may
+support a declared sealed single-radiator system with sufficient geometry.
+Vented, passive-radiator, multi-radiator, or unknown systems receive a typed
+refusal until their complete acoustic-source contract exists. Empirical overlap
+alone never licenses JTS to infer enclosure physics.
+
+The shared measurement layer receives only normalized immutable bounds and
+returns a typed admission verdict. It never receives the design draft, the
+browser, CamillaDSP, or a powerful active-speaker host object. The active-speaker
+host independently verifies the exact target and required protection through
+fresh graph readback before audible work. This is deliberate defense in depth,
+not two competing sources of truth.
+
+`jasper.audio_measurement.excitation_admission` is the Wave 1 leaf for that
+decision. Its strict request, limits, protection evidence, and verdict bind the
+exact target, safety profile, authority, excitation plan, closed frequency band,
+effective peak, duration, and repeat count. Their SHA-256 fingerprints are
+content identities, not signatures or capabilities. A trusted owning adapter
+must intersect code-owned, profile-owned, and plan-owned limits; bind the plan
+to normalized generator/effective-peak inputs; derive protection evidence from
+fresh readback; and rerun admission immediately before playback. The current
+isolated-driver producer performs that integration through
+`active_speaker.commissioning_admission`; the summed runtime exposes the same
+typed generation/playback proof seam under the exact adjacent-region graph and
+writer transaction. Its callback remains server-owned; the browser cannot
+supply admission, graph, schedule, or capture authority. Shared's
+`play_admitted_wav()` performs the independent playback-side recheck and
+persistence once that trusted Active callback supplies the fresh values.
+
+### Wave 1 evidence, lifecycle, and Room handoff contracts
+
+The shared `ArtifactIdentity`, `CaptureIdentity`, and `ReplayIdentity` values
+bind exact feature-owned artifacts, raw captures, replay inputs, and algorithm
+versions. They do not move files, migrate either existing bundle format, decide
+capture quality, or turn a forensic bundle into authority. Room and Active keep
+owning their bundles and verdicts.
+
+Active's lifecycle has nine explicit states: `unconfigured`, `protected`,
+`measured`, `candidate_ready`, `applied_unverified`, `verified`, `blocked`,
+`blocked_live_state_unknown`, and `rolled_back`. Each positive transition is
+bound to the expected evidence kind. Once mutation begins, an attempted or
+unknown outcome cannot fall back to ordinary pre-mutation `blocked`; it enters
+`blocked_live_state_unknown` and can leave only through exact restore evidence.
+That prevents durable state from forgetting that the live graph may be
+uncertain.
+
+The positive `CommissioningEligibilityReceipt` is deliberately demanding. Its
+required targets are derived from a current, evaluated-`verified`
+`OutputTopology`'s combined active speaker groups, not supplied by the caller;
+blocked or physically unverified maps cannot create target authority. Every
+required target must pass one
+post-apply verdict over exactly three distinct, admitted, fixed-reference-axis
+captures from one commissioning session and threshold profile. Each capture
+retains its own unique admission id and canonical generation- and playback-role
+artifacts; both admissions authorize exactly one playback, and the playback
+decision must retain the generation request and limits. The receipt also binds
+the confirmed safety profile, applied candidate, expected and freshly read
+back normalized graph, exact predecessor state, and an honest retained-apply
+rollback outcome bound to that same operation, mutation, and observed applied
+graph. A failed, restored, attempted, or unknown mutation cannot mint the
+positive receipt.
+
+The admitted-capture, post-apply-target, and eligibility-receipt containers are
+schema version 2. There is no schema-v1 migration; version 1 is rejected rather
+than guessed.
+
+The Wave 1 transition and receipt values remain pure contracts. Wave 3 now
+persists the lifecycle's exact current-run identity in
+`active_speaker_commissioning_run.json` and projects it as the
+`commissioning_run` block on the crossover status surface. A production run is
+created only with a fresh bundle-backed comparison set; owner generation is
+claimed at correction-web startup, and stale run/attempt callbacks cannot
+commit. The store can persist bounded target-attempt reservations and a
+sequenced transition journal. The internal evidence host uses both.
+Correction-web now supplies a thin production composition: it persists signed
+per-region geometry, reopens the comparison-bound calibration and recorder
+hash, and passes relay WAV bytes to the host. It does not choose an operation or
+reconstruct progress; the host alone advances `protected` to `measured` after
+exact evidence.
+
+Current Active bundles remain forensic and fail-soft. Production verification
+holds the existing writer lock without changing the already-applied graph,
+proves its exact graph/path/volume readback, and uses the summed recorder path
+for three admitted fixed-axis repeats per target. Active persists/reopens the
+receipt and transitions the run to `verified`. The
+`active_speaker.setup_status` producer owns one versioned Room decision. A
+topology-current immutable snapshot whose explicit apply owner is `manual`
+projects `manual_applied_profile` only when CamillaDSP's fresh running
+`active_raw` readback has the same semantic Layer-A fingerprint as a
+recomposition from that snapshot **and the speaker is on its solo active
+runtime**. Solo/grouped scope comes from fresh grouping membership for both
+leader and follower roles, not from source comments that `active_raw` removes.
+A grouped active leader instead projects
+`active_grouped_room_correction_not_supported` and links to `/rooms/`; turning
+grouping off restores the solo proof boundary. A later distributed decision
+must be Active-owned and bind the program-bake Camilla instance plus the
+driver-domain crossover instance. The identity
+covers output-device settings and the complete driver-domain
+mixer/pipeline/filter suffix while excluding the mutable pre-split
+Room/preference prefix. A mismatch asks for an explicit crossover reapply. An
+`automatic` snapshot projects ready only with the strict verified receipt;
+without it the decision remains incomplete. Room validates and consumes that projection without parsing the
+receipt or deriving authority from historical B2b evidence. An allowed
+projection includes Active's opaque loaded Layer-A identity so Room can carry
+it from Start and compare a freshly reissued decision inside its locked
+measurement-baseline and Apply boundaries; Room still does not fingerprint the
+graph itself. Fresh
+excitation-admitted captures and the measured delay walk remain prerequisites
+for automatic receipt authority, not for operator-accepted manual crossover
+authority.
 
 ### DRY invariants
 
@@ -561,12 +1481,15 @@ The implementation should have exactly:
 
 - one crossover parameter vocabulary (`ActiveSpeakerPreset`);
 - one editable working crossover;
+- one confirmed safety profile per physical driver target;
 - one driver-safe signal planner;
+- one pure excitation-admission contract;
 - one sweep/deconvolution implementation;
 - one measurement-quality model with consumer-specific policy values;
 - one candidate compiler;
 - one live-DSP transaction;
-- one current applied-profile fingerprint; and
+- one current applied-profile fingerprint;
+- one Active-owned verified eligibility receipt consumed by Room; and
 - one sequential server-authored commissioning envelope.
 
 Manual and automatic entry points may render different steps, but they do not
@@ -598,7 +1521,18 @@ bundle records:
 
 ### Runtime surface
 
-`/state` or the existing active-speaker state aggregation should expose a small
+The full household summary below remains the target surface. The crossover
+status now carries a narrower fail-closed `commissioning_run` control-plane
+projection: exact session/run identity, owner generation, lifecycle state,
+attempt count, last transition, update time, and state fingerprint are returned
+only when the durable artifact validates; the comparison must also pass its
+complete schema/fingerprint and match the current topology and protected
+profile. An absent file is `not_started`, a comparison mismatch is `stale`, and
+corrupt/unreadable state is `unavailable`.
+Process owner id and raw evidence are not exposed. This block is not an
+eligibility receipt and does not change Room's entry decision. Once candidate,
+apply, verification, and receipt producers land, `/state` or the existing
+active-speaker aggregation should additionally expose a small
 household/operator summary:
 
 - idle, measuring, proposal ready, applying, verified, or failed;
@@ -616,10 +1550,13 @@ the top-level state payload.
 The shipped crossover flow already logs under the `correction.crossover_*`
 namespace (`correction.crossover_driver_capture_sweep`,
 `correction.crossover_summed_capture`, `correction.crossover_relay_recorded`,
-and friends, all via `jasper.log_event`). New lifecycle events extend that
-namespace rather than starting a parallel `crossover.*` prefix — operators
-already grep the shipped names, and the log-event conventions test pins the
-mechanism. Log important transitions once using stable `event=` names,
+and friends, all via `jasper.log_event`). New lifecycle events stay under the
+existing `correction.*` family rather than starting a bare parallel
+`crossover.*` prefix. The durable Active store uses the
+`correction.active_commissioning_*` family for successful run, owner, attempt,
+and transition commits; status polling is silent.
+Operators already grep the shipped correction names, and the log-event
+conventions test pins the mechanism. Log important transitions once using stable `event=` names,
 including:
 
 - `correction.crossover_session_started`;
@@ -629,6 +1566,12 @@ including:
 - `correction.crossover_repeat_attempt` for each bounded attempt and
   `correction.crossover_repeat_aborted` when a service restart durably
   invalidates an orphaned comparison-bound set;
+- `correction.crossover_level_run_claimed` and
+  `correction.crossover_level_run_deduplicated`;
+- `correction.crossover_level_run_phone_armed` and
+  `correction.crossover_level_run_phone_timeout`;
+- `correction.crossover_level_run_completed` or
+  `correction.crossover_level_run_interrupted`;
 - `correction.crossover_repeats_aggregated`;
 - `correction.crossover_proposal_ready`;
 - `correction.crossover_apply_started`;
@@ -658,6 +1601,9 @@ needs a small non-negotiable safety floor:
 - Keep tweeter sweeps short and protected — sweep length is a bounded,
   protected parameter like level.
 - Provide immediate Stop and bounded session expiry.
+- While Stop cleanup is `stopping`, expose no forward action or second run.
+- While phone close/encrypt/upload is `finishing`, expose no Stop or forward action.
+- While verified evidence is `committing`, expose no Stop or forward action.
 - Reject clipped recordings and stale topology/graph evidence.
 - Keep automatic gain attenuation-only until positive-gain headroom and driver
   limits have a proven contract.
@@ -665,8 +1611,9 @@ needs a small non-negotiable safety floor:
 - Do not allow room correction to proceed against an unverified or stale active
   crossover.
 
-These protections already align with established JTS boundaries and do not
-require a new safety framework.
+These protections extend established JTS boundaries through a target-bound
+safety profile and one pure admission primitive. They do not create a parallel
+wizard, graph compiler, or generic commissioning framework.
 
 ### Later safety and analysis enhancements
 
@@ -742,13 +1689,13 @@ CI-provable:
 
 ### Slice 3: measured candidate selection
 
-- Derive a measured usable overlap range above the validity floor.
-- Search the supported electrical frequencies and families/orders, even-order
-  Linkwitz–Riley by default.
-- Score on-axis blend quality, alignment, headroom, and off-axis evidence
-  where deliberately captured; refuse pairings that need per-driver EQ.
-- Produce the same canonical candidate and comparison used by Manual.
-- Allow explicit replacement of a manual or previously automatic crossover.
+- Keep the reviewed crossover frequency, family, and order for the 2-way launch.
+- Derive attenuation-only trims from fixed-axis isolated-driver overlap levels.
+- Prove the reviewed polarity with normal-versus-reverse evidence and select a
+  playback-clock-locked bounded relative delay from the scheduled walk.
+- Persist and read back one exact candidate, then expose its design, corrections,
+  and evidence provenance for explicit review before apply.
+- Defer automatic frequency/family/order search and off-axis optimization.
 
 This order delivers useful measured behavior at each step without pretending a
 trim calculation is a complete automatic crossover.
@@ -792,7 +1739,45 @@ trim calculation is a complete automatic crossover.
 
 ## Current implementation gap summary
 
-As of 2026-07-12, JTS has much of the substrate but not the full product:
+As of 2026-07-15, JTS has much of the substrate but not the full product:
+
+- **Wave 1 contract foundation (2026-07-13) is landed; lifecycle identity is
+  partially integrated in Wave 3.** `/sound/`
+  owns a revisioned, per-physical-target version-1 server request plus
+  request-bound version-2 research result and visible confirmed version-1
+  safety-profile shape; the pure measurement layer owns exact
+  excitation admission and neutral evidence identities; Active owns the
+  nine-state lifecycle and exact positive Room-eligibility receipt. Active now
+  also owns a strict pure group-by-region evidence plan/set contract: it keeps
+  every three-way region separate, binds each set to an immutable durable
+  typed attempt and exact graph/protection/geometry context, requires one
+  globally unique region set per plan target, and refuses capture/admission
+  replay across normal, reverse, delay, and region roles. A new
+  bounded, atomically persisted run store now binds a fresh bundle-backed
+  comparison to exact session/run/owner-generation identity, attempt slots, and
+  a sequenced transition journal. Correction-web claims the owner at startup
+  and exposes a fail-closed `commissioning_run` status; comparison drift is
+  reported stale and prior-generation callbacks cannot commit. The typed
+  internal summed host now owns durable attempts, the bounded graph/capture/
+  restore transaction, deep artifact reopen, and the exact `measured`
+  transition when a trusted raw transport is composed. A separate strict
+  isolated-driver aggregate requires exactly three admitted captures for every
+  physical driver in the same plan and persists one canonical run-scoped
+  complete artifact with deep child/admission verification. The production
+  fixed-axis relay now supplies those captures from its real WAV and one-shot
+  admission handoff, while existing mutable and fail-soft driver records cannot
+  be promoted or backfilled. The store-backed pure evaluator
+  derives the deterministic electrical candidate from exact admitted complete
+  evidence, and the production Active service now persists, reopens, binds, and
+  projects that candidate through `candidate_ready`. The reviewed candidate now
+  compiles and applies through the existing bounded writer/readback/restore path,
+  with exact predecessor recovery and a retained proof before
+  `applied_unverified`. Post-apply verification now proves the retained current
+  graph without another mutation, persists three admitted fixed-axis repeats,
+  issues the exact receipt, and lets Room consume Active's decision. Three usable
+  failing acoustic verdicts instead persist one exact failure, stop capture, and
+  keep Room locked. On-device
+  proof remains outstanding.
 
 - Manual setup exposes frequency, filter family/slope, and trim. ~~There is
   still no `/sound/` UI for polarity/delay authoring~~ Closed (P2a): the
@@ -806,8 +1791,10 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   fresh alignment evidence, never unconditionally).
 - ~~The relay-guided automatic flow takes one accepted near-field sweep per
   driver.~~ Closed (Lane D): each role uses its own bounded sweep length after
-  a 14-second controlled pre-sweep quiet interval, then the server admits
-  three stationary
+  a controlled pre-sweep quiet interval sized to that same sweep length
+  (2026-07-16: right-sized per driver — that driver's own sweep length + 2 s,
+  14 s woofer/subwoofer down to 6 s tweeter — rather than a fixed 14 s pause
+  every driver used to sit through), then the server admits three stationary
   repeats with at most one bounded fourth attempt and at least two accepted.
   The safe level probe chooses non-clipping playback headroom only; acoustic
   accept/reduce/refuse comes from per-band SNR after the signal and ambient
@@ -845,9 +1832,9 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   baffle-step/splice consumer.
 - Crossover frequency, family, and slope remain operator-owned rather than
   measured automatically.
-- The automatic success path requires a pre-apply combined listening check,
-  but not reverse-polarity/delay/off-axis evidence or post-apply acoustic
-  verification.
+- The strict automatic success path requires fixed-axis normal/reverse evidence,
+  the bounded playback-clock-locked delay walk, and post-apply fixed-axis
+  combined verification. Off-axis/directivity optimization remains deferred.
 - ~~Existing alignment analysis is not fully reachable through persisted
   paired summed evidence.~~ Closed for the polarity/margin proposal (Slice 2):
   `measurement.py` now retains both in-phase and reverse-polarity summed
@@ -860,14 +1847,12 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   tweeter-axis reference placement may contribute a null. Automatic baseline
   composition additionally requires affirmative per-band alignment SNR, an
   uncapped null, and an exact match to the applied preset plus corrections; it
-  never consumes a capture-carried delay. The relay preserves the candidate metadata,
-  but the wizard does not yet expose the per-region normal/reverse loop or load
-  a transient reverse-polarity graph; the playback boundary refuses those
-  candidates before audio so it cannot mislabel the unchanged applied graph.
-  The bounded measured
-  delay *walk* (a value, not just a status) and post-apply verification
-  remain separate, not-yet-built pieces of Slice 2.
-- The shared delay-walk substrate now includes a pure candidate graph-content
+  never consumes a capture-carried delay. The production wizard now exposes one
+  server-selected combined-capture action; the internal host—not browser
+  metadata—runs the per-region normal/reverse loop, transient reverse graph, and
+  bounded measured delay *walk*. Candidate persistence/review, exact apply, and
+  three-repeat post-apply verification now continue from that same authority.
+- The shared delay-walk substrate includes a pure candidate graph-content
   proof (`jasper.audio_measurement.delay_graph`). Active-crossover and bass
   hosts share one typed lane proof while retaining their own authoritative
   topology and emitter vocabularies: each target supplies its exact non-empty
@@ -879,12 +1864,11 @@ As of 2026-07-12, JTS has much of the substrate but not the full product:
   one bounded delay while retaining a real
   non-positive volume ceiling and every other graph value. The shared core does
   not parse active-speaker or bass filter names. This is deliberately not proof
-  that the supplied
-  `active_raw` is live or fresh. The pending F2b host must hold the DSP writer
-  lock across apply → fresh read-back → typed confirmation, bind the result to
-  the current run and capture evidence, and pass it to the F1 runner. A
-  stale/replayed content-identical graph is therefore a named future host
-  contract gap, not a capability claimed by this slice. No CamillaDSP host
+  that the supplied `active_raw` is live or fresh. The pending F2b host must hold
+  the DSP writer lock across apply → fresh read-back → typed confirmation, bind
+  the result to the current run and capture evidence, and pass it to the F1
+  runner. A stale/replayed content-identical graph is therefore a named future
+  host contract gap, not a capability claimed by this slice. No CamillaDSP host
   adapter, capture playback, walk scheduling, geometry source, or three-way
   orchestration is wired yet.
 - ~~Automatic trim application must not reset a manually applied delay or
@@ -946,6 +1930,9 @@ multi-position room-measurement guidance:
 - [Rane Note 160: Linkwitz–Riley crossovers and lobing error](https://www.ranecommercial.com/legacy/note160.html)
 - [KLIPPEL: transfer-function measurement](https://www.klippel.de/manuals/frequencyresponse-distortion/trf/trf.html)
 - [KLIPPEL: loudspeaker directivity measurement](https://klippel.de/training/attachments/training8/Training_8_Measurement_of_Loudspeaker_Directivity_en.pdf)
+- [D. B. Keele Jr.: Low-Frequency Loudspeaker Assessment by Nearfield
+  Sound-Pressure Measurement](https://pearl-hifi.com/06_Lit_Archive/14_Books_Tech_Papers/Keele_D_B/LF_Near-field_Measurement.pdf)
+- [ARTA Application Note 4: Loudspeaker Free-Field Response](https://www.artalabs.hr/AppNotes/AN4-FreeField-Rev03eng.pdf)
 - [REW: making measurements](https://www.roomeqwizard.com/help/help_en-GB/html/makingmeasurements.html)
 - [Dirac Live technical overview](https://www.dirac.com/wp-content/uploads/2024/06/Dirac-Live-a-technical-overview-white-paper.pdf)
 
@@ -959,4 +1946,111 @@ split SNR policy, the probe-sets-level-only controller, the pinned delay-walk
 bounds, and the electrical-candidate reframe in this revision came out of
 that validation.
 
-Last verified: 2026-07-13
+Last verified: 2026-07-17 (added the closed-loop level solver — Wave 2 reconstruction, measured-candidate input,
+preparation-only safety, level-run correlation contracts and terminal-result
+liveness, permanent historical refusal, the reachable isolated-driver
+Shared-admission/playback adapter and bounded writer transaction,
+legacy direct summed-endpoint pre-audio refusal, the recorder-only production
+summed relay, signed geometry persistence, durable calibration/device binding,
+the typed internal summed evidence host, strict write-once evidence store,
+exact graph/capture/restore transaction,
+deterministic coarse-then-refinement progression, restart recovery, and durable bundle-backed commissioning-run identity,
+startup owner-generation claim, fail-closed crossover status, strict pure
+group-by-region and isolated-driver evidence sets with typed run/attempt,
+physical-target, graph, admission, and geometry authority,
+the bounded low-frequency coarse-plus-refinement schedule and schedule-aware
+final evaluator, the store-backed pure deterministic electrical candidate
+evaluator, exact candidate persistence/readback and `candidate_ready` review
+projection, explicit reviewed apply, compiler-ready measured corrections,
+writer-locked graph/path/volume readback, exact failure/cancellation/restart
+restore, retained-proof finalization, complete-plan replay
+guards, receipt schema-v2 one-shot roles, current-graph verification,
+receipt persistence, and Active-owned Room authority,
+and Room's versioned passive/solo-manual-applied admission boundary, explicit
+grouped-active unsupported result, and strict automatic-receipt separation
+checked against the current implementation and cited measurement literature;
+the complete path was
+validated with injected runtime seams only, and no live audio/DSP/hardware
+operation was performed or hardware-validated. Same-day follow-up: the W2.2
+clip-aware correction — the unified signed adjustment slot, the driver's own
+measured chain gain replacing the tone's `gain_map_db` for the mic-clip
+ceiling, the two-write bound, and the `measurement_window_unreachable`
+refusal — checked against the current implementation and pinned by a
+regression reproducing the triggering hardware run's numbers; not yet
+hardware-validated. Same-day follow-up: W2.3 completion-time correction and
+the persistence lifecycle change — the completed-but-insufficient
+finalization trigger, corrections now surviving a level re-lock AND the
+between-set level-check restart (non-exhausted targets preserved through
+the endpoint's invalidate; exhausted targets cleared there for a fresh
+evaluation), clearing otherwise only on a sufficient finalization, a
+changed relay microphone identity, or a true full reset, and the resulting
+reachable, non-latching placement-lever refusal — checked against the
+current implementation and pinned by regressions reproducing hardware run
+19's numbers, including an endpoint-level restart repro through the real
+level-match handler; not yet hardware-validated. Same-day-follow-up-style
+addition, landed 2026-07-17: W2.4 revised the between-set restart's
+preserve/clear discriminator from "budget exhausted" to "a pre-flight
+refusal was shown for this target" (any write count; exhausted is
+subsumed, not a separate case) — closing a dead loop where a genuine
+`room_too_noisy_for_safe_measurement` refusal below the exhausted bound
+survived the restart the refusal screen's own action offered, and the
+next solve replayed the identical preserved adjustment against a freshly
+re-measured room, refusing again in seconds with no tone played. The same
+fix made `LevelSolveRefused`'s `str(exc)` the mapped household copy
+instead of the raw `code=... band=...` diagnostic string (closing a leak
+onto both the phone's `sweep_failed` host event and the wizard's relay
+status line), and scoped the stale `crossover_repeat_rejected` nudge out
+of the `level_solve_refused` screen. Checked against the current
+implementation and pinned by regressions reproducing hardware run 20's
+numbers, including an endpoint-level restart repro through the real
+level-match handler; not yet hardware-validated. Same-day follow-up
+(2026-07-17): the phantom noise-floor fix — the per-band ambient-noise
+estimator was overstating SNR by ~40-50 dB for any canonical band the
+reference sweep's own `[f1, f2]` did not fully excite, the root cause
+behind the runs-1-20 SNR shortfall W2.1-W2.4 above were built to react to
+— checked against three real jts3 hardware captures (ground-truth
+validation: sub_bass moved from 13-16 dB "insufficient" to 62-66 dB "ok"
+on all three; every other band's reported level is bit-for-bit unchanged)
+and pinned by ground-truth fixtures plus synthetic protective-power cases;
+not yet hardware-validated on a live re-measure.) Same-day follow-up
+(2026-07-17): the durable-record eligibility fix — JTS3 run 22 accepted a
+full woofer near-field repeat set (60.9 dB SNR, `overlap_levels` usable)
+yet the wizard still rendered the completed-insufficient terminal above.
+Root cause: `crossover_eligibility.driver_acoustic_usable` gated on
+`record.get("captured") is True`, but `measurement.record_driver_measurement`'s
+`captured` flag also requires this record's own played tone to
+byte-match a separately-recorded, earlier by-ear floor confirmation's
+playback (`_floor_confirmation_issues`) — an equality the sweep/repeat
+capture flow can never satisfy, since each accepted repeat plays its own
+sweep tone. So `captured` is *always* False on an acoustic-bearing
+record from the repeat-set flow, by design (pinned by
+`test_active_speaker_measurement.py::
+test_sweep_evidence_never_clobbers_the_confirmation_gate`), which meant
+`driver_acoustic_usable` refused every real, fully-accepted driver
+unconditionally — not a stale-record-selection edge case. The fix reads
+the acoustic-capture-quality signal directly (mic meter not
+clipping/too_loud, no blocker issue outside the floor-replay-mismatch
+family) instead of the floor-replay flag; every other gate (overlap
+usable, verdict `present`, mic not clipping, repeats accepted == 3,
+placement proof) is unchanged. Checked against the current
+implementation and pinned by a repro built through the real
+`record_driver_measurement` write path (not a synthetic status dict);
+not yet hardware re-validated on jts3. Same-day follow-up (2026-07-17):
+the whole-flow reset this section's "true full reset
+(`invalidate_comparison_context` without the between-set-restart flag)"
+contract anticipated now has a caller — `POST /crossover/reset`
+(`jasper.web.correction_crossover_backend.reset_measurement_journey`),
+an in-flow "Start over" scoped to the measurement journey (comparison
+set, level locks, driver/summed captures, staged candidate). It keeps
+the design draft (driver research/manual settings) and the SOLO applied
+crossover untouched. Multiroom is not protected by that: the
+active-leader/follower builders REBUILD the driver-domain graph from the
+CLEARED measurement evidence, so a bonded speaker fails safe to
+solo-active on its next re-prove until re-measured — the "Start over"
+confirm copy is grouping-aware for exactly this reason. See
+docs/HANDOFF-correction.md "Scoped crossover reset" for the full
+KEEP/CLEAR rationale, the multiroom fail-safe path, and the
+JTS3-hardware-verified reason `startup_load` state is excluded. Checked
+against the current implementation and pinned by
+`tests/test_active_speaker_reset.py` +
+`tests/test_correction_crossover_reset.py`; not yet hardware-validated.

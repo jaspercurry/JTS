@@ -34,15 +34,15 @@ Slice=jts-audio.slice
 Type=simple
 TimeoutStopSec=5s
 EnvironmentFile=-/etc/jasper/jasper.env
-EnvironmentFile=-/var/lib/jasper/grouping.env
 # Derived args, written by jasper-grouping-reconcile (the single writer).
-# Layered AFTER grouping.env so the reconciler's computed
-# JASPER_SNAPCLIENT_ARGS overrides the bare wizard intent. The reconciler
+# The root service never imports management-writable grouping.env; the
+# reconciler parses it as data and emits only the fixed computed argv. It
 # owns this /run file (NOT a unit RuntimeDirectory, which would be reaped
 # when a sibling unit stops); it writes it before starting this unit, so
 # ExecStart reads fresh args. Set for BOTH roles — a leader's client
 # targets 127.0.0.1, a follower's targets cfg.leader_addr.
 EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 # The client plays via the `file` player into the member round-trip
 # FIFO (Increment 5) — NEVER an ALSA sink, which would fight outputd
 # for the DAC (the observed `Device or resource busy` failure of the

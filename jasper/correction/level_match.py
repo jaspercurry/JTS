@@ -14,8 +14,9 @@ that the kernel deliberately does not know about, per
     of the relay ``status`` event. The relay ``event`` slot is last-write-wins
     and the phone streams into it continuously, so ramp control is robust by
     construction, not by one-shot posts: the phone's every level batch carries
-    its own ``armed`` / ``aborted`` / ``agc_frozen`` state as a SUPERSET
-    envelope (a clobbered one-shot host event never strands the flow), Pi-side
+    its own ``armed`` / ``aborted`` / ``agc_frozen`` / ``agc_unattested`` state
+    as a SUPERSET envelope (a clobbered one-shot host event never strands the
+    flow), Pi-side
     abort acks re-post each tick while the ramp exits, and the terminal ramp
     state is re-posted until the relay's ``/status`` echoes it back (the Pi's
     pull-token status includes ``host_event``, so the read-modify-write revert
@@ -194,7 +195,17 @@ class MeasurementLevelLock:
 
     @classmethod
     def from_ramp(cls, geometry: str, data: RampData) -> MeasurementLevelLock:
-        """Build a lock from a terminal ``LOCKED`` ramp result."""
+        """Build a lock from a terminal ``LOCKED`` ramp result.
+
+        ``agc_frozen`` here is sourced from ``data.agc_trusted``, not the raw
+        wire-level ``data.agc_frozen`` — the two agree for an ordinary
+        browser-attested run, but an unattested (iOS/WebKit) run that passed
+        the empirical slope check has ``agc_frozen=False`` at the wire level
+        (by design, for mixed-version safety) while ``agc_trusted`` is True.
+        Sourcing from ``agc_trusted`` is what makes a verified-unattested lock
+        behave identically to an attested one for every downstream consumer of
+        this field (the drift check below, the bounded-low-lock policy).
+        """
         volume = (
             data.locked_main_volume_db
             if data.locked_main_volume_db is not None
@@ -210,7 +221,7 @@ class MeasurementLevelLock:
             settled_snr_db=data.settled_snr_db,
             window_shortfall_db=data.window_shortfall_db,
             settled_spread_db=data.settled_spread_db,
-            agc_frozen=data.agc_frozen,
+            agc_frozen=data.agc_trusted,
         )
 
 
@@ -459,10 +470,11 @@ def parse_level_batch(
             )
         return []
     out: list[LevelSample] = []
-    # The phone's per-event agc_frozen/abort envelope is a superset that survives
-    # a lost host-event round trip; apply the batch-level agc_frozen to any sample
-    # that omitted it.
+    # The phone's per-event agc_frozen/agc_unattested/abort envelope is a
+    # superset that survives a lost host-event round trip; apply the
+    # batch-level flags to any sample that omitted them.
     batch_agc = batch.get("agc_frozen")
+    batch_unattested = batch.get("agc_unattested")
     for raw in raw_samples:
         if not isinstance(raw, dict):
             continue
@@ -470,14 +482,21 @@ def parse_level_batch(
             sample = LevelSample.from_dict(raw)
         except (KeyError, TypeError, ValueError):
             continue
-        if batch_agc is False and "agc_frozen" not in raw:
+        agc_frozen = False if (batch_agc is False and "agc_frozen" not in raw) else sample.agc_frozen
+        agc_unattested = (
+            True
+            if (batch_unattested is True and "agc_unattested" not in raw)
+            else sample.agc_unattested
+        )
+        if agc_frozen != sample.agc_frozen or agc_unattested != sample.agc_unattested:
             sample = LevelSample(
                 seq=sample.seq,
                 t_client_ms=sample.t_client_ms,
                 rms_dbfs=sample.rms_dbfs,
                 peak_dbfs=sample.peak_dbfs,
                 clip=sample.clip,
-                agc_frozen=False,
+                agc_frozen=agc_frozen,
+                agc_unattested=agc_unattested,
             )
         out.append(sample)
     return out
@@ -644,8 +663,11 @@ class RelayLevelFeed:
         """The ramp state currently echoed in the relay's host_event, if any.
 
         The Pi's pull-token ``/status`` includes ``host_event`` (worker.js
-        ``getStatus``), so a terminal post that a phone putMeta race reverted is
-        detectable: re-post until this reads back the expected value."""
+        ``getStatus``), so a terminal post that a phone putMeta race reverted
+        is detectable. Observability only: a single confirmed read-back is NOT
+        durable (the next phone batch post can revert it), so the terminal
+        re-post schedule always runs to its bounded end regardless of what
+        this returns."""
         try:
             status = self._read_status() or {}
         except _FEED_ERRORS:
@@ -693,6 +715,169 @@ class LevelMatchOutcome:
         }
 
 
+# --- ramp terminal refusal copy -----------------------------------------------
+#
+# The 2026-07-16 jts3 finding: a level-match ramp terminal that didn't lock
+# (``agc_suspected`` and friends) reached the phone terminal and the
+# ``capture_relay.adapter_failed`` log as a bare ``ValueError`` carrying the
+# ramp's raw code — never translated, never explaining anything. Every
+# refusal now names its reason (the project rule): this is the single place
+# a ramp terminal's ``(error, error_detail)`` pair becomes homeowner copy.
+# Both the relay web adapter (``jasper.web.correction_setup``) and the Room
+# envelope (``jasper.correction.envelope``) call ``describe_ramp_refusal`` —
+# neither hand-rolls its own copy.
+
+
+@dataclass(frozen=True)
+class RampRefusal:
+    """One ramp terminal's homeowner-facing translation.
+
+    ``code`` is the stable, machine-readable reason (the ramp's own terminal
+    ``error`` string — already a short snake_case code for the known cases
+    like ``agc_suspected``, e.g. for `reason=` log fields). ``user_message``
+    is the sentence shown to the household.
+    """
+
+    code: str
+    user_message: str
+
+
+class LevelMatchRefused(RuntimeError):
+    """The level-match ramp ended without a lock; carries the homeowner copy.
+
+    Raised by the relay web adapter instead of a bare ``ValueError(detail)``
+    (see the module docstring above). ``str(exc)`` is the homeowner message,
+    so an unmigrated ``str(exc)`` caller still reads sensibly; ``.code`` and
+    ``.user_message`` are the structured pair for callers that want them
+    (log ``reason=``, the phone terminal's ``error`` field).
+    """
+
+    def __init__(self, refusal: RampRefusal) -> None:
+        super().__init__(refusal.user_message)
+        self.code = refusal.code
+        self.user_message = refusal.user_message
+
+
+# Known short ramp codes -> homeowner copy. Exact match only — most other
+# ramp terminals already carry a full sentence in `error` (handled by the
+# prefix table and the generic fallback below).
+_RAMP_REFUSAL_COPY: dict[str, str] = {
+    "agc_suspected": (
+        "The microphone kept adjusting its own level during the check, so "
+        "this measurement can't be trusted. Turn off the mic's automatic "
+        "gain if you can, or try a different device or browser, then retry."
+    ),
+    "agc_indeterminate": (
+        "The speaker couldn't collect enough evidence that the microphone's "
+        "level held steady during the check. Keep the phone still and the "
+        "room quiet, then retry."
+    ),
+    "no usable phone samples": (
+        "The speaker never heard a usable reading from the phone's "
+        "microphone. Check the phone is close enough and its microphone "
+        "isn't blocked, then retry."
+    ),
+    "tone ended before the ramp completed": (
+        "The test tone stopped before the check finished. Retry the level "
+        "check."
+    ),
+    "clip detected": (
+        "The microphone picked up a sound too loud to measure safely. Move "
+        "the phone or turn the volume down, then retry."
+    ),
+    "phone never armed": (
+        "The phone page never started the check. Reopen the measurement "
+        "link and tap Start."
+    ),
+}
+
+# (prefix, canonical_code, message) — matched in order for terminals whose
+# `error` carries a parameterized detail (a duration, a dB value) after a
+# fixed lead-in. The canonical snake_case code is what `RampRefusal.code`
+# (and therefore the `reason=` log key) carries, so `reason=safety_timeout`
+# groups across runs instead of one key per duration; the verbatim
+# parameterized error stays visible in the user_message parenthetical.
+_RAMP_REFUSAL_PREFIX_COPY: tuple[tuple[str, str, str], ...] = (
+    (
+        "safety timeout",
+        "safety_timeout",
+        "The check took too long and stopped for safety. Retry the level "
+        "check.",
+    ),
+    (
+        "phone feed lost",
+        "phone_feed_lost",
+        "The speaker lost the phone's microphone feed partway through the "
+        "check. Keep the capture page open, then retry.",
+    ),
+    (
+        "safe cap reached below target window",
+        "safe_cap_below_window",
+        "The microphone is still too quiet at the safe volume limit. Raise "
+        "the external amplifier a little, then retry.",
+    ),
+    (
+        # Matches ramp.py's existing `reason="non_finite_original"` log field
+        # for this terminal — one group key across both surfaces.
+        "non-finite pre-ramp main_volume",
+        "non_finite_original",
+        "The speaker's starting volume was invalid. Retry the level check.",
+    ),
+)
+
+_NOT_LOCKED_MESSAGE = "The measurement level was not reached. Retry the level check."
+
+
+def describe_ramp_refusal(
+    error: str | None, detail: str | None = None
+) -> RampRefusal:
+    """Translate one ramp terminal's raw ``(error, error_detail)`` into
+    homeowner copy — the single place this mapping lives.
+
+    ``error`` is ``RampData.error`` (a stable short code for some terminals,
+    e.g. ``agc_suspected``; a full sentence for others, e.g. ``"clip
+    detected"`` or ``"phone feed lost (no samples for 8s)"``). A falsy
+    ``error`` (``outcome.locked`` is False but the ramp never set one) is the
+    generic "not locked" case. Parameterized terminals (a duration, a dB
+    value baked into the string) are normalized to one canonical snake_case
+    ``code`` per family via the prefix table, so ``reason=`` log keys group
+    across runs; the verbatim parameterized error is preserved in the
+    user_message parenthetical instead. An unrecognized code always gets a
+    generic fallback that INCLUDES the raw code, never a silently-generic
+    message — most unrecognized codes are already a plain sentence, so
+    echoing it verbatim (title-cased, period-terminated) reads naturally.
+    ``detail`` — when the ramp attached one (``RampData.error_detail`` —
+    currently only ``agc_suspected``'s measured slopes/step count) — is
+    appended in parentheses so retries and support conversations can point
+    at the exact evidence, without changing the stable ``code`` used for log
+    grouping.
+    """
+    raw = str(error or "").strip()
+    if not raw:
+        return RampRefusal(code="not_locked", user_message=_NOT_LOCKED_MESSAGE)
+    code = raw
+    message: str | None = _RAMP_REFUSAL_COPY.get(raw)
+    extras: list[str] = []
+    if message is None:
+        for prefix, family_code, prefix_message in _RAMP_REFUSAL_PREFIX_COPY:
+            if raw.startswith(prefix):
+                code = family_code
+                message = prefix_message
+                # The code is normalized; keep the verbatim, parameterized
+                # error visible to the household/support conversation.
+                extras.append(raw)
+                break
+    if message is None:
+        text = raw[0].upper() + raw[1:]
+        message = text if text.endswith((".", "!", "?")) else f"{text}."
+    detail_text = str(detail or "").strip()
+    if detail_text:
+        extras.append(detail_text)
+    if extras:
+        message = f"{message} ({'; '.join(extras)})"
+    return RampRefusal(code=code, user_message=message)
+
+
 class LevelMatchSession:
     """Wires the kernel ramp to the relay for ONE geometry step.
 
@@ -707,7 +892,9 @@ class LevelMatchSession:
     DEFAULT_ARMED_TIMEOUT_S = 90.0
     ARMED_POLL_S = 0.25
     # Terminal host-event re-posting: attempts × spacing bound the "phone still
-    # metering with a hot mic" window after a putMeta revert race.
+    # metering with a hot mic" window after a putMeta revert race. The FULL
+    # schedule always runs (no early exit on a confirmed echo) — see the
+    # re-post loop in run_for_geometry for the revert-race rationale.
     TERMINAL_POST_ATTEMPTS = 5
     TERMINAL_POST_SPACING_S = 0.75
 
@@ -722,6 +909,12 @@ class LevelMatchSession:
         self.store = store
         self.config = config or MeasurementRamp.from_env()
         self._controller: RampController | None = None
+        # Lifecycle cancellation is wider than RampController.cancel(): the
+        # retained session exists while waiting for the phone to arm and after
+        # the kernel publishes a terminal state but is still completing relay
+        # acknowledgement. Stop must await both edges, never infer cleanup from
+        # the public RampState alone.
+        self._cancel_requested = False
 
     async def run_for_geometry(
         self,
@@ -763,6 +956,7 @@ class LevelMatchSession:
         controller = self._controller = RampController(
             session_id=self.session_id, config=self.config
         )
+        data: RampData | None
 
         if wait_for_armed:
             timeout = (
@@ -771,7 +965,21 @@ class LevelMatchSession:
                 else armed_timeout_s
             )
             armed_deadline = clock() + timeout
-            while not feed.check_armed():
+            while True:
+                if self._cancel_requested:
+                    data = RampData(state=RampState.CANCELLED)
+                    log_event(
+                        logger,
+                        "level_match_done",
+                        session=self.session_id,
+                        geometry=geometry,
+                        state=RampState.CANCELLED.value,
+                        reason="cancelled_before_phone_armed",
+                    )
+                    break
+                if feed.check_armed():
+                    data = None
+                    break
                 if clock() >= armed_deadline:
                     outcome = LevelMatchOutcome(
                         geometry=geometry,
@@ -792,25 +1000,35 @@ class LevelMatchSession:
                     )
                     return outcome
                 await sleep(self.ARMED_POLL_S)
+        else:
+            data = None
 
-        async def next_samples() -> list[LevelSample]:
-            samples = await feed.next_samples()
-            if feed.aborted_reason is not None:
-                # Latched cancel — re-posted each tick until the kernel exits.
-                feed.post_ramp_signal("abort_ack", feed.aborted_reason)
-                await controller.cancel()
-            return samples
+        # Cancellation owns admission even when the phone's armed update and
+        # Stop arrive in the same scheduler turn. RampController.run() resets
+        # its own kernel-local cancel flag, so this lifecycle check must happen
+        # immediately before entering the volume/tone owner.
+        if data is None and self._cancel_requested:
+            data = RampData(state=RampState.CANCELLED)
 
-        data = await controller.run(
-            get_main_volume_db=get_main_volume_db,
-            set_main_volume_db=set_main_volume_db,
-            play_continuous_tone=play_continuous_tone,
-            cancel_tone=cancel_tone,
-            next_samples=next_samples,
-            noise_floor_dbfs=noise_floor_dbfs,
-            clock=clock,
-            sleep=sleep,
-        )
+        if data is None:
+            async def next_samples() -> list[LevelSample]:
+                samples = await feed.next_samples()
+                if feed.aborted_reason is not None:
+                    # Latched cancel — re-posted each tick until the kernel exits.
+                    feed.post_ramp_signal("abort_ack", feed.aborted_reason)
+                    await controller.cancel()
+                return samples
+
+            data = await controller.run(
+                get_main_volume_db=get_main_volume_db,
+                set_main_volume_db=set_main_volume_db,
+                play_continuous_tone=play_continuous_tone,
+                cancel_tone=cancel_tone,
+                next_samples=next_samples,
+                noise_floor_dbfs=noise_floor_dbfs,
+                clock=clock,
+                sleep=sleep,
+            )
 
         lock: MeasurementLevelLock | None = None
         if data.state is RampState.LOCKED:
@@ -818,15 +1036,25 @@ class LevelMatchSession:
             self.store.put(lock)
 
         # Terminal ramp state → phone. The event slot is a read-modify-write
-        # race (§3.1), so the post is latched: re-post until the relay status
-        # echoes it back in host_event, bounded by TERMINAL_POST_ATTEMPTS.
+        # race (§3.1): the worker's postEvent/postHostEvent each write back the
+        # WHOLE session meta from their own request-start read, so a phone
+        # batch post that read the meta just before our terminal write reverts
+        # host_event when it lands. Always run the FULL bounded re-post
+        # schedule — never stop on a single confirmed read-back. Breaking on
+        # first echo left exactly one revert window with nobody re-posting,
+        # and a phone that then never sees the terminal runs to its own
+        # deadline and reports a false timeout (2026-07-15 JTS3 tweeter ramp:
+        # locked at 33.8 s, echo confirmed on attempt ~2, latch stopped, a
+        # batch clobbered it back, phone showed "did not finish ... timeout").
+        # The read-back is observability now, not an exit condition.
         # All terminal states are posted — a Pi-side CANCELLED/ERROR must also
         # stop the phone's metering, not just LOCKED/MAXED_OUT.
+        terminal_echoed = False
         for _attempt in range(self.TERMINAL_POST_ATTEMPTS):
             feed.post_ramp_signal("state", data.state.value)
             await sleep(self.TERMINAL_POST_SPACING_S)
             if feed.read_back_ramp_state() == data.state.value:
-                break
+                terminal_echoed = True
 
         outcome = LevelMatchOutcome(
             geometry=geometry,
@@ -846,6 +1074,7 @@ class LevelMatchSession:
                 if data.locked_main_volume_db is not None
                 else ""
             ),
+            terminal_echoed=terminal_echoed,
         )
         return outcome
 
@@ -854,4 +1083,12 @@ class LevelMatchSession:
         return await self._controller.lock() if self._controller else False
 
     async def cancel(self) -> bool:
-        return await self._controller.cancel() if self._controller else False
+        # The owning MeasurementSession retains this object only while its task
+        # is live, so True means "lifecycle cancellation accepted; await the
+        # owner". This remains true before arming and after terminal RampState,
+        # when hard task cancellation would respectively hang or interrupt the
+        # exact listening-volume restore.
+        self._cancel_requested = True
+        if self._controller is not None:
+            await self._controller.cancel()
+        return True

@@ -68,6 +68,7 @@ def test_app_css_carries_shared_primitives():
         ".segmented", ".btn", ".sr-only", "prefers-reduced-motion",
         '.segmented__btn[aria-pressed="true"],',
         '.segmented__btn[aria-current="page"]',
+        ".app-header__tabs",
         "[hidden] { display: none !important; }",
     ):
         assert marker in css, f"app.css missing shared primitive: {marker}"
@@ -184,6 +185,25 @@ def test_app_css_does_not_force_global_svg_size():
     assert "width" not in m.group(1), "shared svg rule must not force a size"
 
 
+def test_app_header_tab_strip_is_shared_not_page_local():
+    """Sound originated the strip; Status now reuses it, so its layout has
+    one owner in app.css while Sound keeps only its genuinely local live dot."""
+    shared = _without_css_comments(APP_CSS.read_text())
+    sound = _without_css_comments(
+        (ROOT / "deploy/assets/sound-profile/sound.css").read_text()
+    )
+    assert re.search(r"\.app-header__tabs\s*\{", shared)
+    assert re.search(r"\.app-header__tabs\s*>\s*div\s*\{", shared)
+    assert not re.search(r"\.app-header__tabs\s*\{", sound)
+    assert not re.search(r"\.app-header__tabs\s*>\s*div\s*\{", sound)
+    assert ".app-header__tabs .segmented__btn.is-live::after" in sound
+
+
+def test_segmented_labels_are_centered_for_links_and_buttons():
+    body = _css_body(APP_CSS.read_text(), ".segmented__btn")
+    assert "text-align: center" in body
+
+
 def test_shared_styles_suppress_browser_focus_outlines():
     css = APP_CSS.read_text()
     assert ":where(a, button, input, select, textarea, [tabindex]):focus" in css
@@ -221,13 +241,37 @@ def test_web_css_only_uses_outline_to_suppress_focus_chrome():
     )
 
 
-def test_asset_version_is_url_safe_and_failsoft(monkeypatch):
+def test_asset_version_is_url_safe_and_failsoft():
     # Fail-soft: with no readable build.txt the token falls back to a
     # valid (un-busted) value rather than raising.
-    monkeypatch.setattr(_common, "_asset_version_cache", None)
     version = _common._asset_version()
     assert version
     assert re.fullmatch(r"[\w.-]+", version), version
+
+
+def test_canonical_page_observes_manifest_replacement_in_warm_process(
+    monkeypatch, tmp_path,
+):
+    """A wizard activated mid-deploy must not keep the prior asset URL."""
+    manifest = tmp_path / "build.txt"
+    manifest.write_text("JASPER_GIT_SHA=old123\n")
+    monkeypatch.setattr(_common, "_ASSET_VERSION_PATH", str(manifest))
+
+    first = _common.canonical_page(
+        "Status", "", page_css_href="/assets/system-status/system.css",
+    ).decode()
+    assert '/assets/app.css?v=old123' in first
+    assert '/assets/system-status/system.css?v=old123' in first
+
+    replacement = tmp_path / "build.next"
+    replacement.write_text("JASPER_GIT_SHA=new456\n")
+    replacement.replace(manifest)
+
+    second = _common.canonical_page(
+        "Status", "", page_css_href="/assets/system-status/system.css",
+    ).decode()
+    assert '/assets/app.css?v=new456' in second
+    assert '/assets/system-status/system.css?v=new456' in second
 
 
 # The three-tier typographic grammar (docs/HANDOFF-management-ui.md) lives partly

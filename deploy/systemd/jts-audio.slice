@@ -6,7 +6,7 @@
 # zram and audio-frame access triggered decompression jitter).
 #
 # Daemons in this slice handle audio output: jasper-outputd, jasper-fanin,
-# jasper-camilla, jasper-camilla-crossover, jasper-usbsink, the renderers
+# jasper-camilla, jasper-camilla-crossover, the renderers
 # (shairport-sync, librespot, bluealsa-aplay), and the two managed Snapcast
 # units (jasper-snapserver, jasper-snapclient).
 #

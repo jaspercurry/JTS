@@ -31,7 +31,9 @@ MEM_AVAILABLE_FAIL_MB = 32
 CAPTURE_EXTRA_SECONDS_WARN = 30.0
 CAPTURE_EXTRA_RATIO_WARN = 3.0
 FANIN_CONTROL_SOCKET = "/run/jasper-fanin/control.sock"
+OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
 FANIN_STATUS_TIMEOUT_SEC = 0.15
+OUTPUTD_STATUS_TIMEOUT_SEC = 0.15
 
 
 @dataclass(frozen=True)
@@ -86,9 +88,10 @@ def _read_meminfo_mb() -> dict[str, int] | None:
     }
 
 
-def _read_fanin_status(
-    socket_path: str = FANIN_CONTROL_SOCKET,
-    timeout_sec: float = FANIN_STATUS_TIMEOUT_SEC,
+def _read_status(
+    socket_path: str,
+    *,
+    timeout_sec: float,
 ) -> dict[str, Any] | None:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -108,6 +111,20 @@ def _read_fanin_status(
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _read_fanin_status(
+    socket_path: str = FANIN_CONTROL_SOCKET,
+    timeout_sec: float = FANIN_STATUS_TIMEOUT_SEC,
+) -> dict[str, Any] | None:
+    return _read_status(socket_path, timeout_sec=timeout_sec)
+
+
+def _read_outputd_status(
+    socket_path: str = OUTPUTD_CONTROL_SOCKET,
+    timeout_sec: float = OUTPUTD_STATUS_TIMEOUT_SEC,
+) -> dict[str, Any] | None:
+    return _read_status(socket_path, timeout_sec=timeout_sec)
 
 
 def _fanin_summary(status: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -136,6 +153,26 @@ def _fanin_summary(status: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _outputd_summary(status: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(status, dict):
+        return None
+
+    def _section(name: str) -> dict[str, Any]:
+        raw = status.get(name)
+        section = raw if isinstance(raw, dict) else {}
+        frames_key = "frames_read" if name == "content" else "frames_written"
+        return {
+            "pcm": section.get("pcm"),
+            frames_key: section.get(frames_key),
+            "xrun_count": section.get("xrun_count"),
+        }
+
+    return {
+        "content": _section("content"),
+        "dac": _section("dac"),
+    }
+
+
 def _round_float(value: float | None, digits: int = 3) -> float | None:
     if value is None:
         return None
@@ -153,6 +190,7 @@ def _system_snapshot(
     load_1m = _read_loadavg_1m()
     mem = _read_meminfo_mb() or {}
     fanin = _fanin_summary(_read_fanin_status())
+    outputd = _outputd_summary(_read_outputd_status())
     snapshot: dict[str, Any] = {
         "label": label,
         "timestamp": time.time(),
@@ -170,6 +208,8 @@ def _system_snapshot(
         snapshot["memory"] = mem
     if fanin:
         snapshot["fanin"] = fanin
+    if outputd:
+        snapshot["outputd"] = outputd
     if isinstance(camilla_status, dict):
         snapshot["camilla"] = camilla_status
     return snapshot
@@ -262,6 +302,21 @@ def _camilla_clipped_samples(snapshot: dict[str, Any]) -> int | None:
     return _as_int(camilla.get("clipped_samples"))
 
 
+def _outputd_xrun_counts(snapshot: dict[str, Any]) -> dict[str, int] | None:
+    outputd = snapshot.get("outputd")
+    if not isinstance(outputd, dict):
+        return None
+    counts: dict[str, int] = {}
+    for name in ("content", "dac"):
+        section = outputd.get(name)
+        if not isinstance(section, dict):
+            continue
+        value = _as_int(section.get("xrun_count"))
+        if value is not None:
+            counts[name] = value
+    return counts or None
+
+
 def _delta_issues(
     previous: dict[str, Any] | None,
     current: dict[str, Any],
@@ -283,6 +338,26 @@ def _delta_issues(
                 "label": current.get("label"),
             },
         ))
+    prev_outputd = _outputd_xrun_counts(previous)
+    cur_outputd = _outputd_xrun_counts(current)
+    if prev_outputd is not None and cur_outputd is not None:
+        deltas = {
+            name: cur_outputd[name] - prev_outputd[name]
+            for name in cur_outputd.keys() & prev_outputd.keys()
+            if cur_outputd[name] > prev_outputd[name]
+        }
+        if deltas:
+            issues.append(RuntimeIssue(
+                code="outputd_xruns_increased",
+                severity="warn",
+                message="final audio-path xrun count increased during measurement",
+                details={
+                    "previous": prev_outputd,
+                    "current": cur_outputd,
+                    "deltas": deltas,
+                    "label": current.get("label"),
+                },
+            ))
     prev_clipped = _camilla_clipped_samples(previous)
     cur_clipped = _camilla_clipped_samples(current)
     if (
