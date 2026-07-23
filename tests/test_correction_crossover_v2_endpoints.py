@@ -951,6 +951,37 @@ def test_status_block_surfaces_apply_blocked():
     }
 
 
+def test_apply_blocked_is_scoped_to_its_producing_session():
+    """Item 1 (#1605): a blocked-apply nudge belongs to the session that
+    produced it. persist_conductor_state carries apply_blocked forward while
+    the durable session_id still matches the snapshot's (the blocked-apply
+    terminal path is same-session), but a FRESH session's first snapshot drops
+    the stale nudge instead of surfacing session A's blocker on session B's
+    apply step. pre_apply_profile stays unconditional — only apply_blocked is
+    gated (see persist_conductor_state's carry-forward comment)."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    _c1, session1, phone1 = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor1 = _conductor(backend, session1, phone1, published=[])
+    conductor1.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor1, failure_code=None)
+    conductor1.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor1, failure_code=None)
+
+    issue = {"id": "boom", "message": "the apply was blocked"}
+    v2host._persist_apply_blocked(issue)
+    # Same session ⇒ preserved (the real blocked-apply terminal persist path).
+    v2host.persist_conductor_state(conductor1, failure_code=REASON_APPLY_FAILED)
+    assert v2host.load_v2_state()["apply_blocked"] == issue
+
+    # A brand-new session's first snapshot drops the stale nudge.
+    _c2, session2, phone2 = _mint_v2_session(backend, spec, driver_cls=None)
+    assert session2.session_id != session1.session_id
+    conductor2 = _conductor(backend, session2, phone2, published=[])
+    v2host.persist_conductor_state(conductor2, failure_code=None)
+    assert v2host.load_v2_state()["apply_blocked"] is None
+
+
 def test_blocking_apply_issue_prefers_a_blocker_over_earlier_non_blocker_issues():
     payload = {
         "issues": [

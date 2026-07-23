@@ -812,19 +812,34 @@ def persist_conductor_state(
     # 2026-07-20) are NOT conductor-owned fields: the conductor neither
     # produces nor reads either one, so they are absent from the ``state``
     # literal above and every OTHER caller of this function only ever sets
-    # the fields it does know about. Unlike ``candidate``/``evidence``, this carry-forward is
-    # unconditional (not gated on a matching session_id): the deferred
-    # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
-    # relay session id (``prepare_v2_verify`` mints one and "rebinds" the
-    # conductor's session_id before its own ``persist_conductor_state``
-    # call), so a session-id-gated carry-forward would still lose the stash
-    # on that very first post-apply snapshot. W6.12 P0: without this, the
-    # verify phase that always immediately follows an apply wiped the
-    # just-stashed ``pre_apply_profile`` before a household could ever reach
-    # the verify_fail Undo screen — ``/crossover/v2/restore`` 400'd with "no
-    # previous crossover to restore to" after literally every apply.
+    # the fields it does know about. They carry forward with OPPOSITE
+    # session-scoping, by design:
+    #
+    #   * ``pre_apply_profile`` is carried forward UNCONDITIONALLY (not gated
+    #     on a matching session_id): the deferred VERIFY that auto-arms right
+    #     after every SUCCESSFUL apply runs under a BRAND-NEW relay session id
+    #     (``prepare_v2_verify`` mints one and "rebinds" the conductor's
+    #     session_id before its own ``persist_conductor_state`` call), so a
+    #     session-id-gated carry-forward would lose the stash on that very
+    #     first post-apply snapshot. W6.12 P0: without this, the verify phase
+    #     that always immediately follows an apply wiped the just-stashed
+    #     ``pre_apply_profile`` before a household could ever reach the
+    #     verify_fail Undo screen — ``/crossover/v2/restore`` 400'd with "no
+    #     previous crossover to restore to" after literally every apply.
+    #
+    #   * ``apply_blocked`` IS session-scoped (#1605): it is only ever set on
+    #     a BLOCKED auto-apply, which — unlike a successful one — refuses the
+    #     deferred VERIFY outright (the honest ``apply_failed`` reason, never a
+    #     re-arm), so it never has to survive ``prepare_v2_verify``'s
+    #     new-session rebind. Gating it drops a stale nudge the moment a fresh
+    #     session begins instead of leaking session A's blocker onto session
+    #     B's apply step.
     state["pre_apply_profile"] = prior.get("pre_apply_profile")
-    state["apply_blocked"] = prior.get("apply_blocked")
+    state["apply_blocked"] = (
+        prior.get("apply_blocked")
+        if prior.get("session_id") == snap.session_id
+        else None
+    )
     save_v2_state(state)
 
 
