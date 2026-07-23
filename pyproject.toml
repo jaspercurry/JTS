@@ -99,7 +99,7 @@ full = [
     # (resource shapes for `calendar` and `gmail`). Pure-Python, tiny.
     "google-auth>=2.36",
     "google-auth-oauthlib>=1.2",
-    "google-api-python-client>=2.150",
+    "google-api-python-client>=2.198.0",
     # jasper-input: third-party HID accessory bridge (volume knobs,
     # macro pads, etc.) reads /dev/input/event* via python-evdev and
     # watches for hot-plug via pyudev. Tiny pure-Python deps.
