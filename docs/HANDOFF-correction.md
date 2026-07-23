@@ -85,11 +85,21 @@
   `/start` / `/local-capture/setup` / `/status` report actually got
   bound, alerting once per run on a disagreement — surfacing the
   existing server-side guard's refusal instead of a silent uncalibrated
-  capture. Guarded to only reconcile against a `/status` snapshot for
-  our own `session_id` (an unguarded version false-fired on every page
-  load for any household with a saved mic, since `/status` is polled
-  before the boot-time prefill resolves). Pinned in
-  `tests/js/correction_render_harness.mjs`. **Separately identified, NOT
+  capture. Guarded to only reconcile once `runTransportLocked` is true —
+  a real measurement run in progress, freshly re-derived by
+  `syncSessionMechanics` from `s.state` on every poll tick. An earlier
+  draft gated on `sessionId && s.session_id === sessionId` instead, which
+  adversarial review found vacuous: the server mints a uuid `session_id`
+  even for a never-started, idle `MeasurementSession`
+  (`jasper/correction/session.py:280`), and `syncSessionMechanics`'s idle
+  branch sets the client `sessionId` FROM that same value a few lines
+  before the comparison runs — so it was comparing a value against the
+  value it was just derived from, and false-fired the alert on
+  essentially every page load for any household with a saved mic. Pinned
+  in `tests/js/correction_render_harness.mjs` (a realistic uuid-style
+  `session_id` fixture, plus a test driving the exact concurrent boot
+  order — `pollState()` dispatched before `applyHouseholdMicPrefill()`
+  resolves — both fail against the reverted `sessionId` gate). **Separately identified, NOT
   fixed here:** the room flow's own relay path
   (`_apply_relay_setup_to_session` in `jasper/web/correction_setup.py`)
   never threads a `device` value into `_relay_calibration_from_setup`,
