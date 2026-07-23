@@ -752,6 +752,51 @@ def test_verify_rearm_session_runs_exactly_one_capture():
     assert volume.events == ["open", "close"]
 
 
+def test_verify_rearm_persists_pilot_transfer_baseline_for_a_later_rearm():
+    """Measurement-honesty gate G3's reference threads through
+    persist_conductor_state's verify_priors exactly like gate_window_ms
+    above — written (through the REAL production ``consume()`` closure,
+    ``persist_conductor_state`` runs after every capture) once the
+    conductor's own first usable VERIFY attempt sets it, so a LATER
+    prepare_v2_verify re-arm could inherit it."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    published: list = []
+
+    freqs = np.linspace(100.0, 20000.0, 64)
+    base = _conductor(
+        backend, session, phone, published=published,
+        analyses={
+            "verify": lambda program: _verify_analysis(program, pilot_hi_dbfs=-20.0),
+        },
+    )
+    conductor = CrossoverV2Conductor(
+        session_id=session.session_id,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=base._seams,  # reuse the play/analyze/publish fakes
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
+        index_phase_map={1: PHASE_VERIFY},
+        measure_predicted_sum=(freqs, np.zeros(64)),
+        measure_gate_window_ms=8.0,
+    )
+    volume = VolumeRecorder()
+    _run(_build_runner(conductor, volume), client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    # transfer = level_hi_dbfs(-20.0) - programmed_hi_gain_db(-20.0) = 0.0.
+    assert conductor.verify_pilot_transfer_baseline == {"summed": 0.0}
+    state = v2host.load_v2_state()
+    assert state["verify_priors"]["pilot_transfer_baseline"] == {"summed": 0.0}
+
+
 # --- endpoint gates (selector + recovery) ----------------------------------------
 
 

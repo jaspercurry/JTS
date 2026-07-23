@@ -39,6 +39,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_RELAY_TIMEOUT,
     REASON_SNR_FLOOR,
     REASON_USER_STOPPED,
+    REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
 )
 
@@ -396,6 +397,22 @@ def test_verify_fail_one_default_screen():
     assert undo["show_during_relay"] is True
     assert remeasure["show_during_relay"] is True
     assert "show_during_relay" not in env["next_action"]
+
+
+def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():
+    """Measurement-honesty gate G3 (crossover_v2_flow._verify_verdict): a
+    THIRD, distinct reason code alongside verify_out_of_tolerance/
+    verify_inconclusive, rendered through the exact same one-default
+    ("Try again") + Undo screen shape — with its own copy naming the
+    actual cause (the phone's mic chain drifted, not the speaker)."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify", failure={"code": REASON_VERIFY_LEVEL_SHIFT},
+    ))
+    assert env["screen"] == "verify_fail"
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
+    assert env["next_action"]["label"] == "Try again"
+    labels = [a["label"] for a in env["alternate_actions"]]
+    assert "Undo (restore previous sound)" in labels
 
 
 def test_unknown_failure_code_still_renders_a_retry_screen():

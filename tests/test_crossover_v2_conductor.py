@@ -37,6 +37,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_TAP,
     CAPTURE_PLAN_TARGET,
     GAIN_CAP_BACKOFF_DB,
+    MEASURE_PREDICTED_RIPPLE_CEILING_DB,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_DONE,
@@ -44,6 +45,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_VERIFY,
     PILOT_LEVEL_DELTA_DB,
     REASON_REGISTRY,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
+    VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
     CrossoverV2Conductor,
     CrossoverV2FlowError,
     V2FlowSeams,
@@ -100,10 +104,10 @@ def _preset() -> ActiveSpeakerPreset:
 
 
 def _loc(segment_id: str, kind: str = "sweep", *, confidence: float = 0.9,
-         clipped: bool = False) -> SegmentLocation:
+         clipped: bool = False, residual_samples: float = 0.0) -> SegmentLocation:
     return SegmentLocation(
         segment_id=segment_id, kind=kind, role=None,
-        scheduled_start=0, located_start=0, residual_samples=0.0,
+        scheduled_start=0, located_start=0, residual_samples=residual_samples,
         confidence=confidence, peak_dbfs=-12.0, clipped=clipped,
     )
 
@@ -153,16 +157,20 @@ def _alignment(
 def _measure_analysis(
     program, *, glitch=False, clipped=False, linearity=True,
     alignment=None, locate_confidence=0.9, gate_ms=8.0,
+    predicted_ripple_db=0.8, sweep_locations=None,
 ) -> ProgramAnalysis:
     freqs = np.linspace(100.0, 20000.0, 64)
-    return ProgramAnalysis(
-        phase="measure",
-        program_id=program.program_id,
-        locations=(
+    locations = (
+        sweep_locations if sweep_locations is not None else (
             _loc("sweep_w", confidence=locate_confidence, clipped=clipped),
             _loc("sweep_t", confidence=locate_confidence),
             _loc("sweep_w_rep", confidence=locate_confidence),
-        ),
+        )
+    )
+    return ProgramAnalysis(
+        phase="measure",
+        program_id=program.program_id,
+        locations=locations,
         drift=DriftEstimate(
             epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
             max_residual_samples=0.2, glitch_detected=glitch,
@@ -175,7 +183,7 @@ def _measure_analysis(
         candidate=CrossoverCandidate(
             trim_db={"woofer": -3.1, "tweeter": 0.0},
             polarity="normal", delay_us=150.0,
-            predicted_ripple_db=0.8, confidence=0.8,
+            predicted_ripple_db=predicted_ripple_db, confidence=0.8,
         ),
         linearity_ok=linearity,
         predicted_sum=(freqs, np.zeros(64)),
@@ -183,8 +191,20 @@ def _measure_analysis(
     )
 
 
+def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> PilotObservation:
+    """A VERIFY leading-pilot observation — role ``summed`` (VERIFY_PILOT_ROLE),
+    the only role a v2 VERIFY program ever carries."""
+    return PilotObservation(
+        role="summed", level_lo_dbfs=hi_dbfs - 10.0, level_hi_dbfs=hi_dbfs,
+        programmed_delta_db=10.0, captured_delta_db=10.0,
+        linearity_ok=True, channel_map_ok=True,
+        programmed_hi_gain_db=programmed_hi_gain_db,
+    )
+
+
 def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
+    pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0,
 ) -> ProgramAnalysis:
     return ProgramAnalysis(
         phase="verify",
@@ -197,6 +217,10 @@ def _verify_analysis(
         # exclude), so the ``max_db`` parameter still controls the gate.
         verify_tracking={"rms_db": 0.4, "max_db": max_db, "max_db_notch_excluded": max_db},
         linearity_ok=linearity,
+        pilots=(
+            (_verify_pilot(pilot_hi_dbfs, programmed_hi_gain_db=programmed_hi_gain_db),)
+            if pilot_hi_dbfs is not None else ()
+        ),
     )
 
 
@@ -444,6 +468,84 @@ def test_implausible_delay_rejects_measure_even_at_high_confidence():
     assert verdict2["accepted"] is True
 
 
+# --- measurement-honesty gate G1: predicted-ripple sanity ceiling -----------------
+
+
+def test_predicted_ripple_ceiling_rejects_measure_reusing_low_alignment_confidence():
+    """Measurement-honesty gate G1 (2026-07-22): a candidate whose OWN
+    predicted ripple is implausibly bad — mirrors the 2026-07-22 corrupted-
+    phone-chain hardware evidence (27.316 dB at a confidence that cleared
+    ALIGNMENT_CONFIDENCE_TRUST_FLOOR) — must not auto-apply even though
+    confidence and the Fix 3 plausibility check both pass. Reuses
+    low_alignment_confidence (same household action, "measure again"); the
+    diag ``guard`` field disambiguates it from the other two checks sharing
+    that code in telemetry."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=27.316,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "low_alignment_confidence"
+    assert not fakes.published_candidates
+    assert c.candidate is None
+    assert c.current_phase == PHASE_MEASURE
+
+
+def test_predicted_ripple_well_under_ceiling_passes():
+    """The 2026-07-22 clean-corpus worst case (12 captures, UMIK-2 +
+    iMM-6C, 4.387-9.031 dB) passes cleanly — the ceiling sits well above it."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=9.0,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+
+def test_predicted_ripple_ceiling_boundary_exact_passes_just_above_fires():
+    """The ceiling is an exclusive upper bound (``>``, not ``>=``) — exactly
+    at the ceiling passes, matching this file's other boundary comparators
+    (e.g. test_alignment_confidence_at_the_trust_floor_is_trusted)."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_CEILING_DB,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    assert _run_phase(c, 2, 2)["accepted"] is True
+
+    fakes2 = FakeSeams()
+    fakes2.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=MEASURE_PREDICTED_RIPPLE_CEILING_DB + 0.01,
+    )
+    c2 = _conductor(fakes2)
+    _run_phase(c2, 1, 1)
+    verdict2 = _run_phase(c2, 2, 2)
+    assert verdict2["accepted"] is False
+    assert verdict2["code"] == "low_alignment_confidence"
+
+
+def test_predicted_ripple_ceiling_skips_when_no_alignment():
+    """A trims-only candidate (no alignment estimate at all) is never
+    ripple-gated — same condition the confidence floor and Fix 3 use (see
+    test_no_alignment_estimate_skips_the_confidence_gate)."""
+    from dataclasses import replace
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: replace(
+        _measure_analysis(program, predicted_ripple_db=27.316), alignment=None,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+
 def test_measure_priors_thread_declared_delay_magnitudes_without_applied_target():
     """T2 threads declared magnitudes even before a target is applied.
 
@@ -545,6 +647,119 @@ def test_glitch_reuses_drift_baselines_disagree():
     assert verdict["code"] == "drift_baselines_disagree"
     assert verdict["template"] == "silent_auto_retry"
     assert verdict["auto_retry"] is True
+
+
+# --- measurement-honesty gate G2: sweep schedule-integrity (xrun detector) ------
+
+
+def test_sweep_schedule_fires_on_large_residual_even_with_good_confidence():
+    """Measurement-honesty gate G2 (2026-07-22 — the xrun detector): a
+    uniform whole-capture schedule shift the repeat-pair drift check above
+    is structurally blind to. Mirrors the 2026-07-22 ``event=outputd.xrun``
+    hardware evidence's -25...-28 ms shift, isolating the RESIDUAL half of
+    the gate: good confidence (0.8, clears SWEEP_LOCATE_CONFIDENCE_FLOOR)
+    does not save a badly-shifted sweep. Routed identically to the
+    pre-existing glitch branch above — same silent auto-retry, same reused
+    drift_baselines_disagree code (§5.2's capture-glitch reuse convention);
+    the diag ``guard`` field is what tells them apart in telemetry."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        sweep_locations=(
+            _loc("sweep_w", confidence=0.8,
+                 residual_samples=-25e-3 * program.sample_rate_hz),
+            _loc("sweep_t", confidence=0.8),
+            _loc("sweep_w_rep", confidence=0.8),
+        ),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["code"] == "drift_baselines_disagree"
+    assert verdict["template"] == "silent_auto_retry"
+    assert verdict["auto_retry"] is True
+    # The automatic retry recomposed the MEASURE program (§5.10 t1, mirrors
+    # test_clipped_measure_is_transient_auto_retry_with_quieter_program) and
+    # left the conductor in a working state — a clean re-capture succeeds.
+    fakes.measure = _measure_analysis
+    assert _run_phase(c, 2, 3)["accepted"] is True
+
+
+def test_sweep_schedule_fires_on_low_confidence_even_with_small_residual():
+    """The CONFIDENCE half of the gate — mirrors the 2026-07-22 xrun
+    evidence's 0.07-0.12 per-segment confidence, here with a negligible
+    residual so only the confidence floor is exercised. 0.12 clears
+    LOCATE_MIN_CONFIDENCE (0.1, the pre-existing ``_stimulus_locate_ok``
+    check earlier in the ladder) but is still under
+    SWEEP_LOCATE_CONFIDENCE_FLOOR (0.3), so G2 alone is what fires here."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        sweep_locations=(
+            _loc("sweep_w", confidence=0.12, residual_samples=1.0),
+            _loc("sweep_t", confidence=0.12),
+            _loc("sweep_w_rep", confidence=0.12),
+        ),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["code"] == "drift_baselines_disagree"
+    assert verdict["template"] == "silent_auto_retry"
+
+
+def test_sweep_schedule_clean_capture_passes():
+    """The default fixture (well inside both thresholds) is unaffected —
+    the happy path already exercises this; pins it explicitly."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+
+def test_sweep_schedule_boundary_exact_values_pass():
+    """Both thresholds are exclusive bounds (``>``/``<``) — exactly-at the
+    ceiling/floor passes."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        sweep_locations=(
+            _loc(
+                "sweep_w", confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR,
+                residual_samples=(
+                    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * program.sample_rate_hz
+                ),
+            ),
+            _loc("sweep_t", confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR),
+            _loc("sweep_w_rep", confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR),
+        ),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+
+def test_sweep_schedule_ignores_pilot_segments():
+    """Sweeps-only filter (mirrors ``_estimate_drift``'s own pilot exclusion
+    in program_analysis.py): a catastrophically bad PILOT location does not
+    fire G2 — only ``KIND_SWEEP`` locations are judged."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        sweep_locations=(
+            _loc("pilot_woofer_hi", "pilot", confidence=0.01,
+                 residual_samples=-1_000_000.0),
+            _loc("sweep_w", confidence=0.9),
+            _loc("sweep_t", confidence=0.9),
+            _loc("sweep_w_rep", confidence=0.9),
+        ),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
 
 
 def test_locate_failed_and_budget_exhaustion():
@@ -658,6 +873,207 @@ def test_verify_out_of_tolerance_and_inconclusive():
     verdict = _run_phase(c, 3, 5)
     assert verdict["accepted"] is True
     assert c.verify_outcome == "pass"
+
+
+# --- measurement-honesty gate G3: verify inter-attempt pilot consistency --------
+
+
+def test_verify_pilot_baseline_never_fires_on_first_usable_attempt():
+    """Measurement-honesty gate G3 (2026-07-22): the FIRST usable VERIFY
+    attempt establishes the reference and never rejects on its own — a
+    normal, otherwise-clean VERIFY with its first-ever pilot pair passes."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    fakes.verify = lambda program: _verify_analysis(program, pilot_hi_dbfs=-20.0)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.verify_outcome == "pass"
+
+
+def test_verify_pilot_level_shift_fires_on_large_step():
+    """Mirrors the 2026-07-22 hardware evidence: a phone's input chain
+    stepped ~0.56 dB between VERIFY attempts, producing escalating
+    dishonest verify verdicts. Attempt 1 (independently out of tolerance,
+    unrelated to G3) establishes the reference; attempt 2's otherwise-clean
+    capture (max_db well within tolerance) still rejects because its own
+    pilot transfer stepped 0.56 dB away from that reference."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    verdict1 = _run_phase(c, 3, 3)
+    assert verdict1["code"] == "verify_out_of_tolerance"  # unrelated to G3
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.56, max_db=0.5,
+    )
+    verdict2 = _run_phase(c, 3, 4)
+    assert verdict2["accepted"] is False
+    assert verdict2["code"] == "verify_level_shift"
+    assert c.verify_outcome == "inconclusive"
+
+
+def test_verify_pilot_level_shift_within_tolerance_passes():
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    _run_phase(c, 3, 3)
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.1, max_db=0.5,
+    )
+    verdict = _run_phase(c, 3, 4)
+    assert verdict["accepted"] is True
+
+
+def test_verify_pilot_level_shift_boundary_exact_passes_just_above_fires():
+    """The ceiling is an exclusive upper bound (``>``, not ``>=``) — exactly
+    at the ceiling passes, matching this file's other boundary comparators.
+    ``programmed_hi_gain_db=0.0`` (not the -20.0 the other G3 tests use) so
+    the transfer IS the pilot level with no subtraction involved — a
+    baseline of -20.0 would compute ``(0.0 - (-20.0)) - (0.35 - (-20.0))``,
+    which picks up a ~1e-15 float rounding artifact that would make an
+    "exactly at the boundary" test flaky."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=0.0, programmed_hi_gain_db=0.0, max_db=5.0,
+    )
+    _run_phase(c, 3, 3)
+    fakes.verify = lambda program: _verify_analysis(
+        program,
+        pilot_hi_dbfs=VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
+        programmed_hi_gain_db=0.0,
+        max_db=0.5,
+    )
+    verdict = _run_phase(c, 3, 4)
+    assert verdict["accepted"] is True
+
+    fakes2 = FakeSeams()
+    c2 = _conductor(fakes2)
+    _run_phase(c2, 1, 1)
+    _run_phase(c2, 2, 2)
+    c2.note_apply_complete()
+    fakes2.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=0.0, programmed_hi_gain_db=0.0, max_db=5.0,
+    )
+    _run_phase(c2, 3, 3)
+    fakes2.verify = lambda program: _verify_analysis(
+        program,
+        pilot_hi_dbfs=VERIFY_PILOT_TRANSFER_STEP_CEILING_DB + 0.01,
+        programmed_hi_gain_db=0.0,
+        max_db=0.5,
+    )
+    verdict2 = _run_phase(c2, 3, 4)
+    assert verdict2["accepted"] is False
+    assert verdict2["code"] == "verify_level_shift"
+
+
+def test_verify_pilot_level_shift_skips_when_pilots_absent():
+    """A legacy VERIFY program with no leading pilot pair (the default
+    ``_verify_analysis`` fixture, ``pilot_hi_dbfs=None`` ⇒ ``pilots=()``)
+    never gates on G3 — mirrors the other two gates' own skip conditions."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+
+
+def test_verify_pilot_level_shift_baseline_does_not_rebaseline():
+    """The baseline is frozen at the FIRST usable attempt — a later attempt
+    that itself clears the ceiling vs the baseline must NOT quietly become
+    the new reference. Numbers are chosen so the two readings diverge: a
+    3rd attempt 0.6 dB from the ORIGINAL baseline (fires) is only 0.3 dB from
+    the 2nd attempt (would NOT fire if the 2nd attempt had silently become
+    the new baseline)."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    # Attempt 1: baseline = -20.0 dBFS transfer (independently out of
+    # tolerance, so a retry is admitted).
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    verdict1 = _run_phase(c, 3, 3)
+    assert verdict1["code"] == "verify_out_of_tolerance"
+
+    # Attempt 2: +0.3 dB from the baseline — clears the ceiling on its OWN
+    # G3 check (0.3 ≤ 0.35), so it fails for the SAME independent reason,
+    # never level_shift.
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-19.7, max_db=5.0,
+    )
+    verdict2 = _run_phase(c, 3, 4)
+    assert verdict2["code"] == "verify_out_of_tolerance"
+
+    # Attempt 3: +0.6 dB from the ORIGINAL -20.0 baseline (fires) but only
+    # +0.3 dB from attempt 2's -19.7 (would NOT fire against that). Also
+    # independently out of tolerance, so a buggy re-baseline would show
+    # verify_out_of_tolerance here instead — the frozen baseline is what
+    # makes this show verify_level_shift.
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-19.4, max_db=5.0,
+    )
+    verdict3 = _run_phase(c, 3, 5)
+    assert verdict3["accepted"] is False
+    assert verdict3["code"] == "verify_level_shift"
+
+
+def test_verify_pilot_transfer_baseline_rehydrates_from_a_prior_session():
+    """A verify-only re-arm session (``prepare_v2_verify``) supplies the
+    PRIOR session's frozen baseline through the constructor — exactly like
+    ``measure_gate_window_ms`` (see ``__init__``'s comment). This conductor's
+    OWN first VERIFY attempt then compares against the SUPPLIED baseline
+    rather than treating itself as attempt 1."""
+    fakes = FakeSeams()
+    c = CrossoverV2Conductor(
+        session_id="verify_rearm_session",
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=fakes.seams(),
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
+        index_phase_map={1: PHASE_VERIFY},
+        measure_gate_window_ms=8.0,
+        verify_pilot_transfer_baseline={"summed": -20.0},
+    )
+    assert c.verify_pilot_transfer_baseline == {"summed": -20.0}
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.56, max_db=0.5,
+    )
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "verify_level_shift"
+    # The supplied baseline is untouched — this attempt did not overwrite it.
+    assert c.verify_pilot_transfer_baseline == {"summed": -20.0}
 
 
 # --- alignment sign contract -----------------------------------------------------
@@ -1406,6 +1822,8 @@ def test_measure_diag_logs_full_numbers_on_glitch_rejection_too(caplog):
     assert "epsilon_ppm=30.0" in caplog.text
     assert "alignment_confidence=0.8" in caplog.text
     assert "predicted_ripple_db=0.8" in caplog.text
+    # The pre-existing glitch check, not G2 — guard stays empty.
+    assert 'guard=""' in caplog.text
 
 
 def test_measure_diag_logs_full_numbers_on_low_alignment_confidence_rejection(caplog):
@@ -1428,6 +1846,53 @@ def test_measure_diag_logs_full_numbers_on_low_alignment_confidence_rejection(ca
     # available for the diagnostic even though THIS rejection means the
     # conductor's own candidate is never built or published.
     assert "predicted_ripple_db=0.8" in caplog.text
+    # The pre-existing confidence-floor check, not G1 — guard stays empty.
+    assert 'guard=""' in caplog.text
+
+
+def test_measure_diag_logs_guard_field_on_ripple_ceiling_fire(caplog):
+    """The diag ``guard`` field distinguishes a G1 fire from the two
+    pre-existing checks (confidence floor, Fix 3 plausibility) that share
+    the SAME reused low_alignment_confidence code — see the two tests
+    above for the "guard empty" counterpart on each of those."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(
+        program, predicted_ripple_db=27.316,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["code"] == "low_alignment_confidence"
+    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "guard=ripple_ceiling" in caplog.text
+    assert "predicted_ripple_db=27.316" in caplog.text
+
+
+def test_measure_diag_logs_guard_field_on_sweep_schedule_fire(caplog):
+    """The diag ``guard`` field distinguishes a G2 fire from the pre-
+    existing glitch_detected branch — both share the reused
+    drift_baselines_disagree code (see the glitch test above for the "guard
+    empty" counterpart)."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    fakes.measure = lambda program: _measure_analysis(
+        program,
+        sweep_locations=(
+            _loc("sweep_w", confidence=0.8,
+                 residual_samples=-25e-3 * program.sample_rate_hz),
+            _loc("sweep_t", confidence=0.8),
+            _loc("sweep_w_rep", confidence=0.8),
+        ),
+    )
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["code"] == "drift_baselines_disagree"
+    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "guard=sweep_schedule" in caplog.text
+    assert "sweep_residual_ms_worst=-25.0" in caplog.text
+    assert "sweep_locate_confidence_min=0.8" in caplog.text
 
 
 def test_verify_diag_logs_full_numbers_on_accept(caplog):
@@ -1460,6 +1925,11 @@ def test_verify_diag_logs_full_numbers_on_accept(caplog):
     assert "tracking_band_lo_hz=800.0" in caplog.text
     assert "tracking_band_hi_hz=3200.0" in caplog.text
     assert "rms_db=0.4" in caplog.text
+    # No pilots on this fixture (a legacy-shaped ProgramAnalysis) — G3's
+    # fields render as absent, never a false 0.0.
+    assert "pilot_transfer_db=null" in caplog.text
+    assert "pilot_transfer_step_db=null" in caplog.text
+    assert 'guard=""' in caplog.text
 
 
 def test_verify_diag_logs_full_numbers_on_out_of_tolerance_rejection_too(caplog):
@@ -1500,3 +1970,80 @@ def test_verify_diag_logs_full_numbers_on_inconclusive_rejection(caplog):
     assert "event=correction.crossover_v2_verify_diag" in caplog.text
     assert "verify_gate_window_ms=4.0" in caplog.text
     assert "measure_gate_window_ms=8.0" in caplog.text
+
+
+def test_verify_diag_logs_guard_field_and_pilot_transfer_on_level_shift_fire(caplog):
+    """Measurement-honesty gate G3's own diagnostics: the baseline-setting
+    attempt logs its raw transfer with a null step and empty guard; the
+    fired attempt logs its own transfer, the computed step, and
+    guard=pilot_level_shift."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    _run_phase(c, 3, 3)
+    # transfer = level_hi_dbfs(-20.0) - programmed_hi_gain_db(-20.0) = 0.0.
+    assert "pilot_transfer_db=0.0" in caplog.text
+    assert "pilot_transfer_step_db=null" in caplog.text
+    assert 'guard=""' in caplog.text
+    caplog.clear()
+
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.56, max_db=0.5,
+    )
+    verdict = _run_phase(c, 3, 4)
+    assert verdict["code"] == "verify_level_shift"
+    assert "event=correction.crossover_v2_verify_diag" in caplog.text
+    # transfer = level_hi_dbfs(-19.44) - programmed_hi_gain_db(-20.0) = 0.56.
+    assert "pilot_transfer_db=0.56" in caplog.text
+    assert "pilot_transfer_step_db=0.56" in caplog.text
+    assert "guard=pilot_level_shift" in caplog.text
+
+
+def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(caplog):
+    """Adversarial-review fix (S1): ``_verify_pilot_transfer_step_db`` must
+    reset at the TOP of every ``_verify_verdict`` call (mirrors
+    ``_last_measure_guard``'s method-top reset in ``_measure_verdict``) — an
+    early return BEFORE the G3 block even runs (locate_failed here) must not
+    leave a PRIOR attempt's REAL step number for ``_log_verify_diag`` (which
+    runs unconditionally) to misreport as if it were computed this attempt."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    # Attempt 1 (N-1): establishes the baseline (independently out of
+    # tolerance, so a retry is admitted).
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    _run_phase(c, 3, 3)
+
+    # Attempt 2 (N): a REAL, non-None step gets computed and logged (0.1 dB,
+    # within the ceiling — independently out of tolerance too, so a 3rd
+    # attempt is admitted).
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.1, max_db=5.0,
+    )
+    _run_phase(c, 3, 4)
+    assert "pilot_transfer_step_db=0.1" in caplog.text
+    caplog.clear()
+
+    # Attempt 3 (N+1): locate_failed — returns BEFORE the G3 block runs at
+    # all. Without the S1 fix this would still show attempt 2's stale 0.1;
+    # with it, the diag must show null.
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.1, locate_confidence=0.01,
+    )
+    verdict = _run_phase(c, 3, 5)
+    assert verdict["code"] == "locate_failed"
+    assert "event=correction.crossover_v2_verify_diag" in caplog.text
+    assert "pilot_transfer_step_db=null" in caplog.text
