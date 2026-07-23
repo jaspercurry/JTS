@@ -1140,12 +1140,15 @@ def _estimate_drift(
     # Primary gate: the WOOFER's first-vs-LAST located occurrence — byte-
     # identical gating semantics to the pre-N=3 composer (which had exactly
     # one woofer repeat, so "first vs last" there IS "sweep_w" vs
-    # "sweep_w_rep", today's exact pair). "sweep_w" is guaranteed present in
-    # the program by the time this runs (`_analyze_measure` already
-    # dereferenced it), so it is the one literal anchor kept — see
-    # `_sweep_occurrences_by_role` for why every OTHER role/occurrence is
-    # discovered rather than hardcoded.
+    # "sweep_w_rep", today's exact pair). This IS the first dereference of
+    # "sweep_w" in the analysis flow (`_estimate_drift` runs before
+    # `_analyze_measure` resolves its own `seg_w`/`seg_t`) — but a MEASURE
+    # program is required to contain "sweep_w" with a role, and this
+    # analysis hard-depends on that invariant throughout, so it is the one
+    # literal anchor kept — see `_sweep_occurrences_by_role` for why every
+    # OTHER role/occurrence is discovered rather than hardcoded.
     woofer_role = program.segment("sweep_w").role
+    assert woofer_role is not None, "a MEASURE sweep segment always carries a role"
     woofer_occurrences = occurrences_by_role.get(woofer_role, [])
     w1 = woofer_occurrences[0] if woofer_occurrences else None
     w2 = woofer_occurrences[-1] if len(woofer_occurrences) >= 2 else None
@@ -2157,6 +2160,7 @@ def _repeat_driver_responses(
     epsilon: float,
     occurrences: Sequence[SegmentLocation],
     *,
+    role: str,
     calibration: "CalibrationCurve | None",
     ambient_report: Mapping[str, Any] | None,
     fc_hz: float,
@@ -2170,7 +2174,14 @@ def _repeat_driver_responses(
     deconvolution call count (2→6) on purpose per the design. The PRIMARY
     response (the driver's canonical ``sweep_w``/``sweep_t`` occurrence) is
     built by the caller and untouched by this function; repeats never feed
-    the candidate/trim/alignment math.
+    the candidate/trim/alignment math. ``role`` is the primary's own
+    already-resolved role: every location in ``occurrences`` shares it by
+    construction of the caller's per-role grouping
+    (``_sweep_occurrences_by_role``), so it is threaded through explicitly
+    rather than re-derived per segment as an ``Optional[str]``.
+
+    Consumed by ``jasper.active_speaker.linearization_envelope.
+    compute_sigma_curve`` — the Layer-1a repeatability term.
     """
     out: list[DriverResponse] = []
     for repeat_index, loc in enumerate(occurrences[1:], start=1):
@@ -2180,7 +2191,7 @@ def _repeat_driver_responses(
             epsilon=epsilon,
         )
         resp = _driver_response(
-            seg.role, full_ir, sample_rate,
+            role, full_ir, sample_rate,
             calibration=calibration, ambient_report=ambient_report,
             fc_hz=fc_hz, n_fft=n_fft,
         )
@@ -2227,6 +2238,7 @@ def _analyze_measure(
             repeat_responses=_repeat_driver_responses(
                 program, capture, sample_rate, global_offset, epsilon,
                 occurrences_by_role.get(resp.role, ()),
+                role=resp.role,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
             ),

@@ -40,6 +40,7 @@ from jasper.audio_measurement.program import (
     PHASE_MEASURE,
     RoleBand,
     _finalize,
+    _occurrence_suffix,
     _seconds_to_samples,
     _silence,
     _stimulus,
@@ -82,6 +83,7 @@ from jasper.audio_measurement.program_analysis import (
     _predicted_sum,
     _ripple_db,
     _solve_trims,
+    _sweep_occurrence_index,
     analysis_diagnostic_summary,
     analyze_program_capture,
 )
@@ -481,6 +483,16 @@ def test_era_tolerance_old_shaped_program_analyzes_without_crash_or_version_flag
     assert len(by_role["woofer"].repeat_responses) == 1
     assert by_role["woofer"].repeat_responses[0].repeat_index == 1
     assert by_role["tweeter"].repeat_responses == ()
+
+
+@pytest.mark.parametrize("n", [0, 1, 2, 5])
+def test_sweep_occurrence_index_round_trips_through_occurrence_suffix(n):
+    """Analysis-side ``_sweep_occurrence_index`` must invert composition-side
+    ``_occurrence_suffix`` exactly — the contract ``_sweep_occurrences_by_role``
+    relies on to group located sweeps by occurrence order rather than physical
+    schedule position under the N=3 interleaved MEASURE layout (design §5.4,
+    sweep-composition PR-A #1668)."""
+    assert _sweep_occurrence_index(f"sweep_w{_occurrence_suffix(n)}") == n
 
 
 # --------------------------------------------------------------------------- #

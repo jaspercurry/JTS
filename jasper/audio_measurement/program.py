@@ -94,6 +94,11 @@ MEASURE_SWEEP_F_HI_HZ = 23_000.0
 # (sweep-composition PR-A, #1668): the first is the primary, the remaining
 # N-1 are bit-identical repeats used for the in-capture drift/glitch
 # estimator (design §3.1) — now for BOTH drivers, not just the woofer.
+# At the defaults this composes a ~35.8 s / ~3.4 MB mono-WAV MEASURE
+# capture against the 5 MB
+# jasper.active_speaker.test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES
+# upload cap (headroom ~2.9 MB pre-#1668 → ~1.5 MB today) — raising
+# repeat_count OR any role's sweep_durations must re-check that cap.
 MEASURE_REPEAT_COUNT = 3
 
 # The unit-peak reference level the per-segment digital gain is applied ON TOP
