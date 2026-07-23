@@ -56,7 +56,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import GROUPING_ENV_FILE, GroupingConfig, is_active_leader, load_config
+from . import config
+from .config import GROUPING_ENV_FILE, GroupingConfig
+
+# NOTE: `load_config` / `is_active_leader` are resolved through the `config`
+# module at call time (``config.load_config`` / ``config.is_active_leader``),
+# NOT captured via ``from .config import ...``. A from-import binds a private
+# reference at import time; if this module was first imported while a test had
+# monkeypatched ``jasper.multiroom.config.load_config`` (the grouping-doctor
+# tests do exactly this), that reference stuck to the stub and survived the
+# monkeypatch teardown, poisoning later tests — pytest-xdist sharding hid it
+# by varying which test imported this module first (#1270). Call-time
+# resolution honours both the patch and its teardown.
 
 
 def member_camilla_kwargs(
@@ -82,8 +93,8 @@ def member_camilla_kwargs(
     apply paths); the reconciler passes its already-resolved ``cfg``.
     """
     if cfg is None:
-        cfg = load_config(path)
-    if is_active_leader(cfg):
+        cfg = config.load_config(path)
+    if config.is_active_leader(cfg):
         from .reconcile import SNAPFIFO
 
         out = {

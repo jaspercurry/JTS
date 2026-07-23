@@ -140,6 +140,41 @@ def test_member_camilla_kwargs_invalid_member_unchanged():
     assert kw["playback_pipe_path"] is None
 
 
+def test_member_camilla_kwargs_resolves_config_at_call_time(monkeypatch):
+    """Regression for #1270. member_config must resolve ``load_config`` /
+    ``is_active_leader`` through ``jasper.multiroom.config`` at CALL time, not
+    capture them via ``from .config import ...`` at import time. A captured
+    binding survived a monkeypatch teardown in an unrelated grouping-doctor
+    test (which patches ``config.load_config``) and poisoned later tests —
+    pytest-xdist sharding hid it by varying which test first-imported this
+    module.
+
+    The spy is the leak-proof part: a stale from-import binding would bypass
+    BOTH patches below, so ``is_active_leader`` would never see our sentinel.
+    (Asserting on the returned kwargs alone is not enough — the leaked lambda
+    happened to also be a bonded leader, so a value check passes by accident.)
+    """
+    import jasper.multiroom.config as cfgmod
+    from jasper.multiroom.member_config import member_camilla_kwargs
+
+    sentinel = object()
+    seen = {}
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: sentinel)
+
+    def spy_is_active_leader(cfg):
+        seen["cfg"] = cfg
+        return False
+
+    monkeypatch.setattr(cfgmod, "is_active_leader", spy_is_active_leader)
+
+    kw = member_camilla_kwargs()  # cfg omitted → must call cfgmod.load_config
+
+    # Our patched load_config supplied the cfg, and our patched is_active_leader
+    # received THAT exact object — proving call-time module resolution.
+    assert seen.get("cfg") is sentinel
+    assert kw["playback_pipe_path"] is None  # spy returned False → solo defaults
+
+
 # ---------- generated sound configs emit the param ----------
 
 
