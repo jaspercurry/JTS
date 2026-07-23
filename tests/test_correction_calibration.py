@@ -386,6 +386,35 @@ def test_model_label_aliases_default_and_unknown():
     assert calibration.model_label_aliases("nope") == []  # no crash on unknown
 
 
+# --- mic_tier_for_model: correction-envelope trust-tier resolution (#1668 PR-B)
+def test_mic_tier_for_model_known_reference_mics():
+    assert calibration.mic_tier_for_model("minidsp_umik1") == "reference"
+    assert calibration.mic_tier_for_model("minidsp_umik2") == "reference"
+
+
+def test_mic_tier_for_model_known_consumer_mics():
+    assert calibration.mic_tier_for_model("dayton_imm6") == "consumer"
+    assert calibration.mic_tier_for_model("dayton_umm6") == "consumer"
+
+
+def test_mic_tier_for_model_other_is_consumer():
+    assert calibration.mic_tier_for_model("other") == "consumer"
+
+
+def test_mic_tier_for_model_none_is_phone_the_most_conservative():
+    assert calibration.mic_tier_for_model(None) == "phone"
+
+
+def test_mic_tier_for_model_unknown_key_falls_back_to_consumer_not_a_crash():
+    assert calibration.mic_tier_for_model("some_future_mic_not_yet_registered") == "consumer"
+
+
+def test_supported_models_every_entry_declares_a_valid_tier():
+    valid_tiers = {"reference", "consumer", "phone"}
+    for key, spec in calibration.SUPPORTED_MODELS.items():
+        assert spec.get("tier") in valid_tiers, key
+
+
 # --- F2: repeat lookup re-uses the stored calibration (no vendor round-trip)
 def test_fetch_vendor_calibration_reuses_stored_record(tmp_path: Path):
     calls = {"n": 0}
