@@ -65,6 +65,64 @@
   safe. A session that establishes a DIFFERENT mic is never blocked; the
   new success replaces the record
   (`event=correction.household_mic_replaced`).
+- 🧱 **Household-mic identity reconciliation on the room page (issue #1656,
+  2026-07-22).** The Wave-2 prefill above sets `micModelSelect.value`
+  directly (bypassing `updateMicCalibrationRows`, to avoid wiping the
+  prefetched calibration or re-triggering the per-browser saved-serial
+  auto-fetch) — but this left `maybeInferCalibrationModel`'s "never
+  override an explicit choice" guard treating the REPLAYED prefill as if
+  the household had picked it in this session, so a positively-identified
+  DIFFERENT physical mic (e.g. a Dayton iMM-6C after JTS remembered a
+  miniDSP UMIK-2) never got a chance to correct the model picker — even
+  when explicitly re-selected from Input device — and the banner was
+  never retired by a fresh Fetch/Upload once shown, only by Change. Fix
+  (`deploy/assets/correction/js/main.js`): a `householdMicPrefillPending`
+  flag distinguishes an unconfirmed replayed choice from a genuine
+  household one, so a detected mismatch can override it (disclosed, not
+  silent); the banner now retires on any reconciliation of the
+  model/serial UI, not just Change; and `checkCalibrationHonesty`
+  compares the `calibration_id` this page asked for against what
+  `/start` / `/local-capture/setup` / `/status` report actually got
+  bound, alerting once per run on a disagreement — surfacing the
+  existing server-side guard's refusal instead of a silent uncalibrated
+  capture. Guarded to only reconcile once `runTransportLocked` is true —
+  a real measurement run in progress, freshly re-derived by
+  `syncSessionMechanics` from `s.state` on every poll tick. An earlier
+  draft gated on `sessionId && s.session_id === sessionId` instead, which
+  adversarial review found vacuous: the server mints a uuid `session_id`
+  even for a never-started, idle `MeasurementSession`
+  (`jasper/correction/session.py:280`), and `syncSessionMechanics`'s idle
+  branch sets the client `sessionId` FROM that same value a few lines
+  before the comparison runs — so it was comparing a value against the
+  value it was just derived from, and false-fired the alert on
+  essentially every page load for any household with a saved mic. Pinned
+  in `tests/js/correction_render_harness.mjs` (a realistic uuid-style
+  `session_id` fixture, plus a test driving the exact concurrent boot
+  order — `pollState()` dispatched before `applyHouseholdMicPrefill()`
+  resolves — both fail against the reverted `sessionId` gate). Also adds
+  `thisTabStartedCurrentRun`, gating the pollState-side check on
+  `runTransportLocked && thisTabStartedCurrentRun` rather than
+  `runTransportLocked` alone: adversarial review found the latter still
+  fires for a second tab/device merely OBSERVING someone else's live run
+  (its own household-prefilled `selectedCalibrationId` has nothing to do
+  with that run's actual binding) and for this same tab after a page
+  reload mid-relay-run (a relay start is never remembered across reload
+  the way `rememberLocalCapture` does for local mode). The flag is set
+  only by this tab's own successful `/start` and cleared the moment
+  `syncSessionMechanics` sees the server describing a different
+  `session_id`. **Separately identified, NOT fixed here (tracked as
+  [issue #1660](https://github.com/jaspercurry/JTS/issues/1660)):** the
+  room flow's own relay path (`_apply_relay_setup_to_session` in
+  `jasper/web/correction_setup.py`) never threads a `device` value into
+  `_relay_calibration_from_setup`, unlike
+  `jasper.web.correction_crossover_v2.resolve_relay_calibration` which
+  does — so `_stored_calibration_model_mismatch`'s refusal is reachable
+  for a v2 crossover capture but NOT for a room-correction phone-relay
+  capture today; a mismatched stored reconfirm there would currently bind
+  the wrong calibration rather than refuse it, under the SAME
+  `calibration_id` the page asked for — invisible to
+  `checkCalibrationHonesty` above, which can only ever notice a CHANGED or
+  DROPPED id, never a wrong-mic bind hiding behind the id it expected.
 - 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
   2026-07-19).** Every v2 crossover capture logged
   `crossover_v2_uncalibrated_capture` even with a resolvable stored mic

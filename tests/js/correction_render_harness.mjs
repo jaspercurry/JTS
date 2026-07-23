@@ -284,6 +284,26 @@ source = source.replace(
     renderBrowserAudioReport,
     renderQuality,
     loadSessionReport,
+    // Household-mic prefill / calibration-identity surfaces (issue #1656).
+    applyHouseholdMicPrefill,
+    maybeInferCalibrationModel,
+    updateMicCalibrationRows,
+    invalidateLoadedCalibration,
+    checkCalibrationHonesty,
+    resetCalibrationMismatchAlerted: function () {
+      calibrationMismatchAlerted = false;
+    },
+    // Mirrors exactly what startMeasurement/startRelayMeasurement do on a
+    // successful /start (sessionId + thisTabStartedCurrentRun together),
+    // without driving the full network-calling start flow — so a test can
+    // simulate "this tab owns run X" for the S1 gate tests.
+    primeThisTabStartedRun: function (id) {
+      sessionId = id;
+      thisTabStartedCurrentRun = true;
+    },
+    clearThisTabStartedRun: function () {
+      thisTabStartedCurrentRun = false;
+    },
     // The tuning status line text, for the fetch-error-framing tests.
     getTuningStatusText: function () { return tuningStatus.textContent; },
     // Probe seams for the fetch-once poll-discipline test.
@@ -433,7 +453,10 @@ async function jtsConfirm() {
   globalThis.__confirmCalls = (globalThis.__confirmCalls || 0) + 1;
   return globalThis.__confirmReturn === undefined ? true : globalThis.__confirmReturn;
 }
-async function jtsAlert() {}
+async function jtsAlert(message) {
+  globalThis.__alertCalls = (globalThis.__alertCalls || 0) + 1;
+  globalThis.__lastAlertMessage = message;
+}
 function escapeText(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 `;
 
@@ -557,6 +580,14 @@ const {
   renderBrowserAudioReport,
   renderQuality,
   loadSessionReport,
+  applyHouseholdMicPrefill,
+  maybeInferCalibrationModel,
+  updateMicCalibrationRows,
+  invalidateLoadedCalibration,
+  checkCalibrationHonesty,
+  resetCalibrationMismatchAlerted,
+  primeThisTabStartedRun,
+  clearThisTabStartedRun,
   getTuningStatusText,
   getEnvelopeFetchCount,
   setWizardActionInFlight,
@@ -2672,9 +2703,353 @@ await (async () => {
   resetRelayQrCalls();
 }
 
+// ---- Household-mic prefill + calibration-identity honesty (issue #1656) ---
+//
+// The owner reported the mic setup UI would not let him enter/change the
+// serial for a saved mic. Root cause: applyHouseholdMicPrefill sets
+// micModelSelect.value directly (bypassing updateMicCalibrationRows, by
+// design, so it doesn't wipe the prefetched calibration) — but this left the
+// model "select" looking like an explicit household choice, so
+// maybeInferCalibrationModel's "never override an explicit choice" guard
+// silently ignored a positively-identified DIFFERENT physical mic, and the
+// household-mic banner was never retired by a fresh Fetch/Upload once shown.
+// These pins cover the fix: a prefill is provisional until confirmed, and a
+// disagreement between what the page asked for and what the Pi actually used
+// is disclosed rather than silent.
+
+function seedMicModelOptions(selectedValue) {
+  const opts = [
+    ["", "None / phone built-in", ""],
+    ["dayton_imm6", "Dayton Audio iMM-6 / iMM-6C", "iMM-6"],
+    ["dayton_umm6", "Dayton Audio UMM-6", "UMM-6"],
+    ["minidsp_umik1", "miniDSP UMIK-1", "umik-1"],
+    ["minidsp_umik2", "miniDSP UMIK-2", "umik-2"],
+    ["other", "Other calibrated mic", ""],
+  ];
+  const select = getOrMake("mic-model-select");
+  select.options = opts.map(([value, optLabel, aliases]) => {
+    const option = makeEl(`mic-model-select-${value || "blank"}`);
+    option.value = value;
+    option.textContent = optLabel;
+    option.dataset = { aliases };
+    return option;
+  });
+  select.value = selectedValue || "";
+  select.selectedIndex = Math.max(
+    0, select.options.findIndex((o) => o.value === (selectedValue || "")),
+  );
+}
+
+function householdMicRecord(overrides) {
+  return Object.assign({
+    model_key: "minidsp_umik2",
+    calibration: {
+      calibration_id: "minidsp-minidsp_umik2-b7343c0c625b",
+      provider: "minidsp",
+      model: "minidsp_umik2",
+      label: "miniDSP UMIK-2",
+      point_count: 3,
+      file_sha256: "a".repeat(64),
+      orientation: "0deg",
+      sign_convention: "correction",
+    },
+    preview: { freqs_hz: [20, 1000, 20000], correction_db: [0, 0.1, -0.2] },
+  }, overrides || {});
+}
+
+function seedHouseholdMicData(overrides) {
+  getOrMake("household-mic-data").textContent =
+    JSON.stringify(householdMicRecord(overrides));
+}
+
+// 29. A server-rendered prefill pre-selects the remembered model and shows
+//     the "remembered from your last measurement" banner.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  getOrMake("household-mic-banner").classList.add("hidden");
+  applyHouseholdMicPrefill();
+  assert(getOrMake("mic-model-select").value === "minidsp_umik2",
+    "prefill pre-selects the remembered model",
+    { got: getOrMake("mic-model-select").value });
+  assert(!getOrMake("household-mic-banner").classList.contains("hidden"),
+    "prefill shows the remembered-mic banner");
+  assert(getOrMake("household-mic-banner-text").textContent.indexOf(
+    "miniDSP UMIK-2") !== -1,
+    "banner names the remembered mic",
+    { got: getOrMake("household-mic-banner-text").textContent });
+}
+
+// 30. A positively-identified DIFFERENT physical mic overrides the stale
+//     prefill instead of being silently ignored, and the banner is retired
+//     with an honest explanation — not just reset to blank.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  maybeInferCalibrationModel("iMM-6C (2752:002b)");
+  assert(getOrMake("mic-model-select").value === "dayton_imm6",
+    "a detected different mic overrides the stale household prefill",
+    { got: getOrMake("mic-model-select").value });
+  assert(getOrMake("household-mic-banner").classList.contains("hidden"),
+    "the stale 'remembered' banner is retired once the model switches");
+  assert(getOrMake("calibration-status").className.indexOf("bad") !== -1 &&
+      getOrMake("calibration-status").textContent.indexOf(
+        "different microphone") !== -1,
+    "switching away from a stale prefill is disclosed, not silent",
+    { got: getOrMake("calibration-status").textContent });
+}
+
+// 31. Re-detecting the SAME remembered mic (e.g. re-plugging it, or
+//     explicitly re-selecting it from Input device) must not reset the
+//     already-loaded calibration or retire the banner.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  maybeInferCalibrationModel("UMIK-2 (2752:002b)");
+  assert(getOrMake("mic-model-select").value === "minidsp_umik2",
+    "a matching device label leaves the prefilled model untouched");
+  assert(!getOrMake("household-mic-banner").classList.contains("hidden"),
+    "the remembered-mic banner survives a matching device label");
+}
+
+// 32. An unrecognized device label has nothing concrete to contradict the
+//     prefill with, so it is left untouched too.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  maybeInferCalibrationModel("Some Unknown USB Audio Device");
+  assert(getOrMake("mic-model-select").value === "minidsp_umik2",
+    "an unrecognized device label leaves a pending prefill untouched");
+}
+
+// 33. Editing the visible serial field directly (without using the Change
+//     button) also retires the stale banner — previously the banner never
+//     updated once shown, so correcting the serial in place looked like it
+//     had no effect even though the fresh fetch/upload underneath it worked.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  assert(!getOrMake("household-mic-banner").classList.contains("hidden"),
+    "sanity: banner starts visible");
+  getOrMake("mic-serial").value = "810-9999";
+  invalidateLoadedCalibration();
+  assert(getOrMake("household-mic-banner").classList.contains("hidden"),
+    "editing the serial in place retires the stale banner");
+}
+
+// 34. checkCalibrationHonesty: the Pi confirming the SAME calibration this
+//     page asked for never alerts.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  checkCalibrationHonesty({ calibration_id: "minidsp-minidsp_umik2-b7343c0c625b" });
+  assert(globalThis.__alertCalls === 0,
+    "a matching calibration_id never alerts",
+    { got: globalThis.__alertCalls });
+}
+
+// 35. A disagreement — the guard silently refused the requested calibration
+//     server-side (issue #1656's "second half": a wrong-mic capture proceeds
+//     uncalibrated with no explanation) — surfaces exactly once, naming the
+//     calibration the household selected. A second check in the same run
+//     does not re-alert.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  checkCalibrationHonesty(null);
+  assert(globalThis.__alertCalls === 1,
+    "a null server calibration when one was requested alerts once",
+    { got: globalThis.__alertCalls });
+  assert(globalThis.__lastAlertMessage.indexOf("miniDSP UMIK-2") !== -1,
+    "the alert names the calibration the household selected",
+    { got: globalThis.__lastAlertMessage });
+  checkCalibrationHonesty(null);
+  assert(globalThis.__alertCalls === 1,
+    "the honesty alert fires at most once per run",
+    { got: globalThis.__alertCalls });
+}
+
+// 36. No calibration was ever requested (household chose "None"): never
+//     alerts, regardless of what the server reports — nothing to reconcile.
+{
+  seedMicModelOptions("");
+  getOrMake("mic-model-select").value = "";
+  updateMicCalibrationRows();
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  checkCalibrationHonesty(null);
+  assert(globalThis.__alertCalls === 0,
+    "never alerts when the household never asked for a calibration");
+  checkCalibrationHonesty({ calibration_id: "unrelated-id" });
+  assert(globalThis.__alertCalls === 0,
+    "still never alerts even if the server reports an unrelated calibration",
+    { got: globalThis.__alertCalls });
+}
+
+// 37. BOOT-ORDER REGRESSION, take 2 (adversarial review caught the first
+//     fixture as impossible): the server ALWAYS mints a session_id, even for
+//     a never-started, idle session — MeasurementSession.__init__ uuid4()s
+//     it unconditionally (jasper/correction/session.py:280) and
+//     _handle_status never special-cases "no run yet" to omit it. A prior
+//     draft gated the honesty check on `sessionId && s.session_id ===
+//     sessionId`, which is trivially true at idle too: syncSessionMechanics's
+//     idle branch (`liveRun` false) sets `sessionId = serverSessionId`
+//     UNCONDITIONALLY a few lines before that comparison runs, so it was
+//     always comparing a value against the very value it was just derived
+//     from. A fixture using `session_id: null` masked this — the real server
+//     can never emit that. This uses a realistic uuid-style id (matching
+//     `uuid.uuid4().hex[:12]`'s shape) with mic_calibration: null and a
+//     loaded household prefill, and asserts zero alerts: fails if the old
+//     sessionId-based gate were restored, passes with the runTransportLocked
+//     gate (syncSessionMechanics freshly re-derives it from s.state on every
+//     tick, false at idle regardless of session_id).
+await (async () => {
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  setFetchRoute("/status", () => ({
+    state: "idle", session_id: "a1b2c3d4e5f6", mic_calibration: null,
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await pollState();
+  assert(globalThis.__alertCalls === 0,
+    "a realistic idle /status snapshot (real uuid session_id, no " +
+    "measurement run in progress) never alerts, even with a household " +
+    "prefill already loaded",
+    { got: globalThis.__alertCalls });
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 38. The REAL boot dispatch order, not just a realistic fixture: main.js's
+//     landing sequence calls pollState() (fire-and-forget) BEFORE
+//     applyHouseholdMicPrefill() — so the prefill sets selectedCalibrationId
+//     WHILE pollState's own fetchStatus() is still in flight, and only
+//     resolves afterward. Drives that exact interleaving (dispatch, then
+//     synchronously prefill, then await) rather than the tidier sequential
+//     "prefill first" order test 37 uses, matching how adversarial review
+//     actually reproduced the original bug.
+await (async () => {
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  setFetchRoute("/status", () => ({
+    state: "idle", session_id: "9f8e7d6c5b4a", mic_calibration: null,
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  const pending = pollState();     // dispatched; suspends at await fetchStatus()
+  applyHouseholdMicPrefill();      // runs synchronously while the fetch is in flight
+  await pending;
+  assert(globalThis.__alertCalls === 0,
+    "the real pollState-dispatched-before-prefill boot race never alerts " +
+    "on an idle snapshot", { got: globalThis.__alertCalls });
+  assert(getOrMake("mic-model-select").value === "minidsp_umik2",
+    "sanity: the prefill still applied while the poll was in flight",
+    { got: getOrMake("mic-model-select").value });
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 39. Companion to 30: if the serial field already carries a value when the
+//     model switches away from a stale prefill (updateMicCalibrationRows
+//     auto-fills a per-browser remembered serial and kicks off its own
+//     fetchCalibration for exactly this reason), the disclosure prompt must
+//     not stomp over it with "enter its serial below" — that in-flight
+//     fetch's own status (fetching/loaded/failed) owns the status line
+//     instead.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  getOrMake("mic-serial").value = "cmm31555";  // as if already auto-filled
+  maybeInferCalibrationModel("iMM-6C (2752:002b)");
+  assert(getOrMake("mic-model-select").value === "dayton_imm6",
+    "sanity: the model still switches to the detected mic");
+  assert(getOrMake("calibration-status").textContent.indexOf(
+    "different microphone") === -1,
+    "a serial already present is not stomped by the 'enter its serial' prompt",
+    { got: getOrMake("calibration-status").textContent });
+}
+
+// 40. S1 (round-2 adversarial review): runTransportLocked alone is "a run is
+//     live", not "this tab started it". An observer tab that never called
+//     /start itself — its own selectedCalibrationId comes from its own
+//     household prefill, unrelated to whatever a DIFFERENT tab/device's live
+//     run actually bound — must never alert, even when runTransportLocked
+//     correctly flips true (a real run IS in progress) and the reported
+//     calibration genuinely differs from what this tab has selected. The
+//     same shape covers a reload mid-relay-run: thisTabStartedCurrentRun
+//     starts false either way, since a relay start is never remembered
+//     across reload the way rememberLocalCapture does for local mode.
+await (async () => {
+  seedMicModelOptions("");
+  seedHouseholdMicData();  // this tab's own prefill: minidsp-minidsp_umik2-...
+  applyHouseholdMicPrefill();
+  clearThisTabStartedRun();
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  setFetchRoute("/status", () => ({
+    state: "ready", autolevel: { status: "idle" },
+    session_id: "live-run-started-elsewhere",
+    mic_calibration: { calibration_id: "dayton_audio-dayton_imm6-abcdef012345" },
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await pollState();
+  assert(globalThis.__alertCalls === 0,
+    "an observer tab that never started this live run never alerts, even " +
+    "on a genuine calibration_id disagreement",
+    { got: globalThis.__alertCalls });
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 41. Positive control for 40: the tab that DID start the run must still get
+//     the honesty alert on a genuine mismatch through the real pollState()
+//     path — the new gate narrows to "observer tabs never alert", not
+//     "nobody ever alerts".
+await (async () => {
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  primeThisTabStartedRun("this-tabs-own-run");
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  setFetchRoute("/status", () => ({
+    state: "ready", autolevel: { status: "idle" },
+    session_id: "this-tabs-own-run",
+    mic_calibration: null,
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await pollState();
+  assert(globalThis.__alertCalls === 1,
+    "the tab that started this run still gets the honesty alert on a " +
+    "genuine mismatch",
+    { got: globalThis.__alertCalls });
+  clearThisTabStartedRun();
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 63 }));
+console.log(JSON.stringify({ ok: true, tests: 76 }));

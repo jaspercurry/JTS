@@ -159,6 +159,27 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   var selectedCalibrationMeta = null;
   var selectedInputDevice = null;
   var wakeLockSentinel = null;
+  // True from a server-rendered household-mic prefill (applyHouseholdMicPrefill)
+  // until the household — or a positive device-label auto-match — reconciles
+  // it. Distinct from micModelSelect.value being non-empty: a prefill is a
+  // remembered PAST choice, not evidence about what's plugged in THIS session,
+  // so maybeInferCalibrationModel below must be allowed to override it when the
+  // connected mic clearly doesn't match (issue #1656).
+  var householdMicPrefillPending = false;
+  // One-shot per measurement run: whether we've already told the household
+  // their selected calibration didn't end up bound (see checkCalibrationHonesty).
+  var calibrationMismatchAlerted = false;
+  // True only from THIS tab's own successful /start (local or relay) until a
+  // later /status poll shows the server describing a DIFFERENT run (a
+  // reload, another tab/device's run, or a stale leftover id) — see
+  // syncSessionMechanics. runTransportLocked alone says "a run is live",
+  // not "this tab started it": an observer tab that never called /start
+  // still sees runTransportLocked flip true while polling someone else's
+  // run, and its OWN selectedCalibrationId (from its own household prefill)
+  // has nothing to do with that run's actual binding. Gates the pollState
+  // honesty backstop so it only ever fires for the tab that made the request
+  // it's checking the answer to.
+  var thisTabStartedCurrentRun = false;
 
   // Stepped-wizard (P3b) envelope-poll bookkeeping. The /status poll stays
   // the capture/upload/autolevel mechanism layer; the ENVELOPE drives the
@@ -488,6 +509,15 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     calibrationPreview.classList.add('hidden');
     calibrationPreview.textContent = '';
     calibrationStatus.className = 'mic-status';
+    // Any reconciliation of the model/serial UI (a manual model change, the
+    // Change button, or maybeInferCalibrationModel switching away from a
+    // stale prefill below) ends the "unconfirmed prefill" state and retires
+    // its banner — the banner's claim ("Using X — remembered…") is stale the
+    // moment the household (or JTS) picks something else (issue #1656: the
+    // banner otherwise never updates, so editing the visible fields directly
+    // looked like it silently had no effect).
+    householdMicPrefillPending = false;
+    householdMicBanner.classList.add('hidden');
     if (!model) {
       serialRow.classList.add('hidden');
       uploadRow.classList.add('hidden');
@@ -519,6 +549,12 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     if (!selectedCalibrationId && !selectedCalibrationMeta) return;
     selectedCalibrationId = null;
     selectedCalibrationMeta = null;
+    // A direct edit to the serial/orientation/sign/file while a household-mic
+    // banner is showing is the household actively correcting the setup —
+    // retire the stale "remembered" claim rather than leaving it to
+    // contradict the fresh fetch/upload this edit is heading toward.
+    householdMicPrefillPending = false;
+    householdMicBanner.classList.add('hidden');
     calibrationPreview.classList.add('hidden');
     calibrationPreview.textContent = '';
     calibrationStatus.className = 'mic-status bad';
@@ -595,6 +631,10 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     householdMicBannerText.textContent =
       'Using ' + selectedCalibrationMeta.label + ' — remembered from your last measurement.';
     householdMicBanner.classList.remove('hidden');
+    // Not yet a household choice made IN THIS SESSION — just a replayed past
+    // one. maybeInferCalibrationModel is allowed to override it below if the
+    // mic this browser actually detects doesn't match (issue #1656).
+    householdMicPrefillPending = true;
   }
 
   householdMicChangeBtn.addEventListener('click', function () {
@@ -714,17 +754,39 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
 
   // If we can identify the calibrated mic and the user hasn't already picked a
   // model, pre-select it and reveal the serial field. Only acts when the
-  // server actually offers that model, and never overrides an explicit choice.
+  // server actually offers that model, and never overrides an explicit
+  // choice — but a household-mic PREFILL is not yet an explicit choice (see
+  // householdMicPrefillPending): it was replayed from a past session before
+  // this browser had any evidence about what's plugged in now, so a
+  // positively-identified DIFFERENT mic must still be able to correct it.
+  // Without this, plugging in (and even explicitly selecting, from Input
+  // device) a different measurement mic than the remembered one left the
+  // Calibration picker frozen on the stale model with no way to notice —
+  // issue #1656.
   function maybeInferCalibrationModel(label) {
-    if (micModelSelect.value) return;
+    if (micModelSelect.value && !householdMicPrefillPending) return;
     var key = inferCalibrationModelFromLabel(label);
-    if (!key) return;
+    if (!key || key === micModelSelect.value) return;
     var hasOption = Array.prototype.some.call(micModelSelect.options, function (o) {
       return o.value === key;
     });
     if (!hasOption) return;
+    var previousLabel = householdMicPrefillPending && selectedCalibrationMeta ?
+      selectedCalibrationMeta.label : '';
     micModelSelect.value = key;
     updateMicCalibrationRows();
+    // updateMicCalibrationRows() may have just auto-filled a per-browser
+    // remembered serial for the newly-detected model and kicked off its own
+    // fetchCalibration() — in which case micSerialInput.value is no longer
+    // empty. Let that fetch's own status text stand (fetching/loaded/failed)
+    // rather than overwriting it with a stale "enter its serial" prompt the
+    // auto-fill already answered.
+    if (previousLabel && !micSerialInput.value.trim()) {
+      calibrationStatus.className = 'mic-status bad';
+      calibrationStatus.textContent =
+        'JTS remembered a ' + previousLabel + ' calibration, but this looks ' +
+        'like a different microphone. Enter its serial below.';
+    }
   }
 
   // A vendor measurement-mic calibration (Dayton / miniDSP) can never be the
@@ -843,6 +905,15 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     if (!snapshot || typeof snapshot !== 'object') return;
     var serverSessionId = snapshot.session_id
       ? String(snapshot.session_id) : null;
+    // A poll describing a different run than the one this tab last knew
+    // about means this tab did not start (or no longer owns the identity
+    // of) the run now being described — a reload, an observer tab watching
+    // a different tab/device's run, or a stale id left over from a prior
+    // run. Only startMeasurement/startRelayMeasurement's own success may
+    // set this back to true. Compared BEFORE sessionId is reassigned below.
+    if (serverSessionId !== sessionId) {
+      thisTabStartedCurrentRun = false;
+    }
     localCaptureSetupBound = snapshot.local_capture_setup_bound === true;
     var liveRun = snapshot.state !== 'idle' && snapshot.state !== 'failed';
     var remembered = readLocalCaptureMemory();
@@ -1075,6 +1146,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
 
       if (boundSetup && boundSetup.state === 'needs_noise_capture') {
         localCaptureSetupBound = true;
+        checkCalibrationHonesty(boundSetup.mic_calibration);
         pollState();
       }
     }
@@ -2690,7 +2762,52 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     qualityBanner.innerHTML = '';
     lastChartEnvelope = null;
     inVerifyMode = false;
+    calibrationMismatchAlerted = false;
+    thisTabStartedCurrentRun = false;
     setStateBadge('preparing', 'pausing music…');
+  }
+
+  // Honesty backstop for the mic-calibration identity guard (issue #1656):
+  // the Pi can silently end up NOT using the calibration this page asked for
+  // — a wrong-mic identity mismatch, a calibration file that went missing,
+  // or any future guard — and today nothing tells the household when that
+  // happens; the capture just proceeds uncalibrated. Rather than re-deriving
+  // that detection client-side, this compares what we asked for
+  // (selectedCalibrationId) against what the server's response says it
+  // actually bound, and says so once per run if they disagree. Never blocks
+  // the capture — matches the guard's own "never a blocked capture" posture.
+  //
+  // Scope: this only catches a mismatch the server converts into a
+  // CHANGED or DROPPED calibration_id (the built-in-mic guard nulling it
+  // out, a calibration file that went missing, etc). A wrong-mic bind that
+  // keeps the SAME calibration_id — the room-relay device-threading gap,
+  // issue #1660, where a mismatched mic's capture is bound anyway because
+  // nothing ever told the mismatch guard what mic actually recorded — is
+  // invisible to this check: the server echoes back exactly the id we
+  // asked for, so there is nothing here to disagree with.
+  function checkCalibrationHonesty(reportedCalibration) {
+    if (calibrationMismatchAlerted || !selectedCalibrationId) return;
+    // reportedCalibration is compared as-is: undefined is treated the same
+    // as an explicit null (falsy, so it never matches selectedCalibrationId
+    // below and always alerts). Safe only because every caller's endpoint
+    // ALWAYS emits the mic_calibration key — session_snapshot
+    // (jasper/correction/status.py), _handle_start's return dict, and
+    // _handle_local_capture_setup's return dict all set it to null rather
+    // than omitting it. A future endpoint that omits the field instead of
+    // nulling it would false-fire this alert.
+    if (reportedCalibration &&
+        reportedCalibration.calibration_id === selectedCalibrationId) {
+      return;
+    }
+    calibrationMismatchAlerted = true;
+    var label = selectedCalibrationMeta ? selectedCalibrationMeta.label :
+      'selected';
+    jtsAlert(
+      'JTS could not use the ' + label + ' calibration for this ' +
+      'measurement — the microphone it detected did not match it, so this ' +
+      'measurement is uncalibrated. Tap “Change” next to the microphone ' +
+      'calibration above to fix the mic model or serial before measuring again.'
+    );
   }
 
   function measurementStartPayload() {
@@ -2759,6 +2876,8 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      thisTabStartedCurrentRun = true;
+      checkCalibrationHonesty(resp.mic_calibration);
       setRunTransportLocked(true);
     } catch (e) {
       setStateBadge('failed', e.message);
@@ -2784,6 +2903,8 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      thisTabStartedCurrentRun = true;
+      checkCalibrationHonesty(resp.mic_calibration);
       localRunOwnedByThisTab = true;
       localRunOwnerSessionId = sessionId;
       rememberLocalCapture(null);
@@ -3152,6 +3273,28 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       setStateBadge(s.state, detail);
       renderQuality(s);
       renderBrowserAudioReport(s.browser_audio_report);
+      // Only reconcile once a real run THIS TAB STARTED is actually in
+      // progress. /status is also polled idle, before /start, while a
+      // household-mic prefill has already set selectedCalibrationId — and
+      // the server always mints a session_id even for a never-started, idle
+      // session (MeasurementSession.__init__ uuid4s unconditionally), so
+      // runTransportLocked alone is not enough either: it is "a run is
+      // live" (freshly re-derived by syncSessionMechanics from s.state,
+      // true for ANY live run), not "this tab started it". Without
+      // thisTabStartedCurrentRun, a second observer tab — its own
+      // selectedCalibrationId from its own household prefill, never having
+      // called /start itself — would compare that unrelated value against
+      // whatever a DIFFERENT tab/device's live run actually bound and
+      // false-fire; same for this same tab after a reload, since a relay
+      // run's start is never remembered across a reload the way
+      // rememberLocalCapture does for local mode. thisTabStartedCurrentRun
+      // is set true only by this tab's own successful /start (local or
+      // relay) and cleared the moment syncSessionMechanics sees the server
+      // describing a different run — so it stays true for the entire
+      // lifetime of a run this tab itself started, local or relay.
+      if (runTransportLocked && thisTabStartedCurrentRun) {
+        checkCalibrationHonesty(s.mic_calibration);
+      }
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
       // Edge-trigger the envelope-driven wizard chrome on a real transition
       // (state change, or autolevel sub-state change that flips the "level"
