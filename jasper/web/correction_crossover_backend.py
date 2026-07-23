@@ -1920,13 +1920,14 @@ class CrossoverLevelLease:
             mapping_sequence,
             nonnegative_int,
         )
+        from jasper.active_speaker.repeat_admission import MAX_RESERVATIONS
 
         def public_result(value: Any) -> dict[str, Any] | None:
             if not isinstance(value, Mapping):
                 return None
             attempt = nonnegative_int(value.get("attempt"))
             accepted = value.get("accepted")
-            if not 1 <= attempt <= 4 or not isinstance(accepted, bool):
+            if not 1 <= attempt <= MAX_RESERVATIONS or not isinstance(accepted, bool):
                 return None
             public: dict[str, Any] = {
                 "attempt": attempt,
@@ -1944,7 +1945,7 @@ class CrossoverLevelLease:
                 "snr_shortfall_db",
                 "validity_floor_hz",
             )
-            bool_fields = ("clipping", "above_validity_floor")
+            bool_fields = ("clipping", "above_validity_floor", "audio_emitted")
             for key in string_fields:
                 item = value.get(key)
                 if item is None:
@@ -2015,7 +2016,7 @@ class CrossoverLevelLease:
                 and result_attempts == list(range(1, attempts))
             )
             if (
-                not 1 <= attempts <= 4
+                not 1 <= attempts <= MAX_RESERVATIONS
                 or not isinstance(raw_results, (list, tuple))
                 or len(result_items) != len(raw_results)
                 or any(result is None for result in results)
@@ -2110,7 +2111,10 @@ class CrossoverLevelLease:
             aggregate_driver_repeats,
         )
 
-        from jasper.active_speaker.repeat_admission import MAX_ATTEMPTS
+        from jasper.active_speaker.repeat_admission import (
+            MAX_ATTEMPTS,
+            measurement_attempts,
+        )
         from jasper.active_speaker.crossover_eligibility import (
             mapping_sequence,
             nonnegative_int,
@@ -2159,9 +2163,12 @@ class CrossoverLevelLease:
                     "attempts": attempts,
                     "accepted": accepted,
                     "target": DEFAULT_REPEAT_TARGET,
+                    # Gate on the audible MEASUREMENT budget, not the raw
+                    # reservation counter: a set that spent a couple of
+                    # refunded transport failures still has audio attempts left.
                     "needed_recapture": (
                         entry.get("status") == "active"
-                        and attempts < MAX_ATTEMPTS
+                        and measurement_attempts(results) < MAX_ATTEMPTS
                         and accepted < DEFAULT_REPEAT_TARGET
                     ),
                     "status": entry.get("status"),

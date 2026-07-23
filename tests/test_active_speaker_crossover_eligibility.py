@@ -16,6 +16,7 @@ from jasper.active_speaker.crossover_eligibility import (
     RepeatProgress,
     automatic_measurement_eligibility,
     driver_acoustic_usable,
+    driver_repeat_completed,
     mapping_sequence,
     render_repeat_progress,
     repeat_progress,
@@ -895,3 +896,199 @@ def test_fresh_accepted_capture_wins_over_stale_insufficient_siblings(tmp_path):
     assert driver_acoustic_usable(
         stale_record, active_comparison_set, target, capture_geometry="near_field"
     ) is False
+
+
+# --- #1513: infra-phase failures must not consume the acceptance budget ------
+
+_1513_FP = "6" * 64
+_1513_TARGET = {
+    "speaker_group_id": "mono",
+    "role": "woofer",
+    "target_fingerprint": _1513_FP,
+}
+
+
+def _transport(attempt: int) -> dict:
+    return {
+        "attempt": attempt,
+        "accepted": False,
+        "reject_reason": "capture_failed",
+        "phase": "transport",
+        "audio_emitted": False,
+    }
+
+
+def _acoustic_reject(attempt: int) -> dict:
+    return {
+        "attempt": attempt,
+        "accepted": False,
+        "reject_reason": "level_outlier",
+        "audio_emitted": True,
+    }
+
+
+def _accept(attempt: int) -> dict:
+    return {"attempt": attempt, "accepted": True, "audio_emitted": True}
+
+
+def _repeat_targets(geometry: str, attempts: int, results: list) -> dict:
+    target_id, target_fingerprint = driver_repeat_binding(
+        speaker_group_id="mono",
+        role="woofer",
+        target_fingerprint=_1513_FP,
+        capture_geometry=geometry,
+    )
+    return {
+        target_id: {
+            "status": "completed",
+            "target_fingerprint": target_fingerprint,
+            "attempts": attempts,
+            "inflight": None,
+            "results": results,
+        }
+    }
+
+
+def _completed(geometry: str, attempts: int, results: list) -> bool:
+    return driver_repeat_completed(
+        _1513_TARGET,
+        _repeat_targets(geometry, attempts, results),
+        capture_geometry=geometry,
+    )
+
+
+@pytest.mark.parametrize("capture_geometry", ["near_field", "reference_axis"])
+def test_acoustic_rejections_consume_budget_but_transport_failures_do_not(
+    capture_geometry,
+):
+    # One acoustic reject (a tone played) is the single allowed non-accept.
+    assert _completed(
+        capture_geometry,
+        4,
+        [_accept(1), _acoustic_reject(2), _accept(3), _accept(4)],
+    ) is True
+    # A second acoustic reject spends a fifth audio attempt -> over the audible
+    # budget -> refused. The acoustic gate is unchanged for real captures.
+    assert _completed(
+        capture_geometry,
+        5,
+        [_accept(1), _acoustic_reject(2), _accept(3), _acoustic_reject(4),
+         _accept(5)],
+    ) is False
+    # Two TRANSPORT failures across the same five reservations are refunded, so
+    # only three measurement attempts count -> completed. The exact scenario
+    # #1513 makes possible: two infra failures no longer block three accepts.
+    assert _completed(
+        capture_geometry,
+        5,
+        [_transport(1), _transport(2), _accept(3), _accept(4), _accept(5)],
+    ) is True
+
+
+@pytest.mark.parametrize("capture_geometry", ["near_field", "reference_axis"])
+def test_unknown_audio_is_not_refunded_in_eligibility(capture_geometry):
+    def unknown_reject(attempt: int) -> dict:
+        return {"attempt": attempt, "accepted": False}  # audio_emitted absent
+
+    # Fail-closed: two unknown-audio rejects consume the budget just like real
+    # acoustic rejects -> five measurement attempts -> refused.
+    assert _completed(
+        capture_geometry,
+        5,
+        [_accept(1), unknown_reject(2), _accept(3), unknown_reject(4),
+         _accept(5)],
+    ) is False
+    # The same shape with PROVEN no-audio is refunded -> completed. Only
+    # audio_emitted is False reopens headroom.
+    assert _completed(
+        capture_geometry,
+        5,
+        [_accept(1), _transport(2), _accept(3), _transport(4), _accept(5)],
+    ) is True
+
+
+def _inject_repeat_results(data: dict, results: list, attempts: int) -> None:
+    for target_id in ("mono:woofer", "reference_axis/mono:woofer"):
+        data["repeat_state"]["targets"][target_id].update(
+            {"attempts": attempts, "results": results}
+        )
+
+
+def _set_admission_attempts(data: dict, value: int) -> None:
+    for key in (
+        "latest_driver_measurements",
+        "latest_reference_axis_driver_measurements",
+    ):
+        data["measurements"]["summary"][key]["mono:woofer"]["repeats"][
+            "admission_attempts"
+        ] = value
+
+
+def test_two_transport_failures_and_three_accepts_pass_both_eligibility_gates():
+    data = _evidence()
+    _inject_repeat_results(
+        data,
+        [_transport(1), _transport(2), _accept(3), _accept(4), _accept(5)],
+        attempts=5,
+    )
+    result = automatic_measurement_eligibility(**data)
+
+    assert result.ready is True
+    assert result.missing == ()
+    # The repeat-completion gate honours the refund: five reservations, three
+    # measurement attempts, three accepts.
+    assert driver_repeat_completed(
+        _1513_TARGET,
+        data["repeat_state"]["targets"],
+        capture_geometry="near_field",
+    ) is True
+    # The record-side gate keeps admission_attempts within [3, 4] because it
+    # records the MEASUREMENT count (3), not the raw five reservations.
+    near_record = data["measurements"]["summary"]["latest_driver_measurements"][
+        "mono:woofer"
+    ]
+    assert near_record["repeats"]["admission_attempts"] == 3
+    assert driver_acoustic_usable(
+        near_record,
+        data["measurements"]["active_comparison_set"],
+        _1513_TARGET,
+        capture_geometry="near_field",
+    ) is True
+
+
+def test_mixed_transport_and_acoustic_outlier_run_is_eligible():
+    data = _evidence()
+    _inject_repeat_results(
+        data,
+        [_transport(1), _acoustic_reject(2), _accept(3), _accept(4), _accept(5)],
+        attempts=5,
+    )
+    # Four measurement attempts (one acoustic outlier + three accepts); the
+    # transport failure is refunded and the outlier is the one allowed
+    # non-accept.
+    _set_admission_attempts(data, 4)
+
+    result = automatic_measurement_eligibility(**data)
+
+    assert result.ready is True
+    assert result.missing == ()
+
+
+@pytest.mark.parametrize(
+    ("admission_attempts", "ready"),
+    ((3, True), (4, True), (5, False)),
+)
+def test_driver_acoustic_usable_gates_admission_attempts_on_measurement_budget(
+    admission_attempts, ready
+):
+    # admission_attempts == 4 is a set that survived a refunded transport
+    # failure (four measurement attempts); it must still pass. admission_attempts
+    # == 5 is what the pre-fix raw reservation counter would have leaked in —
+    # it must fail, or the record-side gate would reject a legitimately
+    # completed set.
+    data = _evidence()
+    _set_admission_attempts(data, admission_attempts)
+
+    result = automatic_measurement_eligibility(**data)
+
+    assert result.ready is ready

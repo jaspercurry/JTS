@@ -1305,7 +1305,36 @@ def test_terminal_transport_failure_never_completes_thin_fixed_axis_evidence(
             },
         },
     }
-    for attempt in (1, 2):
+    reject_acoustic = {**acoustic, "mic_clipping": True}
+
+    def _repeat_item(attempt, item_acoustic):
+        return {
+            "attempt": attempt,
+            "verdict": "present",
+            "acoustic": item_acoustic,
+            "wav_path": str(wav_path),
+            "sweep_meta": {"sample_rate": 48000},
+            "playback_id": f"play-{attempt}",
+            "test_level_dbfs": -12.0,
+            "excitation": {},
+            "placement_proof": placement_proof,
+            "ambient_report": {},
+            "ambient_duration_s": 14.0,
+            "analysis_kwargs": {},
+            "preset": object(),
+            "measurement_mode": {"mode": "magnitude_only"},
+            "calibration_id": None,
+            "bundle_dir": str(bundle_dir),
+            "capture_relpath": "captures/driver.wav",
+            "floor_evidence_source": "durable_current_driver_measurement",
+        }
+
+    # Spend the WHOLE audible measurement budget: two accepted repeats and two
+    # clipping rejects — four audio-emitting captures (MAX_ATTEMPTS). Only when
+    # the audio budget is fully spent may the near-field set be completed from
+    # its two accepted repeats; a transport failure with the budget not yet
+    # spent must instead stay retryable (measurement_attempts refunds it).
+    for attempt, accepted in ((1, True), (2, True), (3, False)):
         reservation = repeat_admission.reserve(
             comparison,
             target_id="mono:woofer",
@@ -1316,56 +1345,30 @@ def test_terminal_transport_failure_never_completes_thin_fixed_axis_evidence(
             key,
             target_id="mono:woofer",
             attempt=attempt,
-            item={
-                "attempt": attempt,
-                "verdict": "present",
-                "acoustic": acoustic,
-                "wav_path": str(wav_path),
-                "sweep_meta": {"sample_rate": 48000},
-                "playback_id": f"play-{attempt}",
-                "test_level_dbfs": -12.0,
-                "excitation": {},
-                "placement_proof": placement_proof,
-                "ambient_report": {},
-                "ambient_duration_s": 14.0,
-                "analysis_kwargs": {},
-                "preset": object(),
-                "measurement_mode": {"mode": "magnitude_only"},
-                "calibration_id": None,
-                "bundle_dir": str(bundle_dir),
-                "capture_relpath": "captures/driver.wav",
-                "floor_evidence_source": "durable_current_driver_measurement",
-            },
+            item=_repeat_item(attempt, acoustic if accepted else reject_acoustic),
         )
         repeat_admission.finish(
             comparison,
             target_id="mono:woofer",
             target_fingerprint=target_fingerprint,
             token=reservation["token"],
-            result={"accepted": True},
+            result={"accepted": accepted},
             status="active",
             path=admission_path,
         )
-    third = repeat_admission.reserve(
-        comparison,
-        target_id="mono:woofer",
-        target_fingerprint=target_fingerprint,
-        path=admission_path,
-    )
-    repeat_admission.finish(
-        comparison,
-        target_id="mono:woofer",
-        target_fingerprint=target_fingerprint,
-        token=third["token"],
-        result={"accepted": False, "reject_reason": "level_outlier"},
-        status="active",
-        path=admission_path,
-    )
     fourth = repeat_admission.reserve(
         comparison,
         target_id="mono:woofer",
         target_fingerprint=target_fingerprint,
         path=admission_path,
+    )
+    # The fourth audio capture also clips; it is appended to the store, but the
+    # reservation stays inflight so the terminal-failure finalize consumes it.
+    store.append_driver_repeat(
+        key,
+        target_id="mono:woofer",
+        attempt=4,
+        item=_repeat_item(4, reject_acoustic),
     )
     monkeypatch.setattr(web_measurement, "load_output_topology", lambda: object())
     monkeypatch.setattr(
@@ -1432,9 +1435,13 @@ def test_terminal_transport_failure_never_completes_thin_fixed_axis_evidence(
             status=repeat_admission.failure_status(fourth["attempt"]),
             path=admission_path,
         )
+        # Fixed-axis refuses the legacy 2-repeat completion, and a transport
+        # failure below the reservation circuit-breaker stays retryable rather
+        # than terminal — its tone never played, so the audible budget is
+        # refunded (failure_status keeps it "active").
         assert repeat_admission.snapshot(
             comparison, path=admission_path
-        )["targets"]["mono:woofer"]["status"] == "refused"
+        )["targets"]["mono:woofer"]["status"] == "active"
         assert store.driver_repeats(key) != []
         assert recorded == {}
         assert appended == []

@@ -639,7 +639,14 @@ def _finalize_driver_repeat_set(
             else None
         ),
     )
-    aggregate["admission_attempts"] = reservation_attempt
+    # Record the MEASUREMENT-attempt count (audio-emitting captures that went
+    # into this set), not the raw reservation number: a set that survived
+    # refunded transport failures can carry a reservation attempt above
+    # MAX_ATTEMPTS, and `driver_acoustic_usable` gates `admission_attempts` on
+    # [DEFAULT_REPEAT_TARGET, MAX_ATTEMPTS]. Every `per_repeat` entry is an
+    # audio-emitting attempt (transport failures never reach the store), so its
+    # length is exactly the measurement budget consumed.
+    aggregate["admission_attempts"] = len(aggregate.get("per_repeat") or ())
     winner = aggregate.get("aggregate_repeat")
     if aggregate["accepted"] < 2 or not isinstance(winner, Mapping):
         raise RuntimeError("driver repeat set is not eligible for finalization")
@@ -855,7 +862,9 @@ def finalize_driver_repeats_after_terminal_failure(
     failure_type: str,
     repeat_store: Any,
 ) -> dict[str, Any] | None:
-    """Finalize two legacy near-field repeats when attempt four dies."""
+    """Finalize a near-field set from its existing accepted repeats once the
+    audible measurement budget is spent (a transport failure hit the last
+    admissible audio attempt)."""
 
     from jasper.active_speaker import repeat_admission
     from jasper.active_speaker.commissioning_capture import (
@@ -863,13 +872,11 @@ def finalize_driver_repeats_after_terminal_failure(
         aggregate_driver_repeats,
     )
 
-    if int(reservation.get("attempt") or 0) < repeat_admission.MAX_ATTEMPTS:
-        return None
     if capture_geometry == "reference_axis":
         # Fixed-axis admitted captures feed strict commissioning authority,
         # whose load-bearing contract is three fresh accepted repetitions.
-        # The caller will terminally refuse this fourth attempt rather than
-        # publishing a legacy completion that strict status cannot promote.
+        # The caller will terminally refuse this attempt rather than publishing
+        # a legacy completion that strict status cannot promote.
         return None
     from jasper.active_speaker.capture_geometry import driver_repeat_binding
 
@@ -884,6 +891,14 @@ def finalize_driver_repeats_after_terminal_failure(
         repeat_target_fingerprint,
     )
     repeats = repeat_store.driver_repeats(key)
+    # Salvage only once the audible measurement budget is genuinely spent: a
+    # transport/infra failure that never played a tone is refunded and does not
+    # exhaust it, so a set that could still earn its third accept is never
+    # prematurely completed from two. Every stored repeat is an audio-emitting
+    # capture (transport failures never reach the store), so
+    # measurement_attempts == len(repeats).
+    if repeat_admission.measurement_attempts(repeats) < repeat_admission.MAX_ATTEMPTS:
+        return None
     preview = aggregate_driver_repeats(repeats, target=DEFAULT_REPEAT_TARGET)
     if preview["accepted"] < 2:
         return None
@@ -918,6 +933,10 @@ def finalize_driver_repeats_after_terminal_failure(
             "reject_reason": "capture_failed",
             "failure_type": str(failure_type)[:80],
             "phase": "transport",
+            # A transport/infra failure provably played no tone, so it is
+            # refunded from the audible measurement budget (see
+            # repeat_admission.measurement_attempts).
+            "audio_emitted": False,
         },
         repeats=repeats,
         repeat_store=repeat_store,
@@ -1152,6 +1171,8 @@ def record_driver_capture(
                 target_fingerprint=target_fingerprint,
                 capture_geometry=capture_geometry,
             )
+        from jasper.active_speaker import repeat_admission
+
         comparison_set_id = str(comparison_set.get("comparison_set_id") or "")
         reservation = raw.get("repeat_reservation")
         reservation = reservation if isinstance(reservation, Mapping) else {}
@@ -1161,7 +1182,7 @@ def record_driver_capture(
             not comparison_set_id
             or not target_fingerprint
             or not reservation_token
-            or not 1 <= reservation_attempt <= 4
+            or not 1 <= reservation_attempt <= repeat_admission.MAX_RESERVATIONS
             or reservation.get("target_id") != repeat_target_id
             or reservation.get("target_fingerprint")
             != repeat_target_fingerprint
@@ -1247,6 +1268,12 @@ def record_driver_capture(
         aggregate = aggregate_driver_repeats(
             repeats, target=DEFAULT_REPEAT_TARGET
         )
+        # Every stored repeat is an audio-emitting capture (transport failures
+        # never reach the store), so this is the MEASUREMENT-attempt count —
+        # the audible budget consumed. It drives the recapture-vs-finalize
+        # decision instead of the raw reservation number so that refunded
+        # transport failures do not prematurely exhaust the budget.
+        measurement_attempt_count = len(aggregate["per_repeat"])
         latest_attempt = aggregate["per_repeat"][-1]
         def persist_repeat_progress(status: str, reason: str | None = None) -> None:
             if bundle_dir is None:
@@ -1265,8 +1292,6 @@ def record_driver_capture(
                 status=status,
                 reason=reason,
             )
-
-        from jasper.active_speaker import repeat_admission
 
         acoustic_block = _mapping_value(provisional.get("acoustic"))
         snr_block = _mapping_value(acoustic_block.get("snr"))
@@ -1306,6 +1331,12 @@ def record_driver_capture(
             "validity_floor_hz": gating_block.get("f_valid_floor_hz"),
             "peak_dbfs": acoustic_block.get("peak_dbfs"),
             "effective_peak_dbfs": raw_excitation.get("effective_peak_dbfs"),
+            # This capture was analyzed from a real recorded WAV, so a tone was
+            # emitted regardless of the acoustic verdict. Acoustic rejections
+            # still consume the audible measurement budget and the one allowed
+            # non-accept slot; only a proven no-audio transport failure is
+            # refunded (see repeat_admission.result_emitted_audio).
+            "audio_emitted": True,
         }
         strict_isolated_required = bool(
             authoritative_recorder is not None
@@ -1362,7 +1393,7 @@ def record_driver_capture(
                 raise
 
         attempt_budget_exhausted = (
-            reservation_attempt >= repeat_admission.MAX_ATTEMPTS
+            measurement_attempt_count >= repeat_admission.MAX_ATTEMPTS
         )
         if aggregate["needed_recapture"] and not attempt_budget_exhausted:
             repeat_admission.finish(
@@ -1383,7 +1414,7 @@ def record_driver_capture(
                     "accepted": aggregate["accepted"],
                     "target": DEFAULT_REPEAT_TARGET,
                     "bounded_recapture": (
-                        reservation_attempt >= DEFAULT_REPEAT_TARGET
+                        measurement_attempt_count >= DEFAULT_REPEAT_TARGET
                     ),
                     "latest_rejection": (
                         admission_result

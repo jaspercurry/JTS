@@ -31,7 +31,25 @@ from jasper.log_event import log_event
 
 STATE_KIND = "jts_active_speaker_repeat_admission"
 SCHEMA_VERSION = 1
+# The audible MEASUREMENT budget: how many attempts that PROVABLY played a
+# tone a set may spend. It is DERIVED from the durable results (see
+# ``measurement_attempts``), never from the raw reservation counter — an
+# attempt that never emitted audio (a transport/infra failure) is refunded
+# from it, so infra flakiness cannot exhaust the room-variance tolerance.
 MAX_ATTEMPTS = 4
+# Infra circuit-breaker: total reservations a set may consume regardless of
+# audio. Transport failures are refunded from ``MAX_ATTEMPTS`` above, so a box
+# whose transport keeps failing could otherwise reserve forever; this caps the
+# loop and gives a terminal distinct from acoustic insufficiency
+# (``INFRA_RETRY_EXHAUSTED``) so the envelope can say "the speaker couldn't
+# complete a pass" rather than blaming the room. With MAX_ATTEMPTS=4 audible
+# attempts this tolerates up to four refunded infra retries. Chosen to match
+# the relay's per-plan attempt ceiling (``capture_relay.spec
+# .MAX_CAPTURE_PLAN_ATTEMPTS``) so the durable reservation attempt, which
+# indexes the commissioning bundle's repeat captures, never exceeds that
+# ceiling.
+MAX_RESERVATIONS = 8
+INFRA_RETRY_EXHAUSTED = "infra_retry_exhausted"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_repeat_admission.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE"
 OWNER_ID = uuid.uuid4().hex
@@ -46,13 +64,51 @@ def state_path(path: str | Path | None = None) -> Path:
 
 
 def failure_status(attempt: Any) -> str:
-    """A failed fourth attempt is terminal; earlier transport failures retry."""
+    """A transport/infra failure retries until the reservation circuit-breaker.
+
+    Transport failures never play a tone, so they are refunded from the
+    audible ``MAX_ATTEMPTS`` budget (see ``measurement_attempts``) and the set
+    stays retryable — a box just needs to get its captures through. Only
+    reaching ``MAX_RESERVATIONS`` total reservations makes an infra failure
+    terminal so a box that can never complete a pass cannot loop forever.
+    """
 
     try:
         number = int(attempt)
     except (TypeError, ValueError):
-        number = MAX_ATTEMPTS
-    return "refused" if number >= MAX_ATTEMPTS else "active"
+        number = MAX_RESERVATIONS
+    return "refused" if number >= MAX_RESERVATIONS else "active"
+
+
+def result_emitted_audio(result: Mapping[str, Any]) -> bool:
+    """Whether one stored attempt consumed the audible measurement budget.
+
+    A transport/infra failure that provably never played a tone records
+    ``audio_emitted is False`` and is refunded from the budget. Every other
+    attempt — a real acoustic capture (``audio_emitted is True``) OR one whose
+    audio state is unknown/absent — consumes it, so an uncertain write fails
+    closed with acoustic semantics rather than reopening the audio gate.
+    """
+
+    return result.get("audio_emitted") is not False
+
+
+def measurement_attempts(results: Any) -> int:
+    """Count durable results that consumed the audible measurement budget.
+
+    A PURE projection of the durable ``results`` ledger — never a second
+    mutable counter — so the audio-gate budget can never drift from the
+    attempts actually recorded. Transport/infra results (``audio_emitted is
+    False``) are excluded; unknown audio fails closed and is counted.
+    """
+
+    if not isinstance(results, (list, tuple)):
+        return 0
+    return sum(
+        1
+        for item in results
+        if isinstance(item, Mapping) and result_emitted_audio(item)
+    )
 
 
 def _now() -> str:
@@ -106,7 +162,7 @@ def _load(path: Path) -> dict[str, Any]:
         if (
             isinstance(attempts, bool)
             or not isinstance(attempts, int)
-            or not 1 <= attempts <= MAX_ATTEMPTS
+            or not 1 <= attempts <= MAX_RESERVATIONS
         ):
             raise RuntimeError("crossover repeat target state is invalid")
         if not isinstance(results, list):
@@ -121,6 +177,9 @@ def _load(path: Path) -> dict[str, Any]:
                 or not isinstance(result_attempt, int)
                 or not 1 <= result_attempt <= attempts
             ):
+                raise RuntimeError("crossover repeat target state is invalid")
+            emitted = item.get("audio_emitted")
+            if emitted is not None and not isinstance(emitted, bool):
                 raise RuntimeError("crossover repeat target state is invalid")
             result_attempts.append(result_attempt)
         result_attempts_ordered = result_attempts == sorted(set(result_attempts))
@@ -298,8 +357,18 @@ def reserve(
         if entry.get("inflight"):
             raise ValueError("a crossover repeat attempt is already in progress")
         attempts = int(entry.get("attempts") or 0)
-        if attempts >= MAX_ATTEMPTS:
+        # Two independent gates. The audible budget is DERIVED from the durable
+        # results, so a refunded transport failure never advances it; the raw
+        # reservation cap is the infra circuit-breaker that stops an
+        # always-failing box from reserving forever, with a distinct terminal
+        # reason so the envelope blames the speaker, not the room.
+        if measurement_attempts(entry.get("results")) >= MAX_ATTEMPTS:
             raise ValueError("the crossover repeat set already used four attempts")
+        if attempts >= MAX_RESERVATIONS:
+            raise ValueError(
+                "the crossover repeat set could not complete a measurement pass "
+                f"({INFRA_RETRY_EXHAUSTED})"
+            )
         token = uuid.uuid4().hex
         entry.update({
             "target_id": target_id,
@@ -343,10 +412,22 @@ def finish(
         ):
             raise ValueError("repeat result has no matching inflight admission token")
         results = list(entry.get("results") or [])
-        results.append({**dict(result), "attempt": entry["attempts"]})
+        stored = {**dict(result), "attempt": entry["attempts"]}
+        # Persist the audible-budget discriminator only when playback proved
+        # its state: True (a tone played) or False (a transport/infra failure
+        # that never played). Anything else stays UNSET and fails closed —
+        # measurement_attempts() then counts it as budget-consuming (acoustic
+        # semantics). Storing a strict bool (never a None sentinel) keeps
+        # legacy results byte-identical.
+        emitted = stored.get("audio_emitted")
+        if emitted is True or emitted is False:
+            stored["audio_emitted"] = emitted
+        else:
+            stored.pop("audio_emitted", None)
+        results.append(stored)
         entry.update({
             "inflight": None,
-            "results": results[-MAX_ATTEMPTS:],
+            "results": results[-MAX_RESERVATIONS:],
             "status": status,
             "updated_at": _now(),
         })
@@ -365,6 +446,8 @@ def finish(
             clipping=result.get("clipping"),
             failure_type=result.get("failure_type"),
             phase=result.get("phase") or "acoustic",
+            audio_emitted=stored.get("audio_emitted"),
+            measurement_attempts=measurement_attempts(entry["results"]),
         )
         return entry
 
