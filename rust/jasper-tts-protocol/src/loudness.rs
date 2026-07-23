@@ -94,6 +94,35 @@ pub struct HeldLoudnessReference {
     pub calibration_offset_lu: f32,
 }
 
+/// Where in the output chain the assistant lane this engine governs is mixed.
+///
+/// The one structural difference between fan-in (solo/leader, pre-DSP) and
+/// outputd (passive grouped follower, post-DSP) is whether CamillaDSP's gain
+/// is *downstream* of the assistant lane. Fan-in mixes assistant audio
+/// **before** CamillaDSP, so ``VolumeContext::downstream_db`` (Camilla's gain)
+/// genuinely attenuates the assistant lane and the mixer must pre-compensate
+/// for it. Outputd mixes assistant audio **after** CamillaDSP, so nothing
+/// applies volume after the mix — the effective downstream attenuation of the
+/// assistant lane is structurally **zero**. Every difference between the two
+/// daemons' loudness behaviour collapses to that single fact, so it is the
+/// single parameter this engine takes: `PostDsp` treats `downstream_db` as
+/// 0.0 wherever the code converts between mixer-lane loudness and achieved
+/// speaker loudness (the "subtract/add downstream" positions), while still
+/// honouring `canonical_db`, `tts_envelope_lufs`, and `muted` unchanged.
+/// `PreDsp` (the default) is byte-identical to the pre-`MixStage` engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MixStage {
+    /// Assistant audio is mixed before CamillaDSP (fan-in solo/leader). The
+    /// downstream Camilla gain attenuates the assistant lane and is
+    /// compensated for.
+    #[default]
+    PreDsp,
+    /// Assistant audio is mixed after CamillaDSP (outputd passive grouped
+    /// follower). No stage applies volume after the mix, so `downstream_db`
+    /// is treated as 0.0 in every mixer-to-speaker conversion.
+    PostDsp,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssistantGainDecision {
     pub provider: Option<String>,
@@ -117,6 +146,7 @@ pub struct AssistantGainDecision {
 
 pub struct AssistantLoudness {
     config: AssistantLoudnessConfig,
+    mix_stage: MixStage,
     content: KWeightedWindow,
     pending_context: Option<AssistantContext>,
     last_decision: Option<AssistantGainDecision>,
@@ -129,9 +159,19 @@ pub struct AssistantLoudness {
 }
 
 impl AssistantLoudness {
+    /// Construct a pre-DSP engine (fan-in solo/leader). Byte-identical to the
+    /// pre-`MixStage` engine — the default.
     pub fn new(config: AssistantLoudnessConfig) -> Self {
+        Self::new_with_stage(config, MixStage::PreDsp)
+    }
+
+    /// Construct an engine for an explicit mix stage. `PostDsp` is the
+    /// outputd passive-follower path: `downstream_db` is treated as 0.0 in
+    /// every mixer-to-speaker conversion (see [`MixStage`]).
+    pub fn new_with_stage(config: AssistantLoudnessConfig, mix_stage: MixStage) -> Self {
         Self {
             config,
+            mix_stage,
             content: KWeightedWindow::new(CONTENT_ANCHOR_FRAMES),
             pending_context: None,
             last_decision: None,
@@ -142,6 +182,26 @@ impl AssistantLoudness {
             content_audible_frames: 0,
             content_silence_frames: 0,
         }
+    }
+
+    /// The downstream attenuation to apply for `context` at this mix stage.
+    ///
+    /// Pre-DSP, CamillaDSP sits after the assistant mixer, so its gain
+    /// (`downstream_db`) genuinely attenuates the assistant lane and every
+    /// mixer-to-speaker conversion must account for it. Post-DSP, nothing
+    /// applies volume after the mix, so the effective downstream attenuation
+    /// is structurally 0.0 — the single fact that distinguishes the two
+    /// daemons. The stored wire value is left untouched; only its *use* here
+    /// is stage-aware, so `/state` still reports the honest Camilla gain.
+    fn effective_downstream_db(&self, context: &VolumeContext) -> f32 {
+        match self.mix_stage {
+            MixStage::PreDsp => context.downstream_db,
+            MixStage::PostDsp => 0.0,
+        }
+    }
+
+    pub fn mix_stage(&self) -> MixStage {
+        self.mix_stage
     }
 
     pub fn observe_content_period(&mut self, samples: &[i16]) {
@@ -175,8 +235,18 @@ impl AssistantLoudness {
         if context.muted {
             return;
         }
+        // `speaker_lufs` is the observed content loudness converted to the
+        // achieved-at-the-speaker scale. Pre-DSP the mixer's output is later
+        // attenuated by `downstream_db`, so add it back; post-DSP the content
+        // outputd observes is ALREADY at speaker level (post-Camilla), so the
+        // effective downstream is 0.0 and the two representations coincide.
+        // This must stay consistent with the HeldContent branch of
+        // `decide_gain`, which subtracts the same effective downstream — the
+        // round trip cancels, so a stale Camilla gain can never inflate the
+        // held-content target post-DSP (the double-compensation this fix
+        // exists to prevent).
         self.held_content = Some(HeldLoudnessReference {
-            speaker_lufs: content_lufs + context.downstream_db,
+            speaker_lufs: content_lufs + self.effective_downstream_db(&context),
             canonical_db: context.canonical_db,
             calibration_offset_lu: 0.0,
         });
@@ -287,7 +357,7 @@ impl AssistantLoudness {
                 (
                     baseline,
                     target,
-                    volume_context.map(|ctx| target + ctx.downstream_db),
+                    volume_context.map(|ctx| target + self.effective_downstream_db(&ctx)),
                     ReferenceKind::LiveContent,
                     None,
                 )
@@ -295,7 +365,7 @@ impl AssistantLoudness {
                 let target_speaker = reference.speaker_lufs
                     + (current.canonical_db - reference.canonical_db)
                     + self.config.assistant_offset_lu;
-                let target = target_speaker - current.downstream_db;
+                let target = target_speaker - self.effective_downstream_db(&current);
                 (
                     target - self.config.assistant_offset_lu,
                     target,
@@ -313,7 +383,7 @@ impl AssistantLoudness {
                     self.config.assistant_envelope_offset_limit_lu,
                 );
                 let target_speaker = baseline + offset;
-                let target = target_speaker - current.downstream_db;
+                let target = target_speaker - self.effective_downstream_db(&current);
                 (
                     baseline,
                     target,
@@ -334,7 +404,7 @@ impl AssistantLoudness {
                 );
                 let target_speaker = baseline;
                 let target = volume_context.map_or(target_speaker, |current| {
-                    target_speaker - current.downstream_db
+                    target_speaker - self.effective_downstream_db(&current)
                 });
                 (
                     baseline,
@@ -429,14 +499,18 @@ impl AssistantLoudness {
         else {
             return 0.0;
         };
+        // Post-DSP the downstream (Camilla) delta is not applied to the
+        // assistant lane at all, so it cannot cancel a canonical/envelope
+        // change — the mixer itself must carry the full user delta. Zeroing
+        // the effective downstream at both endpoints makes that term vanish.
+        let downstream_delta =
+            self.effective_downstream_db(&current) - self.effective_downstream_db(&initial);
         match decision.reference_kind {
             ReferenceKind::LiveContent | ReferenceKind::HeldContent => {
-                (current.canonical_db - initial.canonical_db)
-                    - (current.downstream_db - initial.downstream_db)
+                (current.canonical_db - initial.canonical_db) - downstream_delta
             }
             ReferenceKind::HeldAssistant | ReferenceKind::FirstUseFallback => {
-                (current.tts_envelope_lufs - initial.tts_envelope_lufs)
-                    - (current.downstream_db - initial.downstream_db)
+                (current.tts_envelope_lufs - initial.tts_envelope_lufs) - downstream_delta
             }
         }
     }
@@ -467,7 +541,9 @@ impl AssistantLoudness {
         if playout_context.muted || !effective_gain_db.is_finite() {
             return None;
         }
-        let speaker_lufs = decision.source_lufs + effective_gain_db + playout_context.downstream_db;
+        let speaker_lufs = decision.source_lufs
+            + effective_gain_db
+            + self.effective_downstream_db(&playout_context);
         let deterministic_target = playout_context.tts_envelope_lufs;
         let reference = HeldLoudnessReference {
             speaker_lufs,
@@ -1228,6 +1304,127 @@ mod tests {
 
         loudness.update_volume_context(volume_context(-18.0, -24.0, -37.88, 3));
         assert!((loudness.live_gain_delta_db(&decision) - -2.88).abs() < 0.01);
+    }
+
+    fn post_dsp() -> AssistantLoudness {
+        AssistantLoudness::new_with_stage(AssistantLoudnessConfig::default(), MixStage::PostDsp)
+    }
+
+    #[test]
+    fn post_dsp_decide_gain_zeroes_downstream_but_honors_canonical_envelope_muted() {
+        // Downstream is structurally zero post-DSP: a large Camilla gain is
+        // NOT compensated, so first-use speech lands on the envelope itself
+        // (a PRE-DSP engine would add |downstream| back and target -11 LUFS).
+        let mut loudness = post_dsp();
+        loudness.prepare_context_with_volume(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+            Some(volume_context(-30.0, -30.0, -41.0, 1)),
+        );
+        let decision =
+            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(decision.reference_kind, ReferenceKind::FirstUseFallback);
+        assert_eq!(decision.target_speaker_lufs, Some(-41.0));
+        assert_eq!(decision.target_lufs, -41.0);
+        assert_eq!(decision.requested_gain_db, -16.0);
+
+        // The envelope (tts_envelope_lufs) still drives the target one-for-one.
+        loudness.prepare_context_with_volume(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -35.0,
+            Some(volume_context(-30.0, -30.0, -35.0, 2)),
+        );
+        let louder = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(louder.target_lufs, -35.0);
+
+        // Mute still blocks learning post-DSP — the follower safety guard.
+        let mut muted_ctx = volume_context(-30.0, -30.0, -41.0, 3);
+        muted_ctx.muted = true;
+        loudness.update_volume_context(muted_ctx);
+        assert_eq!(
+            loudness.complete_assistant_segment(&decision, decision.final_gain_db),
+            None
+        );
+    }
+
+    #[test]
+    fn post_dsp_and_pre_dsp_decide_differently_with_nonzero_downstream() {
+        // The core "no double-compensation" property at the engine level: the
+        // SAME VolumeContext with a nonzero downstream yields a different gain
+        // pre- vs post-DSP. Pre-DSP compensates for Camilla (+14 dB); post-DSP
+        // must not (-16 dB).
+        let ctx = volume_context(-30.0, -30.0, -41.0, 1);
+        let decide = |stage| {
+            let mut loudness =
+                AssistantLoudness::new_with_stage(AssistantLoudnessConfig::default(), stage);
+            loudness.prepare_context_with_volume(
+                "o".to_string(),
+                "m".to_string(),
+                "v".to_string(),
+                -41.0,
+                Some(ctx),
+            );
+            loudness
+                .decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)))
+                .final_gain_db
+        };
+        let pre = decide(MixStage::PreDsp);
+        let post = decide(MixStage::PostDsp);
+        assert_eq!(pre, 14.0);
+        assert_eq!(post, -16.0);
+        assert_ne!(pre, post);
+    }
+
+    #[test]
+    fn post_dsp_learns_and_reuses_clamped_envelope_offset_without_progressive_quieting() {
+        let mut loudness = post_dsp();
+        // Nonzero Camilla downstream that must be IGNORED when learning.
+        loudness.prepare_context_with_volume(
+            "o".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+            Some(volume_context(-30.0, -30.0, -41.0, 1)),
+        );
+        let first = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(first.reference_kind, ReferenceKind::FirstUseFallback);
+        assert_eq!(first.target_speaker_lufs, Some(-41.0));
+
+        // Achieved gain -20 dB → speaker = source(-25) + (-20) + downstream(0)
+        // = -45 LUFS vs envelope -41 → offset -4, comfortably inside the ±8
+        // clamp. A PRE-DSP engine would fold the -30 downstream in and saturate
+        // the clamp at -8 instead — so this value proves downstream is ignored.
+        let learned = loudness
+            .complete_assistant_segment(&first, -20.0)
+            .expect("completed turn");
+        assert!((learned.calibration_offset_lu - -4.0).abs() < 1e-4);
+
+        // Reuse: the next turn targets envelope+offset, no re-application.
+        loudness.prepare_context_with_volume(
+            "o".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+            Some(volume_context(-30.0, -30.0, -41.0, 2)),
+        );
+        let second = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(second.reference_kind, ReferenceKind::HeldAssistant);
+        assert_eq!(second.envelope_offset_lu, Some(-4.0));
+        assert_eq!(second.target_speaker_lufs, Some(-45.0));
+        assert_eq!(second.target_lufs, -45.0);
+
+        // Replaying the achieved gain does not drift the offset (no
+        // progressive quieting).
+        for _ in 0..3 {
+            let replay = loudness
+                .complete_assistant_segment(&second, second.final_gain_db)
+                .expect("completed replay");
+            assert!((replay.calibration_offset_lu - -4.0).abs() < 1e-4);
+        }
     }
 
     #[test]
