@@ -317,7 +317,12 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
     assert prepares[0]["context_stamp_boot_ns"] == 123
 
 
-async def test_post_dsp_prepare_omits_volume_context(monkeypatch) -> None:
+async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
+    # Since #1547 outputd interprets VOLUME_CONTEXT, so a CONFIRMED post-DSP
+    # member attaches the SAME absolute context to PREPARE_ASSISTANT — the
+    # post-DSP consumer owns the downstream-is-zero fact; Python does not mutate
+    # downstream_db to 0.
+    from jasper.assistant_volume import EffectiveVolumeContext
     from jasper.voice_daemon import WakeLoop
 
     prepares = []
@@ -331,7 +336,7 @@ async def test_post_dsp_prepare_omits_volume_context(monkeypatch) -> None:
             return 50
 
         async def effective_volume_context(self):
-            raise AssertionError("post-DSP voice must not read pre-DSP context")
+            return EffectiveVolumeContext(-30.0, -30.0, -41.0, False, 9)
 
     monkeypatch.setenv("JASPER_TTS_MIX_STAGE", "post_dsp")
     wl = WakeLoop.for_tests()
@@ -341,7 +346,10 @@ async def test_post_dsp_prepare_omits_volume_context(monkeypatch) -> None:
 
     await wl._prepare_assistant_loudness_context()
 
-    assert "canonical_volume_db" not in prepares[0]
+    assert prepares[0]["canonical_volume_db"] == -30.0
+    assert prepares[0]["downstream_volume_db"] == -30.0
+    assert prepares[0]["context_tts_envelope_lufs"] == -41.0
+    assert prepares[0]["context_stamp_boot_ns"] == 9
 
 
 async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> None:

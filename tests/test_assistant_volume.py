@@ -31,13 +31,16 @@ def test_volume_context_publisher_sends_one_absolute_idempotent_message(monkeypa
     assert calls == [("/tmp/fanin.sock", context, 0.5)]
 
 
-def test_runtime_publisher_is_scoped_to_fanin_topology():
+def test_runtime_publisher_is_scoped_to_context_consuming_routes():
     assert volume_context_publisher_for_runtime({"JASPER_DUCK_TRANSPORT": "camilla"}) is None
     assert volume_context_publisher_for_runtime({"JASPER_DUCK_TRANSPORT": "fanin"}) is not None
+    # Since #1547 outputd interprets VolumeContext: a CONFIRMED post-DSP route
+    # builds a publisher (the same wire message goes to outputd's socket).
     assert volume_context_publisher_for_runtime({
         "JASPER_DUCK_TRANSPORT": "fanin",
         "JASPER_TTS_MIX_STAGE": "post_dsp",
-    }) is None
+    }) is not None
+    # A custom socket with NO stage is ambiguous → fail closed either way.
     assert volume_context_publisher_for_runtime({
         "JASPER_DUCK_TRANSPORT": "fanin",
         "JASPER_TTS_OUTPUTD_SOCKET": "/tmp/custom-tts.sock",
@@ -47,6 +50,42 @@ def test_runtime_publisher_is_scoped_to_fanin_topology():
         "JASPER_TTS_OUTPUTD_SOCKET": "/tmp/custom-tts.sock",
         "JASPER_TTS_MIX_STAGE": "pre_dsp",
     }) is not None
+
+
+def test_runtime_publisher_targets_outputd_on_confirmed_post_dsp(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_send(path, context, *, timeout=0.5):
+        calls.append((path, context, timeout))
+
+    monkeypatch.setattr("jasper.assistant_volume._send_volume_context", fake_send)
+    grouping_env = tmp_path / "grouping-voice.env"
+    # A reconciled passive member: the grouping reconciler writes BOTH the
+    # outputd socket and the explicit post_dsp stage.
+    grouping_env.write_text(
+        "JASPER_TTS_MIX_STAGE=post_dsp\n"
+        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+    )
+    publisher = volume_context_publisher_for_runtime(
+        {"JASPER_DUCK_TRANSPORT": "fanin"},
+        grouping_env_path=str(grouping_env),
+    )
+    assert publisher is not None
+    context = EffectiveVolumeContext(
+        canonical_db=-30.0,
+        downstream_db=-30.0,
+        tts_envelope_lufs=-41.0,
+        muted=False,
+        stamp_boot_ns=5,
+    )
+
+    asyncio.run(publisher(context))
+
+    # The SAME wire message is sent to outputd's socket; downstream_db is NOT
+    # mutated to 0 in Python — the structural-zero fact belongs to the post-DSP
+    # consumer.
+    assert calls == [("/run/jasper-outputd/tts.sock", context, 0.5)]
+    assert context.downstream_db == -30.0
 
 
 def test_runtime_publisher_fails_closed_for_legacy_socket_only_grouping(
@@ -84,7 +123,12 @@ def test_dynamic_runtime_publisher_tracks_grouping_file(
 
     monkeypatch.setattr(env_load, "parse_env_file", counted_parse)
     grouping_env = tmp_path / "grouping-voice.env"
-    grouping_env.write_text("JASPER_TTS_MIX_STAGE=post_dsp\n")
+    # Confirmed post-DSP member (stage + outputd socket): the same wire message
+    # now flows to outputd.
+    grouping_env.write_text(
+        "JASPER_TTS_MIX_STAGE=post_dsp\n"
+        "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
+    )
     publisher = volume_context_publisher_for_runtime(
         {"JASPER_DUCK_TRANSPORT": "fanin"},
         grouping_env_path=str(grouping_env),
@@ -94,19 +138,25 @@ def test_dynamic_runtime_publisher_tracks_grouping_file(
     context = EffectiveVolumeContext(-30.0, 0.0, -41.0, False, 123)
 
     asyncio.run(publisher(context))
-    assert sent == []
+    assert sent == [("/run/jasper-outputd/tts.sock", context, 0.5)]
     assert parse_calls == 1
 
+    # A legacy socket-only override (no stage) is ambiguous → fail closed; no
+    # new send.
     grouping_env.write_text(
         "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
     )
     asyncio.run(publisher(context))
-    assert sent == []
+    assert sent == [("/run/jasper-outputd/tts.sock", context, 0.5)]
     assert parse_calls == 2
 
+    # Back to solo (empty) → pre-DSP fan-in.
     grouping_env.write_text("")
     asyncio.run(publisher(context))
-    assert sent == [("/run/jasper-fanin/tts.sock", context, 0.5)]
+    assert sent == [
+        ("/run/jasper-outputd/tts.sock", context, 0.5),
+        ("/run/jasper-fanin/tts.sock", context, 0.5),
+    ]
     assert parse_calls == 3
 
 

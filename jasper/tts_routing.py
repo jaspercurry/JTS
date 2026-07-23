@@ -83,6 +83,29 @@ def resolved_tts_socket_feeds_pre_dsp_fanin(
     return not socket or socket == FANIN_TTS_SOCKET
 
 
+def resolved_tts_socket_feeds_post_dsp_outputd(
+    resolved: Mapping[str, str],
+    *,
+    grouping_socket_override: bool,
+) -> bool:
+    """Classify one already-resolved snapshot as CONFIRMED post-DSP outputd.
+
+    Only an explicit ``JASPER_TTS_MIX_STAGE=post_dsp`` qualifies. Outputd now
+    interprets ``VOLUME_CONTEXT`` (issue #1547), so the SAME wire message is
+    published to its socket — but only when the reconciler has stated the mix
+    stage. A legacy socket-only grouping override (no stage) stays ambiguous
+    and fails closed, the mirror of the pre-DSP classifier's fail-closed
+    posture; a missing stage is the solo/pre-DSP default, never post-DSP.
+    """
+    # ``grouping_socket_override`` is accepted for signature symmetry with the
+    # pre-DSP classifier; post-DSP requires the explicit stage regardless.
+    del grouping_socket_override
+    stage = resolved.get(TTS_MIX_STAGE_ENV)
+    if stage is None:
+        return False
+    return str(stage).strip().lower() == TTS_MIX_STAGE_POST_DSP
+
+
 def tts_socket_feeds_pre_dsp_fanin(
     env: Mapping[str, str],
     *,
@@ -106,6 +129,30 @@ def tts_socket_feeds_pre_dsp_fanin(
     # mixer during an upgrade window. The canonical outputd path check also
     # covers a process that loaded the old file before it was removed.
     return resolved_tts_socket_feeds_pre_dsp_fanin(
+        resolved,
+        grouping_socket_override=grouping_socket_override,
+    )
+
+
+def tts_socket_feeds_post_dsp_outputd(
+    env: Mapping[str, str],
+    *,
+    grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
+) -> bool:
+    """Whether voice's resolved TTS socket feeds the post-DSP outputd mixer.
+
+    True only for a reconciled passive multiroom member that explicitly says
+    ``post_dsp``. Since outputd now consumes ``VOLUME_CONTEXT`` (#1547), voice
+    and the coordinator publish the same absolute wire message on this path —
+    the post-DSP consumer owns the structural fact that its downstream
+    attenuation is zero. Legacy socket-only grouping overrides and a missing
+    stage fail closed (they are handled by the pre-DSP/solo path instead).
+    """
+    resolved, grouping_socket_override = resolve_tts_routing_snapshot(
+        env,
+        grouping_env_path=grouping_env_path,
+    )
+    return resolved_tts_socket_feeds_post_dsp_outputd(
         resolved,
         grouping_socket_override=grouping_socket_override,
     )
