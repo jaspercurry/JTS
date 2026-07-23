@@ -83,6 +83,64 @@ visibly.
    relay/phone/product UX hardening comes after the acoustics are right —
    same pattern that worked for the measurement campaign.
 
+## Layer 1a concretely — UX and data flow
+
+**The household UX does not change.** One commissioning flow, the same
+phone-tap ethos (set the mic, press Go, ~3 captures, fast honest verdicts):
+CHECK → MEASURE → auto-apply → VERIFY, exactly as today. Linearization is
+not a separate flow, a second wizard, or an extra sweep — it is a new
+consumer of data every session already records:
+
+1. **MEASURE (unchanged capture, richer analysis).** The existing per-driver
+   gated sweeps already span each driver's declared band to 18 kHz with
+   per-serial mic cal applied (`DriverResponse`, ~58 dB SNR measured on
+   JTS3). The analysis first fits a per-driver linearization curve within
+   each driver's band (bounded biquad set / smoothed inverse; conservative
+   octave-fraction smoothing; capped correction depth so single-capture
+   noise cannot imprint — exact fit form is a Phase-2 implementation
+   decision against the real JTS3 curves), **then** computes integration
+   (trim/delay/polarity) against the LINEARIZED branch responses. That
+   internal ordering is what structurally defuses #1667. The candidate
+   artifact grows a `linearization` member beside trims/delay/polarity; a
+   re-run refits everything atomically; profiles without the artifact stay
+   valid (absent = no stage emitted).
+2. **APPLY (one more emitted stage).** The baseline emission gains one
+   per-role linearization filter stage, same transaction, same safety
+   posture (non-positive gains + headroom accounting).
+3. **VERIFY (same capture, second claim).** The verify sweep is already a
+   full-band summed ESS — the flatness-verify evaluates the SAME capture
+   against the flat target from the validity floor to ~16 kHz, alongside
+   the existing integration tracking gate. Two named verdicts from one
+   capture; neither implies the other.
+
+**Consistency without extra user steps:** robustness comes from the
+capped/smoothed fit plus the flatness-verify gate, not from asking the
+household for more taps. Before choosing the fit form, Phase 2 quantifies
+fit-to-fit variance OFFLINE against the existing 2026-07-22/23 corpus
+(15+ archived measure captures → fit each → curve spread); if field data
+ever shows single-capture fits are too noisy, N-run averaging becomes an
+operator-tier option — a data-driven decision, not a default cost. The
+woofer's low edge honestly stops at the gate validity floor (~150–200 Hz
+here); below that is Layers 2–3 by contract, not a linearization gap.
+Fix-4 (#1654, wider tweeter sweep) composes naturally but is not a
+prerequisite.
+
+## Session operating model (how the implementing session runs)
+
+Fable is the brains, not the hands: architect, coordinator, debugger, and
+the owner's collaborator. Fable designs, decomposes, dispatches, interprets
+evidence, holds the review gate, and talks to the owner — and **delegates
+the doing**: implementation, replay/evidence-gathering, and drive-tooling
+to **Sonnet-5 (high)** subagents; adversarial reviews (always) and any
+unusually subtle DSP-adjacent core work to **Opus 4.8 (high)**. Token
+discipline is a design constraint: Fable context is spent only where
+Fable-level judgment is worth it — subagents carry the file-level work, and
+their reports (not raw transcripts) come back to the coordinator. Every
+merge passes the canonical adversarial review gate at 0 blockers / 0
+should-fixes, rerun until clean; hardware claims are validated on JTS3
+before merge when the change touches the acoustic path. The owner decides
+taste, thresholds-by-ear, and anything physical at the rig.
+
 ## Composition & code seams (verified present)
 
 The config emitter already composes in the right order and most seams
