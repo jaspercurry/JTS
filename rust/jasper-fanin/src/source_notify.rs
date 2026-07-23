@@ -42,9 +42,7 @@ struct FlowDetector {
 impl FlowDetector {
     /// Return `Some(new_streaming_state)` only on an edge.
     fn observe(&mut self, frames: u64) -> Option<bool> {
-        let Some(previous) = self.previous_frames.replace(frames) else {
-            return None;
-        };
+        let previous = self.previous_frames.replace(frames)?;
         if frames > previous {
             self.idle_samples = 0;
             if !self.streaming {
