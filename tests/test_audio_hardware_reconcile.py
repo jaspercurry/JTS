@@ -1299,6 +1299,82 @@ def test_reconcile_dac_change_with_floor_delta_takes_full_path(
     assert "event=audio_hardware_reconcile.outputd_only_restarted" not in result.stderr
 
 
+def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
+    # The route-only widening of #1257: a converged apple steady state (DAC id +
+    # card already match the detected card, asound pre-rendered, the outputd
+    # latency floor already emitted so outputd_committed=0) where the ONLY moving
+    # dimension is the route/fanin env. That must restart fan-in via the route
+    # runtime path and leave jasper-voice up — no voice stop, no aec-reconcile
+    # kick, and no outputd RESTART (start-if-recognized only). On main this took
+    # the full path (env_changed forced restart_audio_if_needed, stopping voice);
+    # this pins that it no longer does.
+    rendered_template = (
+        "pcm.outputd_dac {\n"
+        "    type hw\n"
+        "    card A\n"
+        "    device 0\n"
+        "}\n"
+        "ctl.outputd_dac {\n"
+        "    type hw\n"
+        "    card A\n"
+        "}\n"
+        "pcm.jasper_out { card A }\n"
+        "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
+    )
+    # Fully converged apple + usb_low_latency outputd.env: the route's content
+    # buffer floor (1536) is ALREADY present alongside the apple profile floor,
+    # so the floor pass is a no-op and nothing commits to outputd.env.
+    outputd_env = (
+        "JASPER_OUTPUTD_BACKEND=alsa\n"
+        "JASPER_OUTPUTD_SINK=single_alsa\n"
+        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"
+        "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
+        "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
+        "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
+        "JASPER_OUTPUTD_ACTIVE_CHANNELS=''\n"
+        "JASPER_OUTPUTD_ACTIVE_LANE=''\n"
+        "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
+        "JASPER_CAMILLA_CHUNKSIZE=256\n"
+        "JASPER_CAMILLA_TARGET_LEVEL=1536\n"
+        "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
+        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536\n"
+    )
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_env=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AUDIO_DAC_CARD=A\n"
+            "JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n"
+        ),
+        initial_outputd_env=outputd_env,
+        # fanin.env carries a STALE warmup cushion, so the reconcile rewrites the
+        # route env (ROUTE_FANIN_CHANGED=1) while nothing else moves.
+        initial_fanin_env="JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=512\n",
+        initial_template=rendered_template,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _render_log(tmp_path) == ""
+    fanin_env = (tmp_path / "fanin.env").read_text(encoding="utf-8")
+    assert "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536" in fanin_env
+    commands = _systemctl_log(tmp_path)
+    # Fan-in restarts via the route runtime path.
+    assert "restart jasper-fanin.service" in commands
+    assert "event=audio_hardware_reconcile.route_runtime_restarted" in result.stderr
+    assert "fanin_restarted=1" in result.stderr
+    # Voice stays up; the AEC reconciler is not re-run; outputd is not RESTARTED.
+    assert "stop jasper-voice.service" not in commands
+    assert "restart jasper-aec-reconcile.service" not in commands
+    assert "--no-block restart jasper-outputd.service" not in commands
+    # The recognized-but-nothing-committed arm still ensures outputd is running.
+    assert "--no-block start jasper-outputd.service" in commands
+    assert "event=audio_hardware_reconcile.outputd_only_restarted" not in result.stderr
+
+
 def _stub_render_lib(tmp_path: Path, body: str) -> Path:
     """A drop-in jasper-asound-render.sh whose template renderer is overridable.
 

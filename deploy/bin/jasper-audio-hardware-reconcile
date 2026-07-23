@@ -802,10 +802,12 @@ restart_audio_if_needed() {
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
 
-# Bounce ONLY jasper-outputd for a change that cannot move the mic/input
-# profile (a floor-only outputd.env re-emit, e.g. one latency buffer-size
-# integer). Unlike restart_audio_if_needed this must NOT stop jasper-voice or
-# kick jasper-aec-reconcile: outputd is the UDP sender to the bridge's :9891
+# Bounce ONLY jasper-outputd for any committed outputd.env-only change — a
+# latency-floor re-emit (e.g. one buffer-size integer), a runtime backend/sink
+# change, or an active-lane width change. None of these can move the mic/input
+# profile (that is owned by the DAC identity, gated separately). Unlike
+# restart_audio_if_needed this must NOT stop jasper-voice or kick
+# jasper-aec-reconcile: outputd is the UDP sender to the bridge's :9891
 # reference receiver, the tap is invariant stereo, and the bridge is a bound
 # receiver that survives an outputd bounce; jasper-voice depends on outputd only
 # softly (Wants=/After=). So wake detection stays up across the restart instead
@@ -1015,8 +1017,9 @@ gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
     # A DAC-identity or asound (render) change can move the mic/input profile,
     # so it takes the full path: stop jasper-voice, restart outputd, kick the
-    # AEC reconciler. A committed change that is ONLY an outputd.env floor
-    # re-emit cannot move the input profile, so it bounces outputd alone and
+    # AEC reconciler. A committed change that touches ONLY outputd.env — a
+    # floor re-emit, a runtime backend/sink change, or an active-lane width
+    # change — cannot move the input profile, so it bounces outputd alone and
     # leaves wake detection up. Fail-safe: skipping the voice stop requires BOTH
     # dac_env_changed==0 AND render_changed==0 — any uncertainty (either flag
     # set) falls through to the full path (#1257).
@@ -1034,4 +1037,4 @@ else
 fi
 
 log_event "complete" \
-    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed}"
+    "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed} dac_env_changed=${dac_env_changed} outputd_committed=${outputd_committed}"
