@@ -675,7 +675,10 @@ def test_module_is_unreachable_from_production_paths() -> None:
                 isinstance(node, ast.ImportFrom)
                 and (
                     "limiter_evidence" in (node.module or "")
-                    or any(a.name == "produce_limiter_thresholds" for a in node.names)
+                    or any(
+                        a.name in {"produce_limiter_thresholds", "limiter_evidence"}
+                        for a in node.names
+                    )
                 )
             ) or (
                 isinstance(node, ast.Import)
