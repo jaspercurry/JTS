@@ -24,7 +24,11 @@ import {
   verifyRealizedConstraints,
 } from "./constraints.js?v=20260711-4";
 import { safeReturnUrl } from "./return-url.js";
-import { acquireWakeLock, watchVisibilityAbort } from "./wakelock.js";
+import {
+  acquireWakeLock,
+  watchVisibilityAbort,
+  watchVisibilityReacquire,
+} from "./wakelock.js";
 import { runLevelRampProtocol } from "./level-events.js?v=20260716-1";
 import { inferCalibrationModel } from "./calibration-model.js?v=20260712-1";
 import {
@@ -145,6 +149,34 @@ function setStatus(message, kind = "info") {
     el.textContent = message;
     el.dataset.kind = kind;
   }
+}
+
+// Fallback copy (#1658) for a phone whose browser has no Screen Wake Lock API,
+// or whose request was rejected — the household still needs SOME signal to
+// keep the screen on by hand, since the capture can run for several minutes.
+const WAKE_LOCK_HINT_TEXT = "Keep your screen on — this takes about 4 minutes.";
+
+function showWakeLockHint() {
+  const el = document.getElementById("wakelock-hint");
+  if (el) el.textContent = WAKE_LOCK_HINT_TEXT;
+}
+
+function hideWakeLockHint() {
+  const el = document.getElementById("wakelock-hint");
+  if (el) el.textContent = "";
+}
+
+// Wraps acquireWakeLock() with the fallback hint. Wake-lock failure is
+// best-effort and must never break the capture flow — this never throws;
+// `lock.supported` tells the caller whether a real lock was taken, exactly
+// like the wrapped function.
+async function acquireWakeLockWithHint() {
+  const lock = await acquireWakeLock();
+  if (lock.supported === false) {
+    console.debug("capture page: screen wake lock unsupported, showing on-screen hint");
+    showWakeLockHint();
+  }
+  return lock;
 }
 
 function setupValidationToken() {
@@ -1209,7 +1241,7 @@ async function onLevelRampStart(ctx) {
     }
     const agcAttested = realizedAgc === false;
 
-    wakeLock = await acquireWakeLock();
+    wakeLock = await acquireWakeLockWithHint();
     disposeWatch = watchVisibilityAbort(
       typeof document !== "undefined" ? document : null,
       (reason) => {
@@ -1269,6 +1301,7 @@ async function onLevelRampStart(ctx) {
       }
     }
     if (wakeLock) await wakeLock.release();
+    hideWakeLockHint();
     setCaptureButtonsDisabled(ctx, false);
     if (activeAbort === abort) activeAbort = null;
   }
@@ -1407,6 +1440,130 @@ function stopButtonEl() {
   });
 }
 
+// Session-wide resources a v3 capture plan holds across EVERY round (#1658):
+// the mic stream/graph a capture session reuses instead of reopening per
+// attempt (Fix 2 — avoids the iOS getUserMedia-renegotiation level step
+// between captures), and the screen wake lock held for the whole session
+// rather than re-acquired per round (Fix 1). Idempotent — safe to call more
+// than once — and called from every terminal path: the success/refusal/
+// exhaustion/failure terminals via endPlanSession below, Stop/backgrounded
+// via makePlanController's abort.
+async function releasePlanSessionResources(ctx) {
+  ctx.sessionEnded = true;
+  // N-a: neither flag means anything once the session is over — clear both
+  // so a later, unrelated re-entry can never resurface a stale pre-arm-retry
+  // state or a stale reacquire-failure from this session.
+  ctx.parkedAtRetriableFailure = false;
+  ctx.recorderFailure = null;
+  if (typeof ctx.disposeSessionVisibilityWatch === "function") {
+    ctx.disposeSessionVisibilityWatch();
+  }
+  ctx.disposeSessionVisibilityWatch = null;
+  hideWakeLockHint();
+  const recorder = ctx.recorder;
+  ctx.recorder = null;
+  if (recorder) {
+    try {
+      await recorder.close();
+    } catch {
+      /* already closed */
+    }
+  }
+  const wakeLock = ctx.wakeLock;
+  ctx.wakeLock = null;
+  if (wakeLock) {
+    try {
+      await wakeLock.release();
+    } catch {
+      /* already released */
+    }
+  }
+}
+
+// The Wake Lock API auto-releases the moment the document goes hidden — a
+// Control Center swipe or a notification banner, not a genuine background —
+// so re-request it once the phone returns to the foreground, as long as this
+// plan session (ctx.sessionEnded) hasn't already ended.
+async function reacquireSessionWakeLock(ctx) {
+  // N-b: a rapid visibility flicker (hide/show/hide/show within one brief
+  // gesture) can fire this twice with overlapping in-flight requests; an
+  // in-flight latch keeps the second call a no-op rather than letting
+  // whichever resolves last silently orphan the other's sentinel (that
+  // orphan would self-heal on the NEXT hide either way, but the latch is
+  // simple enough to just make it airtight).
+  if (ctx.sessionEnded || ctx.reacquiringWakeLock) return;
+  ctx.reacquiringWakeLock = true;
+  try {
+    const lock = await acquireWakeLockWithHint();
+    if (ctx.sessionEnded) {
+      try {
+        await lock.release();
+      } catch {
+        /* already released */
+      }
+      return;
+    }
+    // N2: the browser already dropped ctx.wakeLock's OWN sentinel when the
+    // page hid (that is why we are here re-acquiring) — release it anyway
+    // before overwriting the reference so our wrapper's idempotent
+    // release() flag is flipped for the stale sentinel too, best-effort.
+    try {
+      await ctx.wakeLock?.release();
+    } catch {
+      /* already released */
+    }
+    ctx.wakeLock = lock;
+  } finally {
+    ctx.reacquiringWakeLock = false;
+  }
+}
+
+// Reused across every capture in a v3 session, the mic stream can still die
+// mid-session (a USB mic unplugged, the OS revoking the track) — a dying
+// MediaStreamTrack does not error the audio graph, it just goes silent, so
+// without this a later capture would silently upload dead air. One reacquire
+// attempt; if that also fails, the failure rides the EXISTING capture-failure
+// surface — it is thrown from the point of use (runPlanCapture) and caught by
+// its own existing catch, the same as any other capture error.
+function wireTrackEndedRecovery(ctx, recorder, spec) {
+  const track = recorder.stream && recorder.stream.getAudioTracks
+    ? recorder.stream.getAudioTracks()[0]
+    : null;
+  if (!track) return;
+  track.onended = async () => {
+    if (ctx.recorder !== recorder) return; // already superseded — nothing to do
+    recorder.__trackEnded = true;
+    ctx.recorder = null;
+    try {
+      await recorder.close();
+    } catch {
+      /* already closed, or the graph never fully opened */
+    }
+    try {
+      const replacement = await createMonoRecorder({
+        sampleRate: spec.sample_rate_hz || 48000,
+        deviceId: selectedDeviceId,
+      });
+      if (ctx.sessionEnded) {
+        // B1: Stop/backgrounded fired while THIS reacquire was in flight —
+        // the session already tore down. Close it rather than assigning it
+        // to ctx.recorder, which would orphan a live mic stream with nothing
+        // left to close it (mirrors runPlanCapture's identical guard below).
+        try {
+          await replacement.close();
+        } catch {
+          /* already closed */
+        }
+        return;
+      }
+      wireTrackEndedRecovery(ctx, replacement, spec);
+      ctx.recorder = replacement;
+    } catch (err) {
+      ctx.recorderFailure = err instanceof Error ? err : new Error(String(err));
+    }
+  };
+}
+
 // One persistent abort controller spanning every round of the set — unlike
 // onStart's `abort` closure (scoped to one invocation), this must stay live
 // across the async gaps between "Next measurement" taps so Stop remains
@@ -1414,7 +1571,6 @@ function stopButtonEl() {
 function makePlanController(ctx) {
   const state = {
     aborted: false,
-    recorder: null,
   };
   state.abort = async (reason) => {
     if (state.aborted) return;
@@ -1437,14 +1593,7 @@ function makePlanController(ctx) {
     } catch {
       /* the Pi also times out if it never hears the abort */
     }
-    if (state.recorder) {
-      try {
-        await state.recorder.close();
-      } catch {
-        /* already closed */
-      }
-      state.recorder = null;
-    }
+    await releasePlanSessionResources(ctx);
     if (activeAbort === state.abort) activeAbort = null;
   };
   return state;
@@ -1452,11 +1601,12 @@ function makePlanController(ctx) {
 
 // The whole plan concluded (accepted set, exhausted budget, refusal, or an
 // unrecoverable error) — stop offering Stop against a session nothing is
-// polling anymore.
-function endPlanSession(ctx) {
+// polling anymore, and release the session-wide mic stream + wake lock.
+async function endPlanSession(ctx) {
   if (ctx.planController && activeAbort === ctx.planController.abort) {
     activeAbort = null;
   }
+  await releasePlanSessionResources(ctx);
 }
 
 function renderPlanNext(ctx, { index, attempt, target }) {
@@ -1961,8 +2111,6 @@ async function runPlanCapture(ctx, { index, attempt }) {
   // A fresh round cancels any pending auto-advance (e.g. a countdown, or a Cancel
   // that dropped to the manual tap then the tap fired) so no stale timer fires.
   clearAutoAdvance(ctx);
-  let recorder = null;
-  let wakeLock = null;
   let disposeWatch = () => {};
   // Whether this round's `armed` post was ATTEMPTED (set just before the
   // await — a lost response may still have armed the Pi). It splits the
@@ -1980,7 +2128,7 @@ async function runPlanCapture(ctx, { index, attempt }) {
     if (controller.aborted || admission.aborted) return;
     if (admission.deadSession) {
       renderSessionExpired(ctx);
-      endPlanSession(ctx);
+      await endPlanSession(ctx);
       return;
     }
     if (admission.sessionOver) {
@@ -1988,31 +2136,60 @@ async function runPlanCapture(ctx, { index, attempt }) {
       // terminal, exactly like a dead session; the speaker page shows the
       // specific reason and how to start over.
       renderSessionExpired(ctx);
-      endPlanSession(ctx);
+      await endPlanSession(ctx);
       return;
     }
     if (admission.refused) {
       renderPlanRefused(ctx, admission);
-      endPlanSession(ctx);
+      await endPlanSession(ctx);
       return;
     }
 
     advanceDeferredHoldHeading(ctx);
-    setStatus("Starting microphone…", "info");
-    recorder = await createMonoRecorder({
-      sampleRate: spec.sample_rate_hz || 48000,
-      deviceId: selectedDeviceId,
-    });
-    controller.recorder = recorder;
+    // Fix (#1658): the mic stream + audio graph are acquired ONCE per session
+    // and reused across every capture instead of reopening getUserMedia per
+    // attempt — iOS renegotiates the input chain on each fresh stream, which
+    // measurably shifts level/spectrum between captures. ctx.recorderFailure
+    // is set only when a background reacquire already ran and failed
+    // (wireTrackEndedRecovery, below) — surface that now rather than
+    // silently trying to open yet another stream.
+    if (ctx.recorderFailure) {
+      const failure = ctx.recorderFailure;
+      ctx.recorderFailure = null;
+      throw failure;
+    }
+    let recorder = ctx.recorder;
+    if (!recorder) {
+      setStatus("Starting microphone…", "info");
+      recorder = await createMonoRecorder({
+        sampleRate: spec.sample_rate_hz || 48000,
+        deviceId: selectedDeviceId,
+      });
+      if (controller.aborted || ctx.sessionEnded) {
+        // B1: Stop (or a backgrounded abort) won the race against
+        // getUserMedia + worklet compile — the session already tore down
+        // while this was in flight. Close it here rather than assigning it
+        // to ctx.recorder, which would orphan a live mic stream with
+        // nothing left to close it (reviewer-demonstrated: mic stayed hot
+        // after "Measurement stopped" until page reload).
+        await recorder.close();
+        return;
+      }
+      wireTrackEndedRecovery(ctx, recorder, spec);
+    }
     const capture = inspectRecorder(recorder, spec);
     if (capture.decision.action === "refuse") {
       await recorder.close();
-      controller.recorder = null;
-      recorder = null;
+      ctx.recorder = null;
       // Pre-arm refusal: the round never started on the Pi, so keep the
       // on-screen begin affordance live AND Stop wired (no endPlanSession)
       // — plugging in a USB measurement mic and re-tapping is a legitimate
       // recovery, and Stop must keep working while the household decides.
+      // For round 1 specifically, that affordance is the SAME begin_capture
+      // button onPlanStart itself was invoked from — mark the session as
+      // parked at a retriable failure so a re-tap re-enters capture instead
+      // of being swallowed by onPlanStart's re-entrancy guard (B-1).
+      ctx.parkedAtRetriableFailure = true;
       setStatus(
         `This phone can't run a clean measurement (${capture.decision.reason}). ` +
           "Try a different phone, or use a calibrated USB mic on the speaker.",
@@ -2020,8 +2197,17 @@ async function runPlanCapture(ctx, { index, attempt }) {
       );
       return;
     }
+    ctx.recorder = recorder;
+    // S1: a context held across the whole session can be auto-suspended
+    // between rounds (Android Chrome backgrounding a tab; possibly iOS
+    // foreground idle) WITHOUT its mic track ever reaching `ended` — the
+    // signal wireTrackEndedRecovery relies on — so resume it explicitly
+    // before recording. Idempotent when already running; guarded so a test
+    // stub with no `.context` stays a no-op.
+    if (recorder.context && typeof recorder.context.resume === "function") {
+      await recorder.context.resume();
+    }
 
-    wakeLock = await acquireWakeLock();
     disposeWatch = watchVisibilityAbort(
       typeof document !== "undefined" ? document : null,
       (reason) => {
@@ -2054,16 +2240,21 @@ async function runPlanCapture(ctx, { index, attempt }) {
 
     const sweepCompleted = await waitForSweepComplete(client, spec, () => controller.aborted);
     if (sweepCompleted === false) {
-      endPlanSession(ctx);
+      await endPlanSession(ctx);
       return;
     }
     await delayMs(Math.max(0, Number(spec.post_roll_ms) || 700));
     if (controller.aborted) return;
     const samples = await recorder.stop({ timeoutMs: 5000 });
     if (controller.aborted) return;
-    await recorder.close();
-    controller.recorder = null;
-    recorder = null;
+    if (recorder.__trackEnded) {
+      // The mic track died during THIS round's own recording window — a
+      // dying track does not error the audio graph, it just goes silent, so
+      // trust nothing recorded after that point. armedPosted is already
+      // true, so this routes to the terminal failure screen below, exactly
+      // like any other post-arm failure — never a silent dead-air upload.
+      throw new Error("the microphone disconnected during this measurement");
+    }
 
     setStatus("Encrypting and uploading…", "info");
     const wavBytes = await blobToBytes(
@@ -2092,17 +2283,17 @@ async function runPlanCapture(ctx, { index, attempt }) {
     if (controller.aborted || verdict.aborted) return;
     if (verdict.deadSession) {
       renderSessionExpired(ctx);
-      endPlanSession(ctx);
+      await endPlanSession(ctx);
       return;
     }
     if (verdict.setComplete || (verdict.accepted && index >= target)) {
       renderPlanAllDone(ctx, { index });
-      endPlanSession(ctx);
+      await endPlanSession(ctx);
       return;
     }
     if (verdict.setExhausted) {
       renderPlanExhausted(ctx, verdict);
-      endPlanSession(ctx);
+      await endPlanSession(ctx);
       return;
     }
     if (verdict.accepted) {
@@ -2116,10 +2307,10 @@ async function runPlanCapture(ctx, { index, attempt }) {
     if (!controller.aborted) {
       if (err && err.sweepFailed) {
         renderSweepFailed(ctx, err);
-        endPlanSession(ctx);
+        await endPlanSession(ctx);
       } else if (isDeadSessionError(err)) {
         renderSessionExpired(ctx);
-        endPlanSession(ctx);
+        await endPlanSession(ctx);
       } else if (armedPosted) {
         // Post-arm generic failure (S1 — e.g. a transient putBlob error or
         // a recorder.stop timeout after the sweep played): TERMINAL, mirror
@@ -2128,33 +2319,22 @@ async function runPlanCapture(ctx, { index, attempt }) {
         // already-consumed (index, attempt) — see armedPosted's comment for
         // why that is never sound.
         renderSweepFailed(ctx, err);
-        endPlanSession(ctx);
+        await endPlanSession(ctx);
       } else {
         // Pre-arm failure (mic permission denied, a transient begin-post
         // or authorization hiccup): the round never started on the Pi, so
         // the on-screen begin affordance is safe to re-tap. Keep it live,
         // keep Stop wired (no endPlanSession), and name the ACTUAL button
-        // in the copy — these screens have no button called "Start".
+        // in the copy — these screens have no button called "Start". For
+        // round 1, that affordance is onPlanStart's own begin_capture
+        // button — mark the retriable-failure park (B-1, see the matching
+        // guard in onPlanStart) so the re-tap re-enters capture.
+        ctx.parkedAtRetriableFailure = true;
         setStatus(captureFailureMessage(err, planRetryAffordance(ctx)), "error");
       }
     }
   } finally {
-    if (recorder) {
-      try {
-        await recorder.close();
-      } catch {
-        /* already closed */
-      }
-      if (controller.recorder === recorder) controller.recorder = null;
-    }
     disposeWatch();
-    if (wakeLock) {
-      try {
-        await wakeLock.release();
-      } catch {
-        /* already released */
-      }
-    }
   }
 }
 
@@ -2167,6 +2347,31 @@ async function runPlanCapture(ctx, { index, attempt }) {
 // is no per-round checkbox to re-tick on the page-owned "Next measurement" /
 // "Try again" screens.
 async function onPlanStart(ctx) {
+  // N3 + B-1: guard re-entrancy WITHOUT dead-ending the documented retry
+  // affordance. The initial begin_capture button stays wired to onPlanStart
+  // for as long as round 1 has never successfully authorized+armed — which
+  // includes the THREE pre-arm-failure paths in runPlanCapture (mic
+  // permission denied, a clean-capture refusal, a transient begin-post
+  // hiccup) that keep this exact button on screen as "Tap … to try again"
+  // (planRetryAffordance) without ever ending the session. Those paths set
+  // ctx.parkedAtRetriableFailure so THIS tap is recognized as the legitimate
+  // retry it is, distinct from a genuine accidental double-tap (which must
+  // stay inert — a round is either about to start or already in flight, and
+  // starting a SECOND session on top of it would leak the first's wake lock
+  // + visibility watcher).
+  //
+  // isRetry does not also check !ctx.sessionEnded: releasePlanSessionResources
+  // (the SOLE writer of sessionEnded=true) always clears
+  // parkedAtRetriableFailure in the same breath, so parkedAtRetriableFailure
+  // being true already guarantees the session has not ended — checking both
+  // was a redundant conjunct that let a re-tap after a TRUE session end (e.g.
+  // the host cancelling the sweep, sweep_cancelled, which ends the session via
+  // endPlanSession without ever replacing this screen) fall through into a
+  // wasted acquire-then-immediately-release of a fresh wake lock instead of
+  // being blocked outright. planController being set is already sufficient to
+  // know "this is not the very first tap".
+  const isRetry = Boolean(ctx.planController) && ctx.parkedAtRetriableFailure;
+  if (ctx.planController && !isRetry) return;
   let acknowledgement = null;
   try {
     acknowledgement = acceptedAcknowledgement(ctx.spec, ctx.captureRefs);
@@ -2175,9 +2380,51 @@ async function onPlanStart(ctx) {
     return;
   }
   ctx.planAcknowledgement = acknowledgement;
+
+  if (isRetry) {
+    // Re-enter capture WITHOUT re-acquiring anything already held by the
+    // still-live session — a fresh controller/wake-lock/visibility-watch
+    // here would orphan the originals (the same leak class B1/N2 fixed
+    // elsewhere). The mic is the only thing that actually needs a fresh
+    // attempt; runPlanCapture's own reuse-or-create step handles that.
+    ctx.parkedAtRetriableFailure = false;
+    ctx.recorderFailure = null; // N-a: never resurface an unrelated stale failure
+    await runPlanCapture(ctx, { index: 1, attempt: 1 });
+    return;
+  }
+
   const controller = makePlanController(ctx);
   ctx.planController = controller;
+  // Wire Stop BEFORE any await below — Stop must be live from the instant
+  // Start is tapped, not gated behind the wake-lock request settling.
   activeAbort = controller.abort;
+  // Fix 1 (#1658): the wake lock is held for the WHOLE session (every round's
+  // idle gaps included), not re-acquired per round — acquired right here, in
+  // the tap that started the session, per the Wake Lock API's user-gesture
+  // expectation. It auto-releases whenever the page hides; the visibility
+  // watch below re-requests it once the phone returns, silently, unless the
+  // session has already ended.
+  const wakeLock = await acquireWakeLockWithHint();
+  if (ctx.sessionEnded) {
+    // Stop/backgrounded fired while this request was in flight — the session
+    // already tore down (releasePlanSessionResources already ran). Release
+    // this lock rather than leaking it: an unreleased lock would otherwise
+    // keep the screen on with nothing left running.
+    try {
+      await wakeLock.release();
+    } catch {
+      /* already released */
+    }
+    return;
+  }
+  ctx.wakeLock = wakeLock;
+  ctx.disposeSessionVisibilityWatch = watchVisibilityReacquire(
+    typeof document !== "undefined" ? document : null,
+    () => {
+      void reacquireSessionWakeLock(ctx);
+    },
+    () => !ctx.sessionEnded,
+  );
   await runPlanCapture(ctx, { index: 1, attempt: 1 });
 }
 
@@ -2260,7 +2507,7 @@ async function onStart(ctx) {
 
     // Hold the screen on for the capture; if it backgrounds anyway, abort
     // visibly and let the Pi observe the failure through the relay.
-    wakeLock = await acquireWakeLock();
+    wakeLock = await acquireWakeLockWithHint();
     disposeWatch = watchVisibilityAbort(
       typeof document !== "undefined" ? document : null,
       (reason) => {
@@ -2356,6 +2603,7 @@ async function onStart(ctx) {
     }
     disposeWatch();
     if (wakeLock) await wakeLock.release();
+    hideWakeLockHint();
     if (activeAbort === abort) activeAbort = null;
   }
 }
