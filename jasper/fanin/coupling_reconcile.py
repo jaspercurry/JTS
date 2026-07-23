@@ -2222,21 +2222,22 @@ def _disarm(
     interim compile-default content buffer is a LARGER cushion than the floor
     (fail-safe), and the next hardware-reconcile event still converges it.
 
-    Disclosure (post-#1251 audit): the kicked pass's only delta is
-    outputd.env (the floor re-emit), but ``restart_audio_if_needed`` in
-    ``deploy/bin/jasper-audio-hardware-reconcile`` (~lines 795-798) handles
-    ANY outputd.env change the same way regardless of cause — a blocking
-    ``systemctl stop jasper-voice``, then ``--no-block restart
-    jasper-outputd`` and ``--no-block restart jasper-aec-reconcile``. So
-    every shm_ring -> direct disarm (including a household ``/sources/`` USB
-    toggle-off) deterministically costs ~10-15 s of wake deafness,
-    self-healed by the standard aec-reconcile -> voice-restart pattern (the
-    restarted reconciler detects the mic and restarts jasper-voice). It also
-    means outputd is double-bounced: this function's own blocking restart
-    above, then the kicked pass's no-block restart seconds later — inherent
-    to single-writer floor ownership (the hardware reconciler is the only
-    writer of the floor key). See issue #1257 for a floor-only optimization
-    that would skip the voice stop.
+    Post-#1257 the kicked pass's only committed delta on this path is
+    outputd.env (the floor re-emit), and ``jasper-audio-hardware-reconcile``
+    now classifies its restart by cause. An outputd-only change (no
+    DAC-identity or asound-render move) takes ``restart_outputd_only`` — a
+    single ``--no-block restart jasper-outputd`` with NO blocking
+    ``systemctl stop jasper-voice`` and NO ``jasper-aec-reconcile`` kick — so a
+    shm_ring -> direct disarm (including a household ``/sources/`` USB
+    toggle-off) no longer costs the ~10-15 s of wake deafness the original
+    PR #1251 did not disclose; wake detection stays up across the outputd
+    bounce. outputd is still double-bounced: this function's own blocking
+    restart above, then the kicked pass's no-block outputd-only restart
+    seconds later — inherent to single-writer floor ownership (the hardware
+    reconciler is the only writer of the floor key). A DAC-identity or asound
+    change on the same pass would instead take the full path
+    (``restart_audio_if_needed``, which does stop voice), because that class
+    can move the mic/input profile.
     """
     cam_ok, cam_detail = do_reconcile(COUPLING_LOOPBACK)
     fan_ok, fan_detail = do_restart()

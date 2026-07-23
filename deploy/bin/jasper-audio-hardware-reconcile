@@ -802,6 +802,25 @@ restart_audio_if_needed() {
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
 }
 
+# Bounce ONLY jasper-outputd for a change that cannot move the mic/input
+# profile (a floor-only outputd.env re-emit, e.g. one latency buffer-size
+# integer). Unlike restart_audio_if_needed this must NOT stop jasper-voice or
+# kick jasper-aec-reconcile: outputd is the UDP sender to the bridge's :9891
+# reference receiver, the tap is invariant stereo, and the bridge is a bound
+# receiver that survives an outputd bounce; jasper-voice depends on outputd only
+# softly (Wants=/After=). So wake detection stays up across the restart instead
+# of being deafened for ~10-15 s on a routine /sources/ toggle (#1257).
+restart_outputd_only() {
+    if [[ "$NO_RESTART" == "1" ]]; then
+        log_event "outputd_only_restart_skip" \
+            "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} no_restart=1"
+        return
+    fi
+    "$SYSTEMCTL" reset-failed jasper-outputd.service 2>/dev/null || true
+    "$SYSTEMCTL" --no-block restart jasper-outputd.service 2>/dev/null || true
+    log_event "outputd_only_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD}"
+}
+
 # Restart fan-in when its route-owned environment changed.
 restart_route_runtime_if_needed() {
     local fanin_changed="${1:-0}"
@@ -948,10 +967,18 @@ if ! ACTIVE_OUTPUTD_CAPTURE_DEVICE="$(
 fi
 
 env_changed=0
+# dac_env_changed tracks ONLY a DAC-identity/card move — the class of change
+# that can shift the mic/input profile and therefore requires stopping voice.
+# env_changed stays the coarse "anything moved" flag for the complete log line.
+dac_env_changed=0
 outputd_env_changed=0
+# outputd_committed becomes 1 only when the staged outputd.env is actually
+# written (commit_outputd_env_stage returns 0). It is NOT outputd_env_changed,
+# which is set pre-commit and can be cleared when validation rejects the stage.
+outputd_committed=0
 stage_outputd_env
-set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && env_changed=1
-set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && env_changed=1
+set_env_var_if_changed "JASPER_AUDIO_DAC_ID" "$OUTPUT_DAC_ID" && { env_changed=1; dac_env_changed=1; }
+set_env_var_if_changed "JASPER_AUDIO_DAC_CARD" "$OUTPUT_DAC_CARD" && { env_changed=1; dac_env_changed=1; }
 apply_audio_runtime_env && outputd_env_changed=1
 # A route change also counts toward env_changed so the outputd/audio restart
 # still fires when appropriate.
@@ -972,6 +999,7 @@ fi
 if [[ "$outputd_env_changed" == "1" ]]; then
     if commit_outputd_env_stage; then
         env_changed=1
+        outputd_committed=1
     fi
 else
     cleanup_outputd_env_stage
@@ -985,17 +1013,21 @@ render_changed=0
 render_asound_if_needed && render_changed=1
 gate_role_services
 if [[ "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
-    restart_needed=0
-    if [[ "$render_changed" == "1" || "$env_changed" == "1" ]]; then
-        restart_needed=1
-    fi
-    if [[ "$restart_needed" == "1" ]]; then
-        restart_audio_if_needed "$restart_needed"
-        restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
+    # A DAC-identity or asound (render) change can move the mic/input profile,
+    # so it takes the full path: stop jasper-voice, restart outputd, kick the
+    # AEC reconciler. A committed change that is ONLY an outputd.env floor
+    # re-emit cannot move the input profile, so it bounces outputd alone and
+    # leaves wake detection up. Fail-safe: skipping the voice stop requires BOTH
+    # dac_env_changed==0 AND render_changed==0 — any uncertainty (either flag
+    # set) falls through to the full path (#1257).
+    if [[ "$dac_env_changed" == "1" || "$render_changed" == "1" ]]; then
+        restart_audio_if_needed 1
+    elif [[ "$outputd_committed" == "1" ]]; then
+        restart_outputd_only
     else
         start_outputd_if_recognized
-        restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
     fi
+    restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
 else
     restart_route_runtime_if_needed "$ROUTE_FANIN_CHANGED"
     park_output_audio
