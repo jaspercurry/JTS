@@ -6,9 +6,12 @@
 
 use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWrite};
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
-use crate::loudness::{AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig};
+use crate::loudness::{
+    AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig, MixStage,
+};
 use crate::mixer::{gain_db_to_linear, mix_i16_saturating, sanitize_tts_gain_db};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
+use jasper_tts_protocol::VolumeContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodReport {
@@ -58,7 +61,15 @@ impl OutputCore {
             dac,
             next_reference_sequence: 0,
             ledger: PlayoutLedger::new(SAMPLE_RATE),
-            loudness: AssistantLoudness::new(AssistantLoudnessConfig::default()),
+            // outputd is structurally post-DSP: its assistant mix is downstream
+            // of CamillaDSP, so the loudness engine treats VolumeContext's
+            // downstream_db as 0.0 (see MixStage). Applying fan-in's pre-DSP
+            // downstream compensation here would double-compensate by the full
+            // Camilla gain.
+            loudness: AssistantLoudness::new_with_stage(
+                AssistantLoudnessConfig::default(),
+                MixStage::PostDsp,
+            ),
             content_buf: vec![0; period_samples],
             assistant_buf: vec![0; period_samples],
             output_buf: vec![0; period_samples],
@@ -255,7 +266,22 @@ impl OutputCore {
     }
 
     pub fn set_assistant_loudness_config(&mut self, config: AssistantLoudnessConfig) {
-        self.loudness = AssistantLoudness::new(config);
+        // Preserve outputd's post-DSP mix stage across a config swap.
+        self.loudness = AssistantLoudness::new_with_stage(config, MixStage::PostDsp);
+    }
+
+    /// Accept an absolute speaker-volume context from the voice daemon.
+    ///
+    /// Returns whether the update won the boot-clock stale-stamp guard (the
+    /// same guard fan-in uses). Post-DSP, the stored downstream_db is retained
+    /// verbatim for observability; only its *use* inside the engine is zeroed
+    /// (see MixStage) so this lane never inherits pre-DSP compensation.
+    pub fn update_volume_context(&mut self, context: VolumeContext) -> bool {
+        self.loudness.update_volume_context(context)
+    }
+
+    pub fn current_volume_context(&self) -> Option<VolumeContext> {
+        self.loudness.current_volume_context()
     }
 
     pub fn prepare_assistant_context(
