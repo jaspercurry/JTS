@@ -1525,7 +1525,7 @@ wave keeps out of the god-files. Every implementation PR runs
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, `0670540654a6684f8ac98fb2e70b2e643d65d82f`; contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553, `9f39c70e418cf64316c23de535f322d21f825c8e`; clean gate after 3 review findings fixed in-session) |
 | 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | **merged 2026-07-19** (#1574, `bb2919383b408d630f9d70ef24c14fe38ca98be0`; contract rev 12; sealed natural-at-rest graph emission + durable predecessor-aware apply/recovery groundwork; zero production callers; runtime arming remains blocked) |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits a production-uncallable pure producer skeleton; contract rev 9 additionally authorizes the hardware-free commissioning slice** (pure state machine to `review`, injected synthetic dry run, synthetic producer intake) — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)). Landed: the pure producer (#1611); the reviewed bench runner/temporary activation owner + measured-context builder (#1630, live on-device executor still stubbed); and the rev-9 hardware-free commissioning slice — `jasper/bass_extension/ladder.py`, the pure state machine to in-memory `review` with synthetic producer intake. Still required: the live pre/post-limiter tap executor, an accepted on-device bundle with deterministic replay, and the later production-wiring revision |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits a production-uncallable pure producer skeleton; contract rev 9 additionally authorizes the hardware-free commissioning slice** (pure state machine to `review`, injected synthetic dry run, synthetic producer intake) — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)). Merged on main: the pure producer (#1611) and the reviewed bench runner/temporary activation owner + measured-context builder (#1630, live on-device executor still stubbed). Added in this change (pending review + merge): the rev-9 hardware-free commissioning slice — `jasper/bass_extension/ladder.py`, the pure state machine to in-memory `review` with synthetic producer intake. Still required: the live pre/post-limiter tap executor, an accepted on-device bundle with deterministic replay, and the later production-wiring revision |
 | 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at its own contract rev 9** (distinct from Wave 4's rev 9 above) — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
@@ -1614,17 +1614,19 @@ touching the same files; rebase before push per AGENTS.md.
 ### Wave 4 — Commissioning backend
 
 **Contract revision 9 authorizes the hardware-free commissioning slice on top
-of revision 8's production-uncallable pure producer skeleton.** Landed so far:
-the pure producer (#1611); the reviewed bench runner, temporary
+of revision 8's production-uncallable pure producer skeleton.** Merged on
+main: the pure producer (#1611) and the reviewed bench runner, temporary
 target/candidate activation owner, and measured-context builder (#1630, whose
-live on-device pre/post-limiter tap executor is still stubbed); and the rev-9
-`ladder.py` pure state machine to in-memory `review` with synthetic producer
-intake. Still blocked: profile publication and every production caller. The
+live on-device pre/post-limiter tap executor is still stubbed). Added in this
+change (pending review + merge): the rev-9 `ladder.py` pure state machine to
+in-memory `review` with synthetic producer intake. Still blocked: profile
+publication and every production caller. The
 protocol freezes the detector point and units, the minimum campaign, the
 accepted bundle shape, and total refusal; a real target-specific
 `limiter_threshold_dbfs` remains **not established** until Jasper completes the
-reviewed bench pass and its accepted bundle replays deterministically. After those gates and a later contract revision, the
-intended commissioning wave contains
+reviewed bench pass and its accepted bundle replays deterministically. After
+those gates and a later contract revision, the intended commissioning wave
+contains
 `ladder.py` state machine (pure) + web backend module (new file, thin
 routing seam into `/correction/`), relay `build_bass_nearfield_spec`,
 per-rung retention store, integration of ramp/admission/

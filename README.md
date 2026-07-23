@@ -995,8 +995,10 @@ reference. Currently:
   ported/passive-radiator) that retreats toward the natural response as
   listening level rises. Profile schema, enclosure-adapter contract,
   level-ladder commissioning, CamillaDSP runtime mechanism candidates, and
-  the phased wave plan. Waves 1–3 are merged; commissioning and runtime
-  scheduling have not shipped — read before extending a later wave.
+  the phased wave plan. Waves 1–3 are merged, plus the pure hardware-free
+  Wave 4 rev-9 commissioning slice (`ladder.py`); the commissioning
+  backend/flow and runtime scheduling have not shipped — read before
+  extending a later wave.
   Per-wave Codex execution prompts (shared charter, file allowlists, frozen
   interfaces) live in
   [`docs/bass-extension-waves/`](docs/bass-extension-waves/README.md).
