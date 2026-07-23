@@ -2129,6 +2129,8 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
+                .to_string(),
             active_lane: false,
         }
     }
