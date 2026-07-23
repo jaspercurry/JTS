@@ -1705,6 +1705,80 @@ async function testDoubleTapOnPlanStartDoesNotStartASecondSession() {
   ok();
 }
 
+// ============================================================================
+// 25 (B-1, round-2 adversarial-review blocker). A re-tap of the SAME
+// begin_capture button after round 1's mic-permission-denied pre-arm failure
+// must re-enter capture, not dead-end behind the N3 re-entrancy guard
+// (reviewer repro on the prior branch: recorderCalls delta 0, empty
+// heading). The retry must also REUSE the session's existing controller and
+// wake lock rather than re-acquiring them — a fresh acquire here would
+// orphan the originals (the same leak class B1/N2 fixed elsewhere).
+// ============================================================================
+async function testRetapAfterPreArmMicDeniedReentersCaptureAndReusesSessionResources() {
+  statusHistory.length = 0;
+  globalThis.__recorderCalls = 0;
+  globalThis.__wakeAcquireCalls = 0;
+  const { onPlanStart } = await loadModule();
+  // Round 1's first attempt: mic permission denied — the canonical, most
+  // common first-run pre-arm failure.
+  globalThis.__recorderError = new Error("Permission denied");
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  // target: 2 (not 1) so the retry's success lands on a NON-terminal
+  // "Measurement 1 of 2" screen — that lets us check ctx.wakeLock's identity
+  // BEFORE the session's own end-of-plan teardown nulls it out, which a
+  // target-of-1 plan would already have done by the time this function
+  // could inspect it.
+  const spec = planSpec({ target: 2, maxAttempts: 3 });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 3 });
+  const ctx = makeCtx(spec, client);
+  // The spec screen's own begin button is still the live affordance for
+  // round 1 — give ctx.captureRefs the same shape boot's renderScreen
+  // produces so planRetryAffordance can name it (mirrors
+  // testPreArmFailureKeepsRetryLiveAndStopWired's setup).
+  const beginButton = makeNode("button");
+  beginButton.textContent = "I've positioned the mic — measure Woofer driver";
+  ctx.captureRefs = { buttons: [{ action: "begin_capture", el: beginButton }], levelMeters: [] };
+
+  await onPlanStart(ctx);
+
+  const firstFailureStatus = statusHistory[statusHistory.length - 1];
+  assert.ok(
+    firstFailureStatus.includes("Tap I've positioned the mic — measure Woofer driver to try again"),
+    `expected the pre-arm retry copy, got: ${firstFailureStatus}`,
+  );
+  assert.equal(globalThis.__recorderCalls, 1, "the first attempt DID try to open the mic");
+  assert.equal(globalThis.__wakeAcquireCalls, 1, "the session's own wake lock was acquired once");
+  assert.ok(!ctx.recorder, "no recorder survives a failed acquisition");
+  assert.ok(ctx.planController, "the session controller is still the live one");
+  const priorController = ctx.planController;
+  const priorWakeLock = ctx.wakeLock;
+  assert.ok(priorWakeLock, "the session's wake lock is still held");
+
+  // The household fixes the mic (grants permission / plugs in a working
+  // one) and re-taps the SAME begin_capture button.
+  globalThis.__recorderError = null;
+  globalThis.__recorder = makeRecorder();
+  await onPlanStart(ctx);
+
+  assert.equal(
+    headingText(ctx.screenEl), "Measurement 1 of 2 ✓",
+    "the re-tap re-entered capture and the session advanced (round 1 accepted)",
+  );
+  assert.equal(globalThis.__recorderCalls, 2, "the retry DID attempt to open the mic again");
+  assert.equal(globalThis.__wakeAcquireCalls, 1, "the retry reused the session's existing wake lock — no re-acquire");
+  assert.equal(ctx.planController, priorController, "the retry reused the existing controller, not a fresh one");
+  assert.equal(ctx.wakeLock, priorWakeLock, "the retry reused the existing wake-lock sentinel, not a fresh one");
+
+  // Finish the plan to confirm the session keeps advancing normally from
+  // here — not just that the retry's own round was accepted.
+  const next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -1733,6 +1807,7 @@ const tests = [
   testContextResumesBeforeEachRoundsRecording,
   testReacquireReleasesThePriorWakeLockSentinelBeforeOverwriting,
   testDoubleTapOnPlanStartDoesNotStartASecondSession,
+  testRetapAfterPreArmMicDeniedReentersCaptureAndReusesSessionResources,
 ];
 
 let failure = null;

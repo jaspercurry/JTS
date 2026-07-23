@@ -1450,6 +1450,11 @@ function stopButtonEl() {
 // via makePlanController's abort.
 async function releasePlanSessionResources(ctx) {
   ctx.sessionEnded = true;
+  // N-a: neither flag means anything once the session is over — clear both
+  // so a later, unrelated re-entry can never resurface a stale pre-arm-retry
+  // state or a stale reacquire-failure from this session.
+  ctx.parkedAtRetriableFailure = false;
+  ctx.recorderFailure = null;
   if (typeof ctx.disposeSessionVisibilityWatch === "function") {
     ctx.disposeSessionVisibilityWatch();
   }
@@ -1480,26 +1485,37 @@ async function releasePlanSessionResources(ctx) {
 // so re-request it once the phone returns to the foreground, as long as this
 // plan session (ctx.sessionEnded) hasn't already ended.
 async function reacquireSessionWakeLock(ctx) {
-  if (ctx.sessionEnded) return;
-  const lock = await acquireWakeLockWithHint();
-  if (ctx.sessionEnded) {
+  // N-b: a rapid visibility flicker (hide/show/hide/show within one brief
+  // gesture) can fire this twice with overlapping in-flight requests; an
+  // in-flight latch keeps the second call a no-op rather than letting
+  // whichever resolves last silently orphan the other's sentinel (that
+  // orphan would self-heal on the NEXT hide either way, but the latch is
+  // simple enough to just make it airtight).
+  if (ctx.sessionEnded || ctx.reacquiringWakeLock) return;
+  ctx.reacquiringWakeLock = true;
+  try {
+    const lock = await acquireWakeLockWithHint();
+    if (ctx.sessionEnded) {
+      try {
+        await lock.release();
+      } catch {
+        /* already released */
+      }
+      return;
+    }
+    // N2: the browser already dropped ctx.wakeLock's OWN sentinel when the
+    // page hid (that is why we are here re-acquiring) — release it anyway
+    // before overwriting the reference so our wrapper's idempotent
+    // release() flag is flipped for the stale sentinel too, best-effort.
     try {
-      await lock.release();
+      await ctx.wakeLock?.release();
     } catch {
       /* already released */
     }
-    return;
+    ctx.wakeLock = lock;
+  } finally {
+    ctx.reacquiringWakeLock = false;
   }
-  // N2: the browser already dropped ctx.wakeLock's OWN sentinel when the page
-  // hid (that is why we are here re-acquiring) — release it anyway before
-  // overwriting the reference so our wrapper's idempotent release() flag is
-  // flipped for the stale sentinel too, best-effort.
-  try {
-    await ctx.wakeLock?.release();
-  } catch {
-    /* already released */
-  }
-  ctx.wakeLock = lock;
 }
 
 // Reused across every capture in a v3 session, the mic stream can still die
@@ -2169,6 +2185,11 @@ async function runPlanCapture(ctx, { index, attempt }) {
       // on-screen begin affordance live AND Stop wired (no endPlanSession)
       // — plugging in a USB measurement mic and re-tapping is a legitimate
       // recovery, and Stop must keep working while the household decides.
+      // For round 1 specifically, that affordance is the SAME begin_capture
+      // button onPlanStart itself was invoked from — mark the session as
+      // parked at a retriable failure so a re-tap re-enters capture instead
+      // of being swallowed by onPlanStart's re-entrancy guard (B-1).
+      ctx.parkedAtRetriableFailure = true;
       setStatus(
         `This phone can't run a clean measurement (${capture.decision.reason}). ` +
           "Try a different phone, or use a calibrated USB mic on the speaker.",
@@ -2304,7 +2325,11 @@ async function runPlanCapture(ctx, { index, attempt }) {
         // or authorization hiccup): the round never started on the Pi, so
         // the on-screen begin affordance is safe to re-tap. Keep it live,
         // keep Stop wired (no endPlanSession), and name the ACTUAL button
-        // in the copy — these screens have no button called "Start".
+        // in the copy — these screens have no button called "Start". For
+        // round 1, that affordance is onPlanStart's own begin_capture
+        // button — mark the retriable-failure park (B-1, see the matching
+        // guard in onPlanStart) so the re-tap re-enters capture.
+        ctx.parkedAtRetriableFailure = true;
         setStatus(captureFailureMessage(err, planRetryAffordance(ctx)), "error");
       }
     }
@@ -2322,14 +2347,20 @@ async function runPlanCapture(ctx, { index, attempt }) {
 // is no per-round checkbox to re-tick on the page-owned "Next measurement" /
 // "Try again" screens.
 async function onPlanStart(ctx) {
-  // N3: guard re-entrancy. A fast double-tap of the initial Start button
-  // dispatches onPlanStart twice; without this, the second call would spin
-  // up a whole second session — leaking the first's wake lock and
-  // visibility watcher (the first session's own planController/activeAbort
-  // would simply be overwritten, with nothing left to tear it down). A
-  // session is "already running" once a controller exists and hasn't torn
-  // down yet.
-  if (ctx.planController && !ctx.sessionEnded) return;
+  // N3 + B-1: guard re-entrancy WITHOUT dead-ending the documented retry
+  // affordance. The initial begin_capture button stays wired to onPlanStart
+  // for as long as round 1 has never successfully authorized+armed — which
+  // includes the THREE pre-arm-failure paths in runPlanCapture (mic
+  // permission denied, a clean-capture refusal, a transient begin-post
+  // hiccup) that keep this exact button on screen as "Tap … to try again"
+  // (planRetryAffordance) without ever ending the session. Those paths set
+  // ctx.parkedAtRetriableFailure so THIS tap is recognized as the legitimate
+  // retry it is, distinct from a genuine accidental double-tap (which must
+  // stay inert — a round is either about to start or already in flight, and
+  // starting a SECOND session on top of it would leak the first's wake lock
+  // + visibility watcher).
+  const isRetry = Boolean(ctx.planController) && !ctx.sessionEnded && ctx.parkedAtRetriableFailure;
+  if (ctx.planController && !ctx.sessionEnded && !isRetry) return;
   let acknowledgement = null;
   try {
     acknowledgement = acceptedAcknowledgement(ctx.spec, ctx.captureRefs);
@@ -2338,6 +2369,19 @@ async function onPlanStart(ctx) {
     return;
   }
   ctx.planAcknowledgement = acknowledgement;
+
+  if (isRetry) {
+    // Re-enter capture WITHOUT re-acquiring anything already held by the
+    // still-live session — a fresh controller/wake-lock/visibility-watch
+    // here would orphan the originals (the same leak class B1/N2 fixed
+    // elsewhere). The mic is the only thing that actually needs a fresh
+    // attempt; runPlanCapture's own reuse-or-create step handles that.
+    ctx.parkedAtRetriableFailure = false;
+    ctx.recorderFailure = null; // N-a: never resurface an unrelated stale failure
+    await runPlanCapture(ctx, { index: 1, attempt: 1 });
+    return;
+  }
+
   const controller = makePlanController(ctx);
   ctx.planController = controller;
   // Wire Stop BEFORE any await below — Stop must be live from the instant
