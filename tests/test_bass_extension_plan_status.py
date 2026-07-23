@@ -27,6 +27,13 @@ def test_bass_extension_plan_pins_merged_waves_and_remaining_gate() -> None:
     assert "contract rev 8 freezes limiter protocol revision `2026-07-19b`" in text
     assert "reviewed bench runner/temporary activation owner" in text
     assert "no real\n> target-specific limiter result is established yet" in text
+    # Honesty reconciliation: the plan records the merged bench-runner software
+    # (#1611 producer, #1630 runner/activation-owner/context-builder) and the
+    # landed rev-9 `ladder.py` slice, while the live on-device tap executor and
+    # the accepted bundle stay named as the real remaining blockers. Pin the
+    # true claim so it cannot silently regress to "runner unbuilt".
+    assert "jasper/bass_extension/ladder.py" in text
+    assert "live pre/post-limiter tap executor" in text
     assert "No implementation is authorized by revision 6" not in text
     assert "no frozen contract maps ladder/sustain" not in text
     assert "no frozen\n  wave defines" not in text
@@ -48,8 +55,10 @@ def test_readme_does_not_claim_bass_extension_has_no_code() -> None:
     assert entry is not None
     assert "Waves 1–3 are merged" in entry.group()
     assert "No code exists yet" not in entry.group()
+    # `ladder.py` landed with the Wave 4 rev-9 hardware-free commissioning
+    # slice; the backend/scheduler/runtime surfaces remain unshipped (blocked
+    # behind Jasper's accepted bench bundle and later reviewed revisions).
     for unshipped_surface in (
-        "jasper/bass_extension/ladder.py",
         "jasper/web/bassext_backend.py",
         "jasper/bass_extension/scheduler.py",
         "jasper/bass_extension/runtime.py",

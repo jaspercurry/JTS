@@ -907,10 +907,14 @@ micro-steps, and Wave 4 contract revision 8 freezes a deterministic pure
 producer from an accepted limiter-evidence bundle. No such on-device bundle
 is established. The retained sweep, sustain, commanded-level, stimulus-peak,
 boost, and digital-clamp facts do not bound arbitrary program peaks at the
-now-frozen downstream detector point. A reviewed bench runner/temporary
-activation owner and trusted context builder must first produce Jasper's
-accepted bundle, and its replay must pass independent review before a later
-contract revision authorizes production wiring.
+now-frozen downstream detector point. The reviewed bench runner/temporary
+activation owner and trusted measured-context builder have shipped (the pure
+producer in #1611; the campaign runner, temporary-activation owner, and
+measured-context builder in #1630) — but their live on-device executor, the
+pre/post-limiter sample taps that bind a real campaign, is not, so no accepted
+bundle exists yet. That accepted bundle must be produced on the bench and its
+replay must pass independent review before a later contract revision authorizes
+production wiring.
 `None`, the baseline −1 dB limiter, subtracting boost/digital margin,
 an assumed crest factor, or a scheduler-local formula are not
 fallbacks.
@@ -1521,7 +1525,7 @@ wave keeps out of the god-files. Every implementation PR runs
 | 1 | [wave-1](bass-extension-waves/wave-1-numerics.md) | **merged 2026-07-16** (#1549, `0670540654a6684f8ac98fb2e70b2e643d65d82f`; contract rev 3; review-gate loop caught 6 rev-1 spec contradictions → rev 2) |
 | 2 | [wave-2](bass-extension-waves/wave-2-profile-observability.md) | **merged 2026-07-16** (#1553, `9f39c70e418cf64316c23de535f322d21f825c8e`; clean gate after 3 review findings fixed in-session) |
 | 3 | [wave-3](bass-extension-waves/wave-3-graph-emission.md) | **merged 2026-07-19** (#1574, `bb2919383b408d630f9d70ef24c14fe38ca98be0`; contract rev 12; sealed natural-at-rest graph emission + durable predecessor-aware apply/recovery groundwork; zero production callers; runtime arming remains blocked) |
-| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits a production-uncallable pure producer skeleton; contract rev 9 additionally authorizes the hardware-free commissioning slice** (pure state machine to `review`, injected synthetic dry run, synthetic producer intake) — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)); a reviewed bench runner/temporary activation owner, accepted on-device bundle, and later production-wiring revision are still required |
+| 4 | [wave-4](bass-extension-waves/wave-4-commissioning-backend.md) | **contract rev 8 freezes limiter protocol revision `2026-07-19b` and permits a production-uncallable pure producer skeleton; contract rev 9 additionally authorizes the hardware-free commissioning slice** (pure state machine to `review`, injected synthetic dry run, synthetic producer intake) — the crossover-program hardware burn-in prerequisite is **met** ([operational evidence](HANDOFF-crossover-measurement-v2.md)). Landed: the pure producer (#1611); the reviewed bench runner/temporary activation owner + measured-context builder (#1630, live on-device executor still stubbed); and the rev-9 hardware-free commissioning slice — `jasper/bass_extension/ladder.py`, the pure state machine to in-memory `review` with synthetic producer intake. Still required: the live pre/post-limiter tap executor, an accepted on-device bundle with deterministic replay, and the later production-wiring revision |
 | 5 | [wave-5](bass-extension-waves/wave-5-runtime-scheduler.md) | **blocked at its own contract rev 9** (distinct from Wave 4's rev 9 above) — a post-Wave-3 launch may only record the mandatory stop; no implementation until the Wave 4 prerequisite, replacement contract, and finite sealed thresholds land; bonded roles remain no-arm/no-patch |
 | 6 | [wave-6](bass-extension-waves/wave-6-ui.md) | not started |
 | 7 | [wave-7](bass-extension-waves/wave-7-hardware-validation.md) | not started |
@@ -1609,14 +1613,17 @@ touching the same files; rebase before push per AGENTS.md.
 
 ### Wave 4 — Commissioning backend
 
-**Contract revision 8 authorizes only the production-uncallable pure producer
-skeleton described by the limiter-evidence protocol.** It authorizes no bench
-runner, temporary target/candidate activation owner, profile publication, or
-production caller. The protocol freezes the detector point and units, the
-minimum campaign, the accepted bundle shape, and total refusal; a real
-target-specific `limiter_threshold_dbfs` remains **not established** until
-Jasper completes the reviewed bench pass and its accepted bundle replays
-deterministically. After those gates and a later contract revision, the
+**Contract revision 9 authorizes the hardware-free commissioning slice on top
+of revision 8's production-uncallable pure producer skeleton.** Landed so far:
+the pure producer (#1611); the reviewed bench runner, temporary
+target/candidate activation owner, and measured-context builder (#1630, whose
+live on-device pre/post-limiter tap executor is still stubbed); and the rev-9
+`ladder.py` pure state machine to in-memory `review` with synthetic producer
+intake. Still blocked: profile publication and every production caller. The
+protocol freezes the detector point and units, the minimum campaign, the
+accepted bundle shape, and total refusal; a real target-specific
+`limiter_threshold_dbfs` remains **not established** until Jasper completes the
+reviewed bench pass and its accepted bundle replays deterministically. After those gates and a later contract revision, the
 intended commissioning wave contains
 `ladder.py` state machine (pure) + web backend module (new file, thin
 routing seam into `/correction/`), relay `build_bass_nearfield_spec`,
@@ -1634,9 +1641,10 @@ replacement removes the old sealed pair before publication. The
 existing correction process synchronously claims
 pending recovery before ready and before bass POSTs; GET remains
 read-only and there is no recovery route/task/service; the red Stop
-remains the only no-forward-work exception. Depends: Waves 1–3, a reviewed
-bench runner/temporary activation owner, one accepted on-device bundle with
-deterministic replay, and the later production-wiring contract revision.
+remains the only no-forward-work exception. Depends: Waves 1–3 (met), the
+reviewed bench runner/temporary activation owner (#1630, met — live executor
+pending), one accepted on-device bundle with deterministic replay, and the
+later production-wiring contract revision.
 
 ### Wave 5 — Runtime scheduler
 
@@ -1824,10 +1832,12 @@ atlas + `docs/doc-map.toml` entries. No scheduler env knob is planned.
    and digital-clamp facts do not establish arbitrary program peaks or a real
    target-specific limiter value. The reviewed bench-runner amendment
    [`limiter-bench-runner-protocol.md`](bass-extension-waves/limiter-bench-runner-protocol.md)
-   now authorizes *building* the runner, but no reviewed bench runner/temporary
-   activation owner implementation, trusted commissioning-context builder, or
-   accepted on-device bundle exists yet. The smallest evidence that clears the remaining
-   gap is those reviewed owners, Jasper's accepted bench bundle for the exact
+   now authorizes *building* the runner. The reviewed bench runner/temporary
+   activation owner implementation and trusted commissioning-context builder
+   have since landed (#1630); what does not exist yet is that runner's live
+   on-device executor (its pre/post-limiter sample taps) and, therefore, an
+   accepted on-device bundle. The smallest evidence that clears the remaining
+   gap is that live executor, Jasper's accepted bench bundle for the exact
    sealed family, and deterministic replay at zero review blockers and
    should-fixes; a later contract revision must then authorize the trusted
    production caller. Do not infer a value from the illustrative schema,
