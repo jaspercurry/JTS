@@ -224,6 +224,16 @@ impl PlayoutLedger {
             .expect("unknown playout segment id")
     }
 
+    /// Whether `id`'s segment has received SEGMENT_END (or was flushed).
+    /// Returns false for an unknown id (e.g. pruned), so a late completion for
+    /// a long-gone segment is simply dropped rather than panicking.
+    pub fn is_ended(&self, id: SegmentId) -> bool {
+        self.segments
+            .iter()
+            .find(|segment| segment.local_segment_id == id)
+            .is_some_and(|segment| segment.ended)
+    }
+
     fn segment_mut(&mut self, id: SegmentId) -> &mut PlayoutSegment {
         self.segments
             .iter_mut()

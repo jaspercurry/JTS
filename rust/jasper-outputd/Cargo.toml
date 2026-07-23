@@ -36,10 +36,17 @@ libc = "0.2"
 # Plain-thread signal handling for clean systemd stop.
 signal-hook = "0.4"
 
+# The learned quiet-room assistant reference is a correctness-critical persisted
+# record (versioned, ±24 LU clamp, fail-closed validation), mirroring fan-in's
+# assistant_reference. serde/serde_json own that parse boundary; the STATUS wire
+# payload stays hand-rolled and allocation-conscious. Both were already in
+# Cargo.lock (serde_json was a dev-dependency), so `--locked` needs no churn.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [dev-dependencies]
-# Parse the hand-built STATUS payload in wire-contract tests. Runtime stays
-# allocation-conscious and dependency-free at the JSON serialization boundary;
-# tests use serde_json as the independent grammar oracle.
+# Parse the hand-built STATUS payload in wire-contract tests as an independent
+# grammar oracle (serde_json is now also a runtime dependency, above).
 serde_json = "1"
 
 [profile.release]

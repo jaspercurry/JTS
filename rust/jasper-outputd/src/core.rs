@@ -4,12 +4,17 @@
 
 //! Output-owner core with fake transports for tests and developer runs.
 
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWrite};
+use crate::fake::{
+    DrainedPlayback, FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentPlayback,
+    SegmentWrite,
+};
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
 use crate::loudness::{
-    AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig, MixStage,
+    linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
+    HeldLoudnessReference, MixStage,
 };
 use crate::mixer::{mix_i16_saturating, sanitize_tts_gain_db};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
@@ -35,6 +40,15 @@ pub struct OutputCore {
     /// currently-open segment can carry its peak-cap ceiling and live re-gain
     /// residual into the per-period mix (matched by segment id).
     active_assistant_decision: Option<(SegmentId, Arc<AssistantGainDecision>)>,
+    /// Persistence sink for the learned quiet-room assistant reference. `None`
+    /// (the default / fake-run case) simply drops learned references.
+    assistant_reference_tx: Option<Sender<HeldLoudnessReference>>,
+    /// Reusable scratch for the per-period drained-segment completions from the
+    /// assistant source (kept to keep the audio loop allocation-free).
+    drained_playbacks: Vec<DrainedPlayback>,
+    /// Segments whose audio drained before SEGMENT_END arrived: their playout
+    /// facts wait here until END fires, then the reference is committed.
+    drained_pending_end: Vec<(SegmentId, Option<SegmentPlayback>)>,
     content_buf: Vec<i16>,
     assistant_buf: Vec<i16>,
     output_buf: Vec<i16>,
@@ -77,6 +91,9 @@ impl OutputCore {
                 MixStage::PostDsp,
             ),
             active_assistant_decision: None,
+            assistant_reference_tx: None,
+            drained_playbacks: Vec::new(),
+            drained_pending_end: Vec::new(),
             content_buf: vec![0; period_samples],
             assistant_buf: vec![0; period_samples],
             output_buf: vec![0; period_samples],
@@ -137,17 +154,27 @@ impl OutputCore {
 
     pub fn append_assistant_audio(&mut self, id: SegmentId, gain: f32, samples: Vec<i16>) {
         // Legacy direct path: render at the given gain with no headroom
-        // (peak cap == base) and no live tracking (no decision).
-        self.append_assistant_audio_planned(id, gain, None, samples);
+        // (peak cap == base), no live tracking, and no reference learning.
+        self.append_assistant_audio_planned(id, gain, None, false, samples);
     }
 
     pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
-        let base_gain_db = self.ledger.segment(id).gain;
+        let segment = self.ledger.segment(id);
+        let base_gain_db = segment.gain;
+        // Only Assistant-kind segments train the learned quiet-room reference;
+        // cues and chirps never do.
+        let reference_eligible = segment.kind == SegmentKind::Assistant;
         let decision = match &self.active_assistant_decision {
             Some((decision_id, decision)) if *decision_id == id => Some(Arc::clone(decision)),
             _ => None,
         };
-        self.append_assistant_audio_planned(id, base_gain_db, decision, samples);
+        self.append_assistant_audio_planned(
+            id,
+            base_gain_db,
+            decision,
+            reference_eligible,
+            samples,
+        );
     }
 
     fn append_assistant_audio_planned(
@@ -155,6 +182,7 @@ impl OutputCore {
         id: SegmentId,
         base_gain_db: f32,
         decision: Option<Arc<AssistantGainDecision>>,
+        reference_eligible: bool,
         samples: Vec<i16>,
     ) {
         assert_eq!(samples.len() % (self.format.channels as usize), 0);
@@ -169,12 +197,28 @@ impl OutputCore {
             .map_or(base_gain_db, |decision| decision.peak_cap_gain_db);
         let frames = (samples.len() / (self.format.channels as usize)) as u64;
         self.ledger.queue_frames(id, frames);
-        self.assistant
-            .enqueue_segment(id, samples, base_gain_db, peak_cap_gain_db, decision);
+        self.assistant.enqueue_segment(
+            id,
+            samples,
+            base_gain_db,
+            peak_cap_gain_db,
+            decision,
+            reference_eligible,
+        );
     }
 
     pub fn end_assistant_segment(&mut self, id: SegmentId) {
         self.ledger.end_segment(id, self.monotonic_ns);
+        // If this segment's audio already drained (END arrived after playout),
+        // its playout facts are waiting — commit the learned reference now.
+        if let Some(pos) = self
+            .drained_pending_end
+            .iter()
+            .position(|(pending_id, _)| *pending_id == id)
+        {
+            let (_, playback) = self.drained_pending_end.remove(pos);
+            self.complete_assistant_reference(playback);
+        }
     }
 
     pub fn step(&mut self) -> PeriodReport {
@@ -213,11 +257,15 @@ impl OutputCore {
         }
         // The loudness engine is passed in so the mix applies mute + live
         // re-gain per period (the volume context was drained before this).
+        // Assistant segments that finish draining this period are reported in
+        // `drained_playbacks` for reference learning.
         self.assistant.read_period_into(
             &mut self.assistant_buf,
             &mut self.segment_writes,
             &self.loudness,
+            &mut self.drained_playbacks,
         );
+        self.process_drained_playbacks();
 
         let mix_stats =
             mix_i16_saturating(&self.content_buf, &self.assistant_buf, &mut self.output_buf);
@@ -269,6 +317,10 @@ impl OutputCore {
     pub fn flush_assistant(&mut self) -> Vec<PlayoutEvent> {
         self.assistant.flush();
         self.active_assistant_decision = None;
+        // A barge-in discards the reply: no reference is learned from truncated
+        // or in-flight speech.
+        self.drained_playbacks.clear();
+        self.drained_pending_end.clear();
         let events = self.ledger.flush_open_segments(self.monotonic_ns);
         self.ledger
             .prune_terminal_segments(DEFAULT_TERMINAL_SEGMENT_RETENTION);
@@ -321,6 +373,63 @@ impl OutputCore {
 
     pub fn current_volume_context(&self) -> Option<VolumeContext> {
         self.loudness.current_volume_context()
+    }
+
+    /// Arm the persistence sink for the learned quiet-room assistant reference.
+    /// The daemon spawns the writer thread and hands its sender here; the fake
+    /// developer/test path leaves it unset (learned references are dropped).
+    pub fn set_assistant_reference_sink(&mut self, tx: Sender<HeldLoudnessReference>) {
+        self.assistant_reference_tx = Some(tx);
+    }
+
+    /// Seed the learned quiet-room reference at startup (from disk). Validated
+    /// and ±24 LU-clamped inside the engine.
+    pub fn set_held_assistant_reference(&mut self, reference: Option<HeldLoudnessReference>) {
+        self.loudness.set_held_assistant(reference);
+    }
+
+    #[cfg(test)]
+    pub fn held_assistant_reference(&self) -> Option<HeldLoudnessReference> {
+        self.loudness.held_assistant()
+    }
+
+    /// Pair each drained assistant segment with SEGMENT_END: complete the
+    /// reference now if END already fired, else defer until it does.
+    fn process_drained_playbacks(&mut self) {
+        if self.drained_playbacks.is_empty() {
+            return;
+        }
+        // Take the scratch out to satisfy the borrow checker, then restore it
+        // (empty) so its capacity is reused across periods.
+        let mut drained = std::mem::take(&mut self.drained_playbacks);
+        for completion in drained.drain(..) {
+            if self.ledger.is_ended(completion.id) {
+                self.complete_assistant_reference(completion.playback);
+            } else {
+                self.drained_pending_end
+                    .push((completion.id, completion.playback));
+            }
+        }
+        self.drained_playbacks = drained;
+    }
+
+    /// Commit one completed segment's learned reference. `None` playback means
+    /// the segment was disqualified (muted, or no volume context) and must not
+    /// learn. The engine itself returns `None` for music-anchored references
+    /// (only first-use / held-assistant quiet-room speech trains the offset).
+    fn complete_assistant_reference(&mut self, playback: Option<SegmentPlayback>) {
+        let Some(playback) = playback else {
+            return;
+        };
+        let effective_gain_db = linear_to_db(playback.last_gain_linear);
+        let reference = self.loudness.complete_assistant_segment_at(
+            &playback.decision,
+            effective_gain_db,
+            playback.context,
+        );
+        if let (Some(reference), Some(tx)) = (reference, &self.assistant_reference_tx) {
+            let _ = tx.send(reference); // writer gone = degrade to no persistence
+        }
     }
 
     pub fn prepare_assistant_context(
@@ -739,5 +848,80 @@ mod tests {
             (last - expected).abs() <= 2,
             "ramp reaches +6 dB louder: {last} vs {expected}"
         );
+    }
+
+    #[test]
+    fn post_dsp_learns_and_persists_reference_on_segment_completion() {
+        let mut core = OutputCore::new(4);
+        let (tx, rx) = std::sync::mpsc::channel();
+        core.set_assistant_reference_sink(tx);
+        // Nonzero downstream that must be ignored when learning post-DSP.
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        // FirstUseFallback with source -25 → decided gain -16 dB; ample peak
+        // headroom so nothing clamps.
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-25.0, -20.0)),
+        );
+        assert_eq!(core.ledger().segment(id).gain, -16.0);
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 4));
+        // END arrives before the audio drains; the reference commits once the
+        // audio finishes playing this period.
+        core.end_assistant_segment(id);
+
+        core.push_content_period(stereo(0, 4));
+        core.step();
+
+        let reference = rx.try_recv().expect("a completed reply learns a reference");
+        // speaker = source(-25) + gain(-16) + downstream(ignored, 0) = -41,
+        // which equals the envelope, so the calibration offset is ~0.
+        assert!((reference.speaker_lufs - -41.0).abs() < 0.05);
+        assert_eq!(reference.canonical_db, -30.0);
+        assert!((reference.calibration_offset_lu - 0.0).abs() < 0.05);
+        assert_eq!(core.held_assistant_reference(), Some(reference));
+    }
+
+    #[test]
+    fn post_dsp_muted_reply_does_not_learn_a_reference() {
+        let mut core = OutputCore::new(4);
+        let (tx, rx) = std::sync::mpsc::channel();
+        core.set_assistant_reference_sink(tx);
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-25.0, -20.0)),
+        );
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 8));
+        core.end_assistant_segment(id);
+
+        // First period unmuted, then mute before the reply finishes: a silenced
+        // reply must never train the learned reference.
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, true, 2)));
+        core.push_content_period(stereo(0, 4));
+        core.step();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a muted reply must not learn a reference"
+        );
+        assert_eq!(core.held_assistant_reference(), None);
     }
 }
