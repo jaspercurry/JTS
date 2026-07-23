@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from copy import deepcopy
 from dataclasses import replace
 import logging
@@ -383,7 +385,11 @@ def test_baseline_profile_compiles_durable_camilla_yaml(
         validate=_valid_config,
         created_at="2026-06-14T12:20:00Z",
     )
-    yaml = config_path.read_text(encoding="utf-8")
+    # #1666: every write=True candidate lands on its own content-addressed
+    # sibling next to config_path, never config_path itself -- read back
+    # through the candidate's own reported path.
+    assert Path(payload["config"]["path"]) != config_path
+    yaml = Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     assert payload["status"] == "ready_to_apply"
     assert payload["permissions"]["may_apply"] is True
@@ -477,7 +483,8 @@ def test_baseline_profile_compiles_with_local_subwoofer(tmp_path: Path) -> None:
         validate=_valid_config,
         created_at="2026-06-14T12:20:00Z",
     )
-    yaml = config_path.read_text(encoding="utf-8")
+    # #1666: candidate lands on a content-addressed sibling, not config_path.
+    yaml = Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     assert payload["status"] == "ready_to_apply"
     assert payload["permissions"]["may_apply"] is True
@@ -562,7 +569,8 @@ def test_baseline_capture_device_threads_through_surgically(tmp_path: Path) -> N
             created_at="2026-06-14T12:20:00Z",
             **kwargs,
         )
-        return payload, config_path.read_text(encoding="utf-8")
+        # #1666: candidate lands on a content-addressed sibling, not config_path.
+        return payload, Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     implicit, implicit_yaml = _emit("implicit", None)
     explicit, explicit_yaml = _emit("explicit_default", "plug:jasper_capture")
@@ -614,7 +622,8 @@ def test_driver_domain_seam_emits_layer_a_only_follower_graph(
         validate=_valid_config,
         created_at="2026-06-14T12:20:00Z",
     )
-    yaml = config_path.read_text(encoding="utf-8")
+    # #1666: candidate lands on a content-addressed sibling, not config_path.
+    yaml = Path(payload["config"]["path"]).read_text(encoding="utf-8")
 
     assert payload["status"] == "ready_to_apply"
     assert payload["config"]["domain"] == "driver"
@@ -1292,7 +1301,10 @@ async def test_apply_baseline_profile_uses_shared_dsp_apply_transaction(
     assert payload["status"] == "applied"
     assert payload["profile"]["status"] == "applied"
     assert payload["profile"]["permissions"]["may_apply"] is False
-    assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
+    # #1666: the transaction loads the candidate's own content-addressed
+    # sibling, never the literal config_path passed in.
+    assert calls == [payload["profile"]["config"]["path"]]
+    assert payload["profile"]["config"]["path"] != str(tmp_path / "active_speaker_baseline.yml")
     snapshot = payload["profile"]["recomposition_snapshot"]
     assert snapshot["schema_version"] == 1
     assert snapshot["domain"] == "full"
@@ -2244,7 +2256,7 @@ def test_recompose_baseline_yaml_matches_durable_builder_when_flat(
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     config_path = tmp_path / "active_speaker_baseline.yml"
-    build_baseline_profile_candidate(
+    built = build_baseline_profile_candidate(
         topology,
         design_draft=draft,
         crossover_preview=preview,
@@ -2254,7 +2266,8 @@ def test_recompose_baseline_yaml_matches_durable_builder_when_flat(
         config_path=config_path,
         validate=_valid_config,
     )
-    durable_yaml = config_path.read_text(encoding="utf-8")
+    # #1666: candidate lands on a content-addressed sibling, not config_path.
+    durable_yaml = Path(built["config"]["path"]).read_text(encoding="utf-8")
 
     flat_yaml, flat_issues = recompose_baseline_yaml(
         topology,
@@ -3870,7 +3883,10 @@ async def test_apply_baseline_profile_emits_started_before_dsp_apply(
     assert "baseline_id=baseline-bench_mono" in started[0]
     assert "tuning_owner=manual" in started[0]
     assert "topology_id=bench_mono" in started[0]
-    assert f"config_path={tmp_path}/active_speaker_baseline.yml" in started[0]
+    # #1666: the started event names the candidate's own content-addressed
+    # sibling, never the literal config_path passed in.
+    assert f"config_path={payload['profile']['config']['path']}" in started[0]
+    assert f"config_path={tmp_path}/active_speaker_baseline.yml" not in started[0]
 
 
 async def test_apply_baseline_profile_success_emits_succeeded_with_fingerprints(
@@ -4021,7 +4037,11 @@ async def test_apply_baseline_profile_dsp_error_reports_real_rollback_attempt(
         )
 
     assert payload["status"] == "apply_failed"
-    assert calls == [str(tmp_path / "active_speaker_baseline.yml"), str(prior)]
+    # #1666: the transaction loads the candidate's own content-addressed
+    # sibling, never the literal config_path passed in; a failed apply never
+    # touches config_path either (nothing promotes on failure).
+    assert calls == [payload["profile"]["config"]["path"], str(prior)]
+    assert not (tmp_path / "active_speaker_baseline.yml").exists()
     rolled_back = _events(caplog, "correction.crossover_apply_rolled_back")
     assert len(rolled_back) == 1
     message = rolled_back[0]
@@ -4113,7 +4133,9 @@ def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
         "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
         "tweeter": {"gain_db": -2.0, "delay_ms": 0.25, "inverted": True},
     }
-    config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
+    # #1666: candidate lands on a content-addressed sibling, not the literal
+    # config_path passed in.
+    config_text = Path(payload["config"]["path"]).read_text()
     assert "delay: 0.2500" in config_text
     assert payload["candidate_fingerprint"] is not None
 
@@ -4281,10 +4303,15 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
         "delay_ms": 0.25,
         "inverted": True,
     }
+    # #1666: the applied candidate lands on its own content-addressed sibling
+    # (what load_config was actually called with); the canonical file at
+    # tmp_path/active_speaker_baseline.yml is a POST-success promoted copy, so
+    # it independently carries the same content.
     config_text = (tmp_path / "active_speaker_baseline.yml").read_text()
     assert "as_tweeter_delay" in config_text
     assert "delay: 0.2500" in config_text
-    assert calls == [str(tmp_path / "active_speaker_baseline.yml")]
+    assert calls == [payload["profile"]["config"]["path"]]
+    assert calls != [str(tmp_path / "active_speaker_baseline.yml")]
 
 
 async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
@@ -4596,7 +4623,13 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
         state_path, config_path, load_config, current_config_path,
         prior_payload, run8_payload, retained,
     ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    prior_config_text = config_path.read_text(encoding="utf-8")
+    # #1666: every apply lands on its own content-addressed sibling, so
+    # "prior's bytes" live at prior's OWN reported path, not config_path
+    # (the canonical name, which by now holds run-8's post-apply promoted
+    # copy -- see the canonical-tracks-run8 assertion below).
+    prior_config_text = Path(
+        prior_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
     run8_config_text = Path(
         run8_payload["profile"]["config"]["path"]
     ).read_text(encoding="utf-8")
@@ -4606,6 +4639,9 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
     assert "delay: 0.2500" in prior_config_text
     assert "delay: 0.4048" in run8_config_text
     assert "delay: 0.4048" not in prior_config_text
+    assert config_path.read_text(encoding="utf-8") == run8_config_text, (
+        "canonical should hold run-8's promoted bytes before the restore"
+    )
 
     restore_payload = await restore_applied_baseline_profile(
         retained,
@@ -4619,7 +4655,11 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
     # Reloaded the PRIOR profile's own already-compiled file, unmutated —
     # never recomposed, so the file's bytes are exactly what they were, and
-    # the run-8 candidate's delay is gone from the ACTIVE config.
+    # the run-8 candidate's delay is gone from the ACTIVE config. The restore
+    # ALSO re-promotes canonical back onto prior's bytes (#1666), which is
+    # what this next assertion now proves -- pre-fix, canonical was simply
+    # never touched by run-8's apply in the first place, so this held
+    # trivially; post-fix it holds because restore re-promotes it.
     assert config_path.read_text(encoding="utf-8") == prior_config_text
     active = load_applied_baseline_profile_state(state_path)
     assert active is not None
@@ -4628,7 +4668,9 @@ async def test_restore_applied_baseline_profile_reverts_active_config_and_state(
         == prior_payload["profile"]["candidate_fingerprint"]
     )
     assert active["candidate_fingerprint"] != run8_payload["profile"]["candidate_fingerprint"]
-    assert active["config"]["path"] == str(config_path)
+    # The JSON SSOT keeps the truthful applied (sibling) path, never canonical.
+    assert active["config"]["path"] == prior_payload["profile"]["config"]["path"]
+    assert active["config"]["path"] != str(config_path)
 
 
 async def test_restore_applied_baseline_profile_blocked_when_config_missing(
@@ -4638,7 +4680,10 @@ async def test_restore_applied_baseline_profile_blocked_when_config_missing(
         state_path, config_path, load_config, current_config_path,
         _prior_payload, _run8_payload, retained,
     ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
-    config_path.unlink()
+    # #1666: restore reloads retained's OWN reported path (a content-addressed
+    # sibling), never config_path (the canonical name) -- delete the actual
+    # restore target, not the unrelated canonical file.
+    Path(retained["config"]["path"]).unlink()
 
     payload = await restore_applied_baseline_profile(
         retained,
@@ -4705,3 +4750,374 @@ async def test_restore_applied_baseline_profile_reports_restore_failed(
         active["candidate_fingerprint"]
         != retained["candidate_fingerprint"]
     )
+
+
+# --- #1666: apply-promotion durability ---------------------------------- #
+#
+# build_baseline_profile_candidate never writes baseline_config_path()
+# directly; every write=True candidate lands on its own content-addressed
+# sibling. The canonical name is published ONLY by a post-success promote
+# (a byte copy of the just-applied candidate) in _apply_baseline_profile_locked
+# and restore_applied_baseline_profile. Root cause: the OLD parity check
+# (rename to a sibling only when the previously-applied profile's own path
+# equalled canonical) made an applied profile's path strictly ALTERNATE
+# between canonical and a sibling on every successive apply -- so half the
+# time, unvalidated candidate bytes landed on the canonical name BEFORE
+# CamillaDSP had confirmed them, and a rejected apply could leave rejected
+# bytes there.
+
+
+async def test_second_apply_promotes_canonical_to_sibling_bytes(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#1666 core regression: written FIRST and confirmed to fail against the
+    unfixed parity check (git-stash evidence in the PR), before the fix
+    landed. After the SECOND (sibling-landing, under the old code) apply, the
+    canonical file must be byte-identical to the just-applied candidate --
+    not stale at whatever the FIRST apply wrote directly to canonical."""
+    (
+        state_path, config_path, load_config, current_config_path,
+        prior_payload, run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+
+    run8_config_text = Path(
+        run8_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+
+    assert config_path.exists()
+    assert config_path.read_text(encoding="utf-8") == run8_config_text
+
+
+async def test_first_ever_apply_lands_on_sibling_and_promotes_canonical(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#1666: even a speaker's FIRST-EVER apply (no prior applied anchor)
+    lands its candidate on a content-addressed sibling -- never writes
+    baseline_config_path() in place, changing today's behaviour where a
+    first apply wrote canonical directly -- and canonical ends up holding
+    the applied bytes via the post-success promote."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=config_path,
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+
+    assert payload["status"] == "applied"
+    applied_path = Path(payload["profile"]["config"]["path"])
+    assert applied_path != config_path
+    assert applied_path.name.startswith("active_speaker_baseline_candidate_")
+    assert config_path.exists()
+    assert config_path.read_text(encoding="utf-8") == applied_path.read_text(
+        encoding="utf-8"
+    )
+
+
+async def test_failed_apply_never_touches_canonical_file(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#1666: a rejected candidate's bytes must never reach the canonical
+    name. Pre-existing canonical content (as if an earlier successful
+    apply/promote had run) survives a later failed apply completely
+    untouched."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    sentinel = "# pre-existing canonical content -- must survive a failed apply\n"
+    config_path.write_text(sentinel, encoding="utf-8")
+
+    async def load_config(_path: str) -> bool:
+        return False  # CamillaDSP rejects every candidate
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "apply_failed"
+    assert config_path.read_text(encoding="utf-8") == sentinel
+
+
+async def test_promote_failure_is_fail_soft_apply_still_succeeds(
+    monkeypatch, tmp_path: Path, caplog,
+) -> None:
+    """#1666: a promote failure (disk full, permission drift, ...) must never
+    fail an otherwise-successful apply -- the running CamillaDSP graph and
+    the JSON SSOT are already correct by the time promote runs. Only a
+    WARNING event is emitted; canonical is left exactly as it was."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    real_write = baseline_profile_mod.atomic_write_text
+
+    def promote_write_fails(path, text, **kwargs):
+        # Only the promote's write to the canonical file fails -- the JSON
+        # SSOT write (persist_applied_baseline_profile, a different path)
+        # goes through normally, exercising the REAL apply-succeeds-anyway
+        # path rather than mocking the promote function away entirely.
+        if Path(path) == config_path:
+            raise OSError("disk full (simulated)")
+        return real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(
+        baseline_profile_mod, "atomic_write_text", promote_write_fails
+    )
+
+    with caplog.at_level(logging.WARNING, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            get_current_config_path=current_config_path,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=config_path,
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "applied"
+    assert not config_path.exists()
+    # The applied candidate's OWN sibling file is unaffected -- only the
+    # canonical copy failed.
+    assert Path(payload["profile"]["config"]["path"]).exists()
+    warnings = _events(caplog, "dsp.baseline_promote")
+    assert len(warnings) == 1
+    assert "result=failed" in warnings[0]
+    assert "disk full" in warnings[0]
+
+
+async def test_promote_failure_from_unicode_decode_error_is_fail_soft(
+    monkeypatch, tmp_path: Path, caplog,
+) -> None:
+    """#1666 review S2: read_text() can raise UnicodeDecodeError (a
+    ValueError subtype, not an OSError) on a corrupted-but-present candidate
+    sibling. The old ``except OSError`` let that propagate and fail an
+    otherwise-successful apply, contradicting the documented "must never
+    fail an otherwise-successful apply" contract this promote-fail-soft
+    family exists to prove -- see
+    test_promote_failure_is_fail_soft_apply_still_succeeds above for the
+    OSError case this mirrors."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    # Arm the corruption only for the very next utf-8 text read AFTER
+    # persist_applied_baseline_profile returns -- that is promote's own
+    # applied_path.read_text(encoding="utf-8") call, the sole target here.
+    # An earlier utf-8 read of the same candidate sibling (the bass-
+    # extension graph-safety proof, which runs before the DSP apply) must
+    # keep succeeding, or the apply would be blocked before ever reaching
+    # promote and this test would no longer exercise the fail-soft catch.
+    real_persist = baseline_profile_mod.persist_applied_baseline_profile
+    armed = False
+
+    def persist_then_arm(*args, **kwargs):
+        nonlocal armed
+        result = real_persist(*args, **kwargs)
+        armed = True
+        return result
+
+    monkeypatch.setattr(
+        baseline_profile_mod, "persist_applied_baseline_profile", persist_then_arm
+    )
+
+    real_read_text = Path.read_text
+
+    def read_text_fails_once_armed(self, *args, **kwargs):
+        nonlocal armed
+        if armed and kwargs.get("encoding") == "utf-8":
+            armed = False
+            raise UnicodeDecodeError(
+                "utf-8", b"\xff", 0, 1, "simulated corrupt candidate bytes"
+            )
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text_fails_once_armed)
+
+    with caplog.at_level(logging.WARNING, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            get_current_config_path=current_config_path,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=config_path,
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "applied"
+    assert not config_path.exists()
+    # The applied candidate's OWN sibling file is unaffected -- only the
+    # canonical copy's read failed.
+    assert Path(payload["profile"]["config"]["path"]).exists()
+    warnings = _events(caplog, "dsp.baseline_promote")
+    assert len(warnings) == 1
+    assert "result=failed" in warnings[0]
+
+
+async def test_restore_promotes_canonical_to_prior_candidate_bytes(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#1666: restore_applied_baseline_profile's own post-success promote
+    (not just apply's) republishes canonical -- back onto the RESTORED
+    (prior) candidate's bytes, not whatever the most recent apply left."""
+    (
+        state_path, config_path, load_config, current_config_path,
+        prior_payload, run8_payload, retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+    prior_config_text = Path(
+        prior_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+    # Sanity: canonical currently tracks run-8 (the most recent apply), not
+    # prior, before the restore below.
+    assert config_path.read_text(encoding="utf-8") != prior_config_text
+
+    restore_payload = await restore_applied_baseline_profile(
+        retained,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path,
+        config_path=config_path,
+        validate=_valid_config,
+    )
+
+    assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    assert config_path.read_text(encoding="utf-8") == prior_config_text
+
+
+async def test_promote_prunes_old_candidate_siblings_beyond_newest_k(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#1666: unbounded candidate-sibling growth (each promote is a byte COPY,
+    never a move, so every applied candidate's own file lives on disk
+    forever) is bounded to the newest _MAX_BASELINE_CANDIDATE_FILES by mtime
+    on every successful promote. The just-applied candidate always survives
+    (it is always the newest); canonical itself is never a pruning
+    candidate (it carries no ``_candidate_`` suffix)."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    keep = baseline_profile_mod._MAX_BASELINE_CANDIDATE_FILES
+    # Pre-seed more orphaned siblings than the keep-count, all older (by
+    # explicit mtime) than the real apply below -- the "38 orphans on a
+    # fleet Pi" shape from a box that only ever promotes, never prunes.
+    orphan_count = keep + 5
+    now = time.time()
+    for i in range(orphan_count):
+        sibling = tmp_path / f"active_speaker_baseline_candidate_orphan{i:03d}.yml"
+        sibling.write_text(f"# orphan {i}\n", encoding="utf-8")
+        orphan_mtime = now - (orphan_count - i) * 10
+        os.utime(sibling, (orphan_mtime, orphan_mtime))
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=config_path,
+        validate=_valid_config,
+    )
+    assert payload["status"] == "applied"
+    applied_path = Path(payload["profile"]["config"]["path"])
+
+    remaining = sorted(tmp_path.glob("active_speaker_baseline_candidate_*.yml"))
+    assert len(remaining) == keep
+    assert applied_path in remaining
+    # The newest orphans (closest to "now") survive; the oldest are pruned.
+    survivors = {p.name for p in remaining}
+    assert f"active_speaker_baseline_candidate_orphan{orphan_count - 1:03d}.yml" in (
+        survivors
+    )
+    assert "active_speaker_baseline_candidate_orphan000.yml" not in survivors
+    # Canonical itself (no _candidate_ suffix) is untouched by pruning.
+    assert config_path.exists()
+    assert config_path.name not in survivors

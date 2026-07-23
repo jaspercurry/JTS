@@ -293,9 +293,14 @@
 > `/var/lib/camilladsp/configs/active_speaker_baseline.yml`. Compilation is
 > explicit and no-audio: it writes YAML plus
 > `/var/lib/jasper/active_speaker_baseline_profile.json`, but does not load
-> CamillaDSP. If a baseline is already applied, the new candidate is written to
-> a content-addressed sibling instead of overwriting the running/statefile-owned
-> config; the state retains one small `applied_recomposition_profile` anchor
+> CamillaDSP. Every candidate is written to a content-addressed sibling,
+> never the canonical `active_speaker_baseline.yml` name in place — whether
+> or not a baseline was already applied (issue #1666 fixed an alternation
+> bug where that WAS conditional, and unvalidated bytes could land on the
+> canonical name half the time). The canonical name is republished only by
+> a post-success promote — a byte copy of the just-applied candidate — once
+> `apply_dsp_config` has confirmed it live; the state retains one small
+> `applied_recomposition_profile` anchor
 > until the explicit apply succeeds. The emitter
 > (`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`)
 > requires an explicit active playback device, keeps `devices.volume_limit`

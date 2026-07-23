@@ -223,7 +223,11 @@ def test_production_compiler_uses_exact_measured_candidate_corrections(
     assert payload["verification"]["driver_target_proof_source"] == (
         "measured_candidate"
     )
-    assert config_path.exists()
+    # #1666: the candidate lands on its own content-addressed sibling next to
+    # config_path, never config_path itself.
+    assert not config_path.exists()
+    assert Path(payload["config"]["path"]).exists()
+    assert Path(payload["config"]["path"]) != config_path
 
 
 async def _apply(
@@ -395,6 +399,36 @@ async def test_retained_apply_retry_only_finishes_durable_state(
     applied_path = state["path"]
     current = harness.service._current()
 
+    # S1 (#1666 review): this retry re-enters the retained-fast-path in
+    # _apply_measured_candidate_owned, which must run its promote+prune
+    # under dsp_writer_lock like the slow path -- record every acquisition
+    # so the assertion below can pin that it actually happened here.
+    real_writer_lock = apply_module.dsp_writer_lock
+    lock_entries: list[tuple[Path, str]] = []
+
+    @asynccontextmanager
+    async def recording_writer_lock(config_dir, *, source, **kwargs):
+        lock_entries.append((Path(config_dir), source))
+        async with real_writer_lock(config_dir, source=source, **kwargs):
+            yield
+
+    monkeypatch.setattr(apply_module, "dsp_writer_lock", recording_writer_lock)
+
+    # N3 (#1666 review): also pin that the retry actually reaches promote
+    # (not just that persist succeeded), and that the canonical file mirrors
+    # the applied sibling's content afterward.
+    real_promote = apply_module.promote_applied_baseline_candidate
+    promote_calls = 0
+
+    def recording_promote(applied, **kwargs):
+        nonlocal promote_calls
+        promote_calls += 1
+        return real_promote(applied, **kwargs)
+
+    monkeypatch.setattr(
+        apply_module, "promote_applied_baseline_candidate", recording_promote
+    )
+
     result = await apply_measured_candidate(
         run=harness.plan.authority.run,
         run_store=harness.run_store,
@@ -419,6 +453,18 @@ async def test_retained_apply_retry_only_finishes_durable_state(
     assert result["status"] == "applied_unverified"
     assert state["path"] == applied_path
     assert calls == 2
+    assert lock_entries == [
+        (
+            apply_module.baseline_config_path(tmp_path / "candidate.yml").parent,
+            apply_module.APPLY_SOURCE,
+        )
+    ]
+    assert promote_calls == 1
+    canonical_path = apply_module.baseline_config_path(tmp_path / "candidate.yml")
+    applied_sibling_path = Path(result["applied_profile"]["config"]["path"])
+    assert canonical_path.read_text(encoding="utf-8") == (
+        applied_sibling_path.read_text(encoding="utf-8")
+    )
 
 
 @pytest.mark.asyncio

@@ -5806,6 +5806,159 @@ def test_check_dsp_apply_state_fails_on_rollback_failure(monkeypatch, tmp_path):
     assert "rollback_failed" in r.detail
 
 
+# --- #1666: canonical active-speaker baseline durability -------------------
+
+
+def test_check_active_speaker_baseline_canonical_registered_in_sync_checks():
+    assert (
+        "check_active_speaker_baseline_canonical" in _registered_check_names()
+    )
+
+
+def test_active_speaker_baseline_canonical_ok_when_live_is_canonical(
+    monkeypatch, tmp_path,
+):
+    canonical = tmp_path / "active_speaker_baseline.yml"
+    canonical.write_text("# whatever is currently loaded\n", encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {canonical}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(canonical)
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "ok"
+    assert "live config is the canonical file" in r.detail
+
+
+def test_active_speaker_baseline_canonical_ok_when_not_applicable(
+    monkeypatch, tmp_path,
+):
+    """A live config that is not an active-speaker baseline candidate at all
+    (a plain stereo/flat topology's own generated config) is not applicable
+    -- never a false warning on the majority of the fleet that has no active
+    baseline commissioned."""
+    live = tmp_path / "outputd-cutover.yml"
+    live.write_text("devices:\n  samplerate: 48000\n", encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {live}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
+        str(tmp_path / "active_speaker_baseline.yml"),
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "ok"
+    assert "not applicable" in r.detail
+
+
+def test_active_speaker_baseline_canonical_ok_when_statefile_unreadable(
+    monkeypatch, tmp_path,
+):
+    """N2 (#1666 review): a missing/unreadable outputd statefile is already
+    surfaced as a real failure by check_active_speaker_runtime_graph (when a
+    roleful topology needs it); this check's own scope -- comparing canonical
+    to the live baseline -- cannot be evaluated at all here, so it is not
+    applicable rather than a redundant false warning."""
+    monkeypatch.setenv(
+        "JASPER_CAMILLA_STATEFILE", str(tmp_path / "missing-statefile.yml")
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
+        str(tmp_path / "active_speaker_baseline.yml"),
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "ok"
+    assert "not applicable" in r.detail
+
+
+async def test_active_speaker_baseline_canonical_ok_when_content_matches_live(
+    monkeypatch, tmp_path,
+):
+    """#1666: the common case -- every successful apply's post-success
+    promote keeps canonical's content equal to whatever candidate is
+    actually live."""
+    from tests.test_active_speaker_baseline_profile import _apply_prior_then_run8
+
+    (
+        _state_path, config_path, _load_config, _current_config_path,
+        _prior_payload, run8_payload, _retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+
+    live_path = Path(run8_payload["profile"]["config"]["path"])
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {live_path}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(config_path)
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "ok"
+    assert str(config_path) in r.detail
+
+
+async def test_active_speaker_baseline_canonical_warns_on_divergence(
+    monkeypatch, tmp_path,
+):
+    """#1666: canonical currently holds run-8's promoted bytes (the fixture's
+    most recent apply); simulating CamillaDSP still running the PRIOR
+    candidate produces a genuine content mismatch -- warn, since the live
+    graph is the audible truth and is correct, but the canonical file is
+    stale for other readers."""
+    from tests.test_active_speaker_baseline_profile import _apply_prior_then_run8
+
+    (
+        _state_path, config_path, _load_config, _current_config_path,
+        prior_payload, _run8_payload, _retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+
+    live_path = Path(prior_payload["profile"]["config"]["path"])
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {live_path}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(config_path)
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "warn"
+    assert "does not match" in r.detail
+    assert str(config_path) in r.detail
+    assert str(live_path) in r.detail
+
+
+def test_active_speaker_baseline_canonical_warns_on_missing_canonical(
+    monkeypatch, tmp_path,
+):
+    """#1666: a live applied-candidate sibling with no canonical file yet (a
+    box whose last promote never ran, or hasn't run since this fix
+    deployed) warns rather than failing -- the next apply/restore
+    re-promotes it."""
+    canonical = tmp_path / "active_speaker_baseline.yml"
+    live = tmp_path / "active_speaker_baseline_candidate_abc123def456.yml"
+    live.write_text("# a real applied candidate, never promoted\n", encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {live}\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(canonical)
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "warn"
+    assert "missing" in r.detail
+
+
 def test_check_correction_latest_bundle_warns_without_calibration(
     monkeypatch, tmp_path,
 ):

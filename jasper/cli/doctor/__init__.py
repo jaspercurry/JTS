@@ -155,6 +155,8 @@ from .audio import (
     _sound_profile_path,
     check_sound_profile,
     check_dsp_apply_state,
+    _is_baseline_candidate_sibling,
+    check_active_speaker_baseline_canonical,
 )
 from . import wake as wake
 from .wake import (
@@ -495,6 +497,8 @@ __all__ = [
     "_sound_profile_path",
     "check_sound_profile",
     "check_dsp_apply_state",
+    "_is_baseline_candidate_sibling",
+    "check_active_speaker_baseline_canonical",
     "check_openwakeword_model",
     "_voice_wake_legs_runtime",
     "_assess_wake_legs",

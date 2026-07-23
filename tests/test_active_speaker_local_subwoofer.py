@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import yaml
@@ -914,7 +915,8 @@ def test_passive_mains_sub_builds_and_reproves_at_topology_fc(tmp_path) -> None:
     assert payload["preset"]["way_count"] == 1
     assert payload["config"]["playback_device_source"] == "outputd_active_lane"
 
-    text = config_path.read_text(encoding="utf-8")
+    # #1666: candidate lands on a content-addressed sibling, not config_path.
+    text = Path(payload["config"]["path"]).read_text(encoding="utf-8")
     graph = classify_camilla_graph(topology=topology, text=text)
     assert graph.allowed is True, [i["code"] for i in graph.issues]
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
