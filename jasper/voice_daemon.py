@@ -30,7 +30,10 @@ from .assistant_loudness import (
     active_voice_identity,
     tts_envelope_lufs_for_level,
 )
-from .tts_routing import tts_socket_feeds_pre_dsp_fanin
+from .tts_routing import (
+    tts_socket_feeds_post_dsp_outputd,
+    tts_socket_feeds_pre_dsp_fanin,
+)
 from .wake_events import (
     WakeEventStore,
     make_event_id,
@@ -2375,12 +2378,20 @@ class WakeLoop:
             "voice": voice,
             "tts_envelope_lufs": tts_envelope,
         }
+        # Attach the absolute volume context when the active TTS route
+        # interprets it: the pre-DSP fan-in mix (solo/leader) or the confirmed
+        # post-DSP outputd mix (a reconciled passive member, since #1547). The
+        # same wire message is sent either way — the post-DSP consumer owns the
+        # structural downstream-is-zero fact. Ambiguous/legacy routes stay off.
+        route_consumes_context = getattr(
+            self._cfg, "duck_transport", ""
+        ) == "fanin" and (
+            tts_socket_feeds_pre_dsp_fanin(os.environ)
+            or tts_socket_feeds_post_dsp_outputd(os.environ)
+        )
         context_reader = (
             getattr(self._volume_coordinator, "effective_volume_context", None)
-            if (
-                getattr(self._cfg, "duck_transport", "") == "fanin"
-                and tts_socket_feeds_pre_dsp_fanin(os.environ)
-            )
+            if route_consumes_context
             else None
         )
         if callable(context_reader):
