@@ -155,28 +155,11 @@ impl Default for TtsMetrics {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct TtsLoudnessSnapshot {
-    pub content_short_lufs: Option<f64>,
-    pub content_anchor_lufs: Option<f64>,
-    pub decision_seen: bool,
-    pub calibrated: bool,
-    pub profile_confidence: f64,
-    pub baseline_lufs: Option<f64>,
-    pub target_lufs: Option<f64>,
-    pub source_lufs: Option<f64>,
-    pub source_peak_dbfs: Option<f64>,
-    pub requested_gain_db: Option<f64>,
-    pub peak_cap_gain_db: Option<f64>,
-    pub final_gain_db: Option<f64>,
-    pub target_speaker_lufs: Option<f64>,
-    pub envelope_offset_lu: Option<f64>,
-    pub reference_kind: Option<&'static str>,
-    pub volume_context: Option<VolumeContext>,
-    pub volume_context_rejected: u64,
-    pub held_content: Option<HeldLoudnessReference>,
-    pub held_assistant: Option<HeldLoudnessReference>,
-}
+// The STATUS `assistant_loudness` snapshot is the shared wire shape, defined
+// once in jasper-tts-protocol so fan-in and outputd cannot drift. fan-in
+// derives it from its seqlock'd atomics below; outputd derives it from the
+// engine. Both render it through `jasper_tts_protocol::render_assistant_loudness`.
+pub use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 
 impl TtsMetrics {
     pub fn new(budget_frames: u64) -> Self {

@@ -54,7 +54,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -64,6 +64,7 @@ use crate::core::OutputCore;
 use crate::ledger::{PlayoutEvent, SegmentId};
 use crate::mixer::DEFAULT_TTS_GAIN_DB;
 use crate::types::{SegmentKind, CHANNELS, SAMPLE_RATE};
+use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{command_name, read_command, TtsCommand};
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -163,6 +164,12 @@ pub struct TtsMetrics {
     pub flush_requests: Arc<AtomicU64>,
     pub flushed_frames: Arc<AtomicU64>,
     pub max_pending_frames: u64,
+    /// The shared assistant-loudness snapshot for STATUS. `OutputCore`
+    /// (audio loop) publishes into it each period via `try_lock`; the state
+    /// server reads it. Mutex over a small Copy-ish struct, matching the
+    /// `sro_estimator` / `dac_clock` state pattern — the audio loop never
+    /// blocks on it.
+    loudness: Arc<Mutex<TtsLoudnessSnapshot>>,
 }
 
 impl TtsMetrics {
@@ -175,6 +182,7 @@ impl TtsMetrics {
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
             max_pending_frames,
+            loudness: Arc::new(Mutex::new(TtsLoudnessSnapshot::default())),
         }
     }
 
@@ -182,6 +190,23 @@ impl TtsMetrics {
         self.dropped_audio_frames
             .fetch_add(frames, Ordering::Relaxed);
         self.dropped_commands.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A clone of the shared snapshot cell, handed to `OutputCore` so the audio
+    /// loop can publish loudness state without the state server or the socket
+    /// threads in the path.
+    pub fn loudness_cell(&self) -> Arc<Mutex<TtsLoudnessSnapshot>> {
+        Arc::clone(&self.loudness)
+    }
+
+    /// Read the current snapshot for STATUS. `try_lock` so a state read never
+    /// blocks on the once-per-period publish; on the rare contention, fall back
+    /// to a default (the next read refreshes it).
+    pub fn loudness_snapshot(&self) -> TtsLoudnessSnapshot {
+        self.loudness
+            .try_lock()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default()
     }
 }
 

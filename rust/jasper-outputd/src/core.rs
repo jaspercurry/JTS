@@ -5,7 +5,7 @@
 //! Output-owner core with fake transports for tests and developer runs.
 
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::fake::{
     DrainedPlayback, FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentPlayback,
@@ -14,7 +14,7 @@ use crate::fake::{
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
 use crate::loudness::{
     linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
-    HeldLoudnessReference, MixStage,
+    HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
 };
 use crate::mixer::{mix_i16_saturating, sanitize_tts_gain_db};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
@@ -49,6 +49,12 @@ pub struct OutputCore {
     /// Segments whose audio drained before SEGMENT_END arrived: their playout
     /// facts wait here until END fires, then the reference is committed.
     drained_pending_end: Vec<(SegmentId, Option<SegmentPlayback>)>,
+    /// Shared STATUS snapshot cell (the daemon's TtsMetrics), published each
+    /// period. `None` on the fake/developer path.
+    loudness_sink: Option<Arc<Mutex<TtsLoudnessSnapshot>>>,
+    /// Count of stale/invalid VolumeContext updates the engine rejected,
+    /// surfaced in the snapshot like fan-in's `volume_context_rejected`.
+    volume_context_rejected: u64,
     content_buf: Vec<i16>,
     assistant_buf: Vec<i16>,
     output_buf: Vec<i16>,
@@ -94,6 +100,8 @@ impl OutputCore {
             assistant_reference_tx: None,
             drained_playbacks: Vec::new(),
             drained_pending_end: Vec::new(),
+            loudness_sink: None,
+            volume_context_rejected: 0,
             content_buf: vec![0; period_samples],
             assistant_buf: vec![0; period_samples],
             output_buf: vec![0; period_samples],
@@ -266,6 +274,9 @@ impl OutputCore {
             &mut self.drained_playbacks,
         );
         self.process_drained_playbacks();
+        // Publish the loudness snapshot for STATUS once per period (after
+        // observe + any completions this period). No-op without a sink.
+        self.publish_loudness_snapshot();
 
         let mix_stats =
             mix_i16_saturating(&self.content_buf, &self.assistant_buf, &mut self.output_buf);
@@ -368,7 +379,31 @@ impl OutputCore {
     /// verbatim for observability; only its *use* inside the engine is zeroed
     /// (see MixStage) so this lane never inherits pre-DSP compensation.
     pub fn update_volume_context(&mut self, context: VolumeContext) -> bool {
-        self.loudness.update_volume_context(context)
+        let accepted = self.loudness.update_volume_context(context);
+        if !accepted {
+            self.volume_context_rejected = self.volume_context_rejected.saturating_add(1);
+        }
+        accepted
+    }
+
+    /// Arm the shared STATUS snapshot cell (from the daemon's `TtsMetrics`).
+    /// Once set, the audio loop publishes the loudness snapshot each period.
+    pub fn set_loudness_sink(&mut self, sink: Arc<Mutex<TtsLoudnessSnapshot>>) {
+        self.loudness_sink = Some(sink);
+    }
+
+    /// Publish the current engine snapshot into the shared STATUS cell. Called
+    /// once per period; `try_lock` so the audio loop never blocks on a state
+    /// read. No-op when no sink is armed (fake/developer path).
+    fn publish_loudness_snapshot(&self) {
+        let Some(sink) = &self.loudness_sink else {
+            return;
+        };
+        if let Ok(mut slot) = sink.try_lock() {
+            *slot = self
+                .loudness
+                .loudness_snapshot(self.volume_context_rejected);
+        }
     }
 
     pub fn current_volume_context(&self) -> Option<VolumeContext> {

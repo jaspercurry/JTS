@@ -409,6 +409,9 @@ fn run_alsa(
             path, config.tts_max_pending_frames, config.tts_program_duck_db,
         );
         let mut core = OutputCore::new_for_daemon(config.period_frames);
+        // Publish the assistant-loudness snapshot into the shared STATUS cell
+        // each period (the same shape fan-in exposes under tts.assistant_loudness).
+        core.set_loudness_sink(metrics.loudness_cell());
         // Learned quiet-room assistant reference: load the last value and arm
         // the persistence writer, mirroring fan-in. Best-effort — a writer
         // failure degrades to no learning and never blocks final output.
