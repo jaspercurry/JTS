@@ -2710,7 +2710,9 @@ def handle_v2_restore(
     """
     from jasper.active_speaker.baseline_profile import (
         restore_applied_baseline_profile,
+        topology_config_fingerprint,
     )
+    from jasper.output_topology import load_output_topology
 
     if not v2_flow_active():
         raise CrossoverV2Refused(
@@ -2732,6 +2734,33 @@ def handle_v2_restore(
             "this is the first measured crossover on this speaker — there's "
             "no earlier one to restore; use Speaker setup to remove it instead"
         )
+    # Item 2 (#1605): the stashed Undo target was composed for the output
+    # topology live at apply time. If the topology's config-determining
+    # fingerprint changed since (a driver swap, a different output device or
+    # channel map), reloading that config would realize the WRONG graph —
+    # refuse with a clear "re-measure" nudge rather than silently restoring a
+    # stale config. A stash predating the fingerprint (no topology_fingerprint
+    # in its ``source``) can't be compared, so it falls through to the existing
+    # restore path, which still validates the config bytes itself.
+    stashed_source = pre_apply_profile.get("source")
+    stashed_topology_fp = (
+        str(stashed_source.get("topology_fingerprint") or "")
+        if isinstance(stashed_source, Mapping)
+        else ""
+    )
+    if stashed_topology_fp:
+        current_topology_fp = topology_config_fingerprint(load_output_topology())
+        if current_topology_fp != stashed_topology_fp:
+            log_event(
+                logger,
+                "correction.crossover_v2_restore_topology_mismatch",
+                level=logging.WARNING,
+            )
+            raise CrossoverV2Refused(
+                "the speaker's output configuration changed since this "
+                "crossover was applied, so the previous sound can't be safely "
+                "restored — re-measure the crossover instead"
+            )
     cam = camilla_factory()
     payload = run_async(
         restore_applied_baseline_profile(

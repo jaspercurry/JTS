@@ -939,6 +939,38 @@ def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
         v2host.handle_v2_restore(None, None)
 
 
+def test_restore_refuses_across_a_topology_change(monkeypatch):
+    """Item 2 (#1605): the stashed Undo target was composed for the output
+    topology live at apply time; restoring it after the topology changed would
+    realize the wrong graph. handle_v2_restore refuses with a re-measure nudge
+    when the current topology's config fingerprint differs from the one stashed
+    in pre_apply_profile.source. (The matching-topology pass-through is proven
+    end-to-end by test_apply_stashes_pre_apply_profile_and_restore_reverts_
+    through_real_seams, which restores under one unchanged topology.)"""
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": {
+            "status": "applied",
+            "source": {"topology_fingerprint": "topo-A"},
+            "config": {"path": "/tmp/whatever.yml"},
+        },
+    })
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology", lambda: object()
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.topology_config_fingerprint",
+        lambda _topology: "topo-B",
+    )
+    with pytest.raises(
+        v2host.CrossoverV2Refused, match="output configuration changed"
+    ):
+        v2host.handle_v2_restore(None, None)
+
+
 def test_status_block_surfaces_apply_blocked():
     v2host.save_v2_state({
         "session_id": "cap_x",
