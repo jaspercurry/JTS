@@ -138,24 +138,35 @@ TTS is already a core realtime-voice component:
   a passive bonded non-sub multiroom member, the grouping reconciler instead
   points voice at `/run/jasper-outputd/tts.sock` so assistant audio mixes
   post-round-trip at the final output owner.
-- Fan-in and outputd speak the same `jasper-tts-protocol` wire vocabulary,
-  but **volume-context parity is not claimed across their different mix
-  stages**. `jasper-fanin` owns assistant gain in the solo/active pre-DSP
-  topology: it snapshots pre-duck content loudness, applies the provider
-  source-loudness profile and peak-capped gain policy, emits
-  `event=fanin.assistant_loudness`, and publishes the accepted stamped volume
-  context, held references, rejection count, and latest decision under
-  `tts.assistant_loudness` in STATUS. Python seeds/learns source profiles and
-  publishes speaker-volume facts; it does not set final gain.
+- Fan-in and outputd speak the same `jasper-tts-protocol` wire vocabulary AND
+  now share **volume-context parity** across their different mix stages
+  (issue #1547). Both consume the SAME `VolumeContext`; the one structural
+  difference is a `MixStage` parameter to the shared `AssistantLoudness`
+  engine. `MixStage::PreDsp` (fan-in, solo/leader) compensates for CamillaDSP's
+  downstream gain; `MixStage::PostDsp` (outputd, passive grouped follower)
+  treats `downstream_db` as **0.0** in every mixer-to-speaker conversion
+  because nothing applies volume after the outputd mix — applying fan-in's
+  pre-DSP compensation there would double-compensate by tens of dB. `jasper-fanin`
+  snapshots pre-duck content loudness, applies the provider source-loudness
+  profile and peak-capped gain policy, emits `event=fanin.assistant_loudness`,
+  and publishes the accepted stamped volume context, held references, rejection
+  count, and latest decision under `tts.assistant_loudness` in STATUS. Python
+  seeds/learns source profiles and publishes speaker-volume facts; it does not
+  set final gain.
 - On a passive bonded member, the grouping reconciler routes TTS to outputd and
-  writes `JASPER_TTS_MIX_STAGE=post_dsp`. Voice and the coordinator then send no
-  `VOLUME_CONTEXT`: post-DSP outputd must not inherit fan-in's downstream
-  pre-compensation, and today it has neither equivalent mute semantics nor
-  live re-gain for queued speech. It keeps the pre-volume-context bonded-member
-  behavior. The follow-up
-  [Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
-  must make mix stage an explicit input to `decide_gain`, add mute, and apply
-  live re-gain in outputd's mix loop before parity can be claimed.
+  writes `JASPER_TTS_MIX_STAGE=post_dsp`. Voice and the coordinator now publish
+  the SAME `VOLUME_CONTEXT` to outputd's socket (they never mutate `downstream_db`
+  to 0 — the structural-zero fact belongs to the post-DSP consumer). Outputd
+  applies mute (a follower reply is silenced downstream even when a Camilla mute
+  upstream cannot reach it), live re-gain of queued speech, and learns/persists
+  the quiet-room reference to `JASPER_OUTPUTD_ASSISTANT_REFERENCE_PATH`
+  (a separate file from fan-in's so a solo/bonded flip never cross-contaminates
+  the two engines). It exposes the same `tts.assistant_loudness` STATUS object
+  fan-in does, rendered through the one shared writer so the two `/state` shapes
+  cannot drift. The fail-closed rule stands: outputd applies post-DSP
+  compensation ONLY when its engine is explicitly `MixStage::PostDsp`, and the
+  producer only publishes to a mix stage the reconciler has explicitly confirmed
+  (a legacy socket-only grouping override stays ambiguous and fails closed).
 - Cues and chirps route through the same `TtsPlayout` object. They
   inherit fan-in routing, drain behavior, flush behavior, and
   profile/peak-capped gain policy without training live assistant
@@ -1487,7 +1498,7 @@ datum: how much assistant audio was actually heard.
   DAC-clock precision (subtracting outputd's reported DAC delay) and the
   provider-adapter consume side remain follow-ups.
 
-Last verified: 2026-07-16 (pre-DSP fan-in volume-context ownership and the explicit passive-outputd parity scope checked against PR #1542; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
+Last verified: 2026-07-23 (post-DSP outputd volume-context parity landed for #1547: shared `MixStage` engine, outputd VolumeContext ingest, per-period mute/live-regain mix loop, learned/persisted quiet-room reference, and shared `tts.assistant_loudness` STATUS renderer checked against the branch; prior 2026-07-16 pass covered pre-DSP fan-in volume-context ownership and the then-open passive-outputd parity scope against PR #1542; prior 2026-07-14 pass covered DAC connection declaration and output-hardware USB
 role artifact rechecked; prior 2026-07-12 outputd control-socket command cap/deadline and
 STATUS JSON contract rechecked against `rust/jasper-outputd/src/state.rs`;
 historical readiness entry marked superseded by the
