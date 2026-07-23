@@ -82,6 +82,22 @@ visibly.
    UMIK-2 over the headless direct-Pi drive path (no capture relay). The
    relay/phone/product UX hardening comes after the acoustics are right —
    same pattern that worked for the measurement campaign.
+6. **The correction envelope replaces every fixed fit-ceiling number**
+   (see Layer 1a section). Session enforcement rides with it: 0°
+   orientation confirmed + on-axis aim for fit-eligible sessions (the
+   90°-file-loaded case hard-fails), sweep upper edge decoupled from the
+   declared driver band. The declared-band invariant is refined
+   asymmetrically: the LOWER edge + proven high-pass stay absolute
+   (excursion protection); the UPPER edge is not a protection boundary —
+   low-level ultrasonic sweep content has no damage mechanism, and the
+   sweep needs headroom past the analysis band.
+7. **Sources:** the three verbatim research artifacts live in
+   [`research/2026-07-23-driver-linearization/`](research/2026-07-23-driver-linearization/README.md);
+   this doc is the adopted synthesis and wins where they disagree. The
+   fact-check (artifact 03) also validates the post-amp L-pad as textbook
+   gain structure (feed #1665: predict the hiss reduction from the
+   declared pad) and assesses the closed-loop + multi-level + excess-phase
+   combination as largely novel among shipping DIY tools.
 
 ## Layer 1a concretely — UX and data flow
 
@@ -91,39 +107,87 @@ CHECK → MEASURE → auto-apply → VERIFY, exactly as today. Linearization is
 not a separate flow, a second wizard, or an extra sweep — it is a new
 consumer of data every session already records:
 
-1. **MEASURE (unchanged capture, richer analysis).** The existing per-driver
-   gated sweeps already span each driver's declared band to 18 kHz with
-   per-serial mic cal applied (`DriverResponse`, ~58 dB SNR measured on
-   JTS3). The analysis first fits a per-driver linearization curve within
-   each driver's band (bounded biquad set / smoothed inverse; conservative
-   octave-fraction smoothing; capped correction depth so single-capture
-   noise cannot imprint — exact fit form is a Phase-2 implementation
-   decision against the real JTS3 curves), **then** computes integration
-   (trim/delay/polarity) against the LINEARIZED branch responses. That
-   internal ordering is what structurally defuses #1667. The candidate
-   artifact grows a `linearization` member beside trims/delay/polarity; a
-   re-run refits everything atomically; profiles without the artifact stay
-   valid (absent = no stage emitted).
+1. **MEASURE (one tap, richer capture + richer analysis).** The per-driver
+   gated sweeps grow two composition changes (still ONE phone tap, ~30–60 s
+   longer): each driver's sweep repeats **N≥3 times at the identical
+   position** (the σ(f) repeatability input — today's single repeat already
+   exists for drift), and every sweep runs **past the analysis band**
+   (~22–24 kHz at 48 k fs with proper fades) so deconvolution edge
+   artifacts fall outside anything analyzed — the current 18 kHz sweep end
+   parks fade artifacts inside the band. The analysis then fits each
+   driver's linearization curve under the **correction envelope** (below),
+   **then** computes integration (trim/delay/polarity) against the
+   LINEARIZED branch responses — the ordering that structurally defuses
+   #1667. Linearization *aims* to extend ~an octave past Fc so acoustic
+   slopes approach textbook LR, but only opportunistically within the
+   envelope and boost caps — for a driver rolling off AT Fc (the JTS3
+   Epique), full through-region flattening is unreachable within safe
+   boost, and **empirical integration on the actual responses remains the
+   backstop**; textbook slopes are never assumed. The candidate grows a
+   `linearization` member; re-runs refit atomically; profiles without the
+   artifact stay valid (absent = no stage emitted).
 2. **APPLY (one more emitted stage).** The baseline emission gains one
    per-role linearization filter stage, same transaction, same safety
    posture (non-positive gains + headroom accounting).
-3. **VERIFY (same capture, second claim).** The verify sweep is already a
-   full-band summed ESS — the flatness-verify evaluates the SAME capture
-   against the flat target from the validity floor to ~16 kHz, alongside
-   the existing integration tracking gate. Two named verdicts from one
-   capture; neither implies the other.
+3. **VERIFY (same capture, more claims — three honesty levels).** *Fit* to
+   the envelope, *verify* roughly an octave above the fit band's top, and
+   *observe/report* to 20 kHz — the top octave appears in the technical
+   disclosure as the driver's measured natural response, never as a
+   pass/fail. Verification itself splits by target: **gated per-driver and
+   summed checks verify against FLAT; in-room (Layer 3) verification uses a
+   downward-sloping target (~1 dB/oct Harman-class, directivity-aware,
+   user-adjustable)** — the target is an explicit parameter of the verify
+   function, never a shared default (research artifact 03, claim K: an
+   in-room check against flat over-brightens every result). Closed-loop
+   linearization verification (achieved-vs-predicted per band, back off
+   divergent bands, ≤2 iterations) rides the same auto-apply→re-measure
+   machinery and is the mechanism that turns every contested modeling
+   question into a per-session empirical test.
 
-**Consistency without extra user steps:** robustness comes from the
-capped/smoothed fit plus the flatness-verify gate, not from asking the
-household for more taps. Before choosing the fit form, Phase 2 quantifies
-fit-to-fit variance OFFLINE against the existing 2026-07-22/23 corpus
-(15+ archived measure captures → fit each → curve spread); if field data
-ever shows single-capture fits are too noisy, N-run averaging becomes an
-operator-tier option — a data-driven decision, not a default cost. The
-woofer's low edge honestly stops at the gate validity floor (~150–200 Hz
-here); below that is Layers 2–3 by contract, not a linearization gap.
-Fix-4 (#1654, wider tweeter sweep) composes naturally but is not a
-prerequisite.
+**The correction envelope (adopted 2026-07-23 after research round 2 —
+this supersedes any fixed fit-ceiling number earlier in this doc).** No
+hardcoded ceiling. Per driver, per session, per frequency bin:
+
+```
+allowed_depth(f) = min(
+    mic_trust_limit(f, tier),      # prior: artifact 01's metrology table
+    repeatability_limit(f, σ(f)),  # measured across the N in-capture repeats
+    linearity_limit(f),            # two-level test (extends existing pilots)
+    invertibility_limit(f),        # excess-phase ADVISORY — build last
+    class_prior_limit(f, class)    # artifact 02 §5 driver-class table
+)
+```
+
+Correction is clamped to the envelope, which tapers smoothly (no cliffs).
+Cold-start priors: artifact 01's per-tier table (reference: full correction
+to 8 kHz, taper to zero by 16 k; consumer: 6 k/12 k; phone: 3 k/8 k) and
+artifact 02 §5's driver-class rows. **Evidence can EARN depth beyond the
+priors** (clean measured excess phase + closed-loop verification passing —
+artifact 03's softened boost stance), **but never beyond what the
+measurement chain resolves: the repeatability and mic-trust terms always
+bind.** No class-table row is permission. Fitting policy: cut-preferred /
+normalize-downward (spend the sensitivity headroom — this IS the existing
+non-positive-gain posture), boost caps per artifact 02 §6 (global +6 max,
+Q≤2 boosts, 0 above the envelope, 0 near horn cutoff / into flagged
+nonlinear or excess-phase bands), cuts generous (−12 dB, Q≤8), smoothing
+widening with frequency (1/6 oct to 4 k → 1/3 oct to 10 k → 1/2–1 oct
+above), fit-against-smoothed / verify-against-less-smoothed. Every band
+emits a reason code (`FITTED`, `LIMITED_BY_REPEATABILITY`, …) — the same
+honesty-guard culture as the acceptance gates, per frequency. Build order
+(artifact 02 §15): repeatability gate → closed-loop verify →
+cut-preferred fitting + caps → tier/class priors → multi-level linearity →
+excess-phase advisory → UX reason codes. Steps 1–3 alone beat any
+hardcoded ceiling.
+
+**Consistency without extra user steps:** σ(f) comes from the in-capture
+repeats — no extra taps. Before choosing the fit form, Phase 2 quantifies
+fit-to-fit variance OFFLINE against the 2026-07-22/23 corpus (15+ archived
+measure captures) and seeds the σ thresholds (starting points: 0.5/1.0/1.5
+dB by tier). The woofer's low edge honestly stops at the gate validity
+floor (~150–200 Hz here); below that is Layers 2–3 by contract. Fix-4
+(#1654) composes naturally but is not a prerequisite. Do NOT average
+across mic positions for linearization — position-averaging is Layer-3
+practice and smears genuine on-axis HF detail here (artifact 01 Q2).
 
 **Measurement instrument, in one paragraph (details are canonical in the
 HANDOFF's invariants):** the gated far-field sweep at the listening axis is
