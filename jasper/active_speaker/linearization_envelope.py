@@ -107,6 +107,11 @@ DRIVER_CLASSES: tuple[str, ...] = (
 # is this module's own choice, still >=4x finer than the ladder's finest
 # step (1/6 oct), so it loses no ladder-relevant detail either.
 DEFAULT_ENVELOPE_GRID_HZ: np.ndarray = np.geomspace(150.0, 20_000.0, 176)
+# Frozen dataclasses (EnvelopeCurve) only stop reassigning FIELDS -- a
+# `freqs_hz` field that defaults to this exact array object still holds a
+# live reference to it, so an in-place mutation by one caller would
+# silently corrupt the grid for every other caller. Read-only closes that.
+DEFAULT_ENVELOPE_GRID_HZ.flags.writeable = False
 
 # Every term function below is capped at this value. It is NOT a policy
 # number — the real ceiling on what fitting is allowed to do lives in
@@ -230,6 +235,16 @@ def compute_sigma_curve(
     Returns ``None`` when fewer than 2 occurrences are available (a
     session whose driver never repeated) — no evidence, no sigma, never a
     guess.
+
+    Also returns ``None`` when ``valid_band_hz`` does not overlap
+    ``grid_hz`` at all (an empty valid mask — e.g. a valid band that sits
+    entirely below this module's 150 Hz floor grid). ``valid_band_hz`` is
+    REQUIRED to overlap ``grid_hz`` for a non-``None`` result: centering
+    needs at least one in-band bin to compute each occurrence's reference
+    mean, and the empty-mask guard below exists so that requirement fails
+    the same honest "no evidence" way as the occurrence-count guard above,
+    rather than falling through to ``np.mean`` on an empty slice (which
+    returns NaN with a RuntimeWarning, not an exception).
     """
     occurrences: tuple[DriverResponse, ...] = (primary, *primary.repeat_responses)
     if len(occurrences) < 2:
@@ -237,6 +252,8 @@ def compute_sigma_curve(
 
     lo_hz, hi_hz = valid_band_hz
     valid_mask = (grid_hz >= lo_hz) & (grid_hz <= hi_hz)
+    if not valid_mask.any():
+        return None
 
     centered_curves = []
     for occurrence in occurrences:
@@ -384,9 +401,18 @@ class EnvelopeCurve:
     term's FULL, unmasked, per-bin curve (not just where it won) for
     diagnostics — e.g. showing "here's what mic-trust alone would have
     allowed at every frequency" even at bins some other term actually
-    decided. ``sigma_db`` is :func:`compute_sigma_curve`'s output verbatim
-    (``None`` when fewer than 2 occurrences existed) — the same
-    diagnostic transparency for the repeatability evidence itself.
+    decided. ``sigma_db`` is the sigma actually CONSUMED by the
+    repeatability term: by default that is :func:`compute_sigma_curve`'s
+    output verbatim (``None`` when fewer than 2 occurrences existed); when
+    a caller supplies ``sigma_db`` explicitly to :func:`compose_envelope`
+    (the PR-C σ-composition seam — see that function's docstring), this
+    field records exactly what was supplied instead of the internally
+    computed value — the same diagnostic transparency, now for whichever
+    σ evidence actually decided the term. ``n_repeats`` is independent of
+    which σ source was used: it always reports ``primary``'s own
+    occurrence count (primary + ``repeat_responses``), even when a
+    caller-supplied ``sigma_db`` was composed from evidence outside this
+    one driver's own capture (e.g. combined across a driver pair).
     """
 
     role: str
@@ -400,6 +426,15 @@ class EnvelopeCurve:
     driver_class: str
 
 
+# Sentinel for compose_envelope's `sigma_db` parameter (review finding S1).
+# `None` is already one of the three states the parameter distinguishes
+# (explicit "no evidence"), so unsetness needs a value distinct from both
+# `None` and any real array. Module-private: this sentinel's only job is
+# to be checked with `is`, never compared for equality, logged, or handed
+# back to a caller.
+_COMPUTE: object = object()
+
+
 def compose_envelope(
     role: str,
     primary: DriverResponse,
@@ -408,6 +443,7 @@ def compose_envelope(
     mic_tier: str,
     driver_class: str = "unknown",
     grid_hz: np.ndarray = DEFAULT_ENVELOPE_GRID_HZ,
+    sigma_db: np.ndarray | None | object = _COMPUTE,
 ) -> EnvelopeCurve:
     """Compose the correction envelope: the design doc's
 
@@ -467,11 +503,36 @@ def compose_envelope(
     boundary, and the smoothing ladder's window would otherwise leak a
     sliver of in-band energy across that boundary in either direction.
 
+    ``sigma_db`` is the seam the PR-C wiring layer uses to inject its own
+    σ-composition POLICY instead of this module's default internal
+    computation — the σ-seeding report's finding 5: ``σ_eff = max(
+    σ_prior_floor, live)``, and "don't trust live σ alone until N>=3 for
+    both drivers." That floor + N-trust gate belongs at the wiring
+    boundary, not here — this pure core stays policy-free and only knows
+    three states:
+
+      * default (unset) — compute sigma(f) internally from ``primary``'s
+        own in-capture repeats via :func:`compute_sigma_curve`, exactly
+        today's behavior for every existing caller;
+      * an explicit ``np.ndarray`` (must match ``grid_hz``'s shape) — use
+        it VERBATIM as the repeatability evidence, bypassing internal
+        computation entirely. This is how PR-C hands in its own already-
+        floored, already-N-gated composed σ without this module needing
+        to know what "floored" or "N-gated" mean;
+      * explicit ``None`` — treat as NO repeatability evidence regardless
+        of how many occurrences ``primary`` actually has (the same "no
+        evidence, no permission" contract :func:`compute_sigma_curve`
+        returns for <2 occurrences, but caller-FORCED rather than
+        occurrence-count-derived — e.g. one driver of a pair has real
+        repeats but its partner doesn't yet, so a paired N>=3 gate isn't
+        satisfied for either).
+
     Raises :class:`ValueError` for a ``mic_tier`` or ``driver_class``
     outside the closed vocabularies (:data:`MIC_TIERS` /
     :data:`DRIVER_CLASSES`) — "unknown" (class) and "phone" (tier) are
     themselves valid, closed-vocabulary members (the most conservative
-    ones), not error cases.
+    ones), not error cases — or for an explicit ``sigma_db`` array whose
+    shape does not match ``grid_hz``.
     """
     _validate_tier(mic_tier)
     _validate_driver_class(driver_class)
@@ -488,13 +549,35 @@ def compose_envelope(
     # Grid top is grid_hz's own maximum -- no separate upper check needed.
     in_band_mask = excited_mask & floor_mask
 
-    sigma_db = compute_sigma_curve(primary, valid_band_hz=excited_band_hz, grid_hz=grid_hz)
+    # Resolve the sigma_db tri-state contract (see docstring above): the
+    # default sentinel computes internally, exactly as this function always
+    # did before this parameter existed; an explicit array is trusted
+    # verbatim (PR-C's composed/floored/N-gated σ); explicit None forces
+    # "no evidence" regardless of primary's own occurrence count.
+    resolved_sigma_db: np.ndarray | None
+    if sigma_db is _COMPUTE:
+        resolved_sigma_db = compute_sigma_curve(
+            primary, valid_band_hz=excited_band_hz, grid_hz=grid_hz
+        )
+    elif sigma_db is None:
+        resolved_sigma_db = None
+    elif isinstance(sigma_db, np.ndarray):
+        resolved_sigma_db = sigma_db.astype(np.float64)
+        if resolved_sigma_db.shape != grid_hz.shape:
+            raise ValueError(
+                f"sigma_db shape {resolved_sigma_db.shape} does not match "
+                f"grid_hz shape {grid_hz.shape}"
+            )
+    else:
+        raise TypeError(
+            f"sigma_db must be an ndarray, None, or omitted; got {type(sigma_db)!r}"
+        )
 
     term_specs: tuple[EnvelopeTerm, ...] = (
         EnvelopeTerm(ReasonCode.LIMITED_BY_MIC_TIER, mic_trust_limit(grid_hz, tier=mic_tier)),
         EnvelopeTerm(
             ReasonCode.LIMITED_BY_REPEATABILITY,
-            repeatability_limit(sigma_db, tier=mic_tier, grid_hz=grid_hz),
+            repeatability_limit(resolved_sigma_db, tier=mic_tier, grid_hz=grid_hz),
         ),
         EnvelopeTerm(ReasonCode.LIMITED_BY_NONLINEARITY, linearity_limit(grid_hz)),
         EnvelopeTerm(ReasonCode.LIMITED_BY_EXCESS_PHASE, invertibility_limit(grid_hz)),
@@ -533,7 +616,7 @@ def compose_envelope(
         allowed_depth_db=smoothed_depth_db,
         reason=final_reason,
         terms=terms_map,
-        sigma_db=sigma_db,
+        sigma_db=resolved_sigma_db,
         n_repeats=len(occurrences) - 1,
         mic_tier=mic_tier,
         driver_class=driver_class,

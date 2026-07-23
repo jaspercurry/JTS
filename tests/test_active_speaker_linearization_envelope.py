@@ -203,6 +203,19 @@ def test_two_occurrences_returns_defined_curve_no_nan_no_warning():
     assert (sigma >= 0.0).all()
 
 
+def test_compute_sigma_curve_off_grid_valid_band_returns_none_no_warning():
+    """valid_band_hz that does not overlap grid_hz at all (here: entirely
+    below DEFAULT_ENVELOPE_GRID_HZ's 150 Hz floor) must return None -- the
+    same 'no evidence, no guess' contract as the N<2 occurrence guard --
+    and must NEVER silently produce an all-NaN curve via np.mean on an
+    empty valid-mask slice (which would also emit a RuntimeWarning)."""
+    primary = _with_occurrences("woofer", [_flat(0.0), _flat(0.2)])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        sigma = compute_sigma_curve(primary, valid_band_hz=(20.0, 100.0))
+    assert sigma is None
+
+
 # --------------------------------------------------------------------------- #
 # compute_sigma_curve -- formula correctness
 # --------------------------------------------------------------------------- #
@@ -603,6 +616,116 @@ def test_compose_envelope_no_repeats_sigma_none_but_still_composes():
     assert np.all(curve.allowed_depth_db[in_band] == 0.0)
     for i in np.where(in_band)[0]:
         assert curve.reason[i] == ReasonCode.LIMITED_BY_REPEATABILITY
+
+
+# --------------------------------------------------------------------------- #
+# compose_envelope -- sigma_db injection seam (review finding S1)
+# --------------------------------------------------------------------------- #
+
+
+def test_compose_envelope_caller_supplied_sigma_db_used_verbatim():
+    """sigma_db passed explicitly to compose_envelope must be used AS-IS
+    for the repeatability term, bypassing compute_sigma_curve entirely --
+    the seam PR-C's wiring layer uses to inject its own composed (floored,
+    N-gated) sigma. Constructed so the caller-supplied value differs
+    sharply from what compute_sigma_curve would have computed internally
+    (near-zero, from 3 bit-identical occurrences), so the two envelopes
+    provably differ rather than coincidentally matching."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("tweeter", freqs_hz=grid)  # internal sigma ~ 0 everywhere
+    idx = int(np.argmin(np.abs(grid - 3000.0)))  # inside every flat/unconstrained region
+
+    default_curve = compose_envelope(
+        "tweeter", primary,
+        excited_band_hz=(2000.0, 18000.0),
+        mic_tier="reference",
+        driver_class="beryllium_diamond_dome",
+        grid_hz=grid,
+    )
+    # Same fixture/bin as test_compose_envelope_fitted_reason_when_no_term_binds:
+    # near-zero internal sigma means repeatability saturates, so nothing binds.
+    assert default_curve.reason[idx] == ReasonCode.FITTED
+
+    caller_sigma = np.full(grid.shape, 50.0)  # far past sigma_tolerable for every tier
+    explicit_curve = compose_envelope(
+        "tweeter", primary,
+        excited_band_hz=(2000.0, 18000.0),
+        mic_tier="reference",
+        driver_class="beryllium_diamond_dome",
+        grid_hz=grid,
+        sigma_db=caller_sigma,
+    )
+    # Recorded verbatim -- not the internally-computed near-zero value.
+    assert explicit_curve.sigma_db is not None
+    np.testing.assert_array_equal(explicit_curve.sigma_db, caller_sigma)
+    assert not np.allclose(explicit_curve.sigma_db, default_curve.sigma_db)
+
+    # The (now loose) repeatability term binds where nothing bound before,
+    # so the two envelopes provably differ at this bin.
+    assert explicit_curve.reason[idx] == ReasonCode.LIMITED_BY_REPEATABILITY
+    assert explicit_curve.allowed_depth_db[idx] < default_curve.allowed_depth_db[idx]
+
+    # n_repeats is unaffected by which sigma source was used -- it always
+    # reports primary's own occurrence count.
+    assert explicit_curve.n_repeats == default_curve.n_repeats == 2
+
+
+def test_compose_envelope_explicit_none_sigma_forces_all_zero_repeatability():
+    """Explicit sigma_db=None must force the SAME 'no evidence' contract as
+    compute_sigma_curve's own <2-occurrence guard, even when primary DOES
+    have real in-capture repeats -- e.g. PR-C's paired N>=3-for-both-
+    drivers gate deciding this driver's repeats don't count yet because its
+    partner hasn't repeated enough. n_repeats still reports the real
+    occurrence count, distinguishing this from an actually-unrepeated
+    capture (test_compose_envelope_no_repeats_sigma_none_but_still_composes,
+    where n_repeats == 0)."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("woofer", freqs_hz=grid)  # 2 real in-capture repeats
+    curve = compose_envelope(
+        "woofer", primary,
+        excited_band_hz=(150.0, 4000.0),
+        mic_tier="reference",
+        grid_hz=grid,
+        sigma_db=None,
+    )
+    assert curve.sigma_db is None
+    assert curve.n_repeats == 2
+    in_band = (grid >= 150.0) & (grid <= 4000.0)
+    assert np.all(curve.allowed_depth_db[in_band] == 0.0)
+    for i in np.where(in_band)[0]:
+        assert curve.reason[i] == ReasonCode.LIMITED_BY_REPEATABILITY
+
+
+def test_compose_envelope_sigma_db_shape_mismatch_raises_value_error():
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("woofer", freqs_hz=grid)
+    wrong_shape = np.zeros(len(grid) - 1)
+    with pytest.raises(ValueError):
+        compose_envelope(
+            "woofer", primary,
+            excited_band_hz=(150.0, 4000.0),
+            mic_tier="reference",
+            grid_hz=grid,
+            sigma_db=wrong_shape,
+        )
+
+
+def test_compose_envelope_sigma_db_wrong_type_raises_type_error():
+    """Belt-and-braces for the sigma_db: np.ndarray | None | object
+    signature: the `object` arm exists only so the module-private
+    _COMPUTE sentinel type-checks as a default value, not to accept
+    arbitrary types as real input -- anything that is neither the
+    sentinel, None, nor an ndarray is a caller bug, not a fourth state."""
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    primary = _zero_sigma_primary("woofer", freqs_hz=grid)
+    with pytest.raises(TypeError):
+        compose_envelope(
+            "woofer", primary,
+            excited_band_hz=(150.0, 4000.0),
+            mic_tier="reference",
+            grid_hz=grid,
+            sigma_db=[0.0] * len(grid),  # type: ignore[arg-type]
+        )
 
 
 def test_compose_envelope_rejects_unknown_tier_and_class():
