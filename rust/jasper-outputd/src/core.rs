@@ -4,12 +4,14 @@
 
 //! Output-owner core with fake transports for tests and developer runs.
 
+use std::sync::Arc;
+
 use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWrite};
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
 use crate::loudness::{
     AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig, MixStage,
 };
-use crate::mixer::{gain_db_to_linear, mix_i16_saturating, sanitize_tts_gain_db};
+use crate::mixer::{mix_i16_saturating, sanitize_tts_gain_db};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
 use jasper_tts_protocol::VolumeContext;
 
@@ -29,6 +31,10 @@ pub struct OutputCore {
     next_reference_sequence: u64,
     ledger: PlayoutLedger,
     loudness: AssistantLoudness,
+    /// The most recent segment's gain decision, kept so appended audio for the
+    /// currently-open segment can carry its peak-cap ceiling and live re-gain
+    /// residual into the per-period mix (matched by segment id).
+    active_assistant_decision: Option<(SegmentId, Arc<AssistantGainDecision>)>,
     content_buf: Vec<i16>,
     assistant_buf: Vec<i16>,
     output_buf: Vec<i16>,
@@ -70,6 +76,7 @@ impl OutputCore {
                 AssistantLoudnessConfig::default(),
                 MixStage::PostDsp,
             ),
+            active_assistant_decision: None,
             content_buf: vec![0; period_samples],
             assistant_buf: vec![0; period_samples],
             output_buf: vec![0; period_samples],
@@ -119,25 +126,51 @@ impl OutputCore {
         let decision = self.loudness.decide_gain(kind, fallback_gain, profile);
         log_assistant_loudness_decision(kind, &decision);
         let clamped_gain = decision.final_gain_db;
-        self.ledger
-            .start_segment(provider_item_id, kind, clamped_gain, self.monotonic_ns)
+        let id = self
+            .ledger
+            .start_segment(provider_item_id, kind, clamped_gain, self.monotonic_ns);
+        // Retain the decision so this segment's appended audio can carry its
+        // peak cap + live re-gain residual into the per-period mix.
+        self.active_assistant_decision = Some((id, Arc::new(decision)));
+        id
     }
 
     pub fn append_assistant_audio(&mut self, id: SegmentId, gain: f32, samples: Vec<i16>) {
+        // Legacy direct path: render at the given gain with no headroom
+        // (peak cap == base) and no live tracking (no decision).
+        self.append_assistant_audio_planned(id, gain, None, samples);
+    }
+
+    pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
+        let base_gain_db = self.ledger.segment(id).gain;
+        let decision = match &self.active_assistant_decision {
+            Some((decision_id, decision)) if *decision_id == id => Some(Arc::clone(decision)),
+            _ => None,
+        };
+        self.append_assistant_audio_planned(id, base_gain_db, decision, samples);
+    }
+
+    fn append_assistant_audio_planned(
+        &mut self,
+        id: SegmentId,
+        base_gain_db: f32,
+        decision: Option<Arc<AssistantGainDecision>>,
+        samples: Vec<i16>,
+    ) {
         assert_eq!(samples.len() % (self.format.channels as usize), 0);
         if samples.is_empty() {
             return;
         }
-        let sanitized_gain = sanitize_tts_gain_db(gain);
+        let base_gain_db = sanitize_tts_gain_db(base_gain_db);
+        // The peak-cap ceiling comes from the decision; without one, the
+        // segment renders at exactly its base gain (cap == base).
+        let peak_cap_gain_db = decision
+            .as_deref()
+            .map_or(base_gain_db, |decision| decision.peak_cap_gain_db);
         let frames = (samples.len() / (self.format.channels as usize)) as u64;
         self.ledger.queue_frames(id, frames);
         self.assistant
-            .enqueue_segment(id, samples, gain_db_to_linear(sanitized_gain));
-    }
-
-    pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
-        let gain = self.ledger.segment(id).gain;
-        self.append_assistant_audio(id, gain, samples);
+            .enqueue_segment(id, samples, base_gain_db, peak_cap_gain_db, decision);
     }
 
     pub fn end_assistant_segment(&mut self, id: SegmentId) {
@@ -178,8 +211,13 @@ impl OutputCore {
         if !self.content_meter_paused {
             self.loudness.observe_content_period(&self.content_buf);
         }
-        self.assistant
-            .read_period_into(&mut self.assistant_buf, &mut self.segment_writes);
+        // The loudness engine is passed in so the mix applies mute + live
+        // re-gain per period (the volume context was drained before this).
+        self.assistant.read_period_into(
+            &mut self.assistant_buf,
+            &mut self.segment_writes,
+            &self.loudness,
+        );
 
         let mix_stats =
             mix_i16_saturating(&self.content_buf, &self.assistant_buf, &mut self.output_buf);
@@ -230,6 +268,7 @@ impl OutputCore {
 
     pub fn flush_assistant(&mut self) -> Vec<PlayoutEvent> {
         self.assistant.flush();
+        self.active_assistant_decision = None;
         let events = self.ledger.flush_open_segments(self.monotonic_ns);
         self.ledger
             .prune_terminal_segments(DEFAULT_TERMINAL_SEGMENT_RETENTION);
@@ -569,6 +608,136 @@ mod tests {
         assert_eq!(
             core.ledger().segment(segment).status,
             crate::ledger::SegmentStatus::Flushed
+        );
+    }
+
+    fn vc(
+        canonical_db: f32,
+        downstream_db: f32,
+        tts_envelope_lufs: f32,
+        muted: bool,
+        stamp: u64,
+    ) -> VolumeContext {
+        VolumeContext {
+            canonical_db,
+            downstream_db,
+            tts_envelope_lufs,
+            muted,
+            stamp_boot_ns: stamp,
+        }
+    }
+
+    fn profile(source_lufs: f32, source_peak_dbfs: f32) -> AssistantProfile {
+        AssistantProfile {
+            provider: "openai".to_string(),
+            model: "m".to_string(),
+            voice: "v".to_string(),
+            source_lufs: Some(source_lufs),
+            source_peak_dbfs: Some(source_peak_dbfs),
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn post_dsp_muted_forces_silent_then_ramps_on_unmute() {
+        let mut core = OutputCore::new(4);
+        // Post-DSP: downstream is ignored, and envelope(-41) == source(-41) so
+        // the decided gain is 0 dB — the assistant passes at full amplitude.
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-41.0, -3.0)),
+        );
+        assert_eq!(core.ledger().segment(id).gain, 0.0);
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 12));
+        core.end_assistant_segment(id);
+
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        assert!(
+            core.dac().periods[0].iter().all(|&s| s == 8000),
+            "unmuted assistant passes at full amplitude: {:?}",
+            core.dac().periods[0]
+        );
+
+        // Mute mid-turn: the follower reply is silenced downstream even though
+        // frames remain queued — the real safety edge (a Camilla mute upstream
+        // cannot silence a reply mixed after CamillaDSP).
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, true, 2)));
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        assert!(
+            core.dac().periods[1].iter().all(|&s| s == 0),
+            "muted assistant is silent: {:?}",
+            core.dac().periods[1]
+        );
+
+        // Unmute: ramps back up from silence — audible but below full on the
+        // first frame (never a loud snap).
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 3)));
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        let unmuted = &core.dac().periods[2];
+        assert!(
+            unmuted[0] > 0 && unmuted[0] < 8000,
+            "unmute ramps from silence: {}",
+            unmuted[0]
+        );
+    }
+
+    #[test]
+    fn post_dsp_live_volume_change_regains_queued_speech() {
+        use crate::loudness::{apply_gain_i16, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES};
+
+        const PERIOD: u32 = LIVE_VOLUME_RAMP_FRAMES; // ramp completes in one period
+        let mut core = OutputCore::new(PERIOD);
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        // Ample peak headroom (source_peak -20 → cap +17 dB) so a +6 dB re-gain
+        // is not clamped; decided gain is 0 dB (envelope == source).
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-41.0, -20.0)),
+        );
+        assert_eq!(core.ledger().segment(id).gain, 0.0);
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, (PERIOD as usize) * 2));
+        core.end_assistant_segment(id);
+
+        core.push_content_period(stereo(0, PERIOD as usize));
+        core.step();
+        assert!(core.dac().periods[0].iter().all(|&s| s == 8000));
+
+        // Raise the room target +6 dB (envelope -41 → -35) mid-turn. Post-DSP
+        // the downstream is ignored, so the mixer carries the full +6 dB.
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -35.0, false, 2)));
+        core.push_content_period(stereo(0, PERIOD as usize));
+        core.step();
+        let regained = &core.dac().periods[1];
+        assert!(
+            (regained[0] - 8000).abs() <= 4,
+            "ramp starts without a step discontinuity: {}",
+            regained[0]
+        );
+        let expected = apply_gain_i16(8000, gain_db_to_linear(6.0)) as i32;
+        let last = *regained.last().unwrap() as i32;
+        assert!(
+            (last - expected).abs() <= 2,
+            "ramp reaches +6 dB louder: {last} vs {expected}"
         );
     }
 }

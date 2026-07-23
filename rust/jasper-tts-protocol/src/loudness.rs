@@ -599,6 +599,84 @@ pub fn apply_gain_i16(sample: i16, gain_linear: f32) -> i16 {
     scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
+/// Frames over which a live gain change ramps to its new target (100 ms).
+pub const LIVE_VOLUME_RAMP_FRAMES: u32 = SAMPLE_RATE / 10;
+
+/// A per-frame linear gain ramp shared by the fan-in and outputd mix loops.
+///
+/// The first target snaps in (no ramp from zero); later targets glide over
+/// [`LIVE_VOLUME_RAMP_FRAMES`] so a mid-turn volume change is inaudible.
+/// `force_silent` collapses to zero and re-arms so the next non-muted target
+/// always ramps back up from silence — even at the gain floor. This is the
+/// extraction of fan-in's private ramp so outputd's post-DSP mix loop applies
+/// live re-gain and mute identically; the ramp math is now unit-tested once
+/// here in the hardware-free crate.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GainRamp {
+    initialized: bool,
+    current_linear: f32,
+    target_linear: f32,
+    step_linear: f32,
+    remaining_frames: u32,
+    target_db: f32,
+}
+
+impl GainRamp {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Force the ramp to silence and re-arm, so the next non-muted `retarget`
+    /// always ramps up from zero (mute → unmute never snaps loud).
+    pub fn force_silent(&mut self) {
+        self.initialized = true;
+        self.current_linear = 0.0;
+        self.target_linear = 0.0;
+        self.step_linear = 0.0;
+        self.remaining_frames = 0;
+        // NaN forces the next `retarget` through, even when the new target is
+        // the -60 dB floor, so unmute always ramps from zero.
+        self.target_db = f32::NAN;
+    }
+
+    /// Point the ramp at a new target. The first ever target snaps in; a
+    /// changed target glides over `LIVE_VOLUME_RAMP_FRAMES`.
+    pub fn retarget(&mut self, target_db: f32) {
+        if self.initialized && (target_db - self.target_db).abs() < 0.01 {
+            return;
+        }
+        let target_linear = gain_db_to_linear(target_db);
+        if !self.initialized {
+            self.initialized = true;
+            self.current_linear = target_linear;
+            self.target_linear = target_linear;
+            self.target_db = target_db;
+            return;
+        }
+        self.target_linear = target_linear;
+        self.target_db = target_db;
+        self.remaining_frames = LIVE_VOLUME_RAMP_FRAMES;
+        self.step_linear = (target_linear - self.current_linear) / (LIVE_VOLUME_RAMP_FRAMES as f32);
+    }
+
+    /// Advance one frame and return the current linear gain.
+    pub fn next_frame(&mut self) -> f32 {
+        if self.remaining_frames > 0 {
+            self.current_linear += self.step_linear;
+            self.remaining_frames -= 1;
+            if self.remaining_frames == 0 {
+                self.current_linear = self.target_linear;
+            }
+        }
+        self.current_linear
+    }
+
+    /// The current linear gain without advancing (diagnostics/tests).
+    pub fn current_linear(&self) -> f32 {
+        self.current_linear
+    }
+}
+
 struct KWeightedWindow {
     filters: [KWeightingChannel; CHANNELS as usize],
     periods: VecDeque<EnergyPeriod>,
@@ -1425,6 +1503,27 @@ mod tests {
                 .expect("completed replay");
             assert!((replay.calibration_offset_lu - -4.0).abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn gain_ramp_snaps_first_target_then_ramps_from_silence_on_unmute() {
+        // First target snaps in — no ramp-up from zero on the first frame, so a
+        // steady segment renders at its decided gain from sample one.
+        let mut ramp = GainRamp::new();
+        ramp.retarget(0.0);
+        assert_eq!(ramp.next_frame(), 1.0);
+
+        // Mute collapses to silence and re-arms; unmute ramps up from zero even
+        // when the new target is the -60 dB floor (never a loud snap).
+        ramp.force_silent();
+        ramp.retarget(MIN_TTS_GAIN_DB);
+        let first = ramp.next_frame();
+        assert!(first > 0.0);
+        assert!(first < gain_db_to_linear(MIN_TTS_GAIN_DB));
+        for _ in 1..LIVE_VOLUME_RAMP_FRAMES {
+            ramp.next_frame();
+        }
+        assert!((ramp.current_linear() - gain_db_to_linear(MIN_TTS_GAIN_DB)).abs() < 1e-9);
     }
 
     #[test]
