@@ -149,6 +149,12 @@ dev = [
     # deliberately when tightening or regenerating the baseline.
     "mypy>=2.1,<2.2",
 ]
+fast-landing = [
+    # tests/test_sound_plumbing.py imports sound_setup in a clean child
+    # process to prove NumPy/SciPy stay out of cold start. The import reaches
+    # the Camilla config parser, whose only non-base dependency is PyYAML.
+    "pyyaml==6.0.3",
+]
 openwakeword-onnx = [
     # Support deps for the ONNX-only openWakeWord runtime installed with
     # `openwakeword==0.6.0 --no-deps`. Keep these lock-covered while avoiding

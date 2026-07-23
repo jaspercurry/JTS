@@ -23,12 +23,21 @@ pass.
 
 ## Test plan
 
-- [ ] `pytest` passes locally
-- [ ] Hardware-tested on a Pi (`jasper-doctor` clean), **or** explain
-  why this change can't be hardware-tested
+- [ ] Relevant hardware-free validation passes (commands/evidence below)
+- [ ] Hardware/Pi evidence is included when this change affects
+  hardware, deployment, boot, audio, or runtime-sensitive behavior;
+  otherwise `N/A` is sufficient
 - [ ] If voice-eval was run: cost was approximately $___ — see
   AGENTS.md "Voice-eval cost discipline" for the discipline. Don't
   run voice-eval if you can't justify the dollar figure.
+
+Validation evidence:
+
+- (commands/results)
+
+Hardware/Pi evidence:
+
+- (results, or `N/A`)
 
 ## Notes for reviewer
 

@@ -828,6 +828,9 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
+fast-landing = [
+    { name = "pyyaml" },
+]
 openwakeword-onnx = [
     { name = "requests" },
     { name = "scikit-learn" },
@@ -888,6 +891,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8" },
     { name = "ruff", specifier = ">=0.6" },
 ]
+fast-landing = [{ name = "pyyaml", specifier = "==6.0.3" }]
 openwakeword-onnx = [
     { name = "requests" },
     { name = "scikit-learn", specifier = ">=1,<2" },

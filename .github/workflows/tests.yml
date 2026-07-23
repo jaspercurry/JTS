@@ -13,6 +13,72 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  classify:
+    name: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      lane: ${{ steps.classifier.outputs.lane }}
+      reason: ${{ steps.classifier.outputs.reason }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          # The classifier uses the PR merge-base diff. A shallow fetch can
+          # omit that base on a stale branch; comparison failure is safe but
+          # would unnecessarily send a landing-only PR through the full farm.
+          fetch-depth: 0
+
+      - name: Select fail-closed CI lane
+        id: classifier
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-classify.py
+
+  fast-landing:
+    name: fast-landing
+    needs: classify
+    if: ${{ needs.classify.outputs.lane == 'fast-landing' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      JASPER_VOICE_PROVIDER: gemini
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.14"
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install the locked base + landing test toolchain
+        # The landing contracts import only the JTS base package and stdlib
+        # modules, so the full voice/audio extras and PortAudio apt install
+        # would add latency without exercising another contract.
+        run: uv sync --locked --group fast-landing
+
+      - name: Cheap syntax, policy, and provenance validation
+        run: |
+          python3 -m py_compile scripts/ci-classify.py scripts/docs-impact.py
+          python3 scripts/check-provenance.py
+          python3 scripts/docs-impact.py --validate-only
+          .venv/bin/ruff check .
+
+      - name: Complete registered landing contract bundle
+        run: |
+          set -euo pipefail
+          mapfile -t landing_tests < <(
+            python3 scripts/ci-classify.py --landing-pytest-targets
+          )
+          (( ${#landing_tests[@]} > 0 ))
+          printf 'landing contract: %s\n' "${landing_tests[@]}"
+          .venv/bin/pytest -q --tb=short "${landing_tests[@]}"
+
   shell:
     # Static gate for the highest-blast-radius code in the repo: the
     # installer and the deploy/operator scripts mutate a live speaker
@@ -35,6 +101,8 @@ jobs:
     # Info/style severities (~35 findings, several intentional ssh
     # client-side expansion patterns) remain ungated; tightening
     # further is a separate triage. Do not loosen below warning.
+    needs: classify
+    if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -101,6 +169,8 @@ jobs:
 
   pytest-matrix:
     name: pytest / py${{ matrix.python-version }}
+    needs: classify
+    if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -173,15 +243,14 @@ jobs:
         run: scripts/test-merge
 
   pytest:
-    # Branch protection requires a stable check named exactly `pytest`.
-    # The versioned matrix above fans out the real work; this aggregate
-    # preserves the required-check contract while making each interpreter's
-    # failure independently visible in GitHub Actions.
+    # Keep the historical stable `pytest` context visible during and after
+    # the branch-protection cutover. The versioned matrix above fans out the
+    # real work; `ci` is the sole long-term required context.
     name: pytest
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: pytest-matrix
-    if: ${{ always() }}
+    needs: [classify, pytest-matrix]
+    if: ${{ always() && needs.classify.outputs.lane == 'full' }}
     steps:
       - name: Require all Python matrix jobs
         run: |
@@ -192,6 +261,8 @@ jobs:
           echo "pytest matrix result: success"
 
   js:
+    needs: classify
+    if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -212,10 +283,12 @@ jobs:
 
   rust:
     # CI formats, lints, compiles, and tests the Rust audio daemons — the
-    # pytest job above does not. The job name is required by branch protection,
-    # so PRs that do not touch Rust-relevant surfaces still run this job and
-    # exit green quickly after scripts/rust-ci-needed. Rust-relevant PRs and
-    # every push to main run the full Cargo gate. Without this, a dependency
+    # pytest job above does not. Keep the historical stable `rust` context
+    # visible during and after the branch-protection cutover; `ci` is the sole
+    # long-term required context. On full-lane PRs that do not touch
+    # Rust-relevant surfaces, this job exits green quickly after
+    # scripts/rust-ci-needed. Rust-relevant PRs and every push to main run the
+    # full Cargo gate. Without this, a dependency
     # bump (e.g. the `alsa` crate used by jasper-fanin/jasper-outputd) that
     # breaks the build passes CI green and only fails at deploy-time
     # `cargo build` on the Pi, and a logic regression in the output/loudness
@@ -232,6 +305,8 @@ jobs:
     # tests never ran in CI; those expectations were corrected (the
     # calibrated gain is QUIETER, safe-direction) and `cargo test` re-enabled
     # here.
+    needs: classify
+    if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -410,3 +485,83 @@ jobs:
         # break the lab runner until someone needs it on a bench.
         working-directory: rust/jasper-dual-dac-lab
         run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+
+  ci:
+    # The only long-term branch-protection context. Keep this aggregate
+    # independent of path names: the first-party classifier selects a lane,
+    # and this explicit result table fails closed on failure, cancellation,
+    # or an unexpectedly skipped/started job.
+    name: ci
+    needs:
+      - classify
+      - fast-landing
+      - shell
+      - pytest-matrix
+      - pytest
+      - js
+      - rust
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LANE: ${{ needs.classify.outputs.lane }}
+      CLASSIFY_RESULT: ${{ needs.classify.result }}
+      FAST_LANDING_RESULT: ${{ needs['fast-landing'].result }}
+      SHELL_RESULT: ${{ needs.shell.result }}
+      PYTEST_MATRIX_RESULT: ${{ needs['pytest-matrix'].result }}
+      PYTEST_RESULT: ${{ needs.pytest.result }}
+      JS_RESULT: ${{ needs.js.result }}
+      RUST_RESULT: ${{ needs.rust.result }}
+    steps:
+      - name: Require the selected CI work
+        run: |
+          set -euo pipefail
+          if [[ "${CLASSIFY_RESULT}" != "success" ]]; then
+            echo "classifier did not succeed: ${CLASSIFY_RESULT}" >&2
+            exit 1
+          fi
+
+          case "${LANE}" in
+            fast-landing)
+              if [[ "${FAST_LANDING_RESULT}" != "success" ]]; then
+                echo "fast-landing lane selected work did not succeed: ${FAST_LANDING_RESULT}" >&2
+                exit 1
+              fi
+              for result in \
+                "${SHELL_RESULT}" \
+                "${PYTEST_MATRIX_RESULT}" \
+                "${PYTEST_RESULT}" \
+                "${JS_RESULT}" \
+                "${RUST_RESULT}"
+              do
+                if [[ "${result}" != "skipped" ]]; then
+                  echo "fast-landing lane saw an unexpected full-job result: ${result}" >&2
+                  exit 1
+                fi
+              done
+              ;;
+            full)
+              if [[ "${FAST_LANDING_RESULT}" != "skipped" ]]; then
+                echo "full lane unexpectedly ran fast-landing: ${FAST_LANDING_RESULT}" >&2
+                exit 1
+              fi
+              for result in \
+                "${SHELL_RESULT}" \
+                "${PYTEST_MATRIX_RESULT}" \
+                "${PYTEST_RESULT}" \
+                "${JS_RESULT}" \
+                "${RUST_RESULT}"
+              do
+                if [[ "${result}" != "success" ]]; then
+                  echo "full lane selected work did not succeed: ${result}" >&2
+                  exit 1
+                fi
+              done
+              ;;
+            *)
+              echo "Unexpected CI lane: ${LANE:-<empty>}" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "selected lane ${LANE} completed successfully"
