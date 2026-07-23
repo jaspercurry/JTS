@@ -125,6 +125,20 @@ here); below that is Layers 2–3 by contract, not a linearization gap.
 Fix-4 (#1654, wider tweeter sweep) composes naturally but is not a
 prerequisite.
 
+**Measurement instrument, in one paragraph (details are canonical in the
+HANDOFF's invariants):** the gated far-field sweep at the listening axis is
+the Layer-1 instrument. The analysis finds the direct arrival per driver,
+windows the IR before the first strong reflection (adaptive per capture —
+~7 ms on the JTS3 rig, i.e. a ~143 Hz validity floor via `f_valid = 1/T`),
+and claims nothing below the floor; VERIFY refuses comparison when its own
+gate is forced shorter than MEASURE's. Near-field is a supplement, never
+the instrument: valid only where the driver is acoustically small, so it
+may extend the WOOFER's linearization below the floor via the classic
+near-field-splice — while integration and horn linearization must stay
+far-field (near-field destroys inter-driver geometry, and a horn's response
+does not exist at its mouth). Below the near-field splice's own limits,
+bass and room layers own the problem with in-room instruments.
+
 ## Session operating model (how the implementing session runs)
 
 Fable is the brains, not the hands: architect, coordinator, debugger, and
