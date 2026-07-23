@@ -499,6 +499,18 @@ class PilotObservation:
     no ambient window (the fallback total-energy-fraction test has no rise
     concept) or, for the cross figure, when there are no other roles to
     compare against.
+
+    ``programmed_hi_gain_db`` is the HI segment's own declared ``gain_db``
+    (the digital gain the program composer scheduled it at) — published
+    here so a caller downstream of this analysis (the v2 conductor's VERIFY
+    inter-attempt pilot-level consistency gate, measurement-honesty gate G3,
+    2026-07-22) can compute ``level_hi_dbfs - programmed_hi_gain_db`` (the
+    capture chain's own transfer) WITHOUT binding back to the
+    ``ExcitationProgram`` instance that produced this analysis — the SSOT
+    stays "the analysis publishes the gain it measured against". ``None``
+    for a legacy construction site that predates this field (fixtures,
+    call sites built before this field existed) — a consumer must treat
+    that as "nothing to compare", never as ``0.0``.
     """
 
     role: str
@@ -514,6 +526,7 @@ class PilotObservation:
     snr_db: float = math.inf
     channel_map_target_rise_db: float | None = None
     channel_map_cross_rise_db: float | None = None
+    programmed_hi_gain_db: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1792,6 +1805,7 @@ def _pilot_observations(
             snr_db=lo_snr_db,
             channel_map_target_rise_db=channel_target_rise_db,
             channel_map_cross_rise_db=channel_cross_rise_db,
+            programmed_hi_gain_db=hi_seg.gain_db,
         ))
     return out
 

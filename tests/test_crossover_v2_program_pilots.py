@@ -177,6 +177,12 @@ def test_measure_pilot_linearity_clean_capture_passes():
     assert res.linearity_ok is True
     assert len(res.pilots) == 1
     assert res.pilots[0].captured_delta_db == pytest.approx(10.0, abs=0.5)
+    # measurement-honesty gate G3's raw material (crossover_v2_flow.py): the
+    # HI segment's own declared gain, published so the conductor's VERIFY
+    # inter-attempt consistency check can compute a transfer without binding
+    # back to this ExcitationProgram instance.
+    hi = prog.segment("pilot_woofer_hi")
+    assert res.pilots[0].programmed_hi_gain_db == pytest.approx(hi.gain_db)
     # The pilot pair does not perturb the sweep-anchored drift verdict.
     assert not res.glitch_detected
     assert res.candidate is not None
@@ -215,6 +221,10 @@ def test_verify_pilot_linearity_verdict_present():
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
     assert res.linearity_ok is True
     assert res.summed_ripple_db is not None
+    # measurement-honesty gate G3's raw material — VERIFY's own leading
+    # pilot (role "summed") publishes its programmed HI gain too.
+    hi = prog.segment("pilot_summed_hi")
+    assert res.pilots[0].programmed_hi_gain_db == pytest.approx(hi.gain_db)
 
 
 # --- analysis: woofer-repeat level agreement ------------------------------------

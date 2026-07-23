@@ -785,6 +785,13 @@ def persist_conductor_state(
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             "gate_window_ms": conductor.measure_gate_window_ms,
+            # Measurement-honesty gate G3's reference (crossover_v2_flow's
+            # ``verify_pilot_transfer_baseline`` property) — threaded through
+            # exactly like ``gate_window_ms`` above so a verify-only re-arm
+            # session (``prepare_v2_verify``) can inherit it instead of
+            # silently starting a fresh baseline every time the household
+            # taps "Try again".
+            "pilot_transfer_baseline": conductor.verify_pilot_transfer_baseline,
         },
         "evidence": dict(evidence) if evidence else None,
     }
@@ -2384,6 +2391,24 @@ def prepare_v2_verify(
     gate_ms = (
         priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
     )
+    # Measurement-honesty gate G3's reference, rehydrated exactly like
+    # gate_ms above — absent (a pre-G3 persisted state, or a session that
+    # never reached a usable VERIFY pilot) leaves it None, so this re-arm
+    # starts a fresh baseline itself (acceptable — see
+    # CrossoverV2Conductor.__init__'s comment on verify_pilot_transfer_baseline).
+    baseline_raw = (
+        priors_raw.get("pilot_transfer_baseline")
+        if isinstance(priors_raw, Mapping) else None
+    )
+    pilot_transfer_baseline = (
+        {
+            str(role): float(value)
+            for role, value in baseline_raw.items()
+            if isinstance(value, (int, float))
+        }
+        if isinstance(baseline_raw, Mapping)
+        else None
+    ) or None
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
@@ -2448,6 +2473,7 @@ def prepare_v2_verify(
             measure_gate_window_ms=(
                 float(gate_ms) if isinstance(gate_ms, (int, float)) else None
             ),
+            verify_pilot_transfer_baseline=pilot_transfer_baseline,
         )
         # Keep the durable candidate/applied facts; rebind the session id.
         persist_conductor_state(conductor, failure_code=None, evidence=refs)

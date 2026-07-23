@@ -60,7 +60,9 @@ from typing import Any, Callable, Mapping, Sequence
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
+    KIND_SWEEP,
     STIMULUS_KINDS,
+    VERIFY_PILOT_ROLE,
     ExcitationProgram,
     RoleBand,
     build_check_program,
@@ -161,6 +163,13 @@ REASON_VERIFY_OUT_OF_TOLERANCE = "verify_out_of_tolerance"
 # alignment). Renders through the same VERIFY-fail template — it is a distinct
 # reason parameterizing that screen's copy, not a fifth screen.
 REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
+# Measurement-honesty gate G3 (2026-07-22): a THIRD, distinct VERIFY-outcome
+# reason — the phone's own input chain drifted between VERIFY attempts (see
+# VERIFY_PILOT_TRANSFER_STEP_CEILING_DB below for the evidence), not the
+# speaker going out of tolerance. Renders through the SAME verify_fail
+# template as the two codes above (one more parameterization of that
+# screen, not a fifth screen) with its own copy naming the actual cause.
+REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # Owner ruling (2026-07-20): the alignment-estimator confidence floor that
 # used to gate ONLY a review-screen nudge (informed consent, Apply stayed
 # available regardless) is now a hard MEASURE-phase gate — see
@@ -275,6 +284,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The check was inconclusive — the room reflection cut the window "
         "short. Re-verify to try again.",
     ),
+    REASON_VERIFY_LEVEL_SHIFT: ReasonSpec(
+        REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2, "",
+        "Your phone's microphone levels changed between measurements — "
+        "re-verify to try again.",
+    ),
     REASON_LOW_ALIGNMENT_CONFIDENCE: ReasonSpec(
         REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1, "",
         "Alignment is less certain at this mic position. Place the microphone "
@@ -346,6 +360,48 @@ ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
 # wildly outside it. PROVISIONAL pending W6 bench validation, same status as
 # the confidence floor above.
 ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
+
+# Measurement-honesty gate G1 (2026-07-22): a corrupted phone-chain MEASURE
+# capture on 2026-07-22 hardware built a candidate whose ``predicted_ripple_db``
+# was 27.316 dB at an alignment confidence (0.703) that cleared
+# ALIGNMENT_CONFIDENCE_TRUST_FLOOR above — the candidate auto-applied, then
+# failed three VERIFYs at 5.3-6.7 dB. Every clean MEASURE that same day (12
+# captures, UMIK-2 + iMM-6C) predicted 4.387-9.031 dB. This ceiling sits ~6 dB
+# above the clean corpus's worst case and ~12 dB below the corrupt one — wide
+# margin on both sides. A candidate whose OWN predicted ripple is this bad is
+# not a trustworthy basis for auto-apply regardless of what alignment
+# confidence reported, so this REUSES REASON_LOW_ALIGNMENT_CONFIDENCE (same
+# household action — "measure again" — as the confidence floor and Fix 3's
+# plausibility backstop above; the diag ``guard`` field disambiguates which of
+# the three actually fired in telemetry). PROVISIONAL pending W6 bench
+# validation, same status as every other MEASURE-phase gate in this block.
+MEASURE_PREDICTED_RIPPLE_CEILING_DB = 15.0
+
+# Measurement-honesty gate G2 (2026-07-22): an ``event=outputd.xrun`` playback
+# glitch on 2026-07-22 hardware shifted a MEASURE capture's three sweeps
+# −25…−28 ms off their SCHEDULED slot with per-segment locate confidence
+# 0.07-0.12 (a clean-rig baseline runs |residual| ≲ 2 ms at confidence
+# 0.7-0.85) while ``glitch_detected`` stayed False — the repeat-pair drift
+# check (``_estimate_drift``) is structurally blind to a uniform whole-capture
+# shift (its own residual guard demeans per role, so it only catches a
+# WITHIN-driver desync), and ``_stimulus_locate_ok`` passes on the max()
+# confidence across every located stimulus, so one good segment masks three
+# bad sweeps. Both thresholds carry wide margin on both sides of the two
+# clusters above. PROVISIONAL pending W6 bench validation.
+SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
+SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
+
+# Measurement-honesty gate G3 (2026-07-22): a phone session's input chain
+# stepped ~0.56 dB (frequency-differential) BETWEEN VERIFY attempts on
+# 2026-07-22 hardware, producing escalating dishonest verify verdicts
+# 1.192 → 2.111 → 2.835 dB that read as "speaker out of tolerance" when the
+# recorder was what changed — Mac cross-capture stability on this rig is
+# ≤0.1-0.2 dB. VERIFY replays the IDENTICAL program through the IDENTICAL
+# applied graph on every attempt, so its own leading pilot pair's transfer
+# (captured level minus programmed gain) should not move between attempts
+# either — a step this large is the input chain moving, not the speaker.
+# PROVISIONAL pending W6 bench validation.
+VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
 
 class CrossoverV2FlowError(RuntimeError):
@@ -530,6 +586,61 @@ def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
     return max(confidences) >= LOCATE_MIN_CONFIDENCE
 
 
+def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
+    """False when a MEASURE sweep landed off its scheduled slot, or was only
+    weakly located (measurement-honesty gate G2, 2026-07-22 — the xrun
+    detector; see :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS` for the evidence).
+
+    ``sample_rate_hz`` is deliberately the CALLER's own MEASURE program rate,
+    not something read off ``analysis`` itself:
+    ``analyze_program_capture`` HARD-REFUSES a capture whose sample rate
+    disagrees with the program's own (``capture rate != program rate``,
+    ``jasper.audio_measurement.program_analysis``), and the relay capture
+    spec fixes every phone upload at ``REQUIRED_SAMPLE_RATE_HZ`` (48 kHz,
+    ``jasper.capture_relay.spec``) — so no resampling ever runs between the
+    phone's WAV and this analysis, and ``SegmentLocation.residual_samples``
+    is always expressed in exactly that domain (the conductor's own composed
+    program's ``sample_rate_hz``).
+
+    Filtered to ``KIND_SWEEP`` only — mirrors ``_estimate_drift``'s exclusion
+    of the leading pilot pair from residual/drift logic (their short/quiet
+    windows locate more coarsely and would manufacture spurious fires here).
+    No sweeps at all (nothing to judge) passes — the pre-existing
+    ``_stimulus_locate_ok`` check, which runs earlier in ``_measure_verdict``'s
+    ladder, already covers "nothing usable in this capture".
+    """
+    sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
+    if not sweeps:
+        return True
+    for loc in sweeps:
+        residual_ms = abs(loc.residual_samples) / sample_rate_hz * 1000.0
+        if residual_ms > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS:
+            return False
+        if loc.confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR:
+            return False
+    return True
+
+
+def _sweep_schedule_diag_fields(
+    analysis: ProgramAnalysis, sample_rate_hz: int,
+) -> tuple[float | None, float | None]:
+    """``(sweep_residual_ms_worst, sweep_locate_confidence_min)`` — diagnostic
+    only, over the SAME ``KIND_SWEEP`` domain ``_sweep_schedule_ok`` gates on,
+    but never itself gates a verdict. ``sweep_residual_ms_worst`` is the
+    SIGNED residual (not its magnitude) of whichever sweep has the largest
+    absolute residual, so a reviewer sees which direction the schedule broke,
+    not just how far. ``(None, None)`` when there are no sweeps to judge —
+    mirrors ``_sweep_schedule_ok``'s own "nothing to judge" stance.
+    """
+    sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
+    if not sweeps:
+        return None, None
+    worst = max(sweeps, key=lambda loc: abs(loc.residual_samples))
+    residual_ms_worst = worst.residual_samples / sample_rate_hz * 1000.0
+    confidence_min = min(loc.confidence for loc in sweeps)
+    return residual_ms_worst, confidence_min
+
+
 def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
     return any(
         loc.clipped for loc in analysis.locations if loc.kind in STIMULUS_KINDS
@@ -568,6 +679,25 @@ def _pilot_by_role(analysis: ProgramAnalysis, role: str) -> Any | None:
         if pilot.role == role:
             return pilot
     return None
+
+
+def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
+    """Per-role pilot transfer: captured hi level minus the programmed hi gain.
+
+    Measurement-honesty gate G3's raw material (2026-07-22): VERIFY replays
+    the identical program through the identical applied graph on every
+    attempt, so this transfer should not move between attempts either — see
+    :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB`. Excludes any pilot whose
+    ``programmed_hi_gain_db`` is unset (a legacy program built without
+    ``leading_pilot_gains_db`` never threads it, per
+    ``program_analysis.PilotObservation``'s docstring) — nothing to compare
+    that pilot against.
+    """
+    return {
+        pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db
+        for pilot in analysis.pilots
+        if pilot.programmed_hi_gain_db is not None
+    }
 
 
 def _driver_snr_fields(resp: Any | None) -> tuple[float | None, str | None]:
@@ -751,6 +881,7 @@ class CrossoverV2Conductor:
         index_phase_map: Mapping[int, str] | None = None,
         measure_predicted_sum: Any = None,
         measure_gate_window_ms: float | None = None,
+        verify_pilot_transfer_baseline: Mapping[str, float] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -803,6 +934,37 @@ class CrossoverV2Conductor:
         self._candidate: Any = None
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
         self._last_failure_code: str | None = None
+        # G3 (measurement-honesty gate, 2026-07-22): the FIRST usable VERIFY
+        # attempt's per-role pilot transfer becomes the reference every LATER
+        # attempt is compared against — never re-baselined once set (see
+        # ``_verify_verdict``). A verify-only re-arm session
+        # (``prepare_v2_verify``) rehydrates this from the prior session's
+        # persisted ``verify_priors``, exactly like ``measure_gate_window_ms``
+        # above; a fresh CHECK→MEASURE walk (``prepare_v2_session``) never
+        # threads it, so a genuinely new measurement starts with no VERIFY
+        # history to compare against (acceptable — see the property below).
+        self._verify_pilot_baseline: dict[str, float] | None = (
+            dict(verify_pilot_transfer_baseline)
+            if verify_pilot_transfer_baseline
+            else None
+        )
+        # Transient, recomputed on every VERIFY attempt (never carried
+        # forward itself) — this attempt's step vs the baseline above, or
+        # ``None`` when there is nothing to compare (no usable pilots this
+        # attempt, no shared role with the baseline, or this very attempt is
+        # the one that just established the baseline). ``_log_verify_diag``
+        # reads it for the ``pilot_transfer_step_db`` diagnostic field.
+        self._verify_pilot_transfer_step_db: float | None = None
+        # Which (if any) measurement-honesty gate produced the LAST MEASURE
+        # verdict — reset at the top of every ``_measure_verdict`` call so a
+        # stale value from a PRIOR attempt can never leak into this attempt's
+        # diagnostic. G1/G2 both reuse an existing reason code shared with a
+        # pre-existing check (REASON_LOW_ALIGNMENT_CONFIDENCE /
+        # REASON_DRIFT_BASELINES_DISAGREE respectively), so the reason code
+        # alone cannot tell telemetry which check actually fired — this side
+        # channel can. Read by ``_log_measure_diag``; never consulted by
+        # ``_measure_verdict`` itself, so a bug here cannot change a verdict.
+        self._last_measure_guard: str = ""
 
     # --- program composition -------------------------------------------------
 
@@ -949,6 +1111,16 @@ class CrossoverV2Conductor:
     @property
     def measure_gate_window_ms(self) -> float | None:
         return self._measure_gate_window_ms
+
+    @property
+    def verify_pilot_transfer_baseline(self) -> Mapping[str, float] | None:
+        """The frozen G3 reference (host persistence reads it, mirroring
+        ``measure_gate_window_ms`` above — see ``__init__``'s comment)."""
+        return (
+            dict(self._verify_pilot_baseline)
+            if self._verify_pilot_baseline is not None
+            else None
+        )
 
     @property
     def last_failure_code(self) -> str | None:
@@ -1208,11 +1380,32 @@ class CrossoverV2Conductor:
         return verdict
 
     def _measure_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        # Reset every call — a stale value from a PRIOR attempt must never
+        # leak into THIS attempt's diagnostic (see __init__'s comment).
+        self._last_measure_guard = ""
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.glitch_detected:
             # Repeat-level disagreement reuses this same code (§5.2) — the
             # analysis already folded it into glitch_detected.
+            self._rearm_measure_after_transient()
+            return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
+        # Measurement-honesty gate G2 (2026-07-22 — the xrun detector): a
+        # uniform whole-capture schedule shift the repeat-pair drift check
+        # above is structurally blind to (see SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
+        # for the evidence). Routed identically to the glitch branch above —
+        # same silent auto-retry, same reused reason code (§5.2's "never a
+        # new user-facing code for a capture-glitch class" convention) — the
+        # ``guard`` diag field (below) is what tells telemetry the two apart.
+        # ``_program_for_phase`` (not the bare ``self._measure_program``,
+        # which mypy types ``ExcitationProgram | None``) is the ALREADY
+        # type-narrowed accessor — it raises if MEASURE were somehow armed
+        # before CHECK produced a program, which can't happen on this path
+        # (we are actively processing a MEASURE analysis).
+        if not _sweep_schedule_ok(
+            analysis, self._program_for_phase(PHASE_MEASURE).sample_rate_hz
+        ):
+            self._last_measure_guard = "sweep_schedule"
             self._rearm_measure_after_transient()
             return PhaseVerdict(False, REASON_DRIFT_BASELINES_DISAGREE)
         if _any_sweep_clipped(analysis):
@@ -1246,6 +1439,23 @@ class CrossoverV2Conductor:
             and analysis.alignment.status == ALIGNMENT_OK
             and not alignment_delay_plausible(analysis.alignment.delay_us, self._preset)
         ):
+            return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
+        # Measurement-honesty gate G1 (2026-07-22): a candidate whose OWN
+        # predicted ripple is this bad is not a trustworthy basis for
+        # auto-apply, regardless of what alignment confidence or the Fix 3
+        # plausibility check above reported — see
+        # MEASURE_PREDICTED_RIPPLE_CEILING_DB for the evidence. Reuses the
+        # SAME re-measure guidance as the two checks above (identical
+        # household action); the ``guard`` diag field disambiguates which of
+        # the three actually fired. Skipped when there is no candidate or no
+        # alignment estimate (a trims-only path) — mirrors the confidence
+        # gate's own skip condition above.
+        if (
+            analysis.candidate is not None
+            and analysis.alignment is not None
+            and analysis.candidate.predicted_ripple_db > MEASURE_PREDICTED_RIPPLE_CEILING_DB
+        ):
+            self._last_measure_guard = "ripple_ceiling"
             return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
         candidate = self._build_candidate(analysis)
         self._candidate = candidate
@@ -1285,6 +1495,36 @@ class CrossoverV2Conductor:
         ):
             self._verify_outcome = "inconclusive"
             return PhaseVerdict(False, REASON_VERIFY_INCONCLUSIVE)
+        # Measurement-honesty gate G3 (2026-07-22): the tracking-max
+        # comparison below is exactly the thing a shifted recording chain
+        # invalidates, so check the chain's OWN consistency first — this
+        # gate is level-independent (unlike gate-comparability above, which
+        # must stay first regardless). VERIFY replays the identical program
+        # through the identical applied graph on every attempt, so its own
+        # leading pilot pair's transfer (captured level minus programmed
+        # gain) should not move between attempts either — see
+        # VERIFY_PILOT_TRANSFER_STEP_CEILING_DB for the evidence. The FIRST
+        # usable attempt of this conductor's own lifetime (never pilots
+        # absent, never a legacy program missing ``programmed_hi_gain_db``)
+        # only records the reference; it never rejects on this attempt.
+        transfer = _pilot_transfer_by_role(analysis)
+        self._verify_pilot_transfer_step_db = None
+        if transfer:
+            if self._verify_pilot_baseline is None:
+                self._verify_pilot_baseline = dict(transfer)
+            else:
+                shared = [r for r in transfer if r in self._verify_pilot_baseline]
+                if shared:
+                    self._verify_pilot_transfer_step_db = max(
+                        abs(transfer[r] - self._verify_pilot_baseline[r])
+                        for r in shared
+                    )
+        if (
+            self._verify_pilot_transfer_step_db is not None
+            and self._verify_pilot_transfer_step_db > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
+        ):
+            self._verify_outcome = "inconclusive"
+            return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
@@ -1379,6 +1619,9 @@ class CrossoverV2Conductor:
         tweeter_snr_db, tweeter_snr_verdict = _driver_snr_fields(
             _driver_response_by_role(analysis, self._tweeter.role)
         )
+        sweep_residual_ms_worst, sweep_locate_confidence_min = _sweep_schedule_diag_fields(
+            analysis, self._program_for_phase(PHASE_MEASURE).sample_rate_hz
+        )
         log_event(
             logger, "correction.crossover_v2_measure_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
@@ -1426,6 +1669,19 @@ class CrossoverV2Conductor:
             woofer_snr_verdict=woofer_snr_verdict,
             tweeter_snr_db=tweeter_snr_db,
             tweeter_snr_verdict=tweeter_snr_verdict,
+            sweep_residual_ms_worst=(
+                round(sweep_residual_ms_worst, 3)
+                if sweep_residual_ms_worst is not None else None
+            ),
+            sweep_locate_confidence_min=(
+                round(sweep_locate_confidence_min, 4)
+                if sweep_locate_confidence_min is not None else None
+            ),
+            # Which (if any) measurement-honesty gate fired this verdict —
+            # disambiguates a G1/G2 fire from the pre-existing check that
+            # shares its reused reason code (see __init__'s comment on
+            # ``_last_measure_guard``).
+            guard=self._last_measure_guard,
         )
 
     def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
@@ -1439,6 +1695,11 @@ class CrossoverV2Conductor:
             analysis.summed_response.validity_floor_hz
             if analysis.summed_response is not None else None
         )
+        # Measurement-honesty gate G3's own diagnostics: the current
+        # attempt's raw pilot transfer (re-derived fresh, read-only — never
+        # the mutated conductor state) and the step vs baseline
+        # ``_verify_verdict`` already computed and stashed transiently.
+        pilot_transfer_db = _pilot_transfer_by_role(analysis).get(VERIFY_PILOT_ROLE)
         log_event(
             logger, "correction.crossover_v2_verify_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
@@ -1450,6 +1711,16 @@ class CrossoverV2Conductor:
             tracking_band_lo_hz=tracking_band_lo_hz,
             tracking_band_hi_hz=tracking_band_hi_hz,
             rms_db=tracking.get("rms_db"),
+            pilot_transfer_db=(
+                round(pilot_transfer_db, 3) if pilot_transfer_db is not None else None
+            ),
+            pilot_transfer_step_db=(
+                round(self._verify_pilot_transfer_step_db, 3)
+                if self._verify_pilot_transfer_step_db is not None else None
+            ),
+            guard=(
+                "pilot_level_shift" if verdict.code == REASON_VERIFY_LEVEL_SHIFT else ""
+            ),
         )
 
     # --- helpers -------------------------------------------------------------
@@ -1910,6 +2181,10 @@ __all__ = [
     "CAPTURE_PLAN_TARGET",
     "V2_FIRST_BEGIN_TIMEOUT_S",
     "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
+    "MEASURE_PREDICTED_RIPPLE_CEILING_DB",
+    "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
+    "SWEEP_LOCATE_CONFIDENCE_FLOOR",
+    "VERIFY_PILOT_TRANSFER_STEP_CEILING_DB",
     "alignment_to_candidate_fields",
     "back_off_gain",
     "TEMPLATE_SILENT_AUTO_RETRY",
@@ -1932,6 +2207,7 @@ __all__ = [
     "REASON_INTERNAL_ERROR",
     "REASON_VERIFY_OUT_OF_TOLERANCE",
     "REASON_VERIFY_INCONCLUSIVE",
+    "REASON_VERIFY_LEVEL_SHIFT",
     "REASON_LOW_ALIGNMENT_CONFIDENCE",
     "REASON_APPLY_FAILED",
     "REASON_USER_STOPPED",

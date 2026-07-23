@@ -957,6 +957,21 @@ def test_check_linearity_and_channel_map_pass_for_clean_capture():
         assert pilot.captured_delta_db == pytest.approx(10.0, abs=0.5)
 
 
+def test_check_pilot_programmed_hi_gain_db_matches_the_segment():
+    """``PilotObservation.programmed_hi_gain_db`` (measurement-honesty gate
+    G3's raw material, crossover_v2_flow.py) is the HI segment's own
+    declared gain — published for every pilot, not just a v2 MEASURE/VERIFY
+    leading pair, since ``_pilot_observations`` is the ONE construction site
+    for all of them."""
+    prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
+    cap = _check_capture(prog)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    assert res.pilots
+    for pilot in res.pilots:
+        hi_seg = prog.segment(f"pilot_{pilot.role}_hi")
+        assert pilot.programmed_hi_gain_db == pytest.approx(hi_seg.gain_db)
+
+
 def test_check_linearity_fails_under_simulated_agc():
     prog = build_check_program(_check_roles(), ambient_s=2.0, pilot_duration_s=0.6)
     cap = _check_capture(prog, compress_hi=True)
