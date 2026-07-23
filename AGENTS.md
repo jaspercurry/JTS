@@ -3027,11 +3027,23 @@ commands. This is the contract for humans and LLM agents:
 - **Merge lane:** `scripts/test-merge` before publishing or merging
   non-trivial work. This is the full hardware-free pytest lane:
   parallel pytest, short tracebacks, and `tests/voice_eval` excluded.
-  The required `pytest` CI job also runs `ruff check .` and the
-  lenient, baselined `mypy` gate before this suite.
+  The full CI lane also runs `ruff check .` and the lenient, baselined
+  `mypy` gate before this suite.
 - **Deep/manual lane:** hardware, paid LLM evals, firmware builds, and
   Pi deploy checks. Run only when the touched subsystem requires it,
   with explicit cost/hardware scope.
+
+Pull-request CI is risk-proportional but deliberately narrow:
+[`scripts/ci-classify.py`](scripts/ci-classify.py) selects
+`fast-landing` only when `deploy/index.html` is present and every other
+changed path is one of its registered direct-test companions. That lane
+runs the complete registered landing contract bundle, including the
+load-bearing install cache-key node. Renames, deletions, test-only
+changes, workflow/classifier changes, unknown paths, mixed changes, and
+comparison failures select `full`. Non-PR events — including every
+`main` push — also select `full`. The always-reported `ci` aggregate
+validates the selected jobs' results explicitly and is the sole
+branch-protection context.
 
 The scripts are the source of truth. If a lane changes, update the
 script first, then adjust this short routing note and
@@ -3169,13 +3181,12 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    multi-day refactor of a 3,000+ line file) is the worst staleness profile —
    decompose big work into small, independently-mergeable steps.
 
-3. **`main` is branch-protected.** The `pytest` check (the stable
-   aggregate over the Python 3.11 / 3.12 / 3.13 matrix, with
-   `ruff check .` and lenient `mypy` running in the 3.13 leg) — and the
-   path-aware `rust` check (Rustfmt, Clippy, and `cargo test` for the Rust
-   crates) — **must pass before any PR merges**, enforced for admins too;
-   force-pushes and branch deletion are blocked. You cannot merge a red
-   `main`; wait for green. (Emergency override + the exact rule live in
+3. **`main` is branch-protected.** The stable `ci` aggregate **must pass
+   before any PR merges**, and every review conversation must be resolved.
+   There is no required reviewer (this is a solo-maintainer repository).
+   The rule is enforced for admins too; force-pushes and branch deletion
+   are blocked, and strict/up-to-date branches are off. You cannot merge a
+   red `main`; wait for green. (Emergency rollback + the exact rule live in
    [CONTRIBUTING.md](CONTRIBUTING.md#branch-protection).)
 
 4. **A conflicted (DIRTY) PR cannot run CI at all.** GitHub builds checks
@@ -3184,20 +3195,22 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    **suspect a conflict first** (`gh pr view <n> --json mergeable`), not a
    trigger glitch — rebase onto `main` to resolve.
 
-5. **What the CI gate covers — and does NOT.** It runs: the
-   hardware-free Python merge lane (`scripts/test-merge`, with voice_eval
-   excluded because it is the paid LLM suite) on Python 3.11, 3.12, and
-   3.13; `ruff` and lenient `mypy` in the 3.13 pytest leg; the
-   supply-chain provenance check; a `shell` job (`bash -n` over every
-   shell entry point + `shellcheck --severity=warning`), a `js` job
-   (`scripts/check-js-syntax.sh` plus the browser-module harnesses), and a
-   required pinned-toolchain `rust` job. The `rust` job is path-aware on PRs:
-   it runs `cargo fmt --all -- --check`, default Clippy with `-D warnings`,
-   and `cargo test --release --locked` for the Rust crates only for Rust or
-   Rust deploy/CI surfaces, but always runs on `main` pushes. CI does **not**
-   exercise real audio/mic/voice hardware or the Pi-side install — those
-   still need a deploy + `jasper-doctor` / on-device check. "Green CI" means
-   "safe to merge," not "validated on hardware."
+5. **What the CI gate covers — and does NOT.** The classifier and
+   fail-closed `ci` aggregate always report. A landing-only PR runs the
+   complete registered landing contract bundle plus cheap syntax,
+   provenance, and doc-map validation. Every other PR keeps the full farm:
+   the hardware-free Python merge lane (`scripts/test-merge`, with
+   voice_eval excluded because it is the paid LLM suite) on Python 3.11,
+   3.12, and 3.13; `ruff` and lenient `mypy` in the 3.13 pytest leg; the
+   supply-chain provenance check; `shell` (`bash -n` plus
+   `shellcheck --severity=warning`); `js` (static syntax plus browser-module
+   harnesses); and the pinned-toolchain `rust` job. Rust retains its existing
+   PR path router: Cargo work runs for Rust or Rust deploy/CI surfaces, while
+   every `main` push runs it unconditionally. Every `main` push selects the
+   full farm. CI does **not** exercise real audio/mic/voice hardware or the
+   Pi-side install — those still need a deploy + `jasper-doctor` / on-device
+   check when the change affects those surfaces. "Green CI" means "safe to
+   merge," not "validated on hardware."
 
 6. **Workflow-file PRs: try the `gh` merge before assuming you can't.**
    An earlier version of this rule said a `gh` OAuth token can never

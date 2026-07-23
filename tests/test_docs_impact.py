@@ -137,6 +137,19 @@ def test_state_aggregate_routes_to_state_surface_docs():
     assert "docs/HANDOFF-resilience.md" in report[2]["docs"]
 
 
+def test_landing_page_routes_to_web_design_system_not_conversation_history():
+    """The shared management entrypoint is not owned by the /chat feature."""
+
+    docs_impact = load_docs_impact()
+    subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
+
+    report = docs_impact.impact_report(subsystems, ("deploy/index.html",))
+
+    assert [item["id"] for item in report] == ["web-design-system"]
+    assert "docs/HANDOFF-management-ui.md" in report[0]["docs"]
+    assert "docs/conversation-history-plan.md" not in report[0]["docs"]
+
+
 def test_voice_service_unit_does_not_trigger_global_deploy_docs():
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")

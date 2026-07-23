@@ -68,6 +68,16 @@ def test_openwakeword_onnx_group_covers_ci_helper_deps() -> None:
     ]
 
 
+def test_fast_landing_dependency_group_is_minimal_and_locked() -> None:
+    """The narrow landing lane needs YAML, not the full audio/voice extras."""
+
+    data = _pyproject()
+    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
+
+    assert data["dependency-groups"]["fast-landing"] == ["pyyaml==6.0.3"]
+    assert "uv sync --locked --group fast-landing" in workflow
+
+
 def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
     """The full pytest suite imports optional runtime packages.
 
@@ -99,7 +109,7 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
 
 
 def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
-    """Keep the required Python merge gate fast without running paid voice-eval."""
+    """Keep the full Python lane fast without running paid voice-eval."""
 
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
     test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
@@ -169,8 +179,8 @@ def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None
     assert any("tests/test_new_feature.py" in call for call in calls), calls
 
 
-def test_rust_ci_gate_is_path_aware_without_renaming_required_check() -> None:
-    """Keep the required `rust` check present while avoiding unrelated apt/Cargo work."""
+def test_rust_ci_gate_is_path_aware_without_renaming_visible_job() -> None:
+    """Keep the visible `rust` job while avoiding unrelated apt/Cargo work."""
 
     workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
     rust_router = (ROOT / "scripts" / "rust-ci-needed").read_text(encoding="utf-8")

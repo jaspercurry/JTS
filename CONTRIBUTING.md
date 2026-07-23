@@ -63,9 +63,9 @@ scripts/test-fast
 That runs the fast local lane without a Pi, mic, or speaker. The audio
 I/O, network calls, and systemd surfaces are mocked in the default suite.
 Before publishing substantial work, run `scripts/test-merge`; that mirrors
-the required hardware-free pytest lane and runs the suite in four
-pytest-xdist workers. The `pytest` CI job also runs `ruff check .` and the
-lenient, baselined `mypy` gate before the suite.
+the full hardware-free pytest lane and runs the suite in four pytest-xdist
+workers. The full CI lane also runs `ruff check .` and the lenient,
+baselined `mypy` gate before the suite.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then replays the
 committed lock with
@@ -96,31 +96,30 @@ blank SD card to working speaker.
 
 ### Branch protection
 
-`main` is protected: the required GitHub Actions checks are `pytest`
-and `rust`. The visible `pytest` check is an aggregate over the Python
-3.11 / 3.12 / 3.13 matrix; the Python 3.13 leg also runs `ruff check .`
-and lenient `mypy`. Both required checks **must pass before any PR can
-merge**, force-pushes and branch deletion are blocked, and the rule is
-enforced for admins too — so nobody, including the maintainer, can merge
-into a red `main`. The `rust` job is path-aware on PRs: it exits green
-quickly for unrelated changes, but runs Rustfmt, Clippy, and full Cargo
-tests when Rust or Rust deploy/CI surfaces change and always runs on
-`main` pushes. There is no required reviewer, so you can self-merge your
-own green PR.
+`main` is protected: the required GitHub Actions check is `ci`. It
+**must pass before any PR can merge**, every review conversation
+must be resolved, force-pushes and branch deletion are blocked, and the
+rule is enforced for admins too — so nobody, including the maintainer, can
+merge into a red `main`. Strict/up-to-date branches are off. There is no
+required reviewer: green `ci` plus resolved conversations is the merge
+rule for this solo-maintainer repository.
 
 Two operational notes:
 
-- **The required checks are named `pytest` and `rust`.** The visible
-  `pytest` check is an aggregate over the Python-version matrix
-  (`pytest / py3.11`, `pytest / py3.12`, `pytest / py3.13`) and keeps the
-  branch-protection context stable. If you ever rename the aggregate
-  `pytest` job or the `rust` job in `.github/workflows/tests.yml`,
-  update the branch-protection rule in the same change, or every merge
-  will block on a check that never reports.
+- **The required check is named `ci`.** It is an always-reported,
+  fail-closed aggregate over the lane selected by
+  `scripts/ci-classify.py`. The only narrow lane is `fast-landing`:
+  `deploy/index.html` must be present and every companion path must be
+  one of the registered tests that directly reads it. It runs the complete
+  landing contract bundle. Everything else — including renames, deletions,
+  mixed/unknown files, dependencies, CI infrastructure, comparison
+  failures, and every `main` push — selects the full existing farm. The
+  visible `pytest` and `rust` jobs remain useful internal checks but are not
+  separately required by branch protection.
 - **Emergency override.** If CI is wedged or GitHub Actions is down and a
-  fix genuinely cannot wait, an admin can temporarily lift protection at
-  `Settings → Branches → main`, merge, and re-enable it immediately — or
-  reapply the rule via the API:
+  fix genuinely cannot wait, do not leave `main` unprotected. If the
+  aggregate itself is broken, first restore the prior `pytest` and `rust`
+  contexts, then diagnose. The rollback API shape is:
 
   ```sh
   gh api -X PUT repos/<owner>/<repo>/branches/main/protection \
@@ -138,10 +137,10 @@ Two operational notes:
   agents while iterating. Runs lint, last-failed tests, changed-file
   pytest selection, and always-on guard tests.
 - **Python merge lane** (`scripts/test-merge`) — required green before
-  merge through the `pytest` CI job. No SDK auth or network. Runs the
+  merge through the full `ci` lane. No SDK auth or network. Runs the
   hardware-free suite in parallel and excludes paid `tests/voice_eval`.
-  CI runs this lane on Python 3.11, 3.12, and 3.13; the aggregate
-  `pytest` check fails unless every versioned matrix leg passes.
+  Full CI runs this lane on Python 3.11, 3.12, and 3.13; the internal
+  `pytest` aggregate fails unless every versioned matrix leg passes.
 - **Python static checks** (`ruff check .` and `mypy`) — run once in the
   Python 3.13 matrix leg before the test suite. mypy starts permissive
   and baselined so existing type debt does not block day-one adoption,
@@ -149,8 +148,8 @@ Two operational notes:
 - **Rust audio-daemon gate** (`cargo fmt --all -- --check`, then
   `cargo clippy --release --locked --all-targets -- --no-deps
   -D warnings` (build+lint, no separate `cargo build` step), then
-  `cargo test --release --locked`) — required green through the
-  `rust` CI job when
+  `cargo test --release --locked`) — runs through the internal `rust`
+  CI job when
   Rust-relevant surfaces change, and on every `main` push. Covers the
   production fan-in/outputd daemons and shared protocol crate.
 - **Static JavaScript gate** (`scripts/check-js-syntax.sh`) — CI runs
