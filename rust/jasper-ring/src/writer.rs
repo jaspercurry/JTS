@@ -56,11 +56,38 @@
 //!    free-run" and "Torn-write safety" for the exactly-one-slot bounded race
 //!    with a resuming stale reader).
 //!
+//! **Sticky-stuck demotion (self-recovery — issue #1524).** A reader that keeps
+//! stamping its heartbeat (so it looks live) but never advances `read_seq`
+//! (CamillaDSP wedged in Prepared, polling but not calling `readi`) would
+//! otherwise pin the writer in the step-3 bounded wait forever, running fan-in at
+//! ~1/9 real time and back-pressuring the input lanes until a downstream aplay
+//! times out — with no fan-in-side event. So once `read_seq` has not advanced for
+//! longer than [`STUCK_READER_GRACE_NS`] we STOP honoring the heartbeat for the
+//! block-vs-drop decision and take the step-4 free-run drop-oldest branch instead
+//! of waiting ([`PublishOutcome::DroppedStuckDemoted`]). This is one-way and
+//! derived, not latched: `last_read_seq_advance_ns` only moves forward on a
+//! *reader* advance (never on the writer's own drop-oldest store — see
+//! [`RingWriter::note_reader_progress`]), so the age grows monotonically while the
+//! reader is frozen and demotion persists; the instant the reader (or a
+//! reattached+resynced reader) advances `read_seq` the age resets, the writer
+//! resumes honoring the heartbeat, and publishing returns to normal
+//! [`PublishOutcome::Published`]. The grace is the false-positive guard: a
+//! genuinely DAC-paced reader that back-pressures under a full ring still advances
+//! `read_seq` every period, so its age never crosses the grace and it is never
+//! demoted. Torn-write safety is unchanged: advancing `read_seq` on a
+//! heartbeat-live-but-stuck reader's behalf hits the SAME bounded
+//! (at-most-one-slot), self-healing window the crate module doc analyses for a
+//! resuming stale reader — the discipline is identical; only the trigger
+//! (age-past-grace vs dead-heartbeat) differs.
+//!
 //! # Counters
 //!
 //! [`WriterMetrics`] mirrors the C writer's `published_slots` / `drop_no_reader`
 //! / `full_waits`, and adds `stuck_reader_drops` (the plan's split of the
-//! heartbeat-but-stuck timeout out of `drop_no_reader`). The daemon reads these
+//! heartbeat-but-stuck timeout out of `drop_no_reader`; both the bounded-wait
+//! give-up [`PublishOutcome::DroppedStuck`] and the sticky demotion
+//! [`PublishOutcome::DroppedStuckDemoted`] count here — both mean "a live reader
+//! stamped a heartbeat but did not consume this slot"). The daemon reads these
 //! for `/state.shm_ring`; occupancy is derived (`write_seq - read_seq`).
 
 use std::io;
@@ -82,6 +109,17 @@ pub const MAX_FULL_WAIT_TICKS: u32 = 32;
 /// 2 ms. Mirrors the C writer's `clamped_nanosleep`.
 const MAX_TICK_NS: u64 = 2_000_000;
 
+/// How long `read_seq` may go without a *reader* advance, while the ring is full
+/// and the reader's heartbeat still looks live, before the writer STOPS honoring
+/// that heartbeat and free-runs (drop-oldest) instead of back-pressuring — the
+/// sticky-stuck demotion (issue #1524). 1 s is chosen to sit well above a normal
+/// CamillaDSP reload/reattach turn (sub-second), 5× below the fan-in 5 s progress
+/// watchdog, and 12× below the ~12 s downstream correction-lane aplay timeout the
+/// old unbounded back-pressure used to trip. It doubles as the fan-in stall
+/// EVENT threshold (`RING_STALL_EVENT_NS` in the mixer), so demotion and the
+/// edge-triggered observability event fire at the same instant.
+pub const STUCK_READER_GRACE_NS: u64 = 1_000_000_000;
+
 /// Outcome of a single [`RingWriter::publish`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishOutcome {
@@ -93,8 +131,17 @@ pub enum PublishOutcome {
     DroppedNoReader,
     /// The ring was full WITH a live reader that heartbeats but never advanced
     /// `read_seq` within the bounded wait: the writer gave up and dropped this
-    /// period rather than stall unboundedly. Should not happen with our reader.
+    /// period rather than stall unboundedly. This is the pre-grace back-pressure
+    /// path (each such publish still paid the bounded ~21 ms wait). Sustained
+    /// occurrence promotes to [`PublishOutcome::DroppedStuckDemoted`].
     DroppedStuck,
+    /// The ring was full WITH a live reader whose `read_seq` has not advanced for
+    /// longer than [`STUCK_READER_GRACE_NS`]: the writer DEMOTED the stuck reader
+    /// and free-ran (drop-oldest) WITHOUT the ~21 ms wait, restoring real-time
+    /// pacing and relieving input back-pressure (issue #1524). Distinct from
+    /// [`Self::DroppedStuck`] so the caller can attribute the recovery; counts
+    /// toward `stuck_reader_drops` like `DroppedStuck` (both are live-but-stuck).
+    DroppedStuckDemoted,
 }
 
 /// Writer-side counters for `/state.shm_ring`. Mirrors the C writer's fields
@@ -119,6 +166,22 @@ pub struct WriterMetrics {
     pub slot_frames: u32,
 }
 
+/// Reader liveness + identity snapshot for stall observability. Reads the header
+/// fresh (Relaxed) — the same fields [`RingWriter::reader_is_live`] consults —
+/// so the fan-in mixer can label an edge-triggered stall event
+/// (`reason=stuck_reader|no_reader`, `reader_pid`, `reader_heartbeat_age_ms`)
+/// without duplicating the header layout knowledge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReaderLiveness {
+    /// `reader_pid` (0 = detached).
+    pub pid: u64,
+    /// Age of `reader_heartbeat_ns` in ms (`u64::MAX` = never stamped).
+    pub heartbeat_age_ms: u64,
+    /// The reader looks live: `pid != 0` AND heartbeat younger than
+    /// [`crate::WRITER_LIVENESS_TIMEOUT_NS`].
+    pub live: bool,
+}
+
 /// The production writer half of the ring: attaches to (or creates) the SHM
 /// file, then publishes one slot per call with the SPSC discipline the C writer
 /// and [`crate::RingReader`] agree on. Owns a local `write_seq` mirror and the
@@ -127,6 +190,19 @@ pub struct RingWriter {
     map: RingMapping,
     /// Local mirror of the header `write_seq` (file-lifetime monotonic).
     write_seq: u64,
+    /// The highest `read_seq` the writer has already accounted for. Advanced
+    /// both by observed READER progress (via [`RingWriter::note_reader_progress`],
+    /// which also stamps `last_read_seq_advance_ns`) AND by the writer's own
+    /// free-run/demote drop-oldest stores (which do NOT stamp the timestamp), so
+    /// the writer never mistakes its own `read_seq` store for reader progress.
+    last_read_seq: u64,
+    /// `monotonic_ns()` of the last time an observed `read_seq` advance was
+    /// attributed to the READER. Seeded at attach; moved forward only by
+    /// [`RingWriter::note_reader_progress`]. `now - last_read_seq_advance_ns` is
+    /// the "time since the reader last made progress" that drives the
+    /// sticky-stuck demotion ([`STUCK_READER_GRACE_NS`]) and the mixer's stall
+    /// event.
+    last_read_seq_advance_ns: u64,
     metrics: WriterMetrics,
 }
 
@@ -159,6 +235,13 @@ impl RingWriter {
         map.header_atomic(layout::OFF_WRITER_HEARTBEAT_NS)
             .store(monotonic_ns(), Ordering::Relaxed);
 
+        // Seed the stall-tracking state: the read_seq we attach against, and a
+        // fresh "reader last advanced" stamp so a freshly-attached writer is
+        // never considered stuck (the grace clock starts now).
+        let read_seq = map
+            .header_atomic(layout::OFF_READ_SEQ)
+            .load(Ordering::Acquire);
+
         let metrics = WriterMetrics {
             n_slots: expected.n_slots,
             slot_frames: expected.period_frames,
@@ -167,6 +250,8 @@ impl RingWriter {
         Ok(Self {
             map,
             write_seq,
+            last_read_seq: read_seq,
+            last_read_seq_advance_ns: monotonic_ns(),
             metrics,
         })
     }
@@ -209,12 +294,17 @@ impl RingWriter {
         let w = self.write_seq;
         let mut waited = 0u32;
         let mut dropped_oldest = false;
+        let mut demoted = false;
 
         loop {
+            let now_check = monotonic_ns();
             let r = self
                 .map
                 .header_atomic(layout::OFF_READ_SEQ)
                 .load(Ordering::Acquire);
+            // Attribute any READER-driven advance so the stall/demotion clock
+            // resets the instant the reader makes progress.
+            self.note_reader_progress(r, now_check);
             if w.wrapping_sub(r) < g.n_slots as u64 {
                 break; // space available
             }
@@ -224,23 +314,41 @@ impl RingWriter {
             // publish over the freed lap. This is the only path on which the
             // writer touches read_seq (bounded, self-healing race with a
             // resuming stale reader — see the crate module doc).
-            if !self.reader_is_live(monotonic_ns()) {
-                self.map
-                    .header_atomic(layout::OFF_READ_SEQ)
-                    .store(r.wrapping_add(1), Ordering::Release);
+            if !self.reader_is_live(now_check) {
+                self.free_run_drop_oldest(r);
                 dropped_oldest = true;
                 break; // room made; publish the new slot over the dropped lap
             }
 
-            // Live reader but full: back-pressure. Count the wait ONCE, then
-            // clamped-nanosleep and re-check up to the bounded tick cap.
+            // Full WITH a live reader whose read_seq has not advanced for longer
+            // than the grace: it is stuck (heartbeat-live but not consuming —
+            // issue #1524). DEMOTE it and free-run (drop-oldest) instead of paying
+            // the ~21 ms back-pressure wait, restoring real-time pacing and
+            // relieving the input back-pressure that wedges the correction-lane
+            // aplay. One-way and derived: `last_read_seq_advance_ns` only moves
+            // forward on a real reader advance (note_reader_progress), never on
+            // the writer's own drop-oldest, so the age grows monotonically while
+            // the reader is frozen and the demotion persists until it resumes.
+            // Torn-write safety is the SAME bounded/self-healing window the crate
+            // module doc analyses for a resuming stale reader.
+            if now_check.saturating_sub(self.last_read_seq_advance_ns) > STUCK_READER_GRACE_NS {
+                self.free_run_drop_oldest(r);
+                dropped_oldest = true;
+                demoted = true;
+                break;
+            }
+
+            // Live and still within grace: back-pressure. Count the wait ONCE,
+            // then clamped-nanosleep and re-check up to the bounded tick cap.
             if waited == 0 {
                 self.metrics.full_waits = self.metrics.full_waits.saturating_add(1);
             }
             waited += 1;
             if waited > MAX_FULL_WAIT_TICKS {
-                // A reader that heartbeats but never advances: drop rather than
-                // stall unboundedly. (Should not happen with our reader.)
+                // A reader that heartbeats but has not advanced yet, still inside
+                // the grace: drop this period rather than stall unboundedly. A
+                // sustained stall promotes to the demotion branch above once the
+                // grace elapses (removing this bounded wait).
                 self.metrics.stuck_reader_drops = self.metrics.stuck_reader_drops.saturating_add(1);
                 self.metrics.occupancy = w.wrapping_sub(r);
                 return PublishOutcome::DroppedStuck;
@@ -278,7 +386,15 @@ impl RingWriter {
             .load(Ordering::Acquire);
         self.metrics.occupancy = next.wrapping_sub(r_after);
 
-        if dropped_oldest {
+        if demoted {
+            // Sticky-stuck demotion: the frames were written (pointer stays
+            // honest) but a stuck live reader will not consume them. Count as a
+            // stuck-reader drop (like DroppedStuck — both are "a live reader
+            // stamped a heartbeat but did not consume") and report the DISTINCT
+            // outcome so the caller can attribute the self-recovery.
+            self.metrics.stuck_reader_drops = self.metrics.stuck_reader_drops.saturating_add(1);
+            PublishOutcome::DroppedStuckDemoted
+        } else if dropped_oldest {
             // A free-run drop-oldest still WROTE the payload and advanced
             // write_seq (pointer stays honest), but the displaced frames will
             // never reach a reader — report it as a no-reader drop, not a
@@ -289,6 +405,79 @@ impl RingWriter {
             self.metrics.published_slots = self.metrics.published_slots.saturating_add(1);
             PublishOutcome::Published
         }
+    }
+
+    /// Record an observed `read_seq` value. If it advanced past the highest value
+    /// the writer has accounted for, a live READER consumed a slot: move the
+    /// high-water mark and stamp `last_read_seq_advance_ns`, resetting the
+    /// stall/demotion clock. The writer's OWN drop-oldest stores are folded into
+    /// `last_read_seq` by [`RingWriter::free_run_drop_oldest`] WITHOUT stamping,
+    /// so they are never mistaken for reader progress — the guard that keeps the
+    /// sticky demotion from self-clearing on its own free-run advances.
+    fn note_reader_progress(&mut self, observed_read_seq: u64, now_ns: u64) {
+        if observed_read_seq > self.last_read_seq {
+            self.last_read_seq = observed_read_seq;
+            self.last_read_seq_advance_ns = now_ns;
+        }
+    }
+
+    /// Advance `read_seq` by one on the (dead or demoted) reader's behalf so a
+    /// full ring frees a slot, and account for that store in `last_read_seq`
+    /// WITHOUT stamping `last_read_seq_advance_ns` — the writer's own drop must
+    /// never read as reader progress. `r` is the `read_seq` the caller just
+    /// loaded under the Acquire.
+    fn free_run_drop_oldest(&mut self, r: u64) {
+        let advanced = r.wrapping_add(1);
+        self.map
+            .header_atomic(layout::OFF_READ_SEQ)
+            .store(advanced, Ordering::Release);
+        if advanced > self.last_read_seq {
+            self.last_read_seq = advanced;
+        }
+    }
+
+    /// Nanoseconds since a READER last advanced `read_seq` (or since attach if it
+    /// never has). Grows monotonically while the reader is frozen; resets to ~0
+    /// the instant the reader consumes a slot. The fan-in mixer reads this to
+    /// drive the edge-triggered stall event; it is also what the sticky demotion
+    /// compares against [`STUCK_READER_GRACE_NS`] internally.
+    pub fn ns_since_read_seq_advance(&self) -> u64 {
+        monotonic_ns().saturating_sub(self.last_read_seq_advance_ns)
+    }
+
+    /// The reader's live liveness/identity snapshot for stall observability — the
+    /// `reader_pid`, heartbeat age, and live verdict the mixer stamps into a
+    /// stall event's `reason` / `reader_pid` / `reader_heartbeat_age_ms` fields.
+    pub fn reader_liveness(&self) -> ReaderLiveness {
+        let now = monotonic_ns();
+        let pid = self
+            .map
+            .header_atomic(layout::OFF_READER_PID)
+            .load(Ordering::Relaxed);
+        let hb = self
+            .map
+            .header_atomic(layout::OFF_READER_HEARTBEAT_NS)
+            .load(Ordering::Relaxed);
+        let heartbeat_age_ms = if hb == 0 {
+            u64::MAX
+        } else {
+            now.saturating_sub(hb) / 1_000_000
+        };
+        ReaderLiveness {
+            pid,
+            heartbeat_age_ms,
+            live: self.reader_is_live(now),
+        }
+    }
+
+    /// Test-only seam: pretend the reader's last `read_seq` advance happened
+    /// `elapsed_ns` ago, so a caller in another crate (the fan-in mixer's
+    /// realtime-recovery test) can drive the sticky demotion across
+    /// [`STUCK_READER_GRACE_NS`] deterministically without a real wall-clock
+    /// wait. Never called in production.
+    #[doc(hidden)]
+    pub fn set_read_seq_advance_age_for_test(&mut self, elapsed_ns: u64) {
+        self.last_read_seq_advance_ns = monotonic_ns().saturating_sub(elapsed_ns);
     }
 
     /// Free slots available for a non-blocking publish (`n_slots - (W - R)`).
@@ -501,6 +690,150 @@ mod tests {
         assert_eq!(writer.metrics().stuck_reader_drops, 1);
         assert_eq!(writer.metrics().full_waits, 1);
         assert_eq!(writer.metrics().drop_no_reader, 0);
+        cleanup(&path);
+    }
+
+    /// Sticky-stuck demotion (issue #1524): a live reader that stamps a fresh
+    /// heartbeat but NEVER advances `read_seq` first drops via the bounded
+    /// back-pressure wait (pre-grace, `DroppedStuck` — the ~21 ms path), then
+    /// once `read_seq` has been frozen past [`STUCK_READER_GRACE_NS`] the writer
+    /// DEMOTES it and free-runs (`DroppedStuckDemoted`) with NO bounded wait,
+    /// restoring real-time pacing. Occupancy stays bounded (drop-oldest). The
+    /// grace crossing is simulated by backdating the reader-advance stamp so the
+    /// test never sleeps a real second.
+    #[test]
+    fn stuck_reader_demotes_to_freerun_after_grace() {
+        let path = tmp_ring_path("demote");
+        let g = proto_geometry(); // n_slots = 2
+        let mut writer = RingWriter::create_or_attach(&path, g).unwrap();
+        let reader = RingReader::create_or_attach(&path, g).unwrap();
+        let n = g.samples_per_slot();
+        let s = vec![5i16; n];
+        let stamp_reader_heartbeat = || {
+            reader
+                .map
+                .header_atomic(layout::OFF_READER_HEARTBEAT_NS)
+                .store(monotonic_ns(), Ordering::Relaxed);
+        };
+        // Fill both slots, then wedge the reader: fresh heartbeat, never consume.
+        assert_eq!(writer.publish(&s), PublishOutcome::Published);
+        assert_eq!(writer.publish(&s), PublishOutcome::Published);
+        stamp_reader_heartbeat();
+
+        // PRE-GRACE: within the grace the writer still pays the bounded wait.
+        let start = std::time::Instant::now();
+        assert_eq!(writer.publish(&s), PublishOutcome::DroppedStuck);
+        let pre = start.elapsed();
+        assert!(
+            pre >= std::time::Duration::from_millis(3),
+            "pre-grace publish must pay the bounded back-pressure wait, got {pre:?}",
+        );
+        assert_eq!(writer.metrics().stuck_reader_drops, 1);
+
+        // Cross the grace WITHOUT a real wait: backdate the reader-advance stamp.
+        // read_seq is still frozen (the reader never consumed), so the next
+        // publish's note_reader_progress leaves this backdated stamp intact.
+        stamp_reader_heartbeat();
+        writer.last_read_seq_advance_ns =
+            monotonic_ns().saturating_sub(STUCK_READER_GRACE_NS + 10_000_000);
+
+        // POST-GRACE: demotion — free-run drop-oldest, NO ~21 ms wait.
+        let start = std::time::Instant::now();
+        assert_eq!(writer.publish(&s), PublishOutcome::DroppedStuckDemoted);
+        let post = start.elapsed();
+        assert!(
+            post < std::time::Duration::from_millis(3),
+            "demoted publish must NOT pay the bounded wait, got {post:?}",
+        );
+        // stuck_reader_drops folds the demoted drop; occupancy stays bounded.
+        assert_eq!(writer.metrics().stuck_reader_drops, 2);
+        assert_eq!(writer.metrics().drop_no_reader, 0);
+        assert!(writer.metrics().occupancy <= g.n_slots as u64);
+        cleanup(&path);
+    }
+
+    /// False-positive guard: a reader that KEEPS advancing `read_seq` (a
+    /// legitimately DAC-paced reader that back-pressures a full ring but still
+    /// drains one slot per period) resets the stall clock on every advance and is
+    /// therefore NEVER demoted — even if the age momentarily looks old. This is
+    /// the distinction between "wedged" and "merely back-pressuring".
+    #[test]
+    fn stuck_reader_resets_on_advance() {
+        let path = tmp_ring_path("resets");
+        let g = proto_geometry(); // n_slots = 2
+        let mut writer = RingWriter::create_or_attach(&path, g).unwrap();
+        let mut reader = RingReader::create_or_attach(&path, g).unwrap();
+        let n = g.samples_per_slot();
+        let mut out = vec![0i16; n];
+        reader.try_consume_slot(&mut out); // prime the reader heartbeat
+        let s = vec![7i16; n];
+        // Fill both slots (ring full).
+        assert_eq!(writer.publish(&s), PublishOutcome::Published);
+        assert_eq!(writer.publish(&s), PublishOutcome::Published);
+
+        // Even with the advance stamp backdated to LOOK past-grace, a reader that
+        // advances read_seq resets it before the full/demotion check fires:
+        // consume one slot (the DAC-paced drain), then publish. The loop-top
+        // note_reader_progress sees the advance, resets the clock, and the freed
+        // slot makes the publish succeed with NO demotion.
+        writer.last_read_seq_advance_ns =
+            monotonic_ns().saturating_sub(STUCK_READER_GRACE_NS + 10_000_000);
+        assert_eq!(reader.try_consume_slot(&mut out), SlotRead::Filled);
+        assert_eq!(writer.publish(&s), PublishOutcome::Published);
+
+        assert_eq!(
+            writer.metrics().stuck_reader_drops,
+            0,
+            "a reader that keeps advancing must never be demoted/stuck-dropped",
+        );
+        assert_eq!(writer.metrics().drop_no_reader, 0);
+        assert!(
+            writer.ns_since_read_seq_advance() < STUCK_READER_GRACE_NS,
+            "the reader advance must reset the stall clock",
+        );
+        cleanup(&path);
+    }
+
+    /// Once a demoted reader RESUMES (advances `read_seq` again — here via the
+    /// reattach/drift resync), the writer resets the stall clock and returns to
+    /// normal `Published` back to the now-live reader. Demotion is not latched:
+    /// it self-clears on the first reader advance.
+    #[test]
+    fn demoted_reader_resumes_publishing_when_unstuck() {
+        let path = tmp_ring_path("resume_unstuck");
+        let g = proto_geometry();
+        let mut writer = RingWriter::create_or_attach(&path, g).unwrap();
+        let mut reader = RingReader::create_or_attach(&path, g).unwrap();
+        let n = g.samples_per_slot();
+        let mut out = vec![0i16; n];
+        reader.try_consume_slot(&mut out); // prime the reader heartbeat
+        let s = vec![3i16; n];
+        // Fill, wedge (fresh heartbeat, no consume), and cross the grace.
+        assert_eq!(writer.publish(&s), PublishOutcome::Published);
+        assert_eq!(writer.publish(&s), PublishOutcome::Published);
+        reader
+            .map
+            .header_atomic(layout::OFF_READER_HEARTBEAT_NS)
+            .store(monotonic_ns(), Ordering::Relaxed);
+        writer.last_read_seq_advance_ns =
+            monotonic_ns().saturating_sub(STUCK_READER_GRACE_NS + 10_000_000);
+        assert_eq!(writer.publish(&s), PublishOutcome::DroppedStuckDemoted);
+        assert_eq!(writer.publish(&s), PublishOutcome::DroppedStuckDemoted);
+        assert!(writer.metrics().stuck_reader_drops >= 2);
+
+        // Reader resumes: one consume drift-resyncs read_seq to the write tip and
+        // stores it to the header. The next publish observes that advance, resets
+        // the clock, and returns to normal publishing.
+        let _ = reader.try_consume_slot(&mut out);
+        assert_eq!(
+            writer.publish(&s),
+            PublishOutcome::Published,
+            "once read_seq advances again the writer resumes normal publishing",
+        );
+        assert!(
+            writer.ns_since_read_seq_advance() < STUCK_READER_GRACE_NS,
+            "the reader advance reset the stall clock",
+        );
         cleanup(&path);
     }
 
