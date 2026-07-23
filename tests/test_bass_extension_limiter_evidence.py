@@ -646,14 +646,46 @@ def test_internal_producer_error_is_not_mislabeled_as_input_refusal(
 
 
 def test_module_is_unreachable_from_production_paths() -> None:
+    """The limiter-evidence producer must have no PRODUCTION caller.
+
+    Wave 4 Rev 9 authorizes exactly one consumer — ``ladder.py``'s hardware-free
+    synthetic dry run — and only via a FUNCTION-LOCAL import, never at module (or
+    class) scope, so no eagerly-imported production path can reach the producer.
+    This guard enforces that intent with an AST check instead of a blunt
+    substring scan: the contract-authorized function-local import is allowed,
+    while any module/class-scope import of the producer in any ``jasper`` file
+    still fails. (Operator-approved 2026-07-23 amendment reconciling this frozen
+    guard with the Rev 9 mandate; ``ladder.py``'s own test additionally AST-pins
+    its import as function-local-only, so the two guards are belt-and-braces.)
+    """
     root = Path(__file__).resolve().parents[1]
     module = root / "jasper" / "bass_extension" / "limiter_evidence.py"
     for path in (root / "jasper").rglob("*.py"):
         if path == module:
             continue
-        text = path.read_text(encoding="utf-8")
-        assert "limiter_evidence" not in text, path
-        assert "produce_limiter_thresholds" not in text, path
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        function_local: set[int] = set()
+        for func in ast.walk(tree):
+            if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(func):
+                    if isinstance(node, (ast.Import, ast.ImportFrom)):
+                        function_local.add(id(node))
+        for node in ast.walk(tree):
+            imports_producer = (
+                isinstance(node, ast.ImportFrom)
+                and (
+                    "limiter_evidence" in (node.module or "")
+                    or any(a.name == "produce_limiter_thresholds" for a in node.names)
+                )
+            ) or (
+                isinstance(node, ast.Import)
+                and any("limiter_evidence" in a.name for a in node.names)
+            )
+            if imports_producer:
+                assert id(node) in function_local, (
+                    f"{path}: the limiter-evidence producer may be imported only "
+                    "function-locally (never at module/class scope) — Wave 4 Rev 9"
+                )
 
 
 def test_module_imports_are_pure_and_hardware_free() -> None:
