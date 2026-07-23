@@ -158,6 +158,31 @@ def _candidate_review_payload(
     return payload
 
 
+def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
+    """The verify_fail screen's collapsed expert numbers (#1605): the gated
+    level error against its limit, the average error, and the band checked.
+    Empty when the conductor persisted no tracking evidence (an early-return
+    verify verdict — locate/agc/gate/level-shift — never reaches them)."""
+    evidence = _mapping(_mapping(_v2(status).get("verify")).get("evidence"))
+    if not evidence:
+        return []
+    lines: list[str] = []
+    max_db = _finite(evidence.get("max_db"))
+    tolerance_db = _finite(evidence.get("tolerance_db"))
+    if max_db is not None and tolerance_db is not None:
+        lines.append(f"level error {max_db:.2f} dB (limit {tolerance_db:.1f} dB)")
+    elif max_db is not None:
+        lines.append(f"level error {max_db:.2f} dB")
+    rms_db = _finite(evidence.get("rms_db"))
+    if rms_db is not None:
+        lines.append(f"average error {rms_db:.2f} dB")
+    lo = _finite(evidence.get("tracking_band_lo_hz"))
+    hi = _finite(evidence.get("tracking_band_hi_hz"))
+    if lo is not None and hi is not None:
+        lines.append(f"checked {lo:.0f}–{hi:.0f} Hz")
+    return lines
+
+
 def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(status.get("crossover_v2"))
 
@@ -222,6 +247,7 @@ def _envelope(
     alternate_actions: list[dict[str, Any]] | None = None,
     status: Mapping[str, Any],
     candidate_review: Mapping[str, Any] | None = None,
+    expert_details: list[str] | None = None,
     advertise_relay: bool = True,
 ) -> dict[str, Any]:
     return {
@@ -232,6 +258,10 @@ def _envelope(
         "steps": _step_payload(active_step, _done_before(active_step)),
         "verdict_text": verdict,
         "nudges": nudges or [],
+        # Optional collapsed expert-disclosure lines (the verify_fail screen's
+        # tracking numbers, #1605) — the frontend folds them behind a
+        # <details>. Empty on every screen that has none.
+        "expert_details": list(expert_details or []),
         # A terminal / restart screen must stop advertising the dead phone link
         # and its QR (W6.10 fold-in) — the session it pointed at is gone.
         "relay": (_mapping(status.get("relay")) or None) if advertise_relay else None,
@@ -311,6 +341,7 @@ def _verify_fail_envelope(
             },
         ],
         status=status,
+        expert_details=_verify_expert_details(status),
     )
 
 

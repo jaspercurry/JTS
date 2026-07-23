@@ -779,7 +779,19 @@ def persist_conductor_state(
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "candidate": _candidate_summary(conductor.candidate),
         "verify": (
-            {"outcome": verify_outcome} if verify_outcome is not None else None
+            {
+                "outcome": verify_outcome,
+                # The verify_fail expert-disclosure numbers (#1605) — persisted
+                # only for a NON-pass outcome (the only one that renders a
+                # verify_fail screen). A pass shows the candidate_review card,
+                # not these tracking numbers, so it keeps its lean shape.
+                **(
+                    {"evidence": dict(conductor.verify_evidence)}
+                    if (verify_outcome != "pass" and conductor.verify_evidence)
+                    else {}
+                ),
+            }
+            if verify_outcome is not None else None
         ),
         "failure": {"code": failure_code} if failure_code else None,
         "verify_priors": {

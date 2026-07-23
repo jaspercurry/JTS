@@ -407,6 +407,41 @@ def test_verify_fail_one_default_screen():
     assert "show_during_relay" not in env["next_action"]
 
 
+def test_verify_fail_folds_tracking_numbers_behind_expert_details():
+    """Item 5b (#1605): the verify_fail screen keeps its primary copy short and
+    folds the level-error / average-error / tracking-band numbers into a
+    collapsed expert disclosure (the frontend renders env.expert_details as a
+    <details>). The conductor persists them under verify.evidence; an
+    early-return verify verdict carries none, so no disclosure renders."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={
+            "outcome": "fail",
+            "evidence": {
+                "max_db": 2.34,
+                "rms_db": 0.81,
+                "tracking_band_lo_hz": 1000.0,
+                "tracking_band_hi_hz": 4000.0,
+                "tolerance_db": 1.5,
+            },
+        },
+    ))
+    assert env["screen"] == "verify_fail"
+    details = env["expert_details"]
+    assert "level error 2.34 dB (limit 1.5 dB)" in details
+    assert "average error 0.81 dB" in details
+    assert "checked 1000–4000 Hz" in details
+    # Primary copy stays the short reason message — the numbers are NOT in it.
+    assert "2.34" not in env["verdict_text"]
+
+    # No evidence ⇒ no disclosure (early-return verify verdicts carry none).
+    bare = build_crossover_envelope_v2(_status(
+        phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+    ))
+    assert bare["expert_details"] == []
+
+
 def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():
     """Measurement-honesty gate G3 (crossover_v2_flow._verify_verdict): a
     THIRD, distinct reason code alongside verify_out_of_tolerance/

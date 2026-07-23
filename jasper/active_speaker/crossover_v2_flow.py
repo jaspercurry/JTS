@@ -673,6 +673,30 @@ def _gate_window_ms(response: Any) -> float | None:
     return float(window) if isinstance(window, (int, float)) else None
 
 
+def _verify_evidence_from_tracking(
+    tracking: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The verify_fail expert-disclosure numbers (#1605): the notch-excluded
+    max the tolerance gates on, the RMS, the tracking band, and the tolerance
+    itself. Returns None when the gated max is not a real number — nothing
+    meaningful to show behind the disclosure."""
+    max_db = tracking.get("max_db_notch_excluded")
+    if not isinstance(max_db, (int, float)):
+        return None
+    rms_db = tracking.get("rms_db")
+    band = tracking.get("tracking_band_hz")
+    lo = hi = None
+    if isinstance(band, (list, tuple)) and len(band) == 2:
+        lo, hi = band
+    return {
+        "max_db": float(max_db),
+        "rms_db": float(rms_db) if isinstance(rms_db, (int, float)) else None,
+        "tracking_band_lo_hz": float(lo) if isinstance(lo, (int, float)) else None,
+        "tracking_band_hi_hz": float(hi) if isinstance(hi, (int, float)) else None,
+        "tolerance_db": float(VERIFY_TOLERANCE_DB),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # diagnostic-logging helpers (Part 1 — additive; feed no verdict)
 # --------------------------------------------------------------------------- #
@@ -968,6 +992,12 @@ class CrossoverV2Conductor:
         self._measure_gate_window_ms: float | None = measure_gate_window_ms
         self._candidate: Any = None
         self._verify_outcome: str | None = None  # pass | fail | inconclusive
+        # The VERIFY tracking numbers behind the verify_fail screen's collapsed
+        # expert disclosure (#1605). Set only once the tolerance comparison is
+        # actually reached (the tracking numbers exist); the early-return
+        # verdicts (locate/agc/gate/level-shift) leave it None so no half-empty
+        # disclosure renders.
+        self._verify_evidence: dict[str, Any] | None = None
         self._last_failure_code: str | None = None
         # G3 (measurement-honesty gate, 2026-07-22): the FIRST usable VERIFY
         # attempt's per-role pilot transfer becomes the reference every LATER
@@ -1142,6 +1172,11 @@ class CrossoverV2Conductor:
     @property
     def verify_outcome(self) -> str | None:
         return self._verify_outcome
+
+    @property
+    def verify_evidence(self) -> dict[str, Any] | None:
+        """The verify_fail expert-disclosure numbers (#1605), or None."""
+        return dict(self._verify_evidence) if self._verify_evidence else None
 
     @property
     def applied(self) -> bool:
@@ -1534,6 +1569,10 @@ class CrossoverV2Conductor:
         # ``_log_verify_diag`` runs unconditionally after this method
         # returns and would otherwise misreport it as fresh.
         self._verify_pilot_transfer_step_db = None
+        # Same reset discipline: only a verdict that reaches the tracking
+        # comparison below carries expert-disclosure evidence (#1605); the
+        # early returns must not surface a prior attempt's numbers.
+        self._verify_evidence = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.linearity_ok is False:
@@ -1578,6 +1617,7 @@ class CrossoverV2Conductor:
             self._verify_outcome = "inconclusive"
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
+        self._verify_evidence = _verify_evidence_from_tracking(tracking)
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
         # max — and both are now computed over `tracking["tracking_band_hz"]`,

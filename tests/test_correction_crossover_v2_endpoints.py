@@ -1866,6 +1866,37 @@ def test_status_block_reports_needs_recovery_and_phase():
     assert v2host.crossover_v2_status_block()["phase"] == PHASE_APPLYING
 
 
+def test_verify_fail_persists_expert_evidence_through_the_real_persist_path():
+    """Item 5b (#1605): a real out_of_tolerance VERIFY persists its tracking
+    numbers under state["verify"]["evidence"] via the SAME persist_conductor_
+    state the relay-driven flow calls after every capture — so the verify_fail
+    screen can fold them behind its expert disclosure. Pins the end-to-end key
+    match between what the conductor writes and what
+    crossover_envelope_v2._verify_expert_details reads (the two are tested
+    separately in test_crossover_v2_conductor.py / test_crossover_envelope_v2.py;
+    this closes the loop that a renamed key would silently break)."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        analyses={"verify": lambda program: _verify_analysis(program, max_db=2.4)},
+    )
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.note_apply_complete()  # arm VERIFY
+    conductor.consume_capture(3, 3, CaptureResult(wav=b"fake-verify"))
+    v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
+
+    assert conductor.verify_outcome == "fail"
+    verify = v2host.load_v2_state()["verify"]
+    assert verify["outcome"] == "fail"
+    assert verify["evidence"]["max_db"] == 2.4
+    assert verify["evidence"]["tolerance_db"] == 1.5
+
+
 def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
     """SF2 (adversarial review, 2026-07-20): ``_persist_terminal_failure``
     used to reset ``accepted_phases`` for EVERY terminal code, including

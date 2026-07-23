@@ -89,13 +89,24 @@ function renderApplied(applied) {
   els.applied.dataset.state = state;
 }
 
-function renderNudges(nudges) {
+function renderNudges(nudges, expertDetails) {
   const rows = (Array.isArray(nudges) ? nudges : []).map((nudge) =>
     el('p', {
       class: `wizard-nudge ${nudge.severity === 'warn' ? 'warn' : 'info'}`,
       text: nudge.text || '',
     }),
   );
+  // Optional collapsed expert numbers (the verify_fail screen's tracking
+  // evidence — crossover_envelope_v2._verify_expert_details, #1605). Reuses the
+  // same <details> disclosure style as the candidate provenance so the primary
+  // copy stays short with the numbers folded away.
+  const details = Array.isArray(expertDetails) ? expertDetails : [];
+  if (details.length) {
+    rows.push(el('details', {class: 'candidate-provenance'}, [
+      el('summary', {text: 'Expert details'}),
+      el('p', {class: 'measurement-row__meta', text: `${details.join('; ')}.`}),
+    ]));
+  }
   els.nudges.replaceChildren(...rows);
 }
 
@@ -365,7 +376,7 @@ function render(env) {
   els.verdict.textContent = env.verdict_text || '';
   renderApplied(env.applied);
   renderSteps(env.steps);
-  renderNudges(env.nudges);
+  renderNudges(env.nudges, env.expert_details);
   renderCandidateReview(env.candidate_review);
   // On the review screen the show_during_relay primary (Apply) owns the phone —
   // keep the relay live for polling/Stop but hide its connect link/QR.
