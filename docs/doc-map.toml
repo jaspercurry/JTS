@@ -777,6 +777,7 @@ docs = [
   "docs/HANDOFF-distributed-active.md",
   "docs/active-crossover-information-design.md",
   "docs/crossover-measurement-productization-design.md",
+  "docs/active-speaker-tuning-layers-design.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
 ]

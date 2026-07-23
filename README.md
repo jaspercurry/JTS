@@ -960,6 +960,14 @@ reference. Currently:
   selector, the file map, invariants, failure taxonomy, session-state paths, the
   W6 hardware bug catalog, and the W5b future-work list. Read this for how the
   flow works today; the design/decision record below is the "why."
+- [`active-speaker-tuning-layers-design.md`](docs/active-speaker-tuning-layers-design.md)
+  — **Adopted design (2026-07-23): the five-layer tuning model** — driver
+  linearization (the layer the "no sparkle" incident exposed) + crossover
+  integration as the speaker layer, then bass, room correction, and
+  preference; scalar-trim doctrine, the two named verify claims
+  (integration vs flatness), speaker-class applicability (active
+  2-way/3-way/passive), mic-tier doctrine, and the phased execution plan
+  (#1666–#1672). The handoff doc for the implementing session.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
