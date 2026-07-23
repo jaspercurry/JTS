@@ -100,7 +100,8 @@ VERIFY fail. Offline forensics then attributed every anomaly (see the
 −25…−28 ms off schedule while `glitch_detected` stayed False — the
 repeat-pair gate is structurally blind to uniform whole-capture shifts, and
 the per-segment location residual/confidence the analysis already computes
-is a free detector for it; the residual mic signal is a single unambiguous
+is a free detector for it (now enforced — see the measurement-honesty gates
+below); the residual mic signal is a single unambiguous
 correlation peak at LOW prominence whose position wanders (not lobe
 ambiguity). **The naive sub-sample anchor upgrade is refuted** — it left the
 iMM-6C span unchanged and degraded the UMIK span 12× in direct testing — so
@@ -111,6 +112,29 @@ shelf + mechanism data), #1652 (anomaly detection/attribution), #1650
 iMM-6C series silently ran under the UMIK's calibration curve;
 magnitude-only impact, but it makes the saved-mic serial-entry UI bug a
 correctness issue).
+
+**Measurement-honesty gates (2026-07-22 night).** Three additive acceptance
+gates convert the corrupted-capture signatures above into honest
+refusals/retries — no selection math and no VERIFY comparison semantics
+changed. MEASURE refuses a candidate whose `predicted_ripple_db` exceeds
+`MEASURE_PREDICTED_RIPPLE_CEILING_DB` (15 dB; the corrupted phone solve
+predicted 27.3 dB where every clean capture that day predicted 4.4–9.0 —
+reuses `low_alignment_confidence`, same household action). MEASURE
+rejects-and-auto-retries as a glitch when any sweep locates off schedule
+(`_sweep_schedule_ok`: |residual| > 5 ms or locate confidence < 0.3; the
+xrun signature was −25…−28 ms at 0.07–0.12 confidence vs ≤1.5 ms at ≥0.69
+on every clean capture — reuses `drift_baselines_disagree`). VERIFY refuses
+with the new `verify_level_shift` reason (verify-fail template, budget 2)
+when a later attempt's summed-pilot transfer steps more than 0.35 dB from
+the session's first verify attempt (the phone chain stepped 0.75–0.82 dB
+across the dishonest 1.19→2.11→2.84 dB attempt sequence; the one clean
+multi-attempt session stepped ≤0.05 dB). All thresholds are PROVISIONAL
+named constants in `crossover_v2_flow.py`; the per-capture diag events
+carry the new numbers plus a `guard` disambiguation field. Offline proof
+(45-capture retention archive + both hardware-anchored overlay runs): zero
+false fires, every must-refuse capture refused — evidence + replay scripts
+in `captures/xover-e0-2026-07-21/honesty-guards-proof-20260722/` (session
+artifact, not in-repo).
 
 ---
 
