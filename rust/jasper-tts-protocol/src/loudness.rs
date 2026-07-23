@@ -489,6 +489,40 @@ impl AssistantLoudness {
         self.last_decision.as_ref()
     }
 
+    /// Build the STATUS `assistant_loudness` snapshot directly from engine
+    /// state (outputd's path; fan-in derives an equivalent snapshot from its
+    /// seqlock'd atomics). `volume_context_rejected` is the daemon-owned reject
+    /// counter (the engine does not count rejections). Decision-derived fields
+    /// are `None` until the first decision, matching fan-in's gating.
+    pub fn loudness_snapshot(&self, volume_context_rejected: u64) -> TtsLoudnessSnapshot {
+        let decision = self.last_decision.as_ref();
+        TtsLoudnessSnapshot {
+            content_short_lufs: self.content.short_lufs().map(|v| v as f64),
+            content_anchor_lufs: self.content.anchor_lufs().map(|v| v as f64),
+            decision_seen: decision.is_some(),
+            calibrated: decision.is_some_and(|d| d.calibrated),
+            profile_confidence: decision.map_or(0.0, |d| d.profile_confidence as f64),
+            baseline_lufs: decision.map(|d| d.baseline_lufs as f64),
+            target_lufs: decision.map(|d| d.target_lufs as f64),
+            source_lufs: decision.map(|d| d.source_lufs as f64),
+            source_peak_dbfs: decision.map(|d| d.source_peak_dbfs as f64),
+            requested_gain_db: decision.map(|d| d.requested_gain_db as f64),
+            peak_cap_gain_db: decision.map(|d| d.peak_cap_gain_db as f64),
+            final_gain_db: decision.map(|d| d.final_gain_db as f64),
+            target_speaker_lufs: decision
+                .and_then(|d| d.target_speaker_lufs)
+                .map(|v| v as f64),
+            envelope_offset_lu: decision
+                .and_then(|d| d.envelope_offset_lu)
+                .map(|v| v as f64),
+            reference_kind: decision.map(|d| d.reference_kind.as_str()),
+            volume_context: self.current_volume_context,
+            volume_context_rejected,
+            held_content: self.held_content,
+            held_assistant: self.held_assistant,
+        }
+    }
+
     /// Residual mixer gain needed after an absolute user-volume update.
     ///
     /// If Camilla already carried the user change, canonical and downstream
@@ -597,6 +631,203 @@ pub fn linear_to_db(gain_linear: f32) -> f32 {
 pub fn apply_gain_i16(sample: i16, gain_linear: f32) -> i16 {
     let scaled = (sample as f32) * gain_linear;
     scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
+/// The one snapshot of assistant-loudness state both daemons surface under
+/// `tts.assistant_loudness` in STATUS. fan-in derives it from its seqlock'd
+/// atomics; outputd derives it directly from the engine. The struct and its
+/// renderer ([`render_assistant_loudness`]) live here so the two daemons'
+/// `/state` shapes cannot drift — the same "one wire vocabulary, per-daemon
+/// values" rule the FLUSH_SYNC ack follows.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TtsLoudnessSnapshot {
+    pub content_short_lufs: Option<f64>,
+    pub content_anchor_lufs: Option<f64>,
+    pub decision_seen: bool,
+    pub calibrated: bool,
+    pub profile_confidence: f64,
+    pub baseline_lufs: Option<f64>,
+    pub target_lufs: Option<f64>,
+    pub source_lufs: Option<f64>,
+    pub source_peak_dbfs: Option<f64>,
+    pub requested_gain_db: Option<f64>,
+    pub peak_cap_gain_db: Option<f64>,
+    pub final_gain_db: Option<f64>,
+    pub target_speaker_lufs: Option<f64>,
+    pub envelope_offset_lu: Option<f64>,
+    pub reference_kind: Option<&'static str>,
+    pub volume_context: Option<VolumeContext>,
+    pub volume_context_rejected: u64,
+    pub held_content: Option<HeldLoudnessReference>,
+    pub held_assistant: Option<HeldLoudnessReference>,
+}
+
+/// Canonical top-level JSON keys of the `tts.assistant_loudness` STATUS object.
+///
+/// Both fan-in and outputd render this object through
+/// [`render_assistant_loudness`], and each daemon's state test asserts the
+/// rendered object carries every key here — so the two `/state` surfaces cannot
+/// drift, the same contract [`crate::FLUSH_SYNC_ACK_KEYS`] enforces for the ack.
+pub const ASSISTANT_LOUDNESS_STATUS_KEYS: &[&str] = &[
+    "content_short_lufs",
+    "content_anchor_lufs",
+    "decision_seen",
+    "calibrated",
+    "profile_confidence",
+    "baseline_lufs",
+    "target_lufs",
+    "source_lufs",
+    "source_peak_dbfs",
+    "requested_gain_db",
+    "peak_cap_gain_db",
+    "final_gain_db",
+    "target_speaker_lufs",
+    "envelope_offset_lu",
+    "reference_kind",
+    "volume_context",
+    "volume_context_rejected",
+    "held_content",
+    "held_assistant",
+];
+
+/// Canonical JSON keys of the nested `volume_context` object (when present).
+pub const ASSISTANT_LOUDNESS_VOLUME_CONTEXT_KEYS: &[&str] = &[
+    "canonical_db",
+    "downstream_db",
+    "tts_envelope_lufs",
+    "muted",
+    "stamp_boot_ns",
+];
+
+/// Canonical JSON keys of a nested held-reference object (`held_content` /
+/// `held_assistant`, when present).
+pub const ASSISTANT_LOUDNESS_REFERENCE_KEYS: &[&str] =
+    &["speaker_lufs", "canonical_db", "calibration_offset_lu"];
+
+/// Render `snapshot` as the `tts.assistant_loudness` JSON object (including the
+/// enclosing braces) into `buf`. Both daemons call this so their STATUS shapes
+/// are byte-identical — the single writer of these keys.
+pub fn render_assistant_loudness(buf: &mut String, snapshot: &TtsLoudnessSnapshot) {
+    buf.push('{');
+    push_json_f64_opt(buf, "content_short_lufs", snapshot.content_short_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "content_anchor_lufs", snapshot.content_anchor_lufs, 1);
+    buf.push(',');
+    push_json_bool(buf, "decision_seen", snapshot.decision_seen);
+    buf.push(',');
+    push_json_bool(buf, "calibrated", snapshot.calibrated);
+    buf.push(',');
+    push_json_f64(buf, "profile_confidence", snapshot.profile_confidence, 2);
+    buf.push(',');
+    push_json_f64_opt(buf, "baseline_lufs", snapshot.baseline_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "target_lufs", snapshot.target_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "source_lufs", snapshot.source_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "source_peak_dbfs", snapshot.source_peak_dbfs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "requested_gain_db", snapshot.requested_gain_db, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "peak_cap_gain_db", snapshot.peak_cap_gain_db, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "final_gain_db", snapshot.final_gain_db, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "target_speaker_lufs", snapshot.target_speaker_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "envelope_offset_lu", snapshot.envelope_offset_lu, 1);
+    buf.push(',');
+    match snapshot.reference_kind {
+        Some(kind) => {
+            buf.push_str(r#""reference_kind":""#);
+            buf.push_str(kind);
+            buf.push('"');
+        }
+        None => buf.push_str(r#""reference_kind":null"#),
+    }
+    buf.push(',');
+    buf.push_str(r#""volume_context":"#);
+    match snapshot.volume_context {
+        Some(context) => {
+            buf.push('{');
+            push_json_f64(buf, "canonical_db", context.canonical_db as f64, 1);
+            buf.push(',');
+            push_json_f64(buf, "downstream_db", context.downstream_db as f64, 1);
+            buf.push(',');
+            push_json_f64(
+                buf,
+                "tts_envelope_lufs",
+                context.tts_envelope_lufs as f64,
+                1,
+            );
+            buf.push(',');
+            push_json_bool(buf, "muted", context.muted);
+            buf.push(',');
+            push_json_u64(buf, "stamp_boot_ns", context.stamp_boot_ns);
+            buf.push('}');
+        }
+        None => buf.push_str("null"),
+    }
+    buf.push(',');
+    push_json_u64(
+        buf,
+        "volume_context_rejected",
+        snapshot.volume_context_rejected,
+    );
+    buf.push(',');
+    push_json_reference(buf, "held_content", snapshot.held_content);
+    buf.push(',');
+    push_json_reference(buf, "held_assistant", snapshot.held_assistant);
+    buf.push('}');
+}
+
+fn push_json_key(buf: &mut String, key: &str) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+}
+
+fn push_json_bool(buf: &mut String, key: &str, value: bool) {
+    push_json_key(buf, key);
+    buf.push_str(if value { "true" } else { "false" });
+}
+
+fn push_json_u64(buf: &mut String, key: &str, value: u64) {
+    push_json_key(buf, key);
+    buf.push_str(&value.to_string());
+}
+
+fn push_json_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
+    push_json_key(buf, key);
+    buf.push_str(&format!("{value:.decimals$}"));
+}
+
+fn push_json_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
+    push_json_key(buf, key);
+    match value {
+        Some(value) => buf.push_str(&format!("{value:.decimals$}")),
+        None => buf.push_str("null"),
+    }
+}
+
+fn push_json_reference(buf: &mut String, key: &str, reference: Option<HeldLoudnessReference>) {
+    push_json_key(buf, key);
+    let Some(reference) = reference else {
+        buf.push_str("null");
+        return;
+    };
+    buf.push('{');
+    push_json_f64(buf, "speaker_lufs", reference.speaker_lufs as f64, 1);
+    buf.push(',');
+    push_json_f64(buf, "canonical_db", reference.canonical_db as f64, 1);
+    buf.push(',');
+    push_json_f64(
+        buf,
+        "calibration_offset_lu",
+        reference.calibration_offset_lu as f64,
+        1,
+    );
+    buf.push('}');
 }
 
 /// Frames over which a live gain change ramps to its new target (100 ms).
@@ -1524,6 +1755,123 @@ mod tests {
             ramp.next_frame();
         }
         assert!((ramp.current_linear() - gain_db_to_linear(MIN_TTS_GAIN_DB)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn assistant_loudness_status_keys_are_stable() {
+        // The shared STATUS wire shape. Both daemons render through
+        // `render_assistant_loudness` and each asserts its rendered block
+        // carries these keys — changing this list is a deliberate wire change.
+        assert_eq!(
+            ASSISTANT_LOUDNESS_STATUS_KEYS,
+            [
+                "content_short_lufs",
+                "content_anchor_lufs",
+                "decision_seen",
+                "calibrated",
+                "profile_confidence",
+                "baseline_lufs",
+                "target_lufs",
+                "source_lufs",
+                "source_peak_dbfs",
+                "requested_gain_db",
+                "peak_cap_gain_db",
+                "final_gain_db",
+                "target_speaker_lufs",
+                "envelope_offset_lu",
+                "reference_kind",
+                "volume_context",
+                "volume_context_rejected",
+                "held_content",
+                "held_assistant",
+            ]
+        );
+        assert_eq!(
+            ASSISTANT_LOUDNESS_VOLUME_CONTEXT_KEYS,
+            [
+                "canonical_db",
+                "downstream_db",
+                "tts_envelope_lufs",
+                "muted",
+                "stamp_boot_ns"
+            ]
+        );
+        assert_eq!(
+            ASSISTANT_LOUDNESS_REFERENCE_KEYS,
+            ["speaker_lufs", "canonical_db", "calibration_offset_lu"]
+        );
+    }
+
+    #[test]
+    fn render_assistant_loudness_emits_every_status_key() {
+        let populated = TtsLoudnessSnapshot {
+            content_short_lufs: Some(-18.0),
+            content_anchor_lufs: Some(-19.0),
+            decision_seen: true,
+            calibrated: true,
+            profile_confidence: 0.9,
+            baseline_lufs: Some(-41.0),
+            target_lufs: Some(-40.0),
+            source_lufs: Some(-25.0),
+            source_peak_dbfs: Some(-8.0),
+            requested_gain_db: Some(-15.0),
+            peak_cap_gain_db: Some(5.0),
+            final_gain_db: Some(-15.0),
+            target_speaker_lufs: Some(-40.0),
+            envelope_offset_lu: Some(0.5),
+            reference_kind: Some("held_assistant"),
+            volume_context: Some(VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: -30.0,
+                tts_envelope_lufs: -41.0,
+                muted: false,
+                stamp_boot_ns: 7,
+            }),
+            volume_context_rejected: 2,
+            held_content: Some(HeldLoudnessReference {
+                speaker_lufs: -20.0,
+                canonical_db: -30.0,
+                calibration_offset_lu: 0.0,
+            }),
+            held_assistant: Some(HeldLoudnessReference {
+                speaker_lufs: -40.0,
+                canonical_db: -30.0,
+                calibration_offset_lu: 0.5,
+            }),
+        };
+        let mut buf = String::new();
+        render_assistant_loudness(&mut buf, &populated);
+        for key in ASSISTANT_LOUDNESS_STATUS_KEYS {
+            assert!(
+                buf.contains(&format!("\"{key}\":")),
+                "missing key {key}: {buf}"
+            );
+        }
+        for key in ASSISTANT_LOUDNESS_VOLUME_CONTEXT_KEYS {
+            assert!(
+                buf.contains(&format!("\"{key}\":")),
+                "missing volume_context key {key}: {buf}"
+            );
+        }
+        for key in ASSISTANT_LOUDNESS_REFERENCE_KEYS {
+            assert!(
+                buf.contains(&format!("\"{key}\":")),
+                "missing reference key {key}: {buf}"
+            );
+        }
+        assert!(buf.starts_with('{') && buf.ends_with('}'));
+
+        // The empty snapshot still emits every top-level key (nulls/false).
+        let mut empty = String::new();
+        render_assistant_loudness(&mut empty, &TtsLoudnessSnapshot::default());
+        for key in ASSISTANT_LOUDNESS_STATUS_KEYS {
+            assert!(
+                empty.contains(&format!("\"{key}\":")),
+                "empty missing key {key}: {empty}"
+            );
+        }
+        assert!(empty.contains(r#""volume_context":null"#));
+        assert!(empty.contains(r#""held_assistant":null"#));
     }
 
     #[test]
