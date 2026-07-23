@@ -511,11 +511,30 @@ impl TtsBridge {
                 } => {
                     core.prepare_assistant_context(provider, model, voice, tts_envelope_lufs);
                 }
-                TtsCommand::VolumeContext(_context) => {
-                    // This socket is post-DSP: Camilla's gain is not
-                    // downstream of this lane. Keep wire compatibility with
-                    // fan-in, but never apply pre-DSP compensation here.
-                    eprintln!("event=outputd.volume_context_ignored reason=post_dsp");
+                TtsCommand::VolumeContext(context) => {
+                    // This socket is post-DSP. The engine is constructed with
+                    // MixStage::PostDsp, so it treats Camilla's downstream_db
+                    // as 0.0 and never applies pre-DSP compensation — while
+                    // still honouring canonical_db, tts_envelope_lufs, and
+                    // muted (mute silences a grouped follower reply; live
+                    // re-gain follows queued speech). The stale-stamp guard is
+                    // shared with fan-in; a rejected update is logged, not
+                    // applied.
+                    if core.update_volume_context(context) {
+                        eprintln!(
+                            "event=outputd.volume_context canonical_db={:.1} downstream_db={:.1} tts_envelope_lufs={:.1} muted={} stamp_boot_ns={}",
+                            context.canonical_db,
+                            context.downstream_db,
+                            context.tts_envelope_lufs,
+                            context.muted,
+                            context.stamp_boot_ns,
+                        );
+                    } else {
+                        eprintln!(
+                            "event=outputd.volume_context_rejected reason=stale_or_invalid incoming_stamp_boot_ns={}",
+                            context.stamp_boot_ns,
+                        );
+                    }
                 }
                 TtsCommand::ContentMeterPause => core.pause_content_meter(),
                 TtsCommand::ContentMeterResume => core.resume_content_meter(),
@@ -643,22 +662,30 @@ mod tests {
         assert!(bridge.open_segment.is_some());
     }
 
-    #[test]
-    fn post_dsp_bridge_ignores_pre_dsp_volume_context_compensation() {
-        let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
+    /// The volume context is now a first-class INPUT to outputd's gain, not a
+    /// dropped command. With MixStage::PostDsp the engine zeroes Camilla's
+    /// downstream_db, so a first-use reply targets the envelope directly:
+    /// source_lufs -25, envelope -41 → gain -16 dB (the -30 downstream is
+    /// ignored, which is exactly the double-compensation this fix prevents).
+    fn post_dsp_bridge_inputs(
+        tx: &SyncSender<QueuedTtsCommand>,
+        source_lufs: f32,
+        canonical_db: f32,
+        downstream_db: f32,
+    ) {
         send(
-            &tx,
+            tx,
             0,
             TtsCommand::VolumeContext(jasper_tts_protocol::VolumeContext {
-                canonical_db: -30.0,
-                downstream_db: -30.0,
+                canonical_db,
+                downstream_db,
                 tts_envelope_lufs: -41.0,
                 muted: false,
                 stamp_boot_ns: 1,
             }),
         );
         send(
-            &tx,
+            tx,
             0,
             TtsCommand::PrepareAssistant {
                 provider: "openai".to_string(),
@@ -668,7 +695,7 @@ mod tests {
             },
         );
         send(
-            &tx,
+            tx,
             0,
             TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,
@@ -677,17 +704,74 @@ mod tests {
                     provider: "openai".to_string(),
                     model: "gpt-realtime-2".to_string(),
                     voice: "marin".to_string(),
-                    source_lufs: Some(-41.0),
+                    source_lufs: Some(source_lufs),
                     source_peak_dbfs: Some(-20.0),
                     confidence: 1.0,
                 }),
             },
         );
+    }
+
+    #[test]
+    fn post_dsp_bridge_applies_post_dsp_decided_gain() {
+        let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
+        post_dsp_bridge_inputs(&tx, -25.0, -30.0, -30.0);
 
         bridge.drain(&mut core);
 
         let segment = bridge.open_segment.expect("assistant segment");
-        assert_eq!(core.ledger().segment(segment).gain, 0.0);
+        // Post-DSP-correct: envelope(-41) - source(-25), downstream zeroed.
+        assert_eq!(core.ledger().segment(segment).gain, -16.0);
+    }
+
+    #[test]
+    fn post_dsp_gain_differs_from_pre_dsp_for_same_volume_context() {
+        use crate::loudness::{
+            AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig, AssistantProfile,
+            MixStage,
+        };
+
+        // Outputd's (post-DSP) decided gain for a nonzero-downstream context.
+        let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
+        post_dsp_bridge_inputs(&tx, -25.0, -30.0, -30.0);
+        bridge.drain(&mut core);
+        let segment = bridge.open_segment.expect("assistant segment");
+        let post_dsp_gain = core.ledger().segment(segment).gain;
+
+        // The SAME inputs through a PRE-DSP engine compensate for the -30
+        // downstream and land far higher — proving outputd is not
+        // double-compensating.
+        let mut pre_dsp =
+            AssistantLoudness::new_with_stage(AssistantLoudnessConfig::default(), MixStage::PreDsp);
+        pre_dsp.prepare_context_with_volume(
+            "openai".to_string(),
+            "gpt-realtime-2".to_string(),
+            "marin".to_string(),
+            -41.0,
+            Some(jasper_tts_protocol::VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: -30.0,
+                tts_envelope_lufs: -41.0,
+                muted: false,
+                stamp_boot_ns: 1,
+            }),
+        );
+        let pre_decision: AssistantGainDecision = pre_dsp.decide_gain(
+            SegmentKind::Assistant,
+            0.0,
+            Some(AssistantProfile {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                source_lufs: Some(-25.0),
+                source_peak_dbfs: Some(-20.0),
+                confidence: 1.0,
+            }),
+        );
+
+        assert_eq!(post_dsp_gain, -16.0);
+        assert_eq!(pre_decision.final_gain_db, 14.0);
+        assert_ne!(post_dsp_gain, pre_decision.final_gain_db);
     }
 
     #[test]
