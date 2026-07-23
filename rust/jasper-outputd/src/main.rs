@@ -1049,6 +1049,50 @@ impl ChipRefDegradedLog {
     }
 }
 
+/// What the chip-ref writer should log for one write result. Pure so the full
+/// anti-spam policy — `recovery=1` once per real outage plus the rate-limited
+/// failure line — is unit-tested as a whole, not just the limiter primitive
+/// (#1245). The worker owns the `eprintln!`, the PCM teardown, and STATUS;
+/// this owns the degraded-state transition and the log decision.
+#[derive(Debug, PartialEq, Eq)]
+enum ChipRefWriteLog {
+    /// Healthy write within a healthy episode — nothing to log.
+    Silent,
+    /// First good write after a degraded episode — emit `recovery=1`.
+    Recovered,
+    /// Write failed and this occurrence should log (`suppressed` folded in).
+    Failed { suppressed: u64 },
+    /// Write failed but the line is rate-limited away.
+    FailedSuppressed,
+}
+
+/// Decide what to log for one write outcome (`failed`), advancing the degraded
+/// flag and the rate-limiter in lockstep. This is the SINGLE owner of the
+/// chip-ref write-path degraded-state transition. See [`ChipRefWriteLog`].
+fn chip_ref_write_log(
+    failed: bool,
+    degraded: &mut bool,
+    log: &mut ChipRefDegradedLog,
+    now: Instant,
+    interval: Duration,
+) -> ChipRefWriteLog {
+    if failed {
+        *degraded = true;
+        match log.note(now, interval) {
+            Some(suppressed) => ChipRefWriteLog::Failed { suppressed },
+            None => ChipRefWriteLog::FailedSuppressed,
+        }
+    } else if *degraded {
+        // First good write after a degraded episode: a real recovery. Reset the
+        // limiter so a later, unrelated outage logs immediately.
+        *degraded = false;
+        log.reset();
+        ChipRefWriteLog::Recovered
+    } else {
+        ChipRefWriteLog::Silent
+    }
+}
+
 fn run_chip_ref_writer_with<P, Open, WritePeriod>(
     config: ChipRefWriterConfig<'_>,
     rx: &Receiver<ChipRefPacket>,
@@ -1117,6 +1161,7 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
                     let mut report = PlaybackWriteReport::default();
                     let result =
                         write_period(opened, config.pcm_name, &packet.samples, &mut report);
+                    let failed = result.is_err();
                     state.mark_chip_ref_write(ChipRefWrite {
                         frames_written: report.frames_written,
                         delay_frames: report.delay_frames,
@@ -1124,43 +1169,43 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
                         underruns: report.underruns,
                         xruns: report.xruns,
                         recoveries: report.recoveries,
-                        write_failed: result.is_err(),
+                        write_failed: failed,
                     });
-                    match result {
-                        Ok(()) => {
-                            if degraded_logged {
-                                // A genuine recovery: the sink reopened AND a
-                                // period actually landed. This is the only
-                                // place `recovery=1` is emitted, so it fires
-                                // once per real outage, never once per flap.
-                                eprintln!(
-                                    "event=outputd.chip_ref.active pcm={} recovery=1",
-                                    config.pcm_name,
-                                );
-                                degraded_logged = false;
-                                degraded_log.reset();
-                            }
+                    // Anti-spam decision + degraded-state transition live in one
+                    // pure place (unit-tested); the worker owns only the PCM
+                    // teardown, STATUS, and the eprintln! IO.
+                    let log_action = chip_ref_write_log(
+                        failed,
+                        &mut degraded_logged,
+                        &mut degraded_log,
+                        Instant::now(),
+                        timing.degraded_log_interval,
+                    );
+                    if failed {
+                        state.mark_chip_ref_writer_active(false);
+                        pcm = None;
+                        retry_delay = timing.retry_initial;
+                        retry_at = Instant::now() + retry_delay;
+                    }
+                    match log_action {
+                        ChipRefWriteLog::Recovered => {
+                            // A genuine recovery: the sink reopened AND a period
+                            // actually landed — emitted once per real outage,
+                            // never once per open-OK -> write-fail flap cycle.
+                            eprintln!(
+                                "event=outputd.chip_ref.active pcm={} recovery=1",
+                                config.pcm_name,
+                            );
                         }
-                        Err(e) => {
-                            state.mark_chip_ref_writer_active(false);
-                            // Rate-limit the degraded line: a sustained
-                            // open-OK -> write-fail flap would otherwise emit
-                            // one WARN per failed period (#1245). Log the first
-                            // failure of an episode, then fold the suppressed
-                            // count into the next line an interval later.
-                            if let Some(suppressed) =
-                                degraded_log.note(Instant::now(), timing.degraded_log_interval)
-                            {
+                        ChipRefWriteLog::Failed { suppressed } => {
+                            if let Err(e) = &result {
                                 eprintln!(
                                     "event=outputd.chip_ref.unavailable action=retry_background reason=write_failed pcm={} suppressed={suppressed} detail={e:#}",
                                     config.pcm_name,
                                 );
                             }
-                            pcm = None;
-                            retry_delay = timing.retry_initial;
-                            retry_at = Instant::now() + retry_delay;
-                            degraded_logged = true;
                         }
+                        ChipRefWriteLog::Silent | ChipRefWriteLog::FailedSuppressed => {}
                     }
                 } else {
                     state.mark_chip_ref_dropped_unavailable();
@@ -1508,6 +1553,65 @@ mod tests {
         // A genuine recovery resets the limiter: the next failure logs at once.
         log.reset();
         assert_eq!(log.note(t0 + Duration::from_secs(600), interval), Some(0));
+    }
+
+    #[test]
+    fn chip_ref_write_log_recovers_once_and_rate_limits_failures() {
+        // #1245: pin the full write-result wiring, not just the limiter —
+        // `recovery=1` fires once per real outage and the failure line is
+        // rate-limited across a sustained open-OK -> write-fail flap.
+        let mut degraded = false;
+        let mut log = ChipRefDegradedLog::new();
+        let t0 = Instant::now();
+        let interval = Duration::from_secs(300);
+        let s = |n| Duration::from_secs(n);
+
+        // Healthy writes log nothing and keep us out of a degraded episode.
+        assert_eq!(
+            chip_ref_write_log(false, &mut degraded, &mut log, t0, interval),
+            ChipRefWriteLog::Silent
+        );
+        assert!(!degraded);
+
+        // First failure opens the episode and logs immediately.
+        assert_eq!(
+            chip_ref_write_log(true, &mut degraded, &mut log, t0 + s(1), interval),
+            ChipRefWriteLog::Failed { suppressed: 0 }
+        );
+        assert!(degraded);
+
+        // A flap (reopen succeeds, next write fails) within the window is
+        // suppressed and counted — no per-cycle spam.
+        assert_eq!(
+            chip_ref_write_log(true, &mut degraded, &mut log, t0 + s(2), interval),
+            ChipRefWriteLog::FailedSuppressed
+        );
+        assert_eq!(
+            chip_ref_write_log(true, &mut degraded, &mut log, t0 + s(60), interval),
+            ChipRefWriteLog::FailedSuppressed
+        );
+
+        // Once the interval elapses, one summary line carries the count.
+        assert_eq!(
+            chip_ref_write_log(true, &mut degraded, &mut log, t0 + s(301), interval),
+            ChipRefWriteLog::Failed { suppressed: 2 }
+        );
+
+        // A good write is a genuine recovery: logged once, and it resets the
+        // limiter so the NEXT outage logs immediately rather than suppressed.
+        assert_eq!(
+            chip_ref_write_log(false, &mut degraded, &mut log, t0 + s(302), interval),
+            ChipRefWriteLog::Recovered
+        );
+        assert!(!degraded);
+        assert_eq!(
+            chip_ref_write_log(false, &mut degraded, &mut log, t0 + s(303), interval),
+            ChipRefWriteLog::Silent
+        );
+        assert_eq!(
+            chip_ref_write_log(true, &mut degraded, &mut log, t0 + s(304), interval),
+            ChipRefWriteLog::Failed { suppressed: 0 }
+        );
     }
 
     #[test]
