@@ -2359,8 +2359,19 @@ async function onPlanStart(ctx) {
   // stay inert — a round is either about to start or already in flight, and
   // starting a SECOND session on top of it would leak the first's wake lock
   // + visibility watcher).
-  const isRetry = Boolean(ctx.planController) && !ctx.sessionEnded && ctx.parkedAtRetriableFailure;
-  if (ctx.planController && !ctx.sessionEnded && !isRetry) return;
+  //
+  // isRetry does not also check !ctx.sessionEnded: releasePlanSessionResources
+  // (the SOLE writer of sessionEnded=true) always clears
+  // parkedAtRetriableFailure in the same breath, so parkedAtRetriableFailure
+  // being true already guarantees the session has not ended — checking both
+  // was a redundant conjunct that let a re-tap after a TRUE session end (e.g.
+  // the host cancelling the sweep, sweep_cancelled, which ends the session via
+  // endPlanSession without ever replacing this screen) fall through into a
+  // wasted acquire-then-immediately-release of a fresh wake lock instead of
+  // being blocked outright. planController being set is already sufficient to
+  // know "this is not the very first tap".
+  const isRetry = Boolean(ctx.planController) && ctx.parkedAtRetriableFailure;
+  if (ctx.planController && !isRetry) return;
   let acknowledgement = null;
   try {
     acknowledgement = acceptedAcknowledgement(ctx.spec, ctx.captureRefs);

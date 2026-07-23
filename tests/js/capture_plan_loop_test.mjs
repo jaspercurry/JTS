@@ -230,6 +230,15 @@ const constraintDecision = () => ({ action: "proceed", degraded: false, reason: 
 // session, not once per round".
 const acquireWakeLock = async () => {
   globalThis.__wakeAcquireCalls = (globalThis.__wakeAcquireCalls || 0) + 1;
+  // N-2 regression harness: when a test parks this call on
+  // globalThis.__wakeAcquireGate, it flags __wakeAcquireGateReached
+  // SYNCHRONOUSLY (before awaiting) so a polling test loop can detect "we
+  // are now stuck here" without guessing a microtask-flush count — mirrors
+  // the B1 __recorderGate mechanism above.
+  if (globalThis.__wakeAcquireGate) {
+    globalThis.__wakeAcquireGateReached = true;
+    await globalThis.__wakeAcquireGate;
+  }
   return {
     supported: globalThis.__wakeLockUnsupported !== true,
     release: async () => {
@@ -1779,6 +1788,143 @@ async function testRetapAfterPreArmMicDeniedReentersCaptureAndReusesSessionResou
   ok();
 }
 
+// ============================================================================
+// 26 (N-1, round-3 review). A re-tap of the SAME begin_capture button after
+// the HOST cancels the sweep (sweep_cancelled — a TRUE session end via
+// endPlanSession, unlike the pre-arm-failure "park") must stay fully inert:
+// no fresh wake-lock acquire, no fresh controller. sweep_cancelled never
+// re-renders the screen (only setStatus runs), so the original button is
+// still there to be re-tapped. Pins the simplified guard
+// (`if (ctx.planController && !isRetry) return;`, isRetry no longer also
+// checking !ctx.sessionEnded) against exactly the fall-through the reviewer
+// found: parkedAtRetriableFailure is never set for this path, so isRetry
+// stays false and the tap is blocked before doing any work.
+// ============================================================================
+async function testRetapAfterHostCancelledSweepStaysInert() {
+  statusHistory.length = 0;
+  globalThis.__wakeAcquireCalls = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  // A discriminating stub: without this, hideWakeLockHint()'s own
+  // getElementById("wakelock-hint") call (from releasePlanSessionResources'
+  // end-of-session teardown) would return the SAME statusEl and clobber the
+  // very "Measurement stopped safely…" status text this test checks.
+  const hintEl = { set textContent(_v) {}, get textContent() { return ""; } };
+  globalThis.document = {
+    createElement: (tag) => makeNode(tag),
+    getElementById: (id) => (id === "wakelock-hint" ? hintEl : statusEl),
+  };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const client = {
+    async postEvent(event) {
+      if (event.begin_capture && !event.armed) {
+        const { index, attempt } = event.begin_capture;
+        client._last = { phase: "capture_authorized", index, attempt };
+      } else if (event.armed) {
+        // The Pi cancels the sweep right after arming.
+        client._last = { phase: "sweep_cancelled" };
+      }
+      return { ok: true };
+    },
+    async fetchPhoneStatus() {
+      return { host_event: client._last || {} };
+    },
+    async putBlob() {
+      throw new Error("must not upload after a host-cancelled sweep");
+    },
+  };
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  assert.equal(
+    statusHistory[statusHistory.length - 1],
+    "Measurement stopped safely. The speaker page shows what happens next.",
+  );
+  assert.equal(globalThis.__wakeAcquireCalls, 1, "the initial session acquired the wake lock once");
+  assert.ok(ctx.sessionEnded, "a host-cancelled sweep is a TRUE session end (via endPlanSession)");
+  assert.equal(
+    ctx.parkedAtRetriableFailure, false,
+    "sweep_cancelled is a post-arm outcome, never a pre-arm-failure park",
+  );
+  assert.ok(ctx.planController, "planController is never nulled — only the session is marked ended");
+
+  // Re-tap the SAME (never re-rendered) begin_capture button.
+  await onPlanStart(ctx);
+
+  assert.equal(
+    globalThis.__wakeAcquireCalls, 1,
+    "the re-tap after a true session end stays fully inert — no fresh wake-lock acquire",
+  );
+  ok();
+}
+
+// ============================================================================
+// 27 (N-2, round-3 review). Two overlapping reacquireSessionWakeLock calls
+// (a rapid visibility flicker firing the callback twice before the first
+// acquire settles) must coalesce to a SINGLE acquire — the in-flight latch
+// (ctx.reacquiringWakeLock) makes the second, overlapping call a no-op
+// rather than letting both race to overwrite ctx.wakeLock and orphan one
+// sentinel.
+// ============================================================================
+async function testConcurrentReacquireCallsCoalesceToOneAcquireNoOrphan() {
+  statusHistory.length = 0;
+  globalThis.__wakeAcquireCalls = 0;
+  globalThis.__wakeReleaseCalls = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 2 });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+  assert.equal(globalThis.__wakeAcquireCalls, 1, "the session's own initial acquire");
+  const priorLock = ctx.wakeLock;
+  assert.ok(priorLock);
+  assert.equal(typeof globalThis.__wakeReacquireCallback, "function");
+
+  // Gate the NEXT acquire so the test can catch it mid-flight, then fire the
+  // reacquire callback TWICE in a row — a rapid hide/show/hide/show.
+  globalThis.__wakeAcquireGateReached = false;
+  let releaseGate;
+  globalThis.__wakeAcquireGate = new Promise((resolve) => { releaseGate = resolve; });
+  globalThis.__wakeReacquireCallback();
+  for (let i = 0; i < 200 && !globalThis.__wakeAcquireGateReached; i += 1) {
+    await Promise.resolve();
+  }
+  assert.ok(globalThis.__wakeAcquireGateReached, "test setup reached the pending first reacquire");
+  assert.equal(globalThis.__wakeAcquireCalls, 2, "the first reacquire's request was made");
+
+  // The SECOND callback fires while the first is still in flight — the
+  // in-flight latch must make this an immediate no-op (no second acquire
+  // attempt is even started).
+  globalThis.__wakeReacquireCallback();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(globalThis.__wakeAcquireCalls, 2, "the overlapping second call did not start a second acquire");
+
+  releaseGate();
+  for (let i = 0; i < 200 && ctx.wakeLock === priorLock; i += 1) {
+    await Promise.resolve();
+  }
+
+  assert.notEqual(ctx.wakeLock, priorLock, "the first reacquire's fresh lock is now held");
+  assert.equal(globalThis.__wakeAcquireCalls, 2, "exactly one reacquire total, coalesced from two callback fires");
+  assert.equal(
+    globalThis.__wakeReleaseCalls, 1,
+    "exactly the ORIGINAL prior sentinel was released — nothing left orphaned",
+  );
+
+  globalThis.__wakeAcquireGate = null;
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -1808,6 +1954,8 @@ const tests = [
   testReacquireReleasesThePriorWakeLockSentinelBeforeOverwriting,
   testDoubleTapOnPlanStartDoesNotStartASecondSession,
   testRetapAfterPreArmMicDeniedReentersCaptureAndReusesSessionResources,
+  testRetapAfterHostCancelledSweepStaysInert,
+  testConcurrentReacquireCallsCoalesceToOneAcquireNoOrphan,
 ];
 
 let failure = null;
