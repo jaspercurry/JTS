@@ -478,6 +478,23 @@ def resolve_driver_excitation_ceilings(
     -- :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
     which is the one owner of that physical property. Optional: without it the
     proven-HP path simply keeps the class-default ceiling (and logs the skip).
+
+    Band-edge asymmetry (sweep-composition PR-A, #1668): the LOWER permitted
+    edge is ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0],
+    measurement_band[0])`` -- excursion protection, an absolute boundary that
+    stays untouched by this PR. The UPPER permitted edge is
+    ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` --
+    ``measurement_band[1]`` is deliberately EXCLUDED from it.
+    ``measurement_band`` is analysis-window metadata (what the wizard tells
+    the confidence/SNR scoring to expect), not a protection boundary the
+    driver must never be excited past; the declared HARD excitation band (the
+    datasheet-backed physically-safe range) and the global test-frequency
+    ceiling are what still bind the upper edge. A driver whose measurement
+    band tops out below its hard band (e.g. a tweeter declared
+    hard=[1600, 20000], measurement=[2000, 18000]) can now be swept up to its
+    OWN hard band's edge (or the global ceiling, whichever is lower) instead
+    of being silently capped at the narrower analysis window -- wider MEASURE
+    sweeps without loosening excursion protection.
     """
 
     target = _target_for_request(safety_profile, target_fingerprint)
@@ -505,10 +522,12 @@ def resolve_driver_excitation_ceilings(
         float(hard_band[0]),
         float(measurement_band[0]),
     )
+    # measurement_band[1] is deliberately NOT part of this min() -- see the
+    # "Band-edge asymmetry" paragraph in this function's docstring. The hard
+    # band + global ceiling are the only upper-edge protection boundaries.
     upper = min(
         MAX_DRIVER_TEST_FREQUENCY_HZ,
         float(hard_band[1]),
-        float(measurement_band[1]),
     )
     permitted_band = FrequencyBand(lower, upper)
     protection = driver_protection_profile(

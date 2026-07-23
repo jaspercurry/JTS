@@ -91,11 +91,21 @@ def _synthesize(program, *, noise: float = 1e-4, seed: int = 0) -> np.ndarray:
 # --- composer layout ----------------------------------------------------------
 
 
+_N3_MEASURE_TAIL_IDS = [
+    "sweep_w", "gap_w_t", "sweep_t", "gap_t_w",
+    "sweep_w_rep", "gap_w_t_rep", "sweep_t_rep", "gap_t_w_rep",
+    "sweep_w_rep2", "gap_w_t_rep2", "sweep_t_rep2",
+    "tail",
+]
+
+
 def test_measure_default_layout_is_unchanged_without_pilots():
-    """Opt-out (the legacy composer call) keeps the exact pre-W5a layout."""
+    """Opt-out (no leading pilot pair) still gets the N=3 interleaved shape
+    (sweep-composition PR-A, #1668) — pilots are the only thing this opt-out
+    controls, not the repeat count."""
     prog = _measure_program(with_pilots=False)
     ids = [seg.segment_id for seg in prog.segments]
-    assert ids == ["guard", "sweep_w", "gap_w_t", "sweep_t", "gap_t_w", "sweep_w_rep", "tail"]
+    assert ids == ["guard", *_N3_MEASURE_TAIL_IDS]
 
 
 def test_measure_leading_pilot_pair_layout_and_gains():
@@ -106,7 +116,7 @@ def test_measure_leading_pilot_pair_layout_and_gains():
         "pilot_woofer_hi", "pilot_gap_woofer_hi",
         "guard",
     ]
-    assert ids[5:] == ["sweep_w", "gap_w_t", "sweep_t", "gap_t_w", "sweep_w_rep", "tail"]
+    assert ids[5:] == _N3_MEASURE_TAIL_IDS
     lo = prog.segment("pilot_woofer_lo")
     hi = prog.segment("pilot_woofer_hi")
     assert lo.kind == KIND_PILOT and hi.kind == KIND_PILOT
@@ -228,10 +238,19 @@ def test_verify_pilot_linearity_verdict_present():
 
 
 # --- analysis: woofer-repeat level agreement ------------------------------------
+#
+# The gate is first-vs-LAST located woofer occurrence (sweep-composition
+# PR-A, #1668 — see `_estimate_drift`'s docstring): under the N=3 default the
+# LAST occurrence is "sweep_w_rep2", not "sweep_w_rep" (the middle one) — the
+# three tests below perturb "sweep_w_rep2" so they keep exercising the gate
+# that actually runs against the shipped default, not a middle repeat the
+# gate does not see (that coverage gap is a named, deferred scope note, not
+# a bug — see the same docstring's "Scope note").
 
 
 def test_repeat_level_step_is_flagged_as_glitch():
-    """A >±0.3 dB level step between the two woofer sweeps ⇒ glitch verdict.
+    """A >±0.3 dB level step between the woofer's first and last sweeps ⇒
+    glitch verdict.
 
     Timing is untouched (pure amplitude scale on the repeat window), so the
     drift baselines agree — the LEVEL check alone must trip, and it reuses the
@@ -239,7 +258,7 @@ def test_repeat_level_step_is_flagged_as_glitch():
     §5.2)."""
     prog = _measure_program()
     cap = _synthesize(prog)
-    rep = prog.segment("sweep_w_rep")
+    rep = prog.segment("sweep_w_rep2")
     start = GLOBAL_OFFSET + rep.start_sample
     cap[start:start + rep.n_samples] *= 10.0 ** (-1.0 / 20.0)  # 1 dB quieter
     res = analyze_program_capture(
@@ -254,7 +273,7 @@ def test_repeat_level_step_is_flagged_as_glitch():
 def test_repeat_level_within_tolerance_is_clean():
     prog = _measure_program()
     cap = _synthesize(prog)
-    rep = prog.segment("sweep_w_rep")
+    rep = prog.segment("sweep_w_rep2")
     start = GLOBAL_OFFSET + rep.start_sample
     delta_db = REPEAT_LEVEL_TOLERANCE_DB * 0.5
     cap[start:start + rep.n_samples] *= 10.0 ** (-delta_db / 20.0)
@@ -281,7 +300,7 @@ def test_repeat_level_lf_transient_does_not_false_reject():
     """
     prog = _measure_program()
     cap = _synthesize(prog)
-    rep = prog.segment("sweep_w_rep")
+    rep = prog.segment("sweep_w_rep2")
     start = GLOBAL_OFFSET + rep.start_sample
     n = 480  # 10 ms at 48 kHz, a handful of cycles at 60 Hz
     t = np.arange(n) / SR
@@ -295,9 +314,37 @@ def test_repeat_level_lf_transient_does_not_false_reject():
     # SegmentLocation.peak_dbfs is the untouched full-band peak (still used
     # for clip-run reporting / the pilot gain-solve reference) — confirms the
     # OLD estimator would have tripped the glitch on this same capture.
-    old_style_delta = abs(by_id["sweep_w"].peak_dbfs - by_id["sweep_w_rep"].peak_dbfs)
+    old_style_delta = abs(by_id["sweep_w"].peak_dbfs - by_id["sweep_w_rep2"].peak_dbfs)
     assert old_style_delta > REPEAT_LEVEL_TOLERANCE_DB
     assert res.glitch_detected is False
+
+
+def test_repeat_level_gate_stays_woofer_anchored_middle_and_tweeter_steps_pass():
+    """Pins the scope note in `_estimate_drift`'s docstring (sweep-composition
+    PR-A, #1668): the level gate is woofer first-vs-LAST only. A level step
+    confined to the woofer's MIDDLE repeat, or to any tweeter occurrence
+    (never covered by this gate, before or after #1668), must NOT trip
+    ``glitch_detected`` — deferred to a future PR's G2 hardening, not a bug
+    here."""
+    prog = _measure_program()
+
+    cap_middle = _synthesize(prog)
+    middle = prog.segment("sweep_w_rep")  # occurrence 2 of 3 -- not first/last
+    start = GLOBAL_OFFSET + middle.start_sample
+    cap_middle[start:start + middle.n_samples] *= 10.0 ** (-1.0 / 20.0)
+    res_middle = analyze_program_capture(
+        prog, cap_middle, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res_middle.glitch_detected is False
+
+    cap_tweeter = _synthesize(prog)
+    tweeter_last = prog.segment("sweep_t_rep2")
+    start = GLOBAL_OFFSET + tweeter_last.start_sample
+    cap_tweeter[start:start + tweeter_last.n_samples] *= 10.0 ** (-1.0 / 20.0)
+    res_tweeter = analyze_program_capture(
+        prog, cap_tweeter, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res_tweeter.glitch_detected is False
 
 
 def test_measure_predicted_sum_travels_for_verify():
