@@ -100,6 +100,17 @@ instantiated. Operator surfaces expose this as `software_aec3.bypassed=true`;
 turning off the software-AEC3 layer must not stop the chip-AEC carrier. To
 stop the carrier entirely, choose the `direct_mic` profile.
 
+**CamillaDSP is a soft startup dependency, not a bridge lifecycle owner.**
+The bridge reads the XVF mic directly and consumes outputd's final-reference
+UDP stream; its explicit ALSA fallback is the pre-Camilla `pcm.jasper_ref`
+tap. Consequently, `jasper-aec-bridge.service` uses `After=` plus `Wants=` for
+CamillaDSP and deliberately has neither `Requires=` nor `PartOf=`. A brief
+Camilla pause must leave the UDP mic producer running so `jasper-voice` keeps
+making watchdog progress. `jasper-aec-reconcile` remains the single owner of
+whether the bridge is enabled and running. This contract closes the #1264
+failure where a USB combo toggle clean-stopped the bridge and voice watchdog-
+aborted 30 seconds later.
+
 The optional computer microphone is a second consumer of that carrier, not a
 voice socket takeover. When `/var/lib/jasper/usb_mic.env` explicitly enables
 the feature, the bridge emits one cleaned 16 kHz mono source to localhost UDP
@@ -2805,8 +2816,11 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-07-16 (the active-plan-derived computer-microphone source
-selector, `primary` default, shared gain/soft-limit, per-frame clean fallback,
+Last verified: 2026-07-23 (the bridge's Camilla-independent runtime inputs,
+soft `After=`/`Wants=` startup dependency, and reconciler-owned lifecycle were
+rechecked against the unit, bridge topology, and the #1264 hardware failure;
+the active-plan-derived computer-microphone source selector, `primary` default,
+shared gain/soft-limit, per-frame clean fallback,
 applied-source truth, and isolation from `:9876` / wake legs were rechecked;
 the optional USB-host-mic duplicate on dedicated `:9894`, v2-only timestamp
 header, one-way rollout compatibility, negotiated capture-latency log,

@@ -27,20 +27,19 @@ Description=AEC bridge — carries XVF mic audio via software AEC3 or chip-AEC
 # service as the bridge from the chip beam into jasper-voice. See
 # jasper/cli/aec_bridge.py and docs/HANDOFF-aec.md.
 After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service sound.target
-Requires=jasper-camilla.service
 # `Wants=` so init runs whenever bridge starts (init is a one-shot
 # that applies XVF tuning; bridge depends on chip being initialised).
 # Soft dep — bridge still tries to start even if init failed; AEC
 # quality degrades but the daemon is operational.
-Wants=jasper-fanin.service jasper-outputd.service jasper-aec-init.service
-# `PartOf=` propagates camilla's stop / restart to this unit. Without
-# it, a camilla restart (e.g. during deploy) deactivates the bridge
-# via `Requires=` cascade — but `Restart=on-failure` doesn't trigger
-# on a clean exit (code 0 from cascade-stop), so the bridge stays
-# dead silently. Mic ends up listening to a (now-unfed) loopback,
-# wake events stop firing, speaker appears alive but is deaf. Hit
-# in production on 2026-05-10.
-PartOf=jasper-camilla.service
+# Camilla is also a SOFT startup dependency. The current bridge reads
+# the XVF mic directly and consumes outputd's final-reference UDP stream
+# (or the pre-Camilla jasper_ref diagnostic fallback), so it has no
+# runtime lifecycle dependency on CamillaDSP. Do not add Requires= or
+# PartOf= back: a coordinated Camilla pause during a USB combo toggle
+# otherwise clean-stops the bridge, leaves voice's UDP mic unfed, and
+# triggers its 30 s progress watchdog (#1264). jasper-aec-reconcile
+# remains the single owner of whether the bridge should run.
+Wants=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service
 
 # Tier 4.5 — escalate to system reboot if the per-service watchdog
 # spiral exceeds 4 restarts in 5 minutes. See

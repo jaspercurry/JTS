@@ -376,6 +376,9 @@ OnFailure, no core-graph bounce — one intentional brief camilla restart replac
 the kill cascade. Loopback keeps its plain restart (snd-aloop decouples the two).
 This uses the existing broker/polkit grants (`jasper-camilla.service` is already a
 `MANAGED_UNITS` member; `manage-units` covers stop/start) — no new grant.
+The AEC bridge is deliberately only soft-ordered after CamillaDSP, so this
+pause does not stop voice's UDP mic producer; the canonical lifecycle contract
+lives in [HANDOFF-aec.md](HANDOFF-aec.md).
 
 **Coordination scope.** All DELIBERATE Python-side fan-in restarts are
 coordinated: the reconciler's own restarts, and `jasper.fanin.buffer_reconcile`'s
@@ -2152,7 +2155,9 @@ re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-per
 peak) — trading latency for drops on every source. The lean-fifo gets low latency
 *without* that tradeoff because it removes the sawtooth mechanism entirely.
 
-Last verified: 2026-07-15 (direct-health and reopen fields were rechecked as
+Last verified: 2026-07-23 (the coordinated combo restart's soft AEC-bridge
+lifecycle boundary was rechecked against the #1264 hardware failure and
+HANDOFF-aec.md; direct-health and reopen fields were rechecked as
 fan-in recovery observability only, with no health-driven USB lifecycle action;
 the retired Rust bridge/state surface was removed;
 USB-toggle trigger ownership rechecked against
