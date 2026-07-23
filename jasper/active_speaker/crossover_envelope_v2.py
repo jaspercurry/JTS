@@ -534,9 +534,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="microphone_check", active_step="microphone_check",
             verdict=(
-                "Place the microphone about 1 m in front of the speaker at tweeter "
-                "height (see the picture), then tap Start on your phone. JTS runs a "
-                "quick microphone check first."
+                "Place the microphone about 1 m in front of the speaker, at "
+                "tweeter height and pointing at it — about where you'd sit to "
+                "listen (see the picture). Keep it in that one spot for the whole "
+                "measurement, then tap Start. JTS runs a quick microphone check "
+                "first."
             ),
             next_action={
                 "id": "start_v2_session",

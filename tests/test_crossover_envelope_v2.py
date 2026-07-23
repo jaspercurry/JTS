@@ -97,6 +97,14 @@ def test_check_phase_screen():
     assert statuses["speaker_setup"] == "done"
     assert statuses["microphone_check"] == "active"
     assert env["progress"] == {"position": 2, "total": 5}
+    # Item 5a (#1605): the placement guidance names the load-bearing facts —
+    # distance, tweeter height, and holding ONE spot for the whole session
+    # (one mic position spans all three captures). Substring guards, not exact
+    # wording, so copy can still be refined.
+    verdict = env["verdict_text"].lower()
+    assert "1 m" in verdict
+    assert "tweeter height" in verdict
+    assert "whole measurement" in verdict
 
 
 def test_measure_phase_is_phone_driven():
