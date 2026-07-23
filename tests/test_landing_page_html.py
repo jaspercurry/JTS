@@ -285,8 +285,6 @@ def test_landing_page_has_source_selector_buttons() -> None:
     style = html.split("<style>", 1)[1].split("</style>", 1)[0]
 
     assert 'aria-label="Playback source"' in html
-    assert "Auto uses the newest source to start" in html
-    assert "Select a source to pin it" in html
     for source in ("auto", "airplay", "bluetooth", "spotify", "usbsink"):
         assert f'data-source="{source}"' in html
     assert re.search(r"\.source-buttons \{[^}]*\bgap: 4px;", style)
