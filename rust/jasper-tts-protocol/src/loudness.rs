@@ -1650,6 +1650,38 @@ mod tests {
         let louder = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
         assert_eq!(louder.target_lufs, -35.0);
 
+        // Canonical user-delta is still tracked through a held-content
+        // reference: raising the knob +6 dB raises the target +6 dB, and the
+        // downstream term is zeroed at BOTH the store (observe) and the decide,
+        // so it cannot inflate the held target (the double-compensation guard).
+        let mut held = post_dsp();
+        held.update_volume_context(volume_context(-30.0, -30.0, -41.0, 1));
+        held.observe_content_period(&stereo_sine(0.08, (SAMPLE_RATE as usize) * 3));
+        // A brief silence makes content no longer "currently audible", so the
+        // next decision uses HeldContent (not LiveContent) — but never expires.
+        held.observe_content_period(&vec![
+            0i16;
+            (SAMPLE_RATE as usize) / 2 * (CHANNELS as usize)
+        ]);
+        held.prepare_context("o".to_string(), "m".to_string(), "v".to_string(), -41.0);
+        let at_low = held.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(at_low.reference_kind, ReferenceKind::HeldContent);
+
+        held.update_volume_context(volume_context(-24.0, -30.0, -41.0, 2));
+        held.observe_content_period(&vec![
+            0i16;
+            (SAMPLE_RATE as usize) / 2 * (CHANNELS as usize)
+        ]);
+        held.prepare_context("o".to_string(), "m".to_string(), "v".to_string(), -41.0);
+        let at_high = held.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(at_high.reference_kind, ReferenceKind::HeldContent);
+        assert!(
+            (at_high.target_lufs - at_low.target_lufs - 6.0).abs() < 0.01,
+            "canonical +6 must move the held-content target +6: {} vs {}",
+            at_high.target_lufs,
+            at_low.target_lufs,
+        );
+
         // Mute still blocks learning post-DSP — the follower safety guard.
         let mut muted_ctx = volume_context(-30.0, -30.0, -41.0, 3);
         muted_ctx.muted = true;
