@@ -175,8 +175,14 @@ def test_single_status_miss_does_not_drop_a_live_winner():
     assert _run([0, 48_000, None, 96_000]) == [False, True, True, True]
 
 
-def test_two_consecutive_misses_drop_after_debounce():
-    assert _run([0, 48_000] + [None] * STOP)[-1] is False
+def test_repeated_status_misses_remain_unknown_not_false_stops():
+    """The mux-level five-second unknown grace owns bounded expiry.
+
+    This counter fallback cannot distinguish "fan-in unavailable" from "frames
+    stopped," so missing samples preserve its state instead of manufacturing a
+    stop. Definite flat counters still exercise the stop debounce above.
+    """
+    assert _run([0, 48_000] + [None] * (STOP + 2))[-1] is True
 
 
 def test_counter_reset_rebaselines_without_spurious_advance():
@@ -267,11 +273,10 @@ def test_direct_muted_none_when_absent_or_non_bool():
 
 # ---- Combo liveness is frames-only (no audio-level gate) --------------------
 
-# The old "frames-advanced AND audible (rms > -60)" gate was removed with the
-# sticky-session rework (2026-07-17). USB liveness is now purely "is the host
-# streaming frames to us" — a faint sound streams frames just like a loud one,
-# and USB wins whenever it streams and no explicit session is active (the
-# arbiter, not the level, keeps a silently-streaming host from stealing a cast).
+# The old "frames-advanced AND audible (rms > -60)" gate was removed in 2026.
+# USB liveness is now purely "is the host streaming frames to us" — a faint
+# sound streams frames just like a loud one. The confirmed start enters mux's
+# source-neutral latest-start-wins policy; pin/disable are the explicit opt-outs.
 # The per-lane rms readers below still exist for /state telemetry, but no longer
 # gate liveness. See jasper.mux.step_combo_liveness and docs/HANDOFF-usbsink.md.
 

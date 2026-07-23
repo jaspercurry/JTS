@@ -218,6 +218,8 @@ def upstream_control():
                 },
             },
             "voice_provider": "gemini",
+            "usb_gadget_forensics": {"enabled": False, "running": False,
+                                       "ram_cap_bytes": 524288},
         },
         "/system/diagnostics": {
             "fails": 0, "warns": 0, "results": [
@@ -227,6 +229,8 @@ def upstream_control():
         "/system/restart/voice": {"ok": True, "action": "restart-voice"},
         "/system/restart/audio": {"ok": True, "action": "restart-audio"},
         "/system/audio-quality": {"ok": True, "action": "audio-quality"},
+        "/usb-forensics": {"enabled": True, "running": False,
+                             "ram_cap_bytes": 524288},
         "/system/reboot": {"ok": True, "action": "reboot"},
         "/system/poweroff": {"ok": True, "action": "poweroff"},
     }
@@ -400,6 +404,18 @@ def test_post_audio_quality_proxies_json_body(dashboard_server) -> None:
     assert ("POST", "/system/audio-quality") in received
 
 
+def test_post_usb_forensics_proxies_json_body(dashboard_server) -> None:
+    base, received, _ = dashboard_server
+    status, body = _http_post_json(
+        f"{base}/usb-forensics", {"action": "set_enabled", "enabled": True},
+    )
+    assert status == 200
+    assert json.loads(body)["received_body"] == {
+        "action": "set_enabled", "enabled": True,
+    }
+    assert ("POST", "/usb-forensics") in received
+
+
 def test_post_reboot_proxies(dashboard_server) -> None:
     base, received, _ = dashboard_server
     status, _ = _http_post(f"{base}/reboot")
@@ -498,7 +514,7 @@ _SHARED_DOM_JS = _ASSETS_DIR / "shared" / "js" / "dom.js"
 # in via _system_js() below rather than listed here.
 _EXPECTED_MODULES = (
     "format", "charts", "components", "sections", "audio-sections", "audio-view",
-    "views", "api", "actions", "main",
+    "views", "usb-forensics-card", "api", "actions", "main",
 )
 
 
@@ -541,7 +557,7 @@ def test_modules_wire_the_proxy_endpoints() -> None:
     poll the same read endpoints."""
     js = _system_js()
     for path in ("restart/voice", "restart/audio", "reboot", "poweroff",
-                 "audio-quality", "data.json", "diagnostics.json"):
+                 "audio-quality", "usb-forensics", "data.json", "diagnostics.json"):
         assert path in js, f"system modules no longer reference {path}"
     assert 'getJSON("/system/data.json")' in js
     assert 'fetch("/system/audio-quality"' in js

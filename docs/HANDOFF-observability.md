@@ -39,7 +39,11 @@ JTS intentionally separates:
    via `bash scripts/pi-system-soak.sh ...`, which in turn uses
    `scripts/pi-run-diagnostic.sh` so systemd bounds memory/runtime and
    gives the kernel an obvious diagnostic process to kill before
-   product daemons.
+   product daemons. A device-specific intermittent fault may instead use an
+   explicitly enabled, hard-capped RAM ring with deliberate artifact freezes;
+   USB gadget forensics is the concrete instance and remains separate from the
+   TTL log-level toggle. Its limits and retention live in
+   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
 
 This is the project rule that keeps observability from muddying the
 steady state: production gets truth, not lab equipment.
@@ -359,7 +363,7 @@ decision telemetry and remains INFO.
 
 **Tier B — done (2026-05-30; pending on-device verification).** A
 collapsed **Debug logging** card on `/system` expands to one
-checkbox per subsystem (**voice**, **aec**, **control**, **USB input** — the
+checkbox per subsystem (**voice**, **aec**, **control** — the
 daemons with a clean `basicConfig` seam; shairport's config-file
 `log_verbosity` and mux's `--log-level` are a different mechanism,
 deferred). Each toggle raises that daemon's `jasper` logger to
@@ -378,10 +382,8 @@ DEBUG. As built:
   `/system` page server (:8772) idle-exits after 30 min and can't
   own the auto-expiry timer. `set_debug` writes `debug.env`
   atomically, then applies according to each subsystem's policy:
-  always-on daemons such as voice and AEC restart, optional daemons
-  such as USB input restart **only if already active** (otherwise the
-  flag is deferred until the source's next legitimate start), and
-  control applies **in-process** (a self-restart would drop the request
+  always-on daemons such as voice and AEC restart, and control applies
+  **in-process** (a self-restart would drop the request
   + the timer). (WS1 Phase 3b-2: `jasper-control` runs as a non-root
   user, so the `systemctl restart <unit>` this issues is now
   **polkit-authorized** against the `MANAGED_UNITS` allowlist —
@@ -420,6 +422,8 @@ and its toggles trigger real daemon restarts, so after a deploy open
 `journalctl -u jasper-voice` shows DEBUG lines + the countdown and
 auto-quiet fire. USB input is not a debug subsystem: its readiness unit has no
 resident process; inspect fan-in STATUS and the usbsink doctor group instead.
+The separate USB gadget forensics card samples controller counters, not daemon
+logs, and therefore does not extend this Debug logging registry.
 
 **Tier C — flight recorder (built 2026-05-30; pending on-device
 verification).** A bounded in-RAM verbose ring per daemon,
@@ -592,7 +596,10 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-15 (normalized audio-health ownership, cadence,
+Last verified: 2026-07-22 (the three-member debug registry and USB gadget
+forensics' separate bounded-diagnostics boundary were rechecked against code,
+the root sampler, `/state`, and `/system/` cards).
+Prior 2026-07-15 (normalized audio-health ownership, cadence,
 current-stream/session projection, continuity-vs-timing semantics, bounded
 persistent incident lifecycle, and legacy AirPlay compatibility rechecked
 against `jasper/control/audio_health.py`,

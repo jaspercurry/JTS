@@ -35,6 +35,7 @@ mod lane_resampler;
 mod loudness;
 mod mixer;
 mod playout;
+mod source_notify;
 mod state;
 mod tts;
 mod watchdog;
@@ -192,6 +193,7 @@ fn main() -> Result<()> {
         mixer.input_count(),
         config.input_pcms.len(),
     );
+    let source_notify_signals = mixer.source_notify_signals();
 
     // Impulse-tap writer thread (C4) — the SINGLE JSONL writer for the USB
     // DIRECT ingress tap. Default-disarmed, so this thread idles at a 100 ms
@@ -210,6 +212,26 @@ fn main() -> Result<()> {
             crate::impulse_tap::run_tap_writer(tap_receiver, tap_state, tap_config, tap_shutdown);
         })
         .context("spawning fanin-tap-writer thread")?;
+
+    // USB source-flow wake adapter. It samples the direct lane's existing
+    // frame counter on a non-audio helper thread and sends edge-only hints to
+    // mux. Mux owns policy and patrol recovery; fan-in never selects a source.
+    // Spawn before mlockall, like every other helper thread in this process.
+    let source_notify_thread = source_notify_signals
+        .map(|signals| {
+            let mux_socket = PathBuf::from(
+                std::env::var("JASPER_MUX_CONTROL_SOCKET")
+                    .unwrap_or_else(|_| "/run/jasper-mux/control.sock".to_string()),
+            );
+            let notify_shutdown = Arc::clone(&shutdown);
+            std::thread::Builder::new()
+                .name("fanin-source-notify".into())
+                .spawn(move || {
+                    crate::source_notify::run(signals, &mux_socket, notify_shutdown);
+                })
+                .context("spawning fanin-source-notify thread")
+        })
+        .transpose()?;
 
     // Combo-mode host-slaved USB clock (C5). DEFAULT-OFF. When
     // JASPER_FANIN_HOST_CLOCK=enabled AND USB DIRECT is armed, a dedicated
@@ -379,6 +401,9 @@ fn main() -> Result<()> {
     let _ = state_thread.join();
     let _ = xrun_writer.join();
     let _ = tap_writer.join();
+    if let Some(handle) = source_notify_thread {
+        let _ = handle.join();
+    }
     // Join the host-clock thread last: its loop exited on the shutdown flag and
     // forced a neutral pitch write on the way out (the neutrality invariant),
     // so by the time we return the host is un-slaved. `None` when the feature

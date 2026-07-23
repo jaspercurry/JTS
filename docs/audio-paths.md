@@ -103,8 +103,18 @@ deploy/index.html
 
 Ownership is deliberately split:
 
-- `jasper-mux` owns policy and the source-handoff transaction. Auto
-  mode is latest-source-wins; manual mode is the user-selected source.
+- `jasper-mux` owns policy and the source-handoff transaction. Auto mode is
+  source-neutral latest-start-wins: every confirmed inactive→active transition,
+  including USB frame flow, becomes the winner. Manual mode persistently pins
+  the user-selected source; `/sources/` disables sources entirely. mux records
+  process-local confirmed-start order so returning to Auto or losing the winner
+  selects the newest source still active. Starts first observed in one snapshot
+  use deterministic registry order because their historical order is unknowable.
+  Native producer events are wake hints only: `jasper/source_events.py`
+  translates librespot inotify and AirPlay/Bluetooth D-Bus signals, while
+  fan-in sends USB frame-flow edges over mux's UDS. Every hint and the fixed
+  1 Hz lost-alert patrol enter the same reconciler, which re-reads all source
+  state before applying policy; alert arrival order never chooses the winner.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
   CamillaDSP or by a push-to-source volume API. Operational lifecycle
@@ -184,12 +194,18 @@ mixer, a second output device, or a new volume model.
    and make the disabled state cost zero resident RAM.
 4. **Expose fail-soft playing state.** Add one probe in
    `jasper/source_state.py`, surface it through
-   `RendererClient.active_renderers()`, and keep transport failures as
-   `False` plus debug logging. This state feeds mux, volume and
+   `RendererClient.active_renderers()`, and preserve the public bool contract
+   (`False` plus debug logging on failure). If mux needs the source for
+   arbitration, also expose a tri-state observation where `None` means unknown;
+   mux holds an active last-known state for a bounded grace rather than turning
+   one failed read into a stop/start flap. This state feeds mux, volume and
    transport fallbacks, dashboards, and voice tools, so avoid
    duplicating probes in each caller. Runtime callers that need the
    effective audible source should prefer `RendererClient.selected_source()`
    when mux is available.
+   If the renderer has a native event surface, add a wake adapter in
+   `jasper/source_events.py`; the adapter marks the source dirty but must never
+   choose a winner or command fan-in.
 5. **Declare source metadata.** Add one `Source` enum member and one
    `MusicSourceSpec` in `jasper/music_sources.py`: public ID, fan-in
    label, renderer active key, `/sources/` wizard key, display name,
@@ -209,11 +225,14 @@ mixer, a second output device, or a new volume model.
    second persistence path or infer intent from process state.
 7. **Define preemption.** Add the source-specific stop/pause/silence
    path to `jasper/mux.py`. Prefer a real renderer-owned API: AirPlay
-   uses shairport-sync MPRIS `Stop` when it loses the lane, Spotify uses
-   Web API pause with a restart fallback, and USB uses fan-in's lane-level
-   MUTE/UNMUTE command. If the source cannot be controlled from the Pi,
-   document the intentional fallback ("may briefly mix") and expose an
-   operator escape hatch only when the failure mode justifies one.
+   uses shairport-sync's native `DropSession` after a successful fan-in
+   handoff, with MPRIS `Stop` only as a compatibility fallback. Spotify
+   uses Web API pause with a restart fallback, and USB uses fan-in's
+   lane-level MUTE/UNMUTE command. Cleanup failure must be observable and
+   must not undo an already-completed handoff. If the source cannot be
+   controlled from the Pi, document the intentional fallback ("may briefly
+   mix") and expose an operator escape hatch only when the failure mode
+   justifies one.
 8. **Wire manual source selection.** The mux/control allow-lists derive
    from `jasper/music_sources.py`; add the landing-page button in
    `deploy/index.html` and keep `/sources/` as the on/off surface.
@@ -692,7 +711,10 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-16 (pre-DSP loudness ownership, stamped FIFO volume state, gentle-envelope offset learning, music-reference expiry, drained-before-end commit, and passive outputd scope checked against PR #1542; prior pass covered assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
+Last verified: 2026-07-22 (source-preemption ownership, AirPlay
+receiver-session cleanup ordering, compatibility fallback, and failure
+semantics rechecked against `jasper/mux.py` and mux contract tests. Prior
+2026-07-16: pre-DSP loudness ownership, stamped FIFO volume state, gentle-envelope offset learning, music-reference expiry, drained-before-end commit, and passive outputd scope checked against PR #1542; prior pass covered assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
 launch gate rechecked; source-lifecycle ownership and add-a-source
 integration points rechecked against `jasper.source_intent` and
 `jasper.local_sources`; prior 2026-07-07 ring/default path text rechecked against

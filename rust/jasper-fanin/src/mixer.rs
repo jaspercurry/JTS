@@ -982,6 +982,17 @@ pub struct DirectObservability {
     /// Whether the gadget capture is currently open (`Present`) — the live
     /// "is the USB host attached and captured" gauge.
     pub present: Arc<AtomicBool>,
+    /// Edge-detected host-frame flow used by mux's fast USB wake path. A helper
+    /// thread samples the already-published input counter; the audio thread does
+    /// no notification I/O and never reads this field.
+    pub streaming: Arc<AtomicBool>,
+    /// Since-boot false→true / true→false streaming edges.
+    pub stream_starts: Arc<AtomicU64>,
+    pub stream_stops: Arc<AtomicU64>,
+    /// Best-effort mux wake delivery counters. A failure is safe because mux's
+    /// fixed patrol observes the published ``streaming`` state.
+    pub notify_attempts: Arc<AtomicU64>,
+    pub notify_failures: Arc<AtomicU64>,
     /// Cumulative successful opens of the gadget capture (climbs on first open
     /// and on every reopen after an unplug/loss).
     pub opens: Arc<AtomicU64>,
@@ -1461,6 +1472,27 @@ impl Mixer {
             fallback_reason_code: Arc::clone(&self.host_clock_fallback_reason_code),
             probe_result_code: Arc::clone(&self.host_clock_probe_result_code),
             probe_response_ratio_milli: Arc::clone(&self.host_clock_probe_response_ratio_milli),
+        })
+    }
+
+    /// Clone the USB DIRECT lane's existing frame counter plus the atomics owned
+    /// by the lightweight source-notification helper. No host/policy object is
+    /// exposed: fan-in reports only whether frames are flowing; mux remains the
+    /// sole routing authority.
+    pub fn source_notify_signals(&self) -> Option<crate::source_notify::SourceNotifySignals> {
+        let direct = self.inputs.iter().find(|inp| inp.is_direct())?;
+        let direct_obs = direct.direct_observability()?;
+        let input_frames = direct
+            .resampler_observability()
+            .map(|resampler| Arc::clone(&resampler.input_frames))
+            .unwrap_or_else(|| Arc::clone(&direct.frames_read));
+        Some(crate::source_notify::SourceNotifySignals {
+            input_frames,
+            streaming: Arc::clone(&direct_obs.streaming),
+            stream_starts: Arc::clone(&direct_obs.stream_starts),
+            stream_stops: Arc::clone(&direct_obs.stream_stops),
+            notify_attempts: Arc::clone(&direct_obs.notify_attempts),
+            notify_failures: Arc::clone(&direct_obs.notify_failures),
         })
     }
 
@@ -2804,6 +2836,11 @@ fn open_direct_input(
             period_frames: open_period,
             buffer_frames,
             present,
+            streaming: Arc::new(AtomicBool::new(false)),
+            stream_starts: Arc::new(AtomicU64::new(0)),
+            stream_stops: Arc::new(AtomicU64::new(0)),
+            notify_attempts: Arc::new(AtomicU64::new(0)),
+            notify_failures: Arc::new(AtomicU64::new(0)),
             opens,
             retries,
             reopens: Arc::new(AtomicU64::new(0)),

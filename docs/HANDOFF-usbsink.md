@@ -640,7 +640,7 @@ reads the current volume value and sets that as `listening_level`.
 > [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) "Arbitration
 > mechanism — now fan-in-native (combo)".
 
-#### Sticky sessions — current arbitration model (2026-07-17)
+#### Uniform latest-start-wins — current arbitration model (2026-07-22)
 
 **The condensed story of how USB arbitration works today and why.**
 
@@ -652,46 +652,54 @@ startup delay. mux decided "is USB playing?" with an **audio-level gate**
 threshold (silence), and any quiet passage below −60 for ~2 s closed the gate →
 dropout. Spotify is mastered loud and continuous, so it stayed above the gate;
 browser video isn't. The **level gate is squarely the cause of the faint-audio
-and level-driven quiet-dropout classes.** Startup is more nuanced: the level
-gate delayed only *quiet-starting* audio (a fade-in had to climb past −60); a
-normal-volume track's ~1–2 s to first sound is the **1 Hz poll's 2-tick frames
-baseline** (two samples to see the counter advance) plus the handoff and macOS's
-own USB-device resume — none of which this gate, or its removal, touches. See
-"Residual" below.
+and level-driven quiet-dropout classes.** The remaining normal-volume startup
+delay was separately localized: USB waited for two 1 Hz frame-counter samples,
+and each fan-in control connection could then land in a blind 500 ms accept
+sleep (live automatic handoffs averaged 514 ms). Those are addressed by the
+event/reconcile path below; macOS device/session resume remains upstream of JTS.
 
-*How we thought about it.* The level gate was quietly doing **two** jobs: (A)
-**arbitration** — "should USB win *against another source*?" — which is real,
-and (B) **output gating** — "is USB audible *at all*?" — which is the bug.
-The deeper asymmetry: AirPlay/Spotify/Bluetooth are explicit, long-lived
-**sessions** (starting one is a deliberate "play here" act); USB is a dumb
-**byte stream** whose intent we can only infer, and any host app (a Slack ding,
-a UI click) feeds it. Treating them symmetrically under latest-source-wins is
-the "signal-sense auto-switch" pattern that AV receivers and **Sonos line-in
-autoplay** are infamous for: an incidental signal grabs the speaker and — because
-the preempted source is paused — never hands it back. Level can't encode intent,
-and lowering the threshold only makes the false grabs *more* frequent.
+*Policy decision.* The level gate had quietly coupled two different concerns:
+(A) **liveness** — "is the host sending frames?" — and (B) **arbitration** —
+"which active source should own the speaker?" Level cannot infer intent: a
+faint video is intentional, while a loud notification may not be. The brief
+2026-07-17 sticky-session policy treated USB as passive so incidental computer
+audio could not interrupt an explicit AirPlay/Spotify/Bluetooth session. That
+exception protected one edge case but made Auto inconsistent and surprising:
+"latest source wins" was true for every source except USB.
 
-*Where we landed — sticky sessions.* Separate the two jobs:
+The product contract is now uniform. USB Audio Input is opt-in, source pins are
+persistent, and `/sources/` can disable USB entirely. Those explicit controls
+are the understandable escape hatches; Auto itself has one rule.
+
+*Where we landed — separate liveness from one generic policy:*
 
 - **Routing is level-independent.** USB liveness is now purely "is the host
-  streaming frames to us" (`step_combo_liveness`, frames-only, brief debounce).
+  streaming frames to us." fan-in samples its existing DIRECT host-input counter
+  at 20 Hz off the audio thread, publishes `direct.streaming`, and sends an
+  edge-only `NOTIFY usbsink` wake hint to mux. Start detection is therefore
+  roughly 0–50 ms before the normal probes/handoff; stop retains a 2 s
+  hysteresis. `step_combo_liveness` remains as rolling-upgrade fallback for an
+  older fan-in STATUS shape.
   If USB is the only thing playing, we play whatever it streams — faint or loud.
   This directly fixes the faint-audio class (it always crosses now) and the
   level-driven quiet-passage dropout (a quiet stretch keeps the frames flowing,
-  so the lane never closes), and it lets a *quiet* start be detected at all. It
-  does **not** shorten the ~1–2 s cold-start detect for normal-volume audio —
-  that is the poll cadence, unchanged (see "Residual"). A real pause stops the
-  frames and macOS tears the stream down, so USB releases on its own.
-- **Explicit sessions outrank the passive USB stream, and are sticky.** An
-  AirPlay/Spotify/BT session that *starts* preempts USB (a deliberate cast
-  wins). But USB is a **passive** source: it takes the speaker only when no
-  explicit session is active — it **never** preempts an in-progress cast, so a
-  laptop's incidental sound can't yank a housemate's music. USB re-takes the
-  speaker when the session ends. Code: `_pick_winner` / `_explicit_active` /
-  `step_combo_liveness` in [`jasper/mux.py`](../jasper/mux.py); the mux module
-  docstring has the full rationale.
-- **Manual override** via the `/sources/` Source selector for the rare "switch
-  to my Mac mid-cast."
+  so the lane never closes), and it lets a *quiet* start be detected at all. A
+  real pause stops the frames and macOS tears the stream down, so USB releases
+  after the stop hysteresis.
+- **Every confirmed start is equal in Auto.** A source's authoritative
+  inactive→active transition becomes the winner, including USB. mux records a
+  process-local activation sequence so returning from a pin to Auto, or losing
+  the current winner, selects the most recently started source that is still
+  active. Simultaneous starts first observed in one snapshot use deterministic
+  `MUSIC_SOURCES` registry order; alert arrival order never decides policy.
+- **Pin or disable are explicit opt-outs.** Selecting AirPlay/Spotify/
+  Bluetooth/USB on the landing page persistently pins that source and blocks
+  automatic switching. Turning USB Audio Input off on `/sources/` removes it
+  from arbitration entirely. Because normal preemption stops/pauses the losing
+  renderer, USB taking over disconnects the AirPlay receiver session through
+  shairport-sync's native `DropSession`; AirPlay must be started again after
+  USB ends. That is an intentional consequence of the uniform Auto contract,
+  not an undetected session.
 
 The `−60 dBFS` threshold (`USBSINK_PLAYING_RMS_DBFS`) survives **display-only**
 — the `/state` dashboard's "is there audible content" readout — and no longer
@@ -700,28 +708,37 @@ faint-but-streaming USB is the routed `active_source` — a deliberate,
 long-standing split: `playing` = "audible content", `active_source` = mux
 routing. This is not new drift.)
 
-*Residual / not addressed by this change.* Two things stay as they were:
-(1) the ~1–2 s cold-start detect for normal-volume audio is the **1 Hz poll +
-2-tick frames baseline**, not the level gate — shortening it (faster poll, or a
-1-tick absolute-frames-present detect) is a separate change, deliberately not
-taken here. (2) A dropout caused by the host actually **tearing the stream
-down** (frames stop — e.g. between YouTube videos, an ad transition, or a
-buffering stall that closes the device) is frames-based, so both the old and new
-code drop and re-detect it identically; this change only removes the
-**level-driven** dropout (frames flowing, level dips through a quiet passage).
-Which mechanism dominates a given host's "YouTube dropouts" is **not yet
-hardware-confirmed** on jts.local — the level-driven class is the expected common
-case for continuous in-video playback, but confirming needs the Spotify-vs-YouTube
-A/B against the fan-in event timeline.
+*Alert + patrol reconciliation (2026-07-22).* Producer notifications are **wake
+hints**, not desired-source commands. Librespot's atomic state-file replacement,
+AirPlay/Bluetooth D-Bus signals, and fan-in's USB frame-flow edges mark a source
+dirty; mux then re-reads **all** authoritative source state and runs its one
+latest-start-wins policy function. The fixed 1 Hz patrol runs that exact same
+function and is never postponed by alerts. Duplicate alerts coalesce; a probe
+failure is `unknown` and retains an active last-known state for a bounded 5 s
+grace rather than inventing an immediate stop/start edge (sustained failure then
+expires inactive). Consequently there are no two authorities to disagree or
+flutter: a stale alert causes a harmless no-change reconcile, while a lost alert
+is repaired by the next patrol. `/state.renderers.mux` exposes per-source
+observation/notification counts plus the last trigger and `patrol_repairs`.
 
-*Deliberately not built (possible future toggle): "sustained-audio grab."* If
-we ever want USB to auto-interrupt an active cast when you *deliberately* start
-playing on the host, the escape from the false-grab pathology is a **duration**
-gate — USB preempts a session only after N seconds of continuous real audio, so
-a ding can't trigger it but a song can. It reintroduces a threshold + timer and
-delays the grab a few seconds, so it would ship as an opt-in toggle, not the
-default. Noted here so the option isn't rediscovered from scratch; not
-implemented as of 2026-07-17.
+The old ~514 ms automatic-handoff component was the fan-in UDS listener's blind
+500 ms sleep after an empty nonblocking `accept()`. It now uses `poll(2)` socket
+readiness, preserving a 500 ms shutdown-check bound without making a queued
+client wait. The expected JTS-owned USB onset is now 0–50 ms edge detection plus
+probe/handoff time; this must be re-measured on hardware before recording a new
+p95. If the notification is lost, the unchanged patrol fallback adds 0–1 s.
+
+*Residual.* A delay before the Mac begins sending frames is outside the speaker's
+detector. A dropout caused by the host actually **tearing the stream down**
+(between videos, an ad transition, or a buffering stall that closes the device)
+still stops frames and therefore releases USB after 2 s; the alert path cannot
+turn absent audio into a continuous session.
+
+*Superseded alternative.* Sticky explicit sessions and a future
+"sustained-audio grab" timer were considered to protect casts from incidental
+computer sounds. They are deliberately not part of the shipped policy: pinning
+or disabling USB expresses that preference directly without giving Auto a
+source-specific exception or reintroducing a level/duration heuristic.
 
 ---
 
@@ -1204,19 +1221,21 @@ compatibility `playing:false`; it is not an activity source.
 The source-state module also owns the lower-level helpers used by `jasper-mux`:
 `usbsink_direct_frames_read()` extracts the direct-lane liveness counter from
 fan-in `STATUS`, preferring `resampler.input_frames` and falling back to
-lane-level `frames_read`; `usbsink_direct_rms_dbfs()` /
+lane-level `frames_read`. New fan-in builds also publish the edge-detected
+`direct.streaming` read by `usbsink_direct_streaming()`; counter deltas remain a
+rolling-upgrade fallback. `usbsink_direct_rms_dbfs()` /
 `usbsink_direct_audible()` read the direct lane's live per-period level and
 compare it against the shared
 `USBSINK_PLAYING_RMS_DBFS` gate (`-60.0` dBFS — the single definition, in
 `jasper/source_state.py`; the solo bridge's Rust `PLAYING_RMS_DBFS` anchor
 was deleted 2026-07-11 with the solo path, and
 `tests/test_usbsink_playing_rms_contract.py` now pins the mux ↔ source_state
-identity + value of that one Python constant). Mux combines the frame delta and
-level across ticks for debounced arbitration; the renderer probe below reports
-the current single-snapshot activity. The level gate exists because the fan-in
-DIRECT lane keeps clocking silence frames when the host is connected but muted
-(a muted Zoom, an idle tab), so **frames-advanced alone would seize the speaker
-on silence**.
+identity + value of that one Python constant). Mux routes from streaming state,
+not level; the renderer probe below reports
+the current single-snapshot audible activity. That level classification remains
+useful for dashboards/renderer status, but it is deliberately not mux routing
+authority. USB's frame-flow transition participates in the same
+latest-start-wins policy as every other source, including for faint content.
 
 **Owner**: `jasper/renderer.py`. `active_renderers()` exports
 `usbsinkactive` from `usbsink_playing()`:
@@ -2251,9 +2270,13 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-16 (hardware-resolved USB role and Zero/USB-DAC
-unavailability contract rechecked against the shared output-hardware artifact;
-the optional reverse USB-mic path is explicitly separated from the one
-host-to-speaker fan-in data plane and links to its certification tool; runtime
-capture recovery was rechecked as
-local fan-in self-heal plus telemetry with no health-driven composition owner.)
+Last verified: 2026-07-22 (source-neutral latest-start-wins arbitration,
+process-local activation order, persistent-pin/disable opt-outs, alert/patrol
+single-policy ownership, AirPlay receiver-session cleanup after USB wins, and
+UI guidance rechecked against `jasper/mux.py`, mux contract tests, and both
+source controls. Prior 2026-07-16: hardware-resolved
+USB role and Zero/USB-DAC unavailability contract rechecked against the shared
+output-hardware artifact; the optional reverse USB-mic path is explicitly
+separated from the one host-to-speaker fan-in data plane and links to its
+certification tool; runtime capture recovery was rechecked as local fan-in
+self-heal plus telemetry with no health-driven composition owner.)

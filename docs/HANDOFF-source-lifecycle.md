@@ -276,6 +276,12 @@ addressing, and gadget teardown details stay in
 [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md); the USB audio data plane stays
 in [HANDOFF-usbsink.md](HANDOFF-usbsink.md).
 
+The `/system/` USB-forensics repair is a maintenance restart of the same
+composite owner, not a second lifecycle writer: gadget bring-up re-reads the
+canonical intent/role gates, and `PartOf=jasper-usbgadget.service` makes the
+process-free USB readiness marker re-prove the resulting UAC2 card. It never
+changes saved source intent or chooses a descriptor shape itself.
+
 Malformed or unreadable USB intent also fails closed at the coupling boundary.
 The coupling owner treats USB authorization as false, writes the ordinary
 explicit-disabled fan-in combo plan, completes its ordered restart when needed,
@@ -481,7 +487,9 @@ USB-output negative gadget path and output recovery; it does **not** validate
 UAC2 or positive gadget mode, which still requires a registered I²S-output
 Zero or a board with separate host ports.
 
-Last verified: 2026-07-15 (desired-Off/effective-Off semantics with independent
+Last verified: 2026-07-22 (USB-forensics repair rechecked as a maintenance
+restart that reuses canonical composition guards and readiness invalidation).
+Prior 2026-07-15 (desired-Off/effective-Off semantics with independent
 USB availability, JTS4 active-host Apple-DAC recovery, and the final guard
 rechecked separately from follower parking; fingerprinted per-source
 completion acknowledgement, source-aware final start boundary, desired-Off

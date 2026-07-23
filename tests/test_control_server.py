@@ -529,6 +529,9 @@ def test_streambox_profile_control_route_policy():
     assert _control_route_allowed_for_install_profile(
         "streambox", method="POST", path="/system/restart/audio",
     )
+    assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/usb-forensics",
+    )
     assert not _control_route_allowed_for_install_profile(
         "streambox", method="POST", path="/cue/play",
     )
@@ -890,6 +893,46 @@ def test_system_audio_quality_rejects_missing_converter(
 
     assert status == 400
     assert body["error"] == "converter is required"
+
+
+def test_usb_forensics_persists_intent_and_queues_fixed_action(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    from jasper.control import usb_gadget_forensics as forensics
+
+    enabled = tmp_path / "forensics.env"
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    monkeypatch.setattr(forensics, "ENABLED_FILE", str(enabled))
+    monkeypatch.setattr(forensics, "RUNTIME_DIR", str(runtime))
+    base, _ = server_with_coordinator
+
+    status, body = _post(
+        f"{base}/usb-forensics", {"action": "set_enabled", "enabled": True},
+    )
+    assert status == 200
+    assert body["enabled"] is True
+    assert "JASPER_USB_GADGET_FORENSICS=1" in enabled.read_text()
+
+    (runtime / "status.json").write_text(json.dumps({
+        "running": True, "last_sample_at": time.time(), "sample_count": 2,
+    }))
+    status, body = _post(f"{base}/usb-forensics", {"action": "capture"})
+    assert status == 202
+    assert body["running"] is True
+    assert body["pending_action"] == "capture"
+    assert (runtime / "request.capture").exists()
+
+
+def test_usb_forensics_rejects_malformed_toggle(
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    status, body = _post(
+        f"{base}/usb-forensics", {"action": "set_enabled", "enabled": "yes"},
+    )
+    assert status == 400
+    assert body["error"] == "enabled must be a boolean"
 
 
 def test_system_action_reboot_audits_and_invokes_systemctl(
@@ -3588,7 +3631,9 @@ def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
         http_thread.join(timeout=2)
 
     assert len(results) == 2
-    assert all(item == (200, {"ok": True, "calls": 1}) for item in results)
+    assert all(item[0] == 200 for item in results)
+    assert all(item[1]["ok"] is True and item[1]["calls"] == 1 for item in results)
+    assert all("usb_gadget_forensics" in item[1] for item in results)
     assert calls == 1
 
 
@@ -5592,6 +5637,7 @@ def test_grouping_set_stays_in_token_gated_routes():
         "/system/reboot",
         "/system/restart/voice",
         "/system/restart/audio",
+        "/usb-forensics",
         "/mic/mute",
         "/aec/usb-mic",
         "/aec/usb-mic-leg",

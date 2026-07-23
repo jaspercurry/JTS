@@ -84,11 +84,16 @@ separate anonymous daemon RSS from page cache and kernel accounting when a
    graph. The Audio status view deliberately does not add another daemon or
    sampler loop: `AudioHealthSampler` replaces the former AirPlay sampler
    thread, reuses that collector inline, caches outputd state, and keeps route
-   validation on a slow cadence. Renderer readiness consumes the existing
-   System sampler's cached 30-second service-state snapshot rather than adding
-   a second `systemctl` cadence. Similar child-process isolation may be
-   worthwhile for other rarely viewed dashboard probes only if measurements
-   show meaningful RSS retained in `jasper-control`.
+validation on a slow cadence. Renderer readiness consumes the existing
+System sampler's cached 30-second service-state snapshot rather than adding
+a second `systemctl` cadence. Similar child-process isolation may be
+worthwhile for other rarely viewed dashboard probes only if measurements
+show meaningful RSS retained in `jasper-control`.
+
+   The opt-in USB gadget forensics sampler is intentionally outside that
+   always-on dashboard path: it has no process while disabled, keeps a 512 KiB
+   timeline in `/run` while enabled, and carries a 32 MiB systemd ceiling. See
+   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
 
 5. **Memory cgroup soak before tighter limits.** The dashboard can now expose
    root and service memory. Use a Pi 5 1 GB soak to size any future
@@ -103,7 +108,9 @@ separate anonymous daemon RSS from page cache and kernel accounting when a
   `tests/test_control_server.py`.
 - Dashboard memory breakdown: `tests/test_system_metrics.py`.
 
-Last verified: 2026-07-14 (Audio status sampler ownership and bounded cadence
+Last verified: 2026-07-22 (opt-in USB forensics' disabled-zero-process and
+enabled memory-ceiling contracts rechecked against its systemd units and RAM
+timeline). Prior 2026-07-14 (Audio status sampler ownership and bounded cadence
 rechecked against `jasper/control/audio_health.py` and
 `jasper/control/server.py`). Prior 2026-06-30 (`xvf_chip_aec` one-detector default rechecked
 against `jasper/audio_profile_state.py`, `deploy/bin/jasper-aec-reconcile`,

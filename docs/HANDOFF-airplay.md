@@ -100,11 +100,18 @@ opened behind a common readiness gate; userspace first-read times are not used
 as sample timestamps, and small endpoint-open skew remains a hardware-validation
 uncertainty.
 
-Mux preemption now uses shairport-sync's MPRIS `Stop` when AirPlay
-loses the audible lane to Spotify, Bluetooth, or USB sink. Voice
-transport "pause AirPlay" still uses MPRIS `Pause`; source arbitration
-uses `Stop` so the sender session does not linger as hidden active
-AirPlay while another renderer owns the fan-in gate.
+When AirPlay loses the audible lane to Spotify, Bluetooth, or USB sink,
+mux first completes the guarded fan-in handoff and then calls
+shairport-sync's native D-Bus `DropSession`. This receiver-owned method
+forcibly disconnects the current AirPlay session, so the sender does not
+remain routed to an inaudible speaker. MPRIS `Stop` is a compatibility
+fallback for an older or unavailable native interface; AirPlay 2 senders
+may ignore that remote transport request. Both cleanup attempts are
+best-effort and emit stable `airplay.preempt_*` events, while the already
+completed fan-in handoff remains authoritative if cleanup fails.
+
+Voice transport "pause AirPlay" remains separate: it uses MPRIS/DACP
+pause semantics and intentionally keeps the session available to resume.
 
 If you're hearing artifacts, something has changed (active
 correction profile, DAC swap, software update, network change,
@@ -1831,7 +1838,10 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-07-15 (Tier-3 recovery final mutation rechecked as an
+Last verified: 2026-07-22 (mux AirPlay preemption ordering, native
+`DropSession`, MPRIS `Stop` compatibility fallback, failure observability,
+and the separate voice-pause contract rechecked against `jasper/mux.py` and
+its contract tests. Prior 2026-07-15: Tier-3 recovery final mutation rechecked as an
 inactive-capable `restart` guarded by the unit's final source-intent
 ExecCondition so concurrent Off/role parking wins;
 `/system/audio/` normalized AirPlay projection,

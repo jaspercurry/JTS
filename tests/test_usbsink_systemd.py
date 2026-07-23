@@ -12,10 +12,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink.service"
 GADGET_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget.service"
+FORENSICS_SERVICE_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget-forensics.service"
+FORENSICS_PATH_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget-forensics.path"
 HARDWARE_RECONCILE_UNIT_PATH = (
     REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
 )
 PYPROJECT_PATH = REPO / "pyproject.toml"
+INSTALL_HELPER_PATH = REPO / "deploy" / "lib" / "install" / "systemd-units.sh"
 
 USB_ROLE_TEST_SEAMS = {
     "JASPER_PI_MODEL_FILE",
@@ -95,6 +98,66 @@ def test_gadget_waits_for_reconciled_hardware_capability() -> None:
     unset = set((_value_for(body, "UnsetEnvironment") or "").split())
     assert USB_ROLE_TEST_SEAMS <= unset
     assert "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD" in unset
+
+
+def test_gadget_snapshots_controller_before_reset_and_after_bind() -> None:
+    body = GADGET_UNIT_PATH.read_text()
+    pre_reset = _directive_index(body, "ExecStop=", "snapshot pre_reset")
+    teardown = _directive_index(body, "ExecStop=", "jasper-usbgadget-down")
+
+    assert pre_reset < teardown
+    assert "ExecStartPost=-/usr/bin/timeout 2s " in body
+    assert "jasper-usbgadget-snapshot post_start" in body
+    assert "ExecStop=-/usr/bin/timeout 2s " in body
+    assert "jasper-usbgadget-snapshot pre_reset" in body
+
+    unset = set((_value_for(body, "UnsetEnvironment") or "").split())
+    assert {
+        "JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT",
+        "JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR",
+        "JASPER_USBGADGET_SNAPSHOT_DEBUG_ROOT",
+        "JASPER_USBGADGET_SNAPSHOT_PROC_INTERRUPTS",
+        "JASPER_USBGADGET_SNAPSHOT_USB_MIC_STATUS",
+        "JASPER_USBGADGET_SNAPSHOT_DIR",
+    } <= unset
+
+
+def test_installer_ships_usb_gadget_snapshot_helper() -> None:
+    body = INSTALL_HELPER_PATH.read_text()
+    assert 'deploy/usbsink/jasper-usbgadget-snapshot"' in body
+    assert "/usr/local/sbin/jasper-usbgadget-snapshot" in body
+
+
+def test_forensics_is_opt_in_ram_bounded_and_deploy_persistent() -> None:
+    from jasper.control import usb_gadget_forensics
+
+    service = FORENSICS_SERVICE_PATH.read_text()
+    path = FORENSICS_PATH_PATH.read_text()
+    install = INSTALL_HELPER_PATH.read_text()
+
+    assert "ConditionPathExists=/var/lib/jasper/usb_gadget_forensics.env" in service
+    assert usb_gadget_forensics.ENABLED_FILE in service
+    assert usb_gadget_forensics.ENABLED_FILE in path
+    assert "ExecStart=/usr/local/sbin/jasper-usbgadget-snapshot watch" in service
+    assert "MemoryMax=32M" in service
+    assert "RuntimeDirectory=jasper-usb-gadget-forensics" in service
+    assert "ReadWritePaths=/var/lib/jasper/usb-gadget-incidents" in service
+    assert "CapabilityBoundingSet=" in service
+    assert "jasper-usbgadget.service" not in service
+    assert "PathExists=/var/lib/jasper/usb_gadget_forensics.env" in path
+    assert "WantedBy=multi-user.target" in path
+    assert "jasper-usbgadget-forensics.path" in install
+    assert "install -d -m 0750 /var/lib/jasper/usb-gadget-incidents" in install
+    assert "systemctl enable --now jasper-usbgadget-forensics.path" in install
+    assert "systemctl try-restart jasper-usbgadget-forensics.service" in install
+
+    unset = set((_value_for(service, "UnsetEnvironment") or "").split())
+    assert {
+        "JASPER_USBGADGET_FORENSICS_ENABLED_FILE",
+        "JASPER_USBGADGET_FORENSICS_RUN_DIR",
+        "JASPER_USBGADGET_FORENSICS_INTERVAL",
+        "JASPER_USBGADGET_FORENSICS_MAX_BYTES",
+    } <= unset
 
 
 def test_hardware_reconciler_strips_usb_role_test_seams() -> None:

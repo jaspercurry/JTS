@@ -22,8 +22,10 @@ The truth table (JASPER_USB_NETWORK x audio-intent) is exercised row by row.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +33,7 @@ UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
 DOWN = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-down"
 WANTED = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-wanted"
 NAME_PATCH = ROOT / "deploy" / "usbsink" / "jasper-usbsink-name-patch"
+SNAPSHOT = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-snapshot"
 
 # `true` always succeeds (exit 0); `false` always fails (exit 1). The scripts
 # run the canonical guard command and branch on its exit status, so these are
@@ -697,3 +700,168 @@ def test_events_land_on_stderr_not_stdout(tmp_path):
     proc, _ = _run(UP, tmp_path, audio_intent=FALSE)
     assert "event=usb_gadget." in proc.stderr
     assert "event=usb_gadget." not in proc.stdout
+
+
+# ---------- jasper-usbgadget-snapshot --------------------------------------
+
+
+def _run_snapshot(
+    tmp_path: Path, reason: str = "pre_reset", *, extra_env: dict[str, str] | None = None,
+):
+    configfs = _configfs(tmp_path)
+    gadget = _gadget_dir(configfs)
+    (gadget / "functions" / "uac2.usb0").mkdir(parents=True, exist_ok=True)
+    (gadget / "UDC").write_text("1000480000.usb\n")
+    (gadget / "bcdDevice").write_text("0x0210\n")
+    (gadget / "functions" / "uac2.usb0" / "c_chmask").write_text("3\n")
+    (gadget / "functions" / "uac2.usb0" / "p_chmask").write_text("1\n")
+
+    udc = tmp_path / "udc" / "1000480000.usb"
+    udc.mkdir(parents=True, exist_ok=True)
+    (udc / "state").write_text("configured\n")
+
+    debug = tmp_path / "debug" / "1000480000.usb"
+    debug.mkdir(parents=True, exist_ok=True)
+    (debug / "state").write_text(
+        "GINTMSK=0xd0bc3c44, GINTSTS=0x04048038\n"
+        "DAINTMSK=0x0003000f, DAINT=0x00000002\n"
+    )
+    (debug / "regdump").write_text("DIEPINT(1)=0x00000090\n")
+    (debug / "ep1in").write_text("request pending res -115\n")
+
+    interrupts = tmp_path / "interrupts"
+    interrupts.write_text("34: 3927844733 0 0 0 GICv3 1000480000.usb\n")
+    usb_mic_status = tmp_path / "usbmic.json"
+    usb_mic_status.write_text('{"host_streaming": false}\n')
+    incident_dir = tmp_path / "incidents"
+
+    env = os.environ.copy()
+    env.update({
+        "JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT": str(configfs),
+        "JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR": str(tmp_path / "udc"),
+        "JASPER_USBGADGET_SNAPSHOT_DEBUG_ROOT": str(tmp_path / "debug"),
+        "JASPER_USBGADGET_SNAPSHOT_PROC_INTERRUPTS": str(interrupts),
+        "JASPER_USBGADGET_SNAPSHOT_USB_MIC_STATUS": str(usb_mic_status),
+        "JASPER_USBGADGET_SNAPSHOT_DIR": str(incident_dir),
+    })
+    env.update(extra_env or {})
+    proc = subprocess.run(
+        ["bash", str(SNAPSHOT), reason],
+        check=False,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    return proc, incident_dir
+
+
+def test_snapshot_preserves_wedged_controller_evidence(tmp_path):
+    proc, incident_dir = _run_snapshot(tmp_path)
+
+    assert proc.returncode == 0, proc.stderr
+    snapshots = list(incident_dir.glob("usb-gadget-*.txt"))
+    assert len(snapshots) == 1
+    body = snapshots[0].read_text()
+    assert "reason=pre_reset" in body
+    assert "udc_state=configured" in body
+    assert "bcdDevice=0x0210" in body
+    assert "GINTSTS=0x04048038" in body
+    assert "DAINT=0x00000002" in body
+    assert "DIEPINT(1)=0x00000090" in body
+    assert "request pending res -115" in body
+    assert '"host_streaming": false' in body
+    assert "event=usb_gadget.snapshot" in proc.stderr
+    assert "gintsts=0x04048038" in proc.stderr
+    assert "daint=0x00000002" in proc.stderr
+    assert len(proc.stderr.splitlines()) == 1
+
+
+def test_snapshot_rotation_is_bounded_and_preserves_unrelated_files(tmp_path):
+    proc, incident_dir = _run_snapshot(tmp_path)
+    assert proc.returncode == 0
+    unrelated = incident_dir / "keep-me.txt"
+    unrelated.write_text("operator evidence\n")
+    for index in range(20):
+        (incident_dir / f"usb-gadget-20000101T0000{index:02d}Z-old-{index}.txt").write_text(
+            "old\n"
+        )
+
+    proc, incident_dir = _run_snapshot(tmp_path, reason="post_start")
+
+    assert proc.returncode == 0, proc.stderr
+    assert len(list(incident_dir.glob("usb-gadget-*.txt"))) == 12
+    assert unrelated.read_text() == "operator evidence\n"
+
+
+def test_snapshot_sanitizes_reason_before_using_it_in_filename(tmp_path):
+    proc, incident_dir = _run_snapshot(tmp_path, reason="../../surprise")
+
+    assert proc.returncode == 0, proc.stderr
+    snapshots = list(incident_dir.glob("usb-gadget-*.txt"))
+    assert len(snapshots) == 1
+    assert "-manual-" in snapshots[0].name
+    assert "reason=manual" in snapshots[0].read_text()
+
+
+def test_forensics_watch_writes_only_to_bounded_ram_timeline(tmp_path):
+    # Seed the same fake controller tree used by snapshot tests, then remove
+    # that setup capture so the watcher starts with a genuinely empty disk set.
+    _proc, incident_dir = _run_snapshot(tmp_path)
+    for artifact in incident_dir.glob("usb-gadget-*.txt"):
+        artifact.unlink()
+    enabled = tmp_path / "forensics.env"
+    enabled.write_text("JASPER_USB_GADGET_FORENSICS=1\n")
+    run_dir = tmp_path / "forensics-run"
+    env = os.environ.copy()
+    env.update({
+        "JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT": str(tmp_path / "configfs"),
+        "JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR": str(tmp_path / "udc"),
+        "JASPER_USBGADGET_SNAPSHOT_DEBUG_ROOT": str(tmp_path / "debug"),
+        "JASPER_USBGADGET_SNAPSHOT_PROC_INTERRUPTS": str(tmp_path / "interrupts"),
+        "JASPER_USBGADGET_SNAPSHOT_DIR": str(incident_dir),
+        "JASPER_USBGADGET_FORENSICS_ENABLED_FILE": str(enabled),
+        "JASPER_USBGADGET_FORENSICS_RUN_DIR": str(run_dir),
+        "JASPER_USBGADGET_FORENSICS_INTERVAL": "0.005",
+        "JASPER_USBGADGET_FORENSICS_MAX_BYTES": "256",
+    })
+    watcher = subprocess.Popen(
+        ["bash", str(SNAPSHOT), "watch"], cwd=ROOT, env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 3
+    state = {}
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads((run_dir / "status.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        if state.get("sample_count", 0) >= 10:
+            break
+        time.sleep(0.02)
+    enabled.unlink()
+    _stdout, stderr = watcher.communicate(timeout=3)
+
+    assert watcher.returncode == 0, stderr
+    assert state["ram_cap_bytes"] == 512
+    assert (run_dir / "timeline.tsv").stat().st_size <= 256
+    assert (run_dir / "timeline.previous.tsv").stat().st_size <= 256
+    assert not list(incident_dir.glob("usb-gadget-*.txt"))
+    assert "event=usb_gadget.forensics state=started" in stderr
+
+
+def test_snapshot_freezes_only_tail_of_forensics_timeline(tmp_path):
+    run_dir = tmp_path / "forensics-run"
+    run_dir.mkdir()
+    (run_dir / "timeline.previous.tsv").write_text("old-sample\n")
+    (run_dir / "timeline.tsv").write_text("new-sample\n")
+
+    proc, incident_dir = _run_snapshot(tmp_path, extra_env={
+        "JASPER_USBGADGET_FORENSICS_RUN_DIR": str(run_dir),
+    })
+
+    assert proc.returncode == 0, proc.stderr
+    body = next(incident_dir.glob("usb-gadget-*.txt")).read_text()
+    assert "[forensics_timeline]" in body
+    assert body.index("old-sample") < body.index("new-sample")

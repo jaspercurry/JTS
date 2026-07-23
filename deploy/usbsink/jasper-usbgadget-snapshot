@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# Capture a bounded USB-gadget controller snapshot before a rebind clears it.
+#
+# The Pi's DWC2 UDC can remain logically "configured" while every host-facing
+# endpoint has stopped answering.  ConfigFS/service checks therefore look
+# healthy precisely when the useful failure evidence lives in debugfs.  This
+# helper is called before gadget teardown and after gadget bring-up so a normal
+# service restart preserves both sides of that transition.
+#
+# Production paths are fixed defaults.  The JASPER_USBGADGET_SNAPSHOT_* seams
+# exist only for hermetic tests and are stripped by the systemd unit.
+set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CONFIGFS="${JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT:-/sys/kernel/config}"
+UDC_CLASS_DIR="${JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR:-/sys/class/udc}"
+DEBUG_ROOT="${JASPER_USBGADGET_SNAPSHOT_DEBUG_ROOT:-/sys/kernel/debug/usb}"
+PROC_INTERRUPTS="${JASPER_USBGADGET_SNAPSHOT_PROC_INTERRUPTS:-/proc/interrupts}"
+USB_MIC_STATUS="${JASPER_USBGADGET_SNAPSHOT_USB_MIC_STATUS:-/run/jasper-usbmic/status.json}"
+INCIDENT_DIR="${JASPER_USBGADGET_SNAPSHOT_DIR:-/var/lib/jasper/usb-gadget-incidents}"
+FORENSICS_ENABLED="${JASPER_USBGADGET_FORENSICS_ENABLED_FILE:-/var/lib/jasper/usb_gadget_forensics.env}"
+FORENSICS_RUN_DIR="${JASPER_USBGADGET_FORENSICS_RUN_DIR:-/run/jasper-usb-gadget-forensics}"
+FORENSICS_INTERVAL="${JASPER_USBGADGET_FORENSICS_INTERVAL:-10}"
+FORENSICS_MAX_BYTES="${JASPER_USBGADGET_FORENSICS_MAX_BYTES:-262144}"
+MAX_FILES=12
+GADGET_DIR="${CONFIGFS}/usb_gadget/jts-usb-audio"
+TIMELINE="${FORENSICS_RUN_DIR}/timeline.tsv"
+PREVIOUS_TIMELINE="${FORENSICS_RUN_DIR}/timeline.previous.tsv"
+
+reason="${1:-manual}"
+if [[ ! "${reason}" =~ ^[a-zA-Z0-9_.-]{1,32}$ ]]; then
+    reason="manual"
+fi
+
+read_small_file() {
+    local path="$1"
+    if [[ -r "${path}" ]]; then
+        head -c 65536 "${path}" 2>/dev/null || true
+        printf '\n'
+    else
+        printf '<unavailable: %s>\n' "${path}"
+    fi
+}
+
+resolve_controller() {
+    bound_udc=""
+    [[ -r "${GADGET_DIR}/UDC" ]] && IFS= read -r bound_udc < "${GADGET_DIR}/UDC"
+    if [[ -z "${bound_udc}" && -d "${UDC_CLASS_DIR}" ]]; then
+        for controller in "${UDC_CLASS_DIR}"/*; do
+            [[ -e "${controller}" ]] || continue
+            bound_udc="$(basename "${controller}")"
+            break
+        done
+    fi
+    udc_state="unknown"
+    [[ -n "${bound_udc}" && -r "${UDC_CLASS_DIR}/${bound_udc}/state" ]] && \
+        IFS= read -r udc_state < "${UDC_CLASS_DIR}/${bound_udc}/state"
+    udc_state="${udc_state:-unknown}"
+    debug_dir=""
+    [[ -n "${bound_udc}" && -d "${DEBUG_ROOT}/${bound_udc}" ]] && \
+        debug_dir="${DEBUG_ROOT}/${bound_udc}"
+    return 0
+}
+
+read_registers() {
+    gint="unavailable"; daint="unavailable"
+    if [[ -n "${debug_dir}" && -r "${debug_dir}/state" ]]; then
+        state_head="$(head -n 5 "${debug_dir}/state" 2>/dev/null || true)"
+        [[ "${state_head}" =~ GINTSTS=([^,[:space:]]+) ]] && gint="${BASH_REMATCH[1]}"
+        [[ "${state_head}" =~ DAINT=([^,[:space:]]+) ]] && daint="${BASH_REMATCH[1]}"
+    fi
+    return 0
+}
+
+read_counter() {
+    local value="unavailable"
+    [[ -r "$1" ]] && IFS= read -r value < "$1"
+    printf '%s' "${value:-unknown}"
+}
+
+run_forensics() {
+    local samples=0 last_action="none" last_action_at=0 latest_artifact=""
+    # systemd owns root:jasper on the production RuntimeDirectory; tests and
+    # direct recovery runs may point this at a temporary directory.
+    install -d -m 0770 "${FORENSICS_RUN_DIR}"
+    status_tmp="${FORENSICS_RUN_DIR}/.status.tmp"
+    rotate_tmp="${FORENSICS_RUN_DIR}/.timeline.rotate.tmp"
+    trap 'rm -f -- "${FORENSICS_RUN_DIR}/status.json" "${status_tmp}" "${rotate_tmp}"; printf "event=usb_gadget.forensics state=stopped\n" >&2' EXIT
+    printf 'captured_at_epoch\tudc_state\tgintsts\tdaint\tirq\trx_packets\ttx_packets\trx_errors\ttx_errors\n' >> "${TIMELINE}"
+    printf 'event=usb_gadget.forensics state=started interval_sec=%s ram_cap_bytes=%s\n' \
+        "${FORENSICS_INTERVAL}" "$((FORENSICS_MAX_BYTES * 2))" >&2
+    while [[ -e "${FORENSICS_ENABLED}" ]]; do
+        resolve_controller; read_registers
+        irq="$(awk -v udc="${bound_udc}" '(udc != "" && index($0, udc)) || /dwc2/ {for(i=2;i<=NF && $i~/^[0-9]+$/;i++) n+=$i} END {print n+0}' "${PROC_INTERRUPTS}" 2>/dev/null || printf unavailable)"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" \
+            "${udc_state}" "${gint}" "${daint}" "${irq}" \
+            "$(read_counter /sys/class/net/usb0/statistics/rx_packets)" \
+            "$(read_counter /sys/class/net/usb0/statistics/tx_packets)" \
+            "$(read_counter /sys/class/net/usb0/statistics/rx_errors)" \
+            "$(read_counter /sys/class/net/usb0/statistics/tx_errors)" >> "${TIMELINE}"
+        samples=$((samples + 1))
+        if (( $(wc -c < "${TIMELINE}") > FORENSICS_MAX_BYTES )); then
+            tail -c "${FORENSICS_MAX_BYTES}" "${TIMELINE}" > "${rotate_tmp}"
+            mv -f -- "${rotate_tmp}" "${PREVIOUS_TIMELINE}"
+            : > "${TIMELINE}"
+        fi
+        for action in capture repair; do
+            request="${FORENSICS_RUN_DIR}/request.${action}"
+            [[ -e "${request}" ]] || continue
+            rm -f -- "${request}"
+            last_action="${action}"; last_action_at="$(date +%s)"
+            if [[ "${action}" == "capture" ]]; then
+                /usr/bin/timeout 2s "$0" forensics_manual || last_action="capture_failed"
+            else
+                /usr/bin/timeout 15s systemctl restart jasper-usbgadget.service || last_action="repair_failed"
+            fi
+            snapshots=("${INCIDENT_DIR}"/usb-gadget-*.txt)
+            [[ -e "${snapshots[0]}" ]] && latest_artifact="${snapshots[${#snapshots[@]}-1]}"
+            printf 'event=usb_gadget.forensics action=%s result=%s\n' "${action}" "${last_action}" >&2
+        done
+        printf '{"running":true,"ram_cap_bytes":%s,"sample_interval_sec":%s,"sample_count":%s,"last_sample_at":%s,"last_action":"%s","last_action_at":%s,"latest_artifact":"%s"}\n' \
+            "$((FORENSICS_MAX_BYTES * 2))" \
+            "${FORENSICS_INTERVAL}" "${samples}" "$(date +%s)" "${last_action}" \
+            "${last_action_at}" "${latest_artifact}" > "${status_tmp}"
+        chmod 0640 "${status_tmp}"; mv -f -- "${status_tmp}" "${FORENSICS_RUN_DIR}/status.json"
+        sleep "${FORENSICS_INTERVAL}"
+    done
+}
+
+if [[ "${reason}" == "watch" ]]; then
+    run_forensics
+    exit 0
+fi
+
+resolve_controller
+
+install -d -m 0750 "${INCIDENT_DIR}"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+target="${INCIDENT_DIR}/usb-gadget-${stamp}-${reason}-$$.txt"
+tmp="$(mktemp "${INCIDENT_DIR}/.usb-gadget-snapshot.XXXXXX")"
+trap 'rm -f -- "${tmp}"' EXIT
+
+{
+    printf 'schema_version=1\n'
+    printf 'captured_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'reason=%s\n' "${reason}"
+    printf 'udc=%s\n' "${bound_udc:-none}"
+    printf 'udc_state=%s\n' "${udc_state}"
+    printf '\n[system]\n'
+    uname -a 2>/dev/null || true
+    read_small_file /proc/uptime
+
+    printf '\n[composition]\n'
+    for relative in \
+        UDC bcdDevice \
+        functions/uac2.usb0/c_chmask \
+        functions/uac2.usb0/p_chmask \
+        functions/uac2.usb0/c_sync \
+        functions/uac2.usb0/req_number; do
+        printf '%s=' "${relative}"
+        if [[ -r "${GADGET_DIR}/${relative}" ]]; then
+            head -n 1 "${GADGET_DIR}/${relative}" 2>/dev/null || true
+        else
+            printf '<unavailable>\n'
+        fi
+    done
+
+    printf '\n[controller_state]\n'
+    if [[ -n "${debug_dir}" ]]; then
+        read_small_file "${debug_dir}/state"
+    else
+        printf '<debugfs controller unavailable>\n'
+    fi
+
+    printf '\n[controller_regdump]\n'
+    if [[ -n "${debug_dir}" ]]; then
+        read_small_file "${debug_dir}/regdump"
+    else
+        printf '<debugfs controller unavailable>\n'
+    fi
+
+    printf '\n[endpoints]\n'
+    if [[ -n "${debug_dir}" ]]; then
+        found_endpoint=0
+        for endpoint in "${debug_dir}"/ep*; do
+            [[ -f "${endpoint}" ]] || continue
+            found_endpoint=1
+            printf '\n--- %s ---\n' "$(basename "${endpoint}")"
+            read_small_file "${endpoint}"
+        done
+        if [[ "${found_endpoint}" == "0" ]]; then
+            printf '<no endpoint debug files>\n'
+        fi
+    else
+        printf '<debugfs controller unavailable>\n'
+    fi
+
+    printf '\n[interrupts]\n'
+    if [[ -r "${PROC_INTERRUPTS}" ]]; then
+        if [[ -n "${bound_udc}" ]]; then
+            awk -v udc="${bound_udc}" 'index($0, udc) || /dwc2/ { print }' \
+                "${PROC_INTERRUPTS}" 2>/dev/null || true
+        else
+            awk '/dwc2/ { print }' "${PROC_INTERRUPTS}" 2>/dev/null || true
+        fi
+    else
+        printf '<unavailable: %s>\n' "${PROC_INTERRUPTS}"
+    fi
+
+    printf '\n[usb0]\n'
+    if command -v ip >/dev/null 2>&1; then
+        ip -s link show usb0 2>&1 || true
+    else
+        printf '<ip command unavailable>\n'
+    fi
+
+    printf '\n[usb_mic_status]\n'
+    read_small_file "${USB_MIC_STATUS}"
+
+    printf '\n[forensics_timeline]\n'
+    if [[ -r "${PREVIOUS_TIMELINE}" || -r "${TIMELINE}" ]]; then
+        [[ -r "${PREVIOUS_TIMELINE}" ]] && tail -c 65536 "${PREVIOUS_TIMELINE}"
+        [[ -r "${TIMELINE}" ]] && tail -c 65536 "${TIMELINE}"
+    else
+        printf '<forensics disabled or no samples yet>\n'
+    fi
+} > "${tmp}"
+
+chmod 0640 "${tmp}"
+mv -f -- "${tmp}" "${target}"
+trap - EXIT
+
+# Names begin with a sortable UTC stamp and are generated by this root helper.
+# Rotate only this exact file family; never touch unrelated state-dir content.
+shopt -s nullglob
+snapshots=("${INCIDENT_DIR}"/usb-gadget-*.txt)
+if (( ${#snapshots[@]} > MAX_FILES )); then
+    # Shell glob expansion is lexical; the UTC prefix therefore puts the
+    # oldest generated snapshot first without parsing filenames through ls.
+    while (( ${#snapshots[@]} > MAX_FILES )); do
+        rm -f -- "${snapshots[0]}"
+        snapshots=("${snapshots[@]:1}")
+    done
+fi
+
+read_registers
+printf 'event=usb_gadget.snapshot reason=%s udc=%s state=%s gintsts=%s daint=%s path=%s\n' \
+    "${reason}" "${bound_udc:-none}" "${udc_state}" "${gint}" "${daint}" "${target}" >&2

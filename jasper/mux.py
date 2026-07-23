@@ -4,13 +4,12 @@
 
 """jasper-mux — renderer source-arbiter.
 
-Polls each renderer's state on a short interval and, when a new
-source transitions to "playing" while another is already playing,
-pauses the older one. Implements "most recent source wins" UX
-across the AirPlay / Spotify Connect / Bluetooth A2DP renderers.
-
-Cadence: 1 Hz polling. Each tick fans out to three concurrent
-state probes; the whole tick takes <100 ms typically.
+Native producer notifications wake one host-owned reconciler, which re-reads
+all source state and applies one source-neutral latest-start-wins policy. A
+fixed 1 Hz patrol invokes that exact same reconciler as a lost-alert safety net.
+Alerts are therefore hints, never routing commands: stale and duplicate alerts
+are harmless, and the patrol cannot disagree with a separate alert policy
+because none exists.
 
 Renderer support:
   Spotify (librespot):
@@ -36,10 +35,11 @@ Renderer support:
             metadata corroboration stops mux flapping on macOS's ~30 s
             AirPlay keepalive cycles, which report Playing with no
             audio actually reaching the speakers.
-    preempt: MPRIS Stop method, falling back to Pause if Stop is not
-            available. Stop asks shairport-sync to tear down playback
-            instead of leaving a hidden paused AirPlay session behind
-            while another renderer owns the fan-in gate.
+    preempt: native DropSession method, falling back to MPRIS Stop on
+            older/unavailable native interfaces. DropSession tears down
+            the receiver-owned AirPlay session instead of relying on the
+            sender to honor a remote transport request, avoiding a hidden
+            AirPlay session while another renderer owns the fan-in gate.
   Bluetooth (bluez-alsa):
     detect: presence of an a2dpsnk source PCM (best-effort —
             doesn't distinguish "phone connected, not playing"
@@ -55,27 +55,24 @@ Renderer support:
             sound; if USB is the only source, we play it.
     pause:  MUTE the fan-in usbsink lane at its mix stage. When all
             other sources go idle, we release the preempt (unmute) so
-            user-host transitions (pause then play on Mac) can re-take
-            the speaker.
+            an already-streaming host can resume. A new USB start clears
+            the mute before USB takes the selected lane.
 
-Sticky sessions — the USB↔explicit-source asymmetry:
-  AirPlay / Spotify / Bluetooth are explicit, long-lived SESSIONS: starting one
-  is a deliberate "play here" act. USB is a dumb byte stream we can only infer
-  intent from (any app on the host — a Slack ding, a UI click — feeds it). So
-  the two are NOT peers under "latest-source-wins":
-    - An explicit session that STARTS preempts anything, including USB (a
-      deliberate cast wins). This is unchanged.
-    - USB is a PASSIVE source: it takes the speaker only when no explicit
-      session is active (uncontested, or after the session ends). A USB stream
-      opening does NOT preempt an active AirPlay/Spotify — otherwise an
-      incidental host sound would yank a housemate's cast and (because we pause
-      the preempted source) never hand it back. That "signal-sense auto-switch
-      grabs and doesn't switch back" failure is the well-known Sonos line-in /
-      AVR-input-sense pathology; sticky sessions avoid it structurally.
-  The user can always override via the /sources Source selector (manual pin).
-  See _pick_winner / _explicit_active and docs/HANDOFF-usbsink.md. A future
-  opt-in "sustained-audio grab" (USB preempts after N seconds of continuous
-  real audio) is noted there but deliberately NOT built.
+Automatic source policy:
+  Every source is an equal candidate. A confirmed inactive→active transition
+  becomes the winner, including USB, so Auto has one explainable rule: the
+  latest source to start wins. The losing sources keep their existing
+  source-specific preemption behavior (AirPlay DropSession, Spotify/BT pause,
+  USB lane mute). Alerts only accelerate the authoritative re-read; alert
+  arrival order never chooses the winner.
+
+  Mux records a process-local activation sequence for every confirmed start,
+  including starts observed while a manual pin owns the gate. That sequence
+  chooses the most recently started still-active source when the winner stops
+  or the user returns to Auto. Multiple starts first observed in one snapshot
+  are ordered deterministically by MUSIC_SOURCES registry order because their
+  real-world order is unknowable. A persistent manual pin overrides Auto, and
+  /sources remains the lifecycle surface for disabling a source entirely.
 
 """
 from __future__ import annotations
@@ -103,10 +100,11 @@ from .audio_runtime_plan import (
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
-    airplay_playing,
-    bluetooth_playing,
-    spotify_playing,
+    airplay_playing_observed as airplay_playing,
+    bluetooth_playing_observed as bluetooth_playing,
+    spotify_playing_observed as spotify_playing,
     usbsink_direct_frames_read,
+    usbsink_direct_streaming,
 )
 from .spotify_oauth import default_spotify_redirect_uri
 
@@ -144,6 +142,9 @@ FANIN_TEST_LEASE_SEC = 60.0
 SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
 SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
 MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+SHAIRPORT_NATIVE_BUS = "org.gnome.ShairportSync"
+SHAIRPORT_NATIVE_PATH = "/org/gnome/ShairportSync"
+SHAIRPORT_NATIVE_IFACE = "org.gnome.ShairportSync"
 
 
 def _spotify_preempt_restart_disabled() -> bool:
@@ -188,6 +189,12 @@ def _usbsink_preempt_disabled() -> bool:
 # stops the frames and macOS tears the stream down, so the counter genuinely
 # stalls and USB releases after this many ticks.
 USBSINK_COMBO_STOP_TICKS = 2
+ALERT_COALESCE_SEC = 0.05
+# A transient unreadable probe must not synthesize stop/start flutter, but a
+# permanently dead adapter must not pin a vanished winner forever. Hold an
+# active last-known state for this bounded grace, then fail inactive until a
+# successful observation re-establishes it.
+UNKNOWN_ACTIVE_HOLD_SEC = 5.0
 
 
 @dataclass(frozen=True)
@@ -195,18 +202,19 @@ class ComboLiveness:
     """Temporal state for combo-mode USB frames-flowing detection.
 
     ``streaming`` is "is the host feeding us frames right now" — there is NO
-    audio-LEVEL component (removed with the sticky-session rework, 2026-07-17).
-    A faint sound and a loud one both stream frames; USB is the winner whenever
-    it streams and no explicit session is active (see the module docstring's
-    "Sticky sessions"). The old ``rms_dbfs > -60`` gate lived here to stop a
-    silently-streaming host from seizing the speaker; that job now belongs to
-    the arbiter (an explicit session simply outranks USB), so level dropped out
-    of liveness entirely. That fixed dropped-faint-audio and the level-driven
-    quiet-passage dropout (a quiet stretch keeps the counter advancing, so the
-    lane no longer reads "stopped"). It does NOT change the ~1-2 s cold-start
-    detect — that is this 1 Hz poll's 2-tick frames baseline, not the gate — nor
-    a dropout from the host actually tearing the stream down (frames stop; both
-    old and new drop identically). See docs/HANDOFF-usbsink.md §3.3 "Residual".
+    audio-LEVEL component (removed 2026-07-17). A faint sound and a loud one
+    both stream frames and therefore produce the same authoritative source-start
+    edge. The old ``rms_dbfs > -60`` gate attempted to infer intent from level;
+    it instead dropped faint audio and caused quiet-passage routing dropouts, so
+    level is display-only and does not participate in arbitration. Users who do
+    not want computer audio to enter latest-start-wins Auto can persistently pin
+    another source or disable USB Audio Input. Removing the level gate fixed
+    dropped faint audio and level-driven quiet-passage dropouts: a quiet stretch
+    keeps the counter advancing, so the lane no longer reads "stopped". New
+    fan-in builds publish a 20 Hz-derived streaming edge; this state machine
+    remains the rolling-upgrade fallback for older STATUS shapes. A host that
+    actually tears the stream down still stops frames and releases after the
+    stop hysteresis.
     """
 
     prev_frames: int | None = None
@@ -229,11 +237,13 @@ def step_combo_liveness(
 
     - advanced -> streaming, idle reset.
     - first reading or counter reset -> re-baseline without inventing a delta.
-    - flat / missing frames -> non-advance; drop after ``stop_ticks`` consecutive
-      non-advancing ticks while streaming (the pause / stream-teardown edge).
-      ``prev_frames`` still tracks the counter so a later advance is seen.
+    - flat frames -> drop after ``stop_ticks`` consecutive non-advancing patrols.
+    - missing frames -> unknown; retain the complete prior state. A STATUS miss
+      is not evidence that a stream stopped.
     """
     prev = state.prev_frames
+    if frames is None:
+        return state
     advanced = frames is not None and prev is not None and frames > prev
     new_prev = frames if frames is not None else prev
     if advanced:
@@ -252,6 +262,18 @@ class _State:
     playing: dict[Source, bool] = field(
         default_factory=lambda: {s: False for s in MUSIC_SOURCES},
     )
+    observations: dict[Source, str] = field(
+        default_factory=lambda: {s: "unknown" for s in MUSIC_SOURCES},
+    )
+    known_at: dict[Source, float] = field(
+        default_factory=lambda: {s: 0.0 for s in MUSIC_SOURCES},
+    )
+    # Process-local order of confirmed inactive→active transitions. Sequence
+    # order, rather than alert arrival time, is the source of truth for fallback
+    # arbitration because alerts are lossy wake hints and may be duplicated.
+    started_seq: dict[Source, int] = field(
+        default_factory=lambda: {s: 0 for s in MUSIC_SOURCES},
+    )
 
 
 class Mux:
@@ -266,6 +288,12 @@ class Mux:
         self._librespot_state_path = librespot_state_path
         self._mode_state_path = mode_state_path
         self._state = _State()
+        self._started_seq = 0
+        # Every caller that refreshes source state goes through
+        # _observe_sources(). Serializing probe + record prevents a slower,
+        # older control-path snapshot from overwriting a newer patrol snapshot
+        # and manufacturing a false stop/start edge.
+        self._observation_lock = asyncio.Lock()
         self._winner: Optional[Source] = None
         # Restore a household's manual source pin across restarts. Fails
         # open to None (auto / latest-source-wins) on a missing or
@@ -289,10 +317,10 @@ class Mux:
         # weren't set → pause-via-Web-API not available, log no-op.
         self._spotify_router: Any | None = None
         self._spotify_router_built = False
-        # USB sink preempt state: True while we've told the
-        # jasper-usbsink daemon to silence its output. Cleared when
-        # all other sources go idle (so a host pause-then-resume can
-        # re-take the speaker via a fresh inactive→active transition).
+        # USB sink preempt state: True while we've told fan-in to silence the
+        # USB lane. Cleared before USB becomes the winner or after all other
+        # sources go idle, so source selection and the defense-in-depth mute
+        # cannot disagree.
         self._usbsink_preempted = False
         # USB liveness (see step_combo_liveness). fan-in DIRECT-captures the USB
         # gadget, so `_usbsink_playing` measures liveness off that DIRECT lane.
@@ -321,30 +349,162 @@ class Mux:
         # must not restart-storm the shared daemon every tick. Stay full until
         # the source set changes.
         self._buffer_shrink_blocked = False
+        # Alert/patrol reconciliation. Producers may only mark a source dirty
+        # and wake this event; `_reconcile` is the single policy entry point.
+        self._reconcile_wake = asyncio.Event()
+        self._dirty_sources: set[Source] = set()
+        self._notification_received = {s: 0 for s in MUSIC_SOURCES}
+        self._notification_coalesced = {s: 0 for s in MUSIC_SOURCES}
+        self._notification_last: dict[Source, tuple[str, float] | None] = {
+            s: None for s in MUSIC_SOURCES
+        }
+        self._reconcile_seq = 0
+        self._patrol_count = 0
+        self._patrol_repairs = 0
+        self._last_reconcile: dict[str, Any] | None = None
+        self._last_alert_reconcile_at = 0.0
 
     async def run(self) -> None:
         logger.info(
-            "jasper-mux starting (poll=%.1fs, librespot_state=%s)",
+            "jasper-mux starting (alerts=native, patrol=%.1fs, librespot_state=%s)",
             self.POLL_INTERVAL_SEC, self._librespot_state_path,
         )
         await self._fanin_none_best_effort(reason="startup")
         control_task = asyncio.create_task(self._run_control_server())
+        from .source_events import start_source_event_tasks
+
+        event_tasks = start_source_event_tasks(
+            self.notify_source_changed,
+            spotify_state_path=self._librespot_state_path,
+        )
         try:
+            loop = asyncio.get_running_loop()
+            next_patrol = loop.time() + self.POLL_INTERVAL_SEC
+            startup_pending = True
             while True:
                 try:
-                    await self._tick()
+                    # Startup uses the same protected reconciliation path as
+                    # every later patrol. A transient first probe must not exit
+                    # into Restart=always while fan-in remains held at NONE.
+                    if startup_pending:
+                        startup_pending = False
+                        await self._reconcile(
+                            trigger="startup",
+                            dirty_sources=set(),
+                        )
+                        continue
+
+                    timeout = max(0.0, next_patrol - loop.time())
+                    woke = False
+                    try:
+                        await asyncio.wait_for(
+                            self._reconcile_wake.wait(), timeout=timeout,
+                        )
+                        woke = True
+                    except asyncio.TimeoutError:
+                        pass
+
+                    # Catch an alert that landed at the timeout boundary.
+                    if self._reconcile_wake.is_set():
+                        self._reconcile_wake.clear()
+                        woke = True
+                    if woke:
+                        # Coalesce a short burst (e.g. MPRIS status + metadata)
+                        # without imposing delay on the first alert after idle.
+                        since_last = loop.time() - self._last_alert_reconcile_at
+                        if since_last < ALERT_COALESCE_SEC:
+                            await asyncio.sleep(ALERT_COALESCE_SEC - since_last)
+
+                        # An alert may have landed during that sleep. Clear its
+                        # level-triggered wake immediately before snapshotting
+                        # the dirty set (there is no await between these
+                        # operations). A later alert then remains set for the
+                        # next loop instead of causing an empty reconciliation.
+                        self._reconcile_wake.clear()
+
+                    now = loop.time()
+                    patrol_due = now >= next_patrol
+                    dirty = set(self._dirty_sources)
+                    self._dirty_sources.clear()
+                    if not dirty and not patrol_due:
+                        continue
+                    if patrol_due:
+                        while next_patrol <= now:
+                            next_patrol += self.POLL_INTERVAL_SEC
+                    trigger = (
+                        "alert+patrol" if dirty and patrol_due
+                        else "alert" if dirty
+                        else "patrol"
+                    )
+                    await self._reconcile(
+                        trigger=trigger,
+                        dirty_sources=dirty,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("mux tick failed: %s", e)
-                await asyncio.sleep(self.POLL_INTERVAL_SEC)
+                    logger.warning("mux reconcile failed: %s", e)
         finally:
-            control_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await control_task
+            tasks = [control_task, *event_tasks]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             if self._volume_coordinator is not None:
                 with contextlib.suppress(Exception):
                     await self._volume_coordinator.aclose()
+
+    def notify_source_changed(self, source: Source, via: str) -> None:
+        """Record a wake hint without making or applying a routing decision."""
+        if source not in MUSIC_SOURCES:
+            return
+        self._notification_received[source] += 1
+        if source in self._dirty_sources:
+            self._notification_coalesced[source] += 1
+        self._dirty_sources.add(source)
+        self._notification_last[source] = (via, time.monotonic())
+        self._reconcile_wake.set()
+        logger.debug("source alert source=%s via=%s", source.value, via)
+
+    async def _reconcile(
+        self,
+        *,
+        trigger: str,
+        dirty_sources: set[Source],
+    ) -> None:
+        """The sole automatic arbitration entry point for alerts and patrols."""
+        started = time.monotonic()
+        before = (self._winner, tuple(self._state.playing.items()))
+        await self._tick()
+        after = (self._winner, tuple(self._state.playing.items()))
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        changed = before != after
+        patrol = "patrol" in trigger
+        if patrol:
+            self._patrol_count += 1
+            if changed and not dirty_sources:
+                self._patrol_repairs += 1
+        self._reconcile_seq += 1
+        if dirty_sources:
+            self._last_alert_reconcile_at = asyncio.get_running_loop().time()
+        self._last_reconcile = {
+            "id": self._reconcile_seq,
+            "trigger": trigger,
+            "dirty_sources": sorted(s.value for s in dirty_sources),
+            "changed": changed,
+            "winner": self._winner.value if self._winner else None,
+            "elapsed_ms": elapsed_ms,
+        }
+        if dirty_sources or (patrol and changed):
+            log_event(
+                logger,
+                "mux.source_reconcile",
+                level=logging.INFO if changed else logging.DEBUG,
+                trigger=trigger,
+                dirty=",".join(sorted(s.value for s in dirty_sources)) or "none",
+                changed=changed,
+                winner=self._winner.value if self._winner else "idle",
+                elapsed_ms=elapsed_ms,
+            )
 
     async def _probe_sources(self) -> dict[Source, bool]:
         spotify, airplay, bluetooth, usbsink = await asyncio.gather(
@@ -353,26 +513,62 @@ class Mux:
             bluetooth_playing(),
             self._usbsink_playing(),
         )
-        return {
+        observed: dict[Source, bool | None] = {
             Source.SPOTIFY: spotify,
             Source.AIRPLAY: airplay,
             Source.BLUETOOTH: bluetooth,
             Source.USBSINK: usbsink,
         }
+        resolved = dict(self._state.playing)
+        now = time.monotonic()
+        for source, value in observed.items():
+            if value is None:
+                known_age = now - self._state.known_at[source]
+                if (
+                    resolved[source]
+                    and known_age >= UNKNOWN_ACTIVE_HOLD_SEC
+                ):
+                    resolved[source] = False
+                    self._state.observations[source] = "unknown_expired"
+                else:
+                    self._state.observations[source] = "unknown"
+                continue
+            resolved[source] = bool(value)
+            self._state.known_at[source] = now
+            self._state.observations[source] = (
+                "active" if value else "inactive"
+            )
+        return resolved
 
-    async def _usbsink_playing(self) -> bool:
+    async def _usbsink_playing(self) -> bool | None:
         """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
         lane.
 
-        fan-in DIRECT-captures the gadget as its sole live ingress owner, so
-        liveness comes from the DIRECT-lane counter advancing across ticks —
-        purely "is the host feeding us frames", with NO audio-level gate (see
-        the module docstring's "Sticky sessions" and `ComboLiveness`). A
-        missing/non-direct fan-in snapshot advances the debounce with an unknown
-        counter; do not issue a second STATUS probe on the 1 Hz mux hot path.
+        fan-in DIRECT-captures the gadget as its sole live ingress owner. New
+        builds publish an edge-detected ``direct.streaming`` boolean from their
+        existing frame counter; older builds fall back to counter deltas across
+        patrols. There is NO audio-level gate (see the module docstring's
+        "Sticky sessions"). A missing/non-direct snapshot is unknown and retains
+        the arbiter's last-known state; do not issue a second STATUS probe.
         """
         fanin = await self._fanin_status_best_effort()
+        streaming = usbsink_direct_streaming(fanin)
+        if streaming is not None:
+            # Keep fallback state coherent for rolling upgrades/downgrades.
+            frames = usbsink_direct_frames_read(fanin)
+            self._usbsink_combo = ComboLiveness(
+                prev_frames=(
+                    frames
+                    if frames is not None
+                    else self._usbsink_combo.prev_frames
+                ),
+                idle_ticks=0,
+                streaming=streaming,
+            )
+            return streaming
         frames = usbsink_direct_frames_read(fanin)
+        if frames is None:
+            return None
         self._usbsink_combo = step_combo_liveness(
             self._usbsink_combo,
             frames,
@@ -413,18 +609,7 @@ class Mux:
         return payload if isinstance(payload, dict) else None
 
     async def _tick(self) -> None:
-        current = await self._probe_sources()
-
-        # Detect transitions inactive→active. Multiple in one tick
-        # would be unusual but possible — we treat any of them as
-        # the new winner (last-iteration wins by Source enum order,
-        # which is fine in practice).
-        newly_started: list[Source] = []
-        for source, is_playing in current.items():
-            if is_playing and not self._state.playing[source]:
-                newly_started.append(source)
-
-        self._state.playing = current
+        current, newly_started = await self._observe_sources()
         self._winner_age_ticks += 1
 
         if (
@@ -461,33 +646,24 @@ class Mux:
         target: Source | None = None
         transition_reason = ""
         pending = self._pending_auto_target
-        # Sticky-session inputs (see the module docstring + _pick_winner):
-        # an explicit session (AirPlay/Spotify/BT) that STARTS preempts anything,
-        # including USB; a USB stream that starts takes the speaker only when no
-        # explicit session is active — it never preempts a cast.
-        explicit_started = [s for s in newly_started if s is not Source.USBSINK]
-        usb_started_free = (
-            Source.USBSINK in newly_started and not self._explicit_active(current)
-        )
         pending_ok = (
             pending is not None
             and current.get(pending, False)
             and pending != self._winner
-            and not (pending is Source.USBSINK and self._explicit_active(current))
         )
-        if pending_ok:
+        # A fresh start supersedes an older failed handoff retry. Otherwise the
+        # retry would consume the new edge and violate latest-start-wins.
+        if newly_started:
+            self._pending_auto_target = None
+            target = newly_started[-1]
+            transition_reason = "auto_new_source"
+        elif pending_ok:
             target = pending
             transition_reason = "auto_retry"
         else:
             if pending is not None:
                 self._pending_auto_target = None
-            if explicit_started:
-                target = explicit_started[-1]
-                transition_reason = "auto_new_source"
-            elif usb_started_free:
-                target = Source.USBSINK
-                transition_reason = "auto_new_source"
-            elif self._winner is not None and not current.get(self._winner, False):
+            if self._winner is not None and not current.get(self._winner, False):
                 target = self._pick_winner(current)
                 transition_reason = "auto_winner_stopped"
             elif self._winner is None:
@@ -506,12 +682,10 @@ class Mux:
             async with self._transition_lock:
                 if self._manual_source is not None:
                     return
-                # If the new winner is USBSINK and it's currently in our
-                # preempted set, the daemon's bridge is silent. The fresh
-                # inactive→active edge means the user did "pause then
-                # play" on the host — release the preempt so we forward
-                # audio again. Inside the lock (like select_source /
-                # auto_select) so a concurrent manual selection can't
+                # If the new winner is USBSINK and an older source transition
+                # left its defense-in-depth lane mute set, clear that mute
+                # before selecting USB. Inside the lock (like select_source /
+                # auto_select) so a concurrent manual selection cannot
                 # interleave between the release and the handoff.
                 if target == Source.USBSINK and self._usbsink_preempted:
                     await self._usbsink_set_preempt(
@@ -532,7 +706,6 @@ class Mux:
                             reason="handoff_prepare_failed",
                         )
             if not selected:
-                self._state.playing = current
                 # Handoff didn't settle — never shrink on an unsettled gate;
                 # restore the full buffer if it was shrunk.
                 await self._settle_low_latency_audio(current)
@@ -734,8 +907,7 @@ class Mux:
                     reason="manual_handoff_failed",
                 )
         if not selected:
-            current = await self._probe_sources()
-            self._state.playing = current
+            current, _ = await self._observe_sources()
             log_event(
                 logger,
                 "source.manual_select_failed",
@@ -743,17 +915,16 @@ class Mux:
                 level=logging.WARNING,
             )
             return self._status_payload(current)
-        current = await self._probe_sources()
-        self._state.playing = current
+        current, _ = await self._observe_sources()
         log_event(logger, "source.manual_select", source=source.value)
         return self._status_payload(current)
 
     async def auto_select(self) -> dict[str, Any]:
-        """Return to latest-source-wins behavior (sticky-session priority)."""
+        """Return to source-neutral latest-start-wins behavior."""
         gate_error = self._test_gate_error("automatic selection")
         if gate_error is not None:
             return gate_error
-        current = await self._probe_sources()
+        current, _ = await self._observe_sources()
         active_sources = self._active_sources(current)
         new_winner = self._pick_winner(current)
         if new_winner is not None:
@@ -782,7 +953,6 @@ class Mux:
                             reason="auto_select_handoff_failed",
                         )
             if not selected:
-                self._state.playing = current
                 log_event(
                     logger,
                     "source.auto_select_failed",
@@ -806,7 +976,6 @@ class Mux:
                 mux_mode_persistence.write_mode(self._mode_state_path, None)
                 await self._fanin_none()
 
-        self._state.playing = current
         if self._usbsink_preempted:
             others_playing = any(
                 playing
@@ -968,8 +1137,17 @@ class Mux:
             "winner": self._winner.value if self._winner else None,
             "last_handoff": self._last_handoff,
             "sources": {
-                source.value: {"playing": bool(current.get(source, False))}
+                source.value: self._source_status_payload(source, current)
                 for source in MUSIC_SOURCES
+            },
+            "reconciler": {
+                "patrol_interval_sec": self.POLL_INTERVAL_SEC,
+                "patrols": self._patrol_count,
+                "patrol_repairs": self._patrol_repairs,
+                "pending_sources": sorted(
+                    source.value for source in self._dirty_sources
+                ),
+                "last": self._last_reconcile,
             },
             "usbsink": {
                 # fan-in DIRECT-captures the gadget on every box now; the aloop
@@ -993,6 +1171,30 @@ class Mux:
             },
         }
 
+    def _source_status_payload(
+        self,
+        source: Source,
+        current: dict[Source, bool],
+    ) -> dict[str, Any]:
+        last_notification = self._notification_last[source]
+        return {
+            "playing": bool(current.get(source, False)),
+            "observation": self._state.observations[source],
+            "notifications": self._notification_received[source],
+            "notifications_coalesced": self._notification_coalesced[source],
+            "last_notification_via": (
+                last_notification[0] if last_notification is not None else None
+            ),
+            "last_notification_age_ms": (
+                round((time.monotonic() - last_notification[1]) * 1000)
+                if last_notification is not None
+                else None
+            ),
+            # Process-local, monotonic evidence for latest-start-wins. Zero
+            # means no confirmed inactive→active edge has been observed.
+            "started_seq": self._state.started_seq[source],
+        }
+
     def _active_source_name(self, current: dict[Source, bool]) -> str:
         if self._test_fanin_label is not None:
             return self._test_fanin_label
@@ -1005,31 +1207,65 @@ class Mux:
     def _active_sources(self, current: dict[Source, bool]) -> list[Source]:
         return [source for source in MUSIC_SOURCES if current.get(source, False)]
 
-    def _explicit_active(self, current: dict[Source, bool]) -> bool:
-        """Any explicit-session source (everything except the passive USB
-        stream) currently active. Used by the sticky-session rule: USB never
-        takes or holds the speaker against an active AirPlay/Spotify/Bluetooth
-        session."""
-        return any(
-            current.get(source, False)
-            for source in MUSIC_SOURCES
-            if source is not Source.USBSINK
-        )
+    async def _observe_sources(
+        self,
+    ) -> tuple[dict[Source, bool], list[Source]]:
+        """Probe and record one source snapshot in serialized order.
+
+        Automatic reconciliation and user control commands are separate event
+        loop tasks. Keeping the awaitable probe inside this narrow lock ensures
+        their snapshots cannot be committed out of probe order.
+        """
+        async with self._observation_lock:
+            current = await self._probe_sources()
+            newly_started = self._record_source_observation(current)
+            return current, newly_started
+
+    def _record_source_observation(
+        self,
+        current: dict[Source, bool],
+    ) -> list[Source]:
+        """Record one authoritative source snapshot and return fresh starts.
+
+        This method has no await points: updating activation order and the
+        previous-state snapshot is one event-loop-atomic operation shared by
+        periodic/alert reconciliation and the explicit return-to-Auto path.
+        Alerts never write this state; they only cause a new observation.
+
+        If several starts are first visible in one snapshot, iteration follows
+        ``MUSIC_SOURCES`` order. The last registry entry therefore wins the
+        deterministic tie because the sources' real start order is unknowable.
+        """
+        newly_started: list[Source] = []
+        for source in MUSIC_SOURCES:
+            if current.get(source, False) and not self._state.playing[source]:
+                self._started_seq += 1
+                self._state.started_seq[source] = self._started_seq
+                newly_started.append(source)
+        self._state.playing = current
+        return newly_started
 
     def _pick_winner(self, current: dict[Source, bool]) -> Source | None:
-        """Choose the auto-mode winner under the sticky-session priority.
+        """Choose the most recently started active source in Auto mode.
 
-        An explicit session (AirPlay/Spotify/Bluetooth) always outranks the
-        passive USB stream; USB wins only when no explicit session is active.
-        Among explicit sessions, enum order is the tiebreaker — recency-based
-        preemption is driven by the ``newly_started`` edge in ``_tick`` (and by
-        the pause of the loser), exactly as before; this fallback only decides
-        who owns a newly-free speaker."""
+        ``started_seq`` is authoritative during this mux process. Registry
+        order is a deterministic fallback for active sources with no observed
+        start sequence (possible only through direct state injection or future
+        rolling-upgrade compatibility paths).
+        """
         active = self._active_sources(current)
-        explicit = [s for s in active if s is not Source.USBSINK]
-        if explicit:
-            return explicit[-1]
-        return Source.USBSINK if Source.USBSINK in active else None
+        if not active:
+            return None
+        registry_order = {
+            source: index for index, source in enumerate(MUSIC_SOURCES)
+        }
+        return max(
+            active,
+            key=lambda source: (
+                self._state.started_seq[source],
+                registry_order[source],
+            ),
+        )
 
     async def _reassert_manual_source(self) -> None:
         async with self._transition_lock:
@@ -1366,6 +1602,24 @@ class Mux:
             command = raw.decode("utf-8", "replace").strip()
             if command == "STATUS":
                 payload = self._status_payload()
+            elif command.startswith("NOTIFY "):
+                source_name = command.split(" ", 1)[1].strip()
+                try:
+                    source = Source(source_name)
+                except ValueError:
+                    payload = {"error": f"unknown source {source_name!r}"}
+                else:
+                    if source not in MUSIC_SOURCES:
+                        payload = {
+                            "error": f"not a music source {source_name!r}",
+                        }
+                    else:
+                        self.notify_source_changed(source, "uds")
+                        payload = {
+                            "accepted": True,
+                            "source": source.value,
+                            "policy_applied": False,
+                        }
             elif command == "AUTO":
                 payload = await self.auto_select()
             elif command.startswith("TEST_SELECT "):
@@ -1418,8 +1672,8 @@ class Mux:
                 pass
 
     # ------------------------------------------------------------------
-    # Pause actions — Spotify, AirPlay, and Bluetooth have receiver-side
-    # APIs when their upstream sender exposes the needed control surface.
+    # Losing-source cleanup. Handoff policy lives above; these helpers only
+    # perform each renderer's source-specific I/O after the gate has moved.
     # ------------------------------------------------------------------
 
     async def _pause(self, source: Source) -> None:
@@ -1450,7 +1704,7 @@ class Mux:
             )
             await self._spotify_force_restart_librespot()
         elif source == Source.AIRPLAY:
-            await self._airplay_stop_for_preempt()
+            await self._airplay_drop_session_for_preempt()
         elif source == Source.BLUETOOTH:
             try:
                 await bluetooth_avrcp_call("Pause")
@@ -1470,49 +1724,67 @@ class Mux:
         elif source == Source.USBSINK:
             await self._usbsink_set_preempt(True, reason="preempted_by_winner")
 
-    async def _airplay_stop_for_preempt(self) -> None:
-        """Drop AirPlay playback when another source wins the speaker.
+    async def _airplay_drop_session_for_preempt(self) -> None:
+        """Drop the AirPlay receiver session after another source wins.
 
         Voice transport still exposes "pause" semantics through
         RendererClient.pause_airplay(). Mux preemption is different:
-        once Spotify/Bluetooth/USB has the audible lane, keeping a
-        paused AP2 session alive makes status ambiguous and lets sender
-        resumes race with the next source switch. shairport-sync exposes
-        MPRIS Stop, which is the narrowest renderer-owned way to end the
-        current playback session without restarting the whole service.
+        once Spotify/Bluetooth/USB has the audible lane, keeping an AP2
+        session alive leaves the sender routed to an inaudible receiver.
+
+        ``DropSession`` is receiver-owned and forcibly terminates that
+        connection. MPRIS ``Stop`` is only a remote request to the sender and
+        AirPlay 2 senders may ignore it, so it is retained solely as a
+        compatibility fallback when the native method is unavailable. This
+        cleanup runs after fan-in has moved; failure never rolls back or weakens
+        the authoritative audible-lane handoff.
         """
-        ok = await _busctl(
+        dropped = await _busctl(
+            "call",
+            SHAIRPORT_NATIVE_BUS,
+            SHAIRPORT_NATIVE_PATH,
+            SHAIRPORT_NATIVE_IFACE,
+            "DropSession",
+        )
+        if dropped is not None:
+            log_event(
+                logger,
+                "airplay.preempt_drop_session",
+                method="DropSession",
+                result="ok",
+            )
+            return
+
+        log_event(
+            logger,
+            "airplay.preempt_drop_session_failed",
+            method="DropSession",
+            action="mpris_stop_fallback",
+            level=logging.WARNING,
+        )
+        stopped = await _busctl(
             "call",
             SHAIRPORT_MPRIS_BUS,
             SHAIRPORT_MPRIS_PATH,
             MPRIS_PLAYER_IFACE,
             "Stop",
         )
-        if ok is not None:
-            log_event(logger, "airplay.preempt_stop", method="Stop", result="ok")
+        if stopped is not None:
+            log_event(
+                logger,
+                "airplay.preempt_stop",
+                method="Stop",
+                result="fallback_ok",
+            )
             return
 
         log_event(
             logger,
             "airplay.preempt_stop_failed",
             method="Stop",
-            action="pause_fallback",
+            action="new_source_remains_authoritative",
             level=logging.WARNING,
         )
-        pause_ok = await _busctl(
-            "call",
-            SHAIRPORT_MPRIS_BUS,
-            SHAIRPORT_MPRIS_PATH,
-            MPRIS_PLAYER_IFACE,
-            "Pause",
-        )
-        if pause_ok is None:
-            log_event(
-                logger,
-                "airplay.preempt_pause_failed",
-                method="Pause",
-                level=logging.WARNING,
-            )
 
     # ------------------------------------------------------------------
     # USB sink preempt protocol — MUTE/UNMUTE the fan-in usbsink lane.
@@ -1587,10 +1859,11 @@ class Mux:
         fan-in bounce mid-preempt would drop the silence while mux still tracks
         ``_usbsink_preempted=True`` and would never re-mute (the state guard in
         ``_usbsink_set_preempt`` short-circuits the unchanged decision). This
-        per-tick reassertion closes that gap — the next tick re-mutes an
+        per-reconcile reassertion closes that gap — the next alert or patrol re-mutes an
         unmuted-after-restart lane. Idempotent on the fan-in side (it logs only
-        on a real flip → no steady-state journal spam), bounded at the 1 Hz poll
-        cadence, and fail-soft. Mirrors ``_reassert_auto_winner``'s per-tick
+        on a real flip → no steady-state journal spam), alert-coalesced with a
+        fixed 1 Hz patrol fallback, and fail-soft. Mirrors
+        ``_reassert_auto_winner``'s
         SELECT reassertion.
 
         No-op when USB isn't preempted or when the escape hatch is set."""
@@ -1788,8 +2061,7 @@ class Mux:
 
 async def _busctl(*args: str) -> Optional[str]:
     """Run busctl on the system bus, return stdout on success or
-    None on any error. Used for both PlaybackStatus polling and
-    Pause method invocation."""
+    None on any error. Used by the bounded AirPlay preemption adapter."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "busctl", "--system", *args,
@@ -1797,7 +2069,7 @@ async def _busctl(*args: str) -> Optional[str]:
             stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-    except (FileNotFoundError, asyncio.TimeoutError):
+    except (FileNotFoundError, asyncio.TimeoutError, OSError):
         return None
     if proc.returncode != 0:
         return None

@@ -70,6 +70,13 @@ unavailable, it falls back to `renderer.active_renderers()`:
 | USB sink (`usbsinkactive`) | Not supported — the host computer owns its player transport. Returns a spoken explanation if exposed through future tools. |
 | No active source | Returns "nothing is playing" error so the model can tell the user something concrete instead of silently no-op'ing. |
 
+Voice transport and source preemption deliberately have different AirPlay
+semantics. A voice "pause" uses MPRIS/DACP and keeps the sender session alive
+so it can resume. When another source wins, `jasper-mux` first completes the
+fan-in handoff and then uses shairport-sync's receiver-owned `DropSession` to
+disconnect AirPlay. Keeping these paths separate prevents a transport command
+from accidentally becoming a source-policy decision.
+
 ### 3. Spotify play (`spotify_play(query, kind)`)
 
 Search-and-play. The non-obvious case:
@@ -151,7 +158,9 @@ invite further conversation.
 
 ---
 
-Last verified: 2026-06-26 (transport dispatcher rechecked for
+Last verified: 2026-07-22 (the voice-pause versus mux-preemption boundary
+rechecked against `jasper/tools/transport.py`, `jasper/renderer.py`, and
+`jasper/mux.py`. Prior 2026-06-26: transport dispatcher rechecked for
 mux-selected source priority, USB-sink host-owned errors,
 AirPlay+Spotify title-match, AirPlay DACP gating, Spotify Connect,
-Bluetooth AVRCP, no-source errors, and 0% content mute behavior)
+Bluetooth AVRCP, no-source errors, and 0% content mute behavior.)

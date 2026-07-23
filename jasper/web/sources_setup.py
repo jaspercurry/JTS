@@ -675,7 +675,10 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
                 "the speaker as a USB audio output device. (The USB link also "
                 "provides a management-network path to this speaker's web UI "
                 "when gadget hardware is available; this source toggle does "
-                "not switch that management link.)</div>"
+                "not switch that management link.) While Auto is selected, "
+                "new computer audio takes over like any other newly started "
+                "source; pin another source to prevent automatic switching."
+                "</div>"
             ),
             unavailable_html=(
                 '<div class="source-note warn" id="usbsink-unavailable-note" '

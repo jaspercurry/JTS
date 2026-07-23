@@ -61,6 +61,7 @@ from . import (
     grouping_supervisor,
     shairport_supervisor,
     system_supervisor,
+    usb_gadget_forensics,
 )
 from ..multiroom.config import (
     CROSSOVER_HZ_HI,
@@ -276,6 +277,7 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
     "/grouping/set",
     "/volume/mute",
     "/debug",
+    "/usb-forensics",
     "/system/reboot",
     "/system/poweroff",
     "/source/select",
@@ -356,9 +358,10 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # bread-and-butter low-impact controls stay open (the dial never calls
 # these). poweroff/reboot = power loop; mic/mute = defeats the privacy-mic
 # promise; grouping/set = hijacks output routing; restart/voice|audio =
-# disrupt playback + the assistant; aec/firmware/update downloads and flashes
-# microphone firmware; aec/usb-mic = starts or stops live room-audio export;
-# aec/usb-mic-leg = changes which live room-audio stream reaches the computer.
+# disrupt playback + the assistant; usb-forensics can restart the composite
+# gadget; aec/firmware/update downloads and flashes microphone firmware;
+# aec/usb-mic = starts or stops live room-audio export; aec/usb-mic-leg =
+# changes which live room-audio stream reaches the computer.
 # WS1 Phase 2 added the two restart routes and made the gate mandatory
 # (control_token.ensure_token() at startup, below).
 _TOKEN_GATED_ROUTES = frozenset({
@@ -366,6 +369,7 @@ _TOKEN_GATED_ROUTES = frozenset({
     "/system/reboot",
     "/system/restart/voice",
     "/system/restart/audio",
+    "/usb-forensics",
     "/mic/mute",
     "/aec/usb-mic",
     "/aec/usb-mic-leg",
@@ -1893,6 +1897,8 @@ def _make_handler(
                     ):
                         logger.exception("/state audio health snapshot failed")
                         state["audio_health"] = None
+                state = dict(state)
+                state["usb_gadget_forensics"] = usb_gadget_forensics.snapshot()
             except Exception as e:  # noqa: BLE001
                 logger.exception("/state aggregation failed")
                 self._send_json({"error": str(e)}, status=502)
@@ -2014,6 +2020,7 @@ def _make_handler(
                 "system_capabilities": system_capabilities_for_profile(
                     install_profile,
                 ),
+                "usb_gadget_forensics": usb_gadget_forensics.snapshot(),
             }
             self._send_json(payload)
 
@@ -3205,6 +3212,34 @@ def _make_handler(
             self._send_json(debug_control.snapshot())
             return
 
+        def _post_usb_forensics(self) -> None:
+            body = self._read_json()
+            action = str(body.get("action") or "")
+            try:
+                if action == "set_enabled":
+                    if not isinstance(body.get("enabled"), bool):
+                        self._send_json(
+                            {"error": "enabled must be a boolean"}, status=400,
+                        )
+                        return
+                    result = usb_gadget_forensics.set_enabled(body["enabled"])
+                else:
+                    result = usb_gadget_forensics.request(action)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=409)
+                return
+            except OSError as e:
+                self._send_json(
+                    {"error": f"USB forensics request failed: {e}"}, status=502,
+                )
+                return
+            log_event(
+                logger, "usb_gadget.forensics_request", action=action,
+                client=self.address_string(),
+            )
+            self._send_json(result, status=202 if action != "set_enabled" else 200)
+            return
+
         def _post_system_audio_quality(self) -> None:
             body = self._read_json()
             if not isinstance(body, dict):
@@ -3407,6 +3442,7 @@ def _make_handler(
             "/aec/threshold": "_post_aec_threshold",
             "/aec/firmware/update": "_post_aec_firmware_update",
             "/debug": "_post_debug",
+            "/usb-forensics": "_post_usb_forensics",
             "/system/audio-quality": "_post_system_audio_quality",
             "/system/restart/voice": "_post_system_action",
             "/system/restart/audio": "_post_system_action",

@@ -27,9 +27,12 @@ JTS already has the right system ownership:
 
 - `jasper-fanin` is the hot audio gate. It knows labels and PCM lanes,
   not product policy.
-- `jasper-mux` owns audible source policy: latest-source-wins, manual
-  selection, preemption, and guarded source handoff before opening a
-  fan-in lane.
+- `jasper-mux` owns audible source policy: source-neutral latest-start-wins,
+  persistent manual selection, preemption, and guarded source handoff before
+  opening a fan-in lane. Source-specific cleanup runs only after the guarded
+  handoff succeeds; for AirPlay that means receiver-owned `DropSession` with an
+  observable MPRIS `Stop` compatibility fallback. No source adapter owns
+  priority.
 - `VolumeCoordinator` owns the single user-facing `listening_level`,
   source handoff safety, degraded push guards, duck-aware Camilla
   writes, and persistence.
@@ -91,6 +94,18 @@ Spotify Connect volume is renderer/source logic.
 6. **Do not hide audio safety behind plugins.** Camilla ceilings,
    positive-gain clamps, source handoff guards, and duck/restore
    invariants remain centralized and testable.
+7. **Events wake; the host reconciler decides.** A source adapter may translate
+   an inotify/D-Bus/frame-flow edge into a dirty-source hint. It must not choose
+   a winner or move fan-in itself. `jasper-mux` re-reads authoritative state and
+   applies one policy path for both alerts and its fixed lost-alert patrol. A
+   confirmed inactive→active observation receives a process-local start
+   sequence; the newest active sequence wins regardless of source type. The
+   sequence, never hint arrival order, also controls return-to-Auto and
+   winner-stopped fallback. Per-source `started_seq` in mux STATUS makes that
+   decision inspectable.
+   Duplicate hints coalesce; `unknown` observations retain an active last-known
+   state for a bounded 5 s grace so a transient probe failure cannot synthesize
+   a stop/start flap, then expire inactive so a dead adapter cannot pin a winner.
 
 ## Target Capability Shape
 
@@ -446,7 +461,8 @@ capability unsupported and return a clear user-facing result.
 - A source-specific `if provider == ...` branch in `VolumeCoordinator`.
 - A source-specific `if provider == ...` branch in mux policy unless it
   is genuinely source arbitration, not provider routing.
-- Network calls inside a 1 Hz loop unless rate-limited and proven cheap.
+- Network calls inside the fixed patrol/reconcile loop unless rate-limited and
+  proven cheap.
 - Silent fallback from broken push volume to permanent Camilla-master
   semantics without surfacing degraded health.
 
@@ -465,4 +481,7 @@ capability unsupported and return a clear user-facing result.
   source-addition checklist changes, `HANDOFF-volume.md` for volume
   behavior, and `HANDOFF-voice-music-control.md` for transport behavior.
 
-Last verified: 2026-06-25
+Last verified: 2026-07-22 (mux policy ownership, post-handoff AirPlay
+receiver cleanup, fallback observability, and source-adapter boundaries
+rechecked against `jasper/mux.py` and mux contract tests. Broader capability
+extraction plan last fully rechecked 2026-06-25.)

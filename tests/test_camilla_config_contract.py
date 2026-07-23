@@ -387,8 +387,8 @@ def test_parse_camilla_devices_config_ignores_nested_volume_limit() -> None:
 
 
 # --- G8: snd-aloop rate_adjust + async-resampler oscillation guard ---
-# The MIRROR of the lean-lane File-capture guard. The documented failure is the
-# metastable AirPlay-dropout oscillation when a snd-aloop capture
+# The documented failure is the metastable AirPlay-dropout oscillation when a
+# snd-aloop capture
 # (plug:jasper_capture / hw:Loopback) at capture-rate == playback-rate runs BOTH
 # enable_rate_adjust AND an async resampler — CamillaDSP's adjuster fights the
 # loopback's own rate tracking. The safe shape is enable_rate_adjust true AND no

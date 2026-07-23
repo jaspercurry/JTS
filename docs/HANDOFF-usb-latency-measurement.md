@@ -318,7 +318,9 @@ ssh pi@jts.local 'G=/sys/kernel/config/usb_gadget/jts-usb-audio; U=$(ls /sys/cla
 ```
 
 **Source selection sanity check** — combo-aware mux builds promote USB in auto
-mode when fan-in's direct-lane `resampler.input_frames` advances. Before
+mode from fan-in's 20 Hz frame-flow edge (`direct.streaming:true` +
+`NOTIFY usbsink`), with advancing `resampler.input_frames` as the rolling-upgrade
+fallback. Before
 measuring, confirm `/source/state` shows `active_source: "usbsink"`. On an
 older pre-fix build, or if you need to force the measurement lane explicitly:
 ```sh
@@ -365,13 +367,15 @@ floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
 - **`WARMUP_CUSHION_FRAMES`** on jts.local is `1536`; the code default is `2048`.
   This affects only the cold-start descent shape, not the steady-state floor or
   the measured numbers above.
-- **Combo auto-selection fixed in current code**: in combo mode `jasper-mux`
-  treats USB as live when fan-in's direct-lane `resampler.input_frames` advances
-  across ticks, with lane-level `frames_read` as a fallback for older snapshots.
+- **Combo auto-selection fixed in current code**: in combo mode `jasper-fanin`
+  derives `direct.streaming` from its host-input counter every 50 ms and wakes
+  mux on each edge. Mux retains cross-patrol `resampler.input_frames` deltas,
+  with lane-level `frames_read` as a fallback for older snapshots.
   If auto mode fails to promote USB, capture `/source/state` plus fan-in
   `STATUS` before forcing `/source/select`; the expected shape is
   `/source/state.usbsink.combo: true` and an advancing
-  `inputs[label=usbsink].resampler.input_frames`.
+  `inputs[label=usbsink].resampler.input_frames` plus
+  `inputs[label=usbsink].direct.streaming: true` on current builds.
 
 ---
 
