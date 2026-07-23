@@ -25,6 +25,35 @@ def _value_for(unit_text: str, key: str) -> str | None:
     return None
 
 
+def _values_for(unit_text: str, key: str) -> set[str]:
+    values: set[str] = set()
+    for line in unit_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "[")):
+            continue
+        k, separator, value = stripped.partition("=")
+        if separator and k.strip() == key:
+            values.update(value.split())
+    return values
+
+
+def test_bridge_camilla_dependency_is_startup_only_not_lifecycle_coupled() -> None:
+    """Regression guard for #1264.
+
+    A USB combo change deliberately pauses Camilla around a fan-in restart.
+    The bridge's current inputs are the XVF mic plus outputd's final-reference
+    UDP stream (or the pre-Camilla ALSA diagnostic fallback), so stopping it
+    with Camilla only removes voice's UDP mic producer and causes a 30-second
+    voice watchdog ABRT. Keep Camilla as soft startup ordering, while
+    jasper-aec-reconcile remains the bridge lifecycle owner.
+    """
+    unit = UNIT_PATH.read_text()
+    assert "jasper-camilla.service" in _values_for(unit, "After")
+    assert "jasper-camilla.service" in _values_for(unit, "Wants")
+    assert "jasper-camilla.service" not in _values_for(unit, "Requires")
+    assert "jasper-camilla.service" not in _values_for(unit, "PartOf")
+
+
 def test_bridge_does_not_elect_process_wide_rt_to_avoid_rttime_startup_kill() -> None:
     """Regression guard for the 2026-06-27 jts finding: the G6 attempt elected a
     process-wide SCHED_FIFO policy plus a 200 ms RTTIME cap, but the bridge's
