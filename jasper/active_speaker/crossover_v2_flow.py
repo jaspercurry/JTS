@@ -380,23 +380,27 @@ MEASURE_PREDICTED_RIPPLE_CEILING_DB = 15.0
 # Measurement-honesty gate G2 (2026-07-22): an ``event=outputd.xrun`` playback
 # glitch on 2026-07-22 hardware shifted a MEASURE capture's three sweeps
 # −25…−28 ms off their SCHEDULED slot with per-segment locate confidence
-# 0.07-0.12 (a clean-rig baseline runs |residual| ≲ 2 ms at confidence
-# 0.7-0.85) while ``glitch_detected`` stayed False — the repeat-pair drift
-# check (``_estimate_drift``) is structurally blind to a uniform whole-capture
-# shift (its own residual guard demeans per role, so it only catches a
-# WITHIN-driver desync), and ``_stimulus_locate_ok`` passes on the max()
-# confidence across every located stimulus, so one good segment masks three
-# bad sweeps. Both thresholds carry wide margin on both sides of the two
-# clusters above. PROVISIONAL pending W6 bench validation.
+# 0.07-0.12 (the measured clean corpus's WORST capture ran ≤1.5 ms residual
+# at ≥0.6926 confidence) while ``glitch_detected`` stayed False — the
+# repeat-pair drift check (``_estimate_drift``) is structurally blind to a
+# uniform whole-capture shift (its own residual guard demeans per role, so
+# it only catches a WITHIN-driver desync), and ``_stimulus_locate_ok`` passes
+# on the max() confidence across every located stimulus, so one good segment
+# masks three bad sweeps. Both thresholds carry wide margin on both sides of
+# the two clusters above. PROVISIONAL pending W6 bench validation.
 SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
-# Measurement-honesty gate G3 (2026-07-22): a phone session's input chain
-# stepped ~0.56 dB (frequency-differential) BETWEEN VERIFY attempts on
-# 2026-07-22 hardware, producing escalating dishonest verify verdicts
-# 1.192 → 2.111 → 2.835 dB that read as "speaker out of tolerance" when the
-# recorder was what changed — Mac cross-capture stability on this rig is
-# ≤0.1-0.2 dB. VERIFY replays the IDENTICAL program through the IDENTICAL
+# Measurement-honesty gate G3 (2026-07-22): the gate's OWN metric (summed-
+# pilot transfer step) measured the phone's input chain stepping 0.75-0.82
+# dB across the dishonest 1.192 → 2.111 → 2.835 dB VERIFY attempt sequence on
+# 2026-07-22 hardware, producing verdicts that read as "speaker out of
+# tolerance" when the recorder was what changed — the one clean multi-
+# attempt session on the same rig stepped ≤0.05 dB by that SAME metric. (A
+# separate, coarser frequency-differential estimate of the same drift put it
+# at ~0.56 dB — kept only as secondary corroborating context; the pilot-band
+# numbers above are what this gate actually measures and are the primary
+# evidence.) VERIFY replays the IDENTICAL program through the IDENTICAL
 # applied graph on every attempt, so its own leading pilot pair's transfer
 # (captured level minus programmed gain) should not move between attempts
 # either — a step this large is the input chain moving, not the speaker.
@@ -692,6 +696,22 @@ def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
     ``leading_pilot_gains_db`` never threads it, per
     ``program_analysis.PilotObservation``'s docstring) — nothing to compare
     that pilot against.
+
+    ``level_hi_dbfs`` safety note: ``PilotObservation``'s own docstring warns
+    it "must never feed an ABSOLUTE-level consumer" (ambient subtraction
+    shifts it by however much ambient power was removed). This use is safe
+    for TWO independent reasons: (1) it is a RELATIVE cross-ATTEMPT
+    comparison (this attempt's transfer minus the FIRST attempt's), never a
+    true absolute-level read; and (2) a v2 MEASURE/VERIFY leading pilot pair
+    is built with NO ambient window at all (``program_analysis._pilot_verdicts``'s
+    docstring: "a MEASURE/VERIFY pilot pair has no leading ambient window of
+    its own"), so ``_pilot_observations`` degrades ambient subtraction to a
+    no-op for every VERIFY pilot today — ``level_hi_dbfs`` here is the plain
+    band-relative in-band RMS level, not an ambient-adjusted one. If VERIFY's
+    leading pilot pair is ever given an ambient window in the future, this
+    gate needs to be revisited: two attempts observed against DIFFERENT
+    ambient levels would inject an ambient-difference confound into a step
+    that is supposed to isolate the recording chain's own drift.
     """
     return {
         pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db
@@ -943,6 +963,14 @@ class CrossoverV2Conductor:
         # above; a fresh CHECK→MEASURE walk (``prepare_v2_session``) never
         # threads it, so a genuinely new measurement starts with no VERIFY
         # history to compare against (acceptable — see the property below).
+        # Known limitation: the persisted baseline never expires or
+        # re-baselines across verify-only re-arm sessions, so a PERSISTENT
+        # (not transient) post-first-verify setup shift re-fires
+        # verify_level_shift on every "Try again" until the household
+        # re-measures or undoes — matching ``verify_out_of_tolerance``'s
+        # pre-existing perpetual-retry shape when the speaker itself is
+        # genuinely out of tolerance; the household-facing copy is
+        # deliberately unchanged for this.
         self._verify_pilot_baseline: dict[str, float] | None = (
             dict(verify_pilot_transfer_baseline)
             if verify_pilot_transfer_baseline
@@ -1481,6 +1509,16 @@ class CrossoverV2Conductor:
         return verdict
 
     def _verify_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+        # Reset every call — a stale value from a PRIOR attempt must never
+        # leak into THIS attempt's diagnostic (mirrors ``_last_measure_guard``'s
+        # method-top reset in ``_measure_verdict``, see its own comment).
+        # Every early return below (locate_failed, agc_behavioral_fail,
+        # gate-comparability) runs BEFORE the G3 block gets a chance to
+        # recompute this, so it must not still hold a REAL step number from
+        # an earlier attempt that happened to reach that block —
+        # ``_log_verify_diag`` runs unconditionally after this method
+        # returns and would otherwise misreport it as fresh.
+        self._verify_pilot_transfer_step_db = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.linearity_ok is False:
@@ -1508,7 +1546,6 @@ class CrossoverV2Conductor:
         # absent, never a legacy program missing ``programmed_hi_gain_db``)
         # only records the reference; it never rejects on this attempt.
         transfer = _pilot_transfer_by_role(analysis)
-        self._verify_pilot_transfer_step_db = None
         if transfer:
             if self._verify_pilot_baseline is None:
                 self._verify_pilot_baseline = dict(transfer)

@@ -2004,3 +2004,46 @@ def test_verify_diag_logs_guard_field_and_pilot_transfer_on_level_shift_fire(cap
     assert "pilot_transfer_db=0.56" in caplog.text
     assert "pilot_transfer_step_db=0.56" in caplog.text
     assert "guard=pilot_level_shift" in caplog.text
+
+
+def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(caplog):
+    """Adversarial-review fix (S1): ``_verify_pilot_transfer_step_db`` must
+    reset at the TOP of every ``_verify_verdict`` call (mirrors
+    ``_last_measure_guard``'s method-top reset in ``_measure_verdict``) — an
+    early return BEFORE the G3 block even runs (locate_failed here) must not
+    leave a PRIOR attempt's REAL step number for ``_log_verify_diag`` (which
+    runs unconditionally) to misreport as if it were computed this attempt."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    # Attempt 1 (N-1): establishes the baseline (independently out of
+    # tolerance, so a retry is admitted).
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0, max_db=5.0,
+    )
+    _run_phase(c, 3, 3)
+
+    # Attempt 2 (N): a REAL, non-None step gets computed and logged (0.1 dB,
+    # within the ceiling — independently out of tolerance too, so a 3rd
+    # attempt is admitted).
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.1, max_db=5.0,
+    )
+    _run_phase(c, 3, 4)
+    assert "pilot_transfer_step_db=0.1" in caplog.text
+    caplog.clear()
+
+    # Attempt 3 (N+1): locate_failed — returns BEFORE the G3 block runs at
+    # all. Without the S1 fix this would still show attempt 2's stale 0.1;
+    # with it, the diag must show null.
+    fakes.verify = lambda program: _verify_analysis(
+        program, pilot_hi_dbfs=-20.0 + 0.1, locate_confidence=0.01,
+    )
+    verdict = _run_phase(c, 3, 5)
+    assert verdict["code"] == "locate_failed"
+    assert "event=correction.crossover_v2_verify_diag" in caplog.text
+    assert "pilot_transfer_step_db=null" in caplog.text
