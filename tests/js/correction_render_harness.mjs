@@ -293,6 +293,17 @@ source = source.replace(
     resetCalibrationMismatchAlerted: function () {
       calibrationMismatchAlerted = false;
     },
+    // Mirrors exactly what startMeasurement/startRelayMeasurement do on a
+    // successful /start (sessionId + thisTabStartedCurrentRun together),
+    // without driving the full network-calling start flow — so a test can
+    // simulate "this tab owns run X" for the S1 gate tests.
+    primeThisTabStartedRun: function (id) {
+      sessionId = id;
+      thisTabStartedCurrentRun = true;
+    },
+    clearThisTabStartedRun: function () {
+      thisTabStartedCurrentRun = false;
+    },
     // The tuning status line text, for the fetch-error-framing tests.
     getTuningStatusText: function () { return tuningStatus.textContent; },
     // Probe seams for the fetch-once poll-discipline test.
@@ -575,6 +586,8 @@ const {
   invalidateLoadedCalibration,
   checkCalibrationHonesty,
   resetCalibrationMismatchAlerted,
+  primeThisTabStartedRun,
+  clearThisTabStartedRun,
   getTuningStatusText,
   getEnvelopeFetchCount,
   setWizardActionInFlight,
@@ -2973,9 +2986,70 @@ await (async () => {
     { got: getOrMake("calibration-status").textContent });
 }
 
+// 40. S1 (round-2 adversarial review): runTransportLocked alone is "a run is
+//     live", not "this tab started it". An observer tab that never called
+//     /start itself — its own selectedCalibrationId comes from its own
+//     household prefill, unrelated to whatever a DIFFERENT tab/device's live
+//     run actually bound — must never alert, even when runTransportLocked
+//     correctly flips true (a real run IS in progress) and the reported
+//     calibration genuinely differs from what this tab has selected. The
+//     same shape covers a reload mid-relay-run: thisTabStartedCurrentRun
+//     starts false either way, since a relay start is never remembered
+//     across reload the way rememberLocalCapture does for local mode.
+await (async () => {
+  seedMicModelOptions("");
+  seedHouseholdMicData();  // this tab's own prefill: minidsp-minidsp_umik2-...
+  applyHouseholdMicPrefill();
+  clearThisTabStartedRun();
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  setFetchRoute("/status", () => ({
+    state: "ready", autolevel: { status: "idle" },
+    session_id: "live-run-started-elsewhere",
+    mic_calibration: { calibration_id: "dayton_audio-dayton_imm6-abcdef012345" },
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await pollState();
+  assert(globalThis.__alertCalls === 0,
+    "an observer tab that never started this live run never alerts, even " +
+    "on a genuine calibration_id disagreement",
+    { got: globalThis.__alertCalls });
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
+// 41. Positive control for 40: the tab that DID start the run must still get
+//     the honesty alert on a genuine mismatch through the real pollState()
+//     path — the new gate narrows to "observer tabs never alert", not
+//     "nobody ever alerts".
+await (async () => {
+  seedMicModelOptions("");
+  seedHouseholdMicData();
+  applyHouseholdMicPrefill();
+  primeThisTabStartedRun("this-tabs-own-run");
+  resetCalibrationMismatchAlerted();
+  globalThis.__alertCalls = 0;
+  setFetchRoute("/status", () => ({
+    state: "ready", autolevel: { status: "idle" },
+    session_id: "this-tabs-own-run",
+    mic_calibration: null,
+  }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await pollState();
+  assert(globalThis.__alertCalls === 1,
+    "the tab that started this run still gets the honesty alert on a " +
+    "genuine mismatch",
+    { got: globalThis.__alertCalls });
+  clearThisTabStartedRun();
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  resetEnvelopeBookkeeping();
+})();
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 74 }));
+console.log(JSON.stringify({ ok: true, tests: 76 }));

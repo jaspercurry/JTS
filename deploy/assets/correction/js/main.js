@@ -169,6 +169,17 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // One-shot per measurement run: whether we've already told the household
   // their selected calibration didn't end up bound (see checkCalibrationHonesty).
   var calibrationMismatchAlerted = false;
+  // True only from THIS tab's own successful /start (local or relay) until a
+  // later /status poll shows the server describing a DIFFERENT run (a
+  // reload, another tab/device's run, or a stale leftover id) — see
+  // syncSessionMechanics. runTransportLocked alone says "a run is live",
+  // not "this tab started it": an observer tab that never called /start
+  // still sees runTransportLocked flip true while polling someone else's
+  // run, and its OWN selectedCalibrationId (from its own household prefill)
+  // has nothing to do with that run's actual binding. Gates the pollState
+  // honesty backstop so it only ever fires for the tab that made the request
+  // it's checking the answer to.
+  var thisTabStartedCurrentRun = false;
 
   // Stepped-wizard (P3b) envelope-poll bookkeeping. The /status poll stays
   // the capture/upload/autolevel mechanism layer; the ENVELOPE drives the
@@ -894,6 +905,15 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     if (!snapshot || typeof snapshot !== 'object') return;
     var serverSessionId = snapshot.session_id
       ? String(snapshot.session_id) : null;
+    // A poll describing a different run than the one this tab last knew
+    // about means this tab did not start (or no longer owns the identity
+    // of) the run now being described — a reload, an observer tab watching
+    // a different tab/device's run, or a stale id left over from a prior
+    // run. Only startMeasurement/startRelayMeasurement's own success may
+    // set this back to true. Compared BEFORE sessionId is reassigned below.
+    if (serverSessionId !== sessionId) {
+      thisTabStartedCurrentRun = false;
+    }
     localCaptureSetupBound = snapshot.local_capture_setup_bound === true;
     var liveRun = snapshot.state !== 'idle' && snapshot.state !== 'failed';
     var remembered = readLocalCaptureMemory();
@@ -2743,6 +2763,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     lastChartEnvelope = null;
     inVerifyMode = false;
     calibrationMismatchAlerted = false;
+    thisTabStartedCurrentRun = false;
     setStateBadge('preparing', 'pausing music…');
   }
 
@@ -2753,12 +2774,27 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // happens; the capture just proceeds uncalibrated. Rather than re-deriving
   // that detection client-side, this compares what we asked for
   // (selectedCalibrationId) against what the server's response says it
-  // actually bound (the `mic_calibration` field every /start,
-  // /local-capture/setup, and /status response already carries), and says so
-  // once per run if they disagree. Never blocks the capture — matches the
-  // guard's own "never a blocked capture" posture.
+  // actually bound, and says so once per run if they disagree. Never blocks
+  // the capture — matches the guard's own "never a blocked capture" posture.
+  //
+  // Scope: this only catches a mismatch the server converts into a
+  // CHANGED or DROPPED calibration_id (the built-in-mic guard nulling it
+  // out, a calibration file that went missing, etc). A wrong-mic bind that
+  // keeps the SAME calibration_id — the room-relay device-threading gap,
+  // issue #1660, where a mismatched mic's capture is bound anyway because
+  // nothing ever told the mismatch guard what mic actually recorded — is
+  // invisible to this check: the server echoes back exactly the id we
+  // asked for, so there is nothing here to disagree with.
   function checkCalibrationHonesty(reportedCalibration) {
     if (calibrationMismatchAlerted || !selectedCalibrationId) return;
+    // reportedCalibration is compared as-is: undefined is treated the same
+    // as an explicit null (falsy, so it never matches selectedCalibrationId
+    // below and always alerts). Safe only because every caller's endpoint
+    // ALWAYS emits the mic_calibration key — session_snapshot
+    // (jasper/correction/status.py), _handle_start's return dict, and
+    // _handle_local_capture_setup's return dict all set it to null rather
+    // than omitting it. A future endpoint that omits the field instead of
+    // nulling it would false-fire this alert.
     if (reportedCalibration &&
         reportedCalibration.calibration_id === selectedCalibrationId) {
       return;
@@ -2840,6 +2876,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      thisTabStartedCurrentRun = true;
       checkCalibrationHonesty(resp.mic_calibration);
       setRunTransportLocked(true);
     } catch (e) {
@@ -2866,6 +2903,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     try {
       var resp = await postJson('start', measurementStartPayload());
       sessionId = resp.session_id;
+      thisTabStartedCurrentRun = true;
       checkCalibrationHonesty(resp.mic_calibration);
       localRunOwnedByThisTab = true;
       localRunOwnerSessionId = sessionId;
@@ -3235,18 +3273,26 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       setStateBadge(s.state, detail);
       renderQuality(s);
       renderBrowserAudioReport(s.browser_audio_report);
-      // Only reconcile once a real measurement run is actually in progress.
-      // /status is also polled idle, before /start, while a household-mic
-      // prefill has already set selectedCalibrationId — and the server
-      // always mints a session_id even for a never-started, idle session
-      // (MeasurementSession.__init__ uuid4s unconditionally), so comparing
-      // sessionId against s.session_id is NOT a real gate: syncSessionMechanics
-      // above just set sessionId FROM this same s.session_id a few lines up,
-      // making that comparison trivially true at idle too. runTransportLocked
-      // is freshly re-derived by syncSessionMechanics from s.state on every
-      // tick (true only for a live, non-idle/failed run), so it actually
-      // distinguishes "a run is in progress" from "the server responded".
-      if (runTransportLocked) {
+      // Only reconcile once a real run THIS TAB STARTED is actually in
+      // progress. /status is also polled idle, before /start, while a
+      // household-mic prefill has already set selectedCalibrationId — and
+      // the server always mints a session_id even for a never-started, idle
+      // session (MeasurementSession.__init__ uuid4s unconditionally), so
+      // runTransportLocked alone is not enough either: it is "a run is
+      // live" (freshly re-derived by syncSessionMechanics from s.state,
+      // true for ANY live run), not "this tab started it". Without
+      // thisTabStartedCurrentRun, a second observer tab — its own
+      // selectedCalibrationId from its own household prefill, never having
+      // called /start itself — would compare that unrelated value against
+      // whatever a DIFFERENT tab/device's live run actually bound and
+      // false-fire; same for this same tab after a reload, since a relay
+      // run's start is never remembered across a reload the way
+      // rememberLocalCapture does for local mode. thisTabStartedCurrentRun
+      // is set true only by this tab's own successful /start (local or
+      // relay) and cleared the moment syncSessionMechanics sees the server
+      // describing a different run — so it stays true for the entire
+      // lifetime of a run this tab itself started, local or relay.
+      if (runTransportLocked && thisTabStartedCurrentRun) {
         checkCalibrationHonesty(s.mic_calibration);
       }
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');

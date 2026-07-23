@@ -99,16 +99,30 @@
   in `tests/js/correction_render_harness.mjs` (a realistic uuid-style
   `session_id` fixture, plus a test driving the exact concurrent boot
   order — `pollState()` dispatched before `applyHouseholdMicPrefill()`
-  resolves — both fail against the reverted `sessionId` gate). **Separately identified, NOT
-  fixed here:** the room flow's own relay path
-  (`_apply_relay_setup_to_session` in `jasper/web/correction_setup.py`)
-  never threads a `device` value into `_relay_calibration_from_setup`,
-  unlike `jasper.web.correction_crossover_v2.resolve_relay_calibration`
-  which does — so `_stored_calibration_model_mismatch`'s refusal is
-  reachable for a v2 crossover capture but NOT for a room-correction
-  phone-relay capture today; a mismatched stored reconfirm there would
-  currently apply the wrong calibration rather than refuse it. Needs its
-  own follow-up.
+  resolves — both fail against the reverted `sessionId` gate). Also adds
+  `thisTabStartedCurrentRun`, gating the pollState-side check on
+  `runTransportLocked && thisTabStartedCurrentRun` rather than
+  `runTransportLocked` alone: adversarial review found the latter still
+  fires for a second tab/device merely OBSERVING someone else's live run
+  (its own household-prefilled `selectedCalibrationId` has nothing to do
+  with that run's actual binding) and for this same tab after a page
+  reload mid-relay-run (a relay start is never remembered across reload
+  the way `rememberLocalCapture` does for local mode). The flag is set
+  only by this tab's own successful `/start` and cleared the moment
+  `syncSessionMechanics` sees the server describing a different
+  `session_id`. **Separately identified, NOT fixed here (tracked as
+  [issue #1660](https://github.com/jaspercurry/JTS/issues/1660)):** the
+  room flow's own relay path (`_apply_relay_setup_to_session` in
+  `jasper/web/correction_setup.py`) never threads a `device` value into
+  `_relay_calibration_from_setup`, unlike
+  `jasper.web.correction_crossover_v2.resolve_relay_calibration` which
+  does — so `_stored_calibration_model_mismatch`'s refusal is reachable
+  for a v2 crossover capture but NOT for a room-correction phone-relay
+  capture today; a mismatched stored reconfirm there would currently bind
+  the wrong calibration rather than refuse it, under the SAME
+  `calibration_id` the page asked for — invisible to
+  `checkCalibrationHonesty` above, which can only ever notice a CHANGED or
+  DROPPED id, never a wrong-mic bind hiding behind the id it expected.
 - 🧱 **v2 crossover captures now reach the SAME household-mic hint (W6.12,
   2026-07-19).** Every v2 crossover capture logged
   `crossover_v2_uncalibrated_capture` even with a resolvable stored mic
