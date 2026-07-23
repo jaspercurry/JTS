@@ -1490,6 +1490,15 @@ async function reacquireSessionWakeLock(ctx) {
     }
     return;
   }
+  // N2: the browser already dropped ctx.wakeLock's OWN sentinel when the page
+  // hid (that is why we are here re-acquiring) — release it anyway before
+  // overwriting the reference so our wrapper's idempotent release() flag is
+  // flipped for the stale sentinel too, best-effort.
+  try {
+    await ctx.wakeLock?.release();
+  } catch {
+    /* already released */
+  }
   ctx.wakeLock = lock;
 }
 
@@ -1519,6 +1528,18 @@ function wireTrackEndedRecovery(ctx, recorder, spec) {
         sampleRate: spec.sample_rate_hz || 48000,
         deviceId: selectedDeviceId,
       });
+      if (ctx.sessionEnded) {
+        // B1: Stop/backgrounded fired while THIS reacquire was in flight —
+        // the session already tore down. Close it rather than assigning it
+        // to ctx.recorder, which would orphan a live mic stream with nothing
+        // left to close it (mirrors runPlanCapture's identical guard below).
+        try {
+          await replacement.close();
+        } catch {
+          /* already closed */
+        }
+        return;
+      }
       wireTrackEndedRecovery(ctx, replacement, spec);
       ctx.recorder = replacement;
     } catch (err) {
@@ -2128,6 +2149,16 @@ async function runPlanCapture(ctx, { index, attempt }) {
         sampleRate: spec.sample_rate_hz || 48000,
         deviceId: selectedDeviceId,
       });
+      if (controller.aborted || ctx.sessionEnded) {
+        // B1: Stop (or a backgrounded abort) won the race against
+        // getUserMedia + worklet compile — the session already tore down
+        // while this was in flight. Close it here rather than assigning it
+        // to ctx.recorder, which would orphan a live mic stream with
+        // nothing left to close it (reviewer-demonstrated: mic stayed hot
+        // after "Measurement stopped" until page reload).
+        await recorder.close();
+        return;
+      }
       wireTrackEndedRecovery(ctx, recorder, spec);
     }
     const capture = inspectRecorder(recorder, spec);
@@ -2146,6 +2177,15 @@ async function runPlanCapture(ctx, { index, attempt }) {
       return;
     }
     ctx.recorder = recorder;
+    // S1: a context held across the whole session can be auto-suspended
+    // between rounds (Android Chrome backgrounding a tab; possibly iOS
+    // foreground idle) WITHOUT its mic track ever reaching `ended` — the
+    // signal wireTrackEndedRecovery relies on — so resume it explicitly
+    // before recording. Idempotent when already running; guarded so a test
+    // stub with no `.context` stays a no-op.
+    if (recorder.context && typeof recorder.context.resume === "function") {
+      await recorder.context.resume();
+    }
 
     disposeWatch = watchVisibilityAbort(
       typeof document !== "undefined" ? document : null,
@@ -2282,6 +2322,14 @@ async function runPlanCapture(ctx, { index, attempt }) {
 // is no per-round checkbox to re-tick on the page-owned "Next measurement" /
 // "Try again" screens.
 async function onPlanStart(ctx) {
+  // N3: guard re-entrancy. A fast double-tap of the initial Start button
+  // dispatches onPlanStart twice; without this, the second call would spin
+  // up a whole second session — leaking the first's wake lock and
+  // visibility watcher (the first session's own planController/activeAbort
+  // would simply be overwritten, with nothing left to tear it down). A
+  // session is "already running" once a controller exists and hasn't torn
+  // down yet.
+  if (ctx.planController && !ctx.sessionEnded) return;
   let acknowledgement = null;
   try {
     acknowledgement = acceptedAcknowledgement(ctx.spec, ctx.captureRefs);

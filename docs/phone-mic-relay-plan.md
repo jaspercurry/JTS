@@ -804,6 +804,16 @@ mode for a tool whose entire job is a trustworthy result.
   poll** rather than capture garbage; tell the user the screen must stay on. Keep
   it a normal Safari tab, **not** an installed PWA. An audible cue for this path
   is still deferred until jasper-web has a cue bridge.
+  - **Session-spanning capture plans (protocol v3, #1658) hold ONE wake lock
+    and ONE recorder/`AudioContext` for the whole session**, not per capture —
+    per-capture re-acquisition left every idle gap between rounds unprotected,
+    which is what let phones sleep mid-session. The wake lock is re-acquired
+    (silently) on `visibilitychange` back to visible; the reused context is
+    explicitly `resume()`d before each round's recording, since a session-long
+    context can be auto-suspended between rounds (backgrounding) without its
+    mic track ever reaching the `ended` state the per-capture model relied on
+    for detection. See `capture-page/js/main.js`'s `onPlanStart`/
+    `runPlanCapture` and `js/wakelock.js`'s `watchVisibilityReacquire`.
 - **Clean samples:** enforce EC/AGC/NS = false in constraints **and** verify the
   realized settings (§9).
 

@@ -146,4 +146,10 @@ against stubbed browser APIs, but the real iOS behaviors it cannot exercise —
 whether the actual level step between captures is gone, whether
 `navigator.wakeLock` genuinely keeps an iPhone screen on for a multi-minute
 session, and the real `visibilitychange`/re-acquire timing — need a real
-iPhone pass before this is trusted end-to-end.
+iPhone pass before this is trusted end-to-end. Also needs an **Android
+Chrome suspend-without-track-end** pass: backgrounding a tab can auto-suspend
+the reused `AudioContext` without its mic track ever reaching `ended` (the
+signal `wireTrackEndedRecovery` relies on), which is why each round now
+explicitly `resume()`s the context before recording — confirm on a real
+Android Chrome that this actually recovers audio after a background/
+foreground cycle rather than silently timing out on the next `stop()`.

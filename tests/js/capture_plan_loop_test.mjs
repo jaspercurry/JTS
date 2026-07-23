@@ -148,11 +148,22 @@ function makeRecorder() {
       };
     },
   };
+  // S1: a stub AudioContext with a counted resume() — main.js's per-round
+  // resume() call is guarded (`recorder.context && typeof …resume === "function"`)
+  // so fixtures that omit `.context` (e.g. makeRecorderThatDiesDuringRecording)
+  // stay unaffected.
+  const context = {
+    resumes: 0,
+    async resume() {
+      context.resumes += 1;
+    },
+  };
   const recorder = {
     capturedChannelCount: 1,
     starts: 0,
     stops: 0,
     closes: 0,
+    context,
     stream: {
       getAudioTracks() {
         return [track];
@@ -181,6 +192,14 @@ const acceptedAcknowledgement = (spec, refs) => (
 const createMonoRecorder = async () => {
   globalThis.__recorderCalls = (globalThis.__recorderCalls || 0) + 1;
   if (globalThis.__recorderError) throw globalThis.__recorderError;
+  // B1 regression harness: when a test parks this call on
+  // globalThis.__recorderGate, it flags __recorderGateReached SYNCHRONOUSLY
+  // (before awaiting) so a polling test loop can detect "we are now stuck
+  // here, safe to fire Stop" without guessing a microtask-flush count.
+  if (globalThis.__recorderGate) {
+    globalThis.__recorderGateReached = true;
+    await globalThis.__recorderGate;
+  }
   return globalThis.__recorder;
 };
 const delayMs = async () => {};
@@ -219,7 +238,15 @@ const acquireWakeLock = async () => {
   };
 };
 const watchVisibilityAbort = () => () => {};
-const watchVisibilityReacquire = () => () => {};
+// N2 regression harness: capture the onVisible callback main.js wires so a
+// test can invoke it directly to simulate the page returning from a brief
+// hide, instead of it being an unreachable no-op.
+const watchVisibilityReacquire = (doc, onVisible) => {
+  globalThis.__wakeReacquireCallback = onVisible;
+  return () => {
+    globalThis.__wakeReacquireCallback = null;
+  };
+};
 const buildAmbientStatsEvent = (samples, sampleRate, runToken, durationS) => ({
   ambient_stats: { schema: 1, run_token: String(runToken || ""), duration_s: durationS, clipped: false, bands: [] },
 });
@@ -1473,6 +1500,211 @@ async function testTrackEndedDuringActiveRoundFailsRatherThanUploadingDeadAir() 
   ok();
 }
 
+// ============================================================================
+// 20 (B1, adversarial-review blocker). Stop firing WHILE createMonoRecorder()
+// is still pending — Stop's relay POST winning the race against getUserMedia
+// + worklet compile — must not orphan the recorder it eventually resolves
+// with. releasePlanSessionResources already ran and nulled ctx.recorder by
+// then; runPlanCapture must close the late-arriving recorder rather than
+// assigning it (the reviewer's repro: recorder_close_count 0, orphaned live
+// recorder, mic stays hot after "Measurement stopped").
+// ============================================================================
+async function testStopDuringRecorderAcquisitionClosesTheOrphanedStream() {
+  statusHistory.length = 0;
+  globalThis.__recorderGateReached = false;
+  let releaseGate;
+  globalThis.__recorderGate = new Promise((resolve) => { releaseGate = resolve; });
+  const { onPlanStart, stopCapture } = await loadModule();
+  const recorder = makeRecorder();
+  globalThis.__recorder = recorder;
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const { client } = makeFakePlanClient({ target: 1, maxAttempts: 1 });
+  const ctx = makeCtx(spec, client);
+
+  const p = onPlanStart(ctx);
+  // Advance until execution is parked INSIDE createMonoRecorder(), awaiting
+  // our gate — the one promise in this whole chain that never resolves on
+  // its own, so this loop cannot overshoot past it.
+  for (let i = 0; i < 200 && !globalThis.__recorderGateReached; i += 1) {
+    await Promise.resolve();
+  }
+  assert.ok(globalThis.__recorderGateReached, "test setup reached the pending createMonoRecorder call");
+
+  const stopped = stopCapture();
+  assert.ok(stopped, "Stop is wired while acquisition is pending");
+  await stopped;
+  assert.equal(headingText(ctx.screenEl), "Measurement stopped.");
+
+  // Now let createMonoRecorder resolve — B1's guard must close the
+  // late-arriving recorder instead of assigning it to ctx.recorder.
+  releaseGate();
+  await p;
+
+  assert.equal(recorder.closes, 1, "the orphaned recorder is closed, not leaked");
+  assert.equal(ctx.recorder, null, "ctx.recorder is never assigned once the session ended");
+
+  globalThis.__recorderGate = null;
+  ok();
+}
+
+// ============================================================================
+// 21 (B1, identical guard in wireTrackEndedRecovery). The same race in the
+// track-ended reacquire path: Stop firing while the reacquire's own
+// createMonoRecorder() is pending must close the replacement rather than
+// assign it to ctx.recorder.
+// ============================================================================
+async function testStopDuringTrackEndedReacquireClosesTheOrphanedReplacement() {
+  statusHistory.length = 0;
+  const { onPlanStart, stopCapture } = await loadModule();
+  const recorderA = makeRecorder();
+  globalThis.__recorder = recorderA;
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 2 });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+
+  // The mic disconnects while idling on "Next measurement" — the recovery
+  // handler closes recorderA immediately, then reaches for a replacement;
+  // gate THAT createMonoRecorder call so Stop can fire while it is pending.
+  globalThis.__recorderGateReached = false;
+  let releaseGate;
+  globalThis.__recorderGate = new Promise((resolve) => { releaseGate = resolve; });
+  const recorderB = makeRecorder();
+  globalThis.__recorder = recorderB;
+  const track = recorderA.stream.getAudioTracks()[0];
+  const recovered = track.onended();
+
+  for (let i = 0; i < 200 && !globalThis.__recorderGateReached; i += 1) {
+    await Promise.resolve();
+  }
+  assert.ok(globalThis.__recorderGateReached, "test setup reached the pending reacquire");
+
+  const stopped = stopCapture();
+  await stopped;
+  assert.equal(headingText(ctx.screenEl), "Measurement stopped.");
+
+  releaseGate();
+  await recovered;
+
+  assert.equal(recorderB.closes, 1, "the orphaned replacement is closed, not leaked");
+  assert.equal(ctx.recorder, null, "ctx.recorder is never assigned once the session ended");
+
+  globalThis.__recorderGate = null;
+  ok();
+}
+
+// ============================================================================
+// 22 (S1, reviewer should-fix). The reused AudioContext can be auto-suspended
+// between rounds (Android Chrome backgrounding a tab; possibly iOS
+// foreground idle) without its mic track ever reaching `ended` — the signal
+// wireTrackEndedRecovery relies on. Each round must explicitly resume() the
+// context before recording.
+// ============================================================================
+async function testContextResumesBeforeEachRoundsRecording() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  const recorder = makeRecorder();
+  globalThis.__recorder = recorder;
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 2 });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(recorder.context.resumes, 1, "round 1 resumes the context once before recording");
+  const next = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await next._listeners.click[0]();
+
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.equal(recorder.context.resumes, 2, "round 2 resumes the reused context again");
+  ok();
+}
+
+// ============================================================================
+// 23 (N2, reviewer nit). reacquireSessionWakeLock releases the PRIOR wake
+// lock sentinel (best-effort) before overwriting ctx.wakeLock with the fresh
+// one — the browser already dropped the old sentinel internally, but our own
+// reference/idempotent-release flag should not just be silently discarded.
+// ============================================================================
+async function testReacquireReleasesThePriorWakeLockSentinelBeforeOverwriting() {
+  statusHistory.length = 0;
+  globalThis.__wakeAcquireCalls = 0;
+  globalThis.__wakeReleaseCalls = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 2 });
+  const { client } = makeFakePlanClient({ target: 2, maxAttempts: 2 });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+  assert.equal(globalThis.__wakeAcquireCalls, 1);
+  assert.equal(globalThis.__wakeReleaseCalls, 0, "nothing released yet mid-session");
+  const priorLock = ctx.wakeLock;
+  assert.ok(priorLock, "onPlanStart acquired the session wake lock");
+  assert.equal(typeof globalThis.__wakeReacquireCallback, "function");
+
+  // Simulate the page returning to visible after a brief hide (Control
+  // Center swipe) — the browser already auto-released the OLD sentinel;
+  // main.js's watchVisibilityReacquire wiring re-requests a fresh one. Poll
+  // on the actual end-state (ctx.wakeLock changing) rather than the acquire
+  // counter — that counter settles a tick BEFORE the release-then-assign
+  // tail of reacquireSessionWakeLock finishes running.
+  globalThis.__wakeReacquireCallback();
+  for (let i = 0; i < 200 && ctx.wakeLock === priorLock; i += 1) {
+    await Promise.resolve();
+  }
+
+  assert.equal(globalThis.__wakeAcquireCalls, 2, "the reacquire requested a fresh lock");
+  assert.equal(
+    globalThis.__wakeReleaseCalls, 1,
+    "the STALE prior sentinel is released before being overwritten (N2)",
+  );
+  assert.notEqual(ctx.wakeLock, priorLock, "ctx.wakeLock now holds the fresh sentinel");
+  ok();
+}
+
+// ============================================================================
+// 24 (N3, reviewer nit). A fast double-tap of the initial Start button must
+// not spin up a second session — the second onPlanStart call is a guarded
+// no-op while the first session's controller is still alive (fired back to
+// back, in the SAME synchronous stretch, before either has a chance to
+// yield — the worst-case double-tap shape).
+// ============================================================================
+async function testDoubleTapOnPlanStartDoesNotStartASecondSession() {
+  statusHistory.length = 0;
+  globalThis.__wakeAcquireCalls = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 1, maxAttempts: 1 });
+  const { client } = makeFakePlanClient({ target: 1, maxAttempts: 1 });
+  const ctx = makeCtx(spec, client);
+
+  const p1 = onPlanStart(ctx);
+  const p2 = onPlanStart(ctx); // the double-tap
+  await Promise.all([p1, p2]);
+
+  assert.equal(headingText(ctx.screenEl), "All measurements done");
+  assert.equal(globalThis.__wakeAcquireCalls, 1, "only the FIRST tap's session ever acquired a wake lock");
+  ok();
+}
+
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
@@ -1496,6 +1728,11 @@ const tests = [
   testTrackEndedMidSessionReacquiresTransparently,
   testTrackEndedReacquireFailureSurfacesOnNextRound,
   testTrackEndedDuringActiveRoundFailsRatherThanUploadingDeadAir,
+  testStopDuringRecorderAcquisitionClosesTheOrphanedStream,
+  testStopDuringTrackEndedReacquireClosesTheOrphanedReplacement,
+  testContextResumesBeforeEachRoundsRecording,
+  testReacquireReleasesThePriorWakeLockSentinelBeforeOverwriting,
+  testDoubleTapOnPlanStartDoesNotStartASecondSession,
 ];
 
 let failure = null;
