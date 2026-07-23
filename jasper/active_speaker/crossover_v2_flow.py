@@ -365,8 +365,9 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # capture on 2026-07-22 hardware built a candidate whose ``predicted_ripple_db``
 # was 27.316 dB at an alignment confidence (0.703) that cleared
 # ALIGNMENT_CONFIDENCE_TRUST_FLOOR above — the candidate auto-applied, then
-# failed three VERIFYs at 5.3-6.7 dB. Every clean MEASURE that same day (12
-# captures, UMIK-2 + iMM-6C) predicted 4.387-9.031 dB. This ceiling sits ~6 dB
+# failed three VERIFYs at 5.3-6.7 dB. Every clean MEASURE that same day (13
+# captures across UMIK-2, iMM-6C, and the phone chain) predicted
+# 4.387-9.031 dB. This ceiling sits ~6 dB
 # above the clean corpus's worst case and ~12 dB below the corrupt one — wide
 # margin on both sides. A candidate whose OWN predicted ripple is this bad is
 # not a trustworthy basis for auto-apply regardless of what alignment
