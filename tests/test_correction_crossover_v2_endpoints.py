@@ -3130,6 +3130,28 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     ).read_text(encoding="utf-8")
     assert config_path.read_text(encoding="utf-8") == prior_config_text
 
+    # Item 3 (#1605): make the candidate pruner ACTIVE at the run-8 apply below,
+    # with the prior (the Undo target) the OLDEST candidate on disk. Without
+    # _apply_baseline_profile_locked passing it as also_protect, the newest-K
+    # mtime prune would evict it and the Undo at the end of this test would fail
+    # with restore_target_missing — so the prior surviving + the restore
+    # succeeding is the END-TO-END proof that the real extraction protects the
+    # real Undo-target path (the isolated pruner half is pinned by
+    # test_prune_keeps_the_protected_undo_target_even_when_it_is_oldest).
+    import os as _os
+    import time as _time
+
+    from jasper.active_speaker import baseline_profile as _bp
+    prior_config_path = Path(prior_payload["profile"]["config"]["path"])
+    _now = _time.time()
+    _os.utime(prior_config_path, (_now - 10_000, _now - 10_000))
+    for _i in range(_bp._MAX_BASELINE_CANDIDATE_FILES + 2):
+        _orphan = config_path.with_name(
+            f"active_speaker_baseline_candidate_orphan{_i:03d}.yml"
+        )
+        _orphan.write_text(f"# orphan {_i}\n", encoding="utf-8")
+        _os.utime(_orphan, (_now - 1000, _now - 1000))
+
     run8_candidate = _run6_measured_candidate(preset)
     v2host.save_v2_state({
         "session_id": "cap_run8",
@@ -3146,6 +3168,9 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
         _FakeApplyCam,
     )
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
+    # The prior (Undo target) survived the run-8 prune despite being the oldest
+    # candidate on disk — protected by also_protect (#1605).
+    assert prior_config_path.exists()
     run8_config_path = Path(apply_payload["profile"]["config"]["path"])
     assert run8_config_path != config_path
     run8_config_text = run8_config_path.read_text(encoding="utf-8")
