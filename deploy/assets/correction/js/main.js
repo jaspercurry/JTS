@@ -764,7 +764,13 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       selectedCalibrationMeta.label : '';
     micModelSelect.value = key;
     updateMicCalibrationRows();
-    if (previousLabel) {
+    // updateMicCalibrationRows() may have just auto-filled a per-browser
+    // remembered serial for the newly-detected model and kicked off its own
+    // fetchCalibration() — in which case micSerialInput.value is no longer
+    // empty. Let that fetch's own status text stand (fetching/loaded/failed)
+    // rather than overwriting it with a stale "enter its serial" prompt the
+    // auto-fill already answered.
+    if (previousLabel && !micSerialInput.value.trim()) {
       calibrationStatus.className = 'mic-status bad';
       calibrationStatus.textContent =
         'JTS remembered a ' + previousLabel + ' calibration, but this looks ' +
@@ -3229,13 +3235,18 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       setStateBadge(s.state, detail);
       renderQuality(s);
       renderBrowserAudioReport(s.browser_audio_report);
-      // Only reconcile against a /status snapshot that is actually describing
-      // OUR run (session_id match) — /status is also polled idle, before
-      // /start, while a household-mic prefill has already set
-      // selectedCalibrationId; comparing against that stale/idle snapshot's
-      // unrelated (always-null-until-a-session-starts) mic_calibration would
-      // fire a false "could not use calibration" alert on every page load.
-      if (sessionId && s.session_id === sessionId) {
+      // Only reconcile once a real measurement run is actually in progress.
+      // /status is also polled idle, before /start, while a household-mic
+      // prefill has already set selectedCalibrationId — and the server
+      // always mints a session_id even for a never-started, idle session
+      // (MeasurementSession.__init__ uuid4s unconditionally), so comparing
+      // sessionId against s.session_id is NOT a real gate: syncSessionMechanics
+      // above just set sessionId FROM this same s.session_id a few lines up,
+      // making that comparison trivially true at idle too. runTransportLocked
+      // is freshly re-derived by syncSessionMechanics from s.state on every
+      // tick (true only for a live, non-idle/failed run), so it actually
+      // distinguishes "a run is in progress" from "the server responded".
+      if (runTransportLocked) {
         checkCalibrationHonesty(s.mic_calibration);
       }
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
