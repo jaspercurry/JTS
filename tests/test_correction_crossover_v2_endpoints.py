@@ -2970,7 +2970,14 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
         )
     )
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
-    prior_config_text = config_path.read_text(encoding="utf-8")
+    # #1666: "prior's own file" is prior's OWN content-addressed sibling, not
+    # config_path (the canonical name, which the successful apply above just
+    # promoted a copy onto -- still prior's bytes at this point, but via a
+    # promote, not because nothing ever touched it).
+    prior_config_text = Path(
+        prior_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+    assert config_path.read_text(encoding="utf-8") == prior_config_text
 
     run8_candidate = _run6_measured_candidate(preset)
     v2host.save_v2_state({
@@ -2990,8 +2997,15 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
     run8_config_path = Path(apply_payload["profile"]["config"]["path"])
     assert run8_config_path != config_path
-    # The run-8 apply must not have clobbered the prior profile's own file.
-    assert config_path.read_text(encoding="utf-8") == prior_config_text
+    run8_config_text = run8_config_path.read_text(encoding="utf-8")
+    # The run-8 apply must not have clobbered the prior profile's own file --
+    # it landed on its own sibling, still readable unmutated.
+    assert prior_config_text == Path(
+        prior_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+    # The canonical name is a promoted COPY of whichever candidate applied
+    # most recently -- it now tracks run-8, not prior.
+    assert config_path.read_text(encoding="utf-8") == run8_config_text
 
     state_after_apply = v2host.load_v2_state()
     assert state_after_apply["applied"] is True
@@ -3005,6 +3019,7 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
 
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    # Restore reloads prior's own sibling and re-promotes canonical onto it.
     assert config_path.read_text(encoding="utf-8") == prior_config_text
     active = load_applied_baseline_profile_state(state_path)
     assert active is not None
@@ -3106,7 +3121,15 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         _FakeApplyCam,
     )
     assert run1_payload["status"] == "applied", run1_payload.get("issues")
-    run1_config_text = config_path.read_text(encoding="utf-8")
+    # #1666: run 1 (the speaker's first-ever apply) lands on its own
+    # content-addressed sibling too, not config_path directly -- read the
+    # stable reference value from run 1's own reported path. The successful
+    # apply's promote step means config_path (canonical) also currently
+    # holds these same bytes, as a COPY.
+    run1_config_text = Path(
+        run1_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+    assert config_path.read_text(encoding="utf-8") == run1_config_text
     assert v2host.load_v2_state()["pre_apply_profile"] is None  # speaker's first-ever apply
 
     # The deferred VERIFY always auto-arms right after an apply — reproduce
@@ -3132,7 +3155,17 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
         _FakeApplyCam,
     )
     assert run2_payload["status"] == "applied", run2_payload.get("issues")
-    assert config_path.read_text(encoding="utf-8") == run1_config_text  # never clobbered
+    # run 1's own sibling file is never clobbered by run 2's apply...
+    assert Path(
+        run1_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8") == run1_config_text
+    # ...but canonical is a promoted COPY of whichever candidate applied most
+    # recently (#1666), so it now tracks run 2, not run 1.
+    run2_config_text = Path(
+        run2_payload["profile"]["config"]["path"]
+    ).read_text(encoding="utf-8")
+    assert config_path.read_text(encoding="utf-8") == run2_config_text
+    assert run2_config_text != run1_config_text
 
     state_after_run2_apply = v2host.load_v2_state()
     pre_apply_profile = state_after_run2_apply.get("pre_apply_profile")
@@ -3157,6 +3190,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     # Undo must now succeed, through the real restore seam, reverting to run 1.
     restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
+    # Restore reloads run 1's own sibling and re-promotes canonical onto it.
     assert config_path.read_text(encoding="utf-8") == run1_config_text
     active = load_applied_baseline_profile_state(state_path)
     assert active is not None

@@ -992,6 +992,16 @@ def test_active_speaker_setup_rederives_baseline_freshness(
         created_at="2026-06-14T12:20:00Z",
     )
     assert payload["status"] == "ready_to_apply"
+    # #1666: the candidate lands on its own content-addressed sibling, never
+    # baseline_config_path directly -- that literal file is never written by
+    # a bare build_baseline_profile_candidate() call (only the real apply
+    # transaction's post-success promote publishes it). What CamillaDSP would
+    # actually be running is the candidate's own reported path (mirrors
+    # active_config_path_from_statefile() reading CamillaDSP's own statefile
+    # in production, which always names the loaded sibling, never the
+    # promoted canonical copy).
+    applied_config_path = str(payload["config"]["path"])
+    assert applied_config_path != str(baseline_config_path)
 
     saved = json.loads(baseline_state_path.read_text(encoding="utf-8"))
     saved["status"] = "applied"
@@ -1000,7 +1010,7 @@ def test_active_speaker_setup_rederives_baseline_freshness(
     baseline_state_path.write_text(json.dumps(saved), encoding="utf-8")
 
     ready = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(baseline_config_path),
+        active_config_path=applied_config_path,
         baseline_state_path=baseline_state_path,
     )
     assert ready["configured"] is True
@@ -1027,7 +1037,7 @@ def test_active_speaker_setup_rederives_baseline_freshness(
     )
 
     stale = setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(baseline_config_path),
+        active_config_path=applied_config_path,
         baseline_state_path=baseline_state_path,
     )
 

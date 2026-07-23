@@ -223,7 +223,11 @@ def test_production_compiler_uses_exact_measured_candidate_corrections(
     assert payload["verification"]["driver_target_proof_source"] == (
         "measured_candidate"
     )
-    assert config_path.exists()
+    # #1666: the candidate lands on its own content-addressed sibling next to
+    # config_path, never config_path itself.
+    assert not config_path.exists()
+    assert Path(payload["config"]["path"]).exists()
+    assert Path(payload["config"]["path"]) != config_path
 
 
 async def _apply(

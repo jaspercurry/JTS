@@ -3278,3 +3278,98 @@ def check_dsp_apply_state() -> CheckResult:
     if candidate:
         detail += f" config={candidate}"
     return CheckResult("DSP apply state", status, detail)
+
+def _is_baseline_candidate_sibling(live_path: Path, canonical: Path) -> bool:
+    """True if ``live_path`` is a content-addressed sibling of ``canonical``.
+
+    ``build_baseline_profile_candidate`` names every candidate
+    ``<canonical stem>_candidate_<fingerprint12><canonical suffix>`` beside
+    the canonical file (issue #1666). Used to gate the comparison below to
+    speakers that actually have an active-speaker baseline applied live —
+    a plain stereo/flat topology's live config (e.g. ``outputd-cutover.yml``)
+    never matches this shape, so it stays "not applicable" rather than a
+    false warning.
+    """
+    return (
+        live_path.parent == canonical.parent
+        and live_path.suffix == canonical.suffix
+        and live_path.name.startswith(f"{canonical.stem}_candidate_")
+    )
+
+@doctor_check(order=31.5, group="audio")
+def check_active_speaker_baseline_canonical() -> CheckResult:
+    """Canonical ``active_speaker_baseline.yml`` durability (issue #1666).
+
+    ``build_baseline_profile_candidate`` never writes the canonical
+    ``baseline_config_path()`` name directly; every apply/restore promotes
+    the just-applied candidate's bytes onto it as a best-effort, fail-soft
+    copy after CamillaDSP already confirmed the candidate live. A promote
+    failure (disk full, permissions drift) leaves that copy stale without
+    affecting the audible graph at all — CamillaDSP's own statefile already
+    self-persists the running candidate path independently. This check
+    surfaces that gap for the OTHER readers who trust the canonical name
+    (the multiroom follower fallback, operators, this doctor itself): the
+    live graph is always the audible truth and is correct either way, so a
+    mismatch is a WARN, never a FAIL.
+    """
+    from jasper.active_speaker.baseline_profile import (
+        active_layer_a_fingerprint,
+        baseline_config_path,
+    )
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
+
+    label = "active speaker baseline canonical"
+    statefile, live_path_raw = _active_camilla_config_path()
+    if live_path_raw is None:
+        return CheckResult(
+            label, "warn", f"could not read config_path from {statefile}",
+        )
+    live_path = Path(live_path_raw)
+    canonical = baseline_config_path()
+    if live_path == canonical:
+        return CheckResult(
+            label, "ok", f"live config is the canonical file ({canonical})",
+        )
+    if not _is_baseline_candidate_sibling(live_path, canonical):
+        return CheckResult(
+            label, "ok",
+            f"live config ({live_path}) is not an active-speaker baseline "
+            "candidate; canonical-file check not applicable",
+        )
+    if not canonical.exists():
+        return CheckResult(
+            label, "warn",
+            f"canonical baseline file is missing ({canonical}) while the live "
+            f"config is an applied baseline candidate ({live_path}); the next "
+            "apply or restore re-promotes it",
+        )
+    if not live_path.exists():
+        return CheckResult(
+            label, "warn",
+            f"live baseline candidate file is missing on disk ({live_path}); "
+            f"cannot compare it against canonical ({canonical})",
+        )
+    try:
+        live_fingerprint = active_layer_a_fingerprint(
+            live_path.read_text(encoding="utf-8")
+        )
+        canonical_fingerprint = active_layer_a_fingerprint(
+            canonical.read_text(encoding="utf-8")
+        )
+    except (OSError, ActiveSpeakerConfigError) as exc:
+        return CheckResult(
+            label, "warn", f"could not compare {live_path} to {canonical}: {exc}",
+        )
+    if live_fingerprint == canonical_fingerprint:
+        return CheckResult(
+            label, "ok",
+            f"canonical file ({canonical}) matches the live applied baseline "
+            f"({live_path})",
+        )
+    return CheckResult(
+        label, "warn",
+        f"canonical baseline file ({canonical}) does not match the live "
+        f"applied config ({live_path}); the running graph is correct, but the "
+        "canonical file is stale for other readers (multiroom follower "
+        "fallback, operators)",
+    )

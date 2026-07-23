@@ -42,6 +42,7 @@ from .baseline_profile import (
     baseline_profile_state_path,
     build_baseline_profile_candidate,
     persist_applied_baseline_profile,
+    promote_applied_baseline_candidate,
 )
 from .commissioning_evidence_store import EVIDENCE_ROOT, CommissioningEvidenceStore
 from .commissioning_lifecycle import CommissioningTransition
@@ -719,6 +720,7 @@ def finalize_retained_candidate_apply(
     target_plan: RequiredTargetPlan,
     safety_profile_fingerprint: str,
     state_path: str | Path | None = None,
+    config_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Finish only durable bookkeeping after a proven retained graph."""
 
@@ -764,6 +766,14 @@ def finalize_retained_candidate_apply(
         apply_state=apply_state,
         state_path=state_path,
     )
+    # #1666: build_baseline_profile_candidate now writes every candidate to a
+    # content-addressed sibling, never the canonical baseline_config_path()
+    # name directly -- the same treatment as the /correction/ apply/restore
+    # seam in baseline_profile.py, since commissioning rides the identical
+    # write-then-apply-then-persist shape (and is, on a fresh speaker, the
+    # apply that would otherwise leave the canonical file never created at
+    # all). Fail-soft; never raises.
+    promote_applied_baseline_candidate(applied, config_path=config_path)
     lifecycle = run_store.lifecycle_state(run)
     if lifecycle == "candidate_ready":
         if not run_store.transition(
@@ -1114,6 +1124,7 @@ async def _apply_measured_candidate_owned(
             target_plan=target_plan,
             safety_profile_fingerprint=safety_profile_fingerprint,
             state_path=state_path,
+            config_path=config_path,
         )
     if current_mutation is not None and current_mutation.status not in {
         "aborted",
@@ -1314,6 +1325,7 @@ async def _apply_measured_candidate_owned(
                         target_plan=target_plan,
                         safety_profile_fingerprint=safety_profile_fingerprint,
                         state_path=state_path,
+                        config_path=config_path,
                     )
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     raise CommissioningApplyError(

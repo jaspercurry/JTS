@@ -1287,17 +1287,39 @@ def build_baseline_profile_candidate(
             # Never trust the persisted derived field for evidence admission.
             # Re-derive the context from the applied immutable graph inputs.
             applied_profile_context_id = baseline_candidate_fingerprint(applied_anchor)
-    applied_config = (
-        applied_anchor.get("config")
-        if isinstance(applied_anchor, Mapping)
-        and isinstance(applied_anchor.get("config"), Mapping)
-        else {}
-    )
-    applied_config_path = str(applied_config.get("path") or "")
-    if applied_anchor is not None and applied_config_path == str(config_target):
-        # Never overwrite the file the running/statefile-applied graph may still
-        # read. A candidate gets a content-addressed sibling and becomes durable
-        # only when the explicit apply repoints CamillaDSP to it.
+    # Every SOLO (non-driver-domain) candidate is content-addressed to its
+    # OWN sibling file -- unconditionally, whether or not a profile was ever
+    # applied before, and regardless of what that prior profile's own path
+    # was. Never the bare ``baseline_config_path()`` name (issue #1666): a
+    # candidate write must never overwrite the file CamillaDSP's own
+    # statefile, jasper-doctor, the multiroom follower fallback, and a human
+    # inspecting the box all read as the durable truth. Before this was
+    # unconditional, an applied profile's path alternated between the
+    # canonical name and a sibling on every successive apply (whichever the
+    # PREVIOUS apply did NOT use) -- so an apply landing on the canonical
+    # half of that alternation wrote unvalidated candidate bytes there
+    # BEFORE validation/activation, and a rejected apply could leave the
+    # canonical file holding rejected bytes. The canonical name is now
+    # written ONLY by the post-success promote step in
+    # ``_apply_baseline_profile_locked`` / ``restore_applied_baseline_profile``
+    # (and commissioning's ``finalize_retained_candidate_apply``), which runs
+    # after ``apply_dsp_config`` has already proven the candidate live.
+    #
+    # ``driver_domain=True`` candidates are deliberately EXCLUDED: they are
+    # the multiroom follower/leader bonding machinery's own role-specific
+    # compile-then-immediately-consume seam (jasper.multiroom.follower_config
+    # / active_leader_config), which passes its OWN dedicated config_path +
+    # state_path precisely "so the solo baseline artifacts are never
+    # clobbered" (this function's own docstring). That state_path never
+    # reaches ``persist_applied_baseline_profile`` / ``status="applied"``, so
+    # ``applied_anchor`` above is always None for it -- there is no applied
+    # lineage to protect or promote, no Undo-to-a-prior-candidate feature for
+    # it, and its caller re-proves the freshly written file synchronously
+    # before ever loading it. Forcing it onto a sibling would silently break
+    # that caller's read of its OWN just-written config_path (confirmed by
+    # tests/test_multiroom_follower_config.py and
+    # tests/test_multiroom_active_leader_config.py against this change).
+    if not driver_domain:
         config_target = config_target.with_name(
             f"{config_target.stem}_candidate_{source['fingerprint'][:12]}"
             f"{config_target.suffix}"
@@ -2218,6 +2240,106 @@ def persist_applied_baseline_profile(
     return applied
 
 
+# Newest-by-mtime content-addressed candidate siblings to keep around a
+# canonical baseline config on every successful promote. Orphaned candidates
+# accumulate forever now that promotion is a byte COPY, never a move/rename
+# (a fleet Pi was observed carrying 38 of them); this is a bounded-I/O
+# resilience floor, not a tunable, so it is a plain constant rather than an
+# env override.
+_MAX_BASELINE_CANDIDATE_FILES = 20
+
+
+def promote_applied_baseline_candidate(
+    applied: Mapping[str, Any],
+    *,
+    config_path: str | Path | None = None,
+) -> None:
+    """Publish a just-applied candidate's bytes as the canonical config file.
+
+    ``build_baseline_profile_candidate`` never writes ``baseline_config_path()``
+    directly (issue #1666) -- every ``write=True`` candidate lands on its own
+    content-addressed sibling, so a candidate that fails validation or
+    activation can never appear at the canonical name. This is the ONLY
+    place that publishes to that name, and every caller runs it AFTER its own
+    ``apply_dsp_config`` + ``persist_applied_baseline_profile`` have already
+    proven ``applied`` is the new applied truth -- the copy is durability
+    convenience for readers of the canonical name (CamillaDSP's own
+    statefile already self-persists the running path independently; the
+    multiroom follower fallback in ``jasper.multiroom.follower_config``,
+    jasper-doctor, and a human inspecting the box are what this serves), not
+    part of the apply decision.
+
+    Fail-soft by design: the running CamillaDSP graph and the JSON SSOT
+    (``config.path``, which keeps the truthful applied sibling path -- this
+    promotes a COPY, it never rewrites the SSOT) are already correct by the
+    time this runs, so a copy failure must never fail an otherwise-successful
+    apply. jasper-doctor's baseline-canonical check surfaces a stale or
+    missing canonical file as a WARN, never a service disruption.
+    """
+
+    applied_path_raw = (applied.get("config") or {}).get("path")
+    if not applied_path_raw:
+        return
+    applied_path = Path(str(applied_path_raw))
+    canonical = baseline_config_path(config_path)
+    if applied_path == canonical:
+        return
+    try:
+        text = applied_path.read_text(encoding="utf-8")
+        atomic_write_text(canonical, text, mode=0o640)
+    except OSError as exc:
+        log_event(
+            logger,
+            "dsp.baseline_promote",
+            level=logging.WARNING,
+            result="failed",
+            reason=str(exc),
+            candidate_path=applied_path,
+            canonical_path=canonical,
+        )
+        return
+    _prune_baseline_candidate_siblings(canonical, protect=applied_path)
+
+
+def _prune_baseline_candidate_siblings(canonical: Path, *, protect: Path) -> None:
+    """Bound unconditional candidate-sibling growth to the newest K by mtime.
+
+    Deletes ``<stem>_candidate_*<suffix>`` files beside ``canonical`` beyond
+    the newest :data:`_MAX_BASELINE_CANDIDATE_FILES` by mtime. Never deletes
+    ``protect`` (the candidate :func:`promote_applied_baseline_candidate` just
+    promoted) or the canonical file itself (which never matches the glob
+    below -- it carries no ``_candidate_`` suffix). Every caller invokes this
+    immediately after ``persist_applied_baseline_profile`` writes the JSON
+    SSOT with that SAME candidate as its new applied anchor, so ``protect``
+    IS the anchor path -- there is no separate anchor to look up, and
+    deliberately no CamillaDSP-statefile parsing here.
+    """
+
+    pattern = f"{canonical.stem}_candidate_*{canonical.suffix}"
+    try:
+        siblings = sorted(
+            (p for p in canonical.parent.glob(pattern) if p != protect),
+            key=lambda p: p.stat().st_mtime_ns,
+            reverse=True,
+        )
+        # protect is excluded from siblings above (and always survives), so
+        # only the newest (K - 1) of the REMAINING files are kept -- (K - 1)
+        # + protect = K total, matching "keep the newest K" exactly rather
+        # than K-plus-protect.
+        keep = max(0, _MAX_BASELINE_CANDIDATE_FILES - 1)
+        for stale in siblings[keep:]:
+            stale.unlink()
+    except OSError as exc:
+        log_event(
+            logger,
+            "dsp.baseline_candidate_prune",
+            level=logging.WARNING,
+            result="failed",
+            reason=str(exc),
+            canonical_path=canonical,
+        )
+
+
 async def apply_baseline_profile(
     topology: OutputTopology,
     *,
@@ -2595,6 +2717,7 @@ async def _apply_baseline_profile_locked(
         apply_state=apply_state.to_dict(),
         state_path=state_target,
     )
+    promote_applied_baseline_candidate(applied, config_path=config_path)
     log_event(
         logger,
         "correction.crossover_apply_succeeded",
@@ -2714,5 +2837,6 @@ async def restore_applied_baseline_profile(
             apply_state=apply_state.to_dict(),
             state_path=state_path,
         )
+        promote_applied_baseline_candidate(restored, config_path=config_path)
 
     return {"status": "restored", "profile": restored, "apply": apply_state.to_dict()}
