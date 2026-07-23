@@ -4941,6 +4941,91 @@ async def test_promote_failure_is_fail_soft_apply_still_succeeds(
     assert "disk full" in warnings[0]
 
 
+async def test_promote_failure_from_unicode_decode_error_is_fail_soft(
+    monkeypatch, tmp_path: Path, caplog,
+) -> None:
+    """#1666 review S2: read_text() can raise UnicodeDecodeError (a
+    ValueError subtype, not an OSError) on a corrupted-but-present candidate
+    sibling. The old ``except OSError`` let that propagate and fail an
+    otherwise-successful apply, contradicting the documented "must never
+    fail an otherwise-successful apply" contract this promote-fail-soft
+    family exists to prove -- see
+    test_promote_failure_is_fail_soft_apply_still_succeeds above for the
+    OSError case this mirrors."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    # Arm the corruption only for the very next utf-8 text read AFTER
+    # persist_applied_baseline_profile returns -- that is promote's own
+    # applied_path.read_text(encoding="utf-8") call, the sole target here.
+    # An earlier utf-8 read of the same candidate sibling (the bass-
+    # extension graph-safety proof, which runs before the DSP apply) must
+    # keep succeeding, or the apply would be blocked before ever reaching
+    # promote and this test would no longer exercise the fail-soft catch.
+    real_persist = baseline_profile_mod.persist_applied_baseline_profile
+    armed = False
+
+    def persist_then_arm(*args, **kwargs):
+        nonlocal armed
+        result = real_persist(*args, **kwargs)
+        armed = True
+        return result
+
+    monkeypatch.setattr(
+        baseline_profile_mod, "persist_applied_baseline_profile", persist_then_arm
+    )
+
+    real_read_text = Path.read_text
+
+    def read_text_fails_once_armed(self, *args, **kwargs):
+        nonlocal armed
+        if armed and kwargs.get("encoding") == "utf-8":
+            armed = False
+            raise UnicodeDecodeError(
+                "utf-8", b"\xff", 0, 1, "simulated corrupt candidate bytes"
+            )
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text_fails_once_armed)
+
+    with caplog.at_level(logging.WARNING, logger=_BASELINE_LOGGER):
+        payload = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements=measurements,
+            load_config=load_config,
+            get_current_config_path=current_config_path,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=config_path,
+            validate=_valid_config,
+        )
+
+    assert payload["status"] == "applied"
+    assert not config_path.exists()
+    # The applied candidate's OWN sibling file is unaffected -- only the
+    # canonical copy's read failed.
+    assert Path(payload["profile"]["config"]["path"]).exists()
+    warnings = _events(caplog, "dsp.baseline_promote")
+    assert len(warnings) == 1
+    assert "result=failed" in warnings[0]
+
+
 async def test_restore_promotes_canonical_to_prior_candidate_bytes(
     monkeypatch, tmp_path: Path,
 ) -> None:

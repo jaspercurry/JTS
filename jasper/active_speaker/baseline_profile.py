@@ -2286,8 +2286,12 @@ def promote_applied_baseline_candidate(
         return
     try:
         text = applied_path.read_text(encoding="utf-8")
-        atomic_write_text(canonical, text, mode=0o640)
-    except OSError as exc:
+        atomic_write_text(canonical, text, mode=0o640, group_from_parent=True)
+    except (OSError, UnicodeError) as exc:
+        # UnicodeError (read_text can raise UnicodeDecodeError on a
+        # corrupted-but-present sibling) is a ValueError, not an OSError --
+        # it must be caught here too, or a copy failure could raise out of
+        # this "must never fail an otherwise-successful apply" boundary.
         log_event(
             logger,
             "dsp.baseline_promote",

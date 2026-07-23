@@ -3321,8 +3321,15 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     label = "active speaker baseline canonical"
     statefile, live_path_raw = _active_camilla_config_path()
     if live_path_raw is None:
+        # A missing/unreadable outputd statefile is already surfaced by the
+        # checks that own it as a real failure (e.g. check_active_speaker_
+        # runtime_graph fails when a roleful topology needs it); this check's
+        # own scope is only "does canonical mirror the live baseline", which
+        # cannot be evaluated at all here -- not applicable, not a warning.
         return CheckResult(
-            label, "warn", f"could not read config_path from {statefile}",
+            label, "ok",
+            f"could not read config_path from {statefile}; canonical-file "
+            "check not applicable",
         )
     live_path = Path(live_path_raw)
     canonical = baseline_config_path()

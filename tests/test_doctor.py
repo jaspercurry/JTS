@@ -5856,6 +5856,28 @@ def test_active_speaker_baseline_canonical_ok_when_not_applicable(
     assert "not applicable" in r.detail
 
 
+def test_active_speaker_baseline_canonical_ok_when_statefile_unreadable(
+    monkeypatch, tmp_path,
+):
+    """N2 (#1666 review): a missing/unreadable outputd statefile is already
+    surfaced as a real failure by check_active_speaker_runtime_graph (when a
+    roleful topology needs it); this check's own scope -- comparing canonical
+    to the live baseline -- cannot be evaluated at all here, so it is not
+    applicable rather than a redundant false warning."""
+    monkeypatch.setenv(
+        "JASPER_CAMILLA_STATEFILE", str(tmp_path / "missing-statefile.yml")
+    )
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
+        str(tmp_path / "active_speaker_baseline.yml"),
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "ok"
+    assert "not applicable" in r.detail
+
+
 async def test_active_speaker_baseline_canonical_ok_when_content_matches_live(
     monkeypatch, tmp_path,
 ):
