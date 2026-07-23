@@ -710,6 +710,63 @@ def test_deliberate_phone_stop_gets_its_own_honest_reason_not_relay_timeout(monk
     assert state["accepted_phases"] == []
 
 
+def test_review_hold_timeout_gets_its_own_reason_not_relay_timeout(monkeypatch):
+    """Item 4 (#1605): when the deferred apply/"review" hold expires — MEASURE
+    accepted but the conductor's own auto-apply never lands within
+    REVIEW_HOLD_BUDGET_S — the terminal reason is review_hold_timeout ("applying
+    took too long"), not the generic relay_timeout "the measurement link timed
+    out". current_phase is PHASE_APPLYING only in that exact window, which is
+    what separates a hold expiry from an ordinary transport timeout (see
+    test_capture_timeout_maps_to_relay_timeout_and_abandons_volume, whose
+    CHECK-phase timeout is UNCHANGED and still classifies as relay_timeout)."""
+    _skip_purge_grace(monkeypatch)
+    import jasper.capture_relay.session as _relay_session
+    monkeypatch.setattr(_relay_session, "REVIEW_HOLD_BUDGET_S", 0.1)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+
+    # A live phone rearms the hold clock on every deferred retry, so it only
+    # expires when the phone VANISHES mid-hold (backgrounded / screen locked).
+    # Simulate that: after the first deferral the phone stops stepping, and
+    # with no auto-apply wired (no run_async/camilla_factory) the hold is never
+    # released — REVIEW_HOLD_BUDGET_S after that last retry it expires.
+    def _vanish_mid_hold(driver):
+        driver.step = lambda: None
+
+    client, session, phone = _mint_v2_session(
+        backend, spec, on_deferred=_vanish_mid_hold
+    )
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    volume = VolumeRecorder()
+    runner = _build_runner(conductor, volume, poll_interval_s=0.01, timeout_s=20.0)
+    with pytest.raises(CaptureTimeout):
+        _run(runner, client, session)
+
+    # In-memory conductor never observed the apply — the discriminator.
+    assert conductor.current_phase == PHASE_APPLYING
+    assert volume.events == ["open", "abandon"]
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": "review_hold_timeout"}
+
+    # The envelope renders the session-restart template with the honest copy.
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "applying",
+            "failure": {"code": "review_hold_timeout"},
+        },
+    })
+    assert env["screen"] == "session_restart"
+    assert "took too long" in env["verdict_text"].lower()
+
+
 # --- verify-only re-arm (S1d: resume skips accepted phases at the relay) --------
 
 

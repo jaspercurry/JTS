@@ -1499,12 +1499,14 @@ def build_v2_run_and_consume(
             run_capture_plan,
         )
         from jasper.active_speaker.crossover_v2_flow import (
+            PHASE_APPLYING,
             PHASE_DONE,
             REASON_APPLY_FAILED,
             REASON_INTERNAL_ERROR,
             REASON_PROGRAM_UNPLAYABLE,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
+            REASON_REVIEW_HOLD_TIMEOUT,
             REASON_USER_STOPPED,
             V2_FIRST_BEGIN_TIMEOUT_S,
             TRANSIENT_AUTO_RETRY_CODES,
@@ -1870,6 +1872,22 @@ def build_v2_run_and_consume(
             code = REASON_RELAY_TIMEOUT
             if isinstance(exc, CaptureAborted) and exc.reason == "stopped":
                 code = REASON_USER_STOPPED
+            elif (
+                isinstance(exc, CaptureTimeout)
+                and conductor.current_phase == PHASE_APPLYING
+            ):
+                # The deferred apply/"review" hold (CaptureBeginDeferred
+                # "awaiting_apply") expired: MEASURE was accepted but the
+                # conductor's own auto-apply never landed within
+                # REVIEW_HOLD_BUDGET_S. current_phase is PHASE_APPLYING ONLY in
+                # that exact window (MEASURE accepted, VERIFY pending, apply not
+                # observed), so it cleanly separates a hold expiry from a
+                # generic transport death (#1605) — name the real cause instead
+                # of the dishonest "the measurement link timed out". A rare
+                # apply-landed-but-phone-bailed race still renders honestly: the
+                # envelope's applied-keyed override keys on durable
+                # ``applied``, not on this phase.
+                code = REASON_REVIEW_HOLD_TIMEOUT
             await _post_session_over_host_event()
             _persist_terminal_failure(conductor, code)
             await _abandon_best_effort()

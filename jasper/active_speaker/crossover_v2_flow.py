@@ -187,6 +187,14 @@ REASON_APPLY_FAILED = "apply_failed"
 # rendering shape (a fresh session is the only way forward either way) with
 # honest copy instead of a manufactured "timed out" claim.
 REASON_USER_STOPPED = "user_stopped"
+# The deferred apply/"review" hold (CaptureBeginDeferred "awaiting_apply")
+# expired before the conductor's own auto-apply completed — the apply
+# transaction stalled past REVIEW_HOLD_BUDGET_S while the phone waited on the
+# hold. Distinct from a relay-transport death (relay_timeout) and a deliberate
+# phone Stop (user_stopped): name the actual cause (the apply step timed out)
+# rather than a generic "the measurement link timed out" claim (#1605). Same
+# TEMPLATE_SESSION_RESTART shape — a fresh session is the only way forward.
+REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 
 
 @dataclass(frozen=True)
@@ -303,6 +311,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
         "You stopped the measurement. Start over from this page when you're "
         "ready.",
+    ),
+    REASON_REVIEW_HOLD_TIMEOUT: ReasonSpec(
+        REASON_REVIEW_HOLD_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
+        "Applying the measured crossover took too long, so the measurement "
+        "timed out before it could finish. Start over from this page to "
+        "measure again — the quick microphone check runs first.",
     ),
 }
 
@@ -2249,4 +2263,5 @@ __all__ = [
     "REASON_LOW_ALIGNMENT_CONFIDENCE",
     "REASON_APPLY_FAILED",
     "REASON_USER_STOPPED",
+    "REASON_REVIEW_HOLD_TIMEOUT",
 ]
