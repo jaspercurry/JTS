@@ -12,7 +12,9 @@ controls.
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +23,8 @@ from jasper.usbsink.volume_bridge import (
     VolumeBridge,
     VolumeBridgeUnavailable,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 # ----------------------------------------------------------------------
@@ -257,39 +261,74 @@ def test_read_switch_value_returns_muted_on_unparseable():
 
 
 # ----------------------------------------------------------------------
-# _raw_to_pct() — range mapping
+# _raw_to_pct() — amplitude-domain range mapping (issue #1698)
+#
+# The gadget advertises -50..0 dB (centi-dB units -5000..0), so the raw
+# read is dB*100. The curve converts that dB to a linear amplitude and
+# normalizes THAT (10**(dB/20)) rather than normalizing linearly in dB —
+# because macOS maps its slider POSITION perceptually onto the dB range,
+# so a linear-in-dB inverse over-reads the low half of the slider.
 # ----------------------------------------------------------------------
 
 
-def test_raw_to_pct_maps_max_to_100():
+def _old_linear_in_db_pct(raw: int, vol_min: int, vol_max: int) -> int:
+    """The pre-#1698 mapping, recomputed here so the direction assertions
+    below are non-vacuous — they compare the new amplitude curve against
+    the exact linear-in-dB math it replaced."""
+    span = vol_max - vol_min
+    return max(0, min(100, round((raw - vol_min) / span * 100.0)))
+
+
+def test_raw_to_pct_amplitude_endpoints():
+    """(b) Endpoints are preserved by the amplitude normalization: the
+    raw value at vol_max maps to 100, at vol_min maps to 0."""
     bridge = VolumeBridge()
-    bridge._vol_min = -128
-    bridge._vol_max = 0
+    bridge._vol_min = -5000  # -50 dB (centi-dB)
+    bridge._vol_max = 0      # 0 dB
     assert bridge._raw_to_pct(0) == 100
+    assert bridge._raw_to_pct(-5000) == 0
 
 
-def test_raw_to_pct_maps_min_to_0():
+def test_raw_to_pct_mid_db_reads_lower_than_old_linear_in_db():
+    """(c) A mid-range dB read lands LOW in the amplitude domain, well
+    below the old linear-in-dB result for the same dB. Over -50..0 dB a
+    -35 dB read (raw -3500) is ~1-2% amplitude, where the old curve read
+    ~30% — dB is logarithmic, so -35 dB is acoustically quiet and must
+    map low. This is the whole point of the fix; the range narrowing (to
+    -50..0) is what then lets a real mid-slider land near mid on-Mac."""
     bridge = VolumeBridge()
-    bridge._vol_min = -128
+    bridge._vol_min = -5000
     bridge._vol_max = 0
-    assert bridge._raw_to_pct(-128) == 0
+    raw = -3500  # -35 dB
+
+    new_pct = bridge._raw_to_pct(raw)
+    old_pct = _old_linear_in_db_pct(raw, bridge._vol_min, bridge._vol_max)
+
+    assert old_pct == 30  # pin the old behavior so this stays non-vacuous
+    assert new_pct < old_pct
+    assert new_pct <= 5  # amplitude domain: 10**(-35/20) ≈ 1.8%
 
 
-def test_raw_to_pct_maps_midpoint_to_50():
+def test_raw_to_pct_range_midpoint_is_not_fifty():
+    """The dB midpoint of the range no longer maps to 50% (it did under
+    the old linear-in-dB curve). At -25 dB (the midpoint of -50..0) the
+    amplitude read is ~5.6%, far below the old linear 50%."""
     bridge = VolumeBridge()
-    bridge._vol_min = 0
-    bridge._vol_max = 100
-    assert bridge._raw_to_pct(50) == 50
+    bridge._vol_min = -5000
+    bridge._vol_max = 0
+    mid_raw = -2500  # -25 dB, the dB midpoint of the range
+    assert _old_linear_in_db_pct(mid_raw, -5000, 0) == 50
+    assert bridge._raw_to_pct(mid_raw) < 20
 
 
 def test_raw_to_pct_clamps_out_of_range_values():
     """Defensive: if amixer reports a value outside the declared range
     (unusual but possible during a transient), clamp to [0, 100]."""
     bridge = VolumeBridge()
-    bridge._vol_min = 0
-    bridge._vol_max = 100
-    assert bridge._raw_to_pct(-50) == 0
-    assert bridge._raw_to_pct(200) == 100
+    bridge._vol_min = -5000
+    bridge._vol_max = 0
+    assert bridge._raw_to_pct(-6000) == 0   # below -50 dB
+    assert bridge._raw_to_pct(500) == 100   # above 0 dB
 
 
 def test_raw_to_pct_degenerate_range_returns_50():
@@ -299,6 +338,60 @@ def test_raw_to_pct_degenerate_range_returns_50():
     bridge._vol_min = 100
     bridge._vol_max = 100
     assert bridge._raw_to_pct(100) == 50
+
+
+# ----------------------------------------------------------------------
+# Advertised UAC2 capture-volume range — static-writer contract (a).
+#
+# The two ends of the volume-curve contract live in different languages:
+#   - deploy/usbsink/jasper-usbgadget-up advertises the -50..0 dB range
+#     to the host (so macOS tapers its slider over it);
+#   - volume_bridge._raw_to_pct amplitude-normalizes the observed dB.
+# They can't share code, so this pins the advertised centi-dB values the
+# way tests/test_wifi_profile_hardening_contract.py pins the NM hardening
+# set. If the range changes in the script, update _CENTI_DB_PER_UNIT's
+# assumptions + this contract together.
+# ----------------------------------------------------------------------
+
+USBGADGET_UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
+
+# centi-dB (1/100 dB): -5000 = -50 dB floor, 0 = 0 dB ceiling, 100 = 1 dB step.
+REQUIRED_VOLUME_ATTRS = [
+    ("c_volume_min", "-5000"),
+    ("c_volume_max", "0"),
+    ("c_volume_res", "100"),
+]
+
+
+def _script_body_no_comments(path) -> str:
+    """Script text with comment lines stripped + whitespace collapsed, so
+    prose that names the attrs can't false-pass the value assertions."""
+    lines = [
+        line for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    return re.sub(r"\s+", " ", "\n".join(lines))
+
+
+def test_usbgadget_advertises_narrow_capture_volume_range():
+    body = _script_body_no_comments(USBGADGET_UP)
+    for attr, value in REQUIRED_VOLUME_ATTRS:
+        needle = f"functions/uac2.usb0/{attr} {value}"
+        assert needle in body, (
+            f"jasper-usbgadget-up must advertise `{needle}` "
+            f"(the -50..0 dB range that pairs with _raw_to_pct)"
+        )
+
+
+def test_usbgadget_volume_range_writes_are_best_effort():
+    """The range writes must go through write_if_present (guarded on the
+    attr existing) so an older kernel that lacks c_volume_min/max/res does
+    not fail gadget bring-up — the kernel default range applies instead."""
+    body = _script_body_no_comments(USBGADGET_UP)
+    for attr, _value in REQUIRED_VOLUME_ATTRS:
+        assert f"write_if_present functions/uac2.usb0/{attr}" in body, (
+            f"{attr} must be written best-effort via write_if_present"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -314,11 +407,11 @@ async def test_tick_mute_overrides_to_zero(monkeypatch):
     bridge = VolumeBridge()
     bridge._vol_numid = 1
     bridge._switch_numid = 2
-    bridge._vol_min = 0
-    bridge._vol_max = 100
+    bridge._vol_min = -5000
+    bridge._vol_max = 0
 
     # Patch the subprocess-backed reads to return non-zero vol + muted.
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 75)
+    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: -500)
     monkeypatch.setattr(bridge, "_read_switch_value", lambda numid: True)
 
     posted = []
@@ -340,10 +433,11 @@ async def test_tick_deduplicates_identical_polls(monkeypatch):
     bridge = VolumeBridge()
     bridge._vol_numid = 1
     bridge._switch_numid = None  # no switch control
-    bridge._vol_min = 0
-    bridge._vol_max = 100
+    bridge._vol_min = -5000
+    bridge._vol_max = 0
 
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 50)
+    # A steady 0 dB read (raw 0) maps to 100% under the amplitude curve.
+    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 0)
     posted = []
 
     async def _fake_post(pct: int) -> None:
@@ -354,7 +448,7 @@ async def test_tick_deduplicates_identical_polls(monkeypatch):
     await bridge._tick()
     await bridge._tick()
     await bridge._tick()
-    assert posted == [50]  # only first tick posted; subsequent are dedup'd
+    assert posted == [100]  # only first tick posted; subsequent are dedup'd
 
 
 @pytest.mark.asyncio
@@ -365,8 +459,8 @@ async def test_tick_skips_when_raw_read_fails(monkeypatch):
     bridge = VolumeBridge()
     bridge._vol_numid = 1
     bridge._switch_numid = None
-    bridge._vol_min = 0
-    bridge._vol_max = 100
+    bridge._vol_min = -5000
+    bridge._vol_max = 0
 
     monkeypatch.setattr(bridge, "_read_int_value", lambda numid: None)
     posted = []
