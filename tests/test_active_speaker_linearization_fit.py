@@ -485,12 +485,12 @@ def test_complex_correction_response_phase_sensitivity_two_branch_sum():
     _, zero_phase_err = notch_excluded_tracking_error_db(
         freqs, zero_phase_db, true_db, band,
         notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB, notch_reference_db=true_db)
-    _, complex_err = notch_excluded_tracking_error_db(
-        freqs, true_db, true_db, band,
-        notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB, notch_reference_db=true_db)
-
     assert zero_phase_err > 1.0, f"zero-phase should mispredict by >1 dB, got {zero_phase_err}"
-    assert complex_err < 0.1, f"complex should match truth to <0.1 dB, got {complex_err}"
+    # The complex model's exactness against the emitted-biquad truth is pinned
+    # independently by the profile-level magnitude/phase parity tests
+    # (test_filter_response_complex_*); re-asserting truth-vs-truth here was
+    # tautological (2026-07-24 review nit) — this test's load-bearing claim is
+    # the zero-phase misprediction above.
 
 
 # --------------------------------------------------------------------------- #

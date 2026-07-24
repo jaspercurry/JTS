@@ -2274,7 +2274,7 @@ class CrossoverV2Conductor:
             # scale (#1667). The emitted biquads rotate phase near their
             # corners and the two-branch summation below is phase-dominated, so
             # a magnitude-only model mispredicts it — measured on JTS3, the
-            # zero-phase model mistracked the VERIFY summation by ~2.1 dB
+            # zero-phase model mistracked the VERIFY summation by ~2.0 dB
             # (WORSE than the ~1.7 dB of no correction at all) where this
             # complex model tracks to ~0.5 dB. This is the single seam: the
             # complex-corrected branches below feed all three consumers (the
@@ -2315,7 +2315,7 @@ class CrossoverV2Conductor:
         # (6 dB) against the raw candidate below — not a single guard on
         # this call's own seed distance.
         assert analysis.alignment is not None  # MEASURE analyses always carry one
-        trim_t_lin, _ripple_lin, _seed_lin = solve_ripple_optimal_trim(
+        trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
             freqs, W_lin, T_lin, self._fc_hz,
             lo_hz=lo_clamped, hi_hz=hi,
             seed_trim_db=trim_t_lin_band_average,
@@ -2337,6 +2337,11 @@ class CrossoverV2Conductor:
                 raw_trim_db={k: round(v, 3) for k, v in raw_trim.items()},
                 resolved_trim_db={k: round(v, 3) for k, v in resolved.items()},
                 margin_db=LINEARIZATION_TRIM_SANITY_MARGIN_DB,
+                # P4 telemetry (2026-07-24 review): the ripple at each trim lets
+                # live evidence distinguish "legitimate flatter optimum rejected"
+                # from "garbage correctly caught" before anyone widens the guard.
+                resolved_ripple_db=round(float(ripple_lin), 3),
+                raw_predicted_ripple_db=round(float(cand.predicted_ripple_db), 3),
             )
             role_attenuations_db = raw_trim
             self._last_linearization_outcome = "trim_rejected"  # SF3
