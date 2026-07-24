@@ -385,12 +385,40 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 | `event=fanin.source_select selected=airplay` | mux selected one input lane (or `selected=auto` / `selected=none`) | INFO |
 | `event=fanin.assistant_loudness kind=... final_gain_db=... reason=...` | pre-DSP TTS/cue gain decision | INFO |
 | `event=fanin.watchdog.stale age_ms=X` | heartbeat thread skipped a ping (sentinel stale) | WARN |
+| `event=fanin.ring.stall_detected reason=stuck_reader\|no_reader duration_ms=... dropped_periods=... occupancy=... reader_pid=... reader_heartbeat_age_ms=... full_waits=...` | shm_ring only: the ring stayed full-and-not-draining past 1 s (issue #1524); edge-triggered, ONCE per episode, rate-limited against a flapping reader | WARN |
+| `event=fanin.ring.stall_unrecovered reason=... duration_ms=... dropped_periods=...` | shm_ring only: a logged stall persisted past ~10 s (fan-in does NOT restart CamillaDSP — it owns the ring, not the DSP lifecycle) | WARN |
+| `event=fanin.ring.stall_cleared reason=... duration_ms=... dropped_periods=...` | shm_ring only: `read_seq` advanced again (reader resumed/reattached); one per cleared episode | INFO |
 | `event=fanin.shutdown reason=signal graceful=true` | clean shutdown | INFO |
 
 Why this exact set: the `event=` prefix lets `scripts/jasper-trace.sh`
 pick them up alongside other subsystems' events; the verbs match the
 `shairport.*` / `wifi_guardian.*` / `aec_bridge.*` patterns documented
 elsewhere.
+
+**Ring stall self-recovery (issue #1524, `shm_ring` coupling only).** Under
+`shm_ring` the `RingWriter` back-pressures the work loop while CamillaDSP
+drains the ring — that block is the pacer. If CamillaDSP wedges in Prepared
+(still polling, so its heartbeat looks live, but never calling `readi`, so
+`read_seq` never advances), the writer would otherwise wait forever per slot,
+running fan-in at ~1/9 real time and back-pressuring the input lanes until the
+correction-lane aplay times out at 12 s — with no fan-in-side signal (the 5 s
+progress watchdog never fires because `step()` keeps completing). The writer
+now DEMOTES such a reader once its `read_seq` has been frozen past
+`STUCK_READER_GRACE_NS` (1 s): it stops honoring the heartbeat and free-runs
+(drop-oldest), returning fan-in to real time and relieving the input
+back-pressure. Demotion is one-way and derived (it self-clears the instant the
+reader advances `read_seq` again). The default `loopback` coupling is
+timer-paced and structurally immune — this path never runs there and its
+`Output::Alsa` code is byte-identical. Observability: `/state.shm_ring`
+un-folds the drop counters into `stuck_reader_drops` (live-but-frozen reader;
+climbs during a stall) and `drop_no_reader` (dead/absent reader; the normal
+reload transient), plus `stall_active` / `last_stall_ms`. `jasper-doctor`'s
+`fan-in ring stall` check WARNs while `stall_active` is true (skip-if-loopback).
+Design + code: `RingWriter::publish` in
+[`rust/jasper-ring/src/writer.rs`](../rust/jasper-ring/src/writer.rs) (demotion)
+and `write_ring_period` / `RingStallTracker` in
+[`rust/jasper-fanin/src/mixer.rs`](../rust/jasper-fanin/src/mixer.rs) (events +
+counters).
 
 ### State and selection control
 
