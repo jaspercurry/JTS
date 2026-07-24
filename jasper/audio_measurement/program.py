@@ -78,12 +78,28 @@ KIND_SWEEP = "sweep"
 KIND_SUMMED_SWEEP = "summed_sweep"
 STIMULUS_KINDS = frozenset({KIND_PILOT, KIND_SWEEP, KIND_SUMMED_SWEEP})
 
-# Measurement sweeps live in [150 Hz, 20 kHz]: long LF reach is not needed at a
+# Measurement sweeps live in [150 Hz, 23 kHz]: long LF reach is not needed at a
 # ~250 Hz gated validity floor, and bass belongs to the room / bass-extension
 # passes (design §5.2). Each driver's swept band is its declared band
-# intersected with this window.
+# intersected with this window. The upper edge is kept in lockstep with
+# jasper.active_speaker.test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ
+# (sweep-composition PR-A, #1668) — both name the same "no driver test signal
+# goes above this" global ceiling, one for swept sweeps, one for single-tone
+# commissioning plans; a test pins the two constants equal so they can't
+# silently drift apart.
 MEASURE_SWEEP_F_LO_HZ = 150.0
-MEASURE_SWEEP_F_HI_HZ = 20_000.0
+MEASURE_SWEEP_F_HI_HZ = 23_000.0
+
+# Total sweep occurrences PER DRIVER in the interleaved MEASURE program
+# (sweep-composition PR-A, #1668): the first is the primary, the remaining
+# N-1 are bit-identical repeats used for the in-capture drift/glitch
+# estimator (design §3.1) — now for BOTH drivers, not just the woofer.
+# At the defaults this composes a ~35.8 s / ~3.4 MB mono-WAV MEASURE
+# capture against the 5 MB
+# jasper.active_speaker.test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES
+# upload cap (headroom ~2.9 MB pre-#1668 → ~1.5 MB today) — raising
+# repeat_count OR any role's sweep_durations must re-check that cap.
+MEASURE_REPEAT_COUNT = 3
 
 # The unit-peak reference level the per-segment digital gain is applied ON TOP
 # of. A pilot at relative level r has digital peak BASE + r dBFS. Shared with
@@ -613,10 +629,27 @@ def build_check_program(
     return _finalize(PHASE_CHECK, channels, segments, cursor)
 
 
+def _occurrence_suffix(index: int) -> str:
+    """Segment-ID suffix for the ``index``-th (0-based) occurrence of a
+    repeated MEASURE sweep: bare for the first (``sweep_w``), ``_rep`` for
+    the second (``sweep_w_rep``), ``_rep{n}`` for the (n+1)-th thereafter
+    (``sweep_w_rep2``, ``sweep_w_rep3``, …). Mirrors the pre-v2 single-repeat
+    ``sweep_w``/``sweep_w_rep`` pair exactly at ``index`` 0/1, so existing
+    first-occurrence lookups (``program.segment("sweep_w")``) keep working
+    unmodified regardless of ``repeat_count``.
+    """
+    if index <= 0:
+        return ""
+    if index == 1:
+        return "_rep"
+    return f"_rep{index}"
+
+
 def build_measure_program(
     gain_plan: Mapping[str, float],
     roles_bands: Sequence[RoleBand],
     *,
+    repeat_count: int = MEASURE_REPEAT_COUNT,
     sweep_durations: Mapping[str, float] | None = None,
     guard_s: float = DEFAULT_MEASURE_GUARD_S,
     tail_s: float = DEFAULT_MEASURE_TAIL_S,
@@ -627,28 +660,43 @@ def build_measure_program(
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
 ) -> ExcitationProgram:
-    """Compose the MEASURE program (design §5.2/§5.4): woofer, tweeter, woofer-repeat.
+    """Compose the MEASURE program (design §5.2/§5.4): ``repeat_count``
+    interleaved woofer/tweeter sweep cycles.
 
     Exactly two drivers (2-way): ``roles_bands[0]`` is the lower driver (woofer,
-    ch0), ``roles_bands[1]`` is the upper (tweeter, ch1). Layout::
+    ch0), ``roles_bands[1]`` is the upper (tweeter, ch1). Layout for
+    ``repeat_count`` cycles (default :data:`MEASURE_REPEAT_COUNT`)::
 
         [pilot lo → gap → pilot hi → gap →]  (v2, when leading pilots requested)
-        guard silence → woofer sweep → MESM gap → tweeter sweep
-                      → MESM gap → woofer sweep REPEAT → tail silence
+        guard silence
+          → woofer sweep 1 → MESM gap → tweeter sweep 1 → MESM gap
+          → woofer sweep 2 → MESM gap → tweeter sweep 2 → MESM gap
+          → ...
+          → woofer sweep N → MESM gap → tweeter sweep N
+        → tail silence
 
-    The repeat is a bit-identical stimulus to the first woofer sweep (same gain,
-    band, duration ⇒ same PCM); the two form the in-capture drift estimator and
-    the dropped-buffer/glitch detector (design §3.1). ``gain_plan`` maps role →
-    digital gain (dBFS, non-positive); ``sweep_durations`` maps role → sweep
-    duration (defaults: ~4 s woofer / ~3 s tweeter). Gaps come from
-    :func:`mesm_gap_samples` sized to the PRECEDING sweep.
+    Every sweep after a driver's first is a bit-identical stimulus to that
+    driver's first sweep (same gain, band, duration ⇒ same PCM) — the repeats
+    form the in-capture drift estimator and the dropped-buffer/glitch detector
+    (design §3.1), now for BOTH drivers rather than the woofer alone.
+    ``gain_plan`` maps role → digital gain (dBFS, non-positive);
+    ``sweep_durations`` maps role → sweep duration (defaults: ~4 s woofer /
+    ~3 s tweeter), applied to EVERY occurrence of that role. Gaps come from
+    :func:`mesm_gap_samples` sized to the PRECEDING sweep — a gap follows
+    every sweep except the very last (tail silence follows directly instead).
+
+    Segment IDs: each driver's first occurrence keeps exactly ``sweep_w`` /
+    ``sweep_t`` (existing lookups depend on these); later occurrences follow
+    :func:`_occurrence_suffix` (``sweep_w_rep``, ``sweep_w_rep2``, … /
+    ``sweep_t_rep``, ``sweep_t_rep2``, …). Gap IDs carry the SAME suffix as
+    the sweep that sizes them: ``gap_w_t`` / ``gap_t_w`` for the first cycle,
+    ``gap_w_t_rep`` / ``gap_t_w_rep`` for the second, and so on.
 
     ``leading_pilot_gains_db`` (v2 conductor, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` pilot pair on ``leading_pilot_role``'s
     channel (default the lower/woofer driver) so this capture carries its own
-    behavioral-linearity evidence. ``None`` (the default) is byte-identical to
-    the pre-v2 composer — the legacy analysis fixtures and any caller that does
-    not opt in see the exact original segment layout.
+    behavioral-linearity evidence. ``None`` (the default) omits the leading
+    pilot pair — the program starts at ``guard`` either way.
     """
     roles = _validate_roles(roles_bands)
     if len(roles) != 2:
@@ -657,6 +705,8 @@ def build_measure_program(
     for rb in roles:
         if rb.role not in gain_plan:
             raise ValueError(f"gain_plan is missing role {rb.role!r}")
+    if type(repeat_count) is not int or repeat_count < 1:
+        raise ValueError("repeat_count must be a positive integer")
     durations = {
         woofer.role: DEFAULT_WOOFER_SWEEP_S,
         tweeter.role: DEFAULT_TWEETER_SWEEP_S,
@@ -666,12 +716,28 @@ def build_measure_program(
     channels = 1 + max(rb.channel for rb in roles)
 
     def _band(rb: RoleBand) -> tuple[float, float]:
-        return _intersect_band(rb.band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
+        f1, f2 = _intersect_band(rb.band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
+        # Defense in depth (sweep-composition PR-A, #1668): MEASURE_SWEEP_F_HI_HZ
+        # is always < Nyquist today, so this can never fire in production — but
+        # if a future edit ever raised the ceiling past Nyquist without noticing,
+        # the sweep kernel's own raise (deep inside synchronized_sweep_metadata)
+        # would still catch it, just with far less context. Fail loud, here,
+        # with the composer's own frame of reference instead.
+        nyquist_hz = PROGRAM_SAMPLE_RATE_HZ / 2.0
+        if not f2 < nyquist_hz:
+            raise ValueError(
+                f"{rb.role} MEASURE sweep upper edge {f2:g} Hz is not below "
+                f"Nyquist ({nyquist_hz:g} Hz at {PROGRAM_SAMPLE_RATE_HZ} Hz "
+                "sample rate)"
+            )
+        return f1, f2
 
     w_f1, w_f2 = _band(woofer)
     t_f1, t_f2 = _band(tweeter)
     w_meta = _sweep_meta(w_f1, w_f2, durations[woofer.role], gain_plan[woofer.role])
     t_meta = _sweep_meta(t_f1, t_f2, durations[tweeter.role], gain_plan[tweeter.role])
+    gap_w_n = mesm_gap_samples(w_meta, ir_tail_s=ir_tail_s)
+    gap_t_n = mesm_gap_samples(t_meta, ir_tail_s=ir_tail_s)
 
     segments: list[ProgramSegment] = []
     cursor = 0
@@ -717,24 +783,20 @@ def build_measure_program(
         )
         return seg
 
-    sweep_w = _sweep("sweep_w", woofer, w_f1, w_f2, durations[woofer.role])
-    segments.append(sweep_w)
-    cursor += sweep_w.n_samples
-    gap_w = mesm_gap_samples(w_meta, ir_tail_s=ir_tail_s)
-    segments.append(_silence("gap_w_t", cursor, gap_w))
-    cursor += gap_w
+    for cycle in range(repeat_count):
+        suffix = _occurrence_suffix(cycle)
+        sweep_w = _sweep(f"sweep_w{suffix}", woofer, w_f1, w_f2, durations[woofer.role])
+        segments.append(sweep_w)
+        cursor += sweep_w.n_samples
+        segments.append(_silence(f"gap_w_t{suffix}", cursor, gap_w_n))
+        cursor += gap_w_n
 
-    sweep_t = _sweep("sweep_t", tweeter, t_f1, t_f2, durations[tweeter.role])
-    segments.append(sweep_t)
-    cursor += sweep_t.n_samples
-    gap_t = mesm_gap_samples(t_meta, ir_tail_s=ir_tail_s)
-    segments.append(_silence("gap_t_w", cursor, gap_t))
-    cursor += gap_t
-
-    # The repeat is bit-identical to sweep_w (same band/duration/gain ⇒ same PCM).
-    sweep_w_rep = _sweep("sweep_w_rep", woofer, w_f1, w_f2, durations[woofer.role])
-    segments.append(sweep_w_rep)
-    cursor += sweep_w_rep.n_samples
+        sweep_t = _sweep(f"sweep_t{suffix}", tweeter, t_f1, t_f2, durations[tweeter.role])
+        segments.append(sweep_t)
+        cursor += sweep_t.n_samples
+        if cycle < repeat_count - 1:
+            segments.append(_silence(f"gap_t_w{suffix}", cursor, gap_t_n))
+            cursor += gap_t_n
 
     tail_n = _seconds_to_samples(tail_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("tail", cursor, tail_n))

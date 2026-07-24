@@ -23,7 +23,12 @@ PROTECTIVE_TWEETER_HP_MULTIPLIER = 2.0
 EDGE_MARGIN_RATIO = 1.25
 SUBWOOFER_SUBSONIC_FLOOR_HZ = 25.0
 MIN_DRIVER_TEST_FREQUENCY_HZ = 20.0
-MAX_DRIVER_TEST_FREQUENCY_HZ = 20_000.0
+# Kept in lockstep with jasper.audio_measurement.program.MEASURE_SWEEP_F_HI_HZ
+# (sweep-composition PR-A, #1668): both name the same "no driver test tone
+# goes above this" global ceiling, one for the v2 program's swept sweeps, one
+# for this module's single-tone commissioning plans. A test pins the two
+# constants equal so they can't silently drift apart.
+MAX_DRIVER_TEST_FREQUENCY_HZ = 23_000.0
 
 # Sweep duration is part of the protected stimulus contract, not presentation
 # policy.  Longer LF sweeps buy processing gain where domestic ambient noise is

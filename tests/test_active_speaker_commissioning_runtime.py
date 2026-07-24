@@ -2143,7 +2143,11 @@ def test_two_driver_profile_composition_intersects_existing_limits(
         excitation_plan_fingerprint=_HASH_D,
     )
 
-    assert prepared.limits.permitted_band == FrequencyBand(20.0, 20000.0)
+    # Upper edge is the global MAX_DRIVER_TEST_FREQUENCY_HZ ceiling (sweep-
+    # composition PR-A, #1668: 20_000.0 -> 23_000.0) -- both drivers' hard
+    # AND measurement bands here sit well above it, so the shared constant
+    # is what binds, not either driver's own declared band.
+    assert prepared.limits.permitted_band == FrequencyBand(20.0, 23000.0)
     assert prepared.limits.maximum_effective_peak_dbfs == -48.0
     assert prepared.limits.maximum_duration_s == 8.0
     assert prepared.limits.maximum_repeat_count == 1

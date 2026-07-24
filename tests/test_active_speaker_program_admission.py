@@ -127,7 +127,8 @@ def test_clean_program_is_admitted():
     )
     assert adm.allowed
     assert all(s.execution_allowed for s in adm.segments)
-    assert len(adm.segments) == 3  # sweep_w, sweep_t, sweep_w_rep
+    # N=3 interleaved (sweep-composition PR-A, #1668): sweep_w/t, _rep, _rep2.
+    assert len(adm.segments) == 6
     facts = {c.channel: c for c in adm.channels}
     assert facts[0].peak_within_cap and facts[1].peak_within_cap
     assert facts[0].quiet_out_of_segment and facts[1].quiet_out_of_segment

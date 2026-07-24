@@ -177,11 +177,14 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    floor, the behavioral AGC/linearity verdict, channel-map sanity, and
    the **solved gain plan** for MEASURE. Replaces the legacy per-driver
    level ramps and ambient waits.
-2. **MEASURE** (~20 s, auto-advances behind a cancelable countdown).
-   2-channel routing: pilot pair + guard silence + **woofer sweep →
-   tweeter sweep → woofer sweep repeat** (the repeat is bit-identical —
-   the two form the in-capture drift estimator + glitch detector).
-   Yields per-driver gated complex responses (cal applied), relative
+2. **MEASURE** (~33 s, auto-advances behind a cancelable countdown).
+   2-channel routing: pilot pair + guard silence + **three interleaved
+   woofer/tweeter sweep cycles** — `w1 → t1 → w2 → t2 → w3 → t3`
+   (sweep-composition PR-A, #1668; was one woofer-only repeat, ~+15 s
+   program length). Every cycle past the first is bit-identical to that
+   driver's first sweep — the repeats form the in-capture drift estimator
+   + glitch detector, now for BOTH drivers. Yields per-driver gated complex
+   responses (cal applied), relative
    delay, polarity, trims, per-band SNR — folded into a
    `MeasuredCrossoverCandidate`. GCC-PHAT supplies a drift/parallax-corrected
    seed, polarity, and capture confidence. The delay actually selected and
@@ -274,7 +277,13 @@ most visible thing on the screen.
    T_separation. Each MEASURE capture embeds a repeated sweep so ε is
    estimated from the longest available baseline (Gamper least-squares
    ratio); baseline disagreement ⇒ glitch ⇒ reject + one retry. The
-   repeated sweep is **mandatory**.
+   repeated sweep is **mandatory**. The primary gate (both the timing
+   epsilon and the woofer-repeat level-agreement check) is anchored to the
+   WOOFER's first-vs-last located sweep specifically — a design invariant,
+   not an artifact of there being only one repeat (sweep-composition PR-A,
+   #1668, three interleaved cycles per driver). The tweeter's own repeats
+   contribute a diagnostic-only per-role epsilon (never gated) as evidence
+   for future hardening.
 6. **Adaptive gating, never a false verdict.** The reflection gate width
    sets a validity floor `f_valid_hz = 1/window_s`. VERIFY requires its
    gate window ≥ MEASURE's; if a shorter VERIFY gate is forced, the
@@ -899,4 +908,4 @@ so waves could run in parallel.**
 The default flips to `v2` on 2026-07-19. Legacy remains reachable via
 `JASPER_CROSSOVER_FLOW=legacy` until W5b deletes it.
 
-Last verified: 2026-07-22
+Last verified: 2026-07-23
