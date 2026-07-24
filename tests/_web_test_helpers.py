@@ -4,6 +4,14 @@
 
 """Shared helpers for web wizard tests.
 
+Server-teardown timing note, because this is the module the affected tests
+already import: `tests/conftest.py` rebinds the DEFAULT `poll_interval` of
+`socketserver.BaseServer.serve_forever` from the stdlib's 0.5 s to 0.01 s.
+Nothing at the `threading.Thread(target=server.serve_forever)` call sites
+hints at that, so if you are ever puzzled by how fast (or, after a revert,
+how slow) a `server.shutdown()` returns, that shim is the thread to pull.
+Production is unaffected — `tests/` is not in the distribution.
+
 The wizards now require a CSRF token on every mutating POST
 (double-submit cookie pattern: token in `jts_csrf` cookie plus either a
 matching `csrf_token` form field or `X-CSRF-Token` header). These
