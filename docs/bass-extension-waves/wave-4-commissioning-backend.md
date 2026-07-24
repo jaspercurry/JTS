@@ -156,16 +156,20 @@ intake and is itself not a production path:
 **Revision 9 authorizes exactly one additional slice, and it is hardware-free.**
 Create:
 - `jasper/bass_extension/ladder.py` — the pure commissioning module
-  (~≤350 lines): the frozen session snapshot + `transition()` table advancing to
-  an in-memory `review` (the `review → accepted` edge stays blocked — it enters
-  Wave 3); the pure analysis/fit/propose/rung-verdict/ceiling/sustain-result/
-  anchor decisions; strict manifest validation; silent preflight; and the fully
-  injected synthetic dry run. It imports pure Wave 1 numerics, the `MarginPolicy`
-  thresholds, and `interpolate_anchors` at module level, and imports
-  `produce_limiter_thresholds` function-locally inside the dry run only (never at
-  module scope, so no production path can reach it). It adds no production caller,
-  opens no device/socket/CamillaDSP/subprocess/coordinator, and touches no other
-  file.
+  (~≤650 lines, honestly formatted, no line over 100 chars — the original
+  ~≤350 budget was set before the dry run, manifest validation, preflight,
+  and the dataclass set were all assigned to this file; adjudicated in
+  review 2026-07-24): the frozen session snapshot + `transition()` table
+  advancing to an in-memory `review` (the `review → accepted` edge stays
+  blocked — it enters Wave 3); the pure analysis/fit/propose/rung-verdict/
+  ceiling/sustain-result/anchor decisions; strict manifest validation;
+  silent preflight; and the fully injected synthetic dry run. It imports
+  pure Wave 1 numerics, the `MarginPolicy` thresholds, and
+  `interpolate_anchors` at module level, and imports
+  `produce_limiter_thresholds` function-locally inside the dry run only
+  (never at module scope, so no production path can reach it). It adds no
+  production caller, opens no device/socket/CamillaDSP/subprocess/
+  coordinator, and touches no other file.
 - `tests/test_bass_extension_ladder.py`
 
 Everything below stays **blocked** — it is real hardware, live CamillaDSP,
@@ -457,6 +461,22 @@ synchronous claim/mutating-request guard in the existing process.
 The deep mode (full per-target ladders) is the SAME code path with
 more (target, level) pairs — if you find yourself writing a second
 ladder implementation for it, stop.
+
+## Open questions (implementer notes)
+
+- **`verify_deepest` tracking-error gate has no traced threshold.** Plan §7.2
+  requires "tracking error vs `predicted_response` must pass" before advancing
+  `verify_deepest → ladder`. `tracking_error_db` (Wave 1) computes the
+  `(rms, max)` figures, but no `MarginPolicy` field, plan section, or prior
+  wave doc pins a pass/fail number for this specific gate — it is distinct
+  from the per-rung stop-conditions above, which do not list tracking error at
+  all. `ladder.py`'s current implementation computes and retains
+  `tracking_rms_db`/`tracking_max_db` per rung (evidence, per plan §7.2's
+  session-snapshot shape) but does not gate `verify_deepest → ladder` on them:
+  inventing a threshold here would violate the "every value must trace to the
+  prompt, the plan, or existing code" charter rule (rule 10). A later contract
+  revision needs to name the number (and margin-policy variants, if any)
+  before this gate can be implemented.
 
 ## Acceptance commands
 

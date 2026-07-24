@@ -645,15 +645,163 @@ def test_internal_producer_error_is_not_mislabeled_as_input_refusal(
         produce_limiter_thresholds(bundle, required_context=context)
 
 
+# Rev 9 authorizes exactly one consumer of the producer: ladder.py's
+# hardware-free synthetic dry run and evidence intake, via a function-local
+# import inside one of these two functions only.
+_LADDER_AUTHORIZED_FUNCTIONS = frozenset({"synthetic_dry_run", "synthetic_limiter_intake"})
+_PRODUCER_MARKERS = ("limiter_evidence", "produce_limiter_thresholds")
+
+
+def _mentions_producer(text: str) -> bool:
+    """True if the producer's module name or entry point appears anywhere in text.
+
+    A blanket substring scan, not an AST check, so it also catches dynamic
+    reach-arounds an import-statement-only AST check would miss:
+    ``importlib.import_module("...limiter_evidence")`` and
+    ``__import__("...limiter_evidence")`` both contain the marker string
+    literally, even though neither is an ``ast.Import``/``ast.ImportFrom``
+    node.
+    """
+    return any(marker in text for marker in _PRODUCER_MARKERS)
+
+
+def _ladder_producer_references_are_authorized(source: str) -> bool:
+    """True iff every producer reference in ``source`` is a function-local
+    import nested inside one of ladder.py's two Rev-9-authorized functions
+    (``synthetic_dry_run``, ``synthetic_limiter_intake``) — never at module
+    scope, class scope, or via an attribute reference outside those two
+    functions.
+
+    Deliberately AST-based rather than the blanket substring scan above:
+    ladder.py's own source text legitimately contains the producer's name,
+    once, inside its one authorized import statement, so a substring scan
+    would reject the file Rev 9 explicitly permits.
+    """
+    tree = ast.parse(source)
+    violations: list[str] = []
+
+    def scan(node: ast.AST, owner: ast.FunctionDef | ast.AsyncFunctionDef | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            child_owner = owner
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                child_owner = child
+            authorized = owner is not None and owner.name in _LADDER_AUTHORIZED_FUNCTIONS
+
+            if isinstance(child, ast.ImportFrom):
+                hit = "limiter_evidence" in (child.module or "") or any(
+                    marker in alias.name
+                    for alias in child.names
+                    for marker in _PRODUCER_MARKERS
+                )
+                if hit and not authorized:
+                    violations.append("import")
+            elif isinstance(child, ast.Import):
+                hit = any(
+                    marker in alias.name
+                    for alias in child.names
+                    for marker in _PRODUCER_MARKERS
+                )
+                if hit and not authorized:
+                    violations.append("import")
+            elif isinstance(child, ast.Attribute):
+                if child.attr in _PRODUCER_MARKERS and not authorized:
+                    violations.append("attribute")
+
+            scan(child, child_owner)
+
+    scan(tree, None)
+    return not violations
+
+
 def test_module_is_unreachable_from_production_paths() -> None:
+    """The limiter-evidence producer must have no PRODUCTION caller.
+
+    Two mechanisms, deliberately different in strength:
+
+    - Every file under ``jasper/`` EXCEPT this module and ``ladder.py``: the
+      blanket substring scan (:func:`_mentions_producer`). The producer's
+      name or entry point may not appear ANYWHERE in the file — module
+      scope, class scope, function-local, or inside a dynamic
+      ``importlib.import_module()`` / ``__import__()`` string. Intentionally
+      blunter than an AST import check so those dynamic forms cannot slip
+      past it, and a function-local import is exactly as forbidden here as
+      a module-scope one — Rev 9 authorizes ladder.py, not "any file that
+      happens to nest its import inside a function."
+    - ``jasper/bass_extension/ladder.py`` alone:
+      :func:`_ladder_producer_references_are_authorized` — the narrower,
+      AST-based shape Rev 9 actually authorizes for its one consumer.
+
+    (Reviewed 2026-07-24: closes two gaps in a prior AST-only version of
+    this guard — it missed ``importlib``/``__import__`` dynamic forms, and
+    it applied the same lenient function-local-import allowance to every
+    file under ``jasper/`` instead of to ladder.py alone.)
+    """
     root = Path(__file__).resolve().parents[1]
     module = root / "jasper" / "bass_extension" / "limiter_evidence.py"
+    ladder = root / "jasper" / "bass_extension" / "ladder.py"
     for path in (root / "jasper").rglob("*.py"):
         if path == module:
             continue
         text = path.read_text(encoding="utf-8")
-        assert "limiter_evidence" not in text, path
-        assert "produce_limiter_thresholds" not in text, path
+        if path == ladder:
+            assert _ladder_producer_references_are_authorized(text), path
+            continue
+        assert not _mentions_producer(text), path
+
+
+@pytest.mark.parametrize(
+    "label,snippet,mechanism",
+    [
+        (
+            "module_scope_import",
+            "from jasper.bass_extension.limiter_evidence import produce_limiter_thresholds\n",
+            "ladder_ast",
+        ),
+        (
+            "class_scope_import",
+            "class _Foo:\n"
+            "    from jasper.bass_extension.limiter_evidence import produce_limiter_thresholds\n",
+            "ladder_ast",
+        ),
+        (
+            "aliased_module_import",
+            "import jasper.bass_extension.limiter_evidence as le\n",
+            "ladder_ast",
+        ),
+        (
+            "importlib_string",
+            "import importlib\n"
+            "_MOD = importlib.import_module('jasper.bass_extension.limiter_evidence')\n",
+            "substring",
+        ),
+        (
+            "dunder_import",
+            "_MOD = __import__('jasper.bass_extension.limiter_evidence')\n",
+            "substring",
+        ),
+        (
+            "function_local_import_in_a_non_ladder_file",
+            "def helper():\n"
+            "    from jasper.bass_extension.limiter_evidence import produce_limiter_thresholds\n"
+            "    return produce_limiter_thresholds\n",
+            "substring",
+        ),
+    ],
+)
+def test_producer_isolation_guard_catches_every_evasion(label, snippet, mechanism) -> None:
+    """Pin the guard's own strength (2026-07-24 review).
+
+    Each evasion shape is fed through whichever mechanism is responsible for
+    catching it in the real guard: ``ladder_ast`` for shapes that could hide
+    inside ladder.py's narrow exemption, ``substring`` for shapes that must
+    be caught in every OTHER file — including a function-local import, which
+    is only authorized in ladder.py; elsewhere it is exactly as forbidden as
+    a module-scope one.
+    """
+    if mechanism == "ladder_ast":
+        assert not _ladder_producer_references_are_authorized(snippet), label
+    else:
+        assert _mentions_producer(snippet), label
 
 
 def test_module_imports_are_pure_and_hardware_free() -> None:
