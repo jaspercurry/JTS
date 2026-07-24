@@ -395,32 +395,6 @@ def _get_relay_capture() -> dict[str, Any] | None:
         return dict(_relay_capture) if _relay_capture else None
 
 
-def _publish_crossover_capture_plan_progress(
-    kind_label: str, plan_progress: Mapping[str, Any]
-) -> None:
-    """Merge session-spanning capture-plan progress into the relay snapshot.
-
-    Session-spanning capture plans (protocol v3, SPEC W2.3) run every repeat
-    of a driver's set inside one relay session, so the wizard envelope's
-    passive progress mirror (``crossover_envelope._plan_measuring_verdict``)
-    needs live "N of {target} done" — this is the write side, called by the
-    v3 orchestrator (``correction_crossover_flow.
-    build_crossover_relay_plan_run_and_consume``) at session start and after
-    every capture. Best-effort: a stale/changed owner (a concurrent Stop, or
-    the session already ended) silently drops the update rather than
-    resurrecting a slot that has moved on — the same non-blocking posture
-    ``_publish_relay_waiting`` and friends already use for this global slot.
-    """
-    global _relay_capture
-    with _session_lock:
-        relay = _relay_capture
-        if relay is None or relay.get("kind") != kind_label:
-            return
-        if relay.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
-            return
-        _relay_capture = {**relay, "capture_plan": dict(plan_progress)}
-
-
 def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
     """Return relay state only to the flow that owns it.
 

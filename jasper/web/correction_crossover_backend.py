@@ -2530,18 +2530,6 @@ def _commissioning_authority_snapshot() -> Any:
     )
 
 
-def commissioning_recorder_binding() -> tuple[Any, str]:
-    """Return the exact persisted calibration and recorder identity for capture."""
-
-    from jasper.audio_measurement.calibration import load_calibration_record
-
-    authority = _commissioning_authority_snapshot()
-    device_sha256 = str(authority.comparison_set.get("device_sha256") or "")
-    if len(device_sha256) != 64:
-        raise ValueError("the commissioning recorder identity is unavailable")
-    return load_calibration_record(authority.calibration_id), device_sha256
-
-
 def _commissioning_capture_service() -> Any:
     from jasper.active_speaker.bundles import sessions_dir
     from jasper.active_speaker.commissioning_evidence_store import (
@@ -2592,8 +2580,7 @@ def status_payload() -> dict[str, Any]:
     # `active=False` is the honest "this speaker has no crossover to tune" flag
     # for the envelope-driven page to consume. Derived from the already-computed
     # targets. (The active-only block below does its own fail-soft topology
-    # read for the safety-profile evaluation.) Pinned by
-    # tests/test_web_correction_crossover_flow.py.
+    # read for the safety-profile evaluation.)
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])
