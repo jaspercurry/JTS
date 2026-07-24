@@ -208,6 +208,21 @@ class MeasuredCrossoverCandidate:
     the fingerprint flows into ``baseline_profile``'s existing
     ``expected_candidate_fingerprint`` staleness gate via
     ``build_baseline_profile_candidate``'s ``measured_candidate`` seam).
+
+    ``linearization`` (#1668 PR-C) is the Layer-1a driver-linearization
+    artifact — a per-role compact dict (see
+    ``jasper.active_speaker.linearization_fit.LinearizationFit.to_dict``:
+    filters, fit_band_hz, target_level_db, residuals, an octave-band reason
+    summary, mic_tier, driver_class, n_repeats), keyed by driver role. Like
+    ``analysis``, it is frozen through the SAME exact-JSON-data walk and
+    participates in the fingerprint — tampering with a persisted
+    linearization result trips the same ``candidate_tampered`` refusal as
+    tampering with anything else in this candidate. The empty dict (the
+    default, and what every non-reference-tier or under-repeated MEASURE
+    produces — see the v2 conductor's linearization gate) is a fully valid
+    shape: "no linearization was fit," identical to every candidate this
+    module produced before this field existed. This module does NOT persist
+    the underlying ``EnvelopeCurve`` — only the compact fit result.
     """
 
     program_id: str
@@ -215,6 +230,7 @@ class MeasuredCrossoverCandidate:
     source_preset: ActiveSpeakerPreset
     role_attenuations_db: Mapping[str, float]
     alignment: MeasuredCrossoverAlignment = _NO_ALIGNMENT
+    linearization: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -274,6 +290,17 @@ class MeasuredCrossoverCandidate:
         except NullWalkError as exc:
             _refuse("analysis_invalid", f"analysis must be exact JSON data: {exc}")
         object.__setattr__(self, "analysis", frozen_analysis)
+        if not isinstance(self.linearization, Mapping):
+            _refuse("linearization_invalid", "linearization must be a mapping")
+        try:
+            frozen_linearization = DspPredecessor(
+                {"linearization": dict(self.linearization)}
+            ).state["linearization"]
+        except NullWalkError as exc:
+            _refuse(
+                "linearization_invalid", f"linearization must be exact JSON data: {exc}"
+            )
+        object.__setattr__(self, "linearization", frozen_linearization)
         try:
             fingerprint = json_fingerprint(self._core())
         except EvidenceIdentityError as exc:
@@ -289,6 +316,7 @@ class MeasuredCrossoverCandidate:
             "source_preset": self.source_preset.to_dict(),
             "role_attenuations_db": dict(self.role_attenuations_db),
             "alignment": self.alignment.to_dict(),
+            "linearization": dict(self.linearization),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -317,6 +345,7 @@ class MeasuredCrossoverCandidate:
             "source_preset",
             "role_attenuations_db",
             "alignment",
+            "linearization",
             "fingerprint",
         }
         if not isinstance(raw, Mapping) or set(raw) != expected:
@@ -344,6 +373,11 @@ class MeasuredCrossoverCandidate:
             _refuse(
                 "role_attenuations_malformed", "candidate attenuations are malformed"
             )
+        linearization_raw = raw["linearization"]
+        if not isinstance(linearization_raw, Mapping):
+            _refuse(
+                "linearization_malformed", "candidate linearization is malformed"
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -355,6 +389,7 @@ class MeasuredCrossoverCandidate:
                     delay_role=alignment_raw["delay_role"],
                     polarity=alignment_raw["polarity"],
                 ),
+                linearization=dict(linearization_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(

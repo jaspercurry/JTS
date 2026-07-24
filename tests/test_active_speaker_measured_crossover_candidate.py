@@ -49,12 +49,15 @@ def _candidate(
     trims: dict[str, float] | None = None,
     alignment: MeasuredCrossoverAlignment | None = None,
     program_id: str = "prog-abc123",
+    linearization: dict | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
     kwargs = {}
     if alignment is not None:
         kwargs["alignment"] = alignment
+    if linearization is not None:
+        kwargs["linearization"] = linearization
     return MeasuredCrossoverCandidate(
         program_id=program_id,
         analysis={"drift_ppm": 12.5, "sweeps": ["w", "t", "w"]},
@@ -277,6 +280,109 @@ def test_from_mapping_rejects_unknown_fields():
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(raw)
     assert excinfo.value.code == "candidate_malformed"
+
+
+# --- linearization field (#1668 PR-C) ---------------------------------------
+
+
+def test_linearization_defaults_to_empty_dict():
+    candidate = _candidate()
+    assert candidate.linearization == {}
+    assert candidate.to_dict()["linearization"] == {}
+
+
+def test_linearization_empty_dict_is_the_old_shape_and_round_trips():
+    """Empty dict = no linearization -- the shape every pre-PR-C candidate
+    has -- must round-trip through from_mapping exactly like any other
+    field, with zero special-casing."""
+    candidate = _candidate()
+    reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
+    assert reopened.fingerprint == candidate.fingerprint
+    assert reopened.linearization == {}
+
+
+def test_linearization_populated_round_trips():
+    payload = {
+        "woofer": {
+            "role": "woofer", "filters": [], "fit_band_hz": [150.0, 3951.5],
+            "target_level_db": -20.22, "residual_rms_db": 4.16,
+            "residual_max_db": 12.21, "reason_summary": {"250": "envelope_fitted"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+        },
+        "tweeter": {
+            "role": "tweeter",
+            "filters": [{"biquad_type": "Peaking", "freq": 4063.6, "q": 1.89, "gain": -3.38}],
+            "fit_band_hz": [2020.0, 13905.2], "target_level_db": -8.63,
+            "residual_rms_db": 2.63, "residual_max_db": 7.13,
+            "reason_summary": {"2000": "envelope_fitted", "20000": "envelope_limited_by_mic_tier"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+        },
+    }
+    candidate = _candidate(linearization=payload)
+    assert candidate.linearization == payload
+    reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
+    assert reopened.fingerprint == candidate.fingerprint
+    assert reopened.linearization == payload
+
+
+def test_linearization_participates_in_the_fingerprint():
+    preset = _preset()
+    base = _candidate(preset=preset, linearization={})
+    with_fit = _candidate(preset=preset, linearization={"woofer": {"filters": []}})
+    assert base.fingerprint != with_fit.fingerprint
+
+
+def test_linearization_tampering_trips_the_tamper_check():
+    """Verified, not assumed: mutating the persisted linearization payload
+    without updating the fingerprint must be caught by from_mapping's
+    exact-JSON re-derivation, the SAME mechanism every other field uses."""
+    candidate = _candidate(linearization={"woofer": {"filters": [], "target_level_db": -20.0}})
+    raw = dict(candidate.to_dict())
+    tampered = dict(raw)
+    tampered["linearization"] = {
+        **raw["linearization"], "woofer": {"filters": [], "target_level_db": -99.0},
+    }
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(tampered)
+    assert excinfo.value.code == "candidate_tampered"
+
+
+def test_linearization_must_be_a_mapping():
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        _candidate(linearization=["not", "a", "mapping"])
+    assert excinfo.value.code == "linearization_invalid"
+
+
+def test_linearization_must_be_exact_json_data():
+    """Mirrors `analysis`'s own JSON-purity contract (DspPredecessor) —
+    a numpy array (or any non-JSON value) anywhere inside linearization
+    must be refused at construction time, not silently accepted and only
+    fail later when something tries to persist it."""
+    import numpy as np
+
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        _candidate(linearization={"woofer": {"allowed_depth_db": np.zeros(4)}})
+    assert excinfo.value.code == "linearization_invalid"
+
+
+def test_from_mapping_requires_the_linearization_key():
+    """Strict schema, matching every sibling field (alignment,
+    role_attenuations_db, ...) — a payload missing "linearization"
+    entirely is malformed, not silently defaulted to {}."""
+    candidate = _candidate()
+    raw = candidate.to_dict()
+    del raw["linearization"]
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+    assert excinfo.value.code == "candidate_malformed"
+
+
+def test_from_mapping_rejects_non_mapping_linearization():
+    candidate = _candidate()
+    raw = {**candidate.to_dict(), "linearization": "not-a-mapping"}
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+    assert excinfo.value.code == "linearization_malformed"
 
 
 # --- effective_preset / driver_corrections: backward-compat trims-only ------
