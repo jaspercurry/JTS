@@ -18,15 +18,36 @@
 # on 2026-07-21 20:24Z: eight dependabot runs were created inside 20 seconds
 # and saturated the 20-concurrent-job GitHub Actions ceiling, delaying their
 # own jobs by 137-559s. It is the only contention-driven CI queueing episode
-# in the measured window. Grouping collapses that weekly fan-out from ~16
-# open PRs to ~5 and removes the burst, at the cost of a broken bump making
-# its whole group's PR red (exclude that one package, or ask Dependabot to
-# split, when it happens).
+# in the measured window.
+#
+# Grouping collapses that weekly fan-out from ~16 open PRs to ~5. It REDUCES
+# the burst rather than removing it: a full-lane PR peaks at 6 concurrent
+# jobs (shell + the 3-version pytest matrix + js + rust), so 5 grouped PRs
+# still demand ~30 jobs against the 20-job ceiling — the queue drains ~1.6x
+# faster, it does not stop forming. The durable win is 5 PRs a week to review
+# instead of 16, and a shorter queue tail. The cost is that a broken bump
+# reddens its whole group's PR (exclude that one package, or ask Dependabot
+# to split, when it happens).
 #
 # `groups` deliberately omits `applies-to`, which defaults to
-# "version-updates". SECURITY updates therefore stay ungrouped and keep
-# arriving as individual PRs — they are exempt from
-# open-pull-requests-limit and should not wait behind an unrelated bump.
+# "version-updates", so SECURITY updates are structurally ungrouped and are
+# exempt from open-pull-requests-limit.
+#
+# BUT that channel is currently inert on this repository: Dependabot alerts
+# and security updates are both DISABLED
+# (`gh api repos/jaspercurry/JTS/automated-security-fixes` reports
+# `enabled:false`; `.../vulnerability-alerts` 404s), and none of the ~45
+# dependabot PRs raised to date has been a security update. So today the
+# grouped version-update PRs below are the ONLY path by which a CVE fix
+# reaches this repo, which means a red group PR can hold one up — the
+# opposite of what the ungrouped-security design intends.
+#
+# Both features are free on a public repository. Enabling them restores the
+# separate fast channel this grouping assumes:
+#   gh api -X PUT repos/jaspercurry/JTS/vulnerability-alerts
+#   gh api -X PUT repos/jaspercurry/JTS/automated-security-fixes
+# Until then, treat the python-runtime group as security-relevant and do not
+# let it sit red.
 version: 2
 updates:
   - package-ecosystem: "uv"
