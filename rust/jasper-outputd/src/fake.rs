@@ -220,10 +220,12 @@ impl FakeAssistantSource {
             };
 
             let finished = {
-                let front = self
-                    .segments
-                    .front_mut()
-                    .expect("front segment present after gain resolution");
+                let Some(front) = self.segments.front_mut() else {
+                    if let Some(write) = current_write.take() {
+                        writes.push(write);
+                    }
+                    return;
+                };
                 for (channel, slot) in frame.iter_mut().enumerate() {
                     *slot = apply_gain_i16(front.samples[front.cursor_samples + channel], gain);
                 }
@@ -245,24 +247,20 @@ impl FakeAssistantSource {
                 self.finalize_front_completion(drained);
             }
 
-            // Record this frame against the current run of writes. SegmentWrite
-            // is Copy, so we compute the "extend the current run" decision from
-            // a short-lived immutable borrow before mutating — a `match
-            // current_write { Some(ref mut ..) .. }` would mutate a COPY.
-            let extend_current = matches!(&current_write, Some(write) if write.id == seg_id);
-            if extend_current {
-                current_write
-                    .as_mut()
-                    .expect("extend_current implies a current write")
-                    .frames += 1;
-            } else {
-                if let Some(write) = current_write.take() {
-                    writes.push(write);
+            // Record this frame against the current run of writes. Borrow the
+            // option in place so the Copy `SegmentWrite` is not mutated only
+            // in a temporary match value.
+            match current_write.as_mut() {
+                Some(write) if write.id == seg_id => write.frames += 1,
+                _ => {
+                    if let Some(write) = current_write.take() {
+                        writes.push(write);
+                    }
+                    current_write = Some(SegmentWrite {
+                        id: seg_id,
+                        frames: 1,
+                    });
                 }
-                current_write = Some(SegmentWrite {
-                    id: seg_id,
-                    frames: 1,
-                });
             }
         }
         if let Some(write) = current_write.take() {
