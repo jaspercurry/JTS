@@ -291,8 +291,13 @@ tolerance + smoothing decided against the JTS3 curves), emit into the
 baseline, add flatness-verify, wizard copy per #1670. Owner listening
 session validates (ladder protocol from the overnight report), with the
 ripple-optimal trim stop (−23.0) as the first rung.
-Phase 3 — **#1667** trim solve fix (now mostly defused; keep for
-robustness) + re-verify.
+Phase 3 — **#1667** trim solve fix (landed 2026-07-24: the applied trim is
+now `solve_ripple_optimal_trim`'s minimum-ripple solve — seeded by and
+sanity-bounded ±6 dB against the band-average value, wired into both the
+raw candidate and the Layer 1a linearized re-solve; see
+HANDOFF-crossover-measurement-v2.md's trim-solve section. JTS3 hardware
+re-verify against the listening ladder's ripple-optimal stop remains
+open) + re-verify.
 Phase 4+ — #1669 (3-way), #1671 (passive UX), #1665 (component entry —
 the driver-class/geometry/pad declaration schema + envelope wiring landed
 2026-07-24 out of sequence, ahead of this phase order; hardware validation
@@ -309,8 +314,9 @@ crossover-v2 wrong-cal primary scope · #1658 capture-page on-device pass +
 optional nits · #1660 room-relay device threading · #1664 worktree hygiene ·
 #1665 component entry + pad declarations (schema + pad/class-declaration
 slice landed 2026-07-24; JTS3 hardware validation and the research-prefill-
-audit portion still open) · #1666 apply promotion · #1667 trim-band bias ·
-#1668 driver linearization (this doc's Phase 2) · #1669 3-way · #1670
+audit portion still open) · #1666 apply promotion · #1667 trim-band bias
+(ripple-optimal solve landed 2026-07-24, Phase 3; JTS3 hardware re-verify
+still open) · #1668 driver linearization (this doc's Phase 2) · #1669 3-way · #1670
 rename · #1671 passive-class UX · #1672 mic HF arbitration · #1675 ka-
 beaming crossover guidance (simple v1 landed alongside #1665; Bessel
 beamwidth-vs-horn-coverage matching and the JTS3 Fc re-tune bench

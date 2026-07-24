@@ -82,6 +82,7 @@ from jasper.audio_measurement.program_analysis import (
     PilotObservation,
     ProgramAnalysis,
     SegmentLocation,
+    solve_branch_trims,
 )
 from jasper.capture_relay.session import (
     CaptureBeginDeferred,
@@ -2460,7 +2461,19 @@ def _eligible_measure_analysis(
 ) -> ProgramAnalysis:
     freqs = _LINEARIZABLE_FREQS_HZ
     if woofer_db is None:
-        woofer_db = np.zeros_like(freqs)
+        # A mild, monotonic -1.5 dB/octave tilt around Fc (capped at +/-6 dB
+        # at the band extremes) -- NOT a perfectly flat 0 dB reference.
+        # #1667's ripple-optimal trim solve needs the woofer branch to carry
+        # SOME of its own frequency-dependent shape: against a perfectly
+        # flat woofer, attenuating the tweeter toward silence is always
+        # "more flat" (there is nothing on the woofer side to trade off
+        # against), so the search has no genuine interior minimum and walks
+        # to its own scan-window edge -- which the sanity guard then
+        # (correctly) distrusts and rejects. A mild tilt is enough for a
+        # real interior optimum to exist while leaving the tweeter-bump
+        # linearity checks below unaffected (the fit and its own filters are
+        # sibling-independent; verified offline).
+        woofer_db = np.clip(-1.5 * np.log2(np.maximum(freqs, 1.0) / 1600.0), -6.0, 6.0)
     if tweeter_db is None:
         # A +6 dB bump inside the [800, 3200] Hz overlap band (Fc=1600) —
         # validated offline (PR-C sanity pass) to survive envelope/fit and
@@ -2570,6 +2583,142 @@ def test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_optimal
         # test_declared_driver_class_reaches_the_compose_envelope_seam
         # below); this test is deliberately about the no-override path.
         assert role_fit["driver_class"] == "unknown"
+
+
+def test_fit_linearization_wires_ripple_optimal_seeded_by_linearized_band_average(
+    monkeypatch,
+):
+    """#1667 wiring (linearized population): `_fit_linearization`'s re-solve
+    must call `solve_ripple_optimal_trim` on the LINEARIZED branch pair — not
+    merely trust `solve_branch_trims`'s band-average on that pair directly.
+    Spies on the module-level imported name (mirrors
+    test_build_candidate_threads_overlap_band_into_trim_and_ripple's spy on
+    program_analysis._ripple_db) to pin that the call happened exactly once,
+    seeded by solve_branch_trims's own band-average result on the SAME
+    linearized pair (not the raw candidate's band-average), with the
+    woofer's linearized trim held fixed and the analysis's own polarity
+    sign passed through."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    calls = []
+    real_solve = flow_mod.solve_ripple_optimal_trim
+
+    def _spy(*args, **kwargs):
+        # Positional call shape: solve_ripple_optimal_trim(freqs, w_tf,
+        # t_tf, fc_hz, *, lo_hz=..., hi_hz=..., seed_trim_db=...,
+        # trim_w_db=..., sign=...) -- _fit_linearization passes the first
+        # four positionally, the rest by keyword.
+        freqs, w_tf, t_tf, fc_hz = args
+        calls.append({"freqs": freqs, "w_tf": w_tf, "t_tf": t_tf, "fc_hz": fc_hz, **kwargs})
+        return real_solve(*args, **kwargs)
+
+    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["fc_hz"] == FC_HZ
+    assert call["sign"] == 1  # _alignment()'s default polarity="normal"
+    # Seeded by the LINEARIZED band-average (re-derived here the same way
+    # _fit_linearization does, on the SAME W_lin/T_lin this call received)
+    # -- not the raw candidate's -2.211 band-average.
+    expected_trim_w_lin, expected_seed, _lw, _lt = solve_branch_trims(
+        call["freqs"], call["w_tf"], call["t_tf"], FC_HZ,
+        lo_hz=call["lo_hz"], hi_hz=call["hi_hz"],
+    )
+    assert call["trim_w_db"] == pytest.approx(expected_trim_w_lin)
+    assert call["seed_trim_db"] == pytest.approx(expected_seed)
+    assert call["seed_trim_db"] != pytest.approx(-2.211)  # NOT the raw candidate's seed
+
+    # The call's own return value is exactly what the conductor applied
+    # (modulo the sanity guard, which this fixture's default does not trip
+    # -- see test_eligible_candidate_fits_both_roles_and_moves_trim_toward_
+    # ripple_optimal).
+    resolved_trim_t, _ripple, _seed = real_solve(
+        call["freqs"], call["w_tf"], call["t_tf"], FC_HZ,
+        lo_hz=call["lo_hz"], hi_hz=call["hi_hz"],
+        seed_trim_db=call["seed_trim_db"], trim_w_db=call["trim_w_db"],
+        sign=call["sign"],
+    )
+    assert c.candidate.role_attenuations_db["tweeter"] == pytest.approx(resolved_trim_t)
+
+
+def test_analysis_json_round_trips_trim_band_average_db():
+    """#1667 evidence round-trip: `_analysis_json`'s frozen fingerprint
+    carries `trim_band_average_db` alongside the applied `trim_db`, rounded
+    the same way, so replay/forensics can always compare the two — even
+    when the candidate predates this field (`None` passthrough)."""
+    freqs = np.linspace(100.0, 20000.0, 64)
+    cand = CrossoverCandidate(
+        trim_db={"woofer": 0.0, "tweeter": -0.0754},
+        polarity="normal", delay_us=150.0,
+        predicted_ripple_db=0.03, confidence=0.9,
+        trim_band_average_db={"woofer": 0.0, "tweeter": -9.4754},
+    )
+    analysis = ProgramAnalysis(
+        phase="measure", program_id="p1", locations=(),
+        drift=DriftEstimate(
+            epsilon_ppm=1.0, baselines_ppm={}, max_residual_samples=0.0,
+            glitch_detected=False,
+        ),
+        alignment=_alignment(), candidate=cand,
+        predicted_sum=(freqs, np.zeros_like(freqs)),
+        glitch_detected=False,
+    )
+    evidence = _analysis_json(analysis)
+    assert evidence["trim_db"] == {"woofer": 0.0, "tweeter": -0.0754}
+    assert evidence["trim_band_average_db"] == {"woofer": 0.0, "tweeter": -9.4754}
+
+    # Legacy/pre-#1667 construction site: candidate has no evidence field.
+    legacy_cand = CrossoverCandidate(
+        trim_db={"woofer": 0.0, "tweeter": -2.211}, polarity="normal",
+        delay_us=150.0, predicted_ripple_db=0.8, confidence=0.8,
+    )
+    legacy_analysis = replace(analysis, candidate=legacy_cand)
+    legacy_evidence = _analysis_json(legacy_analysis)
+    assert legacy_evidence["trim_db"] == {"woofer": 0.0, "tweeter": -2.211}
+    assert legacy_evidence["trim_band_average_db"] is None
+
+
+def test_measure_diag_logs_trim_ripple_gain_db(caplog):
+    """#1667 observability: the measure_diag line carries the
+    applied-vs-band-average delta for the tweeter trim -- 0.0 when the
+    ripple-optimal search left the trim exactly at its seed (or the sanity
+    guard fell back to it), the actual recovery amount otherwise. `None`
+    only when the candidate predates trim_band_average_db."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: replace(
+        _measure_analysis(program),
+        candidate=CrossoverCandidate(
+            trim_db={"woofer": -3.1, "tweeter": -0.5},
+            polarity="normal", delay_us=150.0,
+            predicted_ripple_db=0.03, confidence=0.8,
+            trim_band_average_db={"woofer": -3.1, "tweeter": -9.5},
+        ),
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "trim_ripple_gain_db=9.0" in caplog.text  # -0.5 - (-9.5)
+    caplog.clear()
+
+    # No band-average evidence on this candidate (legacy/test construction
+    # site) -> None, never a guess.
+    fakes2 = FakeSeams()
+    fakes2.measure = lambda program: _measure_analysis(program)
+    c2 = _conductor(fakes2)
+    _run_phase(c2, 1, 1)
+    verdict2 = _run_phase(c2, 2, 2)
+    assert verdict2["accepted"] is True
+    assert "trim_ripple_gain_db=null" in caplog.text
 
 
 def test_driver_class_by_role_ctor_param_threads_into_the_fit():

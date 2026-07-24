@@ -149,6 +149,53 @@ ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 # Overlap band for trims / alignment / ripple: Fc ± 1 octave.
 OVERLAP_OCTAVE_RATIO = 2.0
 
+# Ripple-optimal trim solve (#1667): solve_branch_trims band-energy-averages
+# |W| and |T| over the overlap band, which is systematically biased whenever
+# the two driver sweeps only overlap on one side of Fc (e.g. the tweeter
+# sweep starts AT Fc, so the whole evaluation band sits inside the woofer's
+# own rolloff skirt, and the woofer's filter attenuation drags the level-
+# match target down with it — issue #1667's root cause). The fix keeps that
+# band-average as a SEED and re-solves for the trim that minimizes the
+# summed response's ripple instead (see solve_ripple_optimal_trim).
+#
+# Search window: the seed +/- this many dB, at this step. Issue #1667's own
+# hardware corpus (jts3, 5 replayed runs) observed a 1.7-6.3 dB band-average
+# bias; +/-10 dB leaves headroom beyond that range on both sides so the scan
+# is never truncated at its own edge for a real capture, while
+# RIPPLE_TRIM_SANITY_MARGIN_DB below still catches a result that wanders
+# implausibly far from a real level match.
+RIPPLE_TRIM_SEARCH_WINDOW_DB = 10.0
+RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
+
+# Floating-point tolerance for "tied for minimum ripple" in the scan above —
+# well below the search grid's own 0.1 dB resolution, just enough to treat
+# two candidates as equal when they genuinely are (e.g. a perfectly flat
+# synthetic fixture) without being fooled by float rounding noise.
+_RIPPLE_TIE_TOLERANCE_DB = 1e-9
+
+# How far the ripple-optimal trim may move from the band-average seed before
+# it is treated as untrustworthy and discarded in favor of the seed (with a
+# WARNING — never a silent wild trim). Deliberately narrower than the search
+# window above, so the guard has real teeth. Mirrors
+# jasper.active_speaker.crossover_v2_flow.LINEARIZATION_TRIM_SANITY_MARGIN_DB
+# — same reasoning, applied one layer earlier to the raw (pre-linearization)
+# solve.
+RIPPLE_TRIM_SANITY_MARGIN_DB = 6.0
+
+# A trim is a passive level-match: never net gain (> 0 dB), and never beyond
+# the shared -60 dB attenuation floor used across the active-speaker
+# candidate/profile machinery
+# (jasper.active_speaker.measured_crossover_candidate._MAX_ATTENUATION_DB /
+# baseline_profile._MAX_ATTENUATION_DB). Mirrored locally rather than
+# imported, the same way those two mirror each other — this module does not
+# import jasper.active_speaker (see the module docstring). solve_branch_trims's
+# own min()-based formula keeps its output in this range implicitly; the
+# ripple-optimal scan must enforce it explicitly, since an unconstrained
+# ripple minimum has no such guarantee (a flatter-but-physically-invalid
+# "trim" is not a real answer).
+RIPPLE_TRIM_MAX_DB = 0.0
+RIPPLE_TRIM_MIN_DB = -60.0
+
 # Direct-arrival window used to isolate each driver's IR before deconvolution
 # magnitude / alignment (mirrors deconv defaults; the pre guard catches the
 # non-causal deconvolution shoulder).
@@ -497,6 +544,14 @@ class CrossoverCandidate:
     AT the anchor and ``flatness_improvement_db`` is ``anchor_ripple −
     selected_ripple`` — evidence only, so a slightly negative value is honest
     (the snap is chosen for comb-lobe correctness, not ripple).
+
+    ``trim_db`` is the APPLIED trim (#1667: ripple-optimal where the sanity
+    guard trusts it, otherwise the band-average fallback); ``trim_band_average_db``
+    preserves ``solve_branch_trims``'s own band-average result — the SEED the
+    ripple-optimal search started from — so replay/forensics can always see
+    both, even when they coincide. ``None`` only for a legacy/test
+    construction site built before this field existed; ``_build_candidate``
+    always sets it.
     """
 
     trim_db: Mapping[str, float]
@@ -509,6 +564,7 @@ class CrossoverCandidate:
     anchor_delay_us: float | None = None
     snap_delta_us: float | None = None
     snap_found: bool = False
+    trim_band_average_db: Mapping[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -1694,6 +1750,108 @@ def solve_branch_trims(
     return target - level_w, target - level_t, level_w, level_t
 
 
+def solve_ripple_optimal_trim(
+    freqs: np.ndarray,
+    w_tf: np.ndarray,
+    t_tf: np.ndarray,
+    fc_hz: float,
+    *,
+    lo_hz: float | None = None,
+    hi_hz: float | None = None,
+    seed_trim_db: float,
+    trim_w_db: float = 0.0,
+    sign: int,
+    window_db: float = RIPPLE_TRIM_SEARCH_WINDOW_DB,
+    step_db: float = RIPPLE_TRIM_SEARCH_STEP_DB,
+) -> tuple[float, float, float]:
+    """Ripple-minimizing tweeter trim, scanned around the band-average seed
+    (#1667).
+
+    ``solve_branch_trims`` matches band-AVERAGE levels, which is biased
+    whenever the evaluation band sits inside one branch's own filter
+    rolloff (the tweeter sweep starting AT Fc is the real-world case: the
+    whole band then lives inside the woofer's LR4 skirt, and the woofer's
+    own attenuation drags the level-match target — and so the tweeter's
+    solved trim — down with it). The fix is the OBJECTIVE, not the band:
+    instead of matching levels, scan the tweeter trim and keep whichever
+    value minimizes the SUMMED branch response's ripple (max-min dB) over
+    the SAME ``[lo_hz, hi_hz]`` band the band-average solve used — reusing
+    :func:`_predicted_sum` and :func:`_ripple_db` exactly as
+    ``predicted_ripple_db`` elsewhere on the candidate already does, rather
+    than inventing a second flatness metric.
+
+    The woofer/reference branch's trim (``trim_w_db``) is held FIXED —
+    ripple depends only on the RELATIVE gain between branches, so scanning
+    one side alone still explores the full space of achievable relative
+    gains. ``trim_w_db`` defaults to 0.0, matching ``solve_branch_trims``'s
+    own convention that the quieter branch is left unattenuated; a caller
+    whose band-average solve gave a nonzero woofer trim should pass that
+    value so the scan is centered on the summed response that will actually
+    be applied.
+
+    Search window: ``seed_trim_db +/- window_db`` at ``step_db`` steps
+    (defaults: :data:`RIPPLE_TRIM_SEARCH_WINDOW_DB` /
+    :data:`RIPPLE_TRIM_SEARCH_STEP_DB` — +/-10 dB / 0.1 dB), clamped to the
+    physically valid attenuation range
+    [:data:`RIPPLE_TRIM_MIN_DB`, :data:`RIPPLE_TRIM_MAX_DB`] — a trim is
+    never net gain and never beyond the shared -60 dB floor, so the scan
+    must not even EVALUATE an unphysical candidate (a flatter-but-invalid
+    "trim" is not a real answer). Ties (a flat ripple minimum, e.g. a wide
+    symmetric notch) break TOWARD THE SEED — the tied candidate closest to
+    the band-average value wins, so a flat objective never introduces
+    gratuitous drift away from the conventional solve.
+
+    Returns ``(trim_t_db, ripple_db, seed_trim_db)``: the selected trim, the
+    summed-response ripple (dB, max-min) AT that trim, and the seed it was
+    scanned around — echoed back so a caller building an evidence/sanity-
+    guard comparison doesn't need to separately thread the seed through.
+
+    ``lo_hz``/``hi_hz`` default to Fc +/- 1 octave like ``solve_branch_trims``;
+    every current caller passes its own gating-clamped band explicitly — the
+    #1667 fix changes the objective, never the band.
+    """
+    lo = lo_hz if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = hi_hz if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
+    band = (freqs >= lo) & (freqs <= hi)
+    if not np.any(band):
+        raise ValueError("overlap band has no frequency bins")
+    freqs_band = freqs[band]
+    w_band = w_tf[band]
+    t_band = t_tf[band]
+
+    n_steps = int(round(window_db / step_db))
+    raw_candidates = [seed_trim_db + i * step_db for i in range(-n_steps, n_steps + 1)]
+    candidate_trims = [
+        trim for trim in raw_candidates if RIPPLE_TRIM_MIN_DB <= trim <= RIPPLE_TRIM_MAX_DB
+    ]
+    if not candidate_trims:
+        # The seed's own window has no physically valid attenuation value at
+        # all (shouldn't happen from solve_branch_trims's own <=0 output,
+        # but stay defensive) — clamp the seed itself into range rather than
+        # searching an empty set.
+        candidate_trims = [min(max(seed_trim_db, RIPPLE_TRIM_MIN_DB), RIPPLE_TRIM_MAX_DB)]
+    ripples_db = [
+        _ripple_db(
+            freqs_band, _predicted_sum(w_band, t_band, trim_w_db, candidate_trim, sign), lo, hi,
+        )
+        for candidate_trim in candidate_trims
+    ]
+
+    min_ripple = min(ripples_db)
+    best_trim = seed_trim_db
+    best_ripple = min_ripple
+    best_distance = math.inf
+    for candidate_trim, ripple in zip(candidate_trims, ripples_db):
+        if ripple > min_ripple + _RIPPLE_TIE_TOLERANCE_DB:
+            continue
+        distance = abs(candidate_trim - seed_trim_db)
+        if distance < best_distance:
+            best_distance = distance
+            best_trim = candidate_trim
+            best_ripple = ripple
+    return best_trim, best_ripple, seed_trim_db
+
+
 def _flatter_sum_polarity(
     capture, program, sample_rate, global_offset, fc_hz, priors,
     *, woofer_full_ir, tweeter_full_ir,
@@ -2384,7 +2542,33 @@ def _build_candidate(
         if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
         else lo
     )
-    trim_w, trim_t, _lw, _lt = solve_branch_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
+    trim_w, trim_t_band_average, _lw, _lt = solve_branch_trims(
+        freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi,
+    )
+    # #1667: re-solve the tweeter trim for minimum summed-response ripple
+    # instead of trusting the band-average level match on its own — see
+    # solve_ripple_optimal_trim's docstring for why band-average is biased.
+    # Guarded: a result implausibly far from the band-average seed is
+    # distrusted and discarded (never a wild applied trim).
+    trim_t_ripple, _ripple_t_ripple, _seed = solve_ripple_optimal_trim(
+        freqs, W, T, fc_hz,
+        lo_hz=lo_clamped, hi_hz=hi,
+        seed_trim_db=trim_t_band_average,
+        trim_w_db=trim_w,
+        sign=alignment.polarity_sign,
+    )
+    if abs(trim_t_ripple - trim_t_band_average) > RIPPLE_TRIM_SANITY_MARGIN_DB:
+        log_event(
+            logger, "program_analysis.ripple_trim_rejected",
+            level=logging.WARNING,
+            woofer_role=woofer_role, tweeter_role=tweeter_role,
+            band_average_trim_db=round(trim_t_band_average, 3),
+            ripple_optimal_trim_db=round(trim_t_ripple, 3),
+            margin_db=RIPPLE_TRIM_SANITY_MARGIN_DB,
+        )
+        trim_t = trim_t_band_average
+    else:
+        trim_t = trim_t_ripple
     delay_us = alignment.delay_us
     seed_ripple_db = None
     flatness_improvement_db = None
@@ -2464,6 +2648,7 @@ def _build_candidate(
         anchor_delay_us=anchor_delay_us,
         snap_delta_us=snap_delta_us,
         snap_found=snap_found,
+        trim_band_average_db={woofer_role: trim_w, tweeter_role: trim_t_band_average},
     )
     return candidate, (freqs, predicted_db)
 

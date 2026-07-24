@@ -247,6 +247,27 @@ evidence parameter needed threading through `classify_camilla_graph`'s
 other callers. Emission is empty by default; a candidate/snapshot with no
 `linearization` key, or an empty one, stays byte-identical to the
 pre-PR-D graph.
+**Ripple-optimal trim solve (#1667 Phase 3).** The applied trim is no
+longer bare band-average level matching — `solve_branch_trims`'s average
+over the overlap band is systematically biased whenever the two driver
+sweeps only overlap on one side of Fc (a tweeter sweep starting AT Fc
+clamps the evaluation band to `[Fc, 2·Fc]`, entirely inside the woofer's
+own rolloff skirt, so the woofer's own filter attenuation drags the
+level-match target — and the tweeter's solved trim — down with it).
+`solve_ripple_optimal_trim`
+([`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py))
+re-solves the tweeter trim for minimum summed-response ripple instead,
+scanned in a bounded window (±10 dB, `RIPPLE_TRIM_SEARCH_WINDOW_DB`)
+around the band-average seed and clamped to the physically valid
+attenuation range; a result more than `RIPPLE_TRIM_SANITY_MARGIN_DB`
+(6 dB) from the seed is distrusted and discarded in favor of band-average,
+with a WARNING (never a silent wild trim). Wired into BOTH the raw
+candidate (`CrossoverCandidate.trim_db`, with the band-average seed
+preserved as `trim_band_average_db` evidence) and the Layer 1a linearized
+re-solve above, so consumer/phone-tier captures — ineligible for
+linearization — get the fix too. Design rationale:
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+"Decisions already made" #2 and "Execution plan" Phase 3.
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with

@@ -89,6 +89,7 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     overlap_band_hz,
     solve_branch_trims,
+    solve_ripple_optimal_trim,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 from jasper.log_event import log_event
@@ -602,6 +603,14 @@ def _analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
         "alignment_confidence_source": align.confidence_source if align else None,
         "trim_db": (
             {k: round(float(v), 4) for k, v in cand.trim_db.items()} if cand else None
+        ),
+        # #1667: the band-average seed trim_db's ripple-optimal solve started
+        # from — evidence only, so replay/forensics can always see both even
+        # when the applied trim_db above coincides with it (the sanity-guard
+        # fallback path).
+        "trim_band_average_db": (
+            {k: round(float(v), 4) for k, v in cand.trim_band_average_db.items()}
+            if cand and cand.trim_band_average_db is not None else None
         ),
         "predicted_ripple_db": (
             round(float(cand.predicted_ripple_db), 4) if cand else None
@@ -1937,6 +1946,21 @@ class CrossoverV2Conductor:
             predicted_ripple_db=(
                 round(float(cand.predicted_ripple_db), 4) if cand else None
             ),
+            # #1667: how far the applied (ripple-optimal-where-trusted)
+            # tweeter trim moved from solve_branch_trims's band-average
+            # seed — the sanity-guard fallback path reads as exactly 0.0
+            # (applied == seed); ``None`` only when this candidate predates
+            # trim_band_average_db.
+            trim_ripple_gain_db=(
+                round(
+                    float(
+                        cand.trim_db[self._tweeter.role]
+                        - cand.trim_band_average_db[self._tweeter.role]
+                    ),
+                    4,
+                )
+                if cand and cand.trim_band_average_db is not None else None
+            ),
             alignment_seed_ripple_db=(
                 round(float(cand.alignment_seed_ripple_db), 4)
                 if cand and cand.alignment_seed_ripple_db is not None else None
@@ -2224,8 +2248,23 @@ class CrossoverV2Conductor:
             if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
             else lo
         )
-        trim_w_lin, trim_t_lin, _lw, _lt = solve_branch_trims(
+        trim_w_lin, trim_t_lin_band_average, _lw, _lt = solve_branch_trims(
             freqs, W_lin, T_lin, self._fc_hz, lo_hz=lo_clamped, hi_hz=hi,
+        )
+        # #1667: ripple-optimal re-solve on the LINEARIZED branch pair, same
+        # fix as the raw candidate's own re-solve
+        # (program_analysis._build_candidate) — see
+        # solve_ripple_optimal_trim's docstring. No separate sanity guard
+        # needed here: the wild-trim check below already re-validates this
+        # result against the raw candidate's OWN trim, which (after the same
+        # #1667 fix, one layer down) is itself ripple-optimal.
+        assert analysis.alignment is not None  # MEASURE analyses always carry one
+        trim_t_lin, _ripple_lin, _seed_lin = solve_ripple_optimal_trim(
+            freqs, W_lin, T_lin, self._fc_hz,
+            lo_hz=lo_clamped, hi_hz=hi,
+            seed_trim_db=trim_t_lin_band_average,
+            trim_w_db=trim_w_lin,
+            sign=analysis.alignment.polarity_sign,
         )
         resolved = {woofer_role: float(trim_w_lin), tweeter_role: float(trim_t_lin)}
 
