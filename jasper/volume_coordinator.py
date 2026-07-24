@@ -525,12 +525,15 @@ class VolumeCoordinator:
         elif source == Source.BLUETOOTH:
             level = bt_volume_to_listening_level(int(native_value))
         elif source == Source.USBSINK:
-            # USB gadget volume_bridge POSTs percent directly (already
-            # normalized 0-100 from the gadget mixer's raw range).
-            # Map identity to listening_level. The translation work
-            # happens client-side in jasper.usbsink.volume_bridge so
-            # the coordinator doesn't need to know about ALSA mixer
-            # units or the gadget's range.
+            # USB gadget volume_bridge POSTs percent directly. It has already
+            # recovered physical dB from the gadget mixer's 0-based step index
+            # (via the control's DB_MINMAX TLV) and amplitude-normalized it to
+            # 0-100 (see volume_bridge._raw_to_pct). Map identity to
+            # listening_level — the coordinator doesn't need to know about ALSA
+            # mixer units, step indices, or the gadget's dB range.
+            # _sync_camilla_observed_level below then turns this level back into
+            # Camilla dB via percent_to_db — the two ends of the same
+            # volume-curve contract.
             level = max(0, min(100, int(native_value)))
         else:
             logger.debug("observe_source_volume: unknown source %s", source)

@@ -11,8 +11,9 @@ controls on the Pi side:
   - "PCM Capture Switch"   (bool — Mac mute toggle)
 
 This module polls those controls at 4 Hz via `amixer cget`, maps the
-raw value to JTS's 0-100 listening_level (linear over the mixer
-range), and POSTs to jasper-control's /volume/set endpoint with
+raw value to JTS's 0-100 listening_level (amplitude-normalized over
+the mixer's dB range — see `_raw_to_pct`), and POSTs to
+jasper-control's /volume/set endpoint with
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
 prevention — so a dial twist that triggered an outbound write to the
@@ -72,23 +73,67 @@ SWITCH_CONTROL_NAME = "PCM Capture Switch"
 DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
 
 
-# `amixer cget` output format:
+# `amixer cget` output format for the UAC2 gadget volume control. CRITICAL:
+# the kernel `u_audio` driver does NOT expose the control in dB. It exposes a
+# 0-based STEP INDEX (u_audio_volume_info: min=0, max=(vmax-vmin+res-1)/res,
+# step=1; the value is (volume-vmin)/res). It also attaches a DB_MINMAX TLV
+# giving the physical dB endpoints. So for our advertised -50..0 dB / 1 dB-step
+# range the control reports:
 #
 #     numid=1,iface=MIXER,name='PCM Capture Volume'
-#       ; type=INTEGER,access=rw---R--,values=1,min=0,max=100,step=0
-#       : values=50
+#       ; type=INTEGER,access=rw---R--,values=1,min=0,max=50,step=1
+#       : values=25
+#       | dBminmax-min=-50.00dB,max=0.00dB
 #
-# - First line: identifier
-# - Second line: spec (type, min, max, step)
-# - Third line: current value(s) — comma-separated for multi-channel
+# - Second line: step-index spec (min/max are STEP INDICES, not dB)
+# - Third line: current step index
+# - Fourth line: the decoded DB_MINMAX TLV (physical dB endpoints)
 #
 # Switch control output:
 #     numid=2,iface=MIXER,name='PCM Capture Switch'
 #       ; type=BOOLEAN,access=rw------,values=1
 #       : values=on
 _NUMID_RE = re.compile(r"numid=(\d+),iface=MIXER,name='([^']+)'")
+# Step-index range from the `; type=...,min=..,max=..,step=..` spec line. The
+# TLV dB line uses `min=-50.00dB` (decimal + `dB`), which this integer-only,
+# comma-terminated pattern deliberately does not match.
 _RANGE_RE = re.compile(r"min=(-?\d+),max=(-?\d+)")
 _VALUES_RE = re.compile(r": values=([^\n]+)")
+# DB_MINMAX TLV: `dBminmax-min=<X>dB,max=<Y>dB` (amixer also prints
+# `dBminmaxmute-` for the MUTE variant — same min/max fields). This is the
+# kernel's ground-truth physical dB scale; preferred over reconstruction.
+_TLV_MINMAX_RE = re.compile(
+    r"dBminmax(?:mute)?-min=(-?\d+\.\d+)dB,max=(-?\d+\.\d+)dB"
+)
+# DB_SCALE fallback (`dBscale-min=<X>dB,step=<Y>dB`) in case a future kernel
+# switches TLV types; recovers min + per-step dB.
+_TLV_SCALE_RE = re.compile(
+    r"dBscale-min=(-?\d+\.\d+)dB,step=(\d+\.\d+)dB"
+)
+
+
+# Single source of truth for the advertised capture-volume dB range. WHY these
+# numbers: macOS maps its slider POSITION perceptually onto the host-advertised
+# dB range, and the kernel's wide ~-128..0 dB default compressed the whole Mac
+# slider into the top few dB (issue #1698: a low-mid slider read ~73%). We
+# advertise a narrow -50..0 dB span aligned with jasper.volume_curve's -50 dB
+# floor. gadget-up (deploy/usbsink/jasper-usbgadget-up) writes these to configfs
+# in 1/256 dB units — c_volume_min/max/res = round(const*256) = -12800/0/256 —
+# and tests/test_usbsink_volume_bridge.py pins the two ends to these constants
+# so the bash literals and this Python can never drift. The bridge uses these to
+# reconstruct physical dB only when the control's DB_MINMAX TLV can't be parsed.
+USBSINK_VOLUME_DB_MIN = -50.0
+USBSINK_VOLUME_DB_MAX = 0.0
+USBSINK_VOLUME_STEP_DB = 1.0
+# configfs unit note: gadget-up converts these to the kernel's 1/256-dB
+# c_volume_* units as round(dB*256); that derivation + its contract test live
+# on the bash side (deploy/usbsink/jasper-usbgadget-up) and in
+# tests/test_usbsink_volume_bridge.py — the bridge only reads physical dB back.
+
+
+def _db_to_amplitude(db: float) -> float:
+    """Physical dB -> linear amplitude (10**(dB/20))."""
+    return 10.0 ** (db / 20.0)
 
 
 class VolumeBridge:
@@ -121,8 +166,16 @@ class VolumeBridge:
         # Cached lookups, populated in _discover().
         self._vol_numid: Optional[int] = None
         self._switch_numid: Optional[int] = None
+        # ALSA step-index range for the volume control (min is 0 on real
+        # hardware; max is the kernel's step count). These are NOT dB.
         self._vol_min: int = 0
-        self._vol_max: int = 100
+        self._vol_max: int = 0
+        # Physical dB endpoints for the two step-index bounds above, recovered
+        # from the control's DB_MINMAX TLV (preferred) or reconstructed from the
+        # advertised range (fallback). `_db_source` records which, for the log.
+        self._db_min: float = USBSINK_VOLUME_DB_MIN
+        self._db_max: float = USBSINK_VOLUME_DB_MAX
+        self._db_source: str = "reconstructed"
 
         # Last value we POSTed — dedupes successive identical polls.
         # None until the first successful read; -1 sentinel would also
@@ -164,7 +217,12 @@ class VolumeBridge:
             card=self._card_name,
             vol_numid=self._vol_numid,
             switch_numid=self._switch_numid,
+            # Step-index range AND the resolved physical dB range, so an
+            # operator can see e.g. `range=0..50 db=-50.0..0.0 db_source=tlv`
+            # and tell whether the advertised range actually stuck.
             range=f"{self._vol_min}..{self._vol_max}",
+            db=f"{self._db_min:.1f}..{self._db_max:.1f}",
+            db_source=self._db_source,
         )
         try:
             while True:
@@ -221,12 +279,48 @@ class VolumeBridge:
                 f"is the gadget descriptor missing c_volume_present=1?",
             )
 
-        # Parse the volume control's range from a one-shot cget.
+        # Parse the volume control's step-index range from a one-shot cget.
+        # On real hardware this is `min=0, max=<step-count>` (see the format
+        # comment above) — NOT dB.
         cg = self._cget(self._vol_numid)
         m = _RANGE_RE.search(cg)
         if m:
             self._vol_min = int(m.group(1))
             self._vol_max = int(m.group(2))
+
+        # Recover the physical dB endpoints. Prefer the control's own
+        # DB_MINMAX TLV (kernel ground truth — reflects whatever range
+        # actually stuck); fall back to the advertised range constants when
+        # the TLV isn't present/parseable.
+        db_scale = self._parse_tlv_db(cg, self._vol_min, self._vol_max)
+        if db_scale is not None:
+            self._db_min, self._db_max = db_scale
+            self._db_source = "tlv"
+        else:
+            self._db_min = USBSINK_VOLUME_DB_MIN
+            self._db_max = USBSINK_VOLUME_DB_MAX
+            self._db_source = "reconstructed"
+
+    @staticmethod
+    def _parse_tlv_db(
+        cget_out: str, idx_min: int, idx_max: int,
+    ) -> Optional[tuple[float, float]]:
+        """Recover (min_db, max_db) from a decoded dB TLV line, or None.
+
+        The kernel u_audio driver attaches a DB_MINMAX TLV, which amixer
+        prints as `dBminmax-min=<X>dB,max=<Y>dB`. A DB_SCALE variant
+        (`dBscale-min=<X>dB,step=<Y>dB`) is also handled defensively; its
+        max is derived from the step-index span.
+        """
+        m = _TLV_MINMAX_RE.search(cget_out)
+        if m:
+            return float(m.group(1)), float(m.group(2))
+        m = _TLV_SCALE_RE.search(cget_out)
+        if m:
+            min_db = float(m.group(1))
+            step_db = float(m.group(2))
+            return min_db, min_db + max(0, idx_max - idx_min) * step_db
+        return None
 
     # ------------------------------------------------------------------
     # Per-tick: read both controls, post if changed
@@ -250,11 +344,63 @@ class VolumeBridge:
         self._last_published_pct = pct
 
     def _raw_to_pct(self, raw: int) -> int:
-        span = self._vol_max - self._vol_min
-        if span <= 0:
-            return 50  # degenerate; pick something sane
-        pct = (raw - self._vol_min) / span * 100.0
+        """THE volume curve: raw mixer STEP INDEX -> JTS 0-100 percent.
+
+        Two steps, in order:
+
+        1. Recover PHYSICAL dB from the step index. The kernel u_audio
+           control reports a 0-based step index, not dB (see the
+           amixer-format comment above), so we must map index -> dB first.
+           `_index_to_db` interpolates linearly across the physical dB
+           endpoints (`_db_min`.._db_max, from the DB_MINMAX TLV or the
+           advertised-range fallback) — steps are uniform in dB, so this is
+           exact. Skipping this and normalizing the raw index directly is
+           the reverted-units bug: the index spans a tiny ~0.5-"dB" range if
+           misread as centi-dB and the curve collapses to ~linear.
+
+        2. Normalize in the AMPLITUDE domain, not linearly in dB. macOS maps
+           its slider POSITION perceptually (~logarithmically) onto the
+           advertised dB range, so a linear-in-dB inverse over-reads the
+           bottom half of the slider (a low-mid slider read ~73% before this
+           fix; issue #1698). Converting the recovered dB to a linear
+           amplitude (10**(dB/20)) and normalizing THAT approximates the
+           perceptual taper — the standard close approximation. Exact
+           25%<->25% tracking would need Apple's undocumented transfer curve;
+           this, plus the narrow advertised range (-50..0 dB, written by
+           jasper-usbgadget-up), is what lands a real mid-slider near mid.
+           Final feel needs an on-Mac slider check.
+
+        This is one END of a two-ended contract. The other end is
+        jasper.volume_curve.percent_to_db, which turns the resulting
+        listening_level back into a CamillaDSP output dB over the SAME
+        -50 dB floor we advertise to the host. Keep the two aligned:
+        host slider -> UAC2 dB (over -50..0) -> _raw_to_pct (here) ->
+        listening_level -> percent_to_db.
+        """
+        if self._vol_max - self._vol_min <= 0:
+            return 50  # degenerate step range; pick something sane
+        amp = _db_to_amplitude(self._index_to_db(raw))
+        amp_min = _db_to_amplitude(self._db_min)
+        amp_max = _db_to_amplitude(self._db_max)
+        denom = amp_max - amp_min
+        if denom <= 0:
+            return 50  # degenerate dB range; pick something sane
+        pct = (amp - amp_min) / denom * 100.0
         return max(0, min(100, round(pct)))
+
+    def _index_to_db(self, index: int) -> float:
+        """Map a 0-based ALSA step index to physical dB.
+
+        Linear interpolation across the physical dB endpoints
+        (`_db_min`.._db_max) using the step-index span. Steps are uniform in
+        dB, so this recovers the true dB exactly; index below/above the range
+        extrapolates and is clamped downstream by the [0,100] percent clamp.
+        """
+        idx_span = self._vol_max - self._vol_min
+        if idx_span <= 0:
+            return self._db_max
+        frac = (index - self._vol_min) / idx_span
+        return self._db_min + frac * (self._db_max - self._db_min)
 
     # ------------------------------------------------------------------
     # amixer subprocess helpers
