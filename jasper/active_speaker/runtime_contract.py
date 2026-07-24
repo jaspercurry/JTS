@@ -61,6 +61,7 @@ from .graph_evidence import (
     driver_limiter_name,
     driver_linearization_peak_name as _linearization_peak_name,
     driver_linearization_shelf_name as _linearization_shelf_name,
+    driver_linearization_taper_name as _linearization_taper_name,
     filter_params as _filter_params,
     filter_type as _filter_type,
     output_commission_mute_name as _commission_mute_name,
@@ -1082,17 +1083,19 @@ def _baseline_gain_limiter_safe(
 
 
 def _linearization_filter_safe(
-    payload: dict[str, Any], *, name: str, biquad_type: str,
+    payload: dict[str, Any], *, name: str, biquad_types: tuple[str, ...],
 ) -> bool:
-    """One named linearization Biquad proves its own declared type + the
-    cut-only invariant (gain <= 0) -- the same posture
-    ``linearization_fit.fit_driver_linearization`` enforces at fit time,
-    re-proved independently here against the emitted graph."""
+    """One named linearization Biquad proves its declared type is one of the
+    allowed ``biquad_types`` for its slot + the cut-only invariant (gain <= 0)
+    -- the same posture ``linearization_fit.fit_driver_linearization`` enforces
+    at fit time, re-proved independently here against the emitted graph. The
+    shelf slot allows Highshelf OR Lowshelf (#1668 CD-horn backbone); the peak
+    slot allows Peaking; the taper slot allows Highshelf."""
 
     if _filter_type(payload, name) != "Biquad":
         return False
     params = _filter_params(payload, name)
-    if str(params.get("type") or "") != biquad_type:
+    if str(params.get("type") or "") not in biquad_types:
         return False
     gain = _strict_finite_number(params.get("gain"))
     return gain is not None and gain <= 0.0
@@ -1105,15 +1108,18 @@ def _consume_linearization_chain(
     role: str,
 ) -> tuple[int, bool]:
     """Advance ``cursor`` past a well-formed, provably-safe Layer-1a
-    linearization run (#1668 PR-D) for ``role``: an optional named shelf
-    then 0..N named peaking filters, in the emitter's own naming convention
+    linearization run (#1668) for ``role``: an optional named leading shelf
+    (Highshelf rising-slope OR Lowshelf CD-horn backbone), then 0..N named
+    peaking filters, then an optional named trailing Highshelf taper — in the
+    emitter's own naming convention
     (``camilla_yaml.driver_linearization_shelf_name`` /
-    ``driver_linearization_peak_name``, re-exported via ``graph_evidence``).
+    ``driver_linearization_peak_name`` / ``driver_linearization_taper_name``,
+    re-exported via ``graph_evidence``).
 
     SELF-PROVING from the graph text alone -- unlike bass-extension (a
     business decision an external profile/candidate declares, so its
     presence/shape must be threaded in as evidence), a linearization
-    filter's full shape (which role, shelf-or-not, how many peaks) is
+    filter's full shape (which role, shelf/peak/taper slot, how many peaks) is
     entirely recoverable from its own name + params. So no
     ``linearization_summary`` parameter needs threading through this
     module's public entry points (``classify_camilla_graph`` /
@@ -1122,9 +1128,11 @@ def _consume_linearization_chain(
     ``_baseline_output_chain``.
 
     Returns ``(new_cursor, ok)``. ``ok`` is False iff a recognized
-    linearization-named filter proves UNSAFE (wrong Biquad subtype or
-    positive gain) — fail closed, exactly like every other named-filter
-    proof in this module. A name at ``cursor`` that does not match the
+    linearization-named filter proves UNSAFE (wrong Biquad subtype for its
+    slot, or positive gain) — fail closed, exactly like every other named-
+    filter proof in this module. The shelf slot accepts Highshelf or Lowshelf;
+    the taper slot accepts only Highshelf; both, like the peaks, must be
+    non-positive gain. A name at ``cursor`` that does not match the
     linearization naming convention is not an error: zero filters are
     consumed, and the ordinary tail check the caller runs next decides
     whether what remains (unshifted) is a legal chain.
@@ -1134,7 +1142,7 @@ def _consume_linearization_chain(
     shelf_name = _linearization_shelf_name(role)
     if index < len(chain) and chain[index] == shelf_name:
         if not _linearization_filter_safe(
-            payload, name=shelf_name, biquad_type="Highshelf",
+            payload, name=shelf_name, biquad_types=("Highshelf", "Lowshelf"),
         ):
             return index, False
         index += 1
@@ -1144,11 +1152,18 @@ def _consume_linearization_chain(
         if chain[index] != peak_name:
             break
         if not _linearization_filter_safe(
-            payload, name=peak_name, biquad_type="Peaking",
+            payload, name=peak_name, biquad_types=("Peaking",),
         ):
             return index, False
         index += 1
         peak_number += 1
+    taper_name = _linearization_taper_name(role)
+    if index < len(chain) and chain[index] == taper_name:
+        if not _linearization_filter_safe(
+            payload, name=taper_name, biquad_types=("Highshelf",),
+        ):
+            return index, False
+        index += 1
     return index, True
 
 

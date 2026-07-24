@@ -29,6 +29,7 @@ from jasper.active_speaker.camilla_yaml import (
     MAX_LINEARIZATION_FILTERS_PER_DRIVER,
     driver_linearization_peak_name,
     driver_linearization_shelf_name,
+    driver_linearization_taper_name,
 )
 from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
 from jasper.active_speaker.runtime_contract import (
@@ -54,6 +55,14 @@ def _preset(layout: str = "mono") -> ActiveSpeakerPreset:
 
 
 def _shelf(freq: float = 8000.0, gain: float = -3.0) -> dict:
+    return {"biquad_type": "Highshelf", "freq": freq, "q": 0.7071067811865476, "gain": gain}
+
+
+def _lowshelf(freq: float = 8400.0, gain: float = -11.0) -> dict:
+    return {"biquad_type": "Lowshelf", "freq": freq, "q": 0.7071067811865476, "gain": gain}
+
+
+def _taper(freq: float = 20500.0, gain: float = -5.0) -> dict:
     return {"biquad_type": "Highshelf", "freq": freq, "q": 0.7071067811865476, "gain": gain}
 
 
@@ -151,6 +160,71 @@ def test_linearization_shelf_uses_fixed_highshelf_slope():
     assert "q" not in params
 
 
+def test_linearization_lowshelf_led_chain_order():
+    """CD-horn sibling of the chain-order test: a Lowshelf-led chain (backbone
+    at position 0 + peaks) names position 0 with the shelf name, exactly like
+    a Highshelf-led chain — the emitter treats both shelf types identically."""
+    preset = _preset()
+    linearization = {"tweeter": [_lowshelf(), _peak(6000.0, -5.0), _peak(11000.0, -1.0)]}
+    text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, linearization=linearization,
+    )
+    tweeter_names = _pipeline_names(text, channel=1)
+    assert tweeter_names == [
+        "as_tweeter_woofer_tweeter_hp",
+        driver_linearization_shelf_name("tweeter"),
+        driver_linearization_peak_name("tweeter", 1),
+        driver_linearization_peak_name("tweeter", 2),
+        "as_tweeter_delay",
+        "as_tweeter_baseline_gain",
+        "as_tweeter_baseline_limiter",
+    ]
+
+
+def test_linearization_lowshelf_uses_fixed_shelf_slope():
+    """The Lowshelf FilterSpec must carry the same fixed slope (6.0) as the
+    Highshelf — CamillaDSP reads ``slope``, not ``q``, for both shelf types."""
+    preset = _preset()
+    text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_lowshelf(freq=8200.0, gain=-9.0)]},
+    )
+    payload = yaml.safe_load(text)
+    params = payload["filters"][driver_linearization_shelf_name("tweeter")]["parameters"]
+    assert params["type"] == "Lowshelf"
+    assert params["freq"] == pytest.approx(8200.0)
+    assert params["gain"] == pytest.approx(-9.0)
+    assert params["slope"] == pytest.approx(6.0)
+    assert "q" not in params
+
+
+def test_linearization_taper_gets_its_own_name_and_definition():
+    """The trailing Highshelf taper (after a Lowshelf lead) gets the distinct
+    taper name and a Highshelf definition with the fixed shelf slope — so a
+    backbone shelf and a taper never collide on one filter name."""
+    preset = _preset()
+    linearization = {"tweeter": [_lowshelf(), _peak(6000.0, -4.0), _taper(freq=20500.0, gain=-5.0)]}
+    text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, linearization=linearization,
+    )
+    tweeter_names = _pipeline_names(text, channel=1)
+    assert tweeter_names == [
+        "as_tweeter_woofer_tweeter_hp",
+        driver_linearization_shelf_name("tweeter"),
+        driver_linearization_peak_name("tweeter", 1),
+        driver_linearization_taper_name("tweeter"),
+        "as_tweeter_delay",
+        "as_tweeter_baseline_gain",
+        "as_tweeter_baseline_limiter",
+    ]
+    payload = yaml.safe_load(text)
+    params = payload["filters"][driver_linearization_taper_name("tweeter")]["parameters"]
+    assert params["type"] == "Highshelf"
+    assert params["freq"] == pytest.approx(20500.0)
+    assert params["gain"] == pytest.approx(-5.0)
+    assert params["slope"] == pytest.approx(6.0)
+
+
 def test_linearization_peak_carries_its_own_q():
     preset = _preset()
     text = emit_active_speaker_baseline_config(
@@ -220,7 +294,10 @@ def test_linearization_unknown_role_is_dropped_not_raised():
     assert "midrange" not in text
 
 
-@pytest.mark.parametrize("bad_type", ["Lowshelf", "Notch", "", None, 42])
+# "Lowshelf" is now a SUPPORTED shelf type (#1668 CD-horn backbone), so it is
+# no longer in this bad-type list; a single-entry Lowshelf-led chain is a valid
+# leading shelf. Its acceptance + placement rules are pinned separately below.
+@pytest.mark.parametrize("bad_type", ["Notch", "", None, 42])
 def test_linearization_rejects_unsupported_biquad_type(bad_type):
     preset = _preset()
     with pytest.raises(ActiveSpeakerConfigError, match="biquad_type"):
@@ -295,6 +372,54 @@ def test_linearization_non_mapping_entry_raises():
         emit_active_speaker_baseline_config(
             preset, playback_device=ACTIVE_PCM,
             linearization={"woofer": ["not-a-mapping"]},  # type: ignore[list-item]
+        )
+
+
+def test_linearization_lowshelf_led_chain_is_accepted():
+    """A single leading Lowshelf, and a Lowshelf-led chain with a trailing
+    Highshelf taper, are BOTH valid shelf structures (#1668) — no raise."""
+    preset = _preset()
+    # single leading Lowshelf
+    emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, linearization={"tweeter": [_lowshelf()]},
+    )
+    # Lowshelf lead + peaks + trailing taper
+    emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_lowshelf(), _peak(6000.0, -3.0), _taper()]},
+    )
+
+
+def test_linearization_rejects_two_leading_shelves():
+    """Two shelf-type entries where the second is not a valid trailing taper
+    (here a Highshelf mid-chain after a Lowshelf lead) must fail closed."""
+    preset = _preset()
+    with pytest.raises(ActiveSpeakerConfigError, match="shelf placement"):
+        emit_active_speaker_baseline_config(
+            preset, playback_device=ACTIVE_PCM,
+            linearization={"tweeter": [_lowshelf(), _shelf(6000.0, -2.0), _peak(3000.0, -1.0)]},
+        )
+
+
+def test_linearization_rejects_taper_without_lowshelf_lead():
+    """A trailing Highshelf taper is only valid after a LOWshelf lead — after a
+    peak-led (or Highshelf-led) chain it is an illegal second shelf."""
+    preset = _preset()
+    with pytest.raises(ActiveSpeakerConfigError, match="shelf placement"):
+        emit_active_speaker_baseline_config(
+            preset, playback_device=ACTIVE_PCM,
+            linearization={"tweeter": [_peak(3000.0, -1.0), _taper()]},
+        )
+
+
+def test_linearization_rejects_taper_not_last():
+    """A Highshelf taper that is not the trailing entry (a shelf mid-chain) is
+    rejected — the fit engine only ever emits it last."""
+    preset = _preset()
+    with pytest.raises(ActiveSpeakerConfigError, match="shelf placement"):
+        emit_active_speaker_baseline_config(
+            preset, playback_device=ACTIVE_PCM,
+            linearization={"tweeter": [_lowshelf(), _taper(), _peak(3000.0, -1.0)]},
         )
 
 

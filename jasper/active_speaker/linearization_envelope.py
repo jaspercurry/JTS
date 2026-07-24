@@ -75,6 +75,18 @@ class ReasonCode(StrEnum):
     design doc (build-order step 2, "closed-loop verify" — a later PR).
     Keeping it in the enum now means the vocabulary never needs a breaking
     rename once that PR lands.
+
+    ``BEYOND_MEASUREMENT_CONFIDENCE`` is likewise vocabulary-only here:
+    :func:`compose_envelope` never produces it. It is produced by the
+    Layer-1a FIT layer's octave-band reason summary
+    (:func:`jasper.active_speaker.linearization_fit.fit_driver_linearization`)
+    for octave centers ABOVE the mic-trust confidence ceiling when the
+    CD-horn continuation stage fired — the top octave's relative lift there
+    is a declared-driver-type-informed continuation, not a measured claim,
+    so it is disclosed as beyond-confidence rather than as any measured
+    limit. Kept in this closed vocabulary (not the fit module) so every
+    persisted reason code, wherever produced, stays self-identifying against
+    the one enum.
     """
 
     FITTED = "envelope_fitted"
@@ -84,6 +96,7 @@ class ReasonCode(StrEnum):
     LIMITED_BY_EXCESS_PHASE = "envelope_limited_by_excess_phase"
     LIMITED_BY_CLASS_PRIOR = "envelope_limited_by_class_prior"
     LIMITED_BY_VERIFY_DIVERGENCE = "envelope_limited_by_verify_divergence"
+    BEYOND_MEASUREMENT_CONFIDENCE = "envelope_beyond_measurement_confidence"
     OUT_OF_BAND = "envelope_out_of_band"
 
 

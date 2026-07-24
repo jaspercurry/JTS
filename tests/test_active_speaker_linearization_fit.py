@@ -23,7 +23,11 @@ from jasper.active_speaker.linearization_envelope import (
     ReasonCode,
     compose_envelope,
 )
+from jasper.active_speaker._common import DRIVER_CLASSES
 from jasper.active_speaker.linearization_fit import (
+    HF_CONTINUATION_POLICY,
+    HF_REALIZATION_TOLERANCE_DB,
+    HF_TAPER_MAX_DB,
     MAX_FILTERS_PER_DRIVER,
     MAX_NORMALIZATION_SPEND_DB,
     PER_FILTER_CUT_CAP_DB,
@@ -129,15 +133,22 @@ def test_single_narrow_peak_yields_one_filter():
 def test_cd_horn_two_bump_shape_yields_multiple_peaking_filters_no_shelf():
     """Two well-separated bumps (a compression-driver's mid-treble rise
     THEN fall — the shape the real N=3 capture's tweeter actually showed,
-    not a monotonic ramp) is peaking-loop territory, not shelf territory:
-    no single cut-only Highshelf can characterize a rise-then-fall."""
+    not a monotonic ramp) is peaking-loop territory, not (rising) shelf
+    territory: no single cut-only Highshelf can characterize a rise-then-fall.
+
+    The excited band stops at 8 kHz (below the reference-tier confidence knee)
+    on purpose, so this fixture isolates the RISING-slope ``_shelf_stage``
+    behavior from the CD-horn continuation stage (#1668) — the latter only
+    engages when the fit band reaches the confidence ceiling, and has its own
+    dedicated tests below. Here, neither shelf mechanism should fire."""
     db = _bell(_NATIVE_FREQS_HZ, 2500.0, 6.0, 0.2) + _bell(_NATIVE_FREQS_HZ, 6000.0, 5.0, 0.2)
     resp = _driver_response("tweeter", db)
-    envelope = _envelope("tweeter", resp, excited_band_hz=(2000.0, 12000.0))
+    envelope = _envelope("tweeter", resp, excited_band_hz=(2000.0, 8000.0))
     fit = fit_driver_linearization(resp, envelope)
     assert len(fit.filters) >= 2
     assert all(f.biquad_type == "Peaking" for f in fit.filters)
     assert all(f.gain <= 0.0 for f in fit.filters)
+    assert fit.hf_continuation_spend_db == 0.0  # CD-horn stage ineligible here
     # Both bumps' regions end up materially reduced.
     assert fit.residual_max_db < 6.0
 
@@ -287,31 +298,50 @@ def test_normalization_budget_clamps_shelf_gain():
     """Direct, deterministic test of _shelf_stage's budget clamp, isolated
     from compose_envelope's own taper shapes: an exact log-linear ramp
     (10 dB over 2 octaves = 5 dB/oct, comfortably past the slope gate)
-    with an EXPLICIT plateau_level_db lets the three cases below assert
-    exact numbers."""
+    with an EXPLICIT plateau_level_db lets the cases below assert exact
+    numbers. Written symbolically in ``MAX_NORMALIZATION_SPEND_DB`` so it
+    tracks the constant (now 12 dB, == PER_FILTER_CUT_CAP_DB) rather than a
+    baked-in 6: the plateau spends a chunk of the budget first, so the
+    REMAINING budget — not the ramp's own 10 dB total_drop nor the 12 dB
+    per-filter cap — is the binding ceiling on the shelf gain."""
     grid = np.geomspace(1000.0, 4000.0, 200)
     slope_db_per_oct = 5.0
     smoothed = slope_db_per_oct * np.log2(grid / 1000.0)  # 0 dB @1kHz, 10 dB @4kHz
     band_mask = np.ones_like(grid, dtype=bool)
     target = 0.0
+    total_drop_db = 10.0  # the ramp's own value at the 4 kHz corner
 
-    # No spend yet (plateau == target) -> the full MAX_NORMALIZATION_SPEND_DB
-    # budget is available; total_drop (10) and the per-filter cut cap (12)
-    # both exceed it, so the budget itself binds.
-    shelf_full_budget = _shelf_stage(grid, smoothed, band_mask, 1000.0, 4000.0, target, target)
-    assert shelf_full_budget is not None
-    assert shelf_full_budget.gain == pytest.approx(-MAX_NORMALIZATION_SPEND_DB)
+    # Core spent a 4 dB chunk of the budget (plateau 4 dB above target) -> the
+    # remaining budget (MAX-4) is below total_drop (10) and below the cap (12),
+    # so the budget is the SOLE binding ceiling.
+    plateau_spent = 4.0
+    assert MAX_NORMALIZATION_SPEND_DB - plateau_spent < total_drop_db
+    shelf_budget_bound = _shelf_stage(
+        grid, smoothed, band_mask, 1000.0, 4000.0, target, plateau_spent,
+    )
+    assert shelf_budget_bound is not None
+    assert shelf_budget_bound.gain == pytest.approx(
+        -(MAX_NORMALIZATION_SPEND_DB - plateau_spent)
+    )
 
-    # Core already spent 5 dB of the budget (plateau 5 dB above target) ->
-    # only 1 dB remains for the shelf.
-    shelf_partial = _shelf_stage(grid, smoothed, band_mask, 1000.0, 4000.0, target, 5.0)
+    # Core spent more (plateau higher) -> even less remains; the shelf gain
+    # shrinks proportionally, proving the clamp tracks the remaining budget.
+    plateau_spent_more = 9.0
+    shelf_partial = _shelf_stage(
+        grid, smoothed, band_mask, 1000.0, 4000.0, target, plateau_spent_more,
+    )
     assert shelf_partial is not None
-    assert shelf_partial.gain == pytest.approx(-1.0)
+    assert shelf_partial.gain == pytest.approx(
+        -(MAX_NORMALIZATION_SPEND_DB - plateau_spent_more)
+    )
 
-    # Core already spent the WHOLE budget (plateau >= 6 dB above target) ->
-    # nothing left; the shelf must not fire (an honest gap, not a filter
-    # with sub-threshold gain).
-    shelf_exhausted = _shelf_stage(grid, smoothed, band_mask, 1000.0, 4000.0, target, 6.5)
+    # Core already spent the WHOLE budget (plateau >= MAX above target) ->
+    # nothing left; the shelf must not fire (an honest gap, not a filter with
+    # sub-threshold gain).
+    shelf_exhausted = _shelf_stage(
+        grid, smoothed, band_mask, 1000.0, 4000.0, target,
+        MAX_NORMALIZATION_SPEND_DB + 0.5,
+    )
     assert shelf_exhausted is None
 
 
@@ -773,3 +803,265 @@ def test_woofer_within_class_and_tier_full_to_has_a_full_width_core():
     envelope_mask = envelope.allowed_depth_db > 0.05
     core = _core_or_fallback_mask(envelope, envelope_mask)
     assert np.array_equal(core, envelope_mask)
+
+
+# --------------------------------------------------------------------------- #
+# CD-horn compensation stage (#1668)
+# --------------------------------------------------------------------------- #
+
+# A compression-driver-on-a-horn: flat 2-8 kHz, then the horn's constant-
+# directivity top-octave rolloff (~-2.5 @10k ... -11.5 @16k, relative to the
+# trusted 4-8 kHz band). Anchored + log-interpolated so the shape is derivable.
+_CD_HORN_ANCHOR_HZ = np.array(
+    [2000.0, 4000.0, 8000.0, 10000.0, 12000.0, 14000.0, 16000.0, 18000.0, 20000.0]
+)
+_CD_HORN_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -2.5, -5.8, -8.6, -11.5, -13.5, -15.0])
+# A slightly deeper rolloff whose top-octave deficit (~12.5 dB) EXCEEDS the
+# 12 dB normalization budget, so the spend is capped below the measured deficit
+# (the "partial correction visible via measured_deficit_at_ceiling_db" case).
+_CD_HORN_DEEP_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -3.0, -7.0, -10.0, -13.0, -14.0, -14.5])
+
+
+def _cd_horn_db(freqs_hz: np.ndarray, anchor_db: np.ndarray = _CD_HORN_ANCHOR_DB) -> np.ndarray:
+    return np.interp(np.log2(freqs_hz), np.log2(_CD_HORN_ANCHOR_HZ), anchor_db)
+
+
+def _tweeter_response(magnitude_db, *, repeat_mags=None, role="tweeter", freqs_hz=_NATIVE_FREQS_HZ):
+    """A tweeter primary whose repeats can be specified individually (for the
+    agreement gate). ``repeat_mags=None`` gives two IDENTICAL repeats (agree)."""
+    def mk(m):
+        return DriverResponse(
+            role=role, freqs_hz=freqs_hz, magnitude_db=m,
+            complex_tf=(10.0 ** (m / 20.0)).astype(complex),
+            gating={}, snr=None, validity_floor_hz=140.0,
+        )
+
+    if repeat_mags is None:
+        repeat_mags = [magnitude_db, magnitude_db]
+    return DriverResponse(
+        role=role, freqs_hz=freqs_hz, magnitude_db=magnitude_db,
+        complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
+        gating={}, snr=None, validity_floor_hz=140.0,
+        repeat_responses=tuple(mk(m) for m in repeat_mags),
+    )
+
+
+def _cd_horn_fit(driver_class="compression_horn", *, anchor_db=_CD_HORN_ANCHOR_DB, role="tweeter", repeat_mags=None):
+    mag = _cd_horn_db(_NATIVE_FREQS_HZ, anchor_db)
+    resp = _tweeter_response(mag, repeat_mags=repeat_mags, role=role)
+    envelope = compose_envelope(
+        role, resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="reference", driver_class=driver_class,
+    )
+    return fit_driver_linearization(resp, envelope)
+
+
+def test_cd_horn_falling_top_octave_fires_lowshelf_give_back():
+    """The keystone: a reference-tier compression-horn tweeter with agreeing
+    repeats FIRES the stage — a Lowshelf backbone at position 0, cut-only, with
+    spend == the measured top-octave deficit (which here sits under the budget)
+    and the realized cascade tracking cut_target (the stage only fires when the
+    fit-quality gate passed, and the give-back-frame residual is small)."""
+    fit = _cd_horn_fit("compression_horn")
+    assert fit.hf_continuation_spend_db > 0.0
+    assert fit.hf_continuation_suppressed_reason == ""
+    assert fit.hf_continuation_policy == "hold"
+    assert fit.hf_continuation_ceiling_hz == pytest.approx(16444.9, rel=0.01)
+    assert fit.filters[0].biquad_type == "Lowshelf"  # backbone at position 0
+    assert fit.filters[0].gain == pytest.approx(-fit.hf_continuation_spend_db)
+    assert all(f.gain <= 0.0 for f in fit.filters)  # cut-only invariant
+    # Deficit under budget here, so spend == the (uncapped) measured deficit.
+    assert fit.hf_continuation_spend_db == pytest.approx(fit.measured_deficit_at_ceiling_db)
+    assert 10.0 < fit.measured_deficit_at_ceiling_db < 12.0
+    assert fit.hf_continuation_spend_db <= MAX_NORMALIZATION_SPEND_DB
+    # Realized cascade tracks cut_target -> the give-back frame is flat.
+    assert fit.residual_max_db < HF_REALIZATION_TOLERANCE_DB
+
+
+def test_cd_horn_realized_cascade_tracks_cut_target_within_tolerance():
+    """Direct check that the EMITTED filters realize the intended cut-domain
+    give-back: applied to the smoothed measured curve, the result is flat in
+    the give-back frame (target - spend) across the trusted band, to within the
+    realization tolerance — the same shape the fit-quality gate enforces."""
+    mag = _cd_horn_db(_NATIVE_FREQS_HZ)
+    resp = _tweeter_response(mag)
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="reference", driver_class="compression_horn",
+    )
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.hf_continuation_spend_db > 0.0
+    grid = envelope.freqs_hz
+    smoothed = _ladder_smooth(grid, np.interp(grid, resp.freqs_hz, resp.magnitude_db))
+    realized = 20.0 * np.log10(
+        np.abs(complex_correction_response(fit.filters, grid))
+    )
+    working = smoothed + realized
+    frame_target = fit.target_level_db - fit.hf_continuation_spend_db
+    # Over the trusted band up to the ceiling, the corrected curve tracks the
+    # give-back frame (flat) rather than falling ~spend below it.
+    band = (grid >= 4000.0) & (grid <= fit.hf_continuation_ceiling_hz)
+    assert float(np.max(np.abs(working - frame_target)[band])) < 2.0
+
+
+def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
+    """When the measured top-octave deficit EXCEEDS the normalization budget,
+    the spend is capped at the budget but measured_deficit_at_ceiling_db still
+    reports the UNCAPPED measured value — so a partially-corrected top octave is
+    visible, not silently rounded to the capped spend."""
+    fit = _cd_horn_fit("compression_horn", anchor_db=_CD_HORN_DEEP_ANCHOR_DB)
+    assert fit.hf_continuation_spend_db > 0.0
+    assert fit.hf_continuation_spend_db == pytest.approx(MAX_NORMALIZATION_SPEND_DB)
+    assert fit.measured_deficit_at_ceiling_db > fit.hf_continuation_spend_db + 0.2
+
+
+def test_cd_horn_disagreeing_repeats_suppress_the_stage():
+    """The agreement gate: repeats that disagree by more than the [10 kHz,
+    ceiling] limit (2 dB) suppress the stage entirely — no filters, a named
+    reason, everything else zeroed."""
+    mag = _cd_horn_db(_NATIVE_FREQS_HZ)
+    disagree = mag + 3.0 * _bell(_NATIVE_FREQS_HZ, 12000.0, 1.0, 0.15)  # +3 dB @12k on one repeat
+    fit = _cd_horn_fit("compression_horn", repeat_mags=[mag, disagree])
+    assert fit.filters == ()
+    assert fit.hf_continuation_suppressed_reason == "repeat_disagreement"
+    assert fit.hf_continuation_spend_db == 0.0
+    assert fit.measured_deficit_at_ceiling_db == 0.0
+
+
+def test_cd_horn_insufficient_repeats_suppress_the_stage():
+    """Fewer than 2 repeats is no reproducibility evidence (the N>=3-total
+    paired gate) — suppressed with its own reason, distinct from disagreement."""
+    mag = _cd_horn_db(_NATIVE_FREQS_HZ)
+    fit = _cd_horn_fit("compression_horn", repeat_mags=[mag])  # only 1 repeat
+    assert fit.filters == ()
+    assert fit.hf_continuation_suppressed_reason == "insufficient_repeats"
+
+
+def test_cd_horn_fit_quality_suppresses_when_realization_cannot_track(monkeypatch):
+    """If the cut-domain realization cannot track cut_target within tolerance
+    (here forced by starving the peaking residual fit, leaving the Lowshelf
+    alone unable to match the corner), the WHOLE stage is suppressed rather
+    than ship a mis-shaped correction."""
+    import jasper.active_speaker.linearization_fit as fit_mod
+    monkeypatch.setattr(fit_mod, "design_peq", lambda *a, **k: [])
+    fit = _cd_horn_fit("compression_horn")
+    assert fit.filters == ()
+    assert fit.hf_continuation_suppressed_reason == "fit_quality"
+    assert fit.hf_continuation_spend_db == 0.0
+
+
+def test_cd_horn_sizing_is_class_blind():
+    """Sizing comes from measurement, not the driver class: the same curve
+    under two DIFFERENT hold-policy classes produces identical spend and
+    identical filters (their continuation policy is the same, so nothing
+    differs) — the class's only authority is the above-ceiling continuation."""
+    a = _cd_horn_fit("compression_horn")
+    b = _cd_horn_fit("soft_dome")
+    assert a.hf_continuation_spend_db == pytest.approx(b.hf_continuation_spend_db)
+    assert [f.to_dict() for f in a.filters] == [f.to_dict() for f in b.filters]
+
+
+def test_cd_horn_taper_policy_appends_trailing_highshelf_cut():
+    """metal_dome / unknown are "taper" classes: above the ceiling they append
+    one TRAILING Highshelf CUT (freq = ceiling*1.25, gain = -min(spend/2,
+    HF_TAPER_MAX_DB)) that walks the lift back down. compression_horn (hold)
+    appends nothing — its filters end on a Peaking."""
+    for taper_class in ("metal_dome", "unknown"):
+        fit = _cd_horn_fit(taper_class)
+        assert fit.hf_continuation_policy == "taper"
+        assert fit.filters[0].biquad_type == "Lowshelf"
+        taper = fit.filters[-1]
+        assert taper.biquad_type == "Highshelf"
+        assert taper.gain <= 0.0  # a CUT, not a boost
+        assert taper.freq == pytest.approx(fit.hf_continuation_ceiling_hz * 1.25)
+        assert taper.gain == pytest.approx(
+            -min(fit.hf_continuation_spend_db / 2.0, HF_TAPER_MAX_DB)
+        )
+
+    hold_fit = _cd_horn_fit("compression_horn")
+    assert hold_fit.hf_continuation_policy == "hold"
+    assert all(f.biquad_type != "Highshelf" for f in hold_fit.filters)
+
+
+def test_cd_horn_continuation_policy_covers_every_driver_class():
+    """The policy table must key EXACTLY on DRIVER_CLASSES — no declared class
+    can fall through to an undefined continuation policy."""
+    assert set(HF_CONTINUATION_POLICY) == set(DRIVER_CLASSES)
+    assert set(HF_CONTINUATION_POLICY.values()) == {"hold", "taper"}
+
+
+def test_cd_horn_mutually_exclusive_with_rising_highshelf_shelf():
+    """A monotonic RISING response fires the rising-slope Highshelf shelf and
+    must NOT also fire the CD-horn stage — the two are mutually exclusive (a
+    genuinely rising response has no falling top-octave deficit to compensate,
+    and the eligibility check refuses to run alongside a rising Highshelf)."""
+    rise_lo, rise_hi, rise_db = 2000.0, 16000.0, 12.0
+    frac = np.log2(np.clip(_NATIVE_FREQS_HZ, rise_lo, rise_hi) / rise_lo) / np.log2(rise_hi / rise_lo)
+    db = np.where(
+        _NATIVE_FREQS_HZ < rise_lo, 0.0,
+        np.where(_NATIVE_FREQS_HZ > rise_hi, rise_db, rise_db * frac),
+    )
+    resp = _tweeter_response(db)
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="reference", driver_class="compression_horn",
+    )
+    fit = fit_driver_linearization(resp, envelope)
+    assert any(f.biquad_type == "Highshelf" for f in fit.filters)  # rising shelf fired
+    assert fit.hf_continuation_spend_db == 0.0  # CD-horn stage stayed out
+    assert fit.hf_continuation_suppressed_reason == ""
+
+
+def test_cd_horn_woofer_shape_is_ineligible_and_byte_stable():
+    """A woofer whose fit band never reaches the confidence ceiling is
+    ineligible — the CD-horn fields stay at their zeroed defaults, so the
+    result serializes exactly as it did before this stage existed."""
+    db = _bell(_NATIVE_FREQS_HZ, 900.0, 8.0, 0.15)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.hf_continuation_spend_db == 0.0
+    assert fit.hf_continuation_ceiling_hz == 0.0
+    assert fit.hf_continuation_policy == ""
+    assert fit.hf_continuation_suppressed_reason == ""
+    assert fit.measured_deficit_at_ceiling_db == 0.0
+    # The woofer still gets its ordinary peaking correction, unaffected.
+    assert fit.filters
+    assert all(f.biquad_type == "Peaking" for f in fit.filters)
+
+
+def test_cd_horn_residual_and_observe_are_in_the_give_back_frame():
+    """When the stage fires, residual/verify/observe are computed against the
+    give-back frame (target - spend), not the original median. Proof: the
+    trusted-band octave summaries sit near 0 (flat in the give-back frame),
+    not near -spend (which is what the ORIGINAL frame would report after the
+    whole band was cut by spend)."""
+    fit = _cd_horn_fit("compression_horn")
+    assert fit.hf_continuation_spend_db > 5.0
+    # In the give-back frame the trusted band reads ~flat; in the original
+    # frame it would read ~-spend (< -5). This distinguishes the two frames.
+    assert abs(fit.observe_octave_summary["4000"]) < 3.0
+    assert fit.residual_max_db < 3.0
+    # target_level_db FIELD still reports the ORIGINAL median (0 for a flat core).
+    assert fit.target_level_db == pytest.approx(0.0, abs=0.5)
+
+
+def test_cd_horn_reason_override_above_ceiling_is_beyond_confidence():
+    """Octave centers ABOVE the confidence ceiling are disclosed as
+    beyond-measurement-confidence when the stage fired; centers at/below the
+    ceiling keep their ordinary envelope reason."""
+    fit = _cd_horn_fit("compression_horn")
+    assert fit.hf_continuation_spend_db > 0.0
+    # 20 kHz is above the ~16.4 kHz reference-tier ceiling.
+    assert fit.reason_summary["20000"] == ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE.value
+    # 8 kHz is below the ceiling -> keeps its ordinary (non-override) reason.
+    assert fit.reason_summary["8000"] != ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE.value
+
+
+def test_cd_horn_stage_is_role_agnostic():
+    """The stage keys on the fit band reaching the ceiling, not on any role
+    vocabulary — an arbitrary role string still fires it."""
+    fit = _cd_horn_fit("compression_horn", role="supertweeter")
+    assert fit.role == "supertweeter"
+    assert fit.hf_continuation_spend_db > 0.0
+    assert fit.filters[0].biquad_type == "Lowshelf"

@@ -225,16 +225,19 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    ±half-period comb lobe inside the range; GCC is deliberately not the lobe
    prior because its periodic peak can identify a neighboring comb basin.
 **Layer 1a driver linearization (#1668 PR-C).** MEASURE additionally fits
-a per-driver cut-only linearization (Highshelf + Peaking, honoring the
-correction envelope's per-bin depth ceiling) whenever the mic resolved to
-the "reference" trust tier AND both drivers cleared a paired ≥3-occurrence
-gate — otherwise the candidate is byte-identical to the plain trims-only
-shape from before this PR. When eligible, the fit is applied to each
-branch in the linear domain BEFORE the trim solve, so trim reflects the
-linearized (not raw) response — the ordering that structurally defuses
-#1667's band-average bias; an implausible re-solved trim (>6 dB from the
-raw solve) is distrusted and discarded in favor of the raw value. The
-fit result travels on `MeasuredCrossoverCandidate.linearization` (empty
+a per-driver cut-only linearization (a rising-slope Highshelf + Peaking cuts,
+plus the CD-horn top-octave give-back stage — a Lowshelf backbone + optional
+trailing Highshelf taper, #1668 — honoring the correction envelope's per-bin
+depth ceiling) whenever the mic resolved to the "reference" trust tier AND both
+drivers cleared a paired ≥3-occurrence gate — otherwise the candidate is
+byte-identical to the plain trims-only shape from before this PR. When eligible,
+the fit is applied to each branch in the linear domain BEFORE the trim solve, so
+trim reflects the linearized (not raw) response — the ordering that structurally
+defuses #1667's band-average bias; an implausibly-drifted linearized re-solve
+(the ripple-optimal tweeter trim >6 dB from its OWN band-average seed, #1668
+CD-horn re-anchor — NOT the raw trim, which a legitimate give-back legitimately
+moves by ~the full spend) is discarded in favor of the band-average seed pair.
+The fit result travels on `MeasuredCrossoverCandidate.linearization` (empty
 dict = not attempted). Design and fitting-policy SSOT:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 "Layer 1a concretely"; engine at
@@ -244,8 +247,10 @@ correction-envelope core at
 
 **Linearization EMISSION (#1668 PR-D).** The fit result is no longer
 evidence-only: `emit_active_speaker_baseline_config` (`camilla_yaml.py`)
-gained a `linearization` parameter — one Peaking/Highshelf chain per role,
-emitted immediately after that driver's crossover HP/LP and before
+gained a `linearization` parameter — one Peaking/Highshelf/Lowshelf chain per
+role (the CD-horn stage adds a leading Lowshelf backbone and an optional
+trailing Highshelf taper, #1668), emitted immediately after that driver's
+crossover HP/LP and before
 bass-extension, via the shared `emit_filter_spec` primitive. The two
 RICH-candidate seams —
 `measured_crossover_candidate.compile_candidate_config` and
@@ -264,8 +269,9 @@ longer silently drops the stage on every EQ/room recompose — but the
 reduction path differs; do not "consolidate" the two onto one helper call.
 The runtime-safety verifier
 (`runtime_contract._baseline_output_chain`) independently re-proves any
-linearization-named filter in the emitted chain (Peaking/Highshelf type,
-non-positive gain) — self-proving from the graph text alone, so no new
+linearization-named filter in the emitted chain (Peaking/Highshelf/Lowshelf
+type, non-positive gain, one leading shelf + one optional trailing Highshelf
+taper) — self-proving from the graph text alone, so no new
 evidence parameter needed threading through `classify_camilla_graph`'s
 other callers. Emission is empty by default; a candidate/snapshot with no
 `linearization` key, or an empty one, stays byte-identical to the
@@ -423,8 +429,8 @@ most visible thing on the screen.
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
 | [`jasper/active_speaker/measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact (trims + `MeasuredCrossoverAlignment` + `linearization`), folded through `emit_active_speaker_baseline_config` (`camilla_yaml.py`) and the delay/graph-safety proofs. |
 | [`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | Layer-1a correction envelope (#1668 PR-B): `compose_envelope` → per-bin allowed correction depth + `ReasonCode`, `compute_sigma_curve`, `mic_trust_limit` / `repeatability_limit` / `class_prior_limit`. Pure computation, no policy. |
-| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, `MAX_NORMALIZATION_SPEND_DB` budget, the `verify_band_hz`/`observe_octave_summary` honesty-ladder fields added in PR-D). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. Also owns `linearization_filters_by_role`, the reduction the two rich-candidate emission call sites share (`recompose_applied_baseline_yaml` deliberately does not call it — see "Linearization EMISSION" above). |
-| [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter. `emit_active_speaker_baseline_config`'s `linearization` parameter (#1668 PR-D) is what actually plays the Layer-1a fit — see "Linearization EMISSION" above; `_validated_linearization` independently re-validates it (Peaking/Highshelf, non-positive gain) before any filter reaches CamillaDSP. |
+| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only rising Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, the CD-horn top-octave `_hf_continuation_stage` — a Lowshelf-backbone give-back + declared-class hold/taper policy, #1668 — `MAX_NORMALIZATION_SPEND_DB` budget now 12 dB, the `verify_band_hz`/`observe_octave_summary` honesty-ladder fields added in PR-D). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. Also owns `linearization_filters_by_role`, the reduction the two rich-candidate emission call sites share (`recompose_applied_baseline_yaml` deliberately does not call it — see "Linearization EMISSION" above). |
+| [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter. `emit_active_speaker_baseline_config`'s `linearization` parameter (#1668 PR-D) is what actually plays the Layer-1a fit — see "Linearization EMISSION" above; `_validated_linearization` independently re-validates it (Peaking/Highshelf/Lowshelf, non-positive gain, one leading shelf + one optional trailing Highshelf taper) before any filter reaches CamillaDSP. |
 | [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Relay protocol v3: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. |
 | [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the v3 session loop; `version.json` carries the supported protocol versions. |
 
@@ -506,9 +512,11 @@ most visible thing on the screen.
     boundary, never trust-the-caller (#1668 PR-D).** The emitter
     (`_validated_linearization`) and the runtime-safety verifier
     (`_consume_linearization_chain`) each re-prove biquad type ∈
-    {Peaking, Highshelf} and non-positive gain from scratch — the
-    fit engine's own cut-only invariant is not assumed to have
-    survived a JSON round-trip. Full safety-posture rationale (the
+    {Peaking, Highshelf, Lowshelf}, non-positive gain, and the
+    shelf-placement structure (one leading shelf + one optional
+    trailing Highshelf taper, #1668) from scratch — the fit engine's
+    own cut-only invariant is not assumed to have survived a JSON
+    round-trip. Full safety-posture rationale (the
     non-positive-gain policy, the boost-cap deferral) is owned by
     [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md);
     this doc does not restate it.

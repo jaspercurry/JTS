@@ -2884,65 +2884,113 @@ def test_declared_driver_class_reaches_the_compose_envelope_seam():
     assert c.candidate.linearization["woofer"]["driver_class"] == "unknown"
 
 
-def test_wild_resolved_trim_falls_back_to_raw_with_warning(caplog):
-    """If the re-solved trim lands implausibly far (> 6 dB) from the raw
-    solve, the conductor must distrust it and fall back to the raw trim —
-    logging a WARNING, never silently swapping in a wild value."""
+def test_large_raw_shift_is_accepted_by_seed_anchored_guard(caplog):
+    """#1668 CD-horn re-anchor, guard pair (a): the wild-trim guard is anchored
+    to the ripple-optimal tweeter trim's OWN band-average seed, NOT the raw
+    candidate trim. So a large correction band-average shift vs the raw trim
+    (exactly what a legitimate CD-horn give-back produces) is ACCEPTED as long
+    as the ripple-optimal scan stayed near its seed. The old raw-anchored guard
+    rejected every such give-back — this is the bug the re-anchor fixes."""
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
-    # A deliberately-inconsistent "raw" trim (nothing derives the resolved
-    # trim from this value — it's the fixture's own declared candidate —
-    # so setting it far from what the actual responses justify is exactly
-    # how to trigger the sanity backstop deterministically).
-    wild_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
-    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=wild_raw_trim)
+    # A raw trim deliberately far from what the responses justify. Under the old
+    # raw-anchored guard this forced a rejection; under the seed anchor it is
+    # irrelevant to the guard (a near-seed ripple-optimal scan is trusted).
+    far_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=far_raw_trim)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    assert c.candidate.role_attenuations_db == wild_raw_trim
+    assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # the constant exists and is positive
+    # Accepted the FITTED (resolved) trim, NOT the raw fallback -> not wild.
+    assert c.candidate.role_attenuations_db != far_raw_trim
+    assert "event=correction.crossover_v2_linearization_trim_rejected" not in caplog.text
+    assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+
+
+def test_wild_seed_drift_falls_back_to_seed_pair_with_warning(caplog, monkeypatch):
+    """#1668 CD-horn re-anchor, guard pair (b): when the ripple-optimal tweeter
+    re-solve drifts implausibly far from its OWN band-average seed, the guard
+    fires and the conductor falls back to the band-average SEED pair — NOT the
+    raw trim (raw trim + emitted filters is the known VERIFY-mismatch class).
+    The rejection event carries seed_trim_db/fallback_trim_db. Crafting a scan
+    that walks that far from its seed against a synthetic fixture is awkward, so
+    the ripple-optimal solve is monkeypatched to return a far-from-seed trim."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+
+    captured: dict = {}
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        # Force the resolved tweeter trim 20 dB below its band-average seed.
+        return kwargs["seed_trim_db"] - 20.0, 0.0, kwargs["seed_trim_db"]
+
+    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+
+    far_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=far_raw_trim)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    # Committed the SEED pair (woofer=trim_w_lin, tweeter=band-average seed),
+    # NOT the raw trim and NOT the wild resolved value.
+    committed = c.candidate.role_attenuations_db
+    assert set(committed) == {"woofer", "tweeter"}
+    assert committed["woofer"] == pytest.approx(captured["trim_w_db"])
+    assert committed["tweeter"] == pytest.approx(captured["seed_trim_db"])
+    assert committed != far_raw_trim
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # sanity: the constant exists and is positive
+    assert "seed_trim_db=" in caplog.text
+    assert "fallback_trim_db=" in caplog.text
     # linearization itself still gets reported — only the trim falls back.
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
 
 
-def test_wild_trim_boundary_exact_passes_just_above_falls_back():
-    """The sanity margin is an exclusive upper bound (matches this file's
-    other boundary comparators, e.g.
-    test_predicted_ripple_ceiling_boundary_exact_passes_just_above_fires):
-    exactly at the margin is trusted, one hair over falls back."""
+def test_wild_trim_boundary_exact_passes_just_above_falls_back(monkeypatch):
+    """The sanity margin is an exclusive upper bound (matches this file's other
+    boundary comparators): a seed drift EXACTLY at the margin is trusted, one
+    hair over falls back. Seed-anchored (#1668), so the ripple-optimal solve is
+    monkeypatched to return a controlled distance from its own seed."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    # Exactly at the margin from the seed -> still trusted (resolved used).
+    monkeypatch.setattr(
+        flow_mod, "solve_ripple_optimal_trim",
+        lambda *a, **k: (
+            k["seed_trim_db"] - LINEARIZATION_TRIM_SANITY_MARGIN_DB, 0.0, k["seed_trim_db"],
+        ),
+    )
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is True
-    resolved_tweeter = c.candidate.role_attenuations_db["tweeter"]
+    _run_phase(c, 2, 2)
+    at_margin_tweeter = c.candidate.role_attenuations_db["tweeter"]
 
-    # Exactly at the margin from the resolved value -> still trusted.
-    at_margin_raw = {
-        "woofer": 0.0,
-        "tweeter": resolved_tweeter - LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    }
+    # A hair past the margin -> falls back to the band-average seed.
+    monkeypatch.setattr(
+        flow_mod, "solve_ripple_optimal_trim",
+        lambda *a, **k: (
+            k["seed_trim_db"] - LINEARIZATION_TRIM_SANITY_MARGIN_DB - 0.5, 0.0,
+            k["seed_trim_db"],
+        ),
+    )
     fakes2 = FakeSeams()
-    fakes2.measure = lambda program: _eligible_measure_analysis(program, trim_db=at_margin_raw)
+    fakes2.measure = lambda program: _eligible_measure_analysis(program)
     c2 = _conductor(fakes2)
     _run_phase(c2, 1, 1)
     _run_phase(c2, 2, 2)
-    assert c2.candidate.role_attenuations_db != at_margin_raw  # resolved value used, not raw
+    past_margin_tweeter = c2.candidate.role_attenuations_db["tweeter"]
 
-    # A hair past the margin -> falls back to raw.
-    past_margin_raw = {
-        "woofer": 0.0,
-        "tweeter": resolved_tweeter - LINEARIZATION_TRIM_SANITY_MARGIN_DB - 0.5,
-    }
-    fakes3 = FakeSeams()
-    fakes3.measure = lambda program: _eligible_measure_analysis(program, trim_db=past_margin_raw)
-    c3 = _conductor(fakes3)
-    _run_phase(c3, 1, 1)
-    _run_phase(c3, 2, 2)
-    assert c3.candidate.role_attenuations_db == past_margin_raw
+    # At margin: the (near-)resolved value is used, so the tweeter trim sits a
+    # full margin below its seed. Past margin: it falls back to the seed itself,
+    # so the tweeter trim is materially HIGHER (closer to 0) than the at-margin
+    # case — the two outcomes are distinguishable.
+    assert past_margin_tweeter > at_margin_tweeter
 
 
 # --------------------------------------------------------------------------- #
@@ -3053,14 +3101,20 @@ def test_measure_diag_linearization_field_ineligible_repeats(caplog):
     assert c.candidate.linearization_outcome == "ineligible_repeats"
 
 
-def test_measure_diag_linearization_field_trim_rejected(caplog):
-    """SF3: the trim_rejected outcome (fit succeeded, but the resolved trim
-    was implausible and fell back to raw -- distinct from "fitted" even
-    though linearization is populated in both)."""
+def test_measure_diag_linearization_field_trim_rejected(caplog, monkeypatch):
+    """SF3: the trim_rejected outcome (fit succeeded, but the ripple-optimal
+    tweeter re-solve drifted implausibly far from its band-average seed and
+    fell back to the seed pair -- distinct from "fitted" even though
+    linearization is populated in both). Seed-anchored (#1668), so force the
+    drift by monkeypatching the ripple-optimal solve."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    monkeypatch.setattr(
+        flow_mod, "solve_ripple_optimal_trim",
+        lambda *a, **k: (k["seed_trim_db"] - 20.0, 0.0, k["seed_trim_db"]),
+    )
     fakes = FakeSeams()
-    wild_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
-    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=wild_raw_trim)
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
@@ -3158,38 +3212,43 @@ def test_measure_predicted_sum_uses_linearized_branches_when_fitted(monkeypatch)
 def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monkeypatch):
     """The wild-trim sanity guard only ever changes the TRIM applied -- the
     correction filters are emitted either way
-    (test_wild_resolved_trim_falls_back_to_raw_with_warning already pins
-    this). The persisted VERIFY prediction must therefore still be built
-    from the LINEARIZED branches on this fallback sub-case too, just at the
-    RAW trim that actually ended up in role_attenuations_db -- never the
-    un-linearized branches, and never the REJECTED (resolved) trim."""
+    (test_wild_seed_drift_falls_back_to_seed_pair_with_warning already pins
+    this). The persisted VERIFY prediction must therefore still be built from
+    the LINEARIZED branches on this fallback sub-case too, just at the band-
+    average SEED trim that actually ended up in role_attenuations_db (#1668
+    re-anchor) -- never the un-linearized branches, and never the REJECTED
+    (wild resolved) trim. Force the rejection by monkeypatching the ripple-
+    optimal solve to return a far-from-seed value while still capturing the
+    linearized branches it received."""
     from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     captured: dict = {}
-    real_solve = flow_mod.solve_ripple_optimal_trim
 
     def _spy(*args, **kwargs):
         freqs, w_tf, t_tf, fc_hz = args
         captured.update(freqs=freqs, w_tf=w_tf, t_tf=t_tf, fc_hz=fc_hz, **kwargs)
-        return real_solve(*args, **kwargs)
+        # Force the resolved tweeter trim far from its band-average seed.
+        return kwargs["seed_trim_db"] - 20.0, 0.0, kwargs["seed_trim_db"]
 
     monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
 
-    wild_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=wild_raw_trim)
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
 
-    # Sanity: this really is the trim_rejected sub-case (falls back to raw).
-    assert c.candidate.role_attenuations_db == wild_raw_trim
+    # Sanity: this really is the trim_rejected sub-case (fell back to the SEED
+    # pair, not the wild resolved value).
+    committed = c.candidate.role_attenuations_db
+    assert committed["woofer"] == pytest.approx(captured["trim_w_db"])
+    assert committed["tweeter"] == pytest.approx(captured["seed_trim_db"])
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
 
     expected_complex = predicted_branch_sum(
         captured["w_tf"], captured["t_tf"],
-        wild_raw_trim["woofer"], wild_raw_trim["tweeter"], 1,
+        captured["trim_w_db"], captured["seed_trim_db"], 1,
     )
     expected_db = 20.0 * np.log10(np.maximum(np.abs(expected_complex), 1e-12))
     freqs_used, db_used = c.measure_predicted_sum
