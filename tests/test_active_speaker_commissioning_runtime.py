@@ -74,6 +74,7 @@ from jasper.dsp_apply import (
     dsp_writer_lock,
 )
 from jasper.output_topology import OutputTopology
+from tests._async_wait import wait_signalled
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_runtime_contract import (
     _active_baseline_yaml,
@@ -759,7 +760,7 @@ async def test_cancellation_during_safe_volume_set_restores_without_audio(
             config_dir=tmp_path,
         )
     )
-    await volume_started.wait()
+    await wait_signalled(volume_started, "safe volume set began", producer=task)
     task.cancel()
     with pytest.raises(runtime.CommissioningRuntimeCancelled) as raised:
         await task
@@ -1596,7 +1597,7 @@ async def test_cancellation_during_restore_continues_remaining_cleanup(
             config_dir=tmp_path,
         )
     )
-    await restore_started.wait()
+    await wait_signalled(restore_started, "restore apply began", producer=task)
     task.cancel()
     with pytest.raises(runtime.CommissioningRuntimeFailure) as raised:
         await task
@@ -1632,7 +1633,7 @@ async def test_external_cancellation_stops_interruptible_capture_and_restores(
             config_dir=tmp_path,
         )
     )
-    await started.wait()
+    await wait_signalled(started, "interruptible capture began", producer=task)
     task.cancel()
     with pytest.raises(runtime.CommissioningRuntimeCancelled) as raised:
         await task
@@ -1667,7 +1668,7 @@ async def test_cancel_suppressed_by_late_callback_reports_completed_result(
             config_dir=tmp_path,
         )
     )
-    await started.wait()
+    await wait_signalled(started, "interruptible capture began", producer=task)
     task.cancel()
     with pytest.raises(runtime.CommissioningRuntimeCancelled) as raised:
         await task
