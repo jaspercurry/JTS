@@ -6836,6 +6836,92 @@ def test_check_fanin_tts_drops_ok_when_status_unreachable(monkeypatch):
     assert "jasper-fanin service" in r.detail
 
 
+# ---------------------------------------------------------------------------
+# check_fanin_ring_stall — a live fan-in→CamillaDSP ring stall (issue #1524):
+# the SHM ring is full and CamillaDSP is not draining it. Skip-if-loopback.
+# ---------------------------------------------------------------------------
+
+
+def _fanin_payload_with_ring(ring: dict | None) -> bytes:
+    """A shm_ring-transport fan-in STATUS payload with (or without) a ring block."""
+    payload = json.loads(_fanin_status_payload(transport="shm_ring").decode())
+    if ring is not None:
+        payload["output"]["ring"] = ring
+    return json.dumps(payload).encode()
+
+
+def test_check_fanin_ring_stall_ok_when_loopback(monkeypatch):
+    # Default loopback coupling: STATUS carries no ring block → skip-if-loopback.
+    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
+    r = doctor.check_fanin_ring_stall()
+    assert r.status == "ok"
+    assert "loopback" in r.detail
+
+
+def test_check_fanin_ring_stall_ok_when_draining(monkeypatch):
+    # shm_ring, ring present, no active stall → ok with the un-folded counts.
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_payload_with_ring({
+            "path": "/dev/shm/jts-ring/program.ring",
+            "slots": 8,
+            "occupancy": 2,
+            "published": 123456,
+            "full_waits": 0,
+            "stuck_reader_drops": 0,
+            "drop_no_reader": 0,
+            "stall_active": False,
+            "last_stall_ms": 0,
+            "mirror_frames": 1000,
+            "mirror_drops": 0,
+        }),
+    )
+    r = doctor.check_fanin_ring_stall()
+    assert r.status == "ok"
+    assert "no active stall" in r.detail
+    assert "stuck_reader_drops=0" in r.detail
+
+
+def test_check_fanin_ring_stall_warns_when_active(monkeypatch):
+    # A live stall (stall_active) → warn, with the stuck/no-reader split and the
+    # journalctl breadcrumb.
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_payload_with_ring({
+            "path": "/dev/shm/jts-ring/program.ring",
+            "slots": 8,
+            "occupancy": 8,
+            "published": 500,
+            "full_waits": 32,
+            "stuck_reader_drops": 375,
+            "drop_no_reader": 0,
+            "stall_active": True,
+            "last_stall_ms": 4200,
+            "mirror_frames": 1000,
+            "mirror_drops": 0,
+        }),
+    )
+    r = doctor.check_fanin_ring_stall()
+    assert r.status == "warn"
+    assert "CURRENTLY active" in r.detail
+    assert "stuck_reader_drops=375" in r.detail
+    assert "last_stall_ms=4200" in r.detail
+    assert "event=fanin.ring.stall" in r.detail  # journalctl breadcrumb
+
+
+def test_check_fanin_ring_stall_ok_when_status_unreachable(monkeypatch):
+    # Reachability is the 'jasper-fanin service' check's job; this check must
+    # not double-report a down daemon.
+    monkeypatch.setattr(
+        doctor.socket,
+        "socket",
+        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
+    )
+    r = doctor.check_fanin_ring_stall()
+    assert r.status == "ok"
+    assert "jasper-fanin service" in r.detail
+
+
 def test_renderer_checks_read_parked_on_bonded_follower(monkeypatch):
     """The dumb-follower profile deliberately stops the renderer stack —
     every liveness check for a parked unit must read ok/'parked', never

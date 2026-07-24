@@ -30,14 +30,17 @@ def _profile_and_targets(
     tweeter_peak: float = -65,
     mode: str = "active_2_way",
     mid_peak: float = -65,
+    hard_band: list | None = None,
+    measurement_band: list | None = None,
+    search_band: list | None = None,
 ):
     topology = mono_output_topology(mode=mode)
 
     def _driver(role: str, peak: float, required_filters: list) -> dict:
         return {
-            "hard_excitation_band_hz": [500, 20_000],
-            "measurement_band_hz": [500, 10_000],
-            "crossover_search_band_hz": [1500, 2500],
+            "hard_excitation_band_hz": hard_band or [500, 20_000],
+            "measurement_band_hz": measurement_band or [500, 10_000],
+            "crossover_search_band_hz": search_band or [1500, 2500],
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,
                 "max_sweep_duration_s": 4,
@@ -349,3 +352,48 @@ def test_skipped_derivation_logs_named_role(caplog):
             profile, targets["tweeter"]["target_fingerprint"],
         )
     assert "excitation_ceiling_derivation_skipped" not in caplog.text
+
+
+# --- resolve_driver_excitation_ceilings: band-edge asymmetry (PR-A, #1668) ---
+#
+# The lower permitted edge stays max(MIN, hard[0], measurement[0]) -- an
+# absolute excursion-protection boundary, untouched. The upper permitted edge
+# drops measurement_band[1] from the min() -- it is analysis-window metadata,
+# not a protection boundary -- so it now binds at min(MAX_DRIVER_TEST_
+# FREQUENCY_HZ, hard_band[1]) instead of also being capped by the (often
+# narrower) declared measurement window.
+
+
+def test_upper_edge_ignores_measurement_band_lower_edge_still_absolute():
+    _topology, profile, targets = _profile_and_targets(
+        hard_band=[1200, 20_000], measurement_band=[1800, 18_000],
+        search_band=[1900, 2500],
+    )
+    band, _ceiling = resolve_driver_excitation_ceilings(
+        profile, targets["woofer"]["target_fingerprint"],
+    )
+    # Upper edge: was 18_000 (measurement_band[1] used to bind); now 20_000
+    # (hard_band[1] binds -- measurement_band[1] no longer participates).
+    assert band.upper_hz == pytest.approx(20_000.0)
+    # Lower edge: unchanged -- measurement_band[0] (1800) is still the
+    # strictest of the three lower-edge candidates and still binds.
+    assert band.lower_hz == pytest.approx(1800.0)
+
+
+def test_upper_edge_still_bounded_by_global_ceiling_when_hard_band_is_wider():
+    # A hard band WIDER than MAX_DRIVER_TEST_FREQUENCY_HZ still leaves the
+    # global ceiling binding (min() semantics preserved) -- the asymmetry
+    # only ever drops measurement_band[1] from the min(), it does not remove
+    # the global ceiling as a backstop. (The driver safety profile validator
+    # requires measurement_band ⊆ hard_band, so a hard band NARROWER than the
+    # measurement band's upper edge cannot occur in a confirmed profile --
+    # that direction is not a reachable scenario to pin here.)
+    _topology, profile, targets = _profile_and_targets(
+        hard_band=[1200, 30_000], measurement_band=[1800, 25_000],
+        search_band=[1900, 2500],
+    )
+    band, _ceiling = resolve_driver_excitation_ceilings(
+        profile, targets["woofer"]["target_fingerprint"],
+    )
+    assert band.upper_hz == pytest.approx(23_000.0)  # MAX_DRIVER_TEST_FREQUENCY_HZ
+    assert band.lower_hz == pytest.approx(1800.0)

@@ -67,26 +67,34 @@ sit on outputd's larger compile-default content buffer (fail-safe, but
 route-incoherent) until the next udev/boot/deploy/outputd-failure event, since
 that reconciler has no timer.
 
-**Disclosure (post-#1251 audit, 2026-07-11):** the kicked reconciler pass's
-only delta on this path is outputd.env (the floor re-emit), but
-`restart_audio_if_needed` in `deploy/bin/jasper-audio-hardware-reconcile`
-(~lines 795-798) treats every outputd.env change identically regardless of
-cause: a blocking `systemctl stop jasper-voice`, then `--no-block restart
-jasper-outputd` and `--no-block restart jasper-aec-reconcile`. So every
+**Wake-preserving floor re-emit (#1257, fixed):** the kicked reconciler
+pass's only committed delta on this path is outputd.env (the floor re-emit).
+`jasper-audio-hardware-reconcile` now classifies its restart by cause. A
+DAC-identity or asound-render change still takes the full path
+(`restart_audio_if_needed`: a blocking `systemctl stop jasper-voice`, then
+`--no-block restart jasper-outputd` and `--no-block restart
+jasper-aec-reconcile`) because that class can move the mic/input profile; but
+a change whose only committed delta is outputd.env — no DAC-identity, no
+asound render — takes `restart_outputd_only`, a single `--no-block restart
+jasper-outputd` with **no** voice stop and **no** aec-reconcile kick. So a
 shm_ring→direct disarm — including a household `/sources/` USB toggle-off —
-deterministically costs ~10-15 s of wake deafness, self-healed by the
-standard aec-reconcile → voice-restart pattern (the restarted reconciler
-detects the mic and restarts `jasper-voice`); this cost was not disclosed in
-the original PR #1251. The disarm path also double-bounces outputd:
+no longer costs the ~10-15 s of wake deafness it used to; wake detection
+stays up across the outputd bounce. (Sound because outputd is the UDP sender
+to the bridge's `:9891` reference receiver, the tap is invariant stereo, the
+bridge is a bound receiver that survives an outputd bounce, and jasper-voice
+depends on outputd only softly via `Wants=`/`After=`.) Before #1257 every
+outputd.env change paid the voice stop identically, a cost the original
+PR #1251 did not disclose. The disarm path still double-bounces outputd:
 `_disarm`'s own blocking restart lands first, then the kicked pass's
-`--no-block` restart lands again seconds later — inherent to single-writer
-floor ownership (the hardware reconciler is the only writer of the floor
-key). A floor-only optimization that would skip the voice stop is filed as
-issue #1257. `_recover_to_loopback` (the ARM-failure rollback path) is the
-one shm_ring→direct transition that intentionally skips the kick — a
-just-failed box gets the larger fail-safe cushion and less daemon churn
-instead, and the floor re-emit simply waits for the next udev/boot/deploy
-event on that path.
+`--no-block` outputd-only restart lands again seconds later — inherent to
+single-writer floor ownership (the hardware reconciler is the only writer of
+the floor key). The fail-safe direction is preserved: skipping the voice stop
+requires BOTH no DAC-identity change AND no asound render, so any uncertainty
+falls through to the full path. `_recover_to_loopback` (the ARM-failure
+rollback path) is the one shm_ring→direct transition that intentionally skips
+the kick — a just-failed box gets the larger fail-safe cushion and less
+daemon churn instead, and the floor re-emit simply waits for the next
+udev/boot/deploy event on that path.
 
 outputd's `/state` publishes the honest Ring B
 capacity in `content.ring.capacity_frames` (`n_slots × slot_frames`) next to a
@@ -2163,7 +2171,12 @@ the retired Rust bridge/state surface was removed;
 USB-toggle trigger ownership rechecked against
 `jasper.source_intent`; `/sources/` now requests intent and the shared source
 coordinator kicks coupling only after a real USB transition. See
-HANDOFF-source-lifecycle.md. Prior 2026-07-13 re-verified the host-clock capture/control generation
+HANDOFF-source-lifecycle.md. Also 2026-07-23: #1257 landed — a change whose
+only committed delta is outputd.env (the floor re-emit) now bounces
+jasper-outputd alone via `restart_outputd_only` instead of stopping
+jasper-voice, so a `/sources/` USB toggle-off no longer deafens wake for
+~10-15 s; truthed the "Wake-preserving floor re-emit" paragraph above and the
+`_disarm` docstring in `jasper/fanin/coupling_reconcile.py`. Prior 2026-07-13 re-verified the host-clock capture/control generation
 lifecycle, bounded same-stream retry, explicit fallback causes, compliance
 actions, STATUS/doctor contract, canonical deploy, coordinated restart, and live
 gadget rebuild on jts.local; also re-verified the route artifact/doctor live-state

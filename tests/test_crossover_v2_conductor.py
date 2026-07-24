@@ -37,6 +37,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_TAP,
     CAPTURE_PLAN_TARGET,
     GAIN_CAP_BACKOFF_DB,
+    LINEARIZATION_MIN_PAIRED_OCCURRENCES,
+    LINEARIZATION_TRIM_SANITY_MARGIN_DB,
     MEASURE_PREDICTED_RIPPLE_CEILING_DB,
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -48,10 +50,12 @@ from jasper.active_speaker.crossover_v2_flow import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
+    _SIGMA_TOLERABLE_DB,
     CrossoverV2Conductor,
     CrossoverV2FlowError,
     V2FlowSeams,
     _analysis_json,
+    _compose_sigma_db,
     abandon_measurement_volume,
     alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
@@ -119,6 +123,37 @@ def _driver_response(role: str, window_ms: float) -> DriverResponse:
         complex_tf=np.ones(64, dtype=complex),
         gating={"applied": True, "window_ms": window_ms},
         snr=None, validity_floor_hz=None,
+    )
+
+
+_LINEARIZABLE_FREQS_HZ = np.linspace(100.0, 20000.0, 2048)
+
+
+def _linearizable_response(
+    role: str, magnitude_db: np.ndarray, *,
+    n_repeats: int = 2, validity_floor_hz: float = 140.0,
+) -> DriverResponse:
+    """A finer-grained DriverResponse (2048 bins, vs _driver_response's
+    coarse 64) carrying real repeat_responses — Layer-1a linearization
+    (#1668 PR-C) needs enough frequency resolution for a synthetic bump to
+    survive resampling onto DEFAULT_ENVELOPE_GRID_HZ and enough occurrences
+    to clear the paired-N gate."""
+
+    def make() -> DriverResponse:
+        return DriverResponse(
+            role=role, freqs_hz=_LINEARIZABLE_FREQS_HZ, magnitude_db=magnitude_db,
+            complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
+            gating={"applied": True, "window_ms": 8.0},
+            snr=None, validity_floor_hz=validity_floor_hz,
+        )
+
+    repeats = tuple(make() for _ in range(n_repeats))
+    return DriverResponse(
+        role=role, freqs_hz=_LINEARIZABLE_FREQS_HZ, magnitude_db=magnitude_db,
+        complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
+        gating={"applied": True, "window_ms": 8.0},
+        snr=None, validity_floor_hz=validity_floor_hz,
+        repeat_responses=repeats,
     )
 
 
@@ -1804,6 +1839,61 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog):
     assert evidence["snap_found"] is True
 
 
+def test_measure_diag_logs_per_role_repeat_epsilon_ppm(caplog):
+    """#1668 PR-A/PR-C: DriftEstimate.per_role_epsilon_ppm (a first-vs-last
+    per-role epsilon, one entry per role with >=2 located occurrences) now
+    surfaces as woofer_repeat_epsilon_ppm / tweeter_repeat_epsilon_ppm on
+    the measure_diag event — diagnostic only, never gated."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: ProgramAnalysis(
+        phase="measure", program_id=program.program_id,
+        locations=(
+            _loc("sweep_w"), _loc("sweep_t"),
+            _loc("sweep_w_rep"), _loc("sweep_t_rep"),
+        ),
+        drift=DriftEstimate(
+            epsilon_ppm=30.0, baselines_ppm={"woofer_repeat": 30.0},
+            max_residual_samples=0.2, glitch_detected=False,
+            per_role_epsilon_ppm={"woofer": 31.5, "tweeter": -4.25},
+        ),
+        driver_responses=(
+            _driver_response_diag("woofer", window_ms=8.0),
+            _driver_response_diag("tweeter", window_ms=9.0),
+        ),
+        alignment=_alignment(),
+        candidate=CrossoverCandidate(
+            trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
+            delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
+        ),
+        linearity_ok=True,
+        predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
+        glitch_detected=False,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "woofer_repeat_epsilon_ppm=31.5" in caplog.text
+    assert "tweeter_repeat_epsilon_ppm=-4.25" in caplog.text
+
+
+def test_measure_diag_per_role_repeat_epsilon_ppm_none_safe_for_legacy_drift(caplog):
+    """A DriftEstimate predating per_role_epsilon_ppm (empty mapping — the
+    field's own default) or a role absent from it must log None, never
+    raise or fabricate a 0.0."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    # log_event renders None as the JSON literal "null", not Python's "None".
+    assert "woofer_repeat_epsilon_ppm=null" in caplog.text
+    assert "tweeter_repeat_epsilon_ppm=null" in caplog.text
+
+
 def test_measure_diag_logs_full_numbers_on_glitch_rejection_too(caplog):
     """The headline bug this fixes: today a rejected MEASURE persists none of
     confidence/gate_window/epsilon — this proves they're all still logged."""
@@ -2047,3 +2137,434 @@ def test_verify_diag_pilot_transfer_step_does_not_leak_across_an_early_return(ca
     assert verdict["code"] == "locate_failed"
     assert "event=correction.crossover_v2_verify_diag" in caplog.text
     assert "pilot_transfer_step_db=null" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# Layer-1a driver linearization (#1668 PR-C)
+# --------------------------------------------------------------------------- #
+#
+# sigma composition (_compose_sigma_db, the paired-N gate + tier floor) and
+# the conductor's integration reorder (_build_candidate's hard gate + the
+# fit -> apply-in-linear-domain -> re-solve-trim -> sanity-backstop chain).
+
+
+def _resp_with_repeats(role: str, n_repeats: int) -> DriverResponse:
+    freqs = np.linspace(150.0, 20000.0, 256)
+    mag = np.zeros_like(freqs)
+
+    def make() -> DriverResponse:
+        return DriverResponse(
+            role=role, freqs_hz=freqs, magnitude_db=mag,
+            complex_tf=np.ones_like(freqs, dtype=complex),
+            gating={}, snr=None, validity_floor_hz=140.0,
+        )
+
+    repeats = tuple(make() for _ in range(n_repeats))
+    return DriverResponse(
+        role=role, freqs_hz=freqs, magnitude_db=mag,
+        complex_tf=np.ones_like(freqs, dtype=complex),
+        gating={}, snr=None, validity_floor_hz=140.0,
+        repeat_responses=repeats,
+    )
+
+
+def test_compose_sigma_db_none_when_own_under_paired_threshold():
+    own = _resp_with_repeats("woofer", 1)  # 2 total occurrences, < 3
+    sibling = _resp_with_repeats("tweeter", 4)  # 5 total, plenty
+    assert 1 + len(own.repeat_responses) < LINEARIZATION_MIN_PAIRED_OCCURRENCES
+    sigma = _compose_sigma_db(own, sibling, tier="reference", valid_band_hz=(150.0, 4000.0))
+    assert sigma is None
+
+
+def test_compose_sigma_db_none_when_sibling_under_paired_threshold():
+    """An under-repeated SIBLING voids the pair's trust even though ``own``
+    alone clears the threshold — this is the PAIRED gate, not a per-driver
+    one."""
+    own = _resp_with_repeats("woofer", 4)  # 5 total, plenty
+    sibling = _resp_with_repeats("tweeter", 1)  # 2 total, < 3
+    sigma = _compose_sigma_db(own, sibling, tier="reference", valid_band_hz=(150.0, 4000.0))
+    assert sigma is None
+
+
+def test_compose_sigma_db_returns_array_when_both_meet_threshold():
+    own = _resp_with_repeats("woofer", 2)  # 3 total, exactly at the gate
+    sibling = _resp_with_repeats("tweeter", 2)
+    sigma = _compose_sigma_db(own, sibling, tier="reference", valid_band_hz=(150.0, 4000.0))
+    assert sigma is not None
+    assert not np.isnan(sigma).any()
+
+
+def test_compose_sigma_db_floors_at_the_tiers_own_tolerable_value():
+    """Identical repeats -> live sigma ~ 0 everywhere -> floored up to the
+    tier's own sigma_tolerable (consumer: 1.0 dB)."""
+    own = _resp_with_repeats("woofer", 2)
+    sibling = _resp_with_repeats("tweeter", 2)
+    sigma = _compose_sigma_db(own, sibling, tier="consumer", valid_band_hz=(150.0, 4000.0))
+    assert sigma is not None
+    assert np.all(sigma >= 1.0 - 1e-9)
+    assert np.allclose(sigma, 1.0, atol=1e-6)
+
+
+def test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit():
+    """The docstring's 'currently does nothing' claim, proven end-to-end:
+    repeatability_limit(floored_sigma) must equal repeatability_limit(
+    raw_live_sigma) bin-for-bin, because any live sigma <=
+    sigma_tolerable already saturates repeatability_limit's own
+    min(1, ...) at its ceiling — flooring a value already at/below the
+    floor changes nothing."""
+    from jasper.active_speaker.linearization_envelope import (
+        compute_sigma_curve,
+        repeatability_limit,
+    )
+
+    own = _resp_with_repeats("woofer", 2)
+    sibling = _resp_with_repeats("tweeter", 2)
+    floored = _compose_sigma_db(own, sibling, tier="reference", valid_band_hz=(150.0, 4000.0))
+    raw = compute_sigma_curve(own, valid_band_hz=(150.0, 4000.0))
+    assert floored is not None and raw is not None
+    assert not np.allclose(floored, raw)  # the floor DID change the sigma values themselves...
+    limit_floored = repeatability_limit(floored, tier="reference")
+    limit_raw = repeatability_limit(raw, tier="reference")
+    np.testing.assert_allclose(limit_floored, limit_raw)  # ...but not the envelope term they feed
+
+
+def test_sigma_tolerable_db_matches_linearization_envelopes_own_table():
+    """SF1 (adversarial review, 2026-07-24): lockstep requirement. This
+    module's own comment on ``_SIGMA_TOLERABLE_DB`` explains why it is a
+    local mirror rather than an import — production code deliberately does
+    not cross that "no cross-module private imports" boundary
+    (linearization_envelope's module docstring). Tests are allowed to reach
+    across it anyway, specifically to pin the two tables in lockstep, so a
+    future edit to one can never silently drift from the other."""
+    from jasper.active_speaker import linearization_envelope
+
+    assert _SIGMA_TOLERABLE_DB == linearization_envelope._SIGMA_TOLERABLE_DB
+
+
+# --- conductor integration reorder ------------------------------------------
+
+
+def _eligible_measure_analysis(
+    program, *, mic_tier="reference", woofer_repeats=2, tweeter_repeats=2,
+    woofer_db=None, tweeter_db=None, trim_db=None,
+) -> ProgramAnalysis:
+    freqs = _LINEARIZABLE_FREQS_HZ
+    if woofer_db is None:
+        woofer_db = np.zeros_like(freqs)
+    if tweeter_db is None:
+        # A +6 dB bump inside the [800, 3200] Hz overlap band (Fc=1600) —
+        # validated offline (PR-C sanity pass) to survive envelope/fit and
+        # move the re-solved trim measurably vs the raw candidate.
+        tweeter_db = 6.0 * np.exp(-0.5 * ((np.log2(freqs / 1500.0) / 0.25) ** 2))
+    if trim_db is None:
+        trim_db = {"woofer": 0.0, "tweeter": -2.211}
+    return ProgramAnalysis(
+        phase="measure",
+        program_id=program.program_id,
+        locations=(
+            _loc("sweep_w"), _loc("sweep_t"), _loc("sweep_w_rep"), _loc("sweep_t_rep"),
+        ),
+        drift=DriftEstimate(
+            epsilon_ppm=5.0, baselines_ppm={"woofer_repeat": 5.0},
+            max_residual_samples=0.1, glitch_detected=False,
+        ),
+        mic_tier=mic_tier,
+        driver_responses=(
+            _linearizable_response("woofer", woofer_db, n_repeats=woofer_repeats),
+            _linearizable_response("tweeter", tweeter_db, n_repeats=tweeter_repeats),
+        ),
+        alignment=_alignment(),
+        candidate=CrossoverCandidate(
+            trim_db=trim_db, polarity="normal", delay_us=150.0,
+            predicted_ripple_db=0.8, confidence=0.8,
+        ),
+        linearity_ok=True,
+        predicted_sum=(freqs, np.zeros_like(freqs)),
+        glitch_detected=False,
+    )
+
+
+def test_non_reference_tier_falls_back_byte_identical_to_trims_only():
+    """mic_tier != 'reference' — even with a paired N>=3 both drivers —
+    must take the EXACT same path as before this PR: raw trim, empty
+    linearization dict."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, mic_tier="consumer")
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.linearization == {}
+
+
+def test_reference_tier_but_under_repeated_falls_back_byte_identical():
+    """Reference-tier mic but the tweeter has only 1 occurrence (< the
+    paired-N gate) — must still fall back, byte-identical."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, mic_tier="reference", tweeter_repeats=0,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.linearization == {}
+
+
+def test_reference_tier_missing_mic_tier_none_falls_back():
+    """mic_tier=None (the field's own default — a legacy/unset analysis)
+    must resolve to ineligible, never crash on the `!= "reference"`
+    comparison."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, mic_tier=None)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.linearization == {}
+
+
+def test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_optimal():
+    """The asymmetric-overlap fixture (PR-C offline-validated numbers): a
+    tweeter bump squarely inside the crossover overlap band gets fitted
+    and corrected, and the re-solved trim moves measurably away from the
+    raw (uncorrected) solve — toward what the ACTUAL (linearized) branch
+    responses justify, not the raw band-average bias #1667 named."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    candidate = c.candidate
+    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    assert candidate.role_attenuations_db != raw_trim
+    # The bump correction quiets the tweeter's overlap-band level, so the
+    # RESOLVED tweeter trim needs LESS attenuation than the raw solve did
+    # (moves toward 0, i.e. strictly greater than the raw -2.211).
+    assert candidate.role_attenuations_db["tweeter"] > raw_trim["tweeter"]
+
+    assert set(candidate.linearization) == {"woofer", "tweeter"}
+    tweeter_fit = candidate.linearization["tweeter"]
+    assert tweeter_fit["filters"], "expected the tweeter bump to attract a filter"
+    assert all(f["gain"] <= 0.0 for f in tweeter_fit["filters"])
+    for role_fit in candidate.linearization.values():
+        assert role_fit["mic_tier"] == "reference"
+        assert role_fit["n_repeats"] == 2
+        # No caller populates driver_class_by_role yet (#1665 not landed) —
+        # every role fits under the conservative "unknown" default.
+        assert role_fit["driver_class"] == "unknown"
+
+
+def test_driver_class_by_role_ctor_param_threads_into_the_fit():
+    """The optional driver_class_by_role ctor param (default None -> every
+    role "unknown") is a forward-looking seam for #1665's component-entry
+    declarations — no production caller populates it yet, but the wiring
+    itself must work when a caller does."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes, driver_class_by_role={"tweeter": "compression_horn"})
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.linearization["tweeter"]["driver_class"] == "compression_horn"
+    # The woofer wasn't named in the override -> stays "unknown".
+    assert c.candidate.linearization["woofer"]["driver_class"] == "unknown"
+
+
+def test_wild_resolved_trim_falls_back_to_raw_with_warning(caplog):
+    """If the re-solved trim lands implausibly far (> 6 dB) from the raw
+    solve, the conductor must distrust it and fall back to the raw trim —
+    logging a WARNING, never silently swapping in a wild value."""
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    # A deliberately-inconsistent "raw" trim (nothing derives the resolved
+    # trim from this value — it's the fixture's own declared candidate —
+    # so setting it far from what the actual responses justify is exactly
+    # how to trigger the sanity backstop deterministically).
+    wild_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=wild_raw_trim)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.role_attenuations_db == wild_raw_trim
+    assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
+    assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # sanity: the constant exists and is positive
+    # linearization itself still gets reported — only the trim falls back.
+    assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+
+
+def test_wild_trim_boundary_exact_passes_just_above_falls_back():
+    """The sanity margin is an exclusive upper bound (matches this file's
+    other boundary comparators, e.g.
+    test_predicted_ripple_ceiling_boundary_exact_passes_just_above_fires):
+    exactly at the margin is trusted, one hair over falls back."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    resolved_tweeter = c.candidate.role_attenuations_db["tweeter"]
+
+    # Exactly at the margin from the resolved value -> still trusted.
+    at_margin_raw = {
+        "woofer": 0.0,
+        "tweeter": resolved_tweeter - LINEARIZATION_TRIM_SANITY_MARGIN_DB,
+    }
+    fakes2 = FakeSeams()
+    fakes2.measure = lambda program: _eligible_measure_analysis(program, trim_db=at_margin_raw)
+    c2 = _conductor(fakes2)
+    _run_phase(c2, 1, 1)
+    _run_phase(c2, 2, 2)
+    assert c2.candidate.role_attenuations_db != at_margin_raw  # resolved value used, not raw
+
+    # A hair past the margin -> falls back to raw.
+    past_margin_raw = {
+        "woofer": 0.0,
+        "tweeter": resolved_tweeter - LINEARIZATION_TRIM_SANITY_MARGIN_DB - 0.5,
+    }
+    fakes3 = FakeSeams()
+    fakes3.measure = lambda program: _eligible_measure_analysis(program, trim_db=past_margin_raw)
+    c3 = _conductor(fakes3)
+    _run_phase(c3, 1, 1)
+    _run_phase(c3, 2, 2)
+    assert c3.candidate.role_attenuations_db == past_margin_raw
+
+
+# --------------------------------------------------------------------------- #
+# SF2 / SF3 (adversarial review, 2026-07-24 — #1668 PR-C review)
+# --------------------------------------------------------------------------- #
+#
+# SF2: an eligible speaker whose fit engine raises must degrade EXACTLY to
+# the ineligible path (raw trim, empty linearization) -- never fail the
+# whole MEASURE accept. SF3: crossover_v2_measure_diag's new
+# `linearization=` field names which of the five outcomes this attempt's
+# candidate build took, for corpus-review greppability.
+
+
+def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch):
+    """SF2: an eligible pair (reference tier, both paired N>=3) whose fit
+    call raises must behave EXACTLY like an ineligible one -- raw trim,
+    empty linearization dict, MEASURE still accepted -- never propagate and
+    fail the whole accept over a bug in the fit engine."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    def _boom(analysis, cand):
+        raise ValueError("simulated fit engine bug")
+
+    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    verdict = _run_phase(c, 2, 2)
+
+    assert verdict["accepted"] is True
+    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.linearization == {}
+    assert "event=correction.crossover_v2_linearization_fit_failed" in caplog.text
+    assert "reason=ValueError" in caplog.text
+    assert "linearization=fit_failed" in caplog.text
+
+
+def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, monkeypatch):
+    """N1 x SF2 interaction: linearization_fit.fit_driver_linearization's own
+    cut-only invariant (N1, this same review) raises RuntimeError, not
+    ValueError. SF2's catch must include RuntimeError specifically so THAT
+    safety net degrades to the raw-trim fallback like any other fit bug,
+    instead of escaping and crashing the whole MEASURE accept -- the two
+    review fixes must compose, not merely coexist."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    def _boom(analysis, cand):
+        raise RuntimeError("linearization fit emitted a boost")
+
+    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    verdict = _run_phase(c, 2, 2)
+
+    assert verdict["accepted"] is True
+    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.linearization == {}
+    assert "reason=RuntimeError" in caplog.text
+    assert "linearization=fit_failed" in caplog.text
+
+
+def test_measure_diag_linearization_field_fitted(caplog):
+    """SF3: the fitted outcome."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "linearization=fitted" in caplog.text
+
+
+def test_measure_diag_linearization_field_ineligible_mic_tier(caplog):
+    """SF3: the ineligible_mic_tier outcome."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, mic_tier="consumer")
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "linearization=ineligible_mic_tier" in caplog.text
+
+
+def test_measure_diag_linearization_field_ineligible_repeats(caplog):
+    """SF3: the ineligible_repeats outcome."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, mic_tier="reference", tweeter_repeats=0,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "linearization=ineligible_repeats" in caplog.text
+
+
+def test_measure_diag_linearization_field_trim_rejected(caplog):
+    """SF3: the trim_rejected outcome (fit succeeded, but the resolved trim
+    was implausible and fell back to raw -- distinct from "fitted" even
+    though linearization is populated in both)."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    wild_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=wild_raw_trim)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "linearization=trim_rejected" in caplog.text
+
+
+def test_measure_diag_linearization_field_empty_when_verdict_rejected_before_candidate(
+    caplog,
+):
+    """SF3: a MEASURE verdict rejected before _build_candidate ever runs
+    (here, the pre-existing glitch check) must log linearization="" -- never
+    a stale value from a prior attempt, and never a guess about a path that
+    was never taken. Mirrors the `guard` field's own empty-on-reject
+    convention."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(program, glitch=True)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is False
+    assert 'linearization=""' in caplog.text

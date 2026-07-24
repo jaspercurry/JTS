@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 from jasper.correction import peq, strategy, target
 
@@ -166,6 +167,99 @@ def test_q_clamped_to_range():
     )
     assert len(peqs) >= 1
     assert all(1.0 <= p.q <= 8.0 for p in peqs)
+
+
+# ---------- max_cut_db per-bin array (#1668 PR-C) --------------------------
+#
+# jasper.active_speaker.linearization_fit's peaking loop needs a per-bin cut
+# ceiling (the correction envelope's allowed_depth_db), not one scalar floor
+# for the whole design band. These tests pin two things: every existing
+# SCALAR caller stays byte-identical, and the new array path actually
+# applies a LOCAL (interpolated-at-the-peak) cap rather than one shared
+# number.
+
+
+def test_max_cut_db_array_of_uniform_scalar_is_byte_identical_to_scalar():
+    """A per-bin array that is the SAME value everywhere must produce
+    EXACTLY the same result as passing that value as the plain scalar —
+    proves the new array machinery doesn't perturb the pre-existing scalar
+    code path at all."""
+    freqs = _log_freqs()
+    target_db = target.flat_target(freqs)
+    measured = (
+        _bell(freqs, fc=40.0, q=4, gain_db=14)
+        + _bell(freqs, fc=90.0, q=3, gain_db=9)
+        + _bell(freqs, fc=200.0, q=5, gain_db=6)
+    )
+    scalar_result = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, max_cut_db=-10.0,
+    )
+    array_result = peq.design_peq(
+        measured, target_db, freqs, max_filters=5,
+        max_cut_db=np.full_like(freqs, -10.0),
+    )
+    assert len(scalar_result) == len(array_result)
+    assert len(scalar_result) >= 1
+    for a, b in zip(scalar_result, array_result):
+        assert a.freq == b.freq
+        assert a.q == b.q
+        assert a.gain == b.gain
+
+
+def test_max_cut_db_array_applies_a_local_cap_not_a_shared_one():
+    """Two equal-height peaks, but the per-bin cap array is much tighter
+    around the SECOND peak than the first (and than the scalar default) —
+    the first peak's cut should land near its natural (uncapped) depth,
+    the second must clamp to its own local ceiling."""
+    freqs = _log_freqs()
+    target_db = target.flat_target(freqs)
+    measured = (
+        _bell(freqs, fc=60.0, q=4.0, gain_db=8.0)
+        + _bell(freqs, fc=250.0, q=4.0, gain_db=8.0)
+    )
+    # -12 dB everywhere except a tight -2 dB ceiling around 250 Hz.
+    cap = np.full_like(freqs, -12.0)
+    cap[np.abs(np.log2(freqs / 250.0)) < 0.3] = -2.0
+    peqs = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, max_cut_db=cap, f_high=400.0,
+    )
+    near_60 = [p for p in peqs if abs(np.log2(p.freq / 60.0)) < 0.2]
+    near_250 = [p for p in peqs if abs(np.log2(p.freq / 250.0)) < 0.2]
+    assert near_60 and near_250
+    assert near_60[0].gain < -3.0  # not locally capped — free to cut deep
+    assert near_250[0].gain >= -2.0 - 1e-6  # clamped to the tight local ceiling
+
+
+def test_max_cut_db_array_interpolated_between_breakpoints():
+    """The per-bin cap is np.interp'd at each candidate peak's OWN
+    frequency, so a coarse cap array (far fewer points than the design
+    grid) still applies the correctly-interpolated value at a peak that
+    doesn't land exactly on one of the cap array's own samples."""
+    freqs = _log_freqs()
+    target_db = target.flat_target(freqs)
+    measured = _bell(freqs, fc=100.0, q=4.0, gain_db=20.0)
+    # A cap that is -1 dB at 20 Hz and -20 dB at 20 kHz, linear in this
+    # array's own (non-design) domain -- interpolated onto `freqs` at
+    # whatever frequency the greedy loop actually proposes.
+    coarse_freqs = np.array([20.0, 20000.0])
+    coarse_cap = np.array([-1.0, -20.0])
+    cap_on_design_grid = np.interp(freqs, coarse_freqs, coarse_cap)
+    peqs = peq.design_peq(
+        measured, target_db, freqs, max_filters=1, max_cut_db=cap_on_design_grid,
+    )
+    assert len(peqs) == 1
+    expected_cap = float(np.interp(peqs[0].freq, coarse_freqs, coarse_cap))
+    assert peqs[0].gain == pytest.approx(expected_cap, abs=1e-6)
+
+
+def test_max_cut_db_array_shape_mismatch_raises():
+    freqs = _log_freqs()
+    target_db = target.flat_target(freqs)
+    measured = _bell(freqs, fc=100.0, q=4.0, gain_db=6.0)
+    with pytest.raises(ValueError, match="max_cut_db"):
+        peq.design_peq(
+            measured, target_db, freqs, max_cut_db=np.array([-10.0, -10.0]),
+        )
 
 
 def test_predicted_response_zero_for_empty_peqs():

@@ -139,7 +139,7 @@ def design_peq(
     f_low: float = 20.0,
     f_high: float = 350.0,
     max_filters: int = 5,
-    max_cut_db: float = -10.0,
+    max_cut_db: float | np.ndarray = -10.0,
     max_boost_db: float = 3.0,
     cuts_only: bool = True,
     flatness_target_db: float = 1.0,
@@ -156,7 +156,16 @@ def design_peq(
       f_low / f_high: design band. Outside this range no filters are
         placed even if there's residual error.
       max_filters: hard cap on PEQs in the result.
-      max_cut_db / max_boost_db: per-filter gain limits (dB).
+      max_cut_db: per-filter cut limit (dB), either a single scalar
+        (the v1 shape — every candidate peak clamps to the same floor)
+        or an array on `freqs` (the Layer-1a linearization shape —
+        jasper.active_speaker.linearization_fit's per-bin correction-
+        envelope ceiling). An array is interpolated (`np.interp`) at
+        each candidate peak's frequency, so it need not share `freqs`'s
+        exact grid. Existing scalar callers are byte-identical (pinned
+        by a test) — the array path is new, additive behavior.
+      max_boost_db: per-filter boost limit (dB); always a scalar (no
+        per-bin boost cap exists today).
       cuts_only: when True, only fit filters with negative gain.
         This is the v1 default — Toole's "first do no harm".
       flatness_target_db: stop when residual RMS in the design band
@@ -177,6 +186,12 @@ def design_peq(
         )
     if f_high <= f_low:
         raise ValueError(f"f_high ({f_high}) must be > f_low ({f_low})")
+    max_cut_is_array = isinstance(max_cut_db, np.ndarray)
+    if max_cut_is_array and max_cut_db.shape != np.shape(freqs):
+        raise ValueError(
+            f"max_cut_db array shape {max_cut_db.shape} does not match "
+            f"freqs shape {np.shape(freqs)}"
+        )
 
     band_mask = (freqs >= f_low) & (freqs <= f_high)
     if not band_mask.any():
@@ -222,12 +237,20 @@ def design_peq(
             q_min=q_min, q_max=q_max,
         )
 
+        # Per-bin cap: interpolate the array at this candidate peak's
+        # frequency; a scalar cap applies unchanged (byte-identical to the
+        # pre-array-support behavior).
+        cut_floor = (
+            float(np.interp(peak_freq, freqs, max_cut_db))
+            if max_cut_is_array else max_cut_db
+        )
+
         # Gain to cancel the peak. Clamp to per-filter limits.
         proposed = -peak_db
         if cuts_only:
-            gain_db = float(np.clip(proposed, max_cut_db, 0.0))
+            gain_db = float(np.clip(proposed, cut_floor, 0.0))
         else:
-            gain_db = float(np.clip(proposed, max_cut_db, max_boost_db))
+            gain_db = float(np.clip(proposed, cut_floor, max_boost_db))
 
         if abs(gain_db) < min_filter_gain_db:
             break

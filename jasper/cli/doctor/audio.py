@@ -1709,6 +1709,74 @@ def check_fanin_tts_drops() -> CheckResult:
     )
 
 
+@doctor_check(order=51.55, group="audio")
+def check_fanin_ring_stall() -> CheckResult:
+    """A live fan-in→CamillaDSP ring stall (issue #1524) means the SHM ring is
+    full AND CamillaDSP is not draining it (heartbeat-live but ``read_seq``
+    frozen, e.g. wedged in Prepared — or the reader has been absent > 1 s). The
+    writer self-recovers by DEMOTING the stuck reader to free-run (so fan-in stays
+    real time instead of running at ~1/9 speed and wedging the correction-lane
+    aplay), but content is being dropped and the DSP is not consuming — the
+    household hears no music through the ring. ``stall_active`` is true for exactly
+    as long as the reader stays stuck, so it is the live/sustained signal;
+    ``stuck_reader_drops`` climbs alongside it.
+
+    Skip-if-loopback: only the ``shm_ring`` coupling has a ring; the default
+    ``loopback`` coupling is timer-paced and structurally immune, so this reports
+    OK there (no ring block in STATUS). Reachability is owned by the
+    'jasper-fanin service' check — an unreadable STATUS reports OK here rather than
+    double-failing a down daemon.
+
+    Returns:
+      - ok when loopback, when the ring is draining normally, or STATUS unreachable
+      - warn when a stall episode is CURRENTLY active, surfacing the stuck-reader
+        vs no-reader drop split and the last stall duration.
+    """
+    name = "fan-in ring stall"
+    try:
+        payload = _read_status_socket_bytes(_FANIN_STATUS_SOCKET, timeout=2.0)
+        data = json.loads(payload.decode("utf-8", errors="replace"))
+        if not isinstance(data, dict):
+            raise ValueError(f"STATUS root is {type(data).__name__}, not object")
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        return CheckResult(
+            name,
+            "ok",
+            f"not probed ({type(e).__name__}); fan-in reachability is "
+            "covered by the 'jasper-fanin service' check",
+        )
+
+    output = data.get("output")
+    ring = output.get("ring") if isinstance(output, dict) else None
+    if not isinstance(ring, dict):
+        # loopback (or any non-ring topology): no ring, nothing can stall.
+        return CheckResult(
+            name,
+            "ok",
+            "skipped — loopback coupling (no shm_ring ring; timer-paced, "
+            "stall-immune)",
+        )
+
+    stuck = int(ring.get("stuck_reader_drops") or 0)
+    no_reader = int(ring.get("drop_no_reader") or 0)
+    last_ms = int(ring.get("last_stall_ms") or 0)
+    counts = (
+        f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}, "
+        f"last_stall_ms={last_ms}"
+    )
+    if bool(ring.get("stall_active")):
+        return CheckResult(
+            name,
+            "warn",
+            f"a ring stall is CURRENTLY active — CamillaDSP is not draining the "
+            f"fan-in ring; fan-in demoted to free-run to stay real-time but ring "
+            f"content is dropping ({counts}). Check `journalctl -u jasper-fanin "
+            f"| grep event=fanin.ring.stall` and `systemctl status "
+            f"jasper-camilla`.",
+        )
+    return CheckResult(name, "ok", f"no active stall ({counts})")
+
+
 def _loaded_device_field(config_path: Path, block: str, field: str) -> str | None:
     """A field from ``devices.<block>`` in a CamillaDSP config, or None.
 
