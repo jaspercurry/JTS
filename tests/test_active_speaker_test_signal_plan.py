@@ -220,24 +220,21 @@ def test_driver_sweep_duration_is_longer_for_lf_and_bounded_for_tweeter() -> Non
 def test_driver_ambient_duration_is_right_sized_per_driver_not_worst_case() -> None:
     """A tweeter's 4 s sweep must not inherit the longest driver's ~14 s pause
     (the pre-2026-07-16 fixed CROSSOVER_AMBIENT_DURATION_S). Contract: the
-    flow's sleep default, the capture spec's ambient_duration_ms, and this
-    plan module's own duration table must all agree, per driver kind — see
-    ``crossover_ambient_duration_s`` in
-    ``jasper.web.correction_crossover_flow``, the single function both the
-    relay spec builder (correction_setup._open) and the flow's own sleep
-    default (build_crossover_relay_run_and_consume) resolve through."""
+    capture spec's ambient_duration_ms and this plan module's own duration
+    table must agree, per driver kind, through
+    ``jasper.active_speaker.test_signal_plan.driver_ambient_duration_s`` — the
+    single function the relay spec builder (correction_setup._open) resolves
+    the per-driver ambient window through."""
     from jasper.active_speaker.test_signal_plan import (
         AMBIENT_DURATION_MARGIN_S,
         CROSSOVER_AMBIENT_DURATION_S,
         DRIVER_SWEEP_DURATIONS_S,
         driver_ambient_duration_s,
     )
-    from jasper.web.correction_crossover_flow import crossover_ambient_duration_s
 
     for role, sweep_s in DRIVER_SWEEP_DURATIONS_S.items():
         expected = sweep_s + AMBIENT_DURATION_MARGIN_S
         assert driver_ambient_duration_s(role) == expected
-        assert crossover_ambient_duration_s("driver", role) == expected
 
     # A short driver's ambient window is strictly shorter than the historical
     # worst-case constant — the whole point of the right-sizing fix.
@@ -246,14 +243,6 @@ def test_driver_ambient_duration_is_right_sized_per_driver_not_worst_case() -> N
     # The longest driver's own ambient window still matches the worst-case
     # ceiling exactly (it IS the driver the ceiling was sized against).
     assert driver_ambient_duration_s("woofer") == CROSSOVER_AMBIENT_DURATION_S
-
-    # Non-driver kinds (summed/verification) keep the historical worst-case
-    # window — there is no single driver role to size against.
-    assert crossover_ambient_duration_s("summed", "") == CROSSOVER_AMBIENT_DURATION_S
-    assert (
-        crossover_ambient_duration_s("verification", "")
-        == CROSSOVER_AMBIENT_DURATION_S
-    )
 
     # The analyzer's REAL pairing requirement, pinned to its own named
     # constant: _capture_to_magnitude selects the quiet crop starting

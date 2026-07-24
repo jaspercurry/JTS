@@ -25,9 +25,8 @@ COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 
 # The ordered commissioning step ids `build_commissioning_view` emits, exported
 # so envelope/progress consumers derive from ONE tuple instead of re-typing the
-# literals (a rename here without updating the view construction below is
-# caught by the real-coordinator drift test in
-# tests/test_web_correction_crossover_flow.py).
+# literals. Keep this tuple in sync with the view construction
+# (`build_commissioning_view`) below.
 COMMISSIONING_STEP_IDS: tuple[str, ...] = (
     "layout",
     "research",

@@ -914,6 +914,34 @@ def test_verify_out_of_tolerance_and_inconclusive():
     assert c.verify_outcome == "pass"
 
 
+def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
+    """Item 5b (#1605): the conductor carries the verify_fail expert-disclosure
+    numbers on a verdict that reaches the tracking comparison, and resets them
+    to None on an early-return verdict (gate comparability) so no stale numbers
+    leak into a later attempt's disclosure."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
+    _run_phase(c, 3, 3)
+    assert c.verify_outcome == "fail"
+    evidence = c.verify_evidence
+    assert evidence is not None
+    assert evidence["max_db"] == 2.4
+    assert evidence["rms_db"] == 0.4
+    assert evidence["tolerance_db"] == 1.5
+
+    # An early-return verdict (gate-comparability inconclusive) never reaches
+    # the tracking numbers ⇒ evidence resets to None, no stale leak.
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
+    _run_phase(c, 3, 4)
+    assert c.verify_outcome == "inconclusive"
+    assert c.verify_evidence is None
+
+
 # --- measurement-honesty gate G3: verify inter-attempt pilot consistency --------
 
 

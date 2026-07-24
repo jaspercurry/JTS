@@ -38,7 +38,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
 from jasper.active_speaker.crossover_v2_flow import (
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -80,7 +79,6 @@ _BINDING = "placement_abcdefghijklmnopqrstuv"
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     v2host.reset_session_measurement_pause_for_tests()
     yield
     v2host.set_state_path_for_tests(None)
@@ -710,6 +708,63 @@ def test_deliberate_phone_stop_gets_its_own_honest_reason_not_relay_timeout(monk
     assert state["accepted_phases"] == []
 
 
+def test_review_hold_timeout_gets_its_own_reason_not_relay_timeout(monkeypatch):
+    """Item 4 (#1605): when the deferred apply/"review" hold expires — MEASURE
+    accepted but the conductor's own auto-apply never lands within
+    REVIEW_HOLD_BUDGET_S — the terminal reason is review_hold_timeout ("applying
+    took too long"), not the generic relay_timeout "the measurement link timed
+    out". current_phase is PHASE_APPLYING only in that exact window, which is
+    what separates a hold expiry from an ordinary transport timeout (see
+    test_capture_timeout_maps_to_relay_timeout_and_abandons_volume, whose
+    CHECK-phase timeout is UNCHANGED and still classifies as relay_timeout)."""
+    _skip_purge_grace(monkeypatch)
+    import jasper.capture_relay.session as _relay_session
+    monkeypatch.setattr(_relay_session, "REVIEW_HOLD_BUDGET_S", 0.1)
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+
+    # A live phone rearms the hold clock on every deferred retry, so it only
+    # expires when the phone VANISHES mid-hold (backgrounded / screen locked).
+    # Simulate that: after the first deferral the phone stops stepping, and
+    # with no auto-apply wired (no run_async/camilla_factory) the hold is never
+    # released — REVIEW_HOLD_BUDGET_S after that last retry it expires.
+    def _vanish_mid_hold(driver):
+        driver.step = lambda: None
+
+    client, session, phone = _mint_v2_session(
+        backend, spec, on_deferred=_vanish_mid_hold
+    )
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    volume = VolumeRecorder()
+    runner = _build_runner(conductor, volume, poll_interval_s=0.01, timeout_s=20.0)
+    with pytest.raises(CaptureTimeout):
+        _run(runner, client, session)
+
+    # In-memory conductor never observed the apply — the discriminator.
+    assert conductor.current_phase == PHASE_APPLYING
+    assert volume.events == ["open", "abandon"]
+    state = v2host.load_v2_state()
+    assert state["failure"] == {"code": "review_hold_timeout"}
+
+    # The envelope renders the session-restart template with the honest copy.
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    env = build_crossover_envelope_v2({
+        "active": True,
+        "setup": {"active": True, "status": "ready"},
+        "crossover_v2": {
+            "phase": "applying",
+            "failure": {"code": "review_hold_timeout"},
+        },
+    })
+    assert env["screen"] == "session_restart"
+    assert "took too long" in env["verdict_text"].lower()
+
+
 # --- verify-only re-arm (S1d: resume skips accepted phases at the relay) --------
 
 
@@ -797,23 +852,7 @@ def test_verify_rearm_persists_pilot_transfer_baseline_for_a_later_rearm():
     assert state["verify_priors"]["pilot_transfer_baseline"] == {"summed": 0.0}
 
 
-# --- endpoint gates (selector + recovery) ----------------------------------------
-
-
-def test_prepare_refuses_under_legacy_flow(monkeypatch):
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.prepare_v2_session(
-            {}, status={}, run_async=None, camilla_factory=None
-        )
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.prepare_v2_verify(
-            {}, status={}, run_async=None, camilla_factory=None
-        )
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.handle_v2_apply({}, None, None)
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.handle_v2_restore(None, None)
+# --- endpoint gates (recovery) ----------------------------------------
 
 
 def test_prepare_refuses_when_volume_needs_recovery():
@@ -939,6 +978,38 @@ def test_restore_refuses_when_no_pre_apply_profile_is_stashed():
         v2host.handle_v2_restore(None, None)
 
 
+def test_restore_refuses_across_a_topology_change(monkeypatch):
+    """Item 2 (#1605): the stashed Undo target was composed for the output
+    topology live at apply time; restoring it after the topology changed would
+    realize the wrong graph. handle_v2_restore refuses with a re-measure nudge
+    when the current topology's config fingerprint differs from the one stashed
+    in pre_apply_profile.source. (The matching-topology pass-through is proven
+    end-to-end by test_apply_stashes_pre_apply_profile_and_restore_reverts_
+    through_real_seams, which restores under one unchanged topology.)"""
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": {
+            "status": "applied",
+            "source": {"topology_fingerprint": "topo-A"},
+            "config": {"path": "/tmp/whatever.yml"},
+        },
+    })
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology", lambda: object()
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.baseline_profile.topology_config_fingerprint",
+        lambda _topology: "topo-B",
+    )
+    with pytest.raises(
+        v2host.CrossoverV2Refused, match="output configuration changed"
+    ):
+        v2host.handle_v2_restore(None, None)
+
+
 def test_status_block_surfaces_apply_blocked():
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -949,6 +1020,37 @@ def test_status_block_surfaces_apply_blocked():
     assert v2host.crossover_v2_status_block()["apply_blocked"] == {
         "id": "measured_candidate_preset_mismatch", "message": "x",
     }
+
+
+def test_apply_blocked_is_scoped_to_its_producing_session():
+    """Item 1 (#1605): a blocked-apply nudge belongs to the session that
+    produced it. persist_conductor_state carries apply_blocked forward while
+    the durable session_id still matches the snapshot's (the blocked-apply
+    terminal path is same-session), but a FRESH session's first snapshot drops
+    the stale nudge instead of surfacing session A's blocker on session B's
+    apply step. pre_apply_profile stays unconditional — only apply_blocked is
+    gated (see persist_conductor_state's carry-forward comment)."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    _c1, session1, phone1 = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor1 = _conductor(backend, session1, phone1, published=[])
+    conductor1.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor1, failure_code=None)
+    conductor1.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor1, failure_code=None)
+
+    issue = {"id": "boom", "message": "the apply was blocked"}
+    v2host._persist_apply_blocked(issue)
+    # Same session ⇒ preserved (the real blocked-apply terminal persist path).
+    v2host.persist_conductor_state(conductor1, failure_code=REASON_APPLY_FAILED)
+    assert v2host.load_v2_state()["apply_blocked"] == issue
+
+    # A brand-new session's first snapshot drops the stale nudge.
+    _c2, session2, phone2 = _mint_v2_session(backend, spec, driver_cls=None)
+    assert session2.session_id != session1.session_id
+    conductor2 = _conductor(backend, session2, phone2, published=[])
+    v2host.persist_conductor_state(conductor2, failure_code=None)
+    assert v2host.load_v2_state()["apply_blocked"] is None
 
 
 def test_blocking_apply_issue_prefers_a_blocker_over_earlier_non_blocker_issues():
@@ -1826,11 +1928,6 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 # --- status block (S1b) -----------------------------------------------------------
 
 
-def test_status_block_none_under_legacy(monkeypatch):
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
-    assert v2host.crossover_v2_status_block() is None
-
-
 def test_status_block_reports_needs_recovery_and_phase():
     class _NeedsRecovery:
         needs_recovery = True
@@ -1852,6 +1949,37 @@ def test_status_block_reports_needs_recovery_and_phase():
         "applied": False,
     })
     assert v2host.crossover_v2_status_block()["phase"] == PHASE_APPLYING
+
+
+def test_verify_fail_persists_expert_evidence_through_the_real_persist_path():
+    """Item 5b (#1605): a real out_of_tolerance VERIFY persists its tracking
+    numbers under state["verify"]["evidence"] via the SAME persist_conductor_
+    state the relay-driven flow calls after every capture — so the verify_fail
+    screen can fold them behind its expert disclosure. Pins the end-to-end key
+    match between what the conductor writes and what
+    crossover_envelope_v2._verify_expert_details reads (the two are tested
+    separately in test_crossover_v2_conductor.py / test_crossover_envelope_v2.py;
+    this closes the loop that a renamed key would silently break)."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        analyses={"verify": lambda program: _verify_analysis(program, max_db=2.4)},
+    )
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.note_apply_complete()  # arm VERIFY
+    conductor.consume_capture(3, 3, CaptureResult(wav=b"fake-verify"))
+    v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
+
+    assert conductor.verify_outcome == "fail"
+    verify = v2host.load_v2_state()["verify"]
+    assert verify["outcome"] == "fail"
+    assert verify["evidence"]["max_db"] == 2.4
+    assert verify["evidence"]["tolerance_db"] == 1.5
 
 
 def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
@@ -2249,7 +2377,7 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise():
     assert cam.vol == -15.0
 
 
-def test_v2_volume_recovery_active_tracks_needs_recovery(monkeypatch):
+def test_v2_volume_recovery_active_tracks_needs_recovery():
     class _NeedsRecovery:
         needs_recovery = True
 
@@ -2261,10 +2389,6 @@ def test_v2_volume_recovery_active_tracks_needs_recovery(monkeypatch):
 
     v2host.set_volume_plan_for_tests(_Clean())
     assert v2host.v2_volume_recovery_active() is False
-
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
-    v2host.set_volume_plan_for_tests(_NeedsRecovery())
-    assert v2host.v2_volume_recovery_active() is False  # legacy flow: never v2
 
 
 def test_recover_session_volume_routes_to_the_plan():
@@ -3087,6 +3211,28 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
     ).read_text(encoding="utf-8")
     assert config_path.read_text(encoding="utf-8") == prior_config_text
 
+    # Item 3 (#1605): make the candidate pruner ACTIVE at the run-8 apply below,
+    # with the prior (the Undo target) the OLDEST candidate on disk. Without
+    # _apply_baseline_profile_locked passing it as also_protect, the newest-K
+    # mtime prune would evict it and the Undo at the end of this test would fail
+    # with restore_target_missing — so the prior surviving + the restore
+    # succeeding is the END-TO-END proof that the real extraction protects the
+    # real Undo-target path (the isolated pruner half is pinned by
+    # test_prune_keeps_the_protected_undo_target_even_when_it_is_oldest).
+    import os as _os
+    import time as _time
+
+    from jasper.active_speaker import baseline_profile as _bp
+    prior_config_path = Path(prior_payload["profile"]["config"]["path"])
+    _now = _time.time()
+    _os.utime(prior_config_path, (_now - 10_000, _now - 10_000))
+    for _i in range(_bp._MAX_BASELINE_CANDIDATE_FILES + 2):
+        _orphan = config_path.with_name(
+            f"active_speaker_baseline_candidate_orphan{_i:03d}.yml"
+        )
+        _orphan.write_text(f"# orphan {_i}\n", encoding="utf-8")
+        _os.utime(_orphan, (_now - 1000, _now - 1000))
+
     run8_candidate = _run6_measured_candidate(preset)
     v2host.save_v2_state({
         "session_id": "cap_run8",
@@ -3103,6 +3249,9 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
         _FakeApplyCam,
     )
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
+    # The prior (Undo target) survived the run-8 prune despite being the oldest
+    # candidate on disk — protected by also_protect (#1605).
+    assert prior_config_path.exists()
     run8_config_path = Path(apply_payload["profile"]["config"]["path"])
     assert run8_config_path != config_path
     run8_config_text = run8_config_path.read_text(encoding="utf-8")
@@ -3418,7 +3567,6 @@ def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
 
     with pytest.raises(v2host.CrossoverV2Refused, match="first measured crossover"):
         v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
 
 
 # --- W6.11: the real session-start preview-ensure seam, end to end ---

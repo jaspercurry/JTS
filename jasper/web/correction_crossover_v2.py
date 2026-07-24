@@ -136,17 +136,8 @@ class CrossoverV2LocalSeamError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- #
-# flow selector + durable state
+# durable state
 # --------------------------------------------------------------------------- #
-
-
-def v2_flow_active() -> bool:
-    from jasper.active_speaker.crossover_flow import (
-        CROSSOVER_FLOW_V2,
-        active_crossover_flow,
-    )
-
-    return active_crossover_flow() == CROSSOVER_FLOW_V2
 
 
 def _state_path() -> Path:
@@ -565,8 +556,6 @@ def enforce_session_volume_ceiling_if_stale(
     household volume and releasing any held measurement pause. v2-only. Returns
     True iff a stale session was drained.
     """
-    if not v2_flow_active():
-        return False
     plan = session_volume_plan()
     try:
         if not plan.stale_active():
@@ -594,8 +583,6 @@ def v2_volume_recovery_active() -> bool:
     endpoint must drain (unresolved, or a crash-hydrated active plan). The
     legacy-lease path 409s these because they live on the v2 plan, not the
     lease — the observed ``crossover_volume_recovery_not_required`` bug."""
-    if not v2_flow_active():
-        return False
     try:
         return bool(session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
@@ -650,8 +637,6 @@ def reconcile_session_volume_for_new_session(
     — the caller's ``needs_recovery`` gate refuses it toward the recover-volume
     screen.
     """
-    if not v2_flow_active():
-        return
     plan = session_volume_plan()
     enforce_session_volume_ceiling_if_stale(run_async, camilla_factory)
     if plan.measurement_volume_db is None or plan.needs_recovery:
@@ -699,15 +684,13 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
 
 
 def crossover_v2_status_block() -> dict[str, Any] | None:
-    """The ``status["crossover_v2"]`` block, or ``None`` when the flow is legacy.
+    """The ``status["crossover_v2"]`` block.
 
     ``needs_recovery`` comes from the SessionVolumePlan (the W2 gate ruling:
     key on ``needs_recovery``, never ``unresolved_volume_safety`` alone — a
     crash-hydrated active plan surfaces no unresolved payload but still needs
     draining before a new session).
     """
-    if not v2_flow_active():
-        return None
     state = load_v2_state()
     try:
         needs_recovery = bool(session_volume_plan().needs_recovery)
@@ -780,7 +763,19 @@ def persist_conductor_state(
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "candidate": _candidate_summary(conductor.candidate),
         "verify": (
-            {"outcome": verify_outcome} if verify_outcome is not None else None
+            {
+                "outcome": verify_outcome,
+                # The verify_fail expert-disclosure numbers (#1605) — persisted
+                # only for a NON-pass outcome (the only one that renders a
+                # verify_fail screen). A pass shows the candidate_review card,
+                # not these tracking numbers, so it keeps its lean shape.
+                **(
+                    {"evidence": dict(conductor.verify_evidence)}
+                    if (verify_outcome != "pass" and conductor.verify_evidence)
+                    else {}
+                ),
+            }
+            if verify_outcome is not None else None
         ),
         "failure": {"code": failure_code} if failure_code else None,
         "verify_priors": {
@@ -813,19 +808,34 @@ def persist_conductor_state(
     # 2026-07-20) are NOT conductor-owned fields: the conductor neither
     # produces nor reads either one, so they are absent from the ``state``
     # literal above and every OTHER caller of this function only ever sets
-    # the fields it does know about. Unlike ``candidate``/``evidence``, this carry-forward is
-    # unconditional (not gated on a matching session_id): the deferred
-    # VERIFY that auto-arms right after every apply runs under a BRAND-NEW
-    # relay session id (``prepare_v2_verify`` mints one and "rebinds" the
-    # conductor's session_id before its own ``persist_conductor_state``
-    # call), so a session-id-gated carry-forward would still lose the stash
-    # on that very first post-apply snapshot. W6.12 P0: without this, the
-    # verify phase that always immediately follows an apply wiped the
-    # just-stashed ``pre_apply_profile`` before a household could ever reach
-    # the verify_fail Undo screen — ``/crossover/v2/restore`` 400'd with "no
-    # previous crossover to restore to" after literally every apply.
+    # the fields it does know about. They carry forward with OPPOSITE
+    # session-scoping, by design:
+    #
+    #   * ``pre_apply_profile`` is carried forward UNCONDITIONALLY (not gated
+    #     on a matching session_id): the deferred VERIFY that auto-arms right
+    #     after every SUCCESSFUL apply runs under a BRAND-NEW relay session id
+    #     (``prepare_v2_verify`` mints one and "rebinds" the conductor's
+    #     session_id before its own ``persist_conductor_state`` call), so a
+    #     session-id-gated carry-forward would lose the stash on that very
+    #     first post-apply snapshot. W6.12 P0: without this, the verify phase
+    #     that always immediately follows an apply wiped the just-stashed
+    #     ``pre_apply_profile`` before a household could ever reach the
+    #     verify_fail Undo screen — ``/crossover/v2/restore`` 400'd with "no
+    #     previous crossover to restore to" after literally every apply.
+    #
+    #   * ``apply_blocked`` IS session-scoped (#1605): it is only ever set on
+    #     a BLOCKED auto-apply, which — unlike a successful one — refuses the
+    #     deferred VERIFY outright (the honest ``apply_failed`` reason, never a
+    #     re-arm), so it never has to survive ``prepare_v2_verify``'s
+    #     new-session rebind. Gating it drops a stale nudge the moment a fresh
+    #     session begins instead of leaking session A's blocker onto session
+    #     B's apply step.
     state["pre_apply_profile"] = prior.get("pre_apply_profile")
-    state["apply_blocked"] = prior.get("apply_blocked")
+    state["apply_blocked"] = (
+        prior.get("apply_blocked")
+        if prior.get("session_id") == snap.session_id
+        else None
+    )
     save_v2_state(state)
 
 
@@ -1500,12 +1510,14 @@ def build_v2_run_and_consume(
             run_capture_plan,
         )
         from jasper.active_speaker.crossover_v2_flow import (
+            PHASE_APPLYING,
             PHASE_DONE,
             REASON_APPLY_FAILED,
             REASON_INTERNAL_ERROR,
             REASON_PROGRAM_UNPLAYABLE,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
+            REASON_REVIEW_HOLD_TIMEOUT,
             REASON_USER_STOPPED,
             V2_FIRST_BEGIN_TIMEOUT_S,
             TRANSIENT_AUTO_RETRY_CODES,
@@ -1871,6 +1883,22 @@ def build_v2_run_and_consume(
             code = REASON_RELAY_TIMEOUT
             if isinstance(exc, CaptureAborted) and exc.reason == "stopped":
                 code = REASON_USER_STOPPED
+            elif (
+                isinstance(exc, CaptureTimeout)
+                and conductor.current_phase == PHASE_APPLYING
+            ):
+                # The deferred apply/"review" hold (CaptureBeginDeferred
+                # "awaiting_apply") expired: MEASURE was accepted but the
+                # conductor's own auto-apply never landed within
+                # REVIEW_HOLD_BUDGET_S. current_phase is PHASE_APPLYING ONLY in
+                # that exact window (MEASURE accepted, VERIFY pending, apply not
+                # observed), so it cleanly separates a hold expiry from a
+                # generic transport death (#1605) — name the real cause instead
+                # of the dishonest "the measurement link timed out". A rare
+                # apply-landed-but-phone-bailed race still renders honestly: the
+                # envelope's applied-keyed override keys on durable
+                # ``applied``, not on this phase.
+                code = REASON_REVIEW_HOLD_TIMEOUT
             await _post_session_over_host_event()
             _persist_terminal_failure(conductor, code)
             await _abandon_best_effort()
@@ -2269,9 +2297,9 @@ def prepare_v2_session(
 ) -> V2PreparedSession:
     """Prepare the ``POST /crossover/v2/session`` relay hosting (S1a).
 
-    Gates (fail-closed, before any relay registration): the flow selector, the
-    volume-recovery gate (``needs_recovery`` — the W2 ruling), and the
-    conductor-context resolution. Hydration (S1d): the durable state is
+    Gates (fail-closed, before any relay registration): the volume-recovery
+    gate (``needs_recovery`` — the W2 ruling) and the conductor-context
+    resolution. Hydration (S1d): the durable state is
     hydrated through :meth:`CrossoverV2Conductor.hydrate` with the NEW relay
     session id — a prior session's CHECK/MEASURE evidence is invalidated per
     §5.6 (and logged); the fresh session starts at CHECK.
@@ -2284,10 +2312,6 @@ def prepare_v2_session(
     )
     from jasper.capture_relay import correction_adapter
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
@@ -2431,10 +2455,6 @@ def prepare_v2_verify(
     )
     from jasper.capture_relay import correction_adapter
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before verifying"
@@ -2616,10 +2636,6 @@ def handle_v2_apply(
     from jasper.active_speaker.measurement import load_measurement_state
     from jasper.output_topology import load_output_topology
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     expected = str(raw.get("expected_candidate_fingerprint") or "")
     if not expected:
         raise CrossoverV2Refused("expected_candidate_fingerprint is required")
@@ -2763,12 +2779,10 @@ def handle_v2_restore(
     """
     from jasper.active_speaker.baseline_profile import (
         restore_applied_baseline_profile,
+        topology_config_fingerprint,
     )
+    from jasper.output_topology import load_output_topology
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     state = load_v2_state()
     if not state or not state.get("applied"):
         raise CrossoverV2Refused(
@@ -2785,6 +2799,33 @@ def handle_v2_restore(
             "this is the first measured crossover on this speaker — there's "
             "no earlier one to restore; use Speaker setup to remove it instead"
         )
+    # Item 2 (#1605): the stashed Undo target was composed for the output
+    # topology live at apply time. If the topology's config-determining
+    # fingerprint changed since (a driver swap, a different output device or
+    # channel map), reloading that config would realize the WRONG graph —
+    # refuse with a clear "re-measure" nudge rather than silently restoring a
+    # stale config. A stash predating the fingerprint (no topology_fingerprint
+    # in its ``source``) can't be compared, so it falls through to the existing
+    # restore path, which still validates the config bytes itself.
+    stashed_source = pre_apply_profile.get("source")
+    stashed_topology_fp = (
+        str(stashed_source.get("topology_fingerprint") or "")
+        if isinstance(stashed_source, Mapping)
+        else ""
+    )
+    if stashed_topology_fp:
+        current_topology_fp = topology_config_fingerprint(load_output_topology())
+        if current_topology_fp != stashed_topology_fp:
+            log_event(
+                logger,
+                "correction.crossover_v2_restore_topology_mismatch",
+                level=logging.WARNING,
+            )
+            raise CrossoverV2Refused(
+                "the speaker's output configuration changed since this "
+                "crossover was applied, so the previous sound can't be safely "
+                "restored — re-measure the crossover instead"
+            )
     cam = camilla_factory()
     payload = run_async(
         restore_applied_baseline_profile(

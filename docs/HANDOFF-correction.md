@@ -22,12 +22,12 @@
   map, invariants, failure taxonomy, session-state paths, and the W6 bug
   catalog — lives in
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
-  this doc does not restate it. The **legacy per-driver crossover flow is
-  deprecated**: reachable only via the explicit opt-out
-  `JASPER_CROSSOVER_FLOW=legacy`, and scheduled for deletion (design-doc
-  wave W5b). The legacy per-driver measurement details that remain below
-  (level-match ramps, near-field/reference-axis geometry, `/crossover/*`
-  per-driver endpoints, scoped reset) describe that deprecated path.
+  this doc does not restate it. The **legacy per-driver crossover flow was
+  removed in W5b (2026-07-24)** — the per-driver envelope, its measurement
+  handlers, and the `JASPER_CROSSOVER_FLOW` selector are gone; v2 is the only
+  flow. Some shared per-driver measurement machinery below (level-match
+  ramps, near-field/reference-axis geometry, scoped reset) survives because
+  the `CrossoverLevelLease` and capture geometry are shared with v2.
 - 🧱 **Wave-2 household-mic persistence — loop complete (Pi record + phone
   one-tap confirm).** Before this, nothing about the measurement mic
   survived across sessions: the phone relay's setup validates against a
@@ -1864,34 +1864,6 @@ POST /crossover/level-match  guided mic/calibration + server-selected per-driver
                              near-field or fixed-reference-axis automatic level
 POST /crossover/recover-volume recover a durable unconfirmed listening volume;
                               exact prior level first, then confirmed −60 dB
-POST /crossover/region-geometry body: {expected_target_fingerprint,
-                              signed_acoustic_path_difference_mm}; persist the
-                              server's current region geometry attestation
-POST /crossover/candidate    resume exact candidate publication if execution
-                             stopped after measured evidence became durable
-POST /crossover/apply        atomically apply measured Layer A; restore gain lease
-POST /crossover/restore      restore or finalize the exact pre-apply DSP state
-POST /crossover/driver-test  start one protected per-driver audible test
-POST /crossover/driver-confirm record the protected driver-test result
-POST /crossover/driver-abort stop the driver test and restore the graph
-POST /crossover/summed-test  run the protected combined-driver listening test
-POST /crossover/driver-capture-sweep start a bounded per-driver capture stimulus
-POST /crossover/summed-capture-sweep legacy direct summed route; always 409
-                             before body/backend/volume/graph/audio
-POST /crossover/summed-capture legacy direct raw-WAV route; always 409 before
-                             body/backend/volume/graph/audio
-POST /crossover/relay-capture driver body: {kind: driver, speaker_group_id,
-                             role, capture_geometry}; summed body exactly
-                             {kind: summed}. Phone-mic relay transport for one
-                             crossover sweep. Driver geometry must equal the
-                             server envelope's next action at POST and armed
-                             time. Summed capture accepts recorder bytes and
-                             fixed-axis acknowledgement only; Active owns its
-                             region, graph, polarity, delay, attempt, ordinal,
-                             and admission. Both refuse while another
-                             measurement is active and re-check mutable
-                             authority when the phone arms. ON-DEVICE: summed
-                             playback/capture not exercised hardware-free — H2.
 POST /crossover/relay-cancel cooperatively stop the active crossover level/sweep
                              relay; reports `stopping` until exact cleanup drains
                              and refuses Stop during `finishing`/`committing`
@@ -1901,21 +1873,18 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
                              envelope. Keeps driver research and the SOLO applied
                              crossover; a bonded speaker fails safe to solo on its
                              next re-prove — see "Scoped crossover reset" below
-POST /crossover/v2/session   v2 conductor flow (JASPER_CROSSOVER_FLOW=v2, W5a):
+POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
                              open ONE relay session spanning CHECK→MEASURE→VERIFY
-                             (3-entry capture plan); refuses under the legacy flow
+                             (3-entry capture plan)
 POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session after
-                             apply (§5.2 re-verify); refuses under the legacy flow
+                             apply (§5.2 re-verify)
 POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
                              through the existing atomic apply transaction (W4
                              measured_candidate seam); arms the deferred VERIFY
 POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
                              pre-candidate applied profile handle_v2_apply
                              stashed at apply time and clear the durable v2
-                             applied/candidate/failure state (W6 run-8
-                             Blocker Q: the legacy /crossover/restore expects a
-                             pending commissioning-run apply a v2 apply never
-                             creates, and 500s)
+                             applied/candidate/failure state
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

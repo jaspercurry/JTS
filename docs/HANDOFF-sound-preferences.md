@@ -508,6 +508,16 @@ unknown/custom graphs, non-hostable protected graphs, flat no-op profiles, and
 `sound_audition.yml` (an unsaved preview must not be promoted or rewritten by
 deploy).
 
+`sound_current.yml` means "the last durable `/sound` render," **not** "the
+config CamillaDSP is currently running." An active-speaker crossover **v2
+apply does not update it** (#1605): v2 points CamillaDSP at a
+content-addressed `active_speaker_baseline_candidate_<fp>.yml` and owns its
+own Layer-A SSOT (`active_speaker_baseline_profile.json`), so the two can
+legitimately diverge. Converging them was considered and declined — see
+[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+"Future work". Runtime truth is always whatever CamillaDSP's statefile
+reports, never a fixed filename.
+
 `/sound/apply`, `/sound/audition`, and `/sound/live-draft` route the loaded
 config through the **graph carrier**
 ([HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)), which preserves

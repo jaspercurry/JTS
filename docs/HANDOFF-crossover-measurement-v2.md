@@ -20,14 +20,12 @@ this doc is the current operational truth.
   speaker at tweeter height, tap Start, then follow the phone — apply is
   automatic (owner ruling, 2026-07-20; gotcha #18), no browser-tab step
   in between.
-- **Flow selector — `JASPER_CROSSOVER_FLOW`.** Resolved by
-  `active_crossover_flow()` in
-  [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py).
-  **The default is `v2`** (flipped from `legacy` on 2026-07-19 after W6
-  hardware validation); the single opt-out is the exact literal
-  `JASPER_CROSSOVER_FLOW=legacy` (case-insensitive, trimmed). Any
-  unrecognized value resolves to the default — fail-safe by
-  construction.
+- **Only flow — v2.** W5b (2026-07-24) retired the legacy per-driver
+  flow and the `JASPER_CROSSOVER_FLOW` selector.
+  `build_crossover_envelope` dispatches straight to
+  `build_crossover_envelope_v2` now; a stale
+  `JASPER_CROSSOVER_FLOW=legacy` carried on an old box no longer selects
+  anything (pinned by `test_legacy_env_still_serves_v2_envelope`).
 - **Phone capture page:** the Cloudflare Pages app under
   [`capture-page/`](../capture-page/README.md), served at
   `capture.jasper.tech`, relaying through `relay.jasper.tech`. Deploy
@@ -269,7 +267,6 @@ most visible thing on the screen.
 
 | File | Responsibility |
 |---|---|
-| [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py) | The `JASPER_CROSSOVER_FLOW` selector — `active_crossover_flow()` / `resolve_crossover_flow()`. No product policy. |
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. |
@@ -866,9 +863,26 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   self-cancelling at the
   mic position (baked into both MEASURE and VERIFY) but the *listening
   position* carries the full geometric error.
-- **Decide whether legacy `sound_current.yml` should update on v2
-  apply.** Today it diverges cosmetically; the v2 SSOT is
-  `active_speaker_baseline_profile.json`.
+- **`sound_current.yml` does NOT update on a v2 apply — by decision, not
+  omission (#1605).** `sound_current.yml` means "the last durable `/sound`
+  render," never "the config CamillaDSP is currently running." A v2 apply
+  writes the content-addressed `active_speaker_baseline_candidate_<fp>.yml`
+  and points CamillaDSP at it; the runtime truth is whatever CamillaDSP's
+  statefile reports, and the Layer-A truth is
+  `active_speaker_baseline_profile.json`. Mirroring v2 applies into
+  `sound_current.yml` would create a second mutable Layer-A artifact and
+  weaken the content-addressed Apply/Undo ownership, so we deliberately do
+  not converge the bytes. Readers treat it accordingly: `graph_carrier`
+  recognizes generated configs by content (the fixed name matters only for
+  the PR #1009 stale-bake recovery), `jasper-doctor` uses it as a
+  last-resort fallback and recognizes content-addressed active-baseline
+  names, and `multiroom.leader_config` stashes/restores whatever CamillaDSP
+  reports live rather than opening a fixed name. See
+  [`HANDOFF-sound-preferences.md`](HANDOFF-sound-preferences.md) for the
+  `sound_current.yml` lifecycle. (Deferred cleanups, not required by this
+  decision: drop the doctor's fixed-file fallback in favor of an explicit
+  active-path-unavailable report, and a name migration to
+  `sound_preferences_current.yml` — both owner-gated.)
 
 ## Boundaries / non-goals
 
@@ -950,7 +964,8 @@ so waves could run in parallel.**
   see Future work. Deleting the only working flow before the replacement
   touched hardware was the one sequencing risk the plan refused.
 
-The default flips to `v2` on 2026-07-19. Legacy remains reachable via
-`JASPER_CROSSOVER_FLOW=legacy` until W5b deletes it.
+The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
+legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
+crossover-measurement flow now.
 
-Last verified: 2026-07-23
+Last verified: 2026-07-24

@@ -9,8 +9,8 @@
 > now lives in
 > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).**
 > Read this doc for the decision archaeology; read the HANDOFF for what
-> the flow does today. Legacy remains reachable via
-> `JASPER_CROSSOVER_FLOW=legacy` until its scheduled W5b deletion.
+> the flow does today. W5b (2026-07-24) deleted the legacy flow and the
+> `JASPER_CROSSOVER_FLOW` selector — v2 is the only flow now.
 
 > **Status: v2.1 design / decision record (2026-07-18, in implementation).**
 > v1 (earlier the same day) synthesized the first-principles deep-research

@@ -954,12 +954,13 @@ reference. Currently:
   and one "next" pointer. Deliberately not a wizard framework.
 - [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
   — **Operational canon for the crossover measurement v2 "conductor" flow**
-  (the default `/correction/crossover/` flow since 2026-07-19). The conductor
+  (the only `/correction/crossover/` flow since W5b retired the legacy
+  per-driver flow and the `JASPER_CROSSOVER_FLOW` selector). The conductor
   model (phone = dumb recorder, Pi = conductor, analysis = pure functions), the
-  CHECK → MEASURE → automatic APPLYING → VERIFY capture flow, the `JASPER_CROSSOVER_FLOW`
-  selector, the file map, invariants, failure taxonomy, session-state paths, the
-  W6 hardware bug catalog, and the W5b future-work list. Read this for how the
-  flow works today; the design/decision record below is the "why."
+  CHECK → MEASURE → automatic APPLYING → VERIFY capture flow, the file map,
+  invariants, failure taxonomy, session-state paths, and the W6 hardware bug
+  catalog. Read this for how the flow works today; the design/decision record
+  below is the "why."
 - [`active-speaker-tuning-layers-design.md`](docs/active-speaker-tuning-layers-design.md)
   — **Adopted design (2026-07-23): the five-layer tuning model** — driver
   linearization (the layer the "no sparkle" incident exposed) + crossover

@@ -68,6 +68,20 @@ def test_schema_8_and_v2_step_tuple():
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
 
+def test_legacy_env_still_serves_v2_envelope(monkeypatch):
+    """W5b retired the ``JASPER_CROSSOVER_FLOW`` selector and the legacy flow —
+    v2 is the only flow now. A box carrying a stale
+    ``JASPER_CROSSOVER_FLOW=legacy`` from before the selector was deleted must
+    still serve the v2 (schema 8) envelope through the ``build_crossover_envelope``
+    entry point, not crash or fall back to a deleted legacy path."""
+    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+
+    monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
+    env = build_crossover_envelope(_status(phase="check"))
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 8
+    assert env["flow"] == "v2"
+
+
 def test_inactive_speaker_gets_not_applicable():
     env = build_crossover_envelope_v2({"active": False})
     assert env["screen"] == "not_applicable"
@@ -97,6 +111,14 @@ def test_check_phase_screen():
     assert statuses["speaker_setup"] == "done"
     assert statuses["microphone_check"] == "active"
     assert env["progress"] == {"position": 2, "total": 5}
+    # Item 5a (#1605): the placement guidance names the load-bearing facts —
+    # distance, tweeter height, and holding ONE spot for the whole session
+    # (one mic position spans all three captures). Substring guards, not exact
+    # wording, so copy can still be refined.
+    verdict = env["verdict_text"].lower()
+    assert "1 m" in verdict
+    assert "tweeter height" in verdict
+    assert "whole measurement" in verdict
 
 
 def test_measure_phase_is_phone_driven():
@@ -397,6 +419,41 @@ def test_verify_fail_one_default_screen():
     assert undo["show_during_relay"] is True
     assert remeasure["show_during_relay"] is True
     assert "show_during_relay" not in env["next_action"]
+
+
+def test_verify_fail_folds_tracking_numbers_behind_expert_details():
+    """Item 5b (#1605): the verify_fail screen keeps its primary copy short and
+    folds the level-error / average-error / tracking-band numbers into a
+    collapsed expert disclosure (the frontend renders env.expert_details as a
+    <details>). The conductor persists them under verify.evidence; an
+    early-return verify verdict carries none, so no disclosure renders."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={
+            "outcome": "fail",
+            "evidence": {
+                "max_db": 2.34,
+                "rms_db": 0.81,
+                "tracking_band_lo_hz": 1000.0,
+                "tracking_band_hi_hz": 4000.0,
+                "tolerance_db": 1.5,
+            },
+        },
+    ))
+    assert env["screen"] == "verify_fail"
+    details = env["expert_details"]
+    assert "level error 2.34 dB (limit 1.5 dB)" in details
+    assert "average error 0.81 dB" in details
+    assert "checked 1000–4000 Hz" in details
+    # Primary copy stays the short reason message — the numbers are NOT in it.
+    assert "2.34" not in env["verdict_text"]
+
+    # No evidence ⇒ no disclosure (early-return verify verdicts carry none).
+    bare = build_crossover_envelope_v2(_status(
+        phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+    ))
+    assert bare["expert_details"] == []
 
 
 def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():

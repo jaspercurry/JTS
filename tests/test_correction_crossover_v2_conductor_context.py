@@ -421,10 +421,8 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolated_v2_state(tmp_path, monkeypatch):
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
 
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     yield
     v2host.set_state_path_for_tests(None)
     v2host.set_volume_plan_for_tests(None)

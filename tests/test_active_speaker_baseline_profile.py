@@ -5141,3 +5141,47 @@ async def test_promote_prunes_old_candidate_siblings_beyond_newest_k(
     # Canonical itself (no _candidate_ suffix) is untouched by pruning.
     assert config_path.exists()
     assert config_path.name not in survivors
+
+
+def test_prune_keeps_the_protected_undo_target_even_when_it_is_oldest(
+    tmp_path: Path,
+) -> None:
+    """Item 3 (#1605): the Undo target (pre_apply_profile.config.path) is a
+    content-addressed sibling that handle_v2_restore reloads. Even when it is
+    the OLDEST candidate — so the newest-K mtime prune would evict it —
+    passing it via ``also_protect`` keeps it on disk, while the on-disk total
+    stays bounded to K (a protected sibling costs a slot, it does not add to
+    K). Without this, ~K compiles between two applies would silently break
+    Undo."""
+    canonical = tmp_path / "active_speaker_baseline.yml"
+    canonical.write_text("# canonical\n", encoding="utf-8")
+    keep = baseline_profile_mod._MAX_BASELINE_CANDIDATE_FILES
+    now = time.time()
+
+    # The Undo target is the very oldest candidate on disk.
+    undo_target = tmp_path / "active_speaker_baseline_candidate_undo0000.yml"
+    undo_target.write_text("# undo target\n", encoding="utf-8")
+    os.utime(undo_target, (now - 10_000, now - 10_000))
+    # More newer orphans than the keep-count, all newer than the undo target.
+    orphan_count = keep + 5
+    for i in range(orphan_count):
+        sib = tmp_path / f"active_speaker_baseline_candidate_orphan{i:03d}.yml"
+        sib.write_text(f"# orphan {i}\n", encoding="utf-8")
+        os.utime(sib, (now - (orphan_count - i), now - (orphan_count - i)))
+    # The just-applied candidate is the newest.
+    applied = tmp_path / "active_speaker_baseline_candidate_applied.yml"
+    applied.write_text("# applied\n", encoding="utf-8")
+    os.utime(applied, (now, now))
+
+    baseline_profile_mod._prune_baseline_candidate_siblings(
+        canonical, protect=applied, also_protect=[str(undo_target)]
+    )
+
+    remaining = {
+        p.name for p in tmp_path.glob("active_speaker_baseline_candidate_*.yml")
+    }
+    assert applied.name in remaining        # the just-applied candidate survives
+    assert undo_target.name in remaining    # protected despite being the oldest
+    assert len(remaining) == keep           # total still bounded to K
+    # A non-protected old orphan is still pruned — protection is targeted.
+    assert "active_speaker_baseline_candidate_orphan000.yml" not in remaining

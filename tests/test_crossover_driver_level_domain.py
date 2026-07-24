@@ -881,35 +881,3 @@ def test_effective_excitation_includes_driver_main_lock():
     assert _effective_excitation_dbfs({
         "excitation": {**locked, "sweep_peak_dbfs": "-12"}
     }) is None
-
-
-def test_sequential_envelope_names_next_driver_frequency_and_optional_calibration(
-    monkeypatch,
-):
-    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
-    from tests.test_web_correction_crossover_flow import _envelope_status
-
-    # This test asserts LEGACY per-driver envelope behavior; since W6 flipped
-    # the product default to the v2 conductor, the legacy path is opt-in.
-    # Goes away with the legacy flow in W5b.
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
-
-    status = _envelope_status()
-    status["level_match"] = {
-        "running": False,
-        "valid": True,
-        "ready": False,
-        "next_target": {
-            "speaker_group_id": "mono",
-            "role": "tweeter",
-            "tone_frequency_hz": 6250.0,
-        },
-        "last": {"ramp": {"state": "locked"}},
-    }
-    envelope = build_crossover_envelope(status)
-
-    assert envelope["screen"] == "microphone"
-    assert envelope["next_action"]["label"] == "Set tweeter microphone level"
-    assert "6250 Hz" in envelope["verdict_text"]
-    assert "without one is supported" in envelope["verdict_text"]

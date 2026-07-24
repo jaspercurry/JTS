@@ -2260,6 +2260,7 @@ def promote_applied_baseline_candidate(
     applied: Mapping[str, Any],
     *,
     config_path: str | Path | None = None,
+    also_protect: Sequence[str | Path] = (),
 ) -> None:
     """Publish a just-applied candidate's bytes as the canonical config file.
 
@@ -2309,36 +2310,46 @@ def promote_applied_baseline_candidate(
             canonical_path=canonical,
         )
         return
-    _prune_baseline_candidate_siblings(canonical, protect=applied_path)
+    _prune_baseline_candidate_siblings(
+        canonical, protect=applied_path, also_protect=also_protect
+    )
 
 
-def _prune_baseline_candidate_siblings(canonical: Path, *, protect: Path) -> None:
+def _prune_baseline_candidate_siblings(
+    canonical: Path, *, protect: Path, also_protect: Sequence[str | Path] = (),
+) -> None:
     """Bound unconditional candidate-sibling growth to the newest K by mtime.
 
     Deletes ``<stem>_candidate_*<suffix>`` files beside ``canonical`` beyond
-    the newest :data:`_MAX_BASELINE_CANDIDATE_FILES` by mtime. Never deletes
-    ``protect`` (the candidate :func:`promote_applied_baseline_candidate` just
-    promoted) or the canonical file itself (which never matches the glob
-    below -- it carries no ``_candidate_`` suffix). Every caller invokes this
-    immediately after ``persist_applied_baseline_profile`` writes the JSON
-    SSOT with that SAME candidate as its new applied anchor, so ``protect``
-    IS the anchor path -- there is no separate anchor to look up, and
-    deliberately no CamillaDSP-statefile parsing here.
+    the newest :data:`_MAX_BASELINE_CANDIDATE_FILES` by mtime. Never deletes a
+    PROTECTED sibling — ``protect`` (the candidate
+    :func:`promote_applied_baseline_candidate` just promoted, always the new
+    applied anchor) or any path in ``also_protect`` — or the canonical file
+    itself (which never matches the glob below; it carries no ``_candidate_``
+    suffix). ``also_protect`` carries the Undo target the apply just stashed as
+    ``pre_apply_profile`` (#1605): a content-addressed sibling like any other
+    that ``handle_v2_restore`` reloads, and would otherwise be prunable by
+    mtime once ~K newer candidates accumulate — silently breaking Undo. A
+    protected sibling costs one of the K slots rather than adding to K, so the
+    on-disk total stays at K.
     """
 
     pattern = f"{canonical.stem}_candidate_*{canonical.suffix}"
     try:
-        siblings = sorted(
-            (p for p in canonical.parent.glob(pattern) if p != protect),
+        protected = {protect, *(Path(p) for p in also_protect if p)}
+        siblings = list(canonical.parent.glob(pattern))
+        prunable = sorted(
+            (p for p in siblings if p not in protected),
             key=lambda p: p.stat().st_mtime_ns,
             reverse=True,
         )
-        # protect is excluded from siblings above (and always survives), so
-        # only the newest (K - 1) of the REMAINING files are kept -- (K - 1)
-        # + protect = K total, matching "keep the newest K" exactly rather
-        # than K-plus-protect.
-        keep = max(0, _MAX_BASELINE_CANDIDATE_FILES - 1)
-        for stale in siblings[keep:]:
+        # Protected siblings always survive; keep enough of the REMAINING files
+        # that protected-present + kept == K total (never negative) -- with no
+        # also_protect this is exactly the prior "keep newest (K - 1) + protect
+        # = K" behaviour.
+        protected_present = sum(1 for p in siblings if p in protected)
+        keep = max(0, _MAX_BASELINE_CANDIDATE_FILES - protected_present)
+        for stale in prunable[keep:]:
             stale.unlink()
     except OSError as exc:
         log_event(
@@ -2728,7 +2739,22 @@ async def _apply_baseline_profile_locked(
         apply_state=apply_state.to_dict(),
         state_path=state_target,
     )
-    promote_applied_baseline_candidate(applied, config_path=config_path)
+    # Protect the Undo target (#1605): the profile this apply replaced is what
+    # v2 Undo reloads. handle_v2_restore restores pre_apply_profile.config.path,
+    # which is exactly this candidate's frozen applied_recomposition_profile
+    # (persist_applied_baseline_profile popped it from the applied copy, not
+    # from ``candidate``). Pass it so the mtime prune can't evict it.
+    _prior = candidate.get("applied_recomposition_profile")
+    _undo_target = (
+        str((_prior.get("config") or {}).get("path") or "")
+        if isinstance(_prior, Mapping)
+        else ""
+    )
+    promote_applied_baseline_candidate(
+        applied,
+        config_path=config_path,
+        also_protect=(_undo_target,) if _undo_target else (),
+    )
     log_event(
         logger,
         "correction.crossover_apply_succeeded",
