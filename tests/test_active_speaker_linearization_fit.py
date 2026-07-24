@@ -27,6 +27,7 @@ from jasper.active_speaker._common import DRIVER_CLASSES
 from jasper.active_speaker.linearization_fit import (
     HF_CONTINUATION_POLICY,
     HF_REALIZATION_TOLERANCE_DB,
+    HF_SUPPRESSION_REASONS,
     HF_TAPER_MAX_DB,
     MAX_FILTERS_PER_DRIVER,
     MAX_NORMALIZATION_SPEND_DB,
@@ -916,9 +917,11 @@ def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
 
 
 def test_cd_horn_disagreeing_repeats_suppress_the_stage():
-    """The agreement gate: repeats that disagree by more than the [10 kHz,
-    ceiling] limit (2 dB) suppress the stage entirely — no filters, a named
-    reason, everything else zeroed."""
+    """The agreement gate: an occurrence (primary or a repeat) that disagrees
+    from the others by more than the [10 kHz, ceiling] limit (2 dB) suppresses
+    the stage entirely — no filters, a named reason, everything else zeroed.
+    The spread is over (primary, *repeats), so a lone disagreeing repeat is
+    caught even though the other two occurrences agree."""
     mag = _cd_horn_db(_NATIVE_FREQS_HZ)
     disagree = mag + 3.0 * _bell(_NATIVE_FREQS_HZ, 12000.0, 1.0, 0.15)  # +3 dB @12k on one repeat
     fit = _cd_horn_fit("compression_horn", repeat_mags=[mag, disagree])
@@ -928,13 +931,69 @@ def test_cd_horn_disagreeing_repeats_suppress_the_stage():
     assert fit.measured_deficit_at_ceiling_db == 0.0
 
 
-def test_cd_horn_insufficient_repeats_suppress_the_stage():
-    """Fewer than 2 repeats is no reproducibility evidence (the N>=3-total
-    paired gate) — suppressed with its own reason, distinct from disagreement."""
+def test_cd_horn_primary_outlier_is_caught_by_the_agreement_gate():
+    """Review SF-2: the spread MUST include the PRIMARY, not just the repeats.
+    A primary carrying a −12 dB top-octave artifact while two repeats agree at
+    −5 must SUPPRESS — otherwise the stage would size a ~7 dB-too-hot lift from
+    the one bad sweep the fit is built on. A repeats-only gate (spread over the
+    two agreeing repeats = 0) would have let it through."""
+    primary_mag = _cd_horn_db(
+        _NATIVE_FREQS_HZ,
+        np.array([0.0, 0.0, 0.0, -2.5, -6.0, -9.0, -12.0, -13.0, -13.5]),
+    )
+    repeat_mag = _cd_horn_db(
+        _NATIVE_FREQS_HZ,
+        np.array([0.0, 0.0, 0.0, -1.0, -2.5, -4.0, -5.0, -5.5, -6.0]),
+    )
+    resp = _tweeter_response(primary_mag, repeat_mags=[repeat_mag, repeat_mag])
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="reference", driver_class="compression_horn",
+    )
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.filters == ()
+    assert fit.hf_continuation_suppressed_reason == "repeat_disagreement"
+    assert fit.hf_continuation_spend_db == 0.0
+
+
+def test_cd_horn_insufficient_occurrences_suppress_the_stage():
+    """Fewer than 3 total occurrences (primary + repeats) is no reproducibility
+    evidence (the N>=3-total paired gate) — suppressed with its own reason,
+    distinct from disagreement. One repeat = 2 occurrences < 3."""
     mag = _cd_horn_db(_NATIVE_FREQS_HZ)
-    fit = _cd_horn_fit("compression_horn", repeat_mags=[mag])  # only 1 repeat
+    fit = _cd_horn_fit("compression_horn", repeat_mags=[mag])  # 1 repeat -> 2 occurrences
     assert fit.filters == ()
     assert fit.hf_continuation_suppressed_reason == "insufficient_repeats"
+
+
+def test_cd_horn_no_filter_budget_suppression_when_slots_exhausted(monkeypatch):
+    """Review N-2: an ELIGIBLE driver whose flattening loop already spent every
+    filter slot gets a NAMED suppression ("no_filter_budget"), not a silent
+    inert — the dropped CD-horn lift stays observable. Forced by making the
+    (flattening) peaking loop fill all MAX_FILTERS_PER_DRIVER slots, so the
+    stage arrives already at capacity."""
+    import jasper.active_speaker.linearization_fit as fit_mod
+    from jasper.correction.peq import PEQ
+    eight = [
+        PEQ(freq=1000.0 + 100.0 * i, q=2.0, gain=-1.0)
+        for i in range(MAX_FILTERS_PER_DRIVER)
+    ]
+    monkeypatch.setattr(fit_mod, "design_peq", lambda *a, **k: eight)
+    fit = _cd_horn_fit("compression_horn")
+    assert len(fit.filters) == MAX_FILTERS_PER_DRIVER  # flattening filled every slot
+    assert all(f.biquad_type == "Peaking" for f in fit.filters)  # no CD-horn shelf added
+    assert fit.hf_continuation_suppressed_reason == "no_filter_budget"
+
+
+def test_cd_horn_suppression_reason_vocabulary_is_closed():
+    """Review N-2: pin the closed set of suppression reasons so a new
+    suppression path can't ship an un-enumerated reason string."""
+    assert HF_SUPPRESSION_REASONS == {
+        "insufficient_repeats",
+        "repeat_disagreement",
+        "fit_quality",
+        "no_filter_budget",
+    }
 
 
 def test_cd_horn_fit_quality_suppresses_when_realization_cannot_track(monkeypatch):

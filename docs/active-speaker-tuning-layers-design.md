@@ -257,12 +257,20 @@ runs AFTER the flattening peaking loop:
 - **Guard re-anchor.** The wild-trim guard in `_fit_linearization`
   ([crossover_v2_flow.py](../jasper/active_speaker/crossover_v2_flow.py)) is
   anchored to the ripple-optimal tweeter trim's OWN band-average seed, not the
-  raw trim — a legitimate give-back moves the linearized band-average by ~the
-  full spend vs raw, so a raw-anchored guard would reject every honest
-  give-back. On a wild seed drift it falls back to the band-average seed pair,
-  never raw + emitted filters (the known VERIFY-mismatch class). Magnitude
-  protection lives in the fit engine's structural caps (per-filter 12, budget
-  12, realization tolerance) plus the VERIFY gate.
+  raw trim. The seed is computed from the ACTUAL linearized branches
+  (`solve_branch_trims` on `W_lin`/`T_lin`) — never a "raw + expected shift"
+  decomposition, which would be wrong on two counts: `_band_average_db` is a
+  POWER-domain mean (10·log10 mean(10^(dB/10))), so a linearized level is not
+  its raw level plus the correction's dB band-average (exact only for a
+  band-flat correction, ~0.28 dB off otherwise); and the downward min-level
+  step can min-flip which branch is quieter under a large tweeter cut,
+  mispredicting by ~the full spend. A raw-anchored guard would reject every
+  honest give-back; the practical "shifts by ~the full spend vs raw" intuition
+  holds only because the give-back is ≈ band-flat (−spend) across the crossover
+  overlap band. On a wild seed drift it falls back to the band-average seed
+  pair, never raw + emitted filters (the known VERIFY-mismatch class).
+  Magnitude protection lives in the fit engine's structural caps (per-filter
+  12, budget 12, realization tolerance) plus the VERIFY gate.
 
 Disclosure: octave centers above the ceiling report
 `envelope_beyond_measurement_confidence`; beyond the ceiling the lift is

@@ -2380,16 +2380,26 @@ class CrossoverV2Conductor:
         # (program_analysis._build_candidate) — see solve_ripple_optimal_trim's
         # docstring. The wild-trim guard below is anchored to THIS call's own
         # band-average seed, not the raw candidate's trim (#1668 CD-horn
-        # re-anchor). Why the seed and not "raw + expected per-role shift":
-        # solve_branch_trims levels branches downward to the min with cut-only
-        # trims, and dB band-averaging is linear, so a linearized branch's
-        # band-average level is EXACTLY its raw level plus that branch's OWN
-        # correction band-average — min-flips included. Any "raw + expected
-        # shift" formula is therefore either identical to the seed anchor (no
-        # min-flip) or WRONG in the min-flip case: a well-padded rig with a
-        # large tweeter cut flips which branch is quieter, and a per-role
-        # formula then mispredicts by ~the full spend. Anchoring to the seed
-        # sidesteps that entirely — the woofer's committed trim IS trim_w_lin
+        # re-anchor). Why the seed and not a "raw + expected per-role shift"
+        # formula: the seed IS computed from the ACTUAL linearized branches
+        # (solve_branch_trims on W_lin/T_lin), so no closed-form decomposition
+        # of the seed into "raw level + correction offset" is ever needed — and
+        # any such decomposition would be wrong on two independent counts.
+        # (1) Power-domain, not linear-dB: solve_branch_trims levels branches
+        # via program_analysis._band_average_db, a POWER-domain mean
+        # (10·log10(mean(10^(dB/10)))), so a branch's linearized level is NOT
+        # its raw level plus the correction's dB band-average — additivity is
+        # exact only when the correction is band-flat over the overlap band
+        # (~0.28 dB off for a non-flat one). (2) Min-flip: solve_branch_trims
+        # then levels both branches DOWN to the quieter one, and a large tweeter
+        # cut on a well-padded rig can flip which branch is quieter, so a
+        # per-role additive formula mispredicts by ~the full spend in that case.
+        # The seed sidesteps both. The practical "a legit give-back shifts the
+        # tweeter's band-average by ~the full spend vs raw" intuition still
+        # holds because the CD-horn give-back is approximately band-flat (≈
+        # −spend, the Lowshelf floor well below its corner) across the crossover
+        # overlap band — flatness makes counts (1) small there, it does not make
+        # the guard rely on additivity. The woofer's committed trim IS trim_w_lin
         # in both the resolved and seed pair (solve_ripple_optimal_trim holds
         # trim_w_db fixed and only scans the tweeter), so the woofer's seed
         # distance is zero by construction and only the tweeter can drift.

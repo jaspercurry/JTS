@@ -192,6 +192,26 @@ HF_AGREEMENT_LIMIT_HIGH_DB: float = 2.0
 # above which HF_AGREEMENT_LIMIT_HIGH_DB applies) within the agreement band.
 _HF_AGREEMENT_TIER_SPLIT_HZ: float = 10_000.0
 
+# Minimum sweep occurrences (primary + repeats) the agreement gate needs to
+# evaluate reproducibility — the N>=3-total "paired gate" (sigma-seeding
+# report finding 5). LOCKSTEP with the flow layer's
+# ``crossover_v2_flow.LINEARIZATION_MIN_PAIRED_OCCURRENCES`` (3); kept as a
+# local constant rather than imported because the flow imports THIS module
+# (a fit->flow import would be a cycle), mirroring this module's other
+# lockstep-duplicate constants. Below this the gate returns
+# "insufficient_repeats".
+_HF_MIN_OCCURRENCES: int = 3
+
+# The closed vocabulary of CD-horn continuation suppression reasons — every
+# non-empty ``hf_continuation_suppressed_reason`` a fit can carry. Pinned by a
+# test so a new suppression path can't ship an un-enumerated reason string.
+HF_SUPPRESSION_REASONS: frozenset[str] = frozenset({
+    "insufficient_repeats",
+    "repeat_disagreement",
+    "fit_quality",
+    "no_filter_budget",
+})
+
 # Max magnitude error (dB) tolerated between the realized cut-domain cascade
 # (lowshelf + peaking cuts) and the desired cut_target over [onset, ceiling].
 # Above this the whole stage is suppressed (reason="fit_quality") rather than
@@ -806,22 +826,29 @@ def _hf_repeat_spread_ok(
     agree well enough over the compensation band, else a suppression reason
     (``"insufficient_repeats"`` / ``"repeat_disagreement"``).
 
-    Spread is the per-bin ``max - min`` across the capture's REPEAT sweeps
-    (``primary.repeat_responses`` — not the primary itself; the repeats are
-    the "does this reproduce" evidence), each resampled + ladder-smoothed onto
-    the grid exactly as the primary is. Fewer than 2 repeats is no evidence of
-    reproducibility (the N>=3-total "paired gate," sigma-seeding report finding
-    5) → suppressed. Otherwise the spread must stay under
+    Spread is the per-bin ``max - min`` across ALL of the capture's sweep
+    occurrences — the PRIMARY plus its ``repeat_responses`` — matching
+    :func:`jasper.active_speaker.linearization_envelope.compute_sigma_curve`'s
+    own occurrence set. The primary MUST be in the spread: the fit is sized
+    from the primary, so a primary that carries an outlier artifact its repeats
+    do not reproduce (e.g. a −12 dB top-octave glitch while two repeats agree
+    at −5) has to be caught here, or the stage would size a several-dB-too-hot
+    lift from that one bad sweep. Each occurrence is resampled + ladder-smoothed
+    onto the grid exactly as the primary is. Fewer than
+    :data:`_HF_MIN_OCCURRENCES` total occurrences is no reproducibility
+    evidence (the N>=3-total "paired gate," sigma-seeding report finding 5,
+    consistent with ``crossover_v2_flow.LINEARIZATION_MIN_PAIRED_OCCURRENCES``)
+    → suppressed. Otherwise the spread must stay under
     :data:`HF_AGREEMENT_LIMIT_LOW_DB` below
     :data:`_HF_AGREEMENT_TIER_SPLIT_HZ` and
     :data:`HF_AGREEMENT_LIMIT_HIGH_DB` from there to the ceiling.
     """
-    repeats = primary.repeat_responses
-    if len(repeats) < 2:
+    occurrences: tuple[DriverResponse, ...] = (primary, *primary.repeat_responses)
+    if len(occurrences) < _HF_MIN_OCCURRENCES:
         return "insufficient_repeats"
     smoothed = np.stack([
-        _ladder_smooth(grid_hz, np.interp(grid_hz, r.freqs_hz, r.magnitude_db))
-        for r in repeats
+        _ladder_smooth(grid_hz, np.interp(grid_hz, o.freqs_hz, o.magnitude_db))
+        for o in occurrences
     ])
     spread = np.max(smoothed, axis=0) - np.min(smoothed, axis=0)
     band = (grid_hz >= HF_COMPENSATION_BAND_LO_HZ) & (grid_hz <= ceiling_hz)
@@ -867,19 +894,23 @@ def _hf_continuation_stage(
     mic_trust = envelope.terms[ReasonCode.LIMITED_BY_MIC_TIER]
     ceiling_hz, knee_hz = _hf_confidence_ceiling_and_knee_hz(grid_hz, mic_trust)
 
-    # -- Eligibility (silent skip, inert result) ---------------------------
+    # -- Applicability (not-applicable → silent inert result) --------------
     # Fit band must reach the confidence-ceiling region: a woofer/mid whose
     # trimmed fit band tops out below the mic knee has no top-octave deficit
     # to compensate. This is what keeps the stage role-agnostic without a
-    # per-role branch. Also require a free filter slot and no rising-slope
-    # Highshelf (mutual exclusivity: a genuinely rising response has no
-    # falling top-octave deficit).
+    # per-role branch. A rising-slope Highshelf already emitted means the stage
+    # does not apply at all (mutual exclusivity: a genuinely rising response
+    # has no falling top-octave deficit). Both are "not this driver" — inert,
+    # no reason.
     if fit_hi_hz < knee_hz:
-        return _HF_INERT
-    if len(filters) >= MAX_FILTERS_PER_DRIVER:
         return _HF_INERT
     if any(f.biquad_type == "Highshelf" for f in filters):
         return _HF_INERT
+    # The stage APPLIES but the flattening loop already spent every slot — a
+    # named suppression (observable via /state + doctor), not a silent inert,
+    # because it means an eligible CD-horn lift was dropped for lack of budget.
+    if len(filters) >= MAX_FILTERS_PER_DRIVER:
+        return _hf_suppressed("no_filter_budget")
 
     # -- Agreement gate (objective suppression) ----------------------------
     disagreement = _hf_repeat_spread_ok(grid_hz, primary, ceiling_hz)

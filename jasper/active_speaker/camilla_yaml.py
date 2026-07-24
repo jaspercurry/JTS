@@ -869,6 +869,34 @@ def _driver_linearization_taper_name(role: str) -> str:
     return f"as_{_name_token(role)}_linearization_taper"
 
 
+def _linearization_slot(
+    index: int, count: int, filters: Sequence[Mapping[str, Any]],
+) -> str:
+    """Classify one filter's role in a linearization chain by POSITION:
+    ``"shelf"`` (a leading Highshelf/Lowshelf at index 0), ``"taper"`` (a
+    trailing Highshelf after a Lowshelf lead, #1668), else ``"peak"``.
+
+    The single source of the shelf-first / taper-last structural rule, shared
+    by the validation gate, the chain namer, and the definition emitter so the
+    three can never disagree about which slot an entry occupies. It classifies
+    whatever order the input carries; enforcing that order is
+    ``_validate_linearization_shelf_structure``'s job (a shelf-type entry that
+    lands in a ``"peak"`` slot is what that gate rejects).
+    """
+    biquad_type = filters[index]["biquad_type"]
+    leading_is_lowshelf = count > 0 and filters[0]["biquad_type"] == "Lowshelf"
+    if index == 0 and biquad_type in ("Highshelf", "Lowshelf"):
+        return "shelf"
+    if (
+        index == count - 1
+        and index != 0
+        and biquad_type == "Highshelf"
+        and leading_is_lowshelf
+    ):
+        return "taper"
+    return "peak"
+
+
 # Public aliases (matching the driver_baseline_gain_name convention above):
 # the runtime-safety verifier (graph_evidence -> runtime_contract) re-proves
 # the linearization stage against the EMITTED graph text and must spell these
@@ -964,19 +992,15 @@ def _validate_linearization_shelf_structure(
     """
     shelf_types = {"Highshelf", "Lowshelf"}
     n = len(role_filters)
-    leading_is_lowshelf = n > 0 and role_filters[0]["biquad_type"] == "Lowshelf"
     for i, entry in enumerate(role_filters):
         biquad_type = entry["biquad_type"]
-        if biquad_type not in shelf_types:
-            continue
-        is_leading_shelf = i == 0
-        is_trailing_taper = (
-            i == n - 1
-            and i != 0
-            and biquad_type == "Highshelf"
-            and leading_is_lowshelf
-        )
-        if not (is_leading_shelf or is_trailing_taper):
+        # A shelf-type entry is legal only where it occupies a shelf/taper slot;
+        # one that classifies as a "peak" slot (a shelf mid-chain, a second
+        # shelf, a taper without a Lowshelf lead, a taper not last) is invalid.
+        if (
+            biquad_type in shelf_types
+            and _linearization_slot(i, n, role_filters) == "peak"
+        ):
             raise ActiveSpeakerConfigError(
                 f"linearization shelf placement for {role} is invalid: a "
                 f"{biquad_type} may only appear as the leading filter, or (a "
@@ -1003,17 +1027,11 @@ def _driver_linearization_chain_names(
     names: list[str] = []
     peak_index = 0
     count = len(filters)
-    leading_is_lowshelf = count > 0 and filters[0]["biquad_type"] == "Lowshelf"
-    for i, entry in enumerate(filters):
-        biquad_type = entry["biquad_type"]
-        if i == 0 and biquad_type in ("Highshelf", "Lowshelf"):
+    for i in range(count):
+        slot = _linearization_slot(i, count, filters)
+        if slot == "shelf":
             names.append(_driver_linearization_shelf_name(role))
-        elif (
-            i == count - 1
-            and i != 0
-            and biquad_type == "Highshelf"
-            and leading_is_lowshelf
-        ):
+        elif slot == "taper":
             names.append(_driver_linearization_taper_name(role))
         else:
             peak_index += 1
@@ -1041,23 +1059,17 @@ def _emit_driver_linearization_definitions(
     for role, filters in linearization.items():
         peak_index = 0
         count = len(filters)
-        leading_is_lowshelf = count > 0 and filters[0]["biquad_type"] == "Lowshelf"
         for i, entry in enumerate(filters):
-            biquad_type = entry["biquad_type"]
-            if i == 0 and biquad_type in ("Highshelf", "Lowshelf"):
+            slot = _linearization_slot(i, count, filters)
+            if slot == "shelf":
                 spec = FilterSpec(
                     name=_driver_linearization_shelf_name(role),
-                    biquad_type=biquad_type,
+                    biquad_type=entry["biquad_type"],
                     freq=entry["freq"],
                     gain=entry["gain"],
                     slope=_LINEARIZATION_SHELF_SLOPE,
                 )
-            elif (
-                i == count - 1
-                and i != 0
-                and biquad_type == "Highshelf"
-                and leading_is_lowshelf
-            ):
+            elif slot == "taper":
                 spec = FilterSpec(
                     name=_driver_linearization_taper_name(role),
                     biquad_type="Highshelf",
