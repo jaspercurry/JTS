@@ -470,19 +470,13 @@ def test_known_post_routes_reach_csrf_guard():
         "/balance/reset",
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/relay-capture", "/sync/apply", "/sync/stop", "/sync/reset",
-        "/crossover/level-match", "/crossover/recover-volume",
-        "/crossover/region-geometry", "/crossover/candidate",
-        "/crossover/apply", "/crossover/restore",
-        "/crossover/relay-capture", "/crossover/relay-cancel",
-        "/crossover/reset",
-        # v2 conductor flow (Wave 5a) — registered unconditionally; each
-        # handler refuses fail-closed unless JASPER_CROSSOVER_FLOW=v2.
+        "/crossover/level-match", "/crossover/relay-cancel",
+        "/crossover/reset", "/crossover/recover-volume",
+        # v2 conductor flow (Wave 5a) — the only crossover-measurement flow
+        # since W5b retired the legacy per-driver flow and the
+        # JASPER_CROSSOVER_FLOW selector.
         "/crossover/v2/session", "/crossover/v2/verify", "/crossover/v2/apply",
         "/crossover/v2/restore",
-        "/crossover/driver-test",
-        "/crossover/driver-confirm", "/crossover/driver-abort",
-        "/crossover/summed-test", "/crossover/driver-capture-sweep",
-        "/crossover/summed-capture-sweep", "/crossover/summed-capture",
         # P6 tuning-LLM routes.
         "/interpret", "/propose", "/propose/apply",
     }
@@ -1187,10 +1181,8 @@ def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
     link (and the failure copy never reached the household)."""
     import json
 
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from jasper.web import correction_crossover_v2 as v2host
 
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
     correction_setup._set_relay_capture({
         "tap_link": "https://capture.test/#s=cap_x",
@@ -1216,11 +1208,9 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
     holds no lease-unresolved state), leaving the recovery button dead."""
     import json
 
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
     from jasper.web import correction_crossover_v2 as v2host
 
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
     )
