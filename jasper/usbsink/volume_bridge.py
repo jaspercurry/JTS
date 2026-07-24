@@ -11,8 +11,9 @@ controls on the Pi side:
   - "PCM Capture Switch"   (bool — Mac mute toggle)
 
 This module polls those controls at 4 Hz via `amixer cget`, maps the
-raw value to JTS's 0-100 listening_level (linear over the mixer
-range), and POSTs to jasper-control's /volume/set endpoint with
+raw value to JTS's 0-100 listening_level (amplitude-normalized over
+the mixer's dB range — see `_raw_to_pct`), and POSTs to
+jasper-control's /volume/set endpoint with
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
 prevention — so a dial twist that triggered an outbound write to the
@@ -89,6 +90,17 @@ DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
 _NUMID_RE = re.compile(r"numid=(\d+),iface=MIXER,name='([^']+)'")
 _RANGE_RE = re.compile(r"min=(-?\d+),max=(-?\d+)")
 _VALUES_RE = re.compile(r": values=([^\n]+)")
+
+
+# Centi-dB per raw ALSA unit for "PCM Capture Volume". The u_audio gadget
+# driver reports the control in 1/100 dB (centi-dB), matching the
+# c_volume_min/max/res we advertise from deploy/usbsink/jasper-usbgadget-up
+# (-5000 / 0 / 100 = -50 dB / 0 dB / 1 dB step). This is the single tunable
+# knob for the raw->dB scale: amixer does not reliably expose the control's
+# resolution (`step=0` in practice), so we assume 0.01 dB/unit rather than
+# reading it back. If a future kernel reports the control in different units,
+# adjust here and re-verify against a Mac slider (see _raw_to_pct).
+_CENTI_DB_PER_UNIT = 0.01
 
 
 class VolumeBridge:
@@ -250,11 +262,43 @@ class VolumeBridge:
         self._last_published_pct = pct
 
     def _raw_to_pct(self, raw: int) -> int:
-        span = self._vol_max - self._vol_min
-        if span <= 0:
-            return 50  # degenerate; pick something sane
-        pct = (raw - self._vol_min) / span * 100.0
+        """THE volume curve: raw mixer value -> JTS 0-100 percent.
+
+        Normalize in the AMPLITUDE domain, not linearly in dB. The UAC2
+        "PCM Capture Volume" control is dB-scaled, and macOS maps its
+        slider POSITION perceptually (~logarithmically) onto that dB
+        range. So normalizing linearly in dB is NOT the inverse of
+        Apple's taper — it over-reads the bottom half of the slider (a
+        low-mid slider read ~73% before this fix; issue #1698). Converting
+        the observed dB to a linear amplitude (10**(dB/20)) and normalizing
+        THAT approximates the perceptual taper — the standard close
+        approximation. Exact 25%<->25% tracking would need Apple's
+        undocumented transfer curve; this, plus the narrow advertised
+        range (-50..0 dB, written by jasper-usbgadget-up), is what lands a
+        real mid-slider near mid. Final feel needs an on-Mac slider check.
+
+        This is one END of a two-ended contract. The other end is
+        jasper.volume_curve.percent_to_db, which turns the resulting
+        listening_level back into a CamillaDSP output dB over the SAME
+        -50 dB floor we advertise to the host. Keep the two aligned:
+        host slider -> UAC2 dB (over -50..0) -> _raw_to_pct (here) ->
+        listening_level -> percent_to_db.
+        """
+        if self._vol_max - self._vol_min <= 0:
+            return 50  # degenerate range; pick something sane
+        amp = self._raw_amplitude(raw)
+        amp_min = self._raw_amplitude(self._vol_min)
+        amp_max = self._raw_amplitude(self._vol_max)
+        denom = amp_max - amp_min
+        if denom <= 0:
+            return 50  # degenerate amplitude range; pick something sane
+        pct = (amp - amp_min) / denom * 100.0
         return max(0, min(100, round(pct)))
+
+    @staticmethod
+    def _raw_amplitude(raw: int) -> float:
+        """Raw centi-dB mixer units -> linear amplitude (10**(dB/20))."""
+        return 10.0 ** ((raw * _CENTI_DB_PER_UNIT) / 20.0)
 
     # ------------------------------------------------------------------
     # amixer subprocess helpers

@@ -599,26 +599,49 @@ sliders.
 
 #### Translation: gadget mixer value → listening_level
 
-UAC2 Volume Control is signed 16.16 dB (or signed 8.8 on some hosts).
-The Linux `u_audio` driver normalizes this to ALSA `Volume` integer
-units. The mapping is straightforward — `amixer cget` reports the control's
-`min`/`max` integer units alongside the current value:
+UAC2 Volume Control is dB-scaled; the Linux `u_audio` driver normalizes
+it to ALSA integer units that we treat as centi-dB (0.01 dB / unit; see
+`_CENTI_DB_PER_UNIT` in `volume_bridge.py`). `amixer cget` reports the
+control's `min`/`max`/current integer values, which `volume_bridge.py`
+parses with a regex (no Python ALSA binding).
+
+**Two coupled levers make the Mac slider track JTS (issue #1698):**
+
+1. **We advertise a narrow -50..0 dB range** to the host from
+   `deploy/usbsink/jasper-usbgadget-up` (`c_volume_min=-5000`,
+   `c_volume_max=0`, `c_volume_res=100`, centi-dB). Without this the
+   kernel default (~-128..0 dB) applies and macOS compresses its whole
+   slider into the top few dB — a low-mid slider then read ~73% on JTS.
+   The range is aligned with `jasper.volume_curve.percent_to_db`'s -50 dB
+   floor. The writes are best-effort (`write_if_present`), so an older
+   kernel that lacks the attrs falls back to the default range rather
+   than failing gadget bring-up.
+
+2. **We normalize in the amplitude domain, not linearly in dB.** macOS
+   maps its slider POSITION perceptually (~logarithmically) onto the dB
+   range, so a linear-in-dB inverse is not the inverse of Apple's taper.
+   Converting the observed dB to a linear amplitude and normalizing THAT
+   approximates the perceptual taper:
 
 ```python
-# `amixer cget numid=N` reports `min=..,max=..` for the control;
-# volume_bridge.py parses those (regex) — no Python ALSA binding.
-# Integer units map 1:1 to dB at 0.01-dB resolution on UAC2.
-min_v, max_v = (-12800, 0)   # parsed from amixer cget; e.g. -128.00..0.00 dB
-def gadget_to_pct(raw: int) -> int:
-    # Linear-in-dB mapping from gadget range to 0..100%
-    # 0.00 dB at host slider 100%, min_v at host slider 0%.
-    span = max_v - min_v
-    return max(0, min(100, round((raw - min_v) / span * 100)))
+# volume_bridge.py:_raw_to_pct — the amplitude-domain curve.
+# raw / min_v / max_v are centi-dB integers from `amixer cget`.
+def _raw_to_pct(raw, min_v, max_v):        # min_v=-5000, max_v=0
+    amp     = 10 ** ((raw   * 0.01) / 20)   # observed dB -> amplitude
+    amp_min = 10 ** ((min_v * 0.01) / 20)
+    amp_max = 10 ** ((max_v * 0.01) / 20)
+    return max(0, min(100, round((amp - amp_min) / (amp_max - amp_min) * 100)))
 ```
 
-The translation lives in `jasper/usbsink/volume_bridge.py` (new file).
-A `gadget_pct_to_listening_level()` helper is the analogue of
-`spotify_percent_to_listening_level()` in `volume_coordinator.py:99`.
+`_raw_to_pct` and `percent_to_db` are the two ends of one contract
+(host slider → UAC2 dB over -50..0 → `_raw_to_pct` → `listening_level`
+→ `percent_to_db` → Camilla dB); keep them aligned. Exact 25%↔25%
+tracking needs Apple's undocumented transfer curve — this is the
+standard close approximation, and the final feel wants an on-Mac slider
+check (set the Mac to 25/50/75%, read `listening_level`, confirm they
+track). The translation lives entirely in
+`jasper/usbsink/volume_bridge.py`; the coordinator maps the POSTed
+percent to `listening_level` identity-wise and never learns ALSA units.
 
 #### Mute handling
 
@@ -1957,10 +1980,20 @@ blockers; defaults are documented for each.
    label now tracks the Speaker Name via a name-patched module override.
    See §4.1a "Host-visible device name". (Confirmed end-to-end on macOS
    2026-06-04: a connected Mac shows "JTS".)
-3. **Volume curve**: gadget mixer range is symmetric in dB; CamillaDSP
-   `main_volume` is also dB-linear. A direct linear-in-dB mapping
-   feels natural. **Default: linear in dB, 100% gadget = 0 dB camilla,
-   0% gadget = camilla min (~−96 dB).**
+3. **Volume curve**: ~~A direct linear-in-dB mapping feels natural.~~
+   **RESOLVED (issue #1698)** — linear-in-dB was NOT the inverse of
+   Apple's slider taper (macOS maps slider POSITION perceptually onto
+   the dB range), so a low-mid Mac slider read ~73% on JTS. Two coupled
+   fixes shipped: (a) `jasper-usbgadget-up` now advertises a narrow
+   -50..0 dB capture-volume range (`c_volume_min/max/res` = -5000/0/100
+   centi-dB, best-effort) aligned with `percent_to_db`'s -50 dB floor,
+   instead of the kernel's wide ~-128..0 dB default that compressed the
+   slider; (b) `volume_bridge._raw_to_pct` normalizes in the AMPLITUDE
+   domain (`10**(dB/20)`), the standard close approximation of the
+   perceptual taper. See §3.2 "Translation". Exact 25%↔25% needs Apple's
+   undocumented transfer curve — the advertised range + amplitude curve
+   land a real mid-slider near mid, but the final values still want an
+   on-Mac slider-feel check.
 4. **Preempt-release window**: how long after all other sources go
    idle before USB un-mutes? Instant feels right (matches mux's tick
    cadence). **Default: instant on next mux tick (1 s max delay).**
