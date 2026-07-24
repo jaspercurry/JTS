@@ -293,6 +293,9 @@ source = source.replace(
     resetCalibrationMismatchAlerted: function () {
       calibrationMismatchAlerted = false;
     },
+    // Gauge fix (2026-07-24): orientation label mapping for the loaded-
+    // calibration status line.
+    orientationLabel,
     // Mirrors exactly what startMeasurement/startRelayMeasurement do on a
     // successful /start (sessionId + thisTabStartedCurrentRun together),
     // without driving the full network-calling start flow — so a test can
@@ -586,6 +589,7 @@ const {
   invalidateLoadedCalibration,
   checkCalibrationHonesty,
   resetCalibrationMismatchAlerted,
+  orientationLabel,
   primeThisTabStartedRun,
   clearThisTabStartedRun,
   getTuningStatusText,
@@ -3047,9 +3051,62 @@ await (async () => {
   resetEnvelopeBookkeeping();
 })();
 
+// 42. Gauge fix (2026-07-24, S1 review follow-up): orientationLabel() maps
+//     the stamped calibration orientation to a household-legible degree
+//     symbol; an unrecognized/unknown value renders no clause at all — the
+//     honest common case for a manual upload with no declared orientation.
+{
+  assert(orientationLabel("0deg") === "0°",
+    "0deg maps to the degree symbol", { got: orientationLabel("0deg") });
+  assert(orientationLabel("90deg") === "90°",
+    "90deg maps to the degree symbol", { got: orientationLabel("90deg") });
+  assert(orientationLabel("unknown") === null,
+    "unknown renders no orientation clause", { got: orientationLabel("unknown") });
+  assert(orientationLabel(undefined) === null,
+    "an absent orientation renders no clause", { got: orientationLabel(undefined) });
+}
+
+// 43. Gauge fix (2026-07-24, S1 review follow-up): the loaded-calibration
+//     status line (showCalibrationLoaded, driven here through the same
+//     household-mic prefill path tests 29-41 use) appends the orientation
+//     clause for a known orientation and stays byte-for-byte the pre-fix
+//     sentence for "unknown" — the honest common case.
+{
+  seedMicModelOptions("");
+  seedHouseholdMicData({
+    calibration: { ...householdMicRecord().calibration, orientation: "0deg" },
+  });
+  applyHouseholdMicPrefill();
+  assert(getOrMake("calibration-status").textContent ===
+    "Loaded miniDSP UMIK-2 calibration (3 points, 0° orientation).",
+    "0deg orientation is appended to the loaded-calibration status line",
+    { got: getOrMake("calibration-status").textContent });
+
+  seedMicModelOptions("");
+  seedHouseholdMicData({
+    calibration: { ...householdMicRecord().calibration, orientation: "90deg" },
+  });
+  applyHouseholdMicPrefill();
+  assert(getOrMake("calibration-status").textContent ===
+    "Loaded miniDSP UMIK-2 calibration (3 points, 90° orientation).",
+    "90deg orientation is appended to the loaded-calibration status line",
+    { got: getOrMake("calibration-status").textContent });
+
+  seedMicModelOptions("");
+  seedHouseholdMicData({
+    calibration: { ...householdMicRecord().calibration, orientation: "unknown" },
+  });
+  applyHouseholdMicPrefill();
+  assert(getOrMake("calibration-status").textContent ===
+    "Loaded miniDSP UMIK-2 calibration (3 points).",
+    "unknown orientation leaves the status line byte-for-byte unchanged " +
+    "from the pre-fix sentence (no dangling clause)",
+    { got: getOrMake("calibration-status").textContent });
+}
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 76 }));
+console.log(JSON.stringify({ ok: true, tests: 78 }));

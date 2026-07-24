@@ -761,7 +761,8 @@ def find_stored_calibration(
             continue
         if data.get("serial_hash") != sh:
             continue
-        if orientation != "unknown" and str(data.get("orientation") or "unknown") != orientation:
+        stored_orientation = str(data.get("orientation") or "unknown")
+        if orientation != "unknown" and stored_orientation != orientation:
             continue
         try:
             rec = CalibrationRecord.from_dict(data)

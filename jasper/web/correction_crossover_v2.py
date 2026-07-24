@@ -728,6 +728,18 @@ def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
     }
 
 
+def _finite(value: Any) -> float | None:
+    """Mirrors ``crossover_envelope_v2._finite``'s exact guard (reject
+    bool, reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review
+    follow-up): this module and that one stay symmetric about what counts
+    as a displayable number, rather than one layer trusting a raw
+    ``float(v)`` the other layer would refuse."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if number == number and abs(number) != float("inf") else None
+
+
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
     """Gauge fix (2026-07-24): per-role OBSERVE-layer octave deficits
     (``LinearizationFit.observe_octave_summary`` — already computed by the
@@ -740,8 +752,15 @@ def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]
         if not isinstance(fit, Mapping):
             continue
         octaves = fit.get("observe_octave_summary")
-        if isinstance(octaves, Mapping) and octaves:
-            out[str(role)] = {str(k): float(v) for k, v in octaves.items()}
+        if not isinstance(octaves, Mapping) or not octaves:
+            continue
+        role_octaves: dict[str, float] = {}
+        for hz, value in octaves.items():
+            db = _finite(value)
+            if db is not None:
+                role_octaves[str(hz)] = db
+        if role_octaves:
+            out[str(role)] = role_octaves
     return out
 
 
