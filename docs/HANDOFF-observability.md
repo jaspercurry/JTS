@@ -200,11 +200,13 @@ not a blocker.
 
 **Persistent journald is deliberate, not an oversight.**
 `deploy/journald/50-jts-persistent-storage.conf` sets
-`Storage=persistent` capped at 200 MB so a watchdog reset's
+`Storage=persistent` capped at 500 MB so a watchdog reset's
 *previous-boot* logs survive — the whole point of Tier 5
 forensics (see [HANDOFF-resilience.md](HANDOFF-resilience.md)).
 Cost per that doc: ~30 MB/hr → ~270 GB/yr against ~100 TBW SD
-endurance — **not a flash-wear emergency.** Global journald
+endurance — **not a flash-wear emergency.** (`SystemMaxUse` is a
+retention ceiling, not a write-rate knob — the bytes/day written are
+unchanged, so a larger cap adds disk, not wear.) Global journald
 `RateLimit*` settings stay at systemd defaults. Two external-log
 exceptions have narrow per-unit overrides: `jasper-camilla.service`
 (`LogRateLimitBurst=120` per 60 s) because CamillaDSP can emit an
@@ -215,14 +217,17 @@ while its leader is offline. In both cases journald still records the first
 burst and its native suppression summary, but a sustained external flood no
 longer consumes the persistent journal.
 
-**The 200 MB cap is also the retention window — forensics have a
+**The 500 MB cap is also the retention window — forensics have a
 volume-dependent shelf life.** journald vacuums oldest-first at the
 cap, so heavy log volume silently eats the boot-time entries Tier 5
 forensics depend on. Observed 2026-06-11 on jts3 under lab-grade
-multiroom logging: the journal sat at 188 MB and the *current* boot's
+multiroom logging (under the earlier 200 MB cap): the journal sat at
+188 MB and the *current* boot's
 first surviving entry was ~5 h after boot — `event=bootloop_guard.ok`
 from 15 h earlier was already gone while the unit's exit status
-showed it had run fine. Before treating a missing journal line as
+showed it had run fine. The 500 MB cap widens that window ~2.5× at
+the same log volume, but the failure mode is unchanged in principle.
+Before treating a missing journal line as
 "never happened," check `journalctl --list-boots` first-entry
 timestamps; `/state.resilience.*` and unit exit status are the
 durable surfaces. The household speaker's far lower volume keeps a
@@ -456,7 +461,7 @@ class RingFlushHandler(logging.Handler):                   # level = DEBUG
 *Decisions (2026-05-30):*
 - **Dump target: journal burst.** On flush, re-emit the buffered
   records into journald tagged `event=flightrec.dump`, right after
-  the triggering WARNING — reuses the 200 MB journald cap (retention)
+  the triggering WARNING — reuses the 500 MB journald cap (retention)
   + `fetch-pi-logs.sh`; DEBUG context lands in the same timeline as
   the anomaly. `fetch-pi-logs.sh` also writes
   `log-noise-summary-latest.txt` with line counts and repeated-message

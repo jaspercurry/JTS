@@ -300,7 +300,7 @@ class MeasurementPriors:
     ``measure_tweeter_sweep_lo_hz``/``measure_woofer_sweep_hi_hz`` carry the
     MEASURE program's actual per-driver sweep bounds forward to VERIFY (§5.6
     fix) — ``predicted_sum`` was itself built only inside that true overlap
-    (see ``_overlap_band_hz``), so VERIFY's tracking comparison must trust the
+    (see ``overlap_band_hz``), so VERIFY's tracking comparison must trust the
     SAME band; a wider nominal Fc±1-octave band would compare real VERIFY
     capture data against sub-floor noise inherited from an unexcited MEASURE
     branch. ``None`` (legacy callers) falls back to the unclamped nominal band.
@@ -311,6 +311,15 @@ class MeasurementPriors:
     drift-corrected physical peak gap orients and centers one ±half-period
     signed lobe inside it. GCC remains the confidence/polarity seed and the
     fallback estimate. ``None`` keeps GCC as the applied-delay estimate.
+
+    ``mic_tier`` (#1668 PR-C) is the correction-envelope trust tier
+    (``jasper.active_speaker.linearization_envelope.MIC_TIERS`` — "reference"
+    / "consumer" / "phone") the measurement mic resolved to, threaded in by
+    ``jasper.web.correction_crossover_v2.bind_production_analyze`` via
+    ``jasper.audio_measurement.calibration.mic_tier_for_model``. ``None``
+    (every construction site that predates this field, and CHECK/VERIFY
+    priors, which never set it) means "no tier known" — the v2 conductor's
+    Layer-1a linearization gate treats that as ineligible, never a guess.
     """
 
     crossover_fc_hz: float | None = None
@@ -321,6 +330,7 @@ class MeasurementPriors:
     measure_tweeter_sweep_lo_hz: float | None = None
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
+    mic_tier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -575,6 +585,13 @@ class ProgramAnalysis:
     alignment: AlignmentEstimate | None = None
     candidate: CrossoverCandidate | None = None
     ambient_report: dict[str, Any] | None = None
+    # Pure passthrough of MeasurementPriors.mic_tier (#1668 PR-C) — set only
+    # by _analyze_measure (see that function's return statement); CHECK and
+    # VERIFY analyses never set it (the v2 conductor's Layer-1a fit only
+    # ever reads it off a MEASURE analysis). See MeasurementPriors.mic_tier's
+    # docstring for the trust-tier vocabulary and "None means unknown, never
+    # a guess" contract.
+    mic_tier: str | None = None
     pilots: tuple[PilotObservation, ...] = ()
     linearity_ok: bool | None = None
     channel_map_ok: bool | None = None
@@ -1421,7 +1438,7 @@ def _aligned_branch_tf(
     return freqs, H, fragment
 
 
-def _overlap_band_hz(
+def overlap_band_hz(
     fc_hz: float,
     *,
     tweeter_sweep_lo_hz: float | None = None,
@@ -1471,7 +1488,7 @@ def _estimate_alignment(
 ) -> AlignmentEstimate:
     seg_w = program.segment("sweep_w")
     seg_t = program.segment("sweep_t")
-    lo, hi = _overlap_band_hz(
+    lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
     )
 
@@ -1621,7 +1638,7 @@ def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -
     return float(np.max(band_db) - np.min(band_db))
 
 
-def _solve_trims(
+def solve_branch_trims(
     freqs: np.ndarray,
     W: np.ndarray,
     T: np.ndarray,
@@ -1636,6 +1653,11 @@ def _solve_trims(
     overlap — the candidate's gating-consistent trim solve (`_build_candidate`)
     clamps ``lo_hz`` up to a branch's validity floor when a room reflection
     gates it tighter than the nominal band.
+
+    Public (#1668 PR-C): the v2 conductor re-solves trims against a
+    linearized branch pair (`jasper.active_speaker.crossover_v2_flow`), so
+    this — and its sibling :func:`overlap_band_hz` — are no longer
+    module-private. No logic changed in this rename.
     """
     lo = lo_hz if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
     hi = hi_hz if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
@@ -1652,11 +1674,11 @@ def _flatter_sum_polarity(
     n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
     freqs, W, _gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=None)
     _f2, T, _gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=None)
-    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(freqs, W, T, fc_hz)
     # SSOT overlap band (fix 1) — clamps the nominal Fc±1-oct span to the real
     # driver-sweep overlap so this ripple check can't drift out of sync with
     # the alignment/trim/VERIFY bands that already use this helper.
-    lo, hi = _overlap_band_hz(
+    lo, hi = overlap_band_hz(
         fc_hz,
         tweeter_sweep_lo_hz=program.segment("sweep_t").f1_hz,
         woofer_sweep_hi_hz=program.segment("sweep_w").f2_hz,
@@ -2292,6 +2314,7 @@ def _analyze_measure(
         driver_responses=responses,
         alignment=alignment,
         candidate=candidate,
+        mic_tier=priors.mic_tier,
         pilots=pilots,
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
@@ -2311,7 +2334,7 @@ def _build_candidate(
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
-    lo, hi = _overlap_band_hz(
+    lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=tweeter_sweep_lo_hz, woofer_sweep_hi_hz=woofer_sweep_hi_hz,
     )
     # Gating-consistent prediction (W6.9 forensics): ``_aligned_branch_tf`` now
@@ -2320,7 +2343,7 @@ def _build_candidate(
     # HIGHER than the nominal Fc±1-oct band. Clamp every quantity derived from
     # W/T — the trim solve, the predicted sum's ripple — to the worse (higher)
     # of the two branches' floors, never silently trusting sub-floor bins.
-    # If the floor consumes the whole band, `_solve_trims`/`_ripple_db` raise
+    # If the floor consumes the whole band, `solve_branch_trims`/`_ripple_db` raise
     # ValueError on the now-empty mask — the existing catch-all seam in
     # `jasper.web.correction_crossover_v2` already classifies that as
     # `internal_error` (see its comment: "analyze/emit raise ValueError"), so
@@ -2334,7 +2357,7 @@ def _build_candidate(
         if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
         else lo
     )
-    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
     delay_us = alignment.delay_us
     seed_ripple_db = None
     flatness_improvement_db = None
@@ -2435,7 +2458,7 @@ def _analyze_verify(
     ripple = None
     tracking = None
     if fc_hz is not None:
-        lo, hi = _overlap_band_hz(
+        lo, hi = overlap_band_hz(
             fc_hz,
             tweeter_sweep_lo_hz=priors.measure_tweeter_sweep_lo_hz,
             woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,

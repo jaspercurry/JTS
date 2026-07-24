@@ -294,7 +294,10 @@ no explanation.
 [PR #160](https://github.com/jaspercurry/JTS/pull/160) added
 `deploy/journald/50-jts-persistent-storage.conf` (installed at
 `/etc/systemd/journald.conf.d/`) flipping back to
-`Storage=persistent` with a 200 MB `SystemMaxUse=` cap. Now the
+`Storage=persistent` with a 500 MB `SystemMaxUse=` cap (raised from
+the original 200 MB — `SystemMaxUse` is a retention ceiling, not a
+write-rate knob, so ~10 days of history now survives at the same
+bytes/day and the same SD wear, for ~300 MB extra disk). Now the
 previous boot's logs survive the reset and the cause is
 recoverable via `journalctl -b -1`. SD wear cost: ~30 MB/hour
 to disk with ZSTD compression, ~270 GB/year, well inside the

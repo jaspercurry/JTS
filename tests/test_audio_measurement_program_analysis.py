@@ -78,14 +78,14 @@ from jasper.audio_measurement.program_analysis import (
     _global_offset,
     _locate_segments,
     _n_fft_for,
-    _overlap_band_hz,
     _peak_dbfs,
     _predicted_sum,
     _ripple_db,
-    _solve_trims,
     _sweep_occurrence_index,
     analysis_diagnostic_summary,
     analyze_program_capture,
+    overlap_band_hz,
+    solve_branch_trims,
 )
 
 SR = 48_000
@@ -937,7 +937,7 @@ def test_snap_production_path_preserves_parallax_contract(
     # improvement is recorded but not constrained to be non-negative.
     assert result.candidate.flatness_improvement_db is not None
     responses = {response.role: response for response in result.driver_responses}
-    lo_hz, hi_hz = _overlap_band_hz(
+    lo_hz, hi_hz = overlap_band_hz(
         FC_HZ,
         tweeter_sweep_lo_hz=prog.segment("sweep_t").f1_hz,
         woofer_sweep_hi_hz=prog.segment("sweep_w").f2_hz,
@@ -1740,7 +1740,7 @@ def test_gating_consistent_candidate_removes_reflection_notch_end_to_end():
     # would fail the same ±1.5 dB VERIFY tolerance the run-7/8 bug tripped.
     freqs_old, W_old = _old_fixed_window_branch_tf(woofer_ir, n_fft)
     _f2, T_old = _old_fixed_window_branch_tf(tweeter_ir, n_fft)
-    trim_w_old, trim_t_old, _lw, _lt = _solve_trims(freqs_old, W_old, T_old, fc_hz)
+    trim_w_old, trim_t_old, _lw, _lt = solve_branch_trims(freqs_old, W_old, T_old, fc_hz)
     old_ripple = _ripple_db(
         freqs_old, _predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1), lo, hi,
     )
@@ -1849,7 +1849,7 @@ def test_validity_floor_clamp_excludes_only_sub_floor_divergence():
 
 def test_build_candidate_raises_when_validity_floor_consumes_whole_band():
     """If a branch's reflection gate is tight enough that the clamped low
-    edge reaches/exceeds the band's high edge, `_solve_trims`/`_ripple_db`
+    edge reaches/exceeds the band's high edge, `solve_branch_trims`/`_ripple_db`
     raise on the now-empty mask rather than silently computing over nothing.
     This is deliberate: `jasper.web.correction_crossover_v2`'s existing
     catch-all seam already classifies an analyze-time ValueError as
@@ -1884,22 +1884,22 @@ def test_overlap_band_hz_clamps_to_true_driver_sweep():
     # Tweeter excited only from Fc (its own MEASURE sweep starts at 2000 Hz,
     # the real-world root cause) — the nominal Fc/2=1000 Hz floor is noise
     # for that branch, so the helper clamps `lo` up to it.
-    lo, hi = _overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=6000.0)
+    lo, hi = overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=6000.0)
     assert lo == pytest.approx(2000.0)
     assert hi == pytest.approx(4000.0)  # woofer's 6000 Hz ceiling doesn't bind here
 
     # Woofer's own sweep ceiling narrower than the nominal 2*Fc ⇒ hi clamps down.
-    lo, hi = _overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=300.0, woofer_sweep_hi_hz=3000.0)
+    lo, hi = overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=300.0, woofer_sweep_hi_hz=3000.0)
     assert lo == pytest.approx(1000.0)  # tweeter's 300 Hz doesn't bind
     assert hi == pytest.approx(3000.0)
 
     # No sweep-segment evidence (legacy callers) ⇒ byte-identical nominal band.
-    assert _overlap_band_hz(fc_hz) == (1000.0, 4000.0)
+    assert overlap_band_hz(fc_hz) == (1000.0, 4000.0)
 
 
 def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     """Fix 1, consumer wiring: `_build_candidate` must compute lo/hi via the
-    SAME SSOT `_overlap_band_hz` helper (clamped to the true driver-sweep
+    SAME SSOT `overlap_band_hz` helper (clamped to the true driver-sweep
     bounds) and pass that band into the ripple calculation — not silently
     keep computing its own unclamped [Fc/2, 2*Fc] locally. Spies on
     `_ripple_db` (rather than asserting on DSP output numbers, which are
@@ -1931,7 +1931,7 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     # the ripple call's band is exactly the SSOT helper's output — proving
     # `_build_candidate` threads the sweep bounds through, not just accepts
     # and ignores them.
-    expected_lo, expected_hi = _overlap_band_hz(
+    expected_lo, expected_hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=3000.0,
     )
     assert seen_lo_hi == [(expected_lo, expected_hi)]

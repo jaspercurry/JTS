@@ -246,10 +246,21 @@ def _requested_segment_plan(
 
 
 def _out_of_segment_mask(program: ExcitationProgram, channel: int, length: int) -> Any:
+    """True where a channel is expected to be silent.
+
+    Scoped to ``known_audible_segments()`` (stimulus segments PLUS the
+    courtesy-tone prelude, issue #1677) rather than ``stimulus_segments()``
+    alone: the prelude is real, intentional audio outside any analyzed
+    stimulus window, so it must be excluded here too or every prelude-bearing
+    program would be refused as if the tone were leaked/tampered energy.
+    ``_channel_declared_peak_dbfs`` below stays scoped to ``stimulus_segments()``
+    on purpose (see its docstring) — this is the one admission surface the
+    prelude actually needs to change.
+    """
     import numpy as np
 
     mask = np.ones(length, dtype=bool)
-    for segment in program.stimulus_segments():
+    for segment in program.known_audible_segments():
         if segment.channel != channel:
             continue
         start = segment.start_sample
@@ -260,6 +271,19 @@ def _out_of_segment_mask(program: ExcitationProgram, channel: int, length: int) 
 
 
 def _channel_declared_peak_dbfs(program: ExcitationProgram, channel: int) -> float:
+    """The manifest's expected true peak for one channel.
+
+    Deliberately scoped to ``stimulus_segments()``, NOT
+    ``known_audible_segments()`` — the courtesy-tone prelude (issue #1677) is
+    derived to never exceed its channel's own loudest stimulus
+    (``courtesy_tone_gain_db``), so a correctly-rendered tone never changes
+    this value. Leaving the prelude out of the declared peak keeps
+    MANIFEST_PEAK_MISMATCH below as a free defense-in-depth check: if a future
+    bug ever rendered the tone louder than intended, the channel's actual
+    (bytes-measured) true peak would rise above this stimulus-only expectation
+    and the mismatch would correctly refuse the program, rather than the
+    expectation silently rising to match whatever the tone happened to do.
+    """
     peaks = [
         float(segment.gain_db)
         for segment in program.stimulus_segments()

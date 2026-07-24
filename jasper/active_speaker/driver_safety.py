@@ -75,6 +75,14 @@ _MANUAL_DRIVER_FIELDS = {
     "level_duration_limits",
     "cabinet",
     "source",
+    # #1665 component entry -- design_draft.py's own manual-driver allowlist
+    # already accepts these; this allowlist re-validates the SAME normalised
+    # record when build_driver_safety_profile is called with it (design_draft
+    # threads manual_settings straight through), so it must accept them too.
+    "driver_class",
+    "radiating_diameter_mm",
+    "horn_coverage_deg",
+    "pad",
 }
 _MANUAL_CANDIDATE_FIELDS = {
     "between_roles",
@@ -597,6 +605,16 @@ _V2_RESEARCH_DRIVER_FIELDS = {
     "gain_offset_db_provenance",
     "notes",
     "sources",
+    # #1665 component entry: driver_class/radiating_diameter_mm/
+    # horn_coverage_deg are researchable (build_driver_research_prompt asks
+    # for them). pad is not prompted (operator-only fact) but is accepted
+    # here too for structural parity with the shared _normalise_driver_common
+    # schema -- a v2 result never legitimately carries it, but rejecting it
+    # here would just be a second, redundant place that gate could drift.
+    "driver_class",
+    "radiating_diameter_mm",
+    "horn_coverage_deg",
+    "pad",
 }
 _V2_RESEARCH_CANDIDATE_FIELDS = {
     "between_roles",
@@ -1027,6 +1045,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "Every field assertion needs confidence, a short basis, and source URLs. Research is advisory; the operator will review every value before confirmation.",
             "A filter cutoff is not a brick wall. Keep the hard excitation band distinct from required filter cutoff/slope, the measurement band, and the crossover-search band.",
             "For cabinet data, identify sealed/vented/passive-radiator/open-baffle/other, radiator count, effective radiating diameter, and baffle width when supported by evidence.",
+            "Identify the driver's technology class (compression_horn, soft_dome, metal_dome, beryllium_diamond_dome, ribbon_amt, or unknown), its radiating diameter for a cone or dome driver, and its nominal horn coverage angle for a compression-horn driver, only when supported by evidence.",
             "Return JSON only. Echo request_fingerprint and every target_id/target_fingerprint exactly.",
             "",
             "Exact server-authored request:",
@@ -1055,6 +1074,9 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "crossover_search_band_hz": [2200, 4000],',
             '    "level_duration_limits": {"max_effective_peak_dbfs":null,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":0},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
+            '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
+            '    "radiating_diameter_mm": 25,',
+            '    "horn_coverage_deg": null,',
             '    "unknowns": ["facts that could not be established"],',
             '    "field_provenance": {"hard_excitation_band_hz":{"confidence":"low|medium|high|unknown","basis":"short explanation","sources":["https://..."]}},',
             '    "gain_offset_db": -6,',

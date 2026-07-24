@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import dataclasses
 import hashlib
 import json
 import logging
@@ -994,6 +995,7 @@ def bind_production_analyze(
 
     def _analyze(program: Any, result: Any, priors: Any, geometry: Any) -> Any:
         from jasper.audio_measurement import program_analysis as _pa
+        from jasper.audio_measurement.calibration import mic_tier_for_model
 
         wav = getattr(result, "wav", result)
         samples, rate = _wav_bytes_to_samples(wav)
@@ -1045,6 +1047,20 @@ def bind_production_analyze(
                 "applied": curve is not None,
                 "calibration_id": getattr(record, "calibration_id", None),
             }
+        # Layer-1a linearization gate input (#1668 PR-C): resolve the
+        # measurement mic's correction-envelope trust tier from the SAME
+        # resolved calibration record this binding already computed above —
+        # no second resolve, no new failure mode. `record` is `None` (no
+        # calibration resolved) or lacks a `model` attribute (a bare
+        # CalibrationCurve test double) exactly as often as `curve` above,
+        # and `mic_tier_for_model(None)` already resolves to the
+        # conservative "phone" tier for that case — never a guess at
+        # "reference". Threaded onto every phase's priors (not just
+        # MEASURE); only `ProgramAnalysis` from a MEASURE analysis actually
+        # surfaces it (see program_analysis.ProgramAnalysis.mic_tier).
+        priors = dataclasses.replace(
+            priors, mic_tier=mic_tier_for_model(getattr(record, "model", None)),
+        )
         analysis = _pa.analyze_program_capture(
             program,
             samples,
@@ -1968,11 +1984,19 @@ class V2ConductorContext:
     topology: Any
     playback_device: str
     role_channels: dict[str, int]
-    # Per-role declared datasheet sensitivities from the design draft's
+    # Per-role declared EFFECTIVE sensitivities (naked datasheet figure with
+    # any declared in-line pad folded in — #1665) from the design draft's
     # declaration (the one owner of that fact — W6.5). Threaded into every cap
     # resolution AND the play-time readmission so the composed levels and the
     # admission gate can never disagree about a derived HF ceiling.
     declared_sensitivities: dict[str, float] = field(default_factory=dict)
+    # Per-role declared driver technology class (#1665 component entry), fed
+    # to the conductor's Layer-1a linearization fit
+    # (linearization_envelope.compose_envelope's class_prior_limit term —
+    # see crossover_v2_flow.CrossoverV2Conductor's own driver_class_by_role
+    # ctor param, landed by #1668 PR-C ahead of this resolver populating it).
+    # A role absent here fits under the conservative "unknown" class default.
+    driver_class_by_role: dict[str, str] = field(default_factory=dict)
 
 
 def ensure_crossover_preview_ready() -> dict[str, Any]:
@@ -2038,6 +2062,42 @@ def ensure_crossover_preview_ready() -> dict[str, Any]:
     return preview
 
 
+def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
+    """Per-role declared driver technology class (#1665 component entry).
+
+    Mirrors :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`'s
+    exact shape — role-keyed, a role with disagreeing declarations drops
+    entirely, fails soft on anything malformed rather than raising. This
+    resolver runs inside conductor-context resolution: an unexpected value
+    should fall back to :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`'s
+    own conservative "unknown" default for that one role, never abort the
+    whole session.
+    """
+
+    from jasper.active_speaker._common import DRIVER_CLASSES
+
+    manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
+    if not isinstance(manual, Mapping):
+        return {}
+    drivers = manual.get("drivers")
+    out: dict[str, str] = {}
+    conflicted: set[str] = set()
+    for driver in drivers if isinstance(drivers, list) else []:
+        if not isinstance(driver, Mapping):
+            continue
+        role = str(driver.get("role") or "")
+        value = driver.get("driver_class")
+        if not role or not isinstance(value, str) or value not in DRIVER_CLASSES:
+            continue
+        if role in out and out[role] != value:
+            conflicted.add(role)
+            continue
+        out[role] = value
+    for role in conflicted:
+        out.pop(role, None)
+    return out
+
+
 def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     """Resolve preset/bands/caps/targets/volume from live status + topology.
 
@@ -2047,7 +2107,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.crossover_v2_flow import derive_session_volume_db
     from jasper.active_speaker.design_draft import (
-        declared_driver_sensitivities,
+        declared_effective_driver_sensitivities,
         load_design_draft,
     )
     from jasper.active_speaker.excitation_safety_plan import (
@@ -2097,9 +2157,14 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         raise CrossoverV2Refused(
             "the woofer and tweeter measurement targets are not both active"
         )
-    # The declaration's per-role datasheet sensitivities (the one owner of
-    # that fact — W6.5), threaded into every cap resolution below.
-    declared_sensitivities = declared_driver_sensitivities(draft)
+    # The declaration's per-role EFFECTIVE datasheet sensitivities -- naked
+    # figure with any declared in-line pad folded in (#1665) -- threaded into
+    # every cap resolution below. This is the one owner of that fact (W6.5).
+    declared_sensitivities = declared_effective_driver_sensitivities(draft)
+    # The declaration's per-role driver technology class (#1665), threaded
+    # into the conductor construction sites below so the Layer-1a
+    # linearization fit (compose_envelope's class_prior_limit term) sees it.
+    driver_class_by_role = _resolve_driver_class_by_role(draft)
     roles_bands = []
     caps: dict[str, float] = {}
     for channel, role in enumerate(("woofer", "tweeter")):
@@ -2165,6 +2230,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         playback_device=playback_device,
         role_channels={"woofer": 0, "tweeter": 1},
         declared_sensitivities=declared_sensitivities,
+        driver_class_by_role=driver_class_by_role,
     )
 
 
@@ -2333,6 +2399,7 @@ def prepare_v2_session(
                 apply_failed=_apply_failure_gate,
             ),
             driver_spacing_m=context.driver_spacing_m,
+            driver_class_by_role=context.driver_class_by_role,
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = build_v2_run_and_consume(
@@ -2485,6 +2552,7 @@ def prepare_v2_verify(
                 apply_failed=_apply_failure_gate,
             ),
             driver_spacing_m=context.driver_spacing_m,
+            driver_class_by_role=context.driver_class_by_role,
             accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
             applied=True,
             gain_plan_db=state.get("gain_plan_db"),

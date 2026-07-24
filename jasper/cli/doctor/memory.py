@@ -22,6 +22,7 @@ the RAM and zram checks already established."""
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from ...install_profile import is_streambox_install_profile, read_install_profile
@@ -30,6 +31,7 @@ from ._shared import (
     CheckResult,
     _installed_units,
     _meminfo_kb,
+    _run,
     _systemctl_show_property,
 )
 
@@ -811,4 +813,183 @@ def check_wake_events_storage() -> CheckResult:
             "check the ring reaper (journalctl -u jasper-voice | grep "
             "wake_events) or lower the cap."
         ),
+    )
+
+
+# --- Persistent-journal retention check (Tier-5 forensics depend on it) -----
+#
+# deploy/journald/50-jts-persistent-storage.conf flips RPi OS's volatile
+# default to Storage=persistent with a SystemMaxUse retention cap, so a
+# watchdog reset's *previous-boot* logs survive (the whole point of Tier 5;
+# see docs/HANDOFF-resilience.md). This check catches the two silent
+# regressions that would gut those forensics: persistence getting turned off,
+# or the retention cap shrinking below what JTS installs (e.g. a stale/lower
+# drop-in winning the precedence merge). Read-only — no journald mutation.
+
+# The JTS-installed drop-in — the "installed value" the effective cap is
+# compared against (never a hard-coded byte figure, so this can't drift from
+# what deploy/journald/50-jts-persistent-storage.conf actually ships).
+_JOURNALD_DROPIN = Path(
+    "/etc/systemd/journald.conf.d/50-jts-persistent-storage.conf"
+)
+
+_JOURNALD_SIZE_SUFFIX = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}
+
+
+def _parse_journald_size(raw: str | None) -> int | None:
+    """Parse a journald size token to bytes. journald accepts a bare number
+    (bytes) or a K/M/G/T suffix (base-1024, e.g. ``500M``). Returns None on
+    an empty/unparseable/negative value."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    suffix = raw[-1].upper()
+    if suffix in _JOURNALD_SIZE_SUFFIX:
+        num, mult = raw[:-1], _JOURNALD_SIZE_SUFFIX[suffix]
+    else:
+        num, mult = raw, 1
+    try:
+        value = float(num)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return int(value * mult)
+
+
+def _journald_setting_last_wins(text: str, key: str) -> str | None:
+    """Last-assignment-wins value for ``key=`` in a journald config text
+    (comment/blank lines ignored). Mirrors systemd's own "last assignment
+    across the merged config wins" rule, so passing the output of
+    ``systemd-analyze cat-config`` yields the effective value."""
+    val: str | None = None
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s[0] in "#;":
+            continue
+        k, sep, v = s.partition("=")
+        if sep and k.strip() == key:
+            val = v.strip()
+    return val
+
+
+def _systemd_booted() -> bool:
+    """True when this host is booted with systemd (so a journald drop-in is
+    the applicable config surface). Fails toward False so the check skips
+    cleanly on a non-systemd dev host rather than warning about a missing
+    Pi-only drop-in."""
+    return Path("/run/systemd/system").is_dir()
+
+
+def _journald_effective_config() -> tuple[str | None, str | None]:
+    """Effective ``(Storage, SystemMaxUse)`` as journald resolves them, read
+    via ``systemd-analyze cat-config systemd/journald.conf`` — systemd does
+    the drop-in precedence merge for us, so the last assignment wins. Returns
+    ``(None, None)`` when the tool is unavailable (values then fall back to
+    the JTS drop-in alone)."""
+    try:
+        proc = _run(
+            ["systemd-analyze", "cat-config", "systemd/journald.conf"],
+            timeout=10.0,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return (None, None)
+    if proc.returncode != 0:
+        return (None, None)
+    text = proc.stdout or ""
+    return (
+        _journald_setting_last_wins(text, "Storage"),
+        _journald_setting_last_wins(text, "SystemMaxUse"),
+    )
+
+
+def _journald_installed_cap_raw() -> str | None:
+    """``SystemMaxUse`` from the JTS-installed drop-in, or None when the
+    drop-in is absent/unreadable."""
+    try:
+        text = _JOURNALD_DROPIN.read_text()
+    except OSError:
+        return None
+    return _journald_setting_last_wins(text, "SystemMaxUse")
+
+
+def _journald_disk_usage() -> str:
+    """One-line ``journalctl --disk-usage`` summary, or "" on any failure."""
+    try:
+        proc = _run(["journalctl", "--disk-usage"], timeout=10.0)
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return " ".join((proc.stdout or "").split())
+
+
+@doctor_check(order=42.4, group="memory")
+def check_journald_persistence() -> CheckResult:
+    """Verify the persistent-journal drop-in is in effect: Storage=persistent
+    so a watchdog reset's previous-boot logs survive, and the SystemMaxUse
+    retention cap has not regressed below the value JTS installs. Read-only;
+    effective values come from ``systemd-analyze cat-config`` (systemd merges
+    drop-in precedence), the installed cap from the JTS drop-in, and current
+    usage from ``journalctl --disk-usage``. Skips cleanly off a systemd host.
+
+    Canonical config: deploy/journald/50-jts-persistent-storage.conf; rationale
+    in docs/HANDOFF-resilience.md + docs/HANDOFF-observability.md."""
+    if not _systemd_booted():
+        return CheckResult(
+            "journald persistence", "ok", "no systemd — skipped (not a Pi?)",
+        )
+
+    storage, eff_cap_raw = _journald_effective_config()
+    installed_cap_raw = _journald_installed_cap_raw()
+    usage = _journald_disk_usage()
+    usage_suffix = f" ({usage})" if usage else ""
+
+    # 1) Persistence off — the whole point of the drop-in is defeated.
+    if storage is not None and storage.lower() != "persistent":
+        if installed_cap_raw is None:
+            fix = (
+                " The JTS persistent-journal drop-in is not installed — "
+                "re-run install.sh."
+            )
+        else:
+            fix = (
+                " The JTS drop-in requests persistent but another config "
+                "overrides it (or journald was not restarted) — re-run "
+                "install.sh / restart systemd-journald."
+            )
+        return CheckResult(
+            "journald persistence", "warn",
+            f"Storage={storage}, not persistent — a watchdog reset's "
+            f"previous-boot forensics will not survive a reboot.{fix}",
+        )
+
+    # Drop-in absent and effective config unreadable: can't confirm persistence.
+    if installed_cap_raw is None and storage is None:
+        return CheckResult(
+            "journald persistence", "warn",
+            "persistent-journal drop-in not installed and effective config "
+            "unreadable — watchdog-reset forensics may be volatile. Re-run "
+            "install.sh.",
+        )
+
+    # 2) Retention cap regressed below what JTS installs.
+    eff_cap = _parse_journald_size(eff_cap_raw)
+    installed_cap = _parse_journald_size(installed_cap_raw)
+    if eff_cap is not None and installed_cap is not None and eff_cap < installed_cap:
+        return CheckResult(
+            "journald persistence", "warn",
+            f"SystemMaxUse effective {eff_cap_raw} is below the installed "
+            f"{installed_cap_raw} — the forensics retention window has "
+            f"regressed (a later journald drop-in is shrinking it)"
+            f"{usage_suffix}.",
+        )
+
+    cap_note = eff_cap_raw or installed_cap_raw or "systemd default"
+    storage_note = storage or "persistent (drop-in)"
+    return CheckResult(
+        "journald persistence", "ok",
+        f"Storage={storage_note}, SystemMaxUse={cap_note}{usage_suffix}",
     )

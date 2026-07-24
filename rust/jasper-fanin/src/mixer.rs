@@ -623,8 +623,10 @@ enum Output {
     /// ring publish (bounded, on a full-ring-with-live-reader) is the pacer; the
     /// mirror is a `write_music_only`-shaped non-blocking side-tap so the AEC
     /// fallback dsnoop and any aloop diagnostics stay live. `RingOutput` owns the
-    /// per-step slot fan-out and the reader-absent self-pacing.
-    Ring(RingOutput),
+    /// per-step slot fan-out and the reader-absent self-pacing. Boxed so this rare
+    /// (flag-gated) variant does not bloat every `Output` (clippy
+    /// `large_enum_variant`) — one alloc at construction, deref-transparent after.
+    Ring(Box<RingOutput>),
 }
 
 /// The Ring A output: the SPSC ring writer, its shared observability counters,
@@ -641,6 +643,10 @@ struct RingOutput {
     /// One period in nanoseconds (period_frames / 48000). The reader-absent
     /// self-pacing sleep, precomputed so the hot loop never divides.
     self_pace_period_ns: u64,
+    /// Edge-detection state machine for the ring stall event (issue #1524).
+    /// `write_ring_period` feeds it one [`RingStallInput`] per period and logs any
+    /// returned [`RingStallEvent`]; steady state emits nothing.
+    stall: RingStallTracker,
 }
 
 pub struct Mixer {
@@ -837,10 +843,23 @@ pub struct CouplingObservability {
 struct RingCounters {
     published: Arc<AtomicU64>,
     full_waits: Arc<AtomicU64>,
-    drops: Arc<AtomicU64>,
+    /// Live-but-STUCK reader drops (issue #1524) — the bounded-wait give-ups
+    /// (`DroppedStuck`) plus the sticky demotions (`DroppedStuckDemoted`). Split
+    /// out of the old folded `drops` so a heartbeat-live wedge is distinguishable
+    /// from a benign no-reader reload.
+    stuck_reader_drops: Arc<AtomicU64>,
+    /// Dead/absent-reader free-run drops (`DroppedNoReader`) — the normal
+    /// CamillaDSP-reload transient.
+    drop_no_reader: Arc<AtomicU64>,
     mirror_frames: Arc<AtomicU64>,
     mirror_drops: Arc<AtomicU64>,
     occupancy: Arc<AtomicU64>,
+    /// A ring stall episode (full + reader heartbeat-live + `read_seq` frozen
+    /// past the grace, OR a >1 s no-reader hold) is CURRENTLY in progress.
+    stall_active: Arc<AtomicBool>,
+    /// Duration in ms of the current (if `stall_active`) or most-recent stall
+    /// episode; 0 if none has ever occurred.
+    last_stall_ms: Arc<AtomicU64>,
 }
 
 impl RingCounters {
@@ -848,20 +867,26 @@ impl RingCounters {
         Self {
             published: Arc::new(AtomicU64::new(0)),
             full_waits: Arc::new(AtomicU64::new(0)),
-            drops: Arc::new(AtomicU64::new(0)),
+            stuck_reader_drops: Arc::new(AtomicU64::new(0)),
+            drop_no_reader: Arc::new(AtomicU64::new(0)),
             mirror_frames: Arc::new(AtomicU64::new(0)),
             mirror_drops: Arc::new(AtomicU64::new(0)),
             occupancy: Arc::new(AtomicU64::new(0)),
+            stall_active: Arc::new(AtomicBool::new(false)),
+            last_stall_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 }
 
 /// The shared ring counters (cloned Arcs) for the STATUS endpoint's `ring`
-/// block: `{path, slots, occupancy, published, full_waits, drops, mirror_frames,
-/// mirror_drops}`. `drops` folds the writer's no-reader + stuck-reader drops
-/// (both mean "a live reader did not consume this slot"); `mirror_frames` /
-/// `mirror_drops` are the lossy aloop side-tap's written-frame and drop counts
-/// (parity with the music-only tap's `music_frames_written` / drops).
+/// block: `{path, slots, occupancy, published, full_waits, stuck_reader_drops,
+/// drop_no_reader, stall_active, last_stall_ms, mirror_frames, mirror_drops}`.
+/// The stuck-reader vs no-reader drop counts are UN-FOLDED (issue #1524) so a
+/// heartbeat-live wedge is distinguishable from a benign no-reader reload;
+/// `stall_active` / `last_stall_ms` surface a live/recent stall episode.
+/// `mirror_frames` / `mirror_drops` are the lossy aloop side-tap's written-frame
+/// and drop counts (parity with the music-only tap's `music_frames_written` /
+/// drops).
 #[derive(Clone)]
 pub struct RingObservability {
     pub path: String,
@@ -869,9 +894,298 @@ pub struct RingObservability {
     pub occupancy: Arc<AtomicU64>,
     pub published: Arc<AtomicU64>,
     pub full_waits: Arc<AtomicU64>,
-    pub drops: Arc<AtomicU64>,
+    pub stuck_reader_drops: Arc<AtomicU64>,
+    pub drop_no_reader: Arc<AtomicU64>,
+    pub stall_active: Arc<AtomicBool>,
+    pub last_stall_ms: Arc<AtomicU64>,
     pub mirror_frames: Arc<AtomicU64>,
     pub mirror_drops: Arc<AtomicU64>,
+}
+
+/// The fan-in ring-stall EVENT threshold (issue #1524): how long the
+/// fan-in→CamillaDSP ring must stay full-and-not-draining before the mixer emits
+/// ONE edge-triggered `event=fanin.ring.stall_detected`. Deliberately EQUAL to
+/// the writer's [`jasper_ring::STUCK_READER_GRACE_NS`] (1 s) so the writer's
+/// sticky-stuck demotion and this observability edge fire together — above a
+/// normal reload/reattach turn, 5× below the 5 s fan-in progress watchdog, 12×
+/// below the ~12 s downstream correction-lane aplay timeout the old unbounded
+/// back-pressure used to trip.
+const RING_STALL_EVENT_NS: u64 = jasper_ring::STUCK_READER_GRACE_NS;
+
+/// Minimum gap between one stall episode CLEARING and arming the next
+/// `stall_detected` — the re-arm rate limit that keeps a flapping reader (rapid
+/// clear→restall cycles) from spamming the journal. A single sustained stall is
+/// already exactly one detected + one cleared (the edge trigger owns that); this
+/// only suppresses repeated SHORT episodes. The first-ever episode always arms.
+const RING_STALL_REARM_MIN_GAP_NS: u64 = 10_000_000_000; // 10 s
+
+/// Bounded escalation threshold: if a logged stall episode persists this long
+/// the mixer emits ONE `event=fanin.ring.stall_unrecovered` (issue #1524). It is
+/// pure observability — fan-in owns the ring, not the CamillaDSP lifecycle, so it
+/// NEVER restarts the DSP; the writer's demotion has already returned fan-in to
+/// real time regardless.
+const RING_STALL_UNRECOVERED_NS: u64 = 10_000_000_000; // 10 s
+
+/// Why the ring is not draining, for the stall event's `reason=` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallReason {
+    /// Reader heartbeat is live but `read_seq` is frozen (the #1524 wedge —
+    /// CamillaDSP polling in Prepared without calling `readi`).
+    StuckReader,
+    /// Reader is dead/absent and the free-run has been held past the threshold
+    /// (e.g. CamillaDSP down for > 1 s, not a normal reload transient).
+    NoReader,
+}
+
+impl StallReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            StallReason::StuckReader => "stuck_reader",
+            StallReason::NoReader => "no_reader",
+        }
+    }
+}
+
+/// One period's stall signals, fed to [`RingStallTracker::observe`]. `now_ns` and
+/// `stall_ns` are injected (not read from a clock inside the tracker) so the edge
+/// state machine is a PURE, deterministically-testable function of its inputs.
+#[derive(Debug, Clone, Copy)]
+struct RingStallInput {
+    /// Monotonic ns (production: `jasper_ring::monotonic_ns()`), for the re-arm
+    /// rate limit only.
+    now_ns: u64,
+    /// `writer.ns_since_read_seq_advance()` — ns since the READER last advanced
+    /// `read_seq`. The authoritative stall duration.
+    stall_ns: u64,
+    /// This period had at least one full-ring drop (the ring was not draining).
+    dropped_this_period: bool,
+    /// Reader heartbeat looked live this period → `stuck_reader`, else `no_reader`.
+    reader_live: bool,
+    /// Cumulative `full_waits` (event field).
+    full_waits: u64,
+    /// Ring occupancy (event field).
+    occupancy: u64,
+    /// Reader pid (event field).
+    reader_pid: u64,
+    /// Reader heartbeat age in ms (`u64::MAX` = never) (event field).
+    reader_heartbeat_age_ms: u64,
+}
+
+/// An edge-triggered ring-stall event the mixer logs. Emitted at most once per
+/// transition — never per period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RingStallEvent {
+    Detected {
+        reason: StallReason,
+        duration_ms: u64,
+        dropped_periods: u64,
+        occupancy: u64,
+        reader_pid: u64,
+        reader_heartbeat_age_ms: u64,
+        full_waits: u64,
+    },
+    /// A logged episode has persisted past [`RING_STALL_UNRECOVERED_NS`]. Pure
+    /// observability — emitted once per episode; fan-in does NOT restart the DSP.
+    Unrecovered {
+        reason: StallReason,
+        duration_ms: u64,
+        dropped_periods: u64,
+    },
+    Cleared {
+        reason: StallReason,
+        duration_ms: u64,
+        dropped_periods: u64,
+    },
+}
+
+/// Edge-detection state machine for the fan-in ring stall event (issue #1524).
+///
+/// PURE: [`Self::observe`] takes explicit `now_ns` / `stall_ns` so it is a
+/// deterministic function of its inputs (no internal clock) and can be unit
+/// tested without any real waiting. `write_ring_period` owns the wiring — it
+/// computes a [`RingStallInput`] from the writer's real accessors each period and
+/// logs whatever event `observe` returns.
+///
+/// Semantics:
+/// - A "drop run" is a contiguous sequence of dropped periods (the ring not
+///   draining). Its duration is the writer's `stall_ns` (time since the reader
+///   last advanced); its `dropped_periods` is the count of dropped periods.
+/// - `Detected` fires ONCE when, during a drop run, `stall_ns` first crosses
+///   [`RING_STALL_EVENT_NS`] AND the re-arm rate limit allows (≥
+///   [`RING_STALL_REARM_MIN_GAP_NS`] since the LAST detected, so a flapping
+///   reader logs at most once per gap and cannot spam).
+/// - `Unrecovered` fires ONCE if a logged episode's `stall_ns` later crosses
+///   [`RING_STALL_UNRECOVERED_NS`].
+/// - `Cleared` fires ONCE when the drop run ends (a non-drop period) IFF a
+///   `Detected` was emitted for it — so a suppressed/short run is fully silent.
+/// - Steady state and normal sub-threshold reloads emit NOTHING.
+#[derive(Debug, Clone)]
+struct RingStallTracker {
+    run_active: bool,
+    run_reason: StallReason,
+    run_dropped_periods: u64,
+    logged: bool,
+    unrecovered_logged: bool,
+    last_stall_ms: u64,
+    /// `now_ns` of the last emitted `Detected` — the re-arm rate limit anchor.
+    last_detected_ns: u64,
+    ever_detected: bool,
+}
+
+impl RingStallTracker {
+    fn new() -> Self {
+        Self {
+            run_active: false,
+            run_reason: StallReason::StuckReader,
+            run_dropped_periods: 0,
+            logged: false,
+            unrecovered_logged: false,
+            last_stall_ms: 0,
+            last_detected_ns: 0,
+            ever_detected: false,
+        }
+    }
+
+    /// True while a logged stall episode is in progress (drives
+    /// `/state.shm_ring.stall_active`).
+    fn stall_active(&self) -> bool {
+        self.logged
+    }
+
+    /// Duration in ms of the current (if active) or most-recent logged episode.
+    fn last_stall_ms(&self) -> u64 {
+        self.last_stall_ms
+    }
+
+    fn observe(&mut self, input: RingStallInput) -> Option<RingStallEvent> {
+        if !input.dropped_this_period {
+            // The ring drained this period → any drop run (and logged episode)
+            // ends. Only emit Cleared if we had emitted Detected for it.
+            if self.run_active {
+                self.run_active = false;
+            }
+            let dropped = self.run_dropped_periods;
+            self.run_dropped_periods = 0;
+            self.unrecovered_logged = false;
+            if self.logged {
+                self.logged = false;
+                let reason = self.run_reason;
+                return Some(RingStallEvent::Cleared {
+                    reason,
+                    duration_ms: self.last_stall_ms,
+                    dropped_periods: dropped,
+                });
+            }
+            return None;
+        }
+
+        // A dropped period: extend (or start) the contiguous drop run.
+        let reason = if input.reader_live {
+            StallReason::StuckReader
+        } else {
+            StallReason::NoReader
+        };
+        if !self.run_active {
+            self.run_active = true;
+            self.run_dropped_periods = 0;
+        }
+        self.run_reason = reason;
+        self.run_dropped_periods = self.run_dropped_periods.saturating_add(1);
+
+        let stall_ms = input.stall_ns / 1_000_000;
+        if input.stall_ns < RING_STALL_EVENT_NS {
+            // Sub-threshold (a normal reload/reattach transient): stay silent.
+            return None;
+        }
+
+        if !self.logged {
+            // Re-arm rate limit: suppress a NEW detected if the LAST detected was
+            // emitted too recently (flapping guard). First-ever episode arms. A
+            // sustained stall is one detected regardless — the `logged` edge below
+            // owns that; this gate only bounds the frequency of NEW episodes.
+            let armed = !self.ever_detected
+                || input.now_ns.saturating_sub(self.last_detected_ns)
+                    >= RING_STALL_REARM_MIN_GAP_NS;
+            if !armed {
+                return None;
+            }
+            self.logged = true;
+            self.ever_detected = true;
+            self.last_detected_ns = input.now_ns;
+            self.unrecovered_logged = false;
+            self.last_stall_ms = stall_ms;
+            return Some(RingStallEvent::Detected {
+                reason,
+                duration_ms: stall_ms,
+                dropped_periods: self.run_dropped_periods,
+                occupancy: input.occupancy,
+                reader_pid: input.reader_pid,
+                reader_heartbeat_age_ms: input.reader_heartbeat_age_ms,
+                full_waits: input.full_waits,
+            });
+        }
+
+        // Already logged: keep the live duration fresh for /state, and emit the
+        // one-shot unrecovered escalation if the episode has run past the bound.
+        self.last_stall_ms = stall_ms;
+        if !self.unrecovered_logged && input.stall_ns >= RING_STALL_UNRECOVERED_NS {
+            self.unrecovered_logged = true;
+            return Some(RingStallEvent::Unrecovered {
+                reason,
+                duration_ms: stall_ms,
+                dropped_periods: self.run_dropped_periods,
+            });
+        }
+        None
+    }
+}
+
+/// Format a ring-stall event as one structured `event=` log line (issue #1524).
+fn format_ring_stall_event(event: &RingStallEvent) -> String {
+    match event {
+        RingStallEvent::Detected {
+            reason,
+            duration_ms,
+            dropped_periods,
+            occupancy,
+            reader_pid,
+            reader_heartbeat_age_ms,
+            full_waits,
+        } => format!(
+            "event=fanin.ring.stall_detected reason={} duration_ms={} \
+             dropped_periods={} occupancy={} reader_pid={} \
+             reader_heartbeat_age_ms={} full_waits={}",
+            reason.as_str(),
+            duration_ms,
+            dropped_periods,
+            occupancy,
+            reader_pid,
+            reader_heartbeat_age_ms,
+            full_waits,
+        ),
+        RingStallEvent::Unrecovered {
+            reason,
+            duration_ms,
+            dropped_periods,
+        } => format!(
+            "event=fanin.ring.stall_unrecovered reason={} duration_ms={} \
+             dropped_periods={}",
+            reason.as_str(),
+            duration_ms,
+            dropped_periods,
+        ),
+        RingStallEvent::Cleared {
+            reason,
+            duration_ms,
+            dropped_periods,
+        } => format!(
+            "event=fanin.ring.stall_cleared reason={} duration_ms={} \
+             dropped_periods={}",
+            reason.as_str(),
+            duration_ms,
+            dropped_periods,
+        ),
+    }
 }
 
 /// One direct USB capture lane's runtime state (DEFAULT-OFF; only the usbsink
@@ -1286,17 +1600,21 @@ impl Mixer {
                     occupancy: Arc::clone(&counters.occupancy),
                     published: Arc::clone(&counters.published),
                     full_waits: Arc::clone(&counters.full_waits),
-                    drops: Arc::clone(&counters.drops),
+                    stuck_reader_drops: Arc::clone(&counters.stuck_reader_drops),
+                    drop_no_reader: Arc::clone(&counters.drop_no_reader),
+                    stall_active: Arc::clone(&counters.stall_active),
+                    last_stall_ms: Arc::clone(&counters.last_stall_ms),
                     mirror_frames: Arc::clone(&counters.mirror_frames),
                     mirror_drops: Arc::clone(&counters.mirror_drops),
                 };
                 (
-                    Output::Ring(RingOutput {
+                    Output::Ring(Box::new(RingOutput {
                         writer,
                         counters,
                         mirror,
                         self_pace_period_ns,
-                    }),
+                        stall: RingStallTracker::new(),
+                    })),
                     CouplingObservability {
                         transport: "shm_ring",
                         ring: Some(observability),
@@ -1774,9 +2092,10 @@ impl Mixer {
             }
             Output::Ring(ring) => {
                 // Count only frames that actually ENTERED the ring — a
-                // fully-dropped period (reader absent / stuck) adds nothing.
-                // `drops` disambiguates, so the top-line counter stays
-                // honest rather than optimistic.
+                // fully-dropped period (reader absent / stuck) adds nothing. The
+                // stuck_reader_drops / drop_no_reader split disambiguates, so the
+                // top-line counter stays honest rather than optimistic. (`ring`
+                // deref-coerces &mut Box<RingOutput> → &mut RingOutput.)
                 let published_frames =
                     write_ring_period(ring, &self.output_buf, self.period_frames);
                 self.frames_written
@@ -2181,6 +2500,19 @@ impl Mixer {
 /// period sleep keeps `step()` well under the 5 s watchdog threshold; the
 /// writer's heartbeat is bumped inside each publish.
 ///
+/// **Ring stall self-recovery + observability (issue #1524).** A reader that
+/// stays heartbeat-live but stops advancing `read_seq` (CamillaDSP wedged in
+/// Prepared, still polling) used to pin every publish in the bounded wait —
+/// running fan-in at ~1/9 real time and back-pressuring the input lanes until a
+/// downstream aplay timed out, with no fan-in-side signal. The writer now DEMOTES
+/// such a reader past its grace and free-runs (`DroppedStuckDemoted`), which the
+/// self-pace below turns back into real-time pacing (a demoted period drops, so
+/// it self-paces one period like the no-reader path). This function additionally
+/// feeds the writer's per-period stall signals to a [`RingStallTracker`] and logs
+/// ONE edge-triggered `event=fanin.ring.stall_detected` / `stall_cleared`
+/// (steady state and normal sub-threshold reloads emit nothing), and un-folds the
+/// stuck-reader vs no-reader drop counters into `/state.shm_ring`.
+///
 /// The mirror is a `write_music_only`-shaped non-blocking side-tap: it is
 /// avail-checked and drop-on-full, so it can NEVER back-pressure the loop (that
 /// would re-couple to the aloop timer and silently reintroduce the hop being
@@ -2198,7 +2530,11 @@ fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u
             PublishOutcome::Published => {
                 published_slots += 1;
             }
-            PublishOutcome::DroppedNoReader | PublishOutcome::DroppedStuck => {
+            // A demoted publish (issue #1524) is a drop like the others — it
+            // self-paces below, returning fan-in to real time.
+            PublishOutcome::DroppedNoReader
+            | PublishOutcome::DroppedStuck
+            | PublishOutcome::DroppedStuckDemoted => {
                 dropped_this_period = true;
             }
         }
@@ -2212,15 +2548,50 @@ fn write_ring_period(ring: &mut RingOutput, output_buf: &[i16], period_frames: u
     ring.counters
         .full_waits
         .store(m.full_waits, Ordering::Relaxed);
-    // `drops` folds no-reader + stuck-reader drops — both mean a live reader did
-    // not consume the slot.
-    ring.counters.drops.store(
-        m.drop_no_reader.saturating_add(m.stuck_reader_drops),
-        Ordering::Relaxed,
-    );
+    // UN-FOLDED (issue #1524): a heartbeat-live wedge (stuck_reader_drops — both
+    // the bounded-wait give-ups and the sticky demotions) is now distinguishable
+    // in /state from a benign no-reader reload (drop_no_reader).
+    ring.counters
+        .stuck_reader_drops
+        .store(m.stuck_reader_drops, Ordering::Relaxed);
+    ring.counters
+        .drop_no_reader
+        .store(m.drop_no_reader, Ordering::Relaxed);
     ring.counters
         .occupancy
         .store(m.occupancy, Ordering::Relaxed);
+
+    // Ring stall detection (issue #1524): feed the writer's real per-period stall
+    // signals to the edge-detection tracker and log any transition. Steady state
+    // and normal sub-threshold reloads return None (no journal spam). The
+    // demotion self-recovery lives in the writer; this is pure observability.
+    let liveness = ring.writer.reader_liveness();
+    let stall_ns = ring.writer.ns_since_read_seq_advance();
+    if let Some(event) = ring.stall.observe(RingStallInput {
+        now_ns: jasper_ring::monotonic_ns(),
+        stall_ns,
+        dropped_this_period,
+        reader_live: liveness.live,
+        full_waits: m.full_waits,
+        occupancy: m.occupancy,
+        reader_pid: liveness.pid,
+        reader_heartbeat_age_ms: liveness.heartbeat_age_ms,
+    }) {
+        match event {
+            RingStallEvent::Detected { .. } | RingStallEvent::Unrecovered { .. } => {
+                warn!("{}", format_ring_stall_event(&event));
+            }
+            RingStallEvent::Cleared { .. } => {
+                info!("{}", format_ring_stall_event(&event));
+            }
+        }
+    }
+    ring.counters
+        .stall_active
+        .store(ring.stall.stall_active(), Ordering::Relaxed);
+    ring.counters
+        .last_stall_ms
+        .store(ring.stall.last_stall_ms(), Ordering::Relaxed);
 
     // Lossy aloop mirror (never the pacer). `write_music_only`-shaped:
     // avail-check + drop-on-full so it can never block the loop.
@@ -5164,6 +5535,7 @@ mod tests {
             // One 256-frame period at 48k, in ns — used only on the reader-absent
             // self-pace path (avoided in these live-reader tests).
             self_pace_period_ns: 256 * 1_000_000_000 / 48_000,
+            stall: RingStallTracker::new(),
         };
         (ring, path)
     }
@@ -5218,7 +5590,9 @@ mod tests {
         assert!(got.iter().all(|&s| s == 9_000), "post-duck+TTS value");
         // Counters reflect two published slots (a live reader, no drops).
         assert_eq!(ring.counters.published.load(Ordering::Relaxed), 2);
-        assert_eq!(ring.counters.drops.load(Ordering::Relaxed), 0);
+        assert_eq!(ring.counters.stuck_reader_drops.load(Ordering::Relaxed), 0);
+        assert_eq!(ring.counters.drop_no_reader.load(Ordering::Relaxed), 0);
+        assert!(!ring.counters.stall_active.load(Ordering::Relaxed));
         cleanup_ring(&path);
     }
 
@@ -5258,9 +5632,238 @@ mod tests {
             elapsed < std::time::Duration::from_secs(1),
             "self-pacing must stay bounded, got {elapsed:?}"
         );
-        // Drops accrued (no live reader); occupancy bounded at n_slots.
-        assert!(ring.counters.drops.load(Ordering::Relaxed) > 0);
+        // Drops accrued as NO-READER drops (dead reader); the stuck-reader
+        // counter stays zero and no stall episode is logged (reason=no_reader
+        // stays sub-episode here because the reader was never live). Occupancy
+        // bounded at n_slots.
+        assert!(ring.counters.drop_no_reader.load(Ordering::Relaxed) > 0);
+        assert_eq!(ring.counters.stuck_reader_drops.load(Ordering::Relaxed), 0);
         assert!(ring.counters.occupancy.load(Ordering::Relaxed) <= 2);
+        cleanup_ring(&path);
+    }
+
+    // ---- Ring stall detection + self-recovery (issue #1524) ----------------
+
+    fn stall_input(now_ns: u64, stall_ns: u64, dropped: bool, live: bool) -> RingStallInput {
+        RingStallInput {
+            now_ns,
+            stall_ns,
+            dropped_this_period: dropped,
+            reader_live: live,
+            full_waits: 32,
+            occupancy: 16,
+            reader_pid: 4321,
+            reader_heartbeat_age_ms: 3,
+        }
+    }
+
+    /// The stall tracker emits EXACTLY one `stall_detected reason=stuck_reader`
+    /// (with the correct fields) when a full ring stops draining past the
+    /// threshold, stays silent per-period while the stall persists, and emits
+    /// EXACTLY one `stall_cleared` when the ring drains again.
+    #[test]
+    fn ring_stall_emits_event_once_and_clears() {
+        let mut t = RingStallTracker::new();
+        let below = RING_STALL_EVENT_NS - 1;
+        // Sub-threshold buildup (a normal reload transient): silent.
+        assert_eq!(t.observe(stall_input(1_000, below, true, true)), None);
+        assert_eq!(t.observe(stall_input(2_000, below, true, true)), None);
+        assert!(!t.stall_active());
+
+        // Cross the threshold → exactly one Detected(stuck_reader), correct fields.
+        match t.observe(stall_input(3_000, RING_STALL_EVENT_NS, true, true)) {
+            Some(RingStallEvent::Detected {
+                reason,
+                duration_ms,
+                dropped_periods,
+                occupancy,
+                reader_pid,
+                reader_heartbeat_age_ms,
+                full_waits,
+            }) => {
+                assert_eq!(reason, StallReason::StuckReader);
+                assert_eq!(duration_ms, RING_STALL_EVENT_NS / 1_000_000);
+                assert_eq!(dropped_periods, 3); // three dropped periods so far
+                assert_eq!(occupancy, 16);
+                assert_eq!(reader_pid, 4321);
+                assert_eq!(reader_heartbeat_age_ms, 3);
+                assert_eq!(full_waits, 32);
+            }
+            other => panic!("expected one Detected, got {other:?}"),
+        }
+        assert!(t.stall_active());
+
+        // Further stalling periods: NO per-period spam.
+        for i in 0..5 {
+            assert_eq!(
+                t.observe(stall_input(4_000 + i, RING_STALL_EVENT_NS + i, true, true)),
+                None,
+                "no per-period event spam while a stall stays active",
+            );
+        }
+
+        // Drain → exactly one Cleared(stuck_reader).
+        match t.observe(stall_input(9_000, 5, false, true)) {
+            Some(RingStallEvent::Cleared {
+                reason,
+                dropped_periods,
+                ..
+            }) => {
+                assert_eq!(reason, StallReason::StuckReader);
+                assert!(dropped_periods >= 3);
+            }
+            other => panic!("expected one Cleared, got {other:?}"),
+        }
+        assert!(!t.stall_active());
+        // Steady state after clear: silent.
+        assert_eq!(t.observe(stall_input(10_000, 0, false, true)), None);
+
+        // The log line matches the #1524 event contract.
+        let line = format_ring_stall_event(&RingStallEvent::Detected {
+            reason: StallReason::StuckReader,
+            duration_ms: 1000,
+            dropped_periods: 12,
+            occupancy: 16,
+            reader_pid: 4321,
+            reader_heartbeat_age_ms: 3,
+            full_waits: 32,
+        });
+        assert!(
+            line.starts_with("event=fanin.ring.stall_detected reason=stuck_reader"),
+            "{line}",
+        );
+        for frag in [
+            "duration_ms=1000",
+            "dropped_periods=12",
+            "occupancy=16",
+            "reader_pid=4321",
+            "reader_heartbeat_age_ms=3",
+            "full_waits=32",
+        ] {
+            assert!(line.contains(frag), "missing {frag} in: {line}");
+        }
+        let cleared = format_ring_stall_event(&RingStallEvent::Cleared {
+            reason: StallReason::StuckReader,
+            duration_ms: 5000,
+            dropped_periods: 900,
+        });
+        assert!(
+            cleared
+                .starts_with("event=fanin.ring.stall_cleared reason=stuck_reader duration_ms=5000"),
+            "{cleared}",
+        );
+    }
+
+    /// A sub-threshold drop burst (the designed normal-reload transient) emits
+    /// NOTHING and never marks the episode active — the guard against journal
+    /// spam on every CamillaDSP reload.
+    #[test]
+    fn ring_stall_silent_below_threshold() {
+        let mut t = RingStallTracker::new();
+        let below = RING_STALL_EVENT_NS - 1;
+        for i in 0..50 {
+            assert_eq!(
+                t.observe(stall_input(i, below, true, true)),
+                None,
+                "a sub-threshold drop must not emit",
+            );
+            assert!(!t.stall_active());
+            assert_eq!(t.last_stall_ms(), 0);
+        }
+        // Draining after a purely sub-threshold run stays silent (no Cleared for
+        // an unlogged run).
+        assert_eq!(t.observe(stall_input(100, 0, false, true)), None);
+    }
+
+    /// A flapping reader (rapid clear→re-stall) logs at most once per re-arm gap:
+    /// a re-stall within the gap is suppressed (both its Detected and Cleared),
+    /// and a fresh episode past the gap arms again.
+    #[test]
+    fn ring_stall_rate_limits_flapping() {
+        let mut t = RingStallTracker::new();
+        // Episode 1 at t=0: detect + clear.
+        assert!(matches!(
+            t.observe(stall_input(0, RING_STALL_EVENT_NS, true, true)),
+            Some(RingStallEvent::Detected { .. }),
+        ));
+        assert!(matches!(
+            t.observe(stall_input(1_000, 0, false, true)),
+            Some(RingStallEvent::Cleared { .. }),
+        ));
+        // A re-stall < gap after the last DETECTED (t=0) is suppressed.
+        let soon = RING_STALL_REARM_MIN_GAP_NS - 1;
+        assert_eq!(
+            t.observe(stall_input(soon, RING_STALL_EVENT_NS, true, true)),
+            None,
+            "a re-stall inside the re-arm gap is suppressed",
+        );
+        // ...and its unlogged clear is silent too (balanced).
+        assert_eq!(t.observe(stall_input(soon + 100, 0, false, true)), None);
+        // A fresh episode past the gap (measured from the last detected at t=0)
+        // arms again.
+        let later = RING_STALL_REARM_MIN_GAP_NS + 1;
+        assert!(
+            matches!(
+                t.observe(stall_input(later, RING_STALL_EVENT_NS, true, true)),
+                Some(RingStallEvent::Detected { .. }),
+            ),
+            "past the re-arm gap a new episode logs again",
+        );
+    }
+
+    /// End-to-end through `write_ring_period`: while a live reader is wedged the
+    /// per-period wall time is dominated by the bounded back-pressure waits;
+    /// after the writer DEMOTES it (grace crossed) the period collapses back to
+    /// ~one self-pace sleep (real time), the drops are attributed to
+    /// `stuck_reader_drops`, and the stall episode is surfaced as active.
+    #[test]
+    fn ring_step_returns_to_realtime_after_demotion() {
+        let period_frames = 256u32; // 2 slots
+        let (mut ring, path) = tmp_ring_output(2, "realtime_after_demote");
+        // Attach a reader but NEVER consume: attach stamps reader_pid + a fresh
+        // heartbeat, so it looks live for the ~2 s liveness window (the whole
+        // test is sub-second) while read_seq stays frozen — the #1524 wedge. Kept
+        // in scope so its Drop (which clears reader_pid) does not fire early.
+        let _reader = RingReader::create_or_attach(&path, ring_geometry(2)).unwrap();
+        let total = (period_frames as usize) * (CHANNELS as usize);
+        let output_buf = vec![9i16; total];
+        // Fill the ring (first period publishes both slots to the live reader).
+        assert_eq!(
+            write_ring_period(&mut ring, &output_buf, period_frames),
+            period_frames,
+        );
+
+        // PRE-GRACE: the ring is full and the reader is wedged but within grace →
+        // each publish pays the bounded ~21 ms wait, so the period is slow.
+        let pre = std::time::Instant::now();
+        assert_eq!(write_ring_period(&mut ring, &output_buf, period_frames), 0);
+        let pre = pre.elapsed();
+        assert!(
+            pre >= std::time::Duration::from_millis(5),
+            "pre-grace period must pay the bounded back-pressure wait, got {pre:?}",
+        );
+
+        // Cross the grace deterministically (no real 1 s wait) via the writer's
+        // test seam; the reader stays wedged so the backdated age survives.
+        ring.writer
+            .set_read_seq_advance_age_for_test(jasper_ring::STUCK_READER_GRACE_NS + 10_000_000);
+
+        // POST-GRACE: demotion → the period is now just the ~5.3 ms self-pace,
+        // an order of magnitude below the pre-grace wall time.
+        let post = std::time::Instant::now();
+        assert_eq!(write_ring_period(&mut ring, &output_buf, period_frames), 0);
+        let post = post.elapsed();
+        assert!(
+            post * 2 < pre,
+            "demotion must collapse per-period wall time back toward real time \
+             (pre={pre:?}, post={post:?})",
+        );
+        // The demoted drops are attributed to stuck_reader_drops (not no-reader),
+        // and the stall episode is surfaced as active.
+        assert!(ring.counters.stuck_reader_drops.load(Ordering::Relaxed) > 0);
+        assert_eq!(ring.counters.drop_no_reader.load(Ordering::Relaxed), 0);
+        assert!(ring.counters.stall_active.load(Ordering::Relaxed));
+        assert!(ring.counters.last_stall_ms.load(Ordering::Relaxed) >= 1000);
         cleanup_ring(&path);
     }
 

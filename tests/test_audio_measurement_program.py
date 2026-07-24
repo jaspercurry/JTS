@@ -28,15 +28,23 @@ import pytest
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
+    COURTESY_TONE_BEEP_COUNT,
+    COURTESY_TONE_BEEP_DURATION_S,
+    COURTESY_TONE_BEEP_GAP_S,
+    COURTESY_TONE_MARGIN_DB,
+    COURTESY_TONE_TRAILING_SILENCE_S,
+    KIND_COURTESY_TONE,
     KIND_SILENCE,
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
+    KNOWN_AUDIBLE_KINDS,
     MEASURE_SWEEP_F_HI_HZ,
     MESM_GAP_FLOOR_S,
     PHASE_CHECK,
     PHASE_MEASURE,
     PHASE_VERIFY,
     PROGRAM_SAMPLE_RATE_HZ,
+    STIMULUS_KINDS,
     VERIFY_PILOT_F_HI_HZ,
     VERIFY_PILOT_F_LO_HZ,
     ExcitationProgram,
@@ -45,6 +53,8 @@ from jasper.audio_measurement.program import (
     build_check_program,
     build_measure_program,
     build_verify_program,
+    courtesy_tone_gain_db,
+    courtesy_tone_stimulus,
     mesm_gap_samples,
     render_program_pcm,
     segment_stimulus,
@@ -399,3 +409,328 @@ def test_segment_validation_rejects_bad_shapes():
             start_sample=0, n_samples=10, f1_hz=None, f2_hz=None,
             gain_db=-12.0, effective_peak_dbfs=-12.0,
         )
+
+
+# --------------------------------------------------------------------------- #
+# courtesy-tone prelude (issue #1677)
+# --------------------------------------------------------------------------- #
+
+
+def test_segment_validation_accepts_courtesy_tone_kind():
+    """The kind vocabulary widened to admit the new non-stimulus kind."""
+    seg = ProgramSegment(
+        segment_id="courtesy_tone_ch0", kind=KIND_COURTESY_TONE, role=None,
+        channel=0, start_sample=0, n_samples=100, f1_hz=1000.0, f2_hz=1000.0,
+        gain_db=-18.0, effective_peak_dbfs=-18.0,
+    )
+    assert seg.kind == KIND_COURTESY_TONE
+    # Still not a STIMULUS_KIND -- the whole point (locate/analysis must
+    # ignore it exactly like silence).
+    assert KIND_COURTESY_TONE not in STIMULUS_KINDS
+    assert KIND_COURTESY_TONE in KNOWN_AUDIBLE_KINDS
+
+
+def test_courtesy_prelude_defaults_off_byte_identical_to_pre_1677():
+    """Era/back-compat: omitting ``courtesy_prelude`` is IDENTICAL (same
+    program_id, same segments) to passing it explicitly ``False``, and both
+    match the pre-#1677 shape every other test in this file already pins."""
+    check_default = build_check_program(_roles(), ambient_s=1.0, pilot_duration_s=0.5)
+    check_explicit = build_check_program(
+        _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=False,
+    )
+    assert check_default.program_id == check_explicit.program_id
+    assert check_default.segments == check_explicit.segments
+    assert check_default.segments[0].segment_id == "ambient"
+
+    measure_default = build_measure_program(_gain_plan(), _roles())
+    measure_explicit = build_measure_program(
+        _gain_plan(), _roles(), courtesy_prelude=False,
+    )
+    assert measure_default.program_id == measure_explicit.program_id
+    assert measure_default.segments[0].segment_id == "guard"
+
+    verify_default = build_verify_program(1600.0, sweep_s=1.0)
+    verify_explicit = build_verify_program(1600.0, sweep_s=1.0, courtesy_prelude=False)
+    assert verify_default.program_id == verify_explicit.program_id
+    assert verify_default.segments[0].segment_id == "guard"
+
+
+def test_check_courtesy_prelude_layout_and_gains():
+    prog = build_check_program(
+        _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
+    )
+    ids = [s.segment_id for s in prog.segments]
+    assert ids[:3] == ["courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap"]
+    assert ids[3] == "ambient"
+    assert ids[3:] == [s.segment_id for s in build_check_program(
+        _roles(), ambient_s=1.0, pilot_duration_s=0.5,
+    ).segments]
+
+    tone0 = prog.segment("courtesy_tone_ch0")
+    tone1 = prog.segment("courtesy_tone_ch1")
+    gap = prog.segment("courtesy_gap")
+    assert tone0.kind == KIND_COURTESY_TONE and tone1.kind == KIND_COURTESY_TONE
+    assert tone0.role is None and tone1.role is None
+    assert tone0.channel == 0 and tone1.channel == 1
+    # Both tones start at sample 0 -- they play simultaneously.
+    assert tone0.start_sample == 0 and tone1.start_sample == 0
+    assert tone0.n_samples == tone1.n_samples
+    expected_tone_s = (
+        COURTESY_TONE_BEEP_COUNT * COURTESY_TONE_BEEP_DURATION_S
+        + (COURTESY_TONE_BEEP_COUNT - 1) * COURTESY_TONE_BEEP_GAP_S
+    )
+    assert tone0.n_samples == pytest.approx(
+        expected_tone_s * PROGRAM_SAMPLE_RATE_HZ, abs=2,
+    )
+    # The trailing gap follows immediately, sized to the fixed silence window.
+    assert gap.kind == KIND_SILENCE
+    assert gap.start_sample == tone0.n_samples
+    assert gap.n_samples == pytest.approx(
+        COURTESY_TONE_TRAILING_SILENCE_S * PROGRAM_SAMPLE_RATE_HZ, abs=2,
+    )
+    # "ambient" (the original first segment) starts right after the prelude.
+    ambient = prog.segment("ambient")
+    assert ambient.start_sample == tone0.n_samples + gap.n_samples
+
+    # Level derivation: CHECK's loudest per-channel stimulus is the "hi"
+    # pilot (base_peak_dbfs + 0), so each channel's tone is exactly
+    # COURTESY_TONE_MARGIN_DB below that channel's own hi pilot.
+    woofer_hi = prog.segment("pilot_woofer_hi")
+    tweeter_hi = prog.segment("pilot_tweeter_hi")
+    assert tone0.gain_db == pytest.approx(woofer_hi.gain_db - COURTESY_TONE_MARGIN_DB)
+    assert tone1.gain_db == pytest.approx(tweeter_hi.gain_db - COURTESY_TONE_MARGIN_DB)
+    assert tone0.effective_peak_dbfs == pytest.approx(tone0.gain_db)
+
+
+def test_measure_courtesy_prelude_shifts_everything_after_it_unchanged():
+    """Every segment after the prelude keeps its id/kind/gain/duration; only
+    ``start_sample`` moves by exactly the prelude's length."""
+    kwargs = dict(
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+        leading_pilot_gains_db=(-21.0, -11.0),
+    )
+    legacy = build_measure_program(_gain_plan(), _roles(), **kwargs)
+    prog = build_measure_program(
+        _gain_plan(), _roles(), courtesy_prelude=True, **kwargs,
+    )
+    ids = [s.segment_id for s in prog.segments]
+    assert ids[:3] == ["courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap"]
+    assert ids[3:] == [s.segment_id for s in legacy.segments]
+
+    tone0 = prog.segment("courtesy_tone_ch0")
+    gap = prog.segment("courtesy_gap")
+    prelude_n = tone0.n_samples + gap.n_samples
+    for old_seg, new_seg in zip(legacy.segments, prog.segments[3:]):
+        assert new_seg.kind == old_seg.kind
+        assert new_seg.gain_db == old_seg.gain_db
+        assert new_seg.n_samples == old_seg.n_samples
+        assert new_seg.channel == old_seg.channel
+        assert new_seg.role == old_seg.role
+        assert new_seg.start_sample == old_seg.start_sample + prelude_n
+    assert prog.total_samples == legacy.total_samples + prelude_n
+
+    # Level derivation, per channel: ch0 (woofer) sees BOTH the leading pilot
+    # hi (-11) and sweep_w (gain_plan woofer=-11) tie for loudest; ch1
+    # (tweeter) only ever plays at gain_plan's tweeter level (-13).
+    tone1 = prog.segment("courtesy_tone_ch1")
+    assert tone0.gain_db == pytest.approx(-11.0 - COURTESY_TONE_MARGIN_DB)
+    assert tone1.gain_db == pytest.approx(-13.0 - COURTESY_TONE_MARGIN_DB)
+
+
+def test_measure_courtesy_prelude_without_leading_pilot_still_prepends():
+    """The prelude is independent of the (separate) leading-pilot opt-in --
+    MEASURE's own reference is then each channel's sweep gain alone."""
+    prog = build_measure_program(_gain_plan(), _roles(), courtesy_prelude=True)
+    ids = [s.segment_id for s in prog.segments]
+    assert ids[:4] == ["courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap", "guard"]
+    tone0 = prog.segment("courtesy_tone_ch0")
+    tone1 = prog.segment("courtesy_tone_ch1")
+    assert tone0.gain_db == pytest.approx(-11.0 - COURTESY_TONE_MARGIN_DB)
+    assert tone1.gain_db == pytest.approx(-13.0 - COURTESY_TONE_MARGIN_DB)
+
+
+def test_verify_courtesy_prelude_layout_and_gain():
+    prog = build_verify_program(
+        1600.0, sweep_s=1.0, gain_db=-9.0,
+        leading_pilot_gains_db=(-19.0, -9.0), courtesy_prelude=True,
+    )
+    assert prog.channels == 1
+    ids = [s.segment_id for s in prog.segments]
+    assert ids[:3] == ["courtesy_tone_ch0", "courtesy_gap", "pilot_summed_lo"]
+    tone = prog.segment("courtesy_tone_ch0")
+    assert tone.channel == 0
+    # Loudest content on the (only) channel is the -9 dBFS pilot-hi/sweep tie.
+    assert tone.gain_db == pytest.approx(-9.0 - COURTESY_TONE_MARGIN_DB)
+
+    # Opt-out (default) stays the exact legacy mono layout.
+    legacy = build_verify_program(1600.0, sweep_s=1.0)
+    assert [s.segment_id for s in legacy.segments] == ["guard", "sweep_verify", "tail"]
+
+
+@pytest.mark.parametrize(
+    "reference_gain_db,margin_db,expected",
+    [
+        # Normal case: margin_db below the reference.
+        (-10.0, 6.0, -16.0),
+        (-40.0, 6.0, -46.0),
+        # margin=0 -> exactly the reference (the "<=" clamp allows equality,
+        # never strictly forces the tone quieter than its own formula).
+        (-10.0, 0.0, -10.0),
+        # A defensively-wrong negative margin must not push the tone LOUDER
+        # than the reference -- the "clamp <= reference" backstop binds.
+        (-10.0, -100.0, -10.0),
+        # A (should-never-happen) positive reference must never yield a
+        # positive tone gain -- the "never positive" backstop binds.
+        (5.0, -10.0, 0.0),
+        # Reference already at 0 dBFS: still clamps to margin below.
+        (0.0, 6.0, -6.0),
+    ],
+)
+def test_courtesy_tone_gain_db_clamp_property(reference_gain_db, margin_db, expected):
+    got = courtesy_tone_gain_db(reference_gain_db, margin_db=margin_db)
+    assert got == pytest.approx(expected)
+    # The two invariants the issue names, restated as properties:
+    assert got <= reference_gain_db + 1e-9
+    assert got <= 1e-9
+
+
+def test_courtesy_tone_gain_db_default_margin_matches_module_constant():
+    assert courtesy_tone_gain_db(-20.0) == pytest.approx(-20.0 - COURTESY_TONE_MARGIN_DB)
+
+
+def test_courtesy_tone_stimulus_shape_and_level():
+    prog = build_check_program(
+        _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
+    )
+    tone_seg = prog.segment("courtesy_tone_ch0")
+    pcm = courtesy_tone_stimulus(tone_seg)
+    assert pcm.dtype == np.float32
+    assert pcm.size == tone_seg.n_samples
+
+    # COURTESY_TONE_BEEP_COUNT beeps separated by exact-zero gaps: probe the
+    # MIDPOINT of each expected beep/gap window directly (a raw zero-crossing
+    # edge count over-counts because the sine itself crosses zero every
+    # half-cycle within a single beep).
+    beep_n = int(round(COURTESY_TONE_BEEP_DURATION_S * PROGRAM_SAMPLE_RATE_HZ))
+    gap_n = int(round(COURTESY_TONE_BEEP_GAP_S * PROGRAM_SAMPLE_RATE_HZ))
+    cursor = 0
+    beep_rms = []
+    for i in range(COURTESY_TONE_BEEP_COUNT):
+        window = pcm[cursor:cursor + beep_n]
+        beep_rms.append(float(np.sqrt(np.mean(np.square(window)))))
+        cursor += beep_n
+        if i < COURTESY_TONE_BEEP_COUNT - 1:
+            gap_window = pcm[cursor:cursor + gap_n]
+            assert np.max(np.abs(gap_window)) == 0.0
+            cursor += gap_n
+    assert cursor == pcm.size
+    expected_peak = 10.0 ** (tone_seg.gain_db / 20.0)
+    # Each beep's RMS should be a healthy fraction of its peak (a genuine
+    # sine tone, not near-silent) and consistent across all three beeps.
+    for rms in beep_rms:
+        assert rms > expected_peak * 0.5
+    assert max(beep_rms) == pytest.approx(min(beep_rms), rel=1e-3)
+
+    assert float(np.max(np.abs(pcm))) == pytest.approx(expected_peak, rel=0.02)
+
+
+def test_courtesy_tone_stimulus_rejects_non_courtesy_segment():
+    prog = build_check_program(_roles(), ambient_s=1.0, pilot_duration_s=0.5)
+    with pytest.raises(ValueError):
+        courtesy_tone_stimulus(prog.segment("pilot_woofer_lo"))
+
+
+def test_render_pcm_places_courtesy_tone_per_channel_only():
+    prog = build_check_program(
+        _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
+    )
+    pcm = render_program_pcm(prog)
+    tone0 = prog.segment("courtesy_tone_ch0")
+    tone1 = prog.segment("courtesy_tone_ch1")
+    window0 = pcm[tone0.start_sample:tone0.start_sample + tone0.n_samples]
+    # ch0 carries the tone, ch1 stays silent during ch0's tone window --
+    # confirms no cross-channel leakage even though both tones start at 0.
+    assert np.max(np.abs(window0[:, 0])) > 0.0
+    # (ch1 has its own, equal-length tone starting at the same sample, so
+    # comparing against tone1's own window instead of asserting ch1 silence.)
+    window1 = pcm[tone1.start_sample:tone1.start_sample + tone1.n_samples]
+    assert np.max(np.abs(window1[:, 1])) > 0.0
+    # The trailing silence gap is genuinely silent on every channel.
+    gap = prog.segment("courtesy_gap")
+    gap_window = pcm[gap.start_sample:gap.start_sample + gap.n_samples]
+    assert np.max(np.abs(gap_window)) == 0.0
+
+
+def test_courtesy_prelude_program_id_differs_from_legacy():
+    legacy = build_check_program(_roles(), ambient_s=1.0, pilot_duration_s=0.5)
+    prelude = build_check_program(
+        _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
+    )
+    assert legacy.program_id != prelude.program_id
+
+
+def test_program_manifest_json_round_trip_with_courtesy_prelude():
+    prog = build_measure_program(_gain_plan(), _roles(), courtesy_prelude=True)
+    blob = json.dumps(prog.to_dict())
+    restored = ExcitationProgram.from_dict(json.loads(blob))
+    assert restored == prog
+    assert restored.program_id == prog.program_id
+    assert restored.segment("courtesy_tone_ch0").kind == KIND_COURTESY_TONE
+
+
+def test_known_audible_segments_includes_courtesy_tone_excludes_silence():
+    prog = build_check_program(
+        _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
+    )
+    known = prog.known_audible_segments()
+    kinds = {s.kind for s in known}
+    assert KIND_COURTESY_TONE in kinds
+    assert KIND_SILENCE not in kinds
+    # Superset of stimulus_segments() by exactly the two courtesy-tone segments.
+    assert set(prog.stimulus_segments()) < set(known)
+    assert set(known) - set(prog.stimulus_segments()) == {
+        prog.segment("courtesy_tone_ch0"), prog.segment("courtesy_tone_ch1"),
+    }
+
+
+def test_write_program_wav_with_courtesy_prelude(tmp_path):
+    from scipy.io import wavfile
+
+    prog = build_measure_program(
+        _gain_plan(), _roles(), sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+        courtesy_prelude=True,
+    )
+    path = tmp_path / "measure_prelude.wav"
+    write_program_wav(path, prog)
+    rate, data = wavfile.read(str(path))
+    assert rate == PROGRAM_SAMPLE_RATE_HZ
+    assert data.shape == (prog.total_samples, prog.channels)
+    tone0 = prog.segment("courtesy_tone_ch0")
+    window = data[tone0.start_sample:tone0.start_sample + tone0.n_samples, 0]
+    assert np.max(np.abs(window)) > 0
+
+
+def test_worst_case_measure_with_prelude_stays_under_capture_wav_cap():
+    """Pin the 5 MiB capture-upload budget against the composed program.
+
+    MEASURE is the longest capture; the #1668 N=3 repeats and the #1677
+    courtesy prelude each silently spend headroom against
+    ``CROSSOVER_CAPTURE_MAX_WAV_BYTES``.  Render the production worst-case
+    shape (leading pilots + prelude + N=3 default) and assert the capture-side
+    mono 16-bit byte count stays under the cap with real margin, so the next
+    duration-growing change fails HERE instead of at upload time.
+    """
+    from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
+
+    program = build_measure_program(
+        _gain_plan(), _roles(),
+        leading_pilot_gains_db=(-6.0, -6.0), leading_pilot_role="woofer",
+        courtesy_prelude=True,
+    )
+    # Capture-side WAV: mono 16-bit, program length + the relay capture-plan
+    # margin (2000 ms — lockstep with crossover_v2_flow.CAPTURE_ENTRY_MARGIN_MS;
+    # mirrored, not imported, per the audio_measurement layering boundary).
+    margin_samples = int(round(2.0 * program.sample_rate_hz))
+    wav_bytes = 44 + 2 * (program.total_samples + margin_samples)
+    assert wav_bytes < CROSSOVER_CAPTURE_MAX_WAV_BYTES
+    assert CROSSOVER_CAPTURE_MAX_WAV_BYTES - wav_bytes > 512 * 1024

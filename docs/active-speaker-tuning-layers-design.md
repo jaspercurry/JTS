@@ -238,7 +238,18 @@ applied) — the data pipeline needs zero new capture work for 2-way.
 ## Speaker-class applicability (#1671)
 
 Component entry (#1665) declares the class; the class drives which layers'
-wizard steps exist:
+wizard steps exist. **Landed so far (2026-07-24, the component-entry
+slice):** per-driver `driver_class` (compression_horn/soft_dome/metal_dome/
+beryllium_diamond_dome/ribbon_amt/unknown — `DRIVER_CLASSES` in
+[`jasper/active_speaker/_common.py`](../jasper/active_speaker/_common.py)),
+`radiating_diameter_mm`/`horn_coverage_deg` geometry, and the declared
+in-line pad (`jasper/active_speaker/driver_pad.py`) all feed the
+correction-envelope's `class_prior_limit` term and the effective-sensitivity
+readers (`declared_effective_driver_sensitivities`). **Still open:** the
+SPEAKER-level class this table's columns describe (2-way / 3-way / passive)
+is not yet driven by a component-entry step — that routing is #1669/#1671's
+job — and the research-prefill auto-populate + full consumed-value-audit
+parts of #1665 (items 1–3 in the issue) are unstarted.
 
 | Class | 1a | 1b | 2 | 3 | 4 |
 |---|---|---|---|---|---|
@@ -282,8 +293,11 @@ session validates (ladder protocol from the overnight report), with the
 ripple-optimal trim stop (−23.0) as the first rung.
 Phase 3 — **#1667** trim solve fix (now mostly defused; keep for
 robustness) + re-verify.
-Phase 4+ — #1669 (3-way), #1671 (passive UX), #1665 (component entry),
-#1672 (mic arbitration/transfer-cal), relay-tier productization.
+Phase 4+ — #1669 (3-way), #1671 (passive UX), #1665 (component entry —
+the driver-class/geometry/pad declaration schema + envelope wiring landed
+2026-07-24 out of sequence, ahead of this phase order; hardware validation
+and the research-prefill-audit portion remain open), #1672 (mic
+arbitration/transfer-cal), relay-tier productization.
 Every phase: PR flow, adversarial review to 0/0, hardware validation on
 JTS3, issues for anything parked.
 
@@ -293,6 +307,11 @@ JTS3, issues for anything parked.
 #1654 Fix-4 tweeter-sweep energy (revival trigger fired ×3) · #1656
 crossover-v2 wrong-cal primary scope · #1658 capture-page on-device pass +
 optional nits · #1660 room-relay device threading · #1664 worktree hygiene ·
-#1665 component entry + pad declarations · #1666 apply promotion · #1667
-trim-band bias · #1668 driver linearization (this doc's Phase 2) · #1669
-3-way · #1670 rename · #1671 passive-class UX · #1672 mic HF arbitration.
+#1665 component entry + pad declarations (schema + pad/class-declaration
+slice landed 2026-07-24; JTS3 hardware validation and the research-prefill-
+audit portion still open) · #1666 apply promotion · #1667 trim-band bias ·
+#1668 driver linearization (this doc's Phase 2) · #1669 3-way · #1670
+rename · #1671 passive-class UX · #1672 mic HF arbitration · #1675 ka-
+beaming crossover guidance (simple v1 landed alongside #1665; Bessel
+beamwidth-vs-horn-coverage matching and the JTS3 Fc re-tune bench
+experiment remain open).

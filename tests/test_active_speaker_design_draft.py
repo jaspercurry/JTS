@@ -23,6 +23,7 @@ from jasper.active_speaker.design_draft import (
     ActiveSpeakerDesignDraftRevisionConflict,
     _normalise_candidate,
     declared_driver_sensitivities,
+    declared_effective_driver_sensitivities,
 )
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
@@ -724,4 +725,326 @@ def test_declared_sensitivities_survive_the_normalised_persisted_draft():
     assert declared_driver_sensitivities(payload) == {
         "woofer": 83.3,
         "tweeter": 108.5,
+    }
+
+
+# --- #1665 component entry: driver_class / radiating_diameter_mm /
+# horn_coverage_deg / pad -------------------------------------------------
+#
+# Gotcha #1 (coordinator brief): design_draft._MANUAL_DRIVER_FIELDS,
+# driver_safety._MANUAL_DRIVER_FIELDS, driver_safety._V2_RESEARCH_DRIVER_FIELDS,
+# and _validate_v2_research_prefill's `comparable` set must ALL accept the four
+# new keys, or build_design_draft 500s at save time (driver_safety.py
+# re-validates the SAME normalised manual_settings record design_draft.py just
+# produced). The guard test below pins the regression signature directly.
+
+
+def test_build_design_draft_does_not_raise_with_driver_class_set():
+    """Gotcha #1's regression signature: a save-time 500 from a driver-safety
+    allowlist that wasn't updated in lockstep with design_draft.py's own."""
+
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [
+                {"role": "woofer", "model": "A", "radiating_diameter_mm": 114},
+                {
+                    "role": "tweeter",
+                    "model": "B",
+                    "driver_class": "compression_horn",
+                    "horn_coverage_deg": 90,
+                    "nominal_impedance_ohm": 8,
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
+                },
+            ],
+            "crossover_candidates": [],
+        },
+    )
+    woofer, tweeter = payload["manual_settings"]["drivers"]
+    assert woofer["radiating_diameter_mm"] == 114.0
+    assert "driver_class" not in woofer
+    assert tweeter["driver_class"] == "compression_horn"
+    assert tweeter["horn_coverage_deg"] == 90.0
+    assert tweeter["pad"] == {
+        "kind": "l_pad",
+        "series_ohm": 6.8,
+        "shunt_ohm": 2.0,
+        "attenuation_db": -14.4,
+        "effective_impedance_ohm": 8.4,
+    }
+    # driver_safety_profile is also built from the SAME manual_settings
+    # record (build_design_draft always tries it when an active crossover
+    # pair exists) -- confirm it too survived the re-validation.
+    assert payload["driver_safety_profile"] is not None
+
+
+def test_driver_class_rejects_unsupported_value():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match=r"driver\.driver_class must be one of",
+    ):
+        build_design_draft(
+            _topology(),
+            manual_settings={
+                "drivers": [{"role": "woofer", "model": "A", "driver_class": "ceramic"}],
+                "crossover_candidates": [],
+            },
+        )
+
+
+def test_driver_class_accepts_every_hoisted_value():
+    from jasper.active_speaker._common import DRIVER_CLASSES
+
+    for value in DRIVER_CLASSES:
+        payload = build_design_draft(
+            _topology(),
+            manual_settings={
+                "drivers": [{"role": "woofer", "model": "A", "driver_class": value}],
+                "crossover_candidates": [],
+            },
+        )
+        assert payload["manual_settings"]["drivers"][0]["driver_class"] == value
+
+
+def test_horn_coverage_deg_must_not_exceed_360():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match=r"horn_coverage_deg must be <= 360",
+    ):
+        build_design_draft(
+            _topology(),
+            manual_settings={
+                "drivers": [
+                    {"role": "tweeter", "model": "B", "horn_coverage_deg": 400}
+                ],
+                "crossover_candidates": [],
+            },
+        )
+
+
+def test_radiating_diameter_mm_must_be_positive():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match=r"radiating_diameter_mm must be > 0",
+    ):
+        build_design_draft(
+            _topology(),
+            manual_settings={
+                "drivers": [
+                    {"role": "woofer", "model": "A", "radiating_diameter_mm": 0}
+                ],
+                "crossover_candidates": [],
+            },
+        )
+
+
+def test_pad_error_surfaces_as_design_draft_error():
+    # driver_pad.DriverPadError is caught and re-raised as
+    # ActiveSpeakerDesignDraftError -- the same pattern as
+    # DriverSafetyProfileError, so callers only need to catch one exception.
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match=r"requires nominal_impedance_ohm",
+    ):
+        build_design_draft(
+            _topology(),
+            manual_settings={
+                "drivers": [
+                    {
+                        "role": "tweeter",
+                        "model": "B",
+                        "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
+                    }
+                ],
+                "crossover_candidates": [],
+            },
+        )
+
+
+def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_raising():
+    # #1665 follow-up bug + fix: normalise_pad wrote attenuation_db /
+    # effective_impedance_ohm into the pad record it returned, then rejected
+    # those same fields as unknown input when that returned record was fed
+    # back in as fresh input. This reproduces the exact live JTS3 failure
+    # shape: crossover-v2 session-start calls
+    # web_commissioning.regenerate_crossover_preview_from_current_draft,
+    # which reloads the saved design draft and rebuilds it via (read
+    # verbatim from that function, ~line 276-284 as of #1665):
+    #
+    #     draft = build_design_draft(
+    #         topology,
+    #         driver_research_request=draft.get("driver_research_request"),
+    #         driver_research=draft.get("driver_research"),
+    #         manual_settings=draft.get("manual_settings"),
+    #         operator_inputs=draft.get("operator_inputs"),
+    #         prior_safety_profile=draft.get("driver_safety_profile"),
+    #         created_at=draft.get("created_at"),
+    #     )
+    #
+    # -- feeding the ALREADY-NORMALISED manual_settings (derived pad fields
+    # included) straight back in. Mirrored here exactly rather than
+    # re-derived, per AGENTS.md "verify at the user's surface": on the
+    # pre-fix code this call raises ActiveSpeakerDesignDraftError(
+    # "manual_settings.driver.pad has unknown fields: effective_impedance_ohm").
+    topology = _topology()
+
+    saved = build_design_draft(
+        topology,
+        manual_settings={
+            "drivers": [
+                {"role": "woofer", "model": "A"},
+                {
+                    "role": "tweeter",
+                    "model": "B",
+                    "nominal_impedance_ohm": 8,
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
+                },
+            ],
+            "crossover_candidates": [],
+        },
+    )
+    _woofer, tweeter = saved["manual_settings"]["drivers"]
+    expected_pad = {
+        "kind": "l_pad",
+        "series_ohm": 6.8,
+        "shunt_ohm": 2.0,
+        "attenuation_db": -14.4,
+        "effective_impedance_ohm": 8.4,
+    }
+    assert tweeter["pad"] == expected_pad
+
+    # The regenerate-path rebuild call, verbatim in argument shape.
+    regenerated = build_design_draft(
+        topology,
+        driver_research_request=saved.get("driver_research_request"),
+        driver_research=saved.get("driver_research"),
+        manual_settings=saved.get("manual_settings"),
+        operator_inputs=saved.get("operator_inputs"),
+        prior_safety_profile=saved.get("driver_safety_profile"),
+        created_at=saved.get("created_at"),
+    )
+    _woofer2, tweeter2 = regenerated["manual_settings"]["drivers"]
+    assert tweeter2["pad"] == expected_pad
+
+
+def test_research_and_manual_drivers_share_the_new_fields_too():
+    common = {
+        "role": "tweeter",
+        "model": "Shared Horn",
+        "driver_class": "compression_horn",
+        "horn_coverage_deg": 90,
+    }
+    research = _research()
+    research["drivers"] = [common]
+    research["crossover_candidates"] = []
+    research_driver = build_design_draft(
+        _topology(),
+        driver_research=research,
+    )["driver_research"]["drivers"][0]
+    manual_driver = build_design_draft(
+        _topology(),
+        manual_settings={"drivers": [common], "crossover_candidates": []},
+    )["manual_settings"]["drivers"][0]
+
+    for field in ("driver_class", "horn_coverage_deg"):
+        assert research_driver[field] == manual_driver[field] == common[field]
+
+
+# --- declared_effective_driver_sensitivities: sensitivity with pad folded in -
+
+
+def test_declared_effective_driver_sensitivities_folds_the_pad():
+    draft = {
+        "manual_settings": {
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {
+                    "role": "tweeter",
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
+                },
+            ],
+            "crossover_candidates": [],
+        },
+    }
+    assert declared_effective_driver_sensitivities(draft) == {
+        "woofer": 83.3,
+        "tweeter": pytest.approx(93.6),
+    }
+    # Without folding, the tweeter would still read 108.0 -- confirm the two
+    # readers genuinely disagree once a pad is declared.
+    assert declared_driver_sensitivities(draft)["tweeter"] == 108.0
+
+
+def test_declared_effective_driver_sensitivities_matches_naked_reader_without_a_pad():
+    draft = {
+        "manual_settings": {
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
+            ],
+        },
+    }
+    assert declared_effective_driver_sensitivities(draft) == declared_driver_sensitivities(
+        draft
+    )
+
+
+def test_declared_effective_driver_sensitivities_fails_soft_on_absent_or_malformed():
+    assert declared_effective_driver_sensitivities(None) == {}
+    assert declared_effective_driver_sensitivities({}) == {}
+    assert declared_effective_driver_sensitivities({"manual_settings": None}) == {}
+    assert (
+        declared_effective_driver_sensitivities(
+            {"manual_settings": {"drivers": "not-a-list"}}
+        )
+        == {}
+    )
+
+
+def test_declared_effective_driver_sensitivities_drops_conflicting_pad_rows():
+    # Same naked sensitivity, but the pads disagree -- the EFFECTIVE figure is
+    # ambiguous even though the naked reader (declared_driver_sensitivities)
+    # would see no conflict at all.
+    draft = {
+        "manual_settings": {
+            "drivers": [
+                {
+                    "role": "tweeter", "target_id": "left:tweeter",
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
+                },
+                {
+                    "role": "tweeter", "target_id": "right:tweeter",
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "pad": {"kind": "direct_db", "attenuation_db": -6.0},
+                },
+            ],
+        },
+    }
+    assert declared_driver_sensitivities(draft) == {"tweeter": 108.0}
+    assert declared_effective_driver_sensitivities(draft) == {}
+
+
+def test_declared_effective_driver_sensitivities_survives_the_normalised_persisted_draft():
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {
+                    "role": "tweeter",
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "nominal_impedance_ohm": 8,
+                    "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
+                },
+            ],
+            "crossover_candidates": [],
+        },
+    )
+    assert declared_effective_driver_sensitivities(payload) == {
+        "woofer": 83.3,
+        "tweeter": pytest.approx(93.6),
     }

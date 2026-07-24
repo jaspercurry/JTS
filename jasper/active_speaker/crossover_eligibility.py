@@ -24,7 +24,11 @@ from .capture_geometry import (
     driver_repeat_binding,
 )
 from .commissioning_capture import DEFAULT_REPEAT_TARGET
-from .repeat_admission import MAX_ATTEMPTS
+from .repeat_admission import (
+    MAX_ATTEMPTS,
+    MAX_RESERVATIONS,
+    result_emitted_audio,
+)
 
 
 def mapping(value: Any) -> Mapping[str, Any]:
@@ -102,7 +106,7 @@ def repeat_progress(repeats: Any, target_id: str) -> RepeatProgress:
     completed = entry.get("status") == "completed"
     results = mapping_sequence(entry.get("results"))
     last_result = results[-1] if results else {}
-    if attempts > 4:
+    if attempts > MAX_RESERVATIONS:
         attempts = 0
     if accepted > 3:
         accepted = 0
@@ -154,7 +158,19 @@ def driver_repeat_completed(
     results = mapping_sequence(raw_results)
     result_attempts = [nonnegative_int(result.get("attempt")) for result in results]
     accepted_flags = [result.get("accepted") for result in results]
-    accepted_results = sum(1 for accepted in accepted_flags if accepted is True)
+    # Measurement-bearing subset: a transport/infra attempt (audio_emitted is
+    # False) never played a tone, so it is neither an accept nor the one
+    # allowed non-accept — exclude it from BOTH the numerator and the
+    # denominator. Unknown/absent audio fails closed and stays in the subset
+    # (acoustic semantics). ``attempts``/``result_attempts`` still cover the
+    # full raw reservation ledger; only the acceptance window is projected.
+    measurement_flags = [
+        result.get("accepted")
+        for result in results
+        if result_emitted_audio(result)
+    ]
+    measurement_count = len(measurement_flags)
+    accepted_results = sum(1 for accepted in measurement_flags if accepted is True)
     declared_accepted = (
         nonnegative_int(entry.get("accepted"))
         if "accepted" in entry
@@ -165,7 +181,8 @@ def driver_repeat_completed(
         and (entry.get("inflight") is None or entry.get("inflight") is False)
         and entry.get("target_fingerprint") == target_fingerprint
         and declared_target == DEFAULT_REPEAT_TARGET
-        and DEFAULT_REPEAT_TARGET <= attempts <= MAX_ATTEMPTS
+        and 1 <= attempts <= MAX_RESERVATIONS
+        and DEFAULT_REPEAT_TARGET <= measurement_count <= MAX_ATTEMPTS
         and isinstance(raw_results, (list, tuple))
         and len(results) == len(raw_results)
         and len(results) == attempts
@@ -173,7 +190,10 @@ def driver_repeat_completed(
         and all(isinstance(accepted, bool) for accepted in accepted_flags)
         and declared_accepted == DEFAULT_REPEAT_TARGET
         and accepted_results == DEFAULT_REPEAT_TARGET
-        and (attempts == DEFAULT_REPEAT_TARGET or accepted_flags.count(False) == 1)
+        and (
+            measurement_count == DEFAULT_REPEAT_TARGET
+            or measurement_flags.count(False) == 1
+        )
     )
 
 

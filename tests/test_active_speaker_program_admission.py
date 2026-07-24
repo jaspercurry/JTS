@@ -26,6 +26,7 @@ from jasper.active_speaker.program_admission import (
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
+    KIND_COURTESY_TONE,
     RoleBand,
     build_measure_program,
     build_verify_program,
@@ -108,13 +109,16 @@ def _roles(woofer_band=(500.0, 1600.0), tweeter_band=(1600.0, 10_000.0)):
     ]
 
 
-def _measure_program(session_volume_db, roles=None, gains=None):
+def _measure_program(session_volume_db, roles=None, gains=None, courtesy_prelude=False):
     roles = roles or _roles()
     # The default gain plan mirrors the corrected session-volume rule: the
     # woofer (highest cap) runs at the -6 dB digital guard; the tweeter
     # attenuates DOWN so gain + session_volume clears its -65 dB cap.
     gains = gains or {"woofer": -6.0, "tweeter": -46.0}
-    return build_measure_program(gains, roles, downstream_gain_db=session_volume_db)
+    return build_measure_program(
+        gains, roles, downstream_gain_db=session_volume_db,
+        courtesy_prelude=courtesy_prelude,
+    )
 
 
 def test_clean_program_is_admitted():
@@ -290,6 +294,90 @@ def test_out_of_segment_energy_refuses():
     )
     assert not adm.allowed
     assert ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY in adm.refusals
+
+
+# --- courtesy-tone prelude (issue #1677) --------------------------------------
+
+
+def test_courtesy_prelude_program_is_admitted():
+    """The core false-positive-refusal fix: a program with the prelude is
+    genuinely intentional, non-silent content outside any STIMULUS_KINDS
+    window -- without ``known_audible_segments()`` covering it in
+    ``_out_of_segment_mask``, this would always refuse as
+    OUT_OF_SEGMENT_ENERGY."""
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    prog = _measure_program(sv, courtesy_prelude=True)
+    assert prog.segment("courtesy_tone_ch0").kind == KIND_COURTESY_TONE
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert adm.allowed, adm.refusals
+    facts = {c.channel: c for c in adm.channels}
+    assert facts[0].peak_within_cap and facts[1].peak_within_cap
+    assert facts[0].quiet_out_of_segment and facts[1].quiet_out_of_segment
+    assert facts[0].peak_matches_manifest and facts[1].peak_matches_manifest
+
+
+def test_courtesy_prelude_still_catches_energy_outside_both_stimulus_and_tone():
+    """The fix narrows the mask to the tone's own window -- it must not
+    accidentally silence the out-of-segment check altogether. Energy leaked
+    into the courtesy_gap silence (AFTER the tone, before the rest of the
+    program) still refuses."""
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    prog = _measure_program(sv, courtesy_prelude=True)
+    pcm = render_program_pcm(prog)
+    gap = prog.segment("courtesy_gap")
+    pcm[gap.start_sample:gap.start_sample + 2000, 0] = 0.1
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv, pcm=pcm,
+    )
+    assert not adm.allowed
+    assert ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY in adm.refusals
+
+
+def test_courtesy_prelude_tampered_louder_than_cap_is_refused():
+    """Defense in depth: the whole-file per-channel peak check reads the
+    ACTUAL rendered bytes regardless of segment kind, so an (impossible via
+    the real composer, but defensively tested) over-loud tone is still
+    caught the same way a tampered stimulus would be. Tampers the TWEETER
+    channel specifically -- its -65 dB cap is far tighter than the -20 dB
+    session volume alone would already enforce on the woofer channel (whose
+    0 dB cap a full-scale sample can't exceed once the session volume folds
+    in), so this is the channel that actually exercises CHANNEL_PEAK_OVER_CAP."""
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    prog = _measure_program(sv, courtesy_prelude=True)
+    pcm = render_program_pcm(prog)
+    tone1 = prog.segment("courtesy_tone_ch1")
+    # Inflate the tweeter tone's own rendered samples to full scale -- far
+    # above its admitted -65 dB cap even after the session-volume fold.
+    pcm[tone1.start_sample:tone1.start_sample + tone1.n_samples, 1] = 0.99
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv, pcm=pcm,
+    )
+    assert not adm.allowed
+    assert ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP in adm.refusals
+    assert ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH in adm.refusals
+
+
+def test_readmit_courtesy_prelude_wav_is_admitted(tmp_path):
+    """Play-time re-admission (the ACTUAL seam ``play_program`` uses) also
+    admits a prelude-bearing program cleanly from a fresh WAV byte readback."""
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    prog = _measure_program(sv, courtesy_prelude=True)
+    wav = tmp_path / "prog_prelude.wav"
+    write_program_wav(wav, prog)
+    adm = readmit_program_from_wav(
+        prog, wav, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert adm.allowed, adm.refusals
 
 
 def test_unmapped_role_refuses():

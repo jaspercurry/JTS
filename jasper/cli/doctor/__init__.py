@@ -147,6 +147,7 @@ from .audio import (
     check_fanin_coupling,
     check_fanin_service,
     check_fanin_tts_drops,
+    check_fanin_ring_stall,
     check_outputd_service,
     check_aec_clock_drift,
     _devices_volume_limit_from_text,
@@ -220,6 +221,7 @@ from .memory import (
     _bounded_dir_size,
     check_correction_storage,
     check_wake_events_storage,
+    check_journald_persistence,
 )
 from . import resilience as resilience
 from .resilience import (
@@ -489,6 +491,7 @@ __all__ = [
     "check_fanin_coupling",
     "check_fanin_service",
     "check_fanin_tts_drops",
+    "check_fanin_ring_stall",
     "check_outputd_service",
     "check_aec_clock_drift",
     "_devices_volume_limit_from_text",
@@ -550,6 +553,7 @@ __all__ = [
     "_bounded_dir_size",
     "check_correction_storage",
     "check_wake_events_storage",
+    "check_journald_persistence",
     "_EXPECTED_START_LIMIT_POLICY",
     "_classify_supervisor_snapshots",
     "check_start_limit_action",

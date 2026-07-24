@@ -1178,6 +1178,114 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
     assert "setup_mode=absent" in caplog.text
 
 
+# --- mic_tier threading (#1668 PR-C) --------------------------------------
+#
+# jasper.audio_measurement.calibration.mic_tier_for_model's own docstring
+# names bind_production_analyze as "the PR that actually calls
+# compose_envelope in the measure/fit flow" — this is that wiring.
+
+
+def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypatch):
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+        seen["priors"] = priors
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+
+    class _Record:
+        curve = object()
+        calibration_id = "cal-umik2"
+        model = "minidsp_umik2"
+
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: _Record(), meta={},
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    result = _FakeResult(setup={"calibration": {"mode": "serial"}})
+    incoming_priors = MeasurementPriors(crossover_fc_hz=FC_HZ)
+    analyze(program, result, incoming_priors, MeasurementGeometry())
+
+    # The ORIGINAL priors object is untouched (dataclasses.replace returns a
+    # new instance) — the mutated copy is what reaches analyze_program_capture.
+    assert incoming_priors.mic_tier is None
+    assert seen["priors"].mic_tier == "reference"
+    assert seen["priors"] is not incoming_priors
+    # Every other field survives the replace unchanged.
+    assert seen["priors"].crossover_fc_hz == FC_HZ
+
+
+def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resolves(monkeypatch):
+    """No calibration record at all (resolver returned None) must resolve
+    to the CONSERVATIVE "phone" tier — never a guess at "reference", and
+    never a crash on ``getattr(None, "model", None)``."""
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+        seen["priors"] = priors
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: None, meta={},
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    analyze(
+        program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(),
+    )
+    assert seen["priors"].mic_tier == "phone"
+
+
+def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(monkeypatch):
+    """A record with no ``model`` attribute at all (the "bare
+    CalibrationCurve" test-double shape bind_production_analyze already
+    special-cases for ``curve``) must not crash — getattr's default takes
+    over and resolves to the conservative "phone" tier."""
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.calibration import CalibrationCurve
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    seen: dict[str, Any] = {}
+
+    def spy(program, samples, rate, *, calibration=None, geometry=None, priors=None):
+        seen["priors"] = priors
+        return "analysis"
+
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    bare_curve = CalibrationCurve(
+        freqs_hz=[20.0, 20000.0], correction_db=[0.0, 0.0],
+    )
+    analyze = v2host.bind_production_analyze(
+        resolve_calibration=lambda setup, device: bare_curve, meta={},
+    )
+    program = build_verify_program(FC_HZ, sweep_s=0.5)
+    analyze(
+        program, _FakeResult(), MeasurementPriors(crossover_fc_hz=FC_HZ),
+        MeasurementGeometry(),
+    )
+    assert seen["priors"].mic_tier == "phone"
+
+
 # --- operator capture retention (durable observability, Part 2) ----------------
 #
 # Off by default, gated on XOVER_CAPTURE_DUMP_DIR / "ENABLED" existing.

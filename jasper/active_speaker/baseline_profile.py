@@ -59,6 +59,7 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
 )
 from .crossover_preview import crossover_preview_fingerprint
+from .driver_pad import effective_sensitivity_db
 from .level_trim import LevelTrimError, attenuation_from_group_deltas
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
@@ -625,7 +626,13 @@ def _derive_corrections(
         for role, driver in drivers.items():
             if role not in corrections or not isinstance(driver, Mapping):
                 continue
-            sensitivity = _finite_float(driver.get("sensitivity_db_2v83_1m"))
+            # #1665: fold any declared in-line pad into the naked datasheet
+            # sensitivity before it feeds the datasheet-trim estimate below --
+            # an L-pad'd driver's effective output is quieter than its bare
+            # rating, and the interim trim must attenuate from THAT figure,
+            # not the pre-pad one.
+            naked_sensitivity = _finite_float(driver.get("sensitivity_db_2v83_1m"))
+            sensitivity = effective_sensitivity_db(naked_sensitivity, driver.get("pad"))
             if sensitivity is not None:
                 sensitivities[str(role)] = sensitivity
             gain = _finite_float(driver.get("gain_offset_db"))
