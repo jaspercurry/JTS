@@ -34,6 +34,7 @@ from jasper.active_speaker.linearization_fit import (
     PER_FILTER_CUT_CAP_DB,
     LinearizationFilter,
     LinearizationFit,
+    _HF_MIN_OCCURRENCES,
     _core_or_fallback_mask,
     _highshelf_response_db,
     _ladder_smooth,
@@ -767,6 +768,19 @@ def test_max_filters_per_driver_is_the_shelf_plus_peaking_cap():
     own LOCKSTEP DUPLICATE comment) -- this test lives on THIS side of the
     pair; the emitter side has its own pinning test."""
     assert MAX_FILTERS_PER_DRIVER == 8
+
+
+def test_hf_min_occurrences_matches_flow_paired_gate():
+    """LOCKSTEP pin (mirrors test_max_linearization_filters_matches_fit_engine_cap):
+    the CD-horn agreement gate's minimum-occurrence threshold must equal the flow
+    layer's paired-gate constant, or the fit engine and the conductor would
+    disagree about the N>=3 'paired gate.' Kept as a local constant in the fit
+    module (not imported) because the flow imports THIS module -- this test is
+    the guard that keeps the two numerically identical."""
+    from jasper.active_speaker.crossover_v2_flow import (
+        LINEARIZATION_MIN_PAIRED_OCCURRENCES,
+    )
+    assert _HF_MIN_OCCURRENCES == LINEARIZATION_MIN_PAIRED_OCCURRENCES
 
 
 # --------------------------------------------------------------------------- #
