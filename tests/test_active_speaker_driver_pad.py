@@ -48,7 +48,9 @@ def test_pad_kinds_is_the_closed_four_value_vocabulary():
             id="series_resistor",
         ),
         pytest.param(
-            {"kind": "direct_db", "attenuation_db": -3.5},
+            {"kind": "direct_db", "attenuation_db": -3.5,
+             # ignored-and-dropped on input (docstring contract pin):
+             "effective_impedance_ohm": 8.4},
             8.0,
             id="direct_db_with_impedance",
         ),
