@@ -65,8 +65,8 @@ from jasper.active_speaker.linearization_envelope import (
     compute_sigma_curve,
 )
 from jasper.active_speaker.linearization_fit import (
+    complex_correction_response,
     fit_driver_linearization,
-    predicted_correction_db,
 )
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -2270,11 +2270,21 @@ class CrossoverV2Conductor:
             )
             fit = fit_driver_linearization(resp, envelope)
             fits[role] = fit
-            corrections[role] = predicted_correction_db(fit.filters, resp.freqs_hz)
+            # COMPLEX (minimum-phase) correction, not a zero-phase magnitude
+            # scale (#1667). The emitted biquads rotate phase near their
+            # corners and the two-branch summation below is phase-dominated, so
+            # a magnitude-only model mispredicts it — measured on JTS3, the
+            # zero-phase model mistracked the VERIFY summation by ~2.1 dB
+            # (WORSE than the ~1.7 dB of no correction at all) where this
+            # complex model tracks to ~0.5 dB. This is the single seam: the
+            # complex-corrected branches below feed all three consumers (the
+            # trim re-solve, the ripple-optimal scan, and the persisted VERIFY
+            # prediction). See complex_correction_response's docstring.
+            corrections[role] = complex_correction_response(fit.filters, resp.freqs_hz)
 
         freqs = woofer_resp.freqs_hz
-        W_lin = woofer_resp.complex_tf * (10.0 ** (corrections[woofer_role] / 20.0))
-        T_lin = tweeter_resp.complex_tf * (10.0 ** (corrections[tweeter_role] / 20.0))
+        W_lin = woofer_resp.complex_tf * corrections[woofer_role]
+        T_lin = tweeter_resp.complex_tf * corrections[tweeter_role]
 
         # Same gating-consistent overlap band the raw trim solve used
         # (program_analysis._build_candidate's own branch_floor_hz clamp —

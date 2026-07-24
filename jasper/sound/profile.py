@@ -860,6 +860,47 @@ def _filter_response_db(
     return out
 
 
+def _filter_response_complex(
+    spec: FilterSpec,
+    freqs: Iterable[float],
+    trig: list[tuple[float, float, float, float]] | None = None,
+) -> list[complex]:
+    """Complex response H(e^{jω}) of one biquad across ``freqs`` — the
+    minimum-phase complement of :func:`_filter_response_db`.
+
+    Same RBJ ``_biquad_coeffs`` SSOT, same ``num``/``den`` construction, so
+    ``|_filter_response_complex(spec, f)| == 10**(_filter_response_db(spec, f)
+    / 20)`` bin-for-bin (pinned by a magnitude-consistency test). The magnitude
+    twin discards phase; this keeps it. That phase is load-bearing wherever a
+    correction is applied to a branch that is then SUMMED with another branch:
+    the emitted CamillaDSP biquads are minimum-phase and rotate phase near
+    their corners, and a crossover's two-branch summation is phase-dominated,
+    so modeling a correction as a zero-phase magnitude scale (``10**(db/20)``)
+    mispredicts the summed response. Measured on JTS3: the zero-phase model
+    mistracked the VERIFY summation by ~2 dB where this complex model tracks it
+    to ~0.5 dB (see ``jasper.active_speaker.linearization_fit.
+    complex_correction_response``). Callers apply it in the LINEAR domain:
+    ``H = H * _filter_response_complex(spec, freqs)``.
+
+    (The ``den == 0`` fallback returns unity, matching the magnitude twin's
+    ``den > 0.0`` guard; a stable biquad has ``a0 > 0`` so it never triggers.
+    Unlike the magnitude twin this does not floor the result at 1e-12 — the
+    floor only bites at unphysical ~-120 dB nulls a peaking/shelf correction
+    never produces, and flooring a complex value would break the phase.)
+    """
+    b0, b1, b2, a0, a1, a2 = _biquad_coeffs(
+        spec.biquad_type, spec.freq, spec.gain, spec.q or 1.0
+    )
+    if trig is None:
+        trig = _freq_trig(freqs)
+    out: list[complex] = []
+    for c1, s1, c2, s2 in trig:
+        num = complex(b0 + b1 * c1 + b2 * c2, -(b1 * s1 + b2 * s2))
+        den = complex(a0 + a1 * c1 + a2 * c2, -(a1 * s1 + a2 * s2))
+        out.append(num / den if den != 0 else complex(1.0, 0.0))
+    return out
+
+
 def response_preview(
     profile: SoundProfile,
     freqs: Iterable[float] = DEFAULT_PREVIEW_FREQS,

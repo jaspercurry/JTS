@@ -16,11 +16,14 @@ from pathlib import Path
 
 from jasper.sound import GAINLESS_BIQUAD_TYPES, build_sound_filters
 from jasper.camilla_stereo_prefix import emit_filter_spec as _emit_filter_spec
+import numpy as np
+
 from jasper.sound.profile import (
     CUT_MAX_Q,
     FilterSpec,
     ParametricBand,
     SoundProfile,
+    _filter_response_complex,
     _filter_response_db,
 )
 
@@ -51,6 +54,45 @@ def test_python_matches_shared_parity_fixture():
         got = _filter_response_db(spec, freqs)
         for value, expected in zip(got, case["db"]):
             assert abs(value - expected) < 1e-6, case
+
+
+def test_filter_response_complex_magnitude_matches_filter_response_db():
+    """#1667 magnitude-consistency parity: the complex (minimum-phase) twin
+    shares the ``_biquad_coeffs`` SSOT with the parity-pinned magnitude one, so
+    ``abs(_filter_response_complex)`` equals ``10**(_filter_response_db/20)``
+    bin-for-bin across every biquad type. The complex twin ADDS phase; it must
+    never perturb the magnitude the emitted graph realizes."""
+    freqs = list(np.geomspace(20.0, 20000.0, 400))
+    cases = [
+        ("Peaking", 1000.0, -6.0, 2.0),
+        ("Peaking", 4064.0, -2.92, 2.0),
+        ("Highshelf", 6000.0, -3.0, 1.0 / 2.0 ** 0.5),
+        ("Lowshelf", 200.0, 4.0, 1.0 / 2.0 ** 0.5),
+        ("Highpass", 1000.0, 0.0, 0.707),
+        ("Lowpass", 12000.0, 0.0, 0.707),
+        ("Notch", 60.0, 0.0, 8.0),
+    ]
+    for biquad_type, freq, gain, q in cases:
+        spec = FilterSpec("x", biquad_type, freq, gain, q=q)
+        mag = np.array(_filter_response_db(spec, freqs))
+        cplx = np.array(_filter_response_complex(spec, freqs))
+        # Notch reaches a true zero (its magnitude flooring at 1e-12 in the dB
+        # twin has no complex counterpart); compare where the magnitude is not
+        # near that floor, which is the whole physical range of every case here.
+        keep = mag > -100.0
+        np.testing.assert_allclose(
+            np.abs(cplx)[keep], (10.0 ** (mag / 20.0))[keep], atol=1e-6, rtol=0, err_msg=biquad_type,
+        )
+
+
+def test_filter_response_complex_peaking_is_minimum_phase():
+    """The load-bearing property vs a zero-phase magnitude scale: a peaking
+    biquad is real (phase 0) at its centre and rotates on the skirts."""
+    spec = FilterSpec("x", "Peaking", 1000.0, -6.0, q=1.0)
+    cplx = _filter_response_complex(spec, [500.0, 1000.0, 2000.0])
+    assert abs(cplx[1].imag) < 1e-9  # centre: real
+    assert abs(np.degrees(np.angle(cplx[0]))) > 5.0  # below: rotated
+    assert abs(np.degrees(np.angle(cplx[2]))) > 5.0  # above: rotated
 
 
 def test_peaking_peaks_at_gain_on_center_frequency():
