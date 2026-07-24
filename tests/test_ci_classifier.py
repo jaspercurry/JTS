@@ -124,6 +124,119 @@ def _changes(*paths: str, status: str = "M"):
             (),
             "full",
         ),
+        # --- docs lane ---
+        (
+            "docs-handoff-only",
+            "pull_request",
+            _changes("docs/HANDOFF-aec.md"),
+            "docs",
+        ),
+        (
+            "docs-nested-subdir",
+            "pull_request",
+            _changes("docs/bass-extension-waves/limiter-evidence-protocol.md"),
+            "docs",
+        ),
+        (
+            "docs-root-prose",
+            "pull_request",
+            _changes("README.md", "AGENTS.md", "CONTRIBUTING.md"),
+            "docs",
+        ),
+        (
+            "docs-pr-template",
+            "pull_request",
+            _changes(".github/PULL_REQUEST_TEMPLATE.md"),
+            "docs",
+        ),
+        (
+            "docs-routing-map",
+            "pull_request",
+            _changes("docs/doc-map.toml"),
+            "docs",
+        ),
+        (
+            "docs-with-registered-companion",
+            "pull_request",
+            _changes(
+                "docs/HANDOFF-bass-extension-plan.md",
+                "tests/test_bass_extension_plan_status.py",
+            ),
+            "docs",
+        ),
+        (
+            "docs-all-registered-companions",
+            "pull_request",
+            _changes("README.md", *ci_classifier.DOCS_TEST_FILES),
+            "docs",
+        ),
+        # --- docs lane must fail closed ---
+        (
+            "docs-plus-runtime",
+            "pull_request",
+            _changes("README.md", "jasper/control/server.py"),
+            "full",
+        ),
+        (
+            "docs-plus-workflow",
+            "pull_request",
+            _changes("README.md", ".github/workflows/tests.yml"),
+            "full",
+        ),
+        (
+            "docs-plus-classifier",
+            "pull_request",
+            _changes("README.md", "scripts/ci-classify.py"),
+            "full",
+        ),
+        (
+            "docs-plus-dependency-config",
+            "pull_request",
+            _changes("README.md", "pyproject.toml"),
+            "full",
+        ),
+        (
+            "docs-plus-unregistered-test",
+            "pull_request",
+            _changes("README.md", "tests/test_mux.py"),
+            "full",
+        ),
+        (
+            "docs-plus-non-markdown-under-docs",
+            "pull_request",
+            _changes("README.md", "docs/assets/diagram.png"),
+            "full",
+        ),
+        (
+            "docs-plus-shell",
+            "pull_request",
+            _changes("README.md", "deploy/install.sh"),
+            "full",
+        ),
+        (
+            "docs-plus-rust",
+            "pull_request",
+            _changes("README.md", "rust/jasper-fanin/src/main.rs"),
+            "full",
+        ),
+        (
+            "docs-companion-test-only",
+            "pull_request",
+            _changes("tests/test_agents_md_toc.py"),
+            "full",
+        ),
+        (
+            "landing-plus-docs-is-mixed",
+            "pull_request",
+            _changes("deploy/index.html", "README.md"),
+            "full",
+        ),
+        (
+            "markdown-outside-docs-tree",
+            "pull_request",
+            _changes("jasper/README.md"),
+            "full",
+        ),
     ],
 )
 def test_lane_decision_table(
@@ -164,6 +277,21 @@ def test_lane_decision_table(
         pytest.param(
             ci_classifier.Change("U", ("deploy/index.html",)),
             id="unmerged",
+        ),
+        pytest.param(
+            ci_classifier.Change("D", ("docs/HANDOFF-aec.md",)),
+            id="doc-deletion",
+        ),
+        pytest.param(
+            ci_classifier.Change(
+                "R100",
+                ("docs/HANDOFF-old.md", "docs/HANDOFF-new.md"),
+            ),
+            id="doc-rename",
+        ),
+        pytest.param(
+            ci_classifier.Change("D", ("README.md",)),
+            id="root-doc-deletion",
         ),
     ],
 )
@@ -232,9 +360,15 @@ def test_name_status_parser_rejects_unsafe_or_malformed_records(
         ci_classifier.parse_name_status_z(payload)
 
 
-def _path_parts(node: ast.AST) -> tuple[str, ...]:
+def _path_parts(
+    node: ast.AST,
+    calls: frozenset[str] | set[str] = _PATH_CALLS,
+) -> tuple[str, ...]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        return (*_path_parts(node.left), *_path_parts(node.right))
+        return (
+            *_path_parts(node.left, calls),
+            *_path_parts(node.right, calls),
+        )
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return tuple(part for part in node.value.split("/") if part)
     if isinstance(node, ast.Call):
@@ -245,10 +379,10 @@ def _path_parts(node: ast.AST) -> tuple[str, ...]:
             if isinstance(node.func, ast.Attribute)
             else ""
         )
-        if call_name not in _PATH_CALLS:
+        if call_name not in calls:
             return ()
         receiver = (
-            _path_parts(node.func.value)
+            _path_parts(node.func.value, calls)
             if isinstance(node.func, ast.Attribute)
             else ()
         )
@@ -257,7 +391,7 @@ def _path_parts(node: ast.AST) -> tuple[str, ...]:
             *(
                 part
                 for argument in node.args
-                for part in _path_parts(argument)
+                for part in _path_parts(argument, calls)
             ),
         )
     return ()
@@ -287,6 +421,135 @@ def test_fast_bundle_covers_every_direct_landing_page_test() -> None:
         *ci_classifier.LANDING_TEST_FILES,
         "tests/test_install_helpers.py"
         "::test_landing_page_app_css_version_uses_resolved_build_sha",
+    )
+
+
+# The docs guard also follows glob/rglob, because a doc reader is as likely to
+# sweep a directory (`(ROOT / "docs").rglob("HANDOFF-*.md")`) as to name one
+# file. Landing keeps the narrower default set; both selections are asserted
+# below so widening this cannot silently move the landing bundle.
+_DOC_PATH_CALLS = _PATH_CALLS | {"glob", "rglob"}
+
+
+def _reads_a_document(parts: tuple[str, ...]) -> bool:
+    if not parts:
+        return False
+    if parts[-1].endswith(".md"):
+        return True
+    return parts[-2:] == ("docs", "doc-map.toml")
+
+
+def _direct_doc_test_files(
+    tests_root: Path = ROOT / "tests",
+) -> tuple[str, ...]:
+    direct: list[str] = []
+    repo_root = tests_root.parent
+    for path in sorted(tests_root.rglob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if any(
+            isinstance(node, (ast.BinOp, ast.Call))
+            and _reads_a_document(_path_parts(node, _DOC_PATH_CALLS))
+            for node in ast.walk(tree)
+        ):
+            direct.append(str(path.relative_to(repo_root)))
+    return tuple(direct)
+
+
+def test_docs_bundle_registers_every_discoverable_doc_reading_test() -> None:
+    """A new test that names a doc path must join the docs bundle.
+
+    Deliberately a SUBSET assertion, not equality: over-registering is safe
+    (a few extra seconds of a 27s bundle) while under-registering would let a
+    prose edit merge green past a contract it breaks. Readers that reach a
+    document through a non-literal pattern are invisible here and are
+    registered by hand from a runtime audit -- see DOCS_TEST_FILES.
+    """
+
+    registered = set(ci_classifier.DOCS_TEST_FILES)
+    missing = sorted(set(_direct_doc_test_files()) - registered)
+
+    assert not missing, (
+        "tests that read documentation but are not in "
+        "DOCS_TEST_FILES (scripts/ci-classify.py):\n"
+        + "\n".join(f"  {path}" for path in missing)
+    )
+
+
+def test_docs_bundle_is_sorted_and_exists_on_disk() -> None:
+    assert list(ci_classifier.DOCS_TEST_FILES) == sorted(
+        ci_classifier.DOCS_TEST_FILES
+    )
+    assert len(set(ci_classifier.DOCS_TEST_FILES)) == len(
+        ci_classifier.DOCS_TEST_FILES
+    )
+    for path in ci_classifier.DOCS_TEST_FILES:
+        assert (ROOT / path).is_file(), path
+    # The guard lives in this file, so the lane must run this file.
+    assert "tests/test_ci_classifier.py" in ci_classifier.DOCS_TEST_FILES
+    assert ci_classifier.DOCS_PYTEST_TARGETS == ci_classifier.DOCS_TEST_FILES
+
+
+def test_hand_registered_doc_readers_are_still_invisible_to_discovery() -> None:
+    """Pin the reason each hand-registered entry is not auto-discovered.
+
+    These four were found by a runtime audit hook, not by the guard: three
+    read docs/calibration-agent/** transitively through
+    jasper.calibration_agent's `corpus.rglob("*.md")`, one reads README.md
+    through an importlib-loaded script, and test_env_vars_codified.py walks
+    `path.rglob("*")`. If a refactor makes any of them statically visible,
+    the corresponding note in DOCS_TEST_FILES is now misleading -- delete the
+    note and this entry together.
+    """
+
+    discovered = set(_direct_doc_test_files())
+    hand_registered = {
+        "tests/test_calibration_agent_actions.py",
+        "tests/test_calibration_agent_response.py",
+        "tests/test_calibration_agent_sound_actions.py",
+        "tests/test_env_vars_codified.py",
+        "tests/test_run_wake_training_phase0.py",
+    }
+
+    assert hand_registered <= set(ci_classifier.DOCS_TEST_FILES)
+    assert not (hand_registered & discovered), sorted(
+        hand_registered & discovered
+    )
+
+
+def test_docs_guard_finds_glob_and_literal_doc_reads(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    nested = tests_root / "web"
+    nested.mkdir(parents=True)
+    (tests_root / "test_literal.py").write_text(
+        'from pathlib import Path\n'
+        'ROOT = Path("/repo")\n'
+        'def test_a():\n'
+        '    (ROOT / "docs" / "HANDOFF-x.md").read_text()\n',
+        encoding="utf-8",
+    )
+    (nested / "test_glob.py").write_text(
+        'from pathlib import Path\n'
+        'ROOT = Path("/repo")\n'
+        'def test_b():\n'
+        '    list((ROOT / "docs").rglob("HANDOFF-*.md"))\n',
+        encoding="utf-8",
+    )
+    (tests_root / "test_routing_map.py").write_text(
+        'from pathlib import Path\n'
+        'ROOT = Path("/repo")\n'
+        'def test_c():\n'
+        '    (ROOT / "docs" / "doc-map.toml").read_text()\n',
+        encoding="utf-8",
+    )
+    (tests_root / "test_mention_only.py").write_text(
+        'NOTE = "docs/HANDOFF-x.md"\n',
+        encoding="utf-8",
+    )
+
+    assert _direct_doc_test_files(tests_root) == (
+        "tests/test_literal.py",
+        "tests/test_routing_map.py",
+        "tests/web/test_glob.py",
     )
 
 
@@ -345,14 +608,59 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     assert triggers["push"] == {"branches": ["main"]}
     assert "  classify:\n" in workflow
     assert "  fast-landing:\n" in workflow
+    assert "  docs:\n" in workflow
     assert "  ci:\n" in workflow
     assert "name: ci" in workflow
     assert "if: ${{ always() }}" in workflow
     assert "Unexpected CI lane" in workflow
     assert "fast-landing lane selected work did not succeed" in workflow
+    assert "docs lane selected work did not succeed" in workflow
     assert "full lane selected work did not succeed" in workflow
     assert 'python-version: ["3.11", "3.12", "3.13"]' in workflow
     assert "python3 scripts/ci-classify.py --landing-pytest-targets" in workflow
+    assert "python3 scripts/ci-classify.py --docs-pytest-targets" in workflow
+
+    # Every narrow lane must be a `needs` of the aggregate, or its failure
+    # could never be observed.
+    assert parsed["jobs"]["ci"]["needs"] == [
+        "classify",
+        "fast-landing",
+        "docs",
+        "shell",
+        "pytest-matrix",
+        "pytest",
+        "js",
+        "rust",
+    ]
+    # Each conditional job must gate on the classifier, never on a path
+    # filter: a workflow-level `paths:` skip leaves a required check Pending
+    # forever, while a job skipped by conditional reports success.
+    for job in ("fast-landing", "docs", "shell", "pytest-matrix", "js", "rust"):
+        assert parsed["jobs"][job]["needs"] == "classify", job
+        assert "needs.classify.outputs.lane ==" in parsed["jobs"][job]["if"], job
+    pull_request_trigger = triggers.get("pull_request") or {}
+    assert "paths" not in pull_request_trigger
+    assert "paths-ignore" not in pull_request_trigger
+
+
+def test_every_workflow_cancels_superseded_pull_request_runs() -> None:
+    """A superseded run must not keep occupying a finite runner slot.
+
+    GitHub Actions caps concurrent jobs per account (20 on the Free plan),
+    so an abandoned run competes with the required `tests` workflow. `main`
+    pushes stay uncancellable so post-merge coverage always completes.
+    """
+
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        concurrency = parsed.get("concurrency")
+        assert concurrency, f"{path.name} has no concurrency group"
+        assert concurrency["group"] == "${{ github.workflow }}-${{ github.ref }}", (
+            path.name
+        )
+        assert concurrency["cancel-in-progress"] == (
+            "${{ github.event_name == 'pull_request' }}"
+        ), path.name
 
 
 def _aggregate_script() -> str:
@@ -369,6 +677,7 @@ def _run_aggregate(**overrides: str) -> subprocess.CompletedProcess[str]:
         "LANE": "full",
         "CLASSIFY_RESULT": "success",
         "FAST_LANDING_RESULT": "skipped",
+        "DOCS_RESULT": "skipped",
         "SHELL_RESULT": "success",
         "PYTEST_MATRIX_RESULT": "success",
         "PYTEST_RESULT": "success",
@@ -387,11 +696,21 @@ def _run_aggregate(**overrides: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_ci_aggregate_accepts_only_the_two_complete_result_shapes() -> None:
+def test_ci_aggregate_accepts_only_the_three_complete_result_shapes() -> None:
     assert _run_aggregate().returncode == 0
     assert _run_aggregate(
         LANE="fast-landing",
         FAST_LANDING_RESULT="success",
+        SHELL_RESULT="skipped",
+        PYTEST_MATRIX_RESULT="skipped",
+        PYTEST_RESULT="skipped",
+        JS_RESULT="skipped",
+        RUST_RESULT="skipped",
+    ).returncode == 0
+    assert _run_aggregate(
+        LANE="docs",
+        DOCS_RESULT="success",
+        FAST_LANDING_RESULT="skipped",
         SHELL_RESULT="skipped",
         PYTEST_MATRIX_RESULT="skipped",
         PYTEST_RESULT="skipped",
@@ -405,12 +724,69 @@ def test_ci_aggregate_accepts_only_the_two_complete_result_shapes() -> None:
     [
         {"CLASSIFY_RESULT": "failure"},
         {"FAST_LANDING_RESULT": "success"},
+        {"DOCS_RESULT": "success"},
+        {"DOCS_RESULT": "failure"},
         {"SHELL_RESULT": "failure"},
         {"PYTEST_MATRIX_RESULT": "cancelled"},
         {"PYTEST_RESULT": "skipped"},
         {"JS_RESULT": "failure"},
         {"RUST_RESULT": "cancelled"},
         {"LANE": "unexpected"},
+        {"LANE": ""},
+        # docs lane: selected work failed / cancelled
+        {
+            "LANE": "docs",
+            "DOCS_RESULT": "failure",
+            "FAST_LANDING_RESULT": "skipped",
+            "SHELL_RESULT": "skipped",
+            "PYTEST_MATRIX_RESULT": "skipped",
+            "PYTEST_RESULT": "skipped",
+            "JS_RESULT": "skipped",
+            "RUST_RESULT": "skipped",
+        },
+        {
+            "LANE": "docs",
+            "DOCS_RESULT": "cancelled",
+            "FAST_LANDING_RESULT": "skipped",
+            "SHELL_RESULT": "skipped",
+            "PYTEST_MATRIX_RESULT": "skipped",
+            "PYTEST_RESULT": "skipped",
+            "JS_RESULT": "skipped",
+            "RUST_RESULT": "skipped",
+        },
+        # docs lane: a full-farm job unexpectedly ran alongside it
+        {
+            "LANE": "docs",
+            "DOCS_RESULT": "success",
+            "FAST_LANDING_RESULT": "skipped",
+            "SHELL_RESULT": "success",
+            "PYTEST_MATRIX_RESULT": "skipped",
+            "PYTEST_RESULT": "skipped",
+            "JS_RESULT": "skipped",
+            "RUST_RESULT": "skipped",
+        },
+        # docs lane: the landing lane unexpectedly ran alongside it
+        {
+            "LANE": "docs",
+            "DOCS_RESULT": "success",
+            "FAST_LANDING_RESULT": "success",
+            "SHELL_RESULT": "skipped",
+            "PYTEST_MATRIX_RESULT": "skipped",
+            "PYTEST_RESULT": "skipped",
+            "JS_RESULT": "skipped",
+            "RUST_RESULT": "skipped",
+        },
+        # docs lane selected but its job never ran at all
+        {
+            "LANE": "docs",
+            "DOCS_RESULT": "skipped",
+            "FAST_LANDING_RESULT": "skipped",
+            "SHELL_RESULT": "skipped",
+            "PYTEST_MATRIX_RESULT": "skipped",
+            "PYTEST_RESULT": "skipped",
+            "JS_RESULT": "skipped",
+            "RUST_RESULT": "skipped",
+        },
         {
             "LANE": "fast-landing",
             "FAST_LANDING_RESULT": "failure",
@@ -443,6 +819,7 @@ def test_ci_aggregate_fails_closed(overrides: dict[str, str]) -> None:
             {
                 "CLASSIFY_RESULT": "success",
                 "FAST_LANDING_RESULT": "skipped",
+                "DOCS_RESULT": "skipped",
                 "SHELL_RESULT": "success",
                 "PYTEST_MATRIX_RESULT": "success",
                 "PYTEST_RESULT": "success",
@@ -455,6 +832,20 @@ def test_ci_aggregate_fails_closed(overrides: dict[str, str]) -> None:
             {
                 "CLASSIFY_RESULT": "success",
                 "FAST_LANDING_RESULT": "success",
+                "DOCS_RESULT": "skipped",
+                "SHELL_RESULT": "skipped",
+                "PYTEST_MATRIX_RESULT": "skipped",
+                "PYTEST_RESULT": "skipped",
+                "JS_RESULT": "skipped",
+                "RUST_RESULT": "skipped",
+            },
+        ),
+        (
+            "docs",
+            {
+                "CLASSIFY_RESULT": "success",
+                "FAST_LANDING_RESULT": "skipped",
+                "DOCS_RESULT": "success",
                 "SHELL_RESULT": "skipped",
                 "PYTEST_MATRIX_RESULT": "skipped",
                 "PYTEST_RESULT": "skipped",

@@ -6,10 +6,22 @@
 
 """Choose the fail-closed GitHub Actions lane for a JTS change.
 
-The only deliberately narrow lane is the static management landing page.
-Everything else keeps the complete existing CI farm.  The policy is data,
-not a heuristic: ``deploy/index.html`` must be present and every companion
-path must be one of the registered tests that directly reads that page.
+Two deliberately narrow lanes exist; everything else keeps the complete
+existing CI farm.  Both policies are data, not heuristics, and both require
+a *subject* file to be present so a companion-test-only diff cannot select
+a narrow lane on its own:
+
+``fast-landing``
+    ``deploy/index.html`` must be present and every companion path must be
+    one of the registered tests that directly reads that page.
+
+``docs``
+    at least one prose document (or the doc routing map) must be present and
+    every companion path must be either another such document or one of the
+    registered tests that read documentation.
+
+The landing check runs first, so a diff carrying both the landing page and a
+document is mixed and selects ``full``.
 """
 
 from __future__ import annotations
@@ -38,6 +50,102 @@ LANDING_INSTALL_CONTRACTS = (
 )
 LANDING_PYTEST_TARGETS = (*LANDING_TEST_FILES, *LANDING_INSTALL_CONTRACTS)
 FAST_LANDING_PATHS = frozenset((LANDING_PAGE, *LANDING_TEST_FILES))
+
+# Prose documents outside docs/.  Root-level operational docs plus the PR
+# template, which tests/test_ci_classifier.py asserts against.
+DOCS_PROSE_FILES = frozenset((
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "AGENTS.md",
+    "BRINGUP.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "PLAN.md",
+    "PRIVACY.md",
+    "QUICKSTART.md",
+    "README.md",
+    "SECURITY.md",
+))
+# The doc routing map is data for an informational, non-blocking PR comment
+# (see its own header), not a safety policy — so it rides the docs lane.  The
+# lane runs `docs-impact.py --validate-only` plus tests/test_docs_impact.py,
+# which are the checks that actually constrain it.
+DOCS_ROUTING_MAP = "docs/doc-map.toml"
+# Registered tests that read documentation.  Keep sorted.
+#
+# tests/test_ci_classifier.py's docs guard auto-discovers every test whose
+# source names a `*.md` path (or globs one) and fails when such a test is
+# missing here, so literal-path readers cannot silently escape the bundle.
+# The guard is a subset assertion: over-registering is safe (a few seconds of
+# a ~30s bundle), under-registering would let a prose edit merge green past a
+# contract it breaks.
+#
+# Static discovery is NOT sufficient on its own, so this list is the union of
+# the guard's output and a runtime audit -- an audit hook that recorded every
+# open() of a document across all 667 test files.  The audit found four
+# readers the guard structurally cannot see, in two classes:
+#
+#   - Transitive reads through imported production code.  The
+#     tests/test_calibration_agent_*.py entries below import
+#     jasper.calibration_agent, whose tools.py sweeps the guidance corpus with
+#     `corpus.rglob("*.md")` -- so docs/calibration-agent/** is a RUNTIME
+#     corpus the product consumes, and nothing in the test source names it.
+#     tests/test_run_wake_training_phase0.py reads README.md the same way, via
+#     an importlib-loaded script.
+#   - Generic directory sweeps.  tests/test_env_vars_codified.py walks
+#     `path.rglob("*")`, so no statically visible pattern names a document.
+#
+# Every hand-registered entry keeps a note saying why discovery misses it, and
+# test_hand_registered_doc_readers_are_still_invisible_to_discovery pins that
+# they really are invisible, so a refactor cannot leave these notes stale.
+#
+# Deliberately NOT registered despite opening a .md during the audit:
+# tests/test_shell_awk_environ_convention.py shebang-probes every file under
+# `deploy` and `scripts` only, so the one document it touched
+# (scripts/ring-proto/README.md) is not a docs-lane subject and no change this
+# lane can carry is able to affect it.
+DOCS_TEST_FILES = (
+    "tests/test_agents_md_toc.py",
+    "tests/test_audio_slice_membership_docs.py",
+    "tests/test_bass_extension_limiter_protocol.py",
+    "tests/test_bass_extension_plan_status.py",
+    "tests/test_calibration_agent_actions.py",
+    "tests/test_calibration_agent_advisor_context.py",
+    "tests/test_calibration_agent_response.py",
+    "tests/test_calibration_agent_sound_actions.py",
+    "tests/test_calibration_agent_tools.py",
+    "tests/test_ci_classifier.py",
+    "tests/test_dependency_groups.py",
+    "tests/test_doc_staleness_sweep_20260604.py",
+    "tests/test_docs_handoff_freshness.py",
+    "tests/test_docs_impact.py",
+    "tests/test_docs_linkcheck.py",
+    "tests/test_env_vars_codified.py",
+    "tests/test_launch_blocker_docs_exist.py",
+    "tests/test_prepare_wake_livekit_smoke.py",
+    "tests/test_prepare_wake_training_workdir.py",
+    "tests/test_run_wake_training_phase0.py",
+    "tests/test_system_supervisor.py",
+    "tests/test_tool_failure_contract_doc.py",
+    "tests/test_voice_eval_registry.py",
+    "tests/test_wake_review.py",
+    "tests/test_waveform_fusion_experiment.py",
+    "tests/test_web_correction_setup.py",
+)
+DOCS_PYTEST_TARGETS = DOCS_TEST_FILES
+
+
+def is_docs_subject(path: str) -> bool:
+    """True for a document whose presence can select the ``docs`` lane."""
+
+    if path in DOCS_PROSE_FILES or path == DOCS_ROUTING_MAP:
+        return True
+    return path.startswith("docs/") and path.endswith(".md")
+
+
+def is_docs_lane_path(path: str) -> bool:
+    """True for anything the ``docs`` lane is allowed to carry."""
+
+    return is_docs_subject(path) or path in DOCS_TEST_FILES
 
 
 class ChangedFileError(RuntimeError):
@@ -167,31 +275,56 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
     changed_paths = frozenset(
         path for change in frozen_changes for path in change.paths
     )
-    if LANDING_PAGE not in changed_paths:
-        return Decision(
-            lane="full",
-            reason="deploy/index.html is absent from the pull-request diff",
-            changes=frozen_changes,
-        )
+    if LANDING_PAGE in changed_paths:
+        disallowed = sorted(changed_paths - FAST_LANDING_PATHS)
+        if disallowed:
+            return Decision(
+                lane="full",
+                reason=(
+                    "path outside the landing-page allowlist: "
+                    + ", ".join(disallowed)
+                ),
+                changes=frozen_changes,
+            )
 
-    disallowed = sorted(changed_paths - FAST_LANDING_PATHS)
-    if disallowed:
+        companions = sorted(changed_paths - {LANDING_PAGE})
         return Decision(
-            lane="full",
+            lane="fast-landing",
             reason=(
-                "path outside the landing-page allowlist: "
-                + ", ".join(disallowed)
+                "deploy/index.html plus "
+                f"{len(companions)} registered companion test file(s)"
             ),
             changes=frozen_changes,
         )
 
-    companions = sorted(changed_paths - {LANDING_PAGE})
+    subjects = sorted(path for path in changed_paths if is_docs_subject(path))
+    if subjects:
+        disallowed = sorted(
+            path for path in changed_paths if not is_docs_lane_path(path)
+        )
+        if disallowed:
+            return Decision(
+                lane="full",
+                reason=(
+                    "path outside the documentation allowlist: "
+                    + ", ".join(disallowed)
+                ),
+                changes=frozen_changes,
+            )
+
+        companions = sorted(changed_paths.difference(subjects))
+        return Decision(
+            lane="docs",
+            reason=(
+                f"{len(subjects)} document(s) plus "
+                f"{len(companions)} registered companion test file(s)"
+            ),
+            changes=frozen_changes,
+        )
+
     return Decision(
-        lane="fast-landing",
-        reason=(
-            "deploy/index.html plus "
-            f"{len(companions)} registered companion test file(s)"
-        ),
+        lane="full",
+        reason="no narrow lane subject in the pull-request diff",
         changes=frozen_changes,
     )
 
@@ -263,6 +396,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the registered fast-landing pytest targets and exit",
     )
+    parser.add_argument(
+        "--docs-pytest-targets",
+        action="store_true",
+        help="print the registered documentation-contract pytest targets and exit",
+    )
     return parser
 
 
@@ -270,6 +408,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.landing_pytest_targets:
         print("\n".join(LANDING_PYTEST_TARGETS))
+        return 0
+    if args.docs_pytest_targets:
+        print("\n".join(DOCS_PYTEST_TARGETS))
         return 0
 
     decision = decision_from_git(args.event, args.base, args.head)

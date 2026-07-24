@@ -9,6 +9,17 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+# Superseded pushes must not keep burning runner slots. This workflow is
+# informational and non-required, so a stale run has no value once a newer
+# commit exists -- and GitHub Actions caps concurrent jobs (20 on the Free
+# plan), which is a finite shared resource the required `tests` workflow
+# competes for. `tests.yml` has cancelled superseded PR runs since it
+# shipped; these three docs workflows did not, so every re-push left their
+# prior runs occupying slots. Keep `main` pushes uncancellable.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   pull-requests: write

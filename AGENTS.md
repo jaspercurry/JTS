@@ -3033,17 +3033,44 @@ commands. This is the contract for humans and LLM agents:
   Pi deploy checks. Run only when the touched subsystem requires it,
   with explicit cost/hardware scope.
 
-Pull-request CI is risk-proportional but deliberately narrow:
-[`scripts/ci-classify.py`](scripts/ci-classify.py) selects
-`fast-landing` only when `deploy/index.html` is present and every other
-changed path is one of its registered direct-test companions. That lane
-runs the complete registered landing contract bundle, including the
-load-bearing install cache-key node. Renames, deletions, test-only
-changes, workflow/classifier changes, unknown paths, mixed changes, and
-comparison failures select `full`. Non-PR events — including every
-`main` push — also select `full`. The always-reported `ci` aggregate
-validates the selected jobs' results explicitly and is the sole
-branch-protection context.
+Pull-request CI is risk-proportional but deliberately narrow.
+[`scripts/ci-classify.py`](scripts/ci-classify.py) selects one of two
+narrow lanes, each of which requires a *subject* file to be present so a
+companion-test-only diff can never select a narrow lane on its own:
+
+- `fast-landing` — only when `deploy/index.html` is present and every other
+  changed path is one of its registered direct-test companions. Runs the
+  complete registered landing contract bundle, including the load-bearing
+  install cache-key node.
+- `docs` — only when at least one prose document is present (`docs/**.md`, a
+  root operational doc, `.github/PULL_REQUEST_TEMPLATE.md`, or the
+  `docs/doc-map.toml` routing map) and every other changed path is another
+  such document or one of the registered tests that read documentation. Runs
+  the documentation contract bundle — the "pin promises with tests" contracts
+  that assert a doc still matches the code — plus
+  `docs-impact --validate-only`, the changed-Markdown link check, and `ruff`.
+
+Renames, deletions, test-only changes, workflow/classifier changes, unknown
+paths, mixed changes (including landing page *plus* a document), and
+comparison failures select `full`. Non-PR events — including every `main`
+push — also select `full`. The always-reported `ci` aggregate validates the
+selected jobs' results explicitly and is the sole branch-protection context.
+
+**Never add a workflow-level `paths:` filter to a required workflow.** A
+workflow skipped by path filtering leaves its check `Pending` forever and
+blocks the merge, whereas a *job* skipped by a conditional reports success —
+which is why every lane gates on `needs.classify.outputs.lane` instead. All
+four workflows also cancel superseded PR runs, because GitHub Actions caps
+concurrent jobs per account (20 on the Free plan) and an abandoned run
+competes with the required farm for that finite pool.
+
+**Adding a test that reads a doc?** The docs guard in
+[`tests/test_ci_classifier.py`](tests/test_ci_classifier.py) auto-discovers
+any test whose source names or globs a `*.md` path and fails until it is
+registered in `DOCS_TEST_FILES`. It is a subset assertion — over-registering
+is safe, under-registering fails. A reader that reaches a document through a
+non-literal pattern (for example `path.rglob("*")`) is invisible to the guard
+and must be registered by hand with a note explaining why.
 
 The scripts are the source of truth. If a lane changes, update the
 script first, then adjust this short routing note and
