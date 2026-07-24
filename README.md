@@ -1036,15 +1036,19 @@ reference. Currently:
   "more bass" / "brighter," and safe reversible EQ layered separately
   from room correction.
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md)
-  — Active speaker DSP / crossover commissioning workstream. Canonical
-  handoff for future JTS hardware where CamillaDSP directly drives
-  woofer/mid/tweeter amplifier channels: speaker-baseline layer,
-  strict room-correction/preference separation, 2-way/3-way preset
-  model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
-  near-field/null-depth/gated measurement triad, LR/IIR-first default,
-  and delay/null verification. The Wave 1 section defines the target-bound
-  research and visible confirmed safety profile, nine-state lifecycle, exact
-  positive Room-eligibility receipt, and the no-live-consumer boundary.
+  — Active speaker DSP / crossover commissioning. Canonical handoff for
+  JTS hardware (JTS3 today) where CamillaDSP directly drives
+  woofer/mid/tweeter amplifier channels: the five-layer tuning model
+  (driver linearization + crossover integration as the speaker layer,
+  then bass/room/preference), the `/sound/` topology-setup substrate
+  versus the `/correction/crossover/` measurement flow (v2 default,
+  legacy opt-out and deprecated), the always-sibling candidate/promote
+  baseline lifecycle and its doctor divergence check, and the hard
+  safety invariants (two-invariant protection model, one audio path,
+  crash-recovery-muted). Restructured 2026-07-24 to the current-
+  state-first HANDOFF shape; the pre-v2/pre-linearization commissioning
+  narrative (near-field/null-depth measurement triad, Wave 1-3
+  nine-state receipt lifecycle) is preserved as a historical appendix.
 - [`HANDOFF-distributed-active.md`](docs/HANDOFF-distributed-active.md) —
   **Design-of-record (proposed 2026-06-20)** for running an active
   speaker's driver-domain crossover (Layer A) as a wireless **follower**,
