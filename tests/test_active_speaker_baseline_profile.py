@@ -4589,6 +4589,95 @@ async def test_apply_then_recompose_reemits_identical_linearization_filters(
     )
 
 
+async def test_apply_baseline_profile_emits_baseline_linearization_event_with_counts(
+    monkeypatch, tmp_path: Path, caplog,
+) -> None:
+    """SF3 (#1668 PR-D review): apply-time observability for what
+    linearization actually reached hardware -- one dsp.baseline_linearization
+    event per successful apply, carrying a per-role filter count."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-lin-2",
+        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization=_linearization_payload(),
+    )
+
+    async def load_config(path: str) -> bool:
+        return True
+
+    with caplog.at_level(logging.INFO, logger=_BASELINE_LOGGER):
+        applied = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=load_config,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+        )
+    assert applied["status"] == "applied"
+
+    # _linearization_payload(): woofer carries 1 filter, tweeter carries 2
+    # (a shelf plus a peak).
+    events = _events(caplog, "dsp.baseline_linearization")
+    assert len(events) == 1
+    assert "woofer=1" in events[0]
+    assert "tweeter=2" in events[0]
+    assert "none=" not in events[0]
+
+
+async def test_apply_baseline_profile_emits_baseline_linearization_event_none_when_absent(
+    monkeypatch, tmp_path: Path, caplog,
+) -> None:
+    """The counterpart: a plain (non-linearized) apply still logs the event,
+    with none=true -- absence is an observable fact, not silence."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    candidate = _v2_candidate(preset, tweeter_gain_db=-2.0, delay_us=250.0)
+
+    async def load_config(path: str) -> bool:
+        return True
+
+    with caplog.at_level(logging.INFO, logger=_BASELINE_LOGGER):
+        applied = await apply_baseline_profile(
+            topology,
+            design_draft=draft,
+            crossover_preview=preview,
+            measurements={},
+            load_config=load_config,
+            state_path=tmp_path / "baseline_profile.json",
+            config_path=tmp_path / "active_speaker_baseline.yml",
+            validate=_valid_config,
+            tuning_owner="automatic",
+            measured_candidate=candidate,
+        )
+    assert applied["status"] == "applied"
+
+    events = _events(caplog, "dsp.baseline_linearization")
+    assert len(events) == 1
+    assert "none=true" in events[0]
+
+
 async def test_recompose_of_legacy_snapshot_missing_linearization_emits_no_stage(
     monkeypatch, tmp_path: Path,
 ) -> None:

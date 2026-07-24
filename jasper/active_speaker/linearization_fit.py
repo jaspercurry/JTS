@@ -325,17 +325,29 @@ def linearization_filters_by_role(
     """Reduce a persisted ``{role: LinearizationFit.to_dict()}`` mapping down
     to the emitter's own reduced input shape: ``{role: [filter_dict, ...]}``.
 
-    Shared by every call site that threads a persisted linearization result
-    into
+    Shared by the two RICH-candidate call sites that thread a persisted
+    linearization result into
     :func:`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`
-    (#1668 PR-D) — ``measured_crossover_candidate.compile_candidate_config``,
-    ``baseline_profile.build_baseline_profile_candidate``, and
-    ``baseline_profile.recompose_applied_baseline_yaml`` — so the reduction
-    is defined exactly once rather than three times. ``linearization_mapping``
-    is whatever a candidate/snapshot carries under its ``"linearization"``
-    key: era-tolerant absence is the caller's job (this function treats a
-    missing/malformed role or filter list as simply not present, matching
-    "no linearization was fit" rather than raising).
+    (#1668 PR-D) — ``measured_crossover_candidate.compile_candidate_config``
+    and ``baseline_profile.build_baseline_profile_candidate`` — so the
+    reduction is defined once rather than twice.
+
+    ``baseline_profile.recompose_applied_baseline_yaml`` deliberately does
+    NOT call this helper. Its snapshot's ``"linearization"`` key is already
+    in this function's OUTPUT shape (``build_baseline_profile_candidate``
+    is what wrote it), not this function's INPUT shape — calling this
+    helper on an already-reduced mapping silently returns ``{}`` for every
+    role (each value is a ``list``, which fails the ``isinstance(fit,
+    Mapping)`` check below, not an error). recompose re-validates the
+    already-reduced shape inline instead, era-tolerantly. Do not
+    "consolidate" that seam onto this helper — see
+    ``test_linearization_filters_by_role_on_already_reduced_shape_is_empty``
+    in ``tests/test_active_speaker_linearization_fit.py`` for the pinned trap.
+
+    ``linearization_mapping`` is whatever a rich candidate carries under its
+    ``"linearization"`` key: era-tolerant absence is the caller's job (this
+    function treats a missing/malformed role or filter list as simply not
+    present, matching "no linearization was fit" rather than raising).
 
     Defensive, not authoritative: this only reshapes trusted-enough
     persisted data. The emitter's own ``_validated_linearization`` is the

@@ -562,10 +562,14 @@ def compile_candidate_config(
 
     ``candidate.linearization`` (empty for a plain trims candidate or a
     pre-PR-C persisted one) is reduced to the emitter's own filter-list shape
-    by the ONE shared helper,
+    by the shared helper,
     ``jasper.active_speaker.linearization_fit.linearization_filters_by_role``
-    — the same reduction ``baseline_profile``'s two call sites use, so the
-    reduction never drifts across the three seams.
+    — the same reduction ``baseline_profile.build_baseline_profile_candidate``
+    uses, so the two RICH-candidate call sites never drift. NOT shared with
+    ``baseline_profile.recompose_applied_baseline_yaml``: that seam reads an
+    already-reduced snapshot and deliberately re-validates it inline instead
+    (see ``linearization_filters_by_role``'s own docstring for why calling
+    it on an already-reduced mapping is a trap, not a valid consolidation).
     """
 
     from .linearization_fit import linearization_filters_by_role

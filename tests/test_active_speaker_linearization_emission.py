@@ -358,6 +358,37 @@ def test_reproof_blocks_tampered_wrong_biquad_subtype():
     assert graph.allowed is False
 
 
+def test_reproof_blocks_reversed_shelf_and_peak_order():
+    """The fit's construction guarantee is shelf-before-peaks (see
+    _driver_linearization_chain_names's docstring); the prover does not
+    re-derive that order, it proves the emitted names match it positionally
+    (_consume_linearization_chain). Reversing the shelf and its first peak
+    in the compiled pipeline must fail closed, not silently accept a
+    reordered chain -- #1668 PR-D review SF2."""
+    topology = _active_topology("mono", "active_2_way")
+    preset = _preset()
+    text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_shelf(), _peak(3400.0, -1.5)]},
+    )
+    payload = yaml.safe_load(text)
+    shelf_name = driver_linearization_shelf_name("tweeter")
+    peak_name = driver_linearization_peak_name("tweeter", 1)
+    for step in payload["pipeline"]:
+        if step.get("channels") == [1]:
+            names = step["names"]
+            i, j = names.index(shelf_name), names.index(peak_name)
+            names[i], names[j] = names[j], names[i]
+            break
+    else:
+        raise AssertionError("no pipeline step for channel 1")
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+    graph = classify_camilla_graph(topology=topology, text=tampered)
+    assert graph.allowed is False
+
+
 def test_reproof_allows_unrelated_filter_name_between_crossover_and_tail():
     """A stray filter name that does NOT match the linearization naming
     convention is not silently consumed — it correctly falls through to the

@@ -941,8 +941,13 @@ def _driver_linearization_chain_names(
     linearization: dict[str, list[dict[str, Any]]],
     role: str,
 ) -> list[str]:
-    """The ordered filter-name list for ``role``'s linearization stage: the
-    shelf (if present) first, then each peaking filter in fit order."""
+    """The filter-name list for ``role``'s linearization stage, one name per
+    entry in ``filters`` IN INPUT ORDER: a Highshelf entry gets the shelf
+    name, everything else gets the next peak name. This function does not
+    reorder or otherwise enforce "shelf first" -- it names whatever order
+    the input list already carries. Shelf-before-peaks is a construction
+    guarantee of the fit engine (``linearization_fit.fit_driver_linearization``),
+    not something enforced here."""
 
     filters = linearization.get(role) or []
     names: list[str] = []
@@ -2380,7 +2385,7 @@ def emit_active_speaker_baseline_config(
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
-    linearization: Mapping[str, Sequence[Mapping[str, Any]]] = {},
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -2427,6 +2432,11 @@ def emit_active_speaker_baseline_config(
     """
 
     preset.validate()
+    # N3 (#1668 PR-D review): normalize the optional linearization mapping
+    # here rather than defaulting the parameter to a mutable ``{}`` literal
+    # -- matches how every other optional dict/sequence param on this
+    # function is handled.
+    linearization = linearization or {}
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)
     if forbidden_token:
