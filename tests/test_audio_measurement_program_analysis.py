@@ -25,6 +25,7 @@ Runtime is kept low with short (≥0.5 s) sweeps and 48 kHz mono buffers.
 """
 from __future__ import annotations
 
+import logging
 import math
 from fractions import Fraction
 
@@ -66,6 +67,11 @@ from jasper.audio_measurement.program_analysis import (
     LINEARITY_SNR_BIAS_BUDGET_FRACTION,
     LINEARITY_TOLERANCE_DB,
     PILOT_MIN_SNR_DB,
+    RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
+    RIPPLE_TRIM_MAX_DB,
+    RIPPLE_TRIM_MIN_DB,
+    RIPPLE_TRIM_SANITY_MARGIN_DB,
+    RIPPLE_TRIM_SEARCH_WINDOW_DB,
     AlignmentEstimate,
     DriverResponse,
     MeasurementGeometry,
@@ -83,13 +89,14 @@ from jasper.audio_measurement.program_analysis import (
     _locate_segments,
     _n_fft_for,
     _peak_dbfs,
-    _predicted_sum,
     _ripple_db,
     _sweep_occurrence_index,
     analysis_diagnostic_summary,
     analyze_program_capture,
     overlap_band_hz,
+    predicted_branch_sum,
     solve_branch_trims,
+    solve_ripple_optimal_trim,
 )
 
 SR = 48_000
@@ -952,7 +959,7 @@ def test_snap_production_path_preserves_parallax_contract(
         if response.validity_floor_hz is not None
     ]
     lo_hz = max([lo_hz, *floors])
-    predicted_aligned = _predicted_sum(
+    predicted_aligned = predicted_branch_sum(
         responses["woofer"].complex_tf,
         responses["tweeter"].complex_tf,
         result.candidate.trim_db["woofer"],
@@ -1836,12 +1843,12 @@ def test_gating_consistent_candidate_removes_reflection_notch_end_to_end():
     _f2, T_old = _old_fixed_window_branch_tf(tweeter_ir, n_fft)
     trim_w_old, trim_t_old, _lw, _lt = solve_branch_trims(freqs_old, W_old, T_old, fc_hz)
     old_ripple = _ripple_db(
-        freqs_old, _predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1), lo, hi,
+        freqs_old, predicted_branch_sum(W_old, T_old, trim_w_old, trim_t_old, +1), lo, hi,
     )
     assert old_ripple > 5.0
     assert old_ripple > candidate.predicted_ripple_db + 4.0
     old_pred_db = 20.0 * np.log10(np.maximum(
-        np.abs(_predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1)), 1e-12,
+        np.abs(predicted_branch_sum(W_old, T_old, trim_w_old, trim_t_old, +1)), 1e-12,
     ))
 
     # The REAL physical system (the reflection is reality — it doesn't get
@@ -1998,7 +2005,14 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     keep computing its own unclamped [Fc/2, 2*Fc] locally. Spies on
     `_ripple_db` (rather than asserting on DSP output numbers, which are
     sensitive to windowing/gating details unrelated to this fix) to pin the
-    actual band value `_build_candidate` used."""
+    actual band value `_build_candidate` used.
+
+    #1667: the ripple-optimal trim solve calls `_ripple_db` once per
+    scanned candidate trim (plus once more for the final predicted-ripple
+    evidence), so this now asserts every recorded call used the expected
+    band rather than pinning an exact call count — the count is an
+    implementation detail of the scan width, the band is the SSOT
+    invariant this test actually protects."""
     fc_hz = 2000.0
     woofer_ir = _band_impulse(300, 500.0, 6000.0, 1.0)
     tweeter_ir = _band_impulse(300, 300.0, 20000.0, 0.7)
@@ -2022,15 +2036,296 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
         tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=3000.0,
     )
     # A clean (non-reflective) fixture never trips the branch-floor clamp, so
-    # the ripple call's band is exactly the SSOT helper's output — proving
+    # every ripple call's band is exactly the SSOT helper's output — proving
     # `_build_candidate` threads the sweep bounds through, not just accepts
     # and ignores them.
     expected_lo, expected_hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=3000.0,
     )
-    assert seen_lo_hi == [(expected_lo, expected_hi)]
+    assert seen_lo_hi  # the ripple-optimal scan + final evidence both called it
+    assert all(entry == (expected_lo, expected_hi) for entry in seen_lo_hi)
     assert expected_lo == pytest.approx(fc_hz)  # lo clamped UP from the nominal Fc/2=1000
     assert expected_hi == pytest.approx(3000.0)  # hi clamped DOWN from the nominal 2*Fc=4000
+
+
+# --------------------------------------------------------------------------- #
+# #1667 — ripple-optimal trim solve
+# --------------------------------------------------------------------------- #
+#
+# solve_branch_trims band-energy-averages |W| and |T| over the overlap band,
+# which is systematically biased whenever the two driver sweeps only overlap
+# on one side of Fc: the tweeter sweep starting AT Fc clamps the evaluation
+# band to [Fc, 2*Fc] (overlap_band_hz), entirely inside the woofer's own
+# filter rolloff skirt, so the woofer's own attenuation drags the level-
+# match target — and so the tweeter's solved trim — down with it. The fix
+# (solve_ripple_optimal_trim) re-solves for the trim that minimizes the
+# summed response's ripple instead, seeded by (and sanity-bounded against)
+# the same band-average value.
+
+
+def _lr_pair_irs(fc_hz: float, order: float, *, delay: int = 300, n: int = 8192):
+    """Woofer/tweeter IR pair whose FFT magnitude follows a textbook
+    Linkwitz-Riley-shaped complementary lowpass/highpass split at ``fc_hz``
+    (``order=4`` is a true LR4; smaller orders are a deliberately gentler
+    slope, used to keep a fixture's band-average bias inside the sanity
+    guard's margin for the "wiring works" test below). Both branches share
+    the SAME linear-phase delay (a co-located pair, zero relative delay,
+    normal polarity) — only the magnitude differs, mirroring
+    `_band_impulse`'s own "shape a flat impulse spectrum" technique."""
+    freqs = np.fft.rfftfreq(n, 1.0 / SR)
+    with np.errstate(divide="ignore"):
+        ratio = np.where(freqs > 0, (freqs / fc_hz) ** order, 0.0)
+    w_mag = 1.0 / (1.0 + ratio)
+    t_mag = ratio / (1.0 + ratio)
+    imp = np.zeros(n)
+    imp[delay] = 1.0
+    spectrum = np.fft.rfft(imp)
+    woofer_ir = np.fft.irfft(spectrum * w_mag, n)
+    tweeter_ir = np.fft.irfft(spectrum * t_mag, n)
+    return woofer_ir, tweeter_ir
+
+
+def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_asymmetric_overlap_bias():
+    """#1667 core regression: a textbook Linkwitz-Riley 4th-order pair sums
+    to EXACTLY flat magnitude at unity gain on both branches by
+    construction (that is the defining property of an LR crossover) — the
+    analytically known optimum is ``trim_t = 0.0`` dB. With the tweeter's
+    sweep starting AT Fc (the real-world asymmetric-overlap mechanism), the
+    evaluation band clamps to ``[Fc, 2*Fc]``, entirely inside the woofer's
+    own LR4 rolloff skirt — band-average level-matching over that skirt
+    drags the tweeter's trim far into over-attenuation.
+
+    The LR4 bowl near 0.0 dB is WIDE relative to
+    ``RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`` (verified below, not assumed —
+    ripple stays under ~0.26 dB across roughly [-0.6, +0.6] dB of trim
+    around the true optimum), so flat-minimum regularization (architect
+    follow-up) legitimately pulls the DEFAULT-regularized result away from
+    the exact 0.0 dB optimum, toward the (far more negative) band-average
+    seed — by design, trading a negligible amount of extra ripple for
+    session-to-session stability. This test therefore asserts on RIPPLE
+    (within epsilon of the sharp optimum), not on the regularized TRIM
+    value, and separately pins the SHARP (epsilon effectively disabled)
+    optimum at the exact analytic 0.0 dB truth so the underlying objective
+    itself stays verified precisely."""
+    fc_hz = 2000.0
+    freqs = np.geomspace(200.0, 8000.0, 2000)
+    ratio4 = (freqs / fc_hz) ** 4
+    W = 1.0 / (1.0 + ratio4)  # LR4 lowpass magnitude
+    T = ratio4 / (1.0 + ratio4)  # LR4 highpass magnitude (exact complement)
+
+    lo, hi = overlap_band_hz(
+        fc_hz, tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=4.0 * fc_hz,
+    )
+    assert (lo, hi) == pytest.approx((2000.0, 4000.0))  # asymmetric: clamps to [Fc, 2*Fc]
+
+    trim_w, trim_t_band_average, _lw, _lt = solve_branch_trims(
+        freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
+    )
+    assert trim_w == pytest.approx(0.0)  # woofer is the quieter (unattenuated) branch
+    assert trim_t_band_average < -5.0  # badly biased: the true optimum is 0.0 dB
+
+    # Sharp optimum: epsilon effectively disabled, recovers the
+    # analytically known 0.0 dB truth to within one scan step
+    # (RIPPLE_TRIM_SEARCH_STEP_DB = 0.1 dB) — exactly the pre-
+    # regularization behavior.
+    trim_t_sharp, ripple_sharp, seed = solve_ripple_optimal_trim(
+        freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
+        seed_trim_db=trim_t_band_average, trim_w_db=trim_w, sign=1,
+        flat_minimum_epsilon_db=1e-9,
+    )
+    assert seed == trim_t_band_average
+    assert trim_t_sharp == pytest.approx(0.0, abs=0.15)
+    assert ripple_sharp < 0.1  # near-perfect LR4 cancellation at the sharp optimum
+
+    # Regularized (default epsilon): pulled toward the (very negative)
+    # seed, away from 0.0 -- asserted on ripple, not the trim value.
+    trim_t_reg, ripple_reg, _seed = solve_ripple_optimal_trim(
+        freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
+        seed_trim_db=trim_t_band_average, trim_w_db=trim_w, sign=1,
+    )
+    assert ripple_reg <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
+    assert trim_t_reg < trim_t_sharp  # pulled toward the very-negative seed
+    assert trim_t_reg > trim_t_band_average  # but nowhere near all the way back
+
+
+def test_solve_ripple_optimal_trim_ties_break_toward_seed():
+    """The exact-tie case, a special case of the broader flat-minimum
+    epsilon-region rule (architect follow-up): a frequency-independent
+    (flat) branch pair sums to a CONSTANT for every trim — no frequency-
+    dependent magnitude on either side to create ripple — so every
+    candidate in the scan window ties for minimum ripple (~0 exactly, an
+    epsilon-region spanning the ENTIRE window). The selection rule must
+    pick the seed itself, not drift to an arbitrary tied candidate."""
+    freqs = np.linspace(500.0, 4000.0, 256)
+    W = np.full_like(freqs, 1.0)
+    T = np.full_like(freqs, 0.5)
+    seed = -6.02  # an arbitrary, non-grid-aligned seed
+    trim_t, ripple_db, returned_seed = solve_ripple_optimal_trim(
+        freqs, W, T, 1600.0, lo_hz=800.0, hi_hz=3200.0,
+        seed_trim_db=seed, trim_w_db=0.0, sign=1,
+    )
+    assert returned_seed == seed
+    assert trim_t == pytest.approx(seed, abs=1e-9)
+    assert ripple_db < 1e-6
+
+
+def test_solve_ripple_optimal_trim_prefers_near_seed_shallow_bowl_over_far_global_min():
+    """Flat-minimum regularization (architect follow-up, #1667): a
+    synthetic shallow bowl with TWO distinct, well-separated, comparably-low
+    ripple minima -- built from a flat background region plus a second
+    region whose T is ~180 degrees out of phase with W (a genuine magnitude
+    interference null). The null's OWN curve dips toward that
+    cancellation and recovers on the far side, crossing the background
+    region's level once on EACH side of the null -- exactly the
+    multi-minimum shape real hardware gets from imperfect time alignment/
+    comb-filtering, not a contrived edge case.
+
+    The FAR minimum (~+12.6 dB) has objectively LOWER ripple than the NEAR
+    one (~-2.3 dB, verified below to be the sharp/unregularized global
+    minimum on this exact scan), but both are comfortably within
+    ``RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`` of each other. The regularized
+    selection must prefer the NEAR one — closer to the band-average seed —
+    trading the far candidate's marginally better flatness for
+    session-to-session repeatability."""
+    n_bg, n_null = 200, 200
+    freqs = np.linspace(1000.0, 3000.0, n_bg + n_null)
+    W = np.empty(freqs.size, dtype=complex)
+    T = np.empty(freqs.size, dtype=complex)
+    W[:n_bg] = 0.5
+    T[:n_bg] = 0.15
+    W[n_bg:] = 1.0
+    T[n_bg:] = -0.5  # ~180 degrees out of phase from W -> an interference null
+    lo, hi = float(freqs[0]), float(freqs[-1])
+
+    seed = -3.28  # close to the near minimum, far from the far one
+
+    # Sharp (epsilon effectively disabled): confirms the fixture's TRUE
+    # global minimum is the NEAR basin, not the far one -- the premise the
+    # rest of this test depends on.
+    trim_sharp, ripple_sharp, _seed = solve_ripple_optimal_trim(
+        freqs, W, T, 2000.0, lo_hz=lo, hi_hz=hi,
+        seed_trim_db=seed, trim_w_db=0.0, sign=1, window_db=20.0,
+        flat_minimum_epsilon_db=1e-9,
+    )
+    assert trim_sharp == pytest.approx(-2.28, abs=0.15)
+
+    trim_reg, ripple_reg, seed_out = solve_ripple_optimal_trim(
+        freqs, W, T, 2000.0, lo_hz=lo, hi_hz=hi,
+        seed_trim_db=seed, trim_w_db=0.0, sign=1, window_db=20.0,
+    )
+    assert seed_out == seed
+    # Stays in the NEAR basin (close to seed), nowhere near the far one.
+    assert trim_reg < 5.0
+    assert abs(trim_reg - seed) < abs(trim_reg - 12.6)
+    # Within the promised epsilon budget of the true sharp optimum -- the
+    # regularization traded distance for flatness within budget, not an
+    # unbounded amount.
+    assert ripple_reg <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
+
+    # The far basin's own best discrete candidate is a GENUINE, comparable
+    # alternative (also within epsilon of the global min) -- confirms this
+    # is a real two-option test, not one where the far option was
+    # accidentally excluded by the search window or grid.
+    far_summed = predicted_branch_sum(W, T, 0.0, 12.6, 1)
+    far_ripple = _ripple_db(freqs, far_summed, lo, hi)
+    assert far_ripple <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
+    assert far_ripple < ripple_reg  # objectively flatter, yet regularization declines it
+
+
+def test_solve_ripple_optimal_trim_never_exceeds_physical_attenuation_bounds():
+    """A degenerate 'flat reference branch' scenario has NO interior ripple
+    minimum: attenuating the only-varying branch toward silence is always
+    'more flat' against a perfectly flat reference (nothing on the
+    reference side to trade off against), so an unconstrained scan would
+    walk all the way to a physically invalid net-gain trim. The search must
+    clamp to [RIPPLE_TRIM_MIN_DB, RIPPLE_TRIM_MAX_DB] and never return a
+    value outside it, regardless of which direction the (degenerate,
+    monotonic) objective wants to walk — this is the #1667 implementation
+    bug the search-window clamp fixes (a real 'MeasuredCrossoverCandidate
+    attenuation_out_of_range' failure was reproduced via this exact shape
+    before the clamp landed)."""
+    freqs = np.linspace(500.0, 4000.0, 256)
+    W = np.full_like(freqs, 1.0)  # perfectly flat reference
+    T = 1.0 + 0.3 * np.sin(2 * np.pi * (freqs - 500.0) / 700.0)  # a varying branch
+
+    # A seed near the physical ceiling: the (degenerate, monotonic)
+    # objective wants to walk further toward 0 dB / positive gain, but must
+    # never cross it. window_db is deliberately huge to exercise the
+    # physical clamp rather than the ordinary search window.
+    trim_t, _ripple, _seed = solve_ripple_optimal_trim(
+        freqs, W, T, 1600.0, lo_hz=800.0, hi_hz=3200.0,
+        seed_trim_db=-0.05, trim_w_db=0.0, sign=1, window_db=100.0,
+    )
+    assert RIPPLE_TRIM_MIN_DB <= trim_t <= RIPPLE_TRIM_MAX_DB
+
+    # A seed near the attenuation floor: same clamp, the other side.
+    trim_t2, _ripple2, _seed2 = solve_ripple_optimal_trim(
+        freqs, W, T, 1600.0, lo_hz=800.0, hi_hz=3200.0,
+        seed_trim_db=-59.95, trim_w_db=0.0, sign=1, window_db=100.0,
+    )
+    assert RIPPLE_TRIM_MIN_DB <= trim_t2 <= RIPPLE_TRIM_MAX_DB
+
+
+def test_build_candidate_applies_ripple_optimal_trim_with_band_average_evidence():
+    """#1667 wiring (raw/program_analysis population): `_build_candidate`'s
+    applied ``trim_db`` is the ripple-optimal solve, and
+    ``trim_band_average_db`` preserves the band-average seed as evidence —
+    both populated, and they differ whenever the ripple-optimal search
+    genuinely moves the trim. The woofer/reference branch is never touched
+    by the search, so its trim is identical in both mappings. Uses a gentler
+    (order=1.5, not a true LR4) asymmetric-overlap fixture so the bias stays
+    inside the sanity guard's margin — the guard-fires case is covered by
+    ``test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning``
+    below."""
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=1.5)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    alignment = AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+    )
+    candidate, _pred = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
+        tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=4.0 * fc_hz,
+    )
+    assert candidate.trim_band_average_db is not None
+    assert candidate.trim_db["woofer"] == candidate.trim_band_average_db["woofer"]
+    assert candidate.trim_db["tweeter"] != candidate.trim_band_average_db["tweeter"]
+    # Moves toward LESS attenuation (the band-average bias always
+    # over-attenuates for this asymmetric-overlap shape) and stays inside
+    # the sanity guard (otherwise it would have fallen back and the two
+    # would be equal — see the guard test below).
+    assert candidate.trim_db["tweeter"] > candidate.trim_band_average_db["tweeter"]
+    assert abs(
+        candidate.trim_db["tweeter"] - candidate.trim_band_average_db["tweeter"]
+    ) <= RIPPLE_TRIM_SANITY_MARGIN_DB
+
+
+def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(caplog):
+    """A textbook LR4 pair's band-average bias (issue #1667's own described
+    shape), run through the real deconvolution/windowing pipeline, is severe
+    enough to move the ripple-optimal solve implausibly far (>6 dB) from the
+    band-average seed — the sanity guard must distrust it, fall back to
+    band-average, and log a WARNING (never a silent wild trim)."""
+    caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.program_analysis")
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    alignment = AlignmentEstimate(
+        delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
+        polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
+        confidence=0.9, status=ALIGNMENT_OK,
+    )
+    candidate, _pred = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter", alignment, None,
+        tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=4.0 * fc_hz,
+    )
+    # Rejected: the applied trim falls back to the band-average seed exactly.
+    assert candidate.trim_db == candidate.trim_band_average_db
+    assert "event=program_analysis.ripple_trim_rejected" in caplog.text
+    assert f"margin_db={RIPPLE_TRIM_SANITY_MARGIN_DB}" in caplog.text
+    assert RIPPLE_TRIM_SEARCH_WINDOW_DB > RIPPLE_TRIM_SANITY_MARGIN_DB  # the guard has real teeth
 
 
 # --------------------------------------------------------------------------- #

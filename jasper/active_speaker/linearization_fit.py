@@ -57,8 +57,10 @@ import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
-from jasper.correction.peq import PEQ, design_peq, predicted_response
-from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
+from jasper.correction.peq import design_peq, predicted_response
+from jasper.sound.profile import (
+    RESPONSE_SAMPLE_RATE_HZ, FilterSpec, _filter_response_complex, _freq_trig,
+)
 
 from .linearization_envelope import (
     ENVELOPE_CEILING_SENTINEL_DB,
@@ -293,29 +295,54 @@ class LinearizationFit:
         }
 
 
-def predicted_correction_db(
+def complex_correction_response(
     filters: Sequence[LinearizationFilter], freqs_hz: np.ndarray,
 ) -> np.ndarray:
-    """The summed dB correction ``filters`` apply across ``freqs_hz``.
+    """The COMPLEX (minimum-phase) response the emitted filters apply across
+    ``freqs_hz``.
 
-    Peaking entries reuse ``jasper.correction.peq.predicted_response``
-    (the SAME Lorentzian-bell model the peaking loop's own greedy residual
-    tracking used while fitting, so this is not a second, possibly-drifted
-    model); Highshelf entries reuse :func:`_highshelf_response_db` (the
-    SAME RBJ evaluation the shelf stage subtracted while fitting). Callers
-    apply this in the LINEAR domain: ``W_lin = W * 10**(db/20)``.
+    The emitted CamillaDSP biquads are minimum-phase and rotate phase near
+    their corners. When a correction is applied to a driver branch that is then
+    SUMMED with the other branch through the crossover, that summation is
+    phase-dominated, so modeling the correction as a zero-phase magnitude scale
+    (``W * 10**(magnitude_db/20)``) mispredicts the summed response — and,
+    because it perturbs magnitude without the compensating phase, can land the
+    prediction FURTHER from the true summation than omitting the filters
+    entirely. Measured on JTS3 (issue #1667): against the same VERIFY capture,
+    the zero-phase magnitude model mistracked the summation by ~2.0 dB (WORSE
+    than the ~1.7 dB of a no-correction model), where this complex model tracks
+    it to ~0.5 dB. So the conductor's linearized-branch model
+    (:func:`jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor.
+    _fit_linearization` — the trim re-solve, the ripple-optimal scan, and the
+    persisted VERIFY prediction) multiplies each branch by THIS, not a
+    magnitude scale. There is no zero-phase branch-correction path.
+
+    Every entry — Peaking and Highshelf alike — is the exact RBJ biquad
+    CamillaDSP realizes, via :func:`jasper.sound.profile._filter_response_complex`
+    (the complex twin of the parity-pinned ``_filter_response_db``, sharing the
+    ``_biquad_coeffs`` SSOT). It is IMPORTED rather than re-derived — unlike
+    this module's ``_highshelf_response_db`` magnitude duplicate — precisely so
+    the phase and magnitude of the applied correction can never silently
+    disagree with the emitted graph:
+    ``abs(complex_correction_response(filters, f))`` equals
+    ``10**(sum of jasper.sound.profile._filter_response_db over filters / 20)``
+    bin-for-bin (pinned by a magnitude-consistency test). Callers apply it in
+    the LINEAR domain: ``W_lin = W * complex_correction_response(...)``.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    total = np.zeros_like(freqs)
-    peaking = [
-        PEQ(freq=f.freq, q=f.q, gain=f.gain)
-        for f in filters if f.biquad_type == "Peaking"
-    ]
-    if peaking:
-        total = total + predicted_response(peaking, freqs)
+    # One trig table (at RESPONSE_SAMPLE_RATE_HZ) shared across every biquad in
+    # the cascade — the same reuse _filter_response_db's own callers do.
+    trig = _freq_trig(freqs)
+    total = np.ones(freqs.shape, dtype=np.complex128)
     for f in filters:
-        if f.biquad_type == "Highshelf":
-            total = total + _highshelf_response_db(freqs, f.freq, f.gain, f.q)
+        # LinearizationFilter and FilterSpec are structurally the same biquad
+        # record (biquad_type/freq/gain/q); FilterSpec is the declared input of
+        # the shared profile evaluator.
+        spec = FilterSpec(
+            name="linearization", biquad_type=f.biquad_type,
+            freq=f.freq, gain=f.gain, q=f.q,
+        )
+        total = total * np.array(_filter_response_complex(spec, freqs, trig))
     return total
 
 

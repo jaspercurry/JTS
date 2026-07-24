@@ -33,9 +33,9 @@ from jasper.active_speaker.linearization_fit import (
     _highshelf_response_db,
     _ladder_smooth,
     _shelf_stage,
+    complex_correction_response,
     fit_driver_linearization,
     linearization_filters_by_role,
-    predicted_correction_db,
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
@@ -388,37 +388,109 @@ def test_reason_summary_values_are_plain_strings_not_enum_members():
 
 
 # --------------------------------------------------------------------------- #
-# predicted_correction_db
+# complex_correction_response (#1667 — minimum-phase branch correction)
 # --------------------------------------------------------------------------- #
 
 
-def test_predicted_correction_db_sums_peaking_and_highshelf():
-    """Cross-checks predicted_correction_db's sum against the SAME two
-    primitives it delegates to, computed independently here (PEQ's own
-    predicted_response for the Peaking term, _highshelf_response_db for
-    the Highshelf term) -- an exact-equality test, not an approximation."""
-    from jasper.correction.peq import PEQ, predicted_response
+def test_complex_correction_response_magnitude_matches_filter_response_db():
+    """Magnitude-consistency parity: ``abs(complex_correction_response)`` equals
+    ``10**(sum of jasper.sound.profile._filter_response_db over filters / 20)``
+    bin-for-bin. The complex correction and the emitted graph's magnitude share
+    the ``_biquad_coeffs`` SSOT, so the applied correction's magnitude can never
+    silently drift from what CamillaDSP realizes -- only its phase is added."""
+    from jasper.sound.profile import _filter_response_db
 
     q_shelf = 1.0 / np.sqrt(2.0)
     filters = (
-        LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=2.0, gain=-4.0),
+        LinearizationFilter(biquad_type="Peaking", freq=803.0, q=1.35, gain=-5.57),
+        LinearizationFilter(biquad_type="Peaking", freq=4064.0, q=2.0, gain=-2.92),
         LinearizationFilter(biquad_type="Highshelf", freq=6000.0, q=q_shelf, gain=-3.0),
     )
-    freqs = np.array([1000.0, 6000.0, 12000.0])
-    corr = predicted_correction_db(filters, freqs)
-    expected = (
-        predicted_response([PEQ(freq=1000.0, q=2.0, gain=-4.0)], freqs)
-        + _highshelf_response_db(freqs, 6000.0, -3.0, q_shelf)
-    )
-    np.testing.assert_allclose(corr, expected, atol=1e-9)
-    # Sanity: the RBJ half-gain-at-corner property still holds inside the sum.
-    assert corr[1] == pytest.approx(expected[1])
+    freqs = np.geomspace(30.0, 20000.0, 512)
+    H = complex_correction_response(filters, freqs)
+    mag_db = np.zeros_like(freqs)
+    for f in filters:
+        mag_db = mag_db + np.asarray(_filter_response_db(f, freqs))
+    np.testing.assert_allclose(np.abs(H), 10.0 ** (mag_db / 20.0), atol=1e-6, rtol=0)
 
 
-def test_predicted_correction_db_empty_filters_is_zero():
+def test_complex_correction_response_empty_filters_is_unity():
+    """No filters -> unity in the LINEAR domain (the multiplicative identity a
+    caller applies as ``W * H``), the complex analogue of the old
+    magnitude-domain ``0 dB``."""
     freqs = np.array([100.0, 1000.0, 10000.0])
-    corr = predicted_correction_db((), freqs)
-    assert np.all(corr == 0.0)
+    H = complex_correction_response((), freqs)
+    np.testing.assert_allclose(H, np.ones_like(freqs, dtype=np.complex128))
+
+
+def test_complex_correction_response_carries_minimum_phase():
+    """The load-bearing difference from a zero-phase magnitude scale: a peaking
+    biquad's phase is non-zero off its centre. A zero-phase model would return
+    a real (phase-0) response everywhere; this must not."""
+    filters = (LinearizationFilter(biquad_type="Peaking", freq=1000.0, q=1.0, gain=-6.0),)
+    freqs = np.array([500.0, 1000.0, 2000.0])
+    H = complex_correction_response(filters, freqs)
+    # At the exact centre a peaking biquad is real (phase 0); on either skirt it
+    # rotates. Assert a materially non-zero rotation off-centre.
+    assert abs(np.angle(H[1])) < 1e-9  # centre: real
+    assert abs(np.degrees(np.angle(H[0]))) > 5.0  # below centre: rotated
+    assert abs(np.degrees(np.angle(H[2]))) > 5.0  # above centre: rotated
+
+
+def test_complex_correction_response_phase_sensitivity_two_branch_sum():
+    """#1667 regression — the exact failure shape. On an inverted-polarity LR4
+    two-branch crossover (the JTS3 session's own topology: polarity=invert, so
+    the branches null near Fc and the summation is phase-DOMINATED there),
+    modeling a driver correction as a ZERO-PHASE magnitude scale mispredicts the
+    summed response by >1 dB under the SAME notch-excluded comparator the VERIFY
+    gate reads, while the COMPLEX minimum-phase correction (what the emitted
+    graph actually realizes) matches the true summation exactly. This reproduces
+    the mechanism behind the live failure: on session 2's captures the
+    zero-phase model was ~2.0 dB off (WORSE than the ~1.7 dB of no correction at
+    all), the complex model ~0.5 dB. If a future change reverts the branch
+    correction to a magnitude scale (``W * 10**(db/20)``), this test fails.
+    """
+    from jasper.audio_measurement.analysis import notch_excluded_tracking_error_db
+    from jasper.audio_measurement.program_analysis import (
+        VERIFY_NOTCH_EXCLUSION_DB, predicted_branch_sum,
+    )
+    from jasper.sound.profile import _filter_response_db
+
+    fc = 2000.0
+    freqs = np.geomspace(500.0, 8000.0, 4096)
+    # Minimum-phase LR4 branches (Butterworth-squared low/high pass):
+    s = 1j * (freqs / fc)
+    bw2 = 1.0 / (1.0 + np.sqrt(2.0) * s + s * s)
+    w_branch = bw2 * bw2                                        # LR4 lowpass (woofer)
+    t_branch = (s * s / (1.0 + np.sqrt(2.0) * s + s * s)) ** 2  # LR4 highpass (tweeter)
+    sign = -1  # inverted polarity — the JTS3 session's own; branches null at Fc
+
+    # A woofer correction whose skirt reaches the crossover region, so its
+    # minimum-phase rotation shifts the (near-null) two-branch interference.
+    corr = (LinearizationFilter(biquad_type="Peaking", freq=1600.0, q=1.5, gain=-6.0),)
+    H_complex = complex_correction_response(corr, freqs)
+    mag_db = np.asarray(_filter_response_db(corr[0], freqs))
+    H_zero_phase = 10.0 ** (mag_db / 20.0)  # the OLD model: magnitude, no phase
+
+    to_db = lambda z: 20.0 * np.log10(np.maximum(np.abs(z), 1e-12))
+    # The emitted graph applies the COMPLEX correction; that summation is truth.
+    true_db = to_db(predicted_branch_sum(w_branch * H_complex, t_branch, 0.0, 0.0, sign))
+    zero_phase_db = to_db(predicted_branch_sum(w_branch * H_zero_phase, t_branch, 0.0, 0.0, sign))
+
+    # Compare each model's predicted summation against truth the SAME way the
+    # VERIFY gate does (notch-excluded max, so the deep-null bins — where any
+    # model is hypersensitive — don't dominate; the divergence measured here is
+    # the shoulder region, exactly what the live gate scored).
+    band = (fc / 2.0, fc * 2.0)
+    _, zero_phase_err = notch_excluded_tracking_error_db(
+        freqs, zero_phase_db, true_db, band,
+        notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB, notch_reference_db=true_db)
+    assert zero_phase_err > 1.0, f"zero-phase should mispredict by >1 dB, got {zero_phase_err}"
+    # The complex model's exactness against the emitted-biquad truth is pinned
+    # independently by the profile-level magnitude/phase parity tests
+    # (test_filter_response_complex_*); re-asserting truth-vs-truth here was
+    # tautological (2026-07-24 review nit) — this test's load-bearing claim is
+    # the zero-phase misprediction above.
 
 
 # --------------------------------------------------------------------------- #
