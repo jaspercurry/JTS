@@ -378,8 +378,27 @@ def test_missing_garbage_and_bypassed_statuses(tmp_path):
     assert bypassed.status == "bypassed"
 
 
-def test_state_summary_is_fail_soft_and_projects_commissioned_profile(tmp_path):
-    profile = _profile()
+def test_state_summary_is_fail_soft_and_projects_commissioned_profile(
+    monkeypatch, tmp_path
+):
+    import jasper.active_speaker.baseline_profile as baseline_mod
+    import jasper.output_topology as topology_mod
+
+    topology = _topology()
+    applied = _applied_baseline()
+    # bass_extension_state_summary re-derives contract_status the same way
+    # the doctor does: by loading current topology/baseline state and
+    # re-running evaluate_loaded_bass_extension_profile against the profile
+    # object it already parsed. Pin those loaders to values consistent with
+    # the saved profile so the contract evaluation is deterministic
+    # ("accepted") instead of depending on whatever real /var/lib/jasper
+    # files happen to exist on the host running tests.
+    monkeypatch.setattr(topology_mod, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        baseline_mod, "load_applied_baseline_profile_state", lambda: applied
+    )
+
+    profile = _profile(topology=topology, applied_baseline=applied)
     path = _save(tmp_path, profile)
     assert bass_extension_state_summary(path) == {
         "commissioned": True,
@@ -397,8 +416,116 @@ def test_state_summary_is_fail_soft_and_projects_commissioned_profile(tmp_path):
             "max_listening_level": 50,
             "evidence": "measured",
         }],
+        "contract_status": "accepted",
+        "contract_refusals": [],
+        "contract_detail": "profile is accepted",
     }
     assert bass_extension_state_summary(tmp_path) is None
+
+
+def test_state_summary_contract_status_stale_when_topology_mismatches(
+    monkeypatch, tmp_path
+):
+    """File status stays "accepted" (the raw field); contract_status tells
+    the truth. This is the bug this change fixes: a household viewing only
+    ``status`` would believe an out-of-date profile is still live."""
+    import jasper.active_speaker.baseline_profile as baseline_mod
+    import jasper.output_topology as topology_mod
+
+    topology = _topology()
+    applied = _applied_baseline()
+    profile = _profile(topology=topology, applied_baseline=applied)
+    path = _save(tmp_path, profile)
+
+    monkeypatch.setattr(
+        topology_mod, "load_output_topology", lambda: _topology("different-speaker")
+    )
+    monkeypatch.setattr(
+        baseline_mod, "load_applied_baseline_profile_state", lambda: applied
+    )
+
+    summary = bass_extension_state_summary(path)
+    assert summary["status"] == "accepted"
+    assert summary["contract_status"] == "stale"
+    assert summary["contract_refusals"] == [
+        BassExtensionRefusal.TOPOLOGY_MISMATCH.value
+    ]
+    assert "topology id/fingerprint mismatch" in summary["contract_detail"]
+
+
+def test_state_summary_contract_status_bypassed(monkeypatch, tmp_path):
+    import jasper.active_speaker.baseline_profile as baseline_mod
+    import jasper.output_topology as topology_mod
+
+    topology = _topology()
+    applied = _applied_baseline()
+    profile = _profile(topology=topology, applied_baseline=applied, status="bypassed")
+    path = _save(tmp_path, profile)
+
+    monkeypatch.setattr(topology_mod, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(
+        baseline_mod, "load_applied_baseline_profile_state", lambda: applied
+    )
+
+    summary = bass_extension_state_summary(path)
+    assert summary["status"] == "bypassed"
+    assert summary["contract_status"] == "bypassed"
+    assert summary["contract_refusals"] == []
+
+
+def test_state_summary_contract_evaluation_explosion_is_fail_soft(
+    monkeypatch, tmp_path
+):
+    profile = _profile()
+    path = _save(tmp_path, profile)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("evaluation exploded")
+
+    monkeypatch.setattr(
+        profile_module, "evaluate_loaded_bass_extension_profile", _boom
+    )
+
+    summary = bass_extension_state_summary(path)
+    assert summary["commissioned"] is True
+    assert summary["status"] == "accepted"
+    assert summary["profile_id"] == profile.profile_id
+    assert summary["contract_status"] is None
+    assert summary["contract_refusals"] == []
+    assert summary["contract_detail"] is None
+
+
+def test_state_summary_survives_exception_types_outside_the_logged_tuple(
+    monkeypatch, tmp_path
+):
+    # The evaluation block's narrow except is for *logging* the expected
+    # failure classes; totality comes from its suppress(Exception) wrapper.
+    # An exception type outside the tuple must degrade only the three
+    # contract keys — never escape to the outer wrapper and cost the whole
+    # summary (that regression shipped once: a lost summary hides the bass
+    # tab card silently, with nothing logged).
+    class WeirdError(Exception):
+        pass
+
+    profile = _profile()
+    path = _save(tmp_path, profile)
+
+    for exc in (WeirdError("untupled"), StopIteration(), IndexError("x")):
+
+        def _boom(*_args, _exc=exc, **_kwargs):
+            raise _exc
+
+        monkeypatch.setattr(
+            profile_module, "evaluate_loaded_bass_extension_profile", _boom
+        )
+
+        summary = bass_extension_state_summary(path)
+        assert summary is not None
+        assert summary["commissioned"] is True
+        assert summary["status"] == "accepted"
+        assert summary["contract_status"] is None
+        assert summary["contract_refusals"] == []
+        assert summary["contract_detail"] is None
 
 
 def test_profile_json_has_no_non_finite_values(tmp_path):
@@ -1434,4 +1561,7 @@ def test_state_summary_reports_pending_recovery_with_absent_predecessor(tmp_path
         "runtime_eligible": False,
         "runtime_deferred_reason": None,
         "apply_recovery_required": True,
+        "contract_status": None,
+        "contract_refusals": [],
+        "contract_detail": None,
     }
