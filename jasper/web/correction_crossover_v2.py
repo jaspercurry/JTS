@@ -135,17 +135,8 @@ class CrossoverV2LocalSeamError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- #
-# flow selector + durable state
+# durable state
 # --------------------------------------------------------------------------- #
-
-
-def v2_flow_active() -> bool:
-    from jasper.active_speaker.crossover_flow import (
-        CROSSOVER_FLOW_V2,
-        active_crossover_flow,
-    )
-
-    return active_crossover_flow() == CROSSOVER_FLOW_V2
 
 
 def _state_path() -> Path:
@@ -564,8 +555,6 @@ def enforce_session_volume_ceiling_if_stale(
     household volume and releasing any held measurement pause. v2-only. Returns
     True iff a stale session was drained.
     """
-    if not v2_flow_active():
-        return False
     plan = session_volume_plan()
     try:
         if not plan.stale_active():
@@ -593,8 +582,6 @@ def v2_volume_recovery_active() -> bool:
     endpoint must drain (unresolved, or a crash-hydrated active plan). The
     legacy-lease path 409s these because they live on the v2 plan, not the
     lease — the observed ``crossover_volume_recovery_not_required`` bug."""
-    if not v2_flow_active():
-        return False
     try:
         return bool(session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
@@ -649,8 +636,6 @@ def reconcile_session_volume_for_new_session(
     — the caller's ``needs_recovery`` gate refuses it toward the recover-volume
     screen.
     """
-    if not v2_flow_active():
-        return
     plan = session_volume_plan()
     enforce_session_volume_ceiling_if_stale(run_async, camilla_factory)
     if plan.measurement_volume_db is None or plan.needs_recovery:
@@ -698,15 +683,13 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
 
 
 def crossover_v2_status_block() -> dict[str, Any] | None:
-    """The ``status["crossover_v2"]`` block, or ``None`` when the flow is legacy.
+    """The ``status["crossover_v2"]`` block.
 
     ``needs_recovery`` comes from the SessionVolumePlan (the W2 gate ruling:
     key on ``needs_recovery``, never ``unresolved_volume_safety`` alone — a
     crash-hydrated active plan surfaces no unresolved payload but still needs
     draining before a new session).
     """
-    if not v2_flow_active():
-        return None
     state = load_v2_state()
     try:
         needs_recovery = bool(session_volume_plan().needs_recovery)
@@ -2248,9 +2231,9 @@ def prepare_v2_session(
 ) -> V2PreparedSession:
     """Prepare the ``POST /crossover/v2/session`` relay hosting (S1a).
 
-    Gates (fail-closed, before any relay registration): the flow selector, the
-    volume-recovery gate (``needs_recovery`` — the W2 ruling), and the
-    conductor-context resolution. Hydration (S1d): the durable state is
+    Gates (fail-closed, before any relay registration): the volume-recovery
+    gate (``needs_recovery`` — the W2 ruling) and the conductor-context
+    resolution. Hydration (S1d): the durable state is
     hydrated through :meth:`CrossoverV2Conductor.hydrate` with the NEW relay
     session id — a prior session's CHECK/MEASURE evidence is invalidated per
     §5.6 (and logged); the fresh session starts at CHECK.
@@ -2263,10 +2246,6 @@ def prepare_v2_session(
     )
     from jasper.capture_relay import correction_adapter
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
@@ -2409,10 +2388,6 @@ def prepare_v2_verify(
     )
     from jasper.capture_relay import correction_adapter
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before verifying"
@@ -2593,10 +2568,6 @@ def handle_v2_apply(
     from jasper.active_speaker.measurement import load_measurement_state
     from jasper.output_topology import load_output_topology
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     expected = str(raw.get("expected_candidate_fingerprint") or "")
     if not expected:
         raise CrossoverV2Refused("expected_candidate_fingerprint is required")
@@ -2744,10 +2715,6 @@ def handle_v2_restore(
     )
     from jasper.output_topology import load_output_topology
 
-    if not v2_flow_active():
-        raise CrossoverV2Refused(
-            "the v2 crossover flow is not active — set JASPER_CROSSOVER_FLOW=v2"
-        )
     state = load_v2_state()
     if not state or not state.get("applied"):
         raise CrossoverV2Refused(

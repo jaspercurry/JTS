@@ -68,6 +68,20 @@ def test_schema_8_and_v2_step_tuple():
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
 
+def test_legacy_env_still_serves_v2_envelope(monkeypatch):
+    """W5b retired the ``JASPER_CROSSOVER_FLOW`` selector and the legacy flow —
+    v2 is the only flow now. A box carrying a stale
+    ``JASPER_CROSSOVER_FLOW=legacy`` from before the selector was deleted must
+    still serve the v2 (schema 8) envelope through the ``build_crossover_envelope``
+    entry point, not crash or fall back to a deleted legacy path."""
+    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+
+    monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
+    env = build_crossover_envelope(_status(phase="check"))
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 8
+    assert env["flow"] == "v2"
+
+
 def test_inactive_speaker_gets_not_applicable():
     env = build_crossover_envelope_v2({"active": False})
     assert env["screen"] == "not_applicable"

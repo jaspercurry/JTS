@@ -11,10 +11,10 @@ renders (silent auto-retry banner / fix-and-retry / hard stop / session
 restart), plus the two special screens (``volume_recovery`` and the VERIFY-fail
 one-default screen). This module is the pure ``status → envelope`` function for
 that flow, dispatched from
-:func:`jasper.active_speaker.crossover_envelope.build_crossover_envelope` by
-default since the post-W6 flip (only an explicit ``JASPER_CROSSOVER_FLOW=legacy``
-opt-out returns the deprecated schema-6 legacy envelope instead). It emits the SAME envelope dict shape the legacy renderer
-returns (``schema_version`` / ``screen`` / ``steps`` / ``verdict_text`` /
+:func:`jasper.active_speaker.crossover_envelope.build_crossover_envelope` —
+the only crossover flow since W5b retired the legacy schema-6 envelope and the
+``JASPER_CROSSOVER_FLOW`` selector. It emits the envelope dict shape the
+generic data-driven JS renderer consumes (``schema_version`` / ``screen`` / ``steps`` / ``verdict_text`` /
 ``nudges`` / ``relay`` / ``next_action`` / ``alternate_actions`` / ``progress``
 / ``applied``) so the generic data-driven JS renderer needs no v2-specific code.
 
