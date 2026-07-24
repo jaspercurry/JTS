@@ -1129,3 +1129,26 @@ def test_later_confirmation_records_confirmation_time_not_draft_creation(
     assert confirmed["driver_safety_profile"]["confirmation"]["confirmed_at"] == (
         "2026-07-13T12:05:00Z"
     )
+
+
+def test_component_entry_fields_present_in_all_four_allowlist_gates():
+    """Drift guard for the four independent allowlist copies (#1665).
+
+    ``driver_class``/``radiating_diameter_mm``/``horn_coverage_deg``/``pad``
+    must be accepted by every gate that re-validates the same driver record:
+    the two save-path allowlists (whose drift 500s a save), the AI-research
+    paste-back allowlist, and the research staleness-comparison set.  One
+    superset assertion per copy so the next field lands in all four or fails
+    loudly here.
+    """
+    from jasper.active_speaker import design_draft as dd
+    from jasper.active_speaker import driver_safety as ds
+
+    new_fields = {"driver_class", "radiating_diameter_mm", "horn_coverage_deg", "pad"}
+    assert new_fields <= set(dd._MANUAL_DRIVER_FIELDS)
+    assert new_fields <= set(ds._MANUAL_DRIVER_FIELDS)
+    # pad is deliberately NOT researchable; the research gates carry the
+    # three researchable fields only.
+    researchable = new_fields - {"pad"}
+    assert researchable <= set(ds._V2_RESEARCH_DRIVER_FIELDS)
+    assert researchable <= set(dd._V2_RESEARCH_COMPARABLE_FIELDS)

@@ -663,7 +663,9 @@ def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, 
 
     The declaration (``manual_settings.drivers``) is the ONE owner of driver
     sensitivity -- a declared physical property of the driver, not a safety
-    limit -- so the W6.5 sensitivity-derived HF measurement ceiling
+    limit -- so the W6.5 sensitivity-derived HF measurement ceiling (which now reads the
+    pad-folded :func:`declared_effective_driver_sensitivities` instead of this
+    naked reader)
     (:func:`jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings`)
     reads it from here rather than duplicating it onto the confirmed safety
     profile. That keeps one copy of the fact and needs zero migration: every
@@ -807,24 +809,10 @@ def normalise_operator_inputs(raw: Any) -> dict[str, Any]:
     return out
 
 
-def _validate_v2_research_prefill(
-    research: Mapping[str, Any],
-    manual: Mapping[str, Any] | None,
-) -> None:
-    """Prove persisted v2 advice still matches the visible imported values.
-
-    A visible edit intentionally invalidates the bound packet in the browser;
-    callers then save the manual authority without v2 research.  While the
-    packet remains attached, every research-provided editable field must still
-    equal its target-specific visible value.
-    """
-
-    manual_by_target = {
-        str(driver.get("target_id")): driver
-        for driver in (manual or {}).get("drivers", [])
-        if isinstance(driver, Mapping) and driver.get("target_id")
-    }
-    comparable = {
+# The research staleness-comparison field set — one of the four allowlist
+# gates for per-driver fields (see tests/test_active_speaker_driver_safety.py
+# ::test_component_entry_fields_present_in_all_four_allowlist_gates).
+_V2_RESEARCH_COMPARABLE_FIELDS = frozenset({
         "role",
         "model",
         "nominal_impedance_ohm",
@@ -850,7 +838,27 @@ def _validate_v2_research_prefill(
         "radiating_diameter_mm",
         "horn_coverage_deg",
         "pad",
+    })
+
+
+def _validate_v2_research_prefill(
+    research: Mapping[str, Any],
+    manual: Mapping[str, Any] | None,
+) -> None:
+    """Prove persisted v2 advice still matches the visible imported values.
+
+    A visible edit intentionally invalidates the bound packet in the browser;
+    callers then save the manual authority without v2 research.  While the
+    packet remains attached, every research-provided editable field must still
+    equal its target-specific visible value.
+    """
+
+    manual_by_target = {
+        str(driver.get("target_id")): driver
+        for driver in (manual or {}).get("drivers", [])
+        if isinstance(driver, Mapping) and driver.get("target_id")
     }
+    comparable = _V2_RESEARCH_COMPARABLE_FIELDS
     for research_driver in research.get("drivers", []):
         target_id = str(research_driver.get("target_id") or "")
         visible = manual_by_target.get(target_id)

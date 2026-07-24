@@ -1762,6 +1762,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         targetSetting.gain_offset_db_provenance =
           driver.gain_offset_db_provenance || 'research_estimate';
       }
+      // Pads are operator-declared hardware facts, never researchable: an AI
+      // research payload carrying a fabricated "pad" must not reach the saved
+      // record (the shared apply below is also used for trusted persisted
+      // reloads, so strip here at the research boundary, not inside it).
+      if (driver.pad != null) {
+        driver = Object.assign({}, driver);
+        delete driver.pad;
+      }
       applyDriverSafetyToSetting(driver, targetSetting);
     });
     // Pick ONE crossover per role-pair: the highest-confidence candidate with a
