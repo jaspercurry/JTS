@@ -26,11 +26,11 @@ streambox = [
     "httpx==0.28.1",
     "rapidfuzz>=3.6,<4",
     "dbus-next>=0.2.3",
-    "zeroconf>=0.149,<1.0",
+    "zeroconf>=0.150.0,<1.0",
 ]
 
 full = [
-    "google-genai==2.9.0",
+    "google-genai==2.14.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
     # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
@@ -40,7 +40,7 @@ full = [
     # which we don't use. Pulls in `websockets` as the realtime
     # transport. Skippable at install time only if the active
     # provider is gemini AND the user is sure they'll never switch.
-    "openai>=2.36.0",
+    "openai>=2.48.0",
     # `audioop` was removed from Python 3.13's stdlib (PEP 594). PiOS
     # Trixie ships 3.13, and jasper.voice.openai_session uses
     # audioop.ratecv to upsample 16 kHz mic audio to the 24 kHz that
@@ -81,7 +81,7 @@ full = [
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
     # vendor-control interface for boot-time profile writes and diagnostics.
     "pyusb>=1.2",
-    "libusb_package>=1.0",
+    "libusb_package>=1.0.30.0",
     # ALSA-native PCM access for jasper-aec-bridge and jasper-usbmic — needed because
     # PortAudio (sounddevice's backend) only enumerates hw: devices,
     # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
@@ -92,14 +92,14 @@ full = [
     # + Improv handshake; esptool for firmware flash. Both pure-Python
     # and tiny.
     "pyserial>=3.5",
-    "esptool>=4.7",
+    "esptool>=5.3.1",
     # Google integration (Calendar + Gmail voice tools). google-auth and
     # google-auth-oauthlib drive the per-account OAuth + refresh flow;
     # google-api-python-client is the discovery-based service factory
     # (resource shapes for `calendar` and `gmail`). Pure-Python, tiny.
-    "google-auth>=2.36",
+    "google-auth>=2.56.2",
     "google-auth-oauthlib>=1.2",
-    "google-api-python-client>=2.150",
+    "google-api-python-client>=2.198.0",
     # jasper-input: third-party HID accessory bridge (volume knobs,
     # macro pads, etc.) reads /dev/input/event* via python-evdev and
     # watches for hot-plug via pyudev. Tiny pure-Python deps.
@@ -118,7 +118,7 @@ full = [
     # the dual-stack conflict (pyvisa-py#378). Imported lazily inside
     # jasper.peering.discovery so the package is import-cheap when
     # peering is OFF (the default). ~5-8 MB Pss when active.
-    "zeroconf>=0.149,<1.0",
+    "zeroconf>=0.150.0,<1.0",
     # jasper.capture_relay.crypto: AES-256-GCM decryption of the phone-mic
     # capture blob the Pi pulls from the relay (the page encrypts with
     # WebCrypto; the Pi decrypts here before feeding the existing room/
@@ -161,7 +161,7 @@ openwakeword-onnx = [
     # openWakeWord's declared tflite-runtime dep, which has no Python 3.13 wheel.
     "requests",
     "tqdm",
-    "scikit-learn>=1,<2",
+    "scikit-learn>=1.9.0,<2",
 ]
 
 [project.scripts]
@@ -220,7 +220,7 @@ jasper-wake-review = "jasper.cli.wake_review:main"
 jasper-wake-corpus-web = "jasper.web.wake_corpus_setup:main"
 
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
