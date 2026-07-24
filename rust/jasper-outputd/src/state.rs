@@ -1222,6 +1222,15 @@ impl OutputdState {
                     "flushed_frames",
                     m.flushed_frames.load(Ordering::Relaxed),
                 );
+                buf.push(',');
+                // The same assistant_loudness object fan-in exposes, rendered
+                // through the shared writer so the two /state shapes cannot
+                // drift (pinned by ASSISTANT_LOUDNESS_STATUS_KEYS on both).
+                buf.push_str(r#""assistant_loudness":"#);
+                jasper_tts_protocol::loudness::render_assistant_loudness(
+                    &mut buf,
+                    &m.loudness_snapshot(),
+                );
             }
             None => {
                 push_kv_bool(&mut buf, "enabled", false);
@@ -2129,6 +2138,8 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
+                .to_string(),
             active_lane: false,
         }
     }
@@ -2624,6 +2635,31 @@ mod tests {
             r#""flushed_frames":7"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+    }
+
+    #[test]
+    fn snapshot_json_assistant_loudness_satisfies_shared_key_contract() {
+        // The mirror of fan-in's guard: outputd's assistant_loudness STATUS
+        // object must carry every shared key (rendered through the one shared
+        // writer), so the two daemons' /state shapes cannot drift.
+        use jasper_tts_protocol::loudness::ASSISTANT_LOUDNESS_STATUS_KEYS;
+        let state = OutputdState::new(&test_config());
+        state.set_tts(
+            "/run/jasper-outputd/tts.sock".to_string(),
+            TtsMetrics::new(96_000),
+        );
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        assert!(
+            j.contains(r#""assistant_loudness":{"#),
+            "block missing: {j}"
+        );
+        for key in ASSISTANT_LOUDNESS_STATUS_KEYS {
+            assert!(
+                j.contains(&format!("\"{key}\":")),
+                "outputd assistant_loudness missing key {key}: {j}"
+            );
         }
     }
 

@@ -597,9 +597,10 @@ engage/release edges (`mixer::ramp_program_duck`,
 
 `PREPARE_ASSISTANT` and profile-bearing `SEGMENT_START`
 drive fan-in's content-loudness/profile/peak-cap gain decision.
-`VOLUME_CONTEXT` is standalone FIFO state, not a PREPARE field. Voice writes it
-immediately before PREPARE on the same connection; every publisher uses one
-serializer. It supplies absolute canonical-user dB, downstream-Camilla dB,
+At turn start, voice embeds `VOLUME_CONTEXT` in `PREPARE_ASSISTANT` so the
+assistant identity and safety snapshot are one atomic command. The standalone
+`VOLUME_CONTEXT` command remains the live-update path while speech is queued.
+Both forms supply absolute canonical-user dB, downstream-Camilla dB,
 final quiet-room TTS-envelope LUFS, mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured
 after the snapshot. Fan-in accepts equal/newer stamps, rejects older state, and
 logs `event=fanin.volume_context_rejected`. For music references it applies the
@@ -647,12 +648,10 @@ entirely: the grouping reconciler points it at outputd's TTS server
 shared `rust/jasper-tts-protocol` crate both daemons import) so assistant
 audio mixes post-round-trip instead of riding the synced stream. The reconciler
 also writes `JASPER_TTS_MIX_STAGE=post_dsp`; that explicit fact disables every
-voice/coordinator volume-context publisher for this route. Outputd therefore
-keeps the pre-volume-context behavior and does not claim fan-in parity for
-mute, downstream compensation, or live knob re-gain. The follow-up
-[Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
-must make mix stage an explicit gain-policy input, add post-DSP mute semantics,
-and re-gain queued speech in outputd's mix loop before parity can be claimed. One
+pre-DSP publisher and enables the post-DSP outputd publisher. Outputd shares
+the same loudness engine with `MixStage::PostDsp`, honors mute and live knob
+re-gain without applying downstream Camilla compensation, and requires a valid
+atomic turn-start context before assistant audio can become audible. One
 contract delta to know when comparing acks: both daemons now return a
 per-segment playout ledger in the `FLUSH_SYNC` ack (provider item id,
 flushed frames, `max_audio_played_ms`, `events[]`) — the ack KEY shape is a
@@ -1281,7 +1280,7 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-07-16 (stamped standalone volume context, gentle-envelope calibration offset, held-content expiry, drained-before-end reference commit, and expanded STATUS observability checked against PR #1542; prior pass covered bounded raw-block queue and live gain ramp; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
+Last verified: 2026-07-24 (atomic turn-start volume context, standalone live updates, and fail-closed post-DSP outputd parity checked against both Rust consumers; prior 2026-07-16 pass covered gentle-envelope calibration offset, held-content expiry, drained-before-end reference commit, and expanded STATUS observability against PR #1542; prior pass covered bounded raw-block queue and live gain ramp; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
 stays loopback while the independent USB DIRECT decision still runs;
 librespot Tier-2 recovery final mutation rechecked
 as active-only `try-restart`, including concurrent Off/role parking;

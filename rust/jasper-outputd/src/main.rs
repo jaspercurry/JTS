@@ -396,6 +396,9 @@ fn run_alsa(
     // segments, loudness, saturating mix, the DAC-true PlayoutLedger)
     // mixes voice at the FINAL output stage: downstream of the
     // round-trip, upstream of the reference publish (inv-A).
+    // Kept alive for the run so the assistant-reference writer thread's channel
+    // sender (held inside OutputCore) has a live receiver; dropped at shutdown.
+    let mut _assistant_reference_writer: Option<thread::JoinHandle<()>> = None;
     let mut tts: Option<(OutputCore, TtsBridge)> = if let Some(path) = &config.tts_socket_path {
         let (tx, rx, flush_tx, flush_rx, metrics, epoch) =
             tts_channels(config.tts_max_pending_frames);
@@ -405,7 +408,30 @@ fn run_alsa(
             "event=outputd.tts.enabled socket={} budget_frames={} program_duck_db={}",
             path, config.tts_max_pending_frames, config.tts_program_duck_db,
         );
-        let core = OutputCore::new_for_daemon(config.period_frames);
+        let mut core = OutputCore::new_for_daemon(config.period_frames);
+        // Publish the assistant-loudness snapshot into the shared STATUS cell
+        // each period (the same shape fan-in exposes under tts.assistant_loudness).
+        core.set_loudness_sink(metrics.loudness_cell());
+        // Learned quiet-room assistant reference: load the last value and arm
+        // the persistence writer, mirroring fan-in. Best-effort — a writer
+        // failure degrades to no learning and never blocks final output.
+        let reference = jasper_outputd::assistant_reference::load(std::path::Path::new(
+            &config.assistant_reference_path,
+        ));
+        core.set_held_assistant_reference(reference);
+        match jasper_outputd::assistant_reference::spawn_writer(
+            PathBuf::from(&config.assistant_reference_path),
+            reference,
+        ) {
+            Ok((reference_tx, handle)) => {
+                core.set_assistant_reference_sink(reference_tx);
+                _assistant_reference_writer = Some(handle);
+            }
+            Err(e) => eprintln!(
+                "event=outputd.assistant_reference.writer_unavailable path={} detail={e}",
+                config.assistant_reference_path,
+            ),
+        }
         let bridge = TtsBridge::new(rx, flush_rx, metrics, config.tts_program_duck_db);
         Some((core, bridge))
     } else {
@@ -1667,6 +1693,8 @@ mod tests {
             tts_socket_path: None,
             tts_max_pending_frames: jasper_outputd::tts::DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
+            assistant_reference_path: "/var/lib/jasper/outputd_assistant_volume_reference.json"
+                .to_string(),
             active_lane: false,
         }
     }

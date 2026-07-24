@@ -23,7 +23,7 @@ from .assistant_loudness import (
     profile_for_outputd,
     update_profile_from_measurement,
 )
-from .assistant_volume import EffectiveVolumeContext, serialize_volume_context
+from .assistant_volume import EffectiveVolumeContext
 from .log_event import log_event
 from .tts_routing import FANIN_TTS_SOCKET
 
@@ -959,9 +959,6 @@ class _OutputdStreamAdapter:
             )
             return
         with self._lock:
-            payload = bytearray()
-            if volume_context is not None:
-                payload.extend(serialize_volume_context(volume_context))
             parts = [
                 "PREPARE_ASSISTANT",
                 provider,
@@ -969,8 +966,17 @@ class _OutputdStreamAdapter:
                 voice,
                 f"{float(tts_envelope_lufs):.2f}",
             ]
-            payload.extend((" ".join(parts) + "\n").encode("ascii"))
-            self._sendall_locked(bytes(payload))
+            if volume_context is not None:
+                parts.extend(
+                    [
+                        f"{volume_context.canonical_db:.3f}",
+                        f"{volume_context.downstream_db:.3f}",
+                        f"{volume_context.tts_envelope_lufs:.3f}",
+                        "1" if volume_context.muted else "0",
+                        str(int(volume_context.stamp_boot_ns)),
+                    ]
+                )
+            self._sendall_locked((" ".join(parts) + "\n").encode("ascii"))
 
     def pause_content_meter(self) -> None:
         with self._lock:

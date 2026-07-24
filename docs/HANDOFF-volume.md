@@ -305,10 +305,13 @@ older even if its socket write is delayed until after a newer update.
 The mute bit is fail-safe: persisted pre-mute intent, canonical 0%, or observed
 Camilla mute can raise it; a stale/unreadable observation can never lower user
 intent.
-Fan-in rejects a context older than the last accepted stamp. Voice sends the
-same standalone message immediately before `PREPARE_ASSISTANT` on one ordered
-connection, which gives a restarted fan-in a current snapshot without letting
-PREPARE overwrite a newer dial update.
+Fan-in rejects a context older than the last accepted stamp. At turn start,
+voice embeds the same five fields directly in `PREPARE_ASSISTANT`, so the
+identity and safety snapshot are one atomic command rather than two separately
+queued messages. The legacy four-field prepare still parses for rolling
+upgrades; fan-in can continue from its latest separately published context,
+while the post-DSP outputd consumer treats a missing or rejected turn-start
+context as silence.
 
 Slow push-mode actuators are ordered differently from local Camilla writes.
 For Spotify/Bluetooth, the coordinator publishes the already-known user intent
@@ -321,14 +324,19 @@ briefly compensate against stale downstream gain and create a needless second
 ramp.
 
 The grouping reconciler is the single writer of `JASPER_TTS_MIX_STAGE`. A
-passive bonded member sets `post_dsp`, so voice and the coordinator publish no
-pre-DSP compensation to outputd's post-Camilla TTS socket. Absent means the
-normal `pre_dsp` fan-in path only when there is no grouping-owned socket
-override. A legacy socket-only grouping file is ambiguous during a rolling
-upgrade and fails closed (no pre-DSP compensation). Callers use
-`tts_socket_feeds_pre_dsp_fanin()` rather than inferring stage from a socket
+passive bonded member sets `post_dsp`. Since #1547 outputd interprets
+`VOLUME_CONTEXT` as a first-class post-DSP consumer, so voice and the
+coordinator publish the SAME absolute wire message to outputd's socket — they
+never mutate `downstream_db` to 0 (the post-DSP consumer's shared
+`AssistantLoudness` engine treats it as 0.0 via `MixStage::PostDsp`). Absent
+means the normal `pre_dsp` fan-in path only when there is no grouping-owned
+socket override. A legacy socket-only grouping file is ambiguous during a
+rolling upgrade and fails closed (neither pre-DSP nor post-DSP compensation is
+published, and outputd silences context-free prepares). Callers use
+`tts_socket_feeds_pre_dsp_fanin()` /
+`tts_socket_feeds_post_dsp_outputd()` rather than inferring stage from a socket
 pathname or duck transport. The message contains no source name or gain policy:
-source dispatch stays in `VolumeCoordinator`, while fan-in owns
+source dispatch stays in `VolumeCoordinator`, while fan-in / outputd own
 measurement/reference policy. The complete loudness contract lives in
 [audio-paths.md](audio-paths.md#assistant-loudness-matching).
 
@@ -488,14 +496,15 @@ Multiple guardrails sit on top:
 
 - `regress_listening_level_if_stale` clamps stale + extreme values
   into `[20%, 70%]` by default.
-- Pre-DSP fan-in assistant/TTS loudness has no fixed source-gain ceiling. It
-  matches assistant loudness to measured content or the quiet-room envelope
-  and caps the result with the dynamic peak-aware limit (`max_peak_dbfs -
-  source_peak_dbfs`) so quiet voices are not pinned below music by a
-  stale global clamp. Passive bonded outputd TTS deliberately does not claim
-  volume-context parity yet; see
-  [Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
-  and the scope in
+- Fan-in (pre-DSP) and outputd (post-DSP) assistant/TTS loudness have no fixed
+  source-gain ceiling. Both match assistant loudness to measured content or the
+  quiet-room envelope and cap the result with the dynamic peak-aware limit
+  (`max_peak_dbfs - source_peak_dbfs`) so quiet voices are not pinned below
+  music by a stale global clamp. Passive bonded outputd TTS now has full
+  volume-context parity (#1547): the shared `AssistantLoudness` engine takes a
+  `MixStage` so post-DSP zeroes the downstream term, and outputd applies mute,
+  live re-gain, and a learned/persisted quiet-room reference just like fan-in.
+  See
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, sound-preference, and active-speaker baseline configs
@@ -679,4 +688,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-16 (pre-DSP mix-stage ownership, stamped standalone volume context, quiet-room envelope tracking, and equal-level downstream republish checked against the PR #1542 implementation; prior pass covered fan-in/Camilla lock separation and mid-TTS adjustment; prior 2026-07-12 pass covered bounded CamillaDSP cancellation/retry; prior 2026-07-11 pass covered measurement-scoped reconciliation and STATUS observability)
+Last verified: 2026-07-24 (post-DSP turn-start context is atomic in `PREPARE_ASSISTANT`, and outputd fails closed to silence when that context is missing or rejected; prior 2026-07-23 pass covered the shared `AssistantLoudness` `MixStage` engine, post-DSP producer gate, and never-mutate-downstream-to-0 wire contract; prior 2026-07-16 pass covered pre-DSP mix-stage ownership, stamped standalone volume updates, quiet-room envelope tracking, and equal-level downstream republish against the PR #1542 implementation)
