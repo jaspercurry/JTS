@@ -277,9 +277,10 @@ if [[ "${WANT_AUDIO}" == "1" ]]; then
     # source of truth is jasper/usbsink/volume_bridge.py's
     # USBSINK_VOLUME_DB_{MIN,MAX}/STEP_DB constants, and a contract test in
     # tests/test_usbsink_volume_bridge.py pins these literals to round(const*256)
-    # so bash and Python can't drift. The read side (_raw_to_pct) recovers
-    # physical dB from the control's step index (via the DB_MINMAX TLV, this
-    # range as fallback) then amplitude-normalizes. Best-effort via
+    # so bash and Python can't drift. The read side (_raw_to_pct) normalizes
+    # the ALSA step index and squares that fraction to invert macOS's observed
+    # slider transfer. The DB_MINMAX TLV is diagnostic only; converting its
+    # physical dB range to amplitude double-corrects the slider. Best-effort via
     # write_if_present: older kernels may not expose these attrs, and a missing
     # attr must not fail gadget bring-up (the kernel default range then
     # applies). Keep the min at/above -60 dB so the slider bottom stays useful;
