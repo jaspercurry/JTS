@@ -36,6 +36,28 @@ Channel routing (design §5.4): CHECK/MEASURE programs are 2-channel WAVs
 (ch0 → woofer output path, ch1 → tweeter output path); VERIFY is a mono summed
 sweep through the applied production graph. Per-driver sequencing lives in the
 WAV channels so the CamillaDSP commissioning graph stays static and provable.
+
+**Courtesy-tone prelude (issue #1677).** Each composer takes an opt-in
+``courtesy_prelude`` flag that PREPENDS a short "beep beep beep" + ~3 s of
+silence ahead of the program's existing content -- a pre-capture "quiet
+please" warning played from the speaker under test itself, once per capture
+group (CHECK/MEASURE/VERIFY each get their own). It rides the SAME admitted
+playback as the stimulus that follows it -- never a second, unguarded
+playback path (see AGENTS.md's ``/sound/`` Combined-test-wedge cautionary
+tale) -- because the prelude is just more segments on the one
+``ExcitationProgram`` the conductor already composes, admits, and plays. Its
+kind (``KIND_COURTESY_TONE``) is deliberately NOT in ``STIMULUS_KINDS``: the
+locate/analysis machinery in ``program_analysis.py`` correlates against and
+deconvolves only ``STIMULUS_KINDS`` segments, so the prelude is as
+analysis-invisible as a silence segment, and the schedule shift it
+introduces is absorbed by the existing relative-offset locate math (the same
+mechanism that already tolerated sweep-composition PR-A lengthening
+MEASURE). It IS real, audible content though, so it belongs to the broader
+``KNOWN_AUDIBLE_KINDS`` set program-admission's out-of-segment-energy check
+must expect rather than flag as a leak. See ``_prepend_courtesy_prelude``
+for the segment shape and ``courtesy_tone_gain_db`` for the level derivation
+(never louder than the channel's own loudest scheduled stimulus, never
+positive).
 """
 from __future__ import annotations
 
@@ -43,7 +65,7 @@ import hashlib
 import json
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -77,6 +99,17 @@ KIND_PILOT = "pilot"
 KIND_SWEEP = "sweep"
 KIND_SUMMED_SWEEP = "summed_sweep"
 STIMULUS_KINDS = frozenset({KIND_PILOT, KIND_SWEEP, KIND_SUMMED_SWEEP})
+# The courtesy-tone prelude (issue #1677) — see the module docstring. Never a
+# STIMULUS_KIND: it must stay invisible to the locate/correlation and
+# deconvolution machinery in program_analysis.py, exactly like KIND_SILENCE.
+KIND_COURTESY_TONE = "courtesy_tone"
+# STIMULUS_KINDS plus the courtesy tone: the segments program_admission.py's
+# out-of-segment-energy / declared-peak checks must treat as expected
+# non-silent content. Anything outside this set (i.e. KIND_SILENCE) must
+# render as true silence — that promise is what OUT_OF_SEGMENT_ENERGY
+# polices, so a new audible-but-unanalyzed kind has to join this set or every
+# program that uses it would be refused as if it leaked/tampered energy.
+KNOWN_AUDIBLE_KINDS = STIMULUS_KINDS | frozenset({KIND_COURTESY_TONE})
 
 # Measurement sweeps live in [150 Hz, 23 kHz]: long LF reach is not needed at a
 # ~250 Hz gated validity floor, and bass belongs to the room / bass-extension
@@ -97,7 +130,8 @@ MEASURE_SWEEP_F_HI_HZ = 23_000.0
 # At the defaults this composes a ~35.8 s / ~3.4 MB mono-WAV MEASURE
 # capture against the 5 MB
 # jasper.active_speaker.test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES
-# upload cap (headroom ~2.9 MB pre-#1668 → ~1.5 MB today) — raising
+# upload cap (headroom ~2.9 MB pre-#1668 → ~1.2 MB today, after the N=3
+# repeats AND the #1677 courtesy prelude's ~0.33 MB) — raising
 # repeat_count OR any role's sweep_durations must re-check that cap.
 MEASURE_REPEAT_COUNT = 3
 
@@ -162,6 +196,24 @@ VERIFY_PILOT_F_LO_HZ = 200.0
 VERIFY_PILOT_F_HI_HZ = 800.0
 VERIFY_PILOT_FC_CLEARANCE_RATIO = 2.5
 
+# --- courtesy-tone prelude (issue #1677) ---
+# Three quick beeps ("beep, beep, beep") + a trailing silence, prepended
+# ahead of a program's existing content when the caller opts in via
+# ``courtesy_prelude=True``. Fixed, not configurable per call — this is the
+# tone's SHAPE, analogous to DEFAULT_PILOT_LEVELS_DB's "10 dB apart" being a
+# fixed property of the pilot pair rather than a per-call parameter.
+COURTESY_TONE_BEEP_COUNT = 3
+COURTESY_TONE_BEEP_HZ = 1000.0
+COURTESY_TONE_BEEP_DURATION_S = 0.12
+COURTESY_TONE_BEEP_GAP_S = 0.12
+# The gap AFTER the last beep, before the program's existing content resumes
+# — the "~3 seconds to go quiet" window the issue asks for.
+COURTESY_TONE_TRAILING_SILENCE_S = 3.0
+# How far below the reference stimulus gain the tone rides (see
+# courtesy_tone_gain_db). 2026-07-23 owner spec: "derive the beep gain from
+# the session's existing plan (e.g. the pilot gain − 6 dB)".
+COURTESY_TONE_MARGIN_DB = 6.0
+
 
 @dataclass(frozen=True)
 class RoleBand:
@@ -209,7 +261,7 @@ class ProgramSegment:
     effective_peak_dbfs: float
 
     def __post_init__(self) -> None:
-        if self.kind not in (STIMULUS_KINDS | {KIND_SILENCE}):
+        if self.kind not in (KNOWN_AUDIBLE_KINDS | {KIND_SILENCE}):
             raise ValueError(f"unknown segment kind: {self.kind!r}")
         if type(self.start_sample) is not int or self.start_sample < 0:
             raise ValueError("start_sample must be a non-negative integer")
@@ -309,6 +361,12 @@ class ExcitationProgram:
 
     def stimulus_segments(self) -> tuple[ProgramSegment, ...]:
         return tuple(s for s in self.segments if s.kind in STIMULUS_KINDS)
+
+    def known_audible_segments(self) -> tuple[ProgramSegment, ...]:
+        """Stimulus segments PLUS the courtesy-tone prelude (issue #1677) —
+        every segment program-admission's out-of-segment-energy check must
+        expect to be non-silent. See ``KNOWN_AUDIBLE_KINDS``."""
+        return tuple(s for s in self.segments if s.kind in KNOWN_AUDIBLE_KINDS)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -557,6 +615,143 @@ def mesm_gap_samples(
     return _seconds_to_samples(gap_s, sample_rate)
 
 
+# --------------------------------------------------------------------------- #
+# courtesy-tone prelude (issue #1677)
+# --------------------------------------------------------------------------- #
+
+
+def courtesy_tone_gain_db(
+    reference_gain_db: float, *, margin_db: float = COURTESY_TONE_MARGIN_DB,
+) -> float:
+    """The courtesy tone's digital gain, derived from ``reference_gain_db``
+    (a program channel's own loudest scheduled stimulus gain).
+
+    ``margin_db`` (default :data:`COURTESY_TONE_MARGIN_DB`, i.e. -6 dB) below
+    the reference, clamped so the tone can never equal or exceed it (the
+    ``min(..., reference_gain_db)`` term is defense in depth against a future
+    zero/negative margin) and never positive. Both clamps mirror the issue's
+    own wording: "clamp ≤ the stimulus gain, never positive." In practice
+    every real stimulus gain is already ≤ 0 dBFS (``synchronized_sweep_metadata``
+    enforces this at compose time for the segments the reference is drawn
+    from), so neither clamp binds today — they exist as an explicit backstop,
+    not because either is expected to fire.
+    """
+    return min(reference_gain_db - margin_db, reference_gain_db, 0.0)
+
+
+def _courtesy_tone_n_samples() -> int:
+    """Total sample count of one courtesy-tone segment (all beeps + the
+    short inter-beep gaps, NOT the trailing silence that follows it)."""
+    beep_n = _seconds_to_samples(COURTESY_TONE_BEEP_DURATION_S, PROGRAM_SAMPLE_RATE_HZ)
+    gap_n = _seconds_to_samples(COURTESY_TONE_BEEP_GAP_S, PROGRAM_SAMPLE_RATE_HZ)
+    return COURTESY_TONE_BEEP_COUNT * beep_n + (COURTESY_TONE_BEEP_COUNT - 1) * gap_n
+
+
+def _courtesy_tone_burst(gain_db: float):
+    """Synthesize the courtesy tone's float32 PCM: ``COURTESY_TONE_BEEP_COUNT``
+    short sine beeps at ``COURTESY_TONE_BEEP_HZ``, separated by silent gaps.
+
+    Deterministic from ``gain_db`` alone — beep count/duration/frequency/gap
+    are fixed module constants, mirroring ``segment_stimulus``'s "regenerate
+    from the schedule, store no PCM" philosophy.
+    """
+    import numpy as np
+
+    sr = PROGRAM_SAMPLE_RATE_HZ
+    beep_n = _seconds_to_samples(COURTESY_TONE_BEEP_DURATION_S, sr)
+    gap_n = _seconds_to_samples(COURTESY_TONE_BEEP_GAP_S, sr)
+    amp = 10.0 ** (gain_db / 20.0)
+    t = np.arange(beep_n, dtype=np.float64) / sr
+    beep = (amp * np.sin(2.0 * np.pi * COURTESY_TONE_BEEP_HZ * t)).astype(np.float32)
+    # Short quadratic power-ramp fade in/out per beep (linspace**2, mirroring
+    # the sweep fade) — avoids the click a
+    # hard-edged tone burst would leave (mirrors sweep.py's fade-in/out).
+    fade_n = min(max(8, int(0.005 * sr)), beep_n // 2)
+    if fade_n > 0:
+        fade_in = (np.linspace(0.0, 1.0, fade_n, dtype=np.float64) ** 2).astype(np.float32)
+        beep[:fade_n] *= fade_in
+        beep[-fade_n:] *= fade_in[::-1]
+    gap = np.zeros(gap_n, dtype=np.float32)
+    parts = []
+    for i in range(COURTESY_TONE_BEEP_COUNT):
+        parts.append(beep)
+        if i < COURTESY_TONE_BEEP_COUNT - 1:
+            parts.append(gap)
+    return np.concatenate(parts)
+
+
+def courtesy_tone_stimulus(segment: ProgramSegment):
+    """Regenerate the exact float32 courtesy-tone PCM for one prelude segment.
+
+    Mirrors :func:`segment_stimulus`'s contract (deterministic reconstruction,
+    a length mismatch means a corrupt schedule) for the one non-``STIMULUS_KINDS``
+    kind that still needs real audio rendered — see :func:`render_program_pcm`.
+    """
+    if segment.kind != KIND_COURTESY_TONE:
+        raise ValueError(
+            "courtesy_tone_stimulus is only defined for courtesy-tone segments"
+        )
+    tone = _courtesy_tone_burst(segment.gain_db)
+    if tone.size != segment.n_samples:
+        raise ValueError(
+            f"segment {segment.segment_id!r} courtesy-tone reconstruction "
+            f"produced {tone.size} samples, schedule says {segment.n_samples}"
+        )
+    return tone
+
+
+def _prepend_courtesy_prelude(
+    segments: list[ProgramSegment],
+    total_samples: int,
+    *,
+    channels: int,
+    downstream_gain_db: float,
+) -> tuple[list[ProgramSegment], int]:
+    """Prepend the courtesy-tone prelude to an already-composed segment list,
+    shifting every existing segment later by the prelude's length.
+
+    One tone segment per program channel (so the warning is audible on every
+    driver path, not just one role's), all starting at sample 0 and playing
+    simultaneously, followed by one shared trailing-silence gap
+    (:data:`COURTESY_TONE_TRAILING_SILENCE_S`) before the program's original
+    content resumes untouched (same segment IDs, kinds, gains — only later).
+
+    Each channel's tone gain is derived from THAT channel's own loudest
+    already-scheduled stimulus (:func:`courtesy_tone_gain_db`), so the tone
+    can never exceed what the channel is already about to play, independent
+    of how the two drivers' levels relate to each other. A channel with no
+    stimulus segments at all (should not happen for a real program) gets no
+    tone rather than an undefined reference level.
+    """
+    tone_n = _courtesy_tone_n_samples()
+    tone_segments: list[ProgramSegment] = []
+    for channel in range(channels):
+        channel_gains = [
+            seg.gain_db for seg in segments
+            if seg.kind in STIMULUS_KINDS and seg.channel == channel
+        ]
+        if not channel_gains:
+            continue
+        gain_db = courtesy_tone_gain_db(max(channel_gains))
+        tone_segments.append(ProgramSegment(
+            segment_id=f"courtesy_tone_ch{channel}",
+            kind=KIND_COURTESY_TONE,
+            role=None,
+            channel=channel,
+            start_sample=0,
+            n_samples=tone_n,
+            f1_hz=COURTESY_TONE_BEEP_HZ,
+            f2_hz=COURTESY_TONE_BEEP_HZ,
+            gain_db=gain_db,
+            effective_peak_dbfs=gain_db + downstream_gain_db,
+        ))
+    gap_n = _seconds_to_samples(COURTESY_TONE_TRAILING_SILENCE_S, PROGRAM_SAMPLE_RATE_HZ)
+    gap_seg = _silence("courtesy_gap", tone_n, gap_n)
+    prelude_n = tone_n + gap_n
+    shifted = [replace(seg, start_sample=seg.start_sample + prelude_n) for seg in segments]
+    return [*tone_segments, gap_seg, *shifted], total_samples + prelude_n
+
+
 def build_check_program(
     roles_bands: Sequence[RoleBand],
     *,
@@ -567,6 +762,7 @@ def build_check_program(
     base_peak_dbfs: float = BASE_STIMULUS_PEAK_DBFS,
     downstream_gain_db: float = 0.0,
     role_base_peak_dbfs: Mapping[str, float] | None = None,
+    courtesy_prelude: bool = False,
 ) -> ExcitationProgram:
     """Compose the CHECK program (design §5.2): ambient silence + per-driver pilots.
 
@@ -585,6 +781,10 @@ def build_check_program(
     preserved regardless of how far the base is clamped; only the absolute
     level degrades, honestly recorded in the segments' gains. ``None`` (the
     default) is byte-identical to the pre-v2 composer.
+
+    ``courtesy_prelude`` (issue #1677) OPT-IN prepends the "beep beep beep" +
+    silence warning (see the module docstring); ``False`` (the default) is
+    byte-identical to the pre-#1677 composer.
     """
     roles = _validate_roles(roles_bands)
     if len(pilot_levels_db) != 2:
@@ -626,6 +826,10 @@ def build_check_program(
             segments.append(_silence(f"gap_{rb.role}_{suffix}", cursor, gap_n))
             cursor += gap_n
 
+    if courtesy_prelude:
+        segments, cursor = _prepend_courtesy_prelude(
+            segments, cursor, channels=channels, downstream_gain_db=downstream_gain_db,
+        )
     return _finalize(PHASE_CHECK, channels, segments, cursor)
 
 
@@ -659,6 +863,7 @@ def build_measure_program(
     leading_pilot_role: str | None = None,
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
+    courtesy_prelude: bool = False,
 ) -> ExcitationProgram:
     """Compose the MEASURE program (design §5.2/§5.4): ``repeat_count``
     interleaved woofer/tweeter sweep cycles.
@@ -697,6 +902,11 @@ def build_measure_program(
     channel (default the lower/woofer driver) so this capture carries its own
     behavioral-linearity evidence. ``None`` (the default) omits the leading
     pilot pair — the program starts at ``guard`` either way.
+
+    ``courtesy_prelude`` (issue #1677) OPT-IN prepends the "beep beep beep" +
+    silence warning (see the module docstring) ahead of everything above,
+    including the leading pilot pair when both are requested. ``False`` (the
+    default) is byte-identical to the pre-#1677 composer.
     """
     roles = _validate_roles(roles_bands)
     if len(roles) != 2:
@@ -802,6 +1012,10 @@ def build_measure_program(
     segments.append(_silence("tail", cursor, tail_n))
     cursor += tail_n
 
+    if courtesy_prelude:
+        segments, cursor = _prepend_courtesy_prelude(
+            segments, cursor, channels=channels, downstream_gain_db=downstream_gain_db,
+        )
     return _finalize(PHASE_MEASURE, channels, segments, cursor)
 
 
@@ -819,6 +1033,7 @@ def build_verify_program(
     leading_pilot_gains_db: tuple[float, float] | None = None,
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
+    courtesy_prelude: bool = False,
 ) -> ExcitationProgram:
     """Compose the VERIFY program (design §5.2): a mono full-band summed sweep.
 
@@ -841,6 +1056,15 @@ def build_verify_program(
     notch goes noise-dominated across the notched portion, misfiring the
     linearity ratio check on noise rather than on AGC/gain behavior. ``None``
     is byte-identical to the pre-v2 composer.
+
+    ``courtesy_prelude`` (issue #1677) OPT-IN prepends the "beep beep beep" +
+    silence warning (see the module docstring) ahead of everything above,
+    including the leading pilot pair when both are requested. ``False`` (the
+    default) is byte-identical to the pre-#1677 composer. VERIFY has no
+    program-admission gate (it rides the applied production graph — see
+    ``jasper.active_speaker.program_admission``'s ``_validate_program``), so
+    the prelude's compose-time clamp (``courtesy_tone_gain_db``) is the ONLY
+    level guard here, exactly like the summed sweep itself.
     """
     if not (fc_hz > 0) or not math.isfinite(fc_hz):
         raise ValueError("fc_hz must be finite and positive")
@@ -896,6 +1120,10 @@ def build_verify_program(
     segments.append(_silence("tail", cursor, tail_n))
     cursor += tail_n
 
+    if courtesy_prelude:
+        segments, cursor = _prepend_courtesy_prelude(
+            segments, cursor, channels=1, downstream_gain_db=downstream_gain_db,
+        )
     return _finalize(PHASE_VERIFY, 1, segments, cursor)
 
 
@@ -933,17 +1161,22 @@ def render_program_pcm(program: ExcitationProgram):
     """Regenerate the interleaved float32 PCM for a program, shape (N, channels).
 
     Deterministic: each stimulus segment is regenerated via
-    :func:`segment_stimulus` and placed on its channel at its scheduled offset;
-    silence segments contribute nothing. No PCM is stored on the program — this
-    is the single renderer both the WAV writer and the analysis fixtures use.
+    :func:`segment_stimulus`, and each courtesy-tone segment (issue #1677) via
+    :func:`courtesy_tone_stimulus`, then placed on its channel at its scheduled
+    offset; silence segments contribute nothing. No PCM is stored on the
+    program — this is the single renderer both the WAV writer and the analysis
+    fixtures use.
     """
     import numpy as np
 
     pcm = np.zeros((program.total_samples, program.channels), dtype=np.float32)
     for seg in program.segments:
-        if seg.kind not in STIMULUS_KINDS:
+        if seg.kind == KIND_COURTESY_TONE:
+            stim = courtesy_tone_stimulus(seg)
+        elif seg.kind in STIMULUS_KINDS:
+            stim = segment_stimulus(seg)
+        else:
             continue
-        stim = segment_stimulus(seg)
         assert seg.channel is not None
         pcm[seg.start_sample:seg.start_sample + seg.n_samples, seg.channel] = stim
     return pcm

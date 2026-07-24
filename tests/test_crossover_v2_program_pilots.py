@@ -25,6 +25,7 @@ from scipy.signal import fftconvolve
 
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
+    KIND_COURTESY_TONE,
     KIND_PILOT,
     KIND_SILENCE,
     RoleBand,
@@ -36,6 +37,8 @@ from jasper.audio_measurement.program_analysis import (
     REPEAT_LEVEL_TOLERANCE_DB,
     MeasurementGeometry,
     MeasurementPriors,
+    _global_offset,
+    _locate_segments,
     analyze_program_capture,
 )
 
@@ -51,7 +54,7 @@ def _roles() -> list[RoleBand]:
     ]
 
 
-def _measure_program(with_pilots: bool = True):
+def _measure_program(with_pilots: bool = True, courtesy_prelude: bool = False):
     kwargs = {}
     if with_pilots:
         kwargs = {
@@ -61,6 +64,7 @@ def _measure_program(with_pilots: bool = True):
     return build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),
         sweep_durations={"woofer": 1.0, "tweeter": 0.8},
+        courtesy_prelude=courtesy_prelude,
         **kwargs,
     )
 
@@ -358,3 +362,111 @@ def test_measure_predicted_sum_travels_for_verify():
     freqs, mag_db = res.predicted_sum
     assert freqs.shape == mag_db.shape
     assert freqs.size > 0
+
+
+# --------------------------------------------------------------------------- #
+# courtesy-tone prelude (issue #1677): locate/schedule/analysis unaffected
+# --------------------------------------------------------------------------- #
+#
+# The prelude adds a longer pre-roll ahead of everything ``_synthesize``
+# already convolves/captures; these pins confirm the relative-offset locate
+# math (``_global_offset``/``_locate_segments``) absorbs it exactly the way
+# it already absorbed sweep-composition PR-A lengthening MEASURE, and that
+# every downstream gate (linearity, drift/glitch, candidate build) reaches
+# the SAME verdict on the SAME underlying capture with or without it.
+
+
+def test_measure_courtesy_prelude_clean_capture_still_passes_every_gate():
+    prog = _measure_program(courtesy_prelude=True)
+    assert prog.segment("courtesy_tone_ch0").kind == KIND_COURTESY_TONE
+    cap = _synthesize(prog)
+    res = analyze_program_capture(
+        prog, cap, SR,
+        priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+        geometry=MeasurementGeometry(),
+    )
+    assert res.linearity_ok is True
+    assert res.glitch_detected is False
+    assert res.candidate is not None
+
+
+def test_measure_courtesy_prelude_sweep_residuals_match_no_prelude_capture():
+    """The longer pre-roll must not degrade sweep-locate precision at all: on
+    an otherwise-identical synthetic capture (same noise seed), every located
+    sweep's residual-from-schedule and confidence are the SAME with or
+    without the prelude -- the relative-offset locate math (``_global_offset``
+    anchors on the first REAL stimulus either way) fully absorbs the extra
+    pre-roll rather than merely tolerating it."""
+    plain = _measure_program(courtesy_prelude=False)
+    prelude = _measure_program(courtesy_prelude=True)
+    cap_plain = _synthesize(plain, seed=7)
+    cap_prelude = _synthesize(prelude, seed=7)
+
+    off_plain, _first_plain, stim_plain = _global_offset(plain, cap_plain, SR)
+    locs_plain = {
+        loc.segment_id: loc
+        for loc in _locate_segments(plain, cap_plain, SR, off_plain, stim_plain)
+    }
+    off_prelude, _first_prelude, stim_prelude = _global_offset(prelude, cap_prelude, SR)
+    locs_prelude = {
+        loc.segment_id: loc
+        for loc in _locate_segments(prelude, cap_prelude, SR, off_prelude, stim_prelude)
+    }
+    for seg_id in ("sweep_w", "sweep_t", "sweep_w_rep", "sweep_t_rep", "sweep_w_rep2", "sweep_t_rep2"):
+        plain_loc = locs_plain[seg_id]
+        prelude_loc = locs_prelude[seg_id]
+        # rel=1e-4: the two captures differ in overall array length (the
+        # prelude's extra 3.6 s), so the downsample/resample step inside
+        # ``_global_offset`` can round a few ULPs differently -- this is
+        # floating-point noise, not a locate-precision regression, so the
+        # tolerance is loose enough to absorb it while still being far
+        # tighter than any value that would indicate a real behavior change.
+        assert prelude_loc.residual_samples == pytest.approx(plain_loc.residual_samples, abs=0.01)
+        assert prelude_loc.confidence == pytest.approx(plain_loc.confidence, rel=1e-4)
+        # Sanity floor so this test would actually catch a real regression
+        # (not just two equally-broken locates agreeing with each other).
+        assert plain_loc.confidence > 0.5
+
+
+def test_measure_courtesy_prelude_tone_segments_located_like_silence():
+    """The tone segments themselves are recorded exactly like a silence
+    segment in ``_locate_segments`` -- no search, residual 0, confidence 1 --
+    because they are never in STIMULUS_KINDS."""
+    prog = _measure_program(courtesy_prelude=True)
+    cap = _synthesize(prog)
+    global_offset, _first, stimuli = _global_offset(prog, cap, SR)
+    locations = _locate_segments(prog, cap, SR, global_offset, stimuli)
+    by_id = {loc.segment_id: loc for loc in locations}
+    for seg_id in ("courtesy_tone_ch0", "courtesy_tone_ch1"):
+        loc = by_id[seg_id]
+        assert loc.kind == KIND_COURTESY_TONE
+        assert loc.residual_samples == 0.0
+        assert loc.confidence == 1.0
+        assert loc.located_start == loc.scheduled_start
+
+
+def test_measure_courtesy_prelude_first_stimulus_is_still_the_leading_pilot():
+    """``_global_offset`` must keep correlating against the first REAL
+    stimulus (the leading pilot), never the tone -- confirmed indirectly: the
+    reported global offset lands the pilot at (or very near) its own
+    scheduled position once the correlation is resolved."""
+    prog = _measure_program(courtesy_prelude=True)
+    cap = _synthesize(prog)
+    global_offset, first, _stimuli = _global_offset(prog, cap, SR)
+    assert first.segment_id == "pilot_woofer_lo"
+    assert first.kind == KIND_PILOT
+
+
+def test_verify_courtesy_prelude_clean_capture_still_passes():
+    prog = build_verify_program(
+        FC_HZ, sweep_s=1.5,
+        leading_pilot_gains_db=(-22.0, -12.0), pilot_duration_s=0.5,
+        courtesy_prelude=True,
+    )
+    assert prog.segment("courtesy_tone_ch0").kind == KIND_COURTESY_TONE
+    cap = _synthesize(prog)
+    res = analyze_program_capture(
+        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    assert res.linearity_ok is True
+    assert res.summed_ripple_db is not None

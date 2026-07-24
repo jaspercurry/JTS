@@ -237,6 +237,27 @@ tolerance window (~±0.3 m distance, ±10 cm height). Only the first
 capture needs a tap; CHECK auto-advances into MEASURE, and a trusted
 candidate auto-arms VERIFY with no household action in between.
 
+**Pre-capture courtesy tone (issue #1677).** Each of the three programs
+(CHECK/MEASURE/VERIFY) opens with three short ~1 kHz beeps + ~3 s of silence
+from the speaker under test itself, before that phase's own content
+resumes — a "quiet please, a measurement is starting" warning per capture
+group, replacing the 2026-07-23 lab-only interim (a Mac-side `osascript
+beep`, then a fan-in-TTS-lane 3-beep burst). It is composed as an ordinary
+prepended segment group on the SAME `ExcitationProgram` the phase already
+plays and admits — never a second playback path — so it rides the session's
+existing volume/admission machinery for free. Its level is derived per
+program channel from that channel's own loudest scheduled stimulus gain
+(`courtesy_tone_gain_db`, 6 dB below, clamped to never exceed it and never
+positive), and its kind (`KIND_COURTESY_TONE`) is deliberately excluded from
+`STIMULUS_KINDS` so the locate/deconvolution machinery treats it exactly
+like a silence segment — invisible to analysis, present in the recording.
+Default ON with no config switch (see `COURTESY_PRELUDE_ENABLED` in
+`crossover_v2_flow.py`); the phone's per-phase `duration_ms` budget derives
+from the same lengthened program, so it is not a second thing to keep in
+sync. See the "courtesy-tone prelude" section of
+[`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py)'s
+module docstring for the segment shape.
+
 The RESULT screen (phone end screen + wizard `done` screen) states the
 outcome plainly first ("Your speaker is tuned. If it sounds worse than
 before, you can undo.") with the measured numbers (trims/delay/polarity/
