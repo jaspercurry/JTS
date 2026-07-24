@@ -27,6 +27,7 @@ from jasper.active_speaker._common import DRIVER_CLASSES
 from jasper.active_speaker.linearization_fit import (
     HF_CONTINUATION_POLICY,
     HF_REALIZATION_TOLERANCE_DB,
+    HF_SINGLE_SHELF_SPEND_CAP_DB,
     HF_SUPPRESSION_REASONS,
     HF_TAPER_MAX_DB,
     MAX_FILTERS_PER_DRIVER,
@@ -872,10 +873,14 @@ def _cd_horn_fit(driver_class="compression_horn", *, anchor_db=_CD_HORN_ANCHOR_D
 
 def test_cd_horn_falling_top_octave_fires_lowshelf_give_back():
     """The keystone: a reference-tier compression-horn tweeter with agreeing
-    repeats FIRES the stage — a Lowshelf backbone at position 0, cut-only, with
-    spend == the measured top-octave deficit (which here sits under the budget)
-    and the realized cascade tracking cut_target (the stage only fires when the
-    fit-quality gate passed, and the give-back-frame residual is small)."""
+    repeats FIRES the stage — a Lowshelf backbone at position 0, cut-only, and
+    the realized cascade tracking cut_target (the stage only fires when the
+    fit-quality gate passed, and the give-back-frame residual is small).
+
+    This synthetic's measured deficit (~11.4 dB) sits just above the
+    single-shelf realization cap, so spend lands ON that cap while
+    ``measured_deficit_at_ceiling_db`` keeps reporting the uncapped measurement.
+    """
     fit = _cd_horn_fit("compression_horn")
     assert fit.hf_continuation_spend_db > 0.0
     assert fit.hf_continuation_suppressed_reason == ""
@@ -884,9 +889,11 @@ def test_cd_horn_falling_top_octave_fires_lowshelf_give_back():
     assert fit.filters[0].biquad_type == "Lowshelf"  # backbone at position 0
     assert fit.filters[0].gain == pytest.approx(-fit.hf_continuation_spend_db)
     assert all(f.gain <= 0.0 for f in fit.filters)  # cut-only invariant
-    # Deficit under budget here, so spend == the (uncapped) measured deficit.
-    assert fit.hf_continuation_spend_db == pytest.approx(fit.measured_deficit_at_ceiling_db)
+    # Spend is bounded by the single-shelf realization cap here, and the
+    # UNCAPPED measurement stays disclosed alongside it.
+    assert fit.hf_continuation_spend_db == pytest.approx(HF_SINGLE_SHELF_SPEND_CAP_DB)
     assert 10.0 < fit.measured_deficit_at_ceiling_db < 12.0
+    assert fit.measured_deficit_at_ceiling_db > fit.hf_continuation_spend_db
     assert fit.hf_continuation_spend_db <= MAX_NORMALIZATION_SPEND_DB
     # Realized cascade tracks cut_target -> the give-back frame is flat.
     assert fit.residual_max_db < HF_REALIZATION_TOLERANCE_DB
@@ -956,11 +963,14 @@ def test_correction_giveback_approximates_spend_on_the_canonical_synthetic():
     1.0 dB rather than 0.5. Measured deltas (giveback − spend) across the fixture
     family:
 
-        canonical (11.4 dB deficit)   spend 11.351  giveback 12.144  +0.793
-        live-rig  (14.3 dB deficit)   spend 13.885  giveback 13.388  −0.497
+        canonical (11.4 dB deficit)   spend 11.000  giveback 11.775  +0.775
+        live-rig  (14.3 dB deficit)   spend 11.000  giveback 11.046  +0.046
         budget-bound (+9 dB bump)     spend  9.880  giveback 12.773  +2.893
         woofer, flattening cuts only  spend  0.000  giveback  1.458  +1.458
         flat, no filters              spend  0.000  giveback  0.000   0.000
+
+    (The two deficit cases now share a spend: both exceed the single-shelf
+    realization cap, so both land on it.)
 
     The larger deltas are correct, not error: whenever the correction also cuts
     INSIDE the core band (the CD-horn residual peak near the onset, a flattening
@@ -997,27 +1007,46 @@ def test_correction_giveback_is_zero_without_filters_and_positive_with_them():
     assert woofer_fit.correction_giveback_db > 0.0
 
 
-def test_cd_horn_deep_deficit_respects_the_per_filter_cut_cap():
-    """The live JTS3 shape: a ~14 dB deficit now fits inside the raised
-    normalization budget, so `spend` EXCEEDS the 12 dB per-filter cut cap. No
-    single emitted filter may exceed that cap — the Lowshelf backbone clamps at
-    it and the peaking residual absorbs the remainder — while the realization
-    still tracks cut_target within tolerance, stays cut-only, and stays inside
-    the filter budget."""
+def test_cd_horn_deep_deficit_is_bounded_by_the_single_shelf_cap():
+    """The live JTS3 run-6 shape (~14 dB deficit): the single-shelf realization
+    cap — NOT the ledger budget and NOT the per-filter cut cap — is what bounds
+    the spend, and the stage still FIRES rather than suppressing.
+
+    This is the regression for run 6, which suppressed with ``fit_quality``
+    because the raised ledger budget let spend reach 14.33 where a single
+    clamped Lowshelf plus bell residuals cannot track a real curve. An offline
+    ladder on that capture put the realization cliff at ~11.9 dB spend; the cap
+    keeps spend below it, so a deep deficit yields a REALIZED partial correction
+    instead of nothing at all. The uncapped measurement stays disclosed."""
     fit = _cd_horn_fit("compression_horn", anchor_db=_CD_HORN_LIVE_ANCHOR_DB)
-    assert fit.hf_continuation_suppressed_reason == ""
-    assert fit.hf_continuation_spend_db > PER_FILTER_CUT_CAP_DB  # the interesting case
-    # The hard per-filter invariant holds even though the total spend exceeds it.
+    assert fit.hf_continuation_suppressed_reason == ""  # fires, unlike live run 6
+    assert fit.hf_continuation_spend_db == pytest.approx(HF_SINGLE_SHELF_SPEND_CAP_DB)
+    # The cap binds BELOW both other ceilings — that is the whole point.
+    assert HF_SINGLE_SHELF_SPEND_CAP_DB < PER_FILTER_CUT_CAP_DB
+    assert HF_SINGLE_SHELF_SPEND_CAP_DB < MAX_NORMALIZATION_SPEND_DB
+    # Partial correction is visible: the measured deficit exceeds what was spent.
+    assert fit.measured_deficit_at_ceiling_db > fit.hf_continuation_spend_db + 2.0
+    # Hard per-filter invariant still holds for every emitted filter.
     assert all(f.gain >= -PER_FILTER_CUT_CAP_DB - 1e-6 for f in fit.filters)
     assert fit.filters[0].biquad_type == "Lowshelf"
-    assert fit.filters[0].gain == pytest.approx(-PER_FILTER_CUT_CAP_DB)
+    assert fit.filters[0].gain == pytest.approx(-HF_SINGLE_SHELF_SPEND_CAP_DB)
     assert all(f.gain <= 0.0 for f in fit.filters)  # cut-only
     assert len(fit.filters) <= MAX_FILTERS_PER_DRIVER
-    # The extra depth the clamped shelf could not carry is absorbed by the
-    # residual peaking cuts, so the give-back still tracks the spend.
     assert fit.correction_giveback_db == pytest.approx(
         fit.hf_continuation_spend_db, abs=1.0
     )
+
+
+def test_single_shelf_cap_binds_in_the_spend_min_chain():
+    """The cap is one of three independent ceilings in the spend min-chain
+    (measured deficit, remaining ledger budget, single-shelf realization limit).
+    A deficit far above all of them must land exactly on the smallest — the
+    realization cap — proving it is wired into the chain rather than merely
+    documented."""
+    deep = np.array([0.0, 0.0, 0.0, -4.5, -10.5, -15.5, -20.0, -22.0, -23.0])
+    fit = _cd_horn_fit("compression_horn", anchor_db=deep)
+    assert fit.hf_continuation_spend_db == pytest.approx(HF_SINGLE_SHELF_SPEND_CAP_DB)
+    assert fit.measured_deficit_at_ceiling_db > HF_SINGLE_SHELF_SPEND_CAP_DB
 
 
 def test_cd_horn_disagreeing_repeats_suppress_the_stage():
