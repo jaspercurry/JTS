@@ -40,12 +40,18 @@ class _FakeVolume:
 
 
 class _FakeClient:
-    def __init__(self, active_raw_value: str | None = None) -> None:
+    def __init__(
+        self,
+        active_raw_value: str | None = None,
+        playback_peak_value: list[float | None] | None = None,
+    ) -> None:
         self.volume = _FakeVolume()
         self.config = self
         self.general = self
+        self.levels = self
         self.active_raw_values: list[str] = []
         self.active_raw_value = active_raw_value
+        self.playback_peak_value = playback_peak_value
         self.queries: list[tuple[str, object]] = []
         self.file_paths: list[str] = []
         self.reload_count = 0
@@ -55,6 +61,9 @@ class _FakeClient:
 
     def active_raw(self):
         return self.active_raw_value
+
+    def playback_peak(self):
+        return self.playback_peak_value
 
     def set_file_path(self, path: str) -> None:
         self.file_paths.append(path)
@@ -177,6 +186,60 @@ async def test_get_active_config_raw_none_when_no_active_config():
     cam = _controller(fake)
 
     assert await cam.get_active_config_raw() is None
+
+
+@pytest.mark.asyncio
+async def test_get_playback_peak_all_returns_full_channel_list_untruncated():
+    # Unlike get_playback_peak (truncated/mirrored to a stereo pair via
+    # _level_pair), every channel Camilla reports passes through in order.
+    fake = _FakeClient(playback_peak_value=[-3.0, -6.0, -9.0, -12.0])
+    cam = _controller(fake)
+
+    assert await cam.get_playback_peak_all() == [-3.0, -6.0, -9.0, -12.0]
+
+
+@pytest.mark.asyncio
+async def test_get_playback_peak_all_missing_data_returns_empty_list():
+    # List analog of _level_pair's (-inf, -inf) sentinel pair.
+    fake = _FakeClient(playback_peak_value=None)
+    cam = _controller(fake)
+
+    assert await cam.get_playback_peak_all() == []
+
+
+@pytest.mark.asyncio
+async def test_get_playback_peak_all_normalizes_per_channel_none_to_negative_infinity():
+    fake = _FakeClient(playback_peak_value=[-3.0, None, -9.0])
+    cam = _controller(fake)
+
+    assert await cam.get_playback_peak_all() == [-3.0, float("-inf"), -9.0]
+
+
+@pytest.mark.asyncio
+async def test_get_playback_peak_all_best_effort_returns_none_when_unavailable():
+    fake = _FakeClient()
+    cam = _controller(fake)
+
+    async def call(fn):
+        raise CamillaUnavailable("offline")
+
+    cam._call = call  # type: ignore[method-assign]
+
+    assert await cam.get_playback_peak_all(best_effort=True) is None
+
+
+@pytest.mark.asyncio
+async def test_get_playback_peak_all_raises_when_not_best_effort():
+    fake = _FakeClient()
+    cam = _controller(fake)
+
+    async def call(fn):
+        raise CamillaUnavailable("offline")
+
+    cam._call = call  # type: ignore[method-assign]
+
+    with pytest.raises(CamillaUnavailable):
+        await cam.get_playback_peak_all()
 
 
 @pytest.mark.asyncio
