@@ -271,7 +271,9 @@ than a fraction-of-a-dB of extra ripple. Wired into BOTH the raw
 candidate (`CrossoverCandidate.trim_db`, with the band-average seed
 preserved as `trim_band_average_db` evidence) and the Layer 1a linearized
 re-solve above, so consumer/phone-tier captures — ineligible for
-linearization — get the fix too. Design rationale:
+linearization — get the fix too. The linearized-path trim is correct
+only with the linearization filters emitted (#1668 PR-D); the two land
+together. Design rationale:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 "Decisions already made" #2 and "Execution plan" Phase 3.
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The

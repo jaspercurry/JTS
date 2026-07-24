@@ -1946,11 +1946,14 @@ class CrossoverV2Conductor:
             predicted_ripple_db=(
                 round(float(cand.predicted_ripple_db), 4) if cand else None
             ),
-            # #1667: how far the applied (ripple-optimal-where-trusted)
-            # tweeter trim moved from solve_branch_trims's band-average
-            # seed — the sanity-guard fallback path reads as exactly 0.0
-            # (applied == seed); ``None`` only when this candidate predates
-            # trim_band_average_db.
+            # #1667: how far the RAW candidate's (ripple-optimal-where-
+            # trusted) tweeter trim moved from solve_branch_trims's
+            # band-average seed — this always reports the RAW candidate's
+            # own recovery, even on a linearization-eligible attempt (the
+            # linearized path's own recovery travels separately in the
+            # evidence JSON). The sanity-guard fallback path reads as
+            # exactly 0.0 (raw == seed); ``None`` only when this candidate
+            # predates trim_band_average_db.
             trim_ripple_gain_db=(
                 round(
                     float(
@@ -2257,7 +2260,12 @@ class CrossoverV2Conductor:
         # solve_ripple_optimal_trim's docstring. No separate sanity guard
         # needed here: the wild-trim check below already re-validates this
         # result against the raw candidate's OWN trim, which (after the same
-        # #1667 fix, one layer down) is itself ripple-optimal.
+        # #1667 fix, one layer down) is itself ripple-optimal. The effective
+        # bound on trim_t_lin is therefore the solver's own +/-window_db
+        # (10 dB) scan window around trim_t_lin_band_average combined with
+        # the wild-trim check's +/-LINEARIZATION_TRIM_SANITY_MARGIN_DB
+        # (6 dB) against the raw candidate below — not a single guard on
+        # this call's own seed distance.
         assert analysis.alignment is not None  # MEASURE analyses always carry one
         trim_t_lin, _ripple_lin, _seed_lin = solve_ripple_optimal_trim(
             freqs, W_lin, T_lin, self._fc_hz,

@@ -295,9 +295,10 @@ Phase 3 — **#1667** trim solve fix (landed 2026-07-24: the applied trim is
 now `solve_ripple_optimal_trim`'s minimum-ripple solve — seeded by and
 sanity-bounded ±6 dB against the band-average value, wired into both the
 raw candidate and the Layer 1a linearized re-solve; see
-HANDOFF-crossover-measurement-v2.md's trim-solve section. JTS3 hardware
-re-verify against the listening ladder's ripple-optimal stop remains
-open) + re-verify.
+HANDOFF-crossover-measurement-v2.md's trim-solve section. The
+linearized-path trim is correct only with the linearization filters
+emitted (PR-D); the two land together. JTS3 hardware re-verify against
+the listening ladder's ripple-optimal stop remains open) + re-verify.
 Phase 4+ — #1669 (3-way), #1671 (passive UX), #1665 (component entry —
 the driver-class/geometry/pad declaration schema + envelope wiring landed
 2026-07-24 out of sequence, ahead of this phase order; hardware validation
