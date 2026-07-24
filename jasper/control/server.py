@@ -1396,16 +1396,19 @@ def _make_handler(
             duck_active_probe=duck_active_probe,
         )
 
-    async def _observe_op(source_name: str, percent: int) -> int:
+    async def _observe_op(source_name: str, percent: int) -> tuple[int, bool]:
         """Route a source-observed volume change (e.g. host slider on
         the USB gadget) through the coordinator's echo-prevented
         observe path. Unknown source names fall back to the
         authoritative set path so a future client that posts a fresh
         source name doesn't silently no-op.
 
-        Returns the level the coordinator ended up at — equal to
-        `percent` on normal observe (no echo) or the prior value if
-        the observation was treated as an echo of our own write."""
+        Returns the level the coordinator ended up at plus whether the
+        observation was accepted. The explicit acknowledgement lets a
+        long-lived observer retry an initial value that arrived before
+        its source became active instead of mistaking HTTP 200 for
+        application.
+        """
         # Lazy import to avoid pulling the full volume_coordinator
         # graph into the import path of server.py's module load.
         from ..volume_coordinator import Source
@@ -1413,14 +1416,14 @@ def _make_handler(
             source_enum = Source(source_name)
         except ValueError:
             # Unknown source — treat as authoritative.
-            return await _set_op(percent)
+            return await _set_op(percent), True
 
         async def _op(coord):
-            await coord.observe_source_volume(source_enum, percent)
+            applied = await coord.observe_source_volume(source_enum, percent)
             # The coordinator's level either took our value or stayed
             # put (echo-suppressed). Return whatever's now canonical
             # for the client to render.
-            return coord.get_listening_level()
+            return coord.get_listening_level(), bool(applied)
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
@@ -2241,9 +2244,10 @@ def _make_handler(
             # `source`, the caller is treated as authoritative
             # (dial twist, voice "louder", etc.).
             source_name = body.get("source")
+            observation_applied: bool | None = None
             try:
                 if source_name:
-                    new_pct = asyncio.run(
+                    new_pct, observation_applied = asyncio.run(
                         _observe_op(str(source_name), target_pct),
                     )
                 else:
@@ -2257,9 +2261,13 @@ def _make_handler(
                 "volume.set",
                 new_pct=new_pct,
                 source=source_name or "authoritative",
+                observation_applied=observation_applied,
                 client=self.address_string(),
             )
-            self._send_json(self._volume_payload(new_pct))
+            payload = self._volume_payload(new_pct)
+            if observation_applied is not None:
+                payload["observation_applied"] = observation_applied
+            self._send_json(payload)
 
         def _post_grouping_set(self) -> None:
             # Set this speaker's grouping role. /grouping/set is token-gated

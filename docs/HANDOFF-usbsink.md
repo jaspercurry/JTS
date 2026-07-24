@@ -572,7 +572,12 @@ Concretely, in `jasper.volume_coordinator.VolumeCoordinator`:
   robustness and one fewer dependency — see the module docstring). When
   the user moves the Mac slider, it calls
   `coordinator.observe_source_volume(Source.USBSINK, value_pct)`,
-  which translates and updates `listening_level` + `camilla.main_volume`
+  which translates and updates `listening_level` + `camilla.main_volume`.
+  The controller explicitly acknowledges whether the source-active gate
+  accepted the observation. A value first seen while USB is idle is retried
+  once per second until USB becomes active; only an accepted value is
+  deduplicated. This prevents a deploy/control restart from caching a
+  declined initial read forever.
 - Outbound: dial twist / voice "louder" goes through the normal
   `_set_camilla` path. **No write back to the gadget mixer**.
 
@@ -599,26 +604,74 @@ sliders.
 
 #### Translation: gadget mixer value → listening_level
 
-UAC2 Volume Control is signed 16.16 dB (or signed 8.8 on some hosts).
-The Linux `u_audio` driver normalizes this to ALSA `Volume` integer
-units. The mapping is straightforward — `amixer cget` reports the control's
-`min`/`max` integer units alongside the current value:
+**Units — the part that bites (verified against kernel `u_audio.c` /
+`f_uac2.c`):**
+
+- **configfs `c_volume_min/max/res` are in 1/256 dB**, not centi-dB
+  (`u_audio_volume_tlv`: "UAC volume resolution is 1/256 dB"). So a
+  -50..0 dB / 1 dB-step range is `c_volume_min=-12800`, `c_volume_max=0`,
+  `c_volume_res=256`. Bind-time validity requires `(max-min) % res == 0`
+  (12800 % 256 == 0 → 50 steps).
+- **The ALSA control `volume_bridge.py` reads is a 0-based STEP INDEX,
+  not dB.** `u_audio_volume_info` exposes `min=0`,
+  `max=(vmax-vmin+res-1)/res` (a step count), `step=1`; the value is
+  `(volume-vmin)/res`. So `amixer cget` reports `min=0, max≈50, step=1`
+  and a current step index. Normalizing that index directly as if it were
+  dB (or centi-dB) is meaningless — that was the first-cut bug.
+- **The physical dB scale rides a DB_MINMAX TLV.** `u_audio_volume_tlv`
+  attaches a `DB_MINMAX` TLV; `amixer cget` decodes it as
+  `dBminmax-min=-50.00dB,max=0.00dB`. That is the ground-truth dB, so the
+  bridge parses it for startup observability: it proves the descriptor
+  range actually stuck. When the TLV can't be parsed it reports the
+  advertised-range constants (`USBSINK_VOLUME_DB_MIN/MAX`) as its
+  reconstructed diagnostic range. The displayed-slider mapping below does
+  not convert this physical dB scale to amplitude.
+
+**Two coupled levers make the Mac slider track JTS (issue #1698):**
+
+1. **Advertise a narrow -50..0 dB range** to the host from
+   `deploy/usbsink/jasper-usbgadget-up` (`c_volume_min=-12800`,
+   `c_volume_max=0`, `c_volume_res=256`, 1/256 dB). Without this the
+   kernel default (~-128..0 dB) applies and macOS compresses its whole
+   slider into the top few dB — a low-mid slider then read ~73% on JTS.
+   The range is aligned with `jasper.volume_curve.percent_to_db`'s -50 dB
+   floor. The single source of truth is the `USBSINK_VOLUME_DB_*` Python
+   constants; the bash literals are pinned to `round(const*256)` by a
+   contract test, so the two ends can't drift. The writes are best-effort
+   (`write_if_present`), so an older kernel that lacks the attrs falls
+   back to the default range rather than failing gadget bring-up.
+
+2. **Invert macOS's observed step transfer, not the physical dB amplitude.**
+   The live Mac/UAC2 path maps the visible slider fraction to approximately
+   the square root of the normalized ALSA step index. Therefore the bridge
+   squares the normalized step fraction to recover the displayed percentage.
+   Converting the TLV dB to amplitude was a double perceptual correction: live
+   step 40/50 is -10 dB, so it produced 31%, while the Mac visibly showed 64%.
 
 ```python
-# `amixer cget numid=N` reports `min=..,max=..` for the control;
-# volume_bridge.py parses those (regex) — no Python ALSA binding.
-# Integer units map 1:1 to dB at 0.01-dB resolution on UAC2.
-min_v, max_v = (-12800, 0)   # parsed from amixer cget; e.g. -128.00..0.00 dB
-def gadget_to_pct(raw: int) -> int:
-    # Linear-in-dB mapping from gadget range to 0..100%
-    # 0.00 dB at host slider 100%, min_v at host slider 0%.
-    span = max_v - min_v
-    return max(0, min(100, round((raw - min_v) / span * 100)))
+# volume_bridge.py:_raw_to_pct — index -> visible Mac slider %.
+# `idx` is the 0-based STEP INDEX from `amixer cget`.
+def _raw_to_pct(idx, idx_min, idx_max):
+    frac = (idx - idx_min) / (idx_max - idx_min)
+    frac = max(0.0, min(1.0, frac))
+    return round(frac * frac * 100)
 ```
 
-The translation lives in `jasper/usbsink/volume_bridge.py` (new file).
-A `gadget_pct_to_listening_level()` helper is the analogue of
-`spotify_percent_to_listening_level()` in `volume_coordinator.py:99`.
+Live reference points over the 0..50 step range: step 18 → 13%, step 25
+→ 25%, step 40 → 64%, and step 50 → 100%. Because the gadget exposes
+1 dB steps, 50% and 75% quantize to roughly 49–52% and 74%.
+
+`_raw_to_pct` and `percent_to_db` are the two ends of one contract
+(host slider → UAC2 step index over -50..0 dB → `_raw_to_pct` → `listening_level`
+→ `percent_to_db` → Camilla dB); keep them aligned. Exact 25%↔25%
+tracking is observed at step 25/50; the remaining difference is the
+one-step quantization of the advertised control. One-shot on-Pi verification
+of the live representation:
+`amixer -c UAC2Gadget cget numid=<PCM Capture Volume>` — expect
+`min=0,max=50` and a `dBminmax-min=-50.00dB,max=0.00dB` TLV line. The
+translation lives entirely in `jasper/usbsink/volume_bridge.py`; the
+coordinator maps the POSTed percent to `listening_level` identity-wise
+and never learns ALSA units.
 
 #### Mute handling
 
@@ -1884,7 +1937,7 @@ sufficient for incident debugging.
 ### Hardware-free tests (`.venv/bin/pytest`)
 
 `tests/test_usbsink_volume.py`:
-- `gadget_raw_to_pct()` math: 0 dB → 100%, min → 0%, mid → 50%
+- `gadget_raw_to_pct()` math: step fraction squared, endpoints preserved
 - listening-level conversion symmetry
 - amixer stub: feed synthetic `amixer cget` output, verify POST payload
 
@@ -1957,10 +2010,23 @@ blockers; defaults are documented for each.
    label now tracks the Speaker Name via a name-patched module override.
    See §4.1a "Host-visible device name". (Confirmed end-to-end on macOS
    2026-06-04: a connected Mac shows "JTS".)
-3. **Volume curve**: gadget mixer range is symmetric in dB; CamillaDSP
-   `main_volume` is also dB-linear. A direct linear-in-dB mapping
-   feels natural. **Default: linear in dB, 100% gadget = 0 dB camilla,
-   0% gadget = camilla min (~−96 dB).**
+3. **Volume curve**: ~~A direct linear-in-dB mapping feels natural.~~
+   **RESOLVED (issue #1698)** — linear-in-dB was NOT the inverse of
+   Apple's slider taper (macOS maps slider POSITION perceptually onto
+   the dB range), so a low-mid Mac slider read ~73% on JTS. The units
+   also matter and were initially wrong: **configfs `c_volume_*` is in
+   1/256 dB** (not centi-dB) and **the ALSA control the bridge reads is a
+   0-based STEP INDEX** with a DB_MINMAX TLV carrying the physical dB
+   scale — both verified against kernel `u_audio.c`/`f_uac2.c`. Two
+   coupled fixes shipped: (a) `jasper-usbgadget-up` advertises a narrow
+   -50..0 dB capture-volume range (`c_volume_min/max/res` =
+   -12800/0/256 in 1/256 dB, best-effort) aligned with `percent_to_db`'s
+   -50 dB floor, instead of the kernel's wide ~-128..0 dB default that
+   compressed the slider; (b) `volume_bridge._raw_to_pct` treats the ALSA
+   value as a step index and squares its normalized fraction, inverting the
+   transfer measured on the live Mac. The DB_MINMAX TLV remains the
+   ground-truth physical-range check; it is observability, not the displayed
+   slider percentage. See §3.2 "Translation" for the unit facts and mapping.
 4. **Preempt-release window**: how long after all other sources go
    idle before USB un-mutes? Instant feels right (matches mux's tick
    cadence). **Default: instant on next mux tick (1 s max delay).**
@@ -2270,7 +2336,10 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-22 (source-neutral latest-start-wins arbitration,
+Last verified: 2026-07-24 (live UAC2 volume evidence confirmed the kernel
+step-index/TLV model and replaced the double-correcting dB-amplitude mapping
+with the observed square-law inverse: Mac 13%→step 18→13%, 25%→25→25%, and
+64%→40→64%. Prior 2026-07-22: source-neutral latest-start-wins arbitration,
 process-local activation order, persistent-pin/disable opt-outs, alert/patrol
 single-policy ownership, AirPlay receiver-session cleanup after USB wins, and
 UI guidance rechecked against `jasper/mux.py`, mux contract tests, and both

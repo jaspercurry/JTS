@@ -500,11 +500,13 @@ class VolumeCoordinator:
 
     async def observe_source_volume(
         self, source: Source, native_value: float | int,
-    ) -> None:
+    ) -> bool:
         """Inbound observer entrypoint. `native_value` is in the
         source's own units (dB for AirPlay, percent for Spotify,
         uint16 for BT). The coordinator converts and updates the
-        canonical level if this isn't an echo.
+        canonical level if this isn't an echo. Returns True when the
+        observation was accepted for the active source and False when
+        it was intentionally declined.
 
         AirPlay is deliberately excluded. Modern AirPlay 2 senders
         expose inbound sender-side volume to shairport-sync, but
@@ -519,35 +521,38 @@ class VolumeCoordinator:
                 "(AirPlay uses camilla-as-master)",
                 float(native_value),
             )
-            return
+            return False
         elif source == Source.SPOTIFY:
             level = spotify_percent_to_listening_level(int(native_value))
         elif source == Source.BLUETOOTH:
             level = bt_volume_to_listening_level(int(native_value))
         elif source == Source.USBSINK:
-            # USB gadget volume_bridge POSTs percent directly (already
-            # normalized 0-100 from the gadget mixer's raw range).
-            # Map identity to listening_level. The translation work
-            # happens client-side in jasper.usbsink.volume_bridge so
-            # the coordinator doesn't need to know about ALSA mixer
-            # units or the gadget's range.
+            # USB gadget volume_bridge POSTs percent directly. It has already
+            # inverted macOS's observed square-root transfer from the gadget
+            # mixer's 0-based step index (see volume_bridge._raw_to_pct). Map
+            # identity to listening_level — the coordinator doesn't need to
+            # know about ALSA mixer units, step indices, or the gadget's dB
+            # range.
+            # _sync_camilla_observed_level below then turns this level back into
+            # Camilla dB via percent_to_db — the two ends of the same
+            # volume-curve contract.
             level = max(0, min(100, int(native_value)))
         else:
             logger.debug("observe_source_volume: unknown source %s", source)
-            return
+            return False
         active = await self._active_source()
         if active != source:
             logger.debug(
                 "observe %s: ignoring %d%% because active source is %s",
                 source.value, level, active.value,
             )
-            return
+            return False
         if self._is_own_echo(source, level):
             logger.debug(
                 "observe %s: %d%% within echo window — ignoring (own write)",
                 source.value, level,
             )
-            return
+            return False
         publish_needed = False
         async with self._lock:
             if self._is_recent_cross_process_write(level):
@@ -557,7 +562,7 @@ class VolumeCoordinator:
                     "ignoring (recent external write)",
                     source.value, level,
                 )
-                return
+                return False
             if level == self._level:
                 if await self._camilla_carries_level(source):
                     publish_needed = await self._sync_camilla_observed_level(
@@ -597,6 +602,7 @@ class VolumeCoordinator:
             # Camilla/socket reads and IPC happen after releasing the mutation
             # lock; volume commands must not queue behind observability work.
             await self.publish_volume_context()
+        return True
 
     async def _sync_camilla_observed_level(
         self, source: Source, level: int,

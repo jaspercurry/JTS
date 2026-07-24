@@ -117,7 +117,7 @@ class FakeCoordinator:
         self.calls.append(("unmute", target))
         return target
 
-    async def observe_source_volume(self, source, percent: int) -> None:
+    async def observe_source_volume(self, source, percent: int) -> bool:
         self._maybe_fail()
         # The real coordinator gates this on whether `source` is the
         # currently active one and on echo windows; the fake just
@@ -128,6 +128,7 @@ class FakeCoordinator:
         target = max(0, min(100, int(percent)))
         self._level = target
         self.calls.append(("observe", target))
+        return True
 
     async def aclose(self) -> None:
         return None
@@ -2557,6 +2558,7 @@ def test_volume_set_with_usbsink_source_routes_to_observe(server_with_coordinato
     )
     assert status == 200
     assert body["percent"] == 42
+    assert body["observation_applied"] is True
     # observe call recorded, not set.
     assert ("observe", 42) in fake.calls
     assert all(c[0] != "set" for c in fake.calls), \
