@@ -946,17 +946,27 @@ def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
 
 
 def test_correction_giveback_approximates_spend_on_the_canonical_synthetic():
-    """The give-back SSOT: ``correction_giveback_db`` is the power-domain average
-    of the emitted cascade over the driver's own core (reference) band, reported
-    POSITIVE. On the canonical fired synthetic — a flat core, so the flattening
-    loop contributes nothing — it must land close to the CD-horn spend, which is
-    what makes the flow's anchored trim level-preserving.
+    """The give-back SSOT: ``correction_giveback_db`` is the MEASURED
+    before-vs-after power-domain level delta of the driver's core (reference)
+    band, reported POSITIVE. On the canonical fired synthetic — a flat core — it
+    lands close to the CD-horn spend, which is what makes the flow's anchored
+    trim restore the pre-correction level.
 
-    Tolerance is 1.0 dB, not 0.5: the CD-horn stage's own residual peaking cut
-    near the onset lands INSIDE the core band and legitimately deepens the
-    measured average past `spend` (~0.8 dB here). That is not error — the anchor
-    consumes the MEASURED value, so a cascade that removed a little more level
-    correctly returns a little more."""
+    ``spend`` is NOT the definition, only a sanity companion, so the tolerance is
+    1.0 dB rather than 0.5. Measured deltas (giveback − spend) across the fixture
+    family:
+
+        canonical (11.4 dB deficit)   spend 11.351  giveback 12.144  +0.793
+        live-rig  (14.3 dB deficit)   spend 13.885  giveback 13.388  −0.497
+        budget-bound (+9 dB bump)     spend  9.880  giveback 12.773  +2.893
+        woofer, flattening cuts only  spend  0.000  giveback  1.458  +1.458
+        flat, no filters              spend  0.000  giveback  0.000   0.000
+
+    The larger deltas are correct, not error: whenever the correction also cuts
+    INSIDE the core band (the CD-horn residual peak near the onset, a flattening
+    cut on a bumped core) it removes real level there, and the anchor restores
+    exactly what was removed. Only the flat-core cases are expected near spend.
+    """
     fit = _cd_horn_fit("compression_horn")
     assert fit.hf_continuation_spend_db > 0.0
     assert fit.correction_giveback_db == pytest.approx(

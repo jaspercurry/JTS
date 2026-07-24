@@ -265,15 +265,23 @@ runs AFTER the flattening peaking loop:
   unverified boost claim. At this budget the practical binding constraint for
   realistic horn shapes is the realization fit-quality gate, not the budget.
 - **Anchored give-back (the trim).** Each branch's linearized trim is its own
-  COMMITTED raw trim plus exactly the level its emitted cascade removed from its
-  reference (core) band — `LinearizationFit.correction_giveback_db`, the fit
-  engine's SSOT (the power-domain average of the cascade over the
-  `_core_or_fallback_mask` region, reported positive, computed for every fit with
-  filters). Level-preserving by construction: each branch's audible band returns
-  to the pre-correction system level, with no solver prediction and no
-  cross-branch coupling. A shared shift then normalizes the pair non-positive so
-  a branch whose give-back exceeds its raw attenuation can never become a boost;
-  the shift preserves relative leveling and is honest extra ledger.
+  COMMITTED raw trim plus `LinearizationFit.correction_giveback_db` — the fit
+  engine's SSOT: the **measured before-vs-after level delta** of that branch's
+  reference (core) band (power-domain average of the pre-correction curve minus
+  the same average of the corrected curve, over the `_core_or_fallback_mask`
+  region, positive, computed for every fit with filters). Because the quantity
+  added back *is* the measured level change of the band being restored, it is
+  exact by definition — no flat-core assumption. (Averaging the *correction*
+  alone would be power-domain-approximate instead: exact only for a flat core,
+  and up to ~1.1 dB under-return on a 12 dB-tilted woofer-shaped core.) A shared
+  shift then normalizes the pair non-positive so a branch whose give-back exceeds
+  its raw attenuation can never become a boost; the shift preserves relative
+  leveling exactly and is honest extra ledger.
+
+  The realization gate bounds the correction's *shape* only over
+  [onset, ceiling]; below-onset divergence (e.g. a clamped shelf the residual
+  only partly absorbs) is absorbed by the anchor consuming the measured value —
+  it shrinks the achieved lift, it never breaks the leveling.
 
   This replaced the `solve_branch_trims` overlap-band seed after the 2026-07-24
   JTS3 runs, where that seed returned only **5.81 dB of a 9.27 dB spend** (raw

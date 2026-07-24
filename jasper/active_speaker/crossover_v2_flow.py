@@ -915,6 +915,10 @@ LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
 # Magnitude protection against a garbage correction lives upstream in the fit
 # engine's structural caps (per-filter <=12 dB cut, total normalization budget,
 # realization tolerance) plus the downstream VERIFY gate — not this trim guard.
+# NOTE the margin's MEANING changed with the anchor: it is now "how far the
+# summed-flatness optimum may disagree with the measured level anchor," not
+# "how far a re-solve may drift from another level estimate." The 6.0 value is
+# retained deliberately and is judged from live guard telemetry, not re-derived.
 LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 
 # Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
@@ -2377,13 +2381,13 @@ class CrossoverV2Conductor:
         )
         # ANCHORED give-back (#1668, replaces the overlap-band solve seed after
         # the 2026-07-24 JTS3 runs). Each branch's linearized trim is its own
-        # COMMITTED raw trim plus exactly the level its own emitted cascade
-        # removed from its reference (core) band —
-        # ``LinearizationFit.correction_giveback_db``, the fit engine's SSOT.
-        # This is level-preserving BY CONSTRUCTION: every branch's audible band
-        # returns to the pre-correction system level the raw candidate already
-        # accepted, so no solver prediction, no min() reasoning, and no
-        # cross-branch coupling enter the give-back at all.
+        # COMMITTED raw trim plus ``LinearizationFit.correction_giveback_db`` —
+        # the fit engine's SSOT, the MEASURED before-vs-after level delta of
+        # that branch's own reference (core) band. Because the quantity added
+        # back IS the measured level change of the band being restored, this
+        # restores each branch's audible band to the pre-correction system level
+        # the raw candidate already accepted — with no flat-core assumption, no
+        # solver prediction, no min() reasoning, and no cross-branch coupling.
         #
         # Why not the old `solve_branch_trims(W_lin, T_lin)` band-average seed:
         # it averaged over the CROSSOVER OVERLAP band (1.43-2.83 kHz on JTS3),

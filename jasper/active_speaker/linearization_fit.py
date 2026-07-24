@@ -415,17 +415,31 @@ class LinearizationFit:
     hf_continuation_policy: str = ""
     hf_continuation_suppressed_reason: str = ""
     measured_deficit_at_ceiling_db: float = 0.0
-    # How much LEVEL this driver's emitted cascade removed from its own
-    # reference (core) band, POSITIVE dB — the power-domain band average of the
-    # cascade's magnitude over the ``_core_or_fallback_mask`` region, negated.
+    # How much LEVEL this driver's correction removed from its own reference
+    # (core) band, POSITIVE dB — the MEASURED before-vs-after power-domain band
+    # average over the ``_core_or_fallback_mask`` region (pre-correction curve
+    # minus post-correction curve). Exact by definition of the quantity being
+    # restored: it is the level change of the very band whose level the anchor
+    # puts back. (Averaging the CORRECTION alone would instead be
+    # power-domain-approximate — exact only for a flat core, up to ~1.1 dB
+    # under-return on a 12 dB-tilted woofer-shaped core.)
+    #
     # This is the SSOT for the trim give-back: ``crossover_v2_flow.
     # _fit_linearization`` anchors each branch's linearized trim at
-    # ``raw_trim + correction_giveback_db``, which returns the branch's audible
-    # band to its pre-correction system level BY CONSTRUCTION — no solver
-    # prediction, no overlap-band averaging (measured live on JTS3 2026-07-24:
-    # the overlap-band route returned only 5.81 dB of a 9.27 dB spend, because
-    # the tweeter's LR4 skirt power-weights that average toward the least-cut
-    # region and the shelf's wide RBJ transition is not at full depth there).
+    # ``raw_trim + correction_giveback_db``, returning the branch's audible band
+    # to its pre-correction system level — no solver prediction, no overlap-band
+    # averaging (measured live on JTS3 2026-07-24: the overlap-band route
+    # returned only 5.81 dB of a 9.27 dB spend, because the tweeter's LR4 skirt
+    # power-weights that average toward the least-cut region and the shelf's
+    # wide RBJ transition is not at full depth there).
+    #
+    # Note the realization fit-quality gate bounds the correction's SHAPE only
+    # over [onset, ceiling]; below the onset the realized cascade may diverge
+    # from cut_target (e.g. a clamped shelf the residual only partly absorbs).
+    # That is safe here precisely because the anchor consumes this MEASURED
+    # delta: an under-realized plateau shrinks the achieved lift, it never
+    # breaks the leveling.
+    #
     # Computed for EVERY fit that emitted filters (0.0 when none), so a woofer
     # carrying only flattening cuts anchors correctly too. When the CD-horn
     # stage fires this reads ≈ spend + the flattening peaks' own in-band share.
@@ -1250,18 +1264,23 @@ def fit_driver_linearization(
     if any(f.gain < -PER_FILTER_CUT_CAP_DB - 1e-6 for f in filters):
         raise RuntimeError("linearization fit exceeded the per-filter cut cap")
 
-    # The give-back this driver's cascade actually removed from its own
+    # The give-back this driver's correction actually removed from its own
     # reference (core) band — the SSOT the flow anchors its linearized trim on.
-    # Power-domain average (matching the trim solver's own averaging domain) of
-    # the emitted cascade's magnitude, negated to read POSITIVE.
+    # The MEASURED before-vs-after core-band level delta: the power-domain band
+    # average of the curve BEFORE correction minus the same average AFTER
+    # (``working_db`` is ``smoothed_db`` plus the cascade). Averaging the
+    # CORRECTION alone instead would be power-domain-approximate — exact only
+    # for a flat core band, and up to ~1.1 dB under-return on a 12 dB-tilted
+    # (woofer-shaped) core, because a power-domain mean of the correction cannot
+    # know which bins carry the level it is being subtracted from. This
+    # formulation is exact by definition of the quantity being restored: it IS
+    # the level change of the band whose level the anchor restores.
     correction_giveback_db = 0.0
     if filters:
-        cascade_db = 20.0 * np.log10(
-            np.maximum(
-                np.abs(complex_correction_response(tuple(filters), grid_hz)), 1e-12
-            )
+        correction_giveback_db = (
+            _power_band_average_db(smoothed_db, level_mask)
+            - _power_band_average_db(working_db, level_mask)
         )
-        correction_giveback_db = -_power_band_average_db(cascade_db, level_mask)
 
     # Give-back frame: when the CD-horn stage fired it cut the whole band by
     # `spend` so the flow's trim re-solve levels the branches back — so the
