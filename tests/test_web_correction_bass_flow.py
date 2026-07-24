@@ -143,7 +143,44 @@ def test_status_payload_is_display_only_no_control_keys(monkeypatch):
         "mains_highpass_unwired_reason",
         "owner_label",
         "configured",
+        "bass_extension",
     }
+
+
+def test_status_payload_includes_bass_extension_section(monkeypatch):
+    """The Bass Extension status (a separate, not-yet-launched feature — see
+    docs/HANDOFF-bass-extension-plan.md §9) rides the same /bass/status
+    payload as the long-shipped bass-management section, verbatim from
+    bass_extension_state_summary()."""
+    import jasper.bass_extension.profile as profile_mod
+
+    _state(monkeypatch)  # bass-management state is irrelevant here
+    summary = {"commissioned": True, "status": "accepted"}
+    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", lambda: summary)
+
+    payload, status = flow.handle_status()
+    assert status == HTTPStatus.OK
+    assert payload["bass_extension"] == summary
+
+
+def test_status_payload_bass_extension_section_is_fail_soft(monkeypatch):
+    """A broken bass-extension read must not take down the long-shipped
+    bass-management payload it shares a page with — the section is null,
+    everything else stays intact."""
+    import jasper.bass_extension.profile as profile_mod
+
+    _state(monkeypatch, corner_hz=80.0)
+
+    def boom():
+        raise RuntimeError("profile read failed")
+
+    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", boom)
+
+    payload, status = flow.handle_status()
+    assert status == HTTPStatus.OK
+    assert payload["bass_extension"] is None
+    assert payload["configured"] is True
+    assert payload["corner_hz"] == 80.0
 
 
 def test_bass_flow_registered_on_the_correction_server(monkeypatch, tmp_path):

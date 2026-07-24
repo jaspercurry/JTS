@@ -1356,12 +1356,19 @@ few per volume swing — no journal spam.
 
 ### 10.2 `/state.bass_extension`
 
-`{commissioned, profile_id, status: accepted|bypassed|stale|absent,
+`{commissioned, profile_id, status: accepted|bypassed, contract_status:
+accepted|bypassed|stale|null, contract_refusals: [...], contract_detail,
 adapter_id, runtime_eligible, runtime_deferred_reason,
 apply_recovery_required,
 runtime_armed, current_target, current_extension_hz, deepest_hz,
-natural_hz, anchors: [...], scheduler_alive, last_transition_at}` —
-static fields read fresh from disk. Wave 3 added
+natural_hz, margin, anchors: [...], scheduler_alive, last_transition_at}` —
+static fields read fresh from disk. `status` is the raw profile-file
+claim (`accepted`/`bypassed`, or `null` when no profile is saved); it
+can lag reality, so `contract_status` re-evaluates the saved profile
+against the speaker's *current* topology/baseline/adapter/algorithm on
+every read (`contract_refusals` names which `BassExtensionRefusal`
+checks failed, `contract_detail` is the free-text explanation; both are
+`null`/`[]` with no profile or on a re-evaluation failure). Wave 3 added
 `adapter_id`/eligibility/deferred reason; live fields do not ship until
 a revised Wave 5. When they do, jasper-voice is the sole authoritative
 heartbeat/current-target owner and publishes the exact
@@ -1380,6 +1387,13 @@ While `apply_recovery_required=true`, sealed runtime is never armed or
 patched. `current_target="natural"` is reported only when the canonical
 resolver proves one of the intent's exact natural graphs; malformed or
 unproved pending state reports `null`.
+
+The read-only overview slice of wave-6-ui.md's planned "Modify
+(additive)" changes to `correction_bass_flow.py`/`bass/main.js` —
+`status`/`contract_status`/depth/margin/runtime rows, no commissioning
+link, no live `current_target` — landed early via a separately
+authorized visibility fix, outside the Wave 6 process; a future Wave 6
+session should build on it, not duplicate or revert it.
 
 ### 10.3 Doctor (flat, one `CheckResult` each)
 

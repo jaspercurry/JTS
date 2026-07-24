@@ -3300,10 +3300,11 @@ def check_bass_extension_profile() -> CheckResult:
             f"bass extension profile is malformed: {evaluation.detail}",
         )
     if evaluation.status == "stale":
+        refusals = ",".join(refusal.value for refusal in evaluation.refusals)
         return CheckResult(
             "bass extension profile",
             "warn",
-            f"bass extension profile is stale: {evaluation.detail}",
+            f"bass extension profile is stale [{refusals}]: {evaluation.detail}",
         )
     if evaluation.status == "bypassed":
         return CheckResult(

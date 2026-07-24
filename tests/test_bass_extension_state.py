@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.bass_extension import profile as profile_mod
-from jasper.bass_extension.profile import BassExtensionEvaluation
+from jasper.bass_extension.profile import BassExtensionEvaluation, BassExtensionRefusal
 from jasper.cli.doctor.audio import check_bass_extension_profile
 from jasper.control import state_aggregate
 
@@ -56,7 +56,10 @@ def test_doctor_stale_profile_is_warn(monkeypatch):
         monkeypatch,
         BassExtensionEvaluation(
             "stale",
-            (),
+            (
+                BassExtensionRefusal.BASELINE_NOT_APPLIED,
+                BassExtensionRefusal.PROFILE_STALE,
+            ),
             None,
             "baseline fingerprint mismatch; algorithm version mismatch",
         ),
@@ -64,6 +67,12 @@ def test_doctor_stale_profile_is_warn(monkeypatch):
     assert result.status == "warn"
     assert "baseline fingerprint mismatch" in result.detail
     assert "algorithm version mismatch" in result.detail
+    # The refusal enum values are surfaced in the detail string so an
+    # operator (or a log grep) can see exactly which contract check failed,
+    # not just the free-text explanation.
+    assert "[bass_extension_baseline_not_applied,bass_extension_profile_stale]" in (
+        result.detail
+    )
 
 
 def test_doctor_accepted_profile_is_ok_with_corners(monkeypatch):

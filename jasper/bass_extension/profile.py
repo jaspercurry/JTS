@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from contextlib import suppress
@@ -21,6 +22,8 @@ from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
     json_fingerprint,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from jasper.bass_extension.adapters.base import TargetSpec
@@ -547,9 +550,69 @@ def bass_extension_state_summary(
                 "runtime_eligible": False,
                 "runtime_deferred_reason": None,
                 "apply_recovery_required": True,
+                "contract_status": None,
+                "contract_refusals": [],
+                "contract_detail": None,
             }
         adapter_id = str(profile.enclosure["adapter_id"])
         runtime_eligible = adapter_id in BASS_EXTENSION_RUNTIME_ADAPTER_IDS
+
+        # The file's own `status` field is a raw, unverified claim: it stays
+        # "accepted" even when the CONTRACT that
+        # evaluate_loaded_bass_extension_profile enforces — baseline
+        # fingerprint, topology, adapter version, algorithm version — would
+        # now refuse the profile. Re-run that same evaluation here against
+        # the profile object already parsed above — the "already-parsed
+        # immutable profile without disk I/O" variant, so this costs no
+        # second read of the file — loading current topology/baseline state
+        # the same way the doctor's check_bass_extension_profile does, so a
+        # caller of this summary (state_aggregate, the bass tab) can tell
+        # "the file says accepted" from "the contract still honors it."
+        # Because this only ever evaluates an already-successfully-parsed
+        # profile, it can only report "stale", "bypassed", or "accepted" —
+        # never "missing"/"malformed" (those are disk-read outcomes the two
+        # branches above this one already handle). The evaluation runs under
+        # its own suppress(Exception) with a narrow, logged except nested
+        # inside for the expected failure classes — so ANY failure here,
+        # expected-and-logged or genuinely unexpected-and-silent, degrades
+        # these three keys to null/[]/null without affecting the rest of the
+        # summary (an unexpected type must not escape to the outer wrapper,
+        # where it would cost the whole summary); the tuple-unpack
+        # assignment computes all three from one evaluation object so a
+        # failure partway through can never leave them partially updated.
+        contract_status: str | None = None
+        contract_refusals: list[str] = []
+        contract_detail: str | None = None
+        with suppress(Exception):
+            try:
+                from jasper.active_speaker.baseline_profile import (
+                    load_applied_baseline_profile_state,
+                )
+                from jasper.output_topology import load_output_topology
+
+                evaluation = evaluate_loaded_bass_extension_profile(
+                    profile,
+                    topology=load_output_topology(),
+                    applied_baseline_state=load_applied_baseline_profile_state(),
+                )
+                contract_status, contract_refusals, contract_detail = (
+                    evaluation.status,
+                    [refusal.value for refusal in evaluation.refusals],
+                    evaluation.detail,
+                )
+            except (
+                ImportError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                KeyError,
+                AttributeError,
+            ):
+                logger.debug(
+                    "bass extension contract re-evaluation failed", exc_info=True
+                )
+
         return {
             "commissioned": True,
             "status": profile.status,
@@ -564,5 +627,8 @@ def bass_extension_state_summary(
             "natural_hz": profile.targets[-1].fp_hz,
             "margin": profile.margin,
             "anchors": [_anchor_to_dict(anchor) for anchor in profile.anchors],
+            "contract_status": contract_status,
+            "contract_refusals": contract_refusals,
+            "contract_detail": contract_detail,
         }
     return None
