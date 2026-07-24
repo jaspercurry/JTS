@@ -264,23 +264,29 @@ if [[ "${WANT_AUDIO}" == "1" ]]; then
     echo 3 > functions/uac2.usb0/c_chmask
     echo 1 > functions/uac2.usb0/c_volume_present
     echo 1 > functions/uac2.usb0/c_mute_present
-    # Advertised capture-volume range, in centi-dB (1/100 dB). We narrow it
-    # from the kernel's wide ~-128..0 dB default to -50..0 dB so macOS tapers
-    # its slider POSITION over a range aligned with JTS's own volume curve
-    # (jasper.volume_curve.percent_to_db's -50 dB floor). WHY: a wide default
-    # compresses the whole Mac slider into the top few dB, so a low-mid slider
-    # read ~73% on JTS (issue #1698). WHAT: min=-5000 (-50 dB), max=0 (0 dB),
-    # res=100 (1 dB step). These are the codification of the range contract —
-    # the other end is jasper/usbsink/volume_bridge.py:_raw_to_pct, which
-    # amplitude-normalizes the observed dB back to 0-100%; keep the two
-    # aligned. Best-effort via write_if_present: older kernels may not expose
-    # these attrs, and a missing attr must not fail gadget bring-up (the
-    # kernel default range then applies). Recommended range for the min: keep
-    # it at/above -60 dB so the bottom of the Mac slider stays useful; final
-    # feel needs an on-Mac slider check.
-    write_if_present functions/uac2.usb0/c_volume_min -5000
+    # Advertised capture-volume range, in UAC2 1/256-dB units (the kernel
+    # configfs unit for c_volume_*; see u_audio_volume_tlv "UAC volume
+    # resolution is 1/256 dB"). We narrow it from the kernel's wide ~-128..0 dB
+    # default to -50..0 dB so macOS tapers its slider POSITION over a range
+    # aligned with JTS's own volume curve (jasper.volume_curve.percent_to_db's
+    # -50 dB floor). WHY: a wide default compresses the whole Mac slider into
+    # the top few dB, so a low-mid slider read ~73% on JTS (issue #1698).
+    # WHAT: min=-12800 (-50 dB = -50*256), max=0 (0 dB), res=256 (1 dB step).
+    # Bind-time validity requires (max-min) % res == 0: 12800 % 256 == 0 (50
+    # steps). These are the codification of the range contract; the SINGLE
+    # source of truth is jasper/usbsink/volume_bridge.py's
+    # USBSINK_VOLUME_DB_{MIN,MAX}/STEP_DB constants, and a contract test in
+    # tests/test_usbsink_volume_bridge.py pins these literals to round(const*256)
+    # so bash and Python can't drift. The read side (_raw_to_pct) recovers
+    # physical dB from the control's step index (via the DB_MINMAX TLV, this
+    # range as fallback) then amplitude-normalizes. Best-effort via
+    # write_if_present: older kernels may not expose these attrs, and a missing
+    # attr must not fail gadget bring-up (the kernel default range then
+    # applies). Keep the min at/above -60 dB so the slider bottom stays useful;
+    # final feel needs an on-Mac slider check.
+    write_if_present functions/uac2.usb0/c_volume_min -12800
     write_if_present functions/uac2.usb0/c_volume_max 0
-    write_if_present functions/uac2.usb0/c_volume_res 100
+    write_if_present functions/uac2.usb0/c_volume_res 256
     if [[ "${WANT_USB_MIC}" == "1" ]]; then
         echo 1 > functions/uac2.usb0/p_chmask
         write_if_present functions/uac2.usb0/p_srate 48000
