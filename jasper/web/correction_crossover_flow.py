@@ -70,7 +70,10 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 <script type="module" src="/assets/correction/js/crossover/main.js"></script>
 """
     return canonical_page(
-        "Crossover measurement — JTS speaker",
+        # User-facing browser-tab title only (#1670 rename) — the route,
+        # slug, section_tabs key, and every internal identifier stay
+        # "crossover".
+        "Active speaker measurement — JTS speaker",
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/correction/crossover.css",

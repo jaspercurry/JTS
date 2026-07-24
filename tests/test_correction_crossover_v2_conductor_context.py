@@ -187,6 +187,52 @@ def test_explicit_env_playback_device_is_honored(monkeypatch):
     assert context.playback_device == "hw:Lab"
 
 
+# --------------------------------------------------------------------------- #
+# driver_class_by_role resolver seam (#1668 PR-D)
+# --------------------------------------------------------------------------- #
+
+
+def test_driver_class_by_role_resolver_default_pins_todays_empty_behavior(monkeypatch):
+    """The REAL (unstubbed) _resolve_driver_class_by_role — a #1665 stub —
+    must return {} today, so context.driver_class_by_role is empty and
+    CrossoverV2Conductor's own ``.get(role, "unknown")`` read falls back to
+    "unknown" for every role, exactly as it did before this resolver
+    existed (test_crossover_v2_conductor.py's own
+    test_happy_path_..._driver_class == "unknown" assertions)."""
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+
+    context = v2host.resolve_conductor_context(_status())
+
+    assert context.driver_class_by_role == {}
+    assert v2host._resolve_driver_class_by_role(context.preset) == {}
+
+
+def test_driver_class_by_role_fake_resolver_injection_reaches_the_context(monkeypatch):
+    """A fake resolver (simulating #1665's future component-entry-backed
+    implementation) proves the WIRING is real, not dead code: whatever
+    _resolve_driver_class_by_role returns lands unchanged on
+    context.driver_class_by_role, which is the exact value both conductor
+    construction sites (prepare_v2_session's .hydrate(...) and
+    prepare_v2_verify's CrossoverV2Conductor(...)) pass straight through as
+    the ctor's driver_class_by_role= — and
+    test_driver_class_by_role_ctor_param_threads_into_the_fit
+    (tests/test_crossover_v2_conductor.py) independently proves THAT ctor
+    param reaches compose_envelope's driver_class= argument. Together the
+    two tests cover the full resolver -> context -> conductor ->
+    compose_envelope chain without one end-to-end test spanning both
+    modules' heavy session-open seams."""
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+    injected = {"tweeter": "compression_horn", "woofer": "unknown"}
+    monkeypatch.setattr(v2host, "_resolve_driver_class_by_role", lambda preset: injected)
+
+    context = v2host.resolve_conductor_context(_status())
+
+    assert context.driver_class_by_role == injected
+    assert context.driver_class_by_role is injected
+
+
 def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     """The W6.5 gate blocker probe: ``resolve_conductor_context`` must resolve
     caps on the proven-HP path with the declaration's sensitivities — the

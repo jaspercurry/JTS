@@ -4479,6 +4479,371 @@ async def test_apply_v2_measured_candidate_reproves_sealed_bass_and_stales_it(
     ).status == "stale"
 
 
+# --- Layer-1a driver linearization threading (#1668 PR-D) -------------------
+#
+# The three gaps: build_baseline_profile_candidate threads candidate.
+# linearization into the emit call + the recomposition_snapshot + the
+# top-level payload mirror; _frozen_applied_profile carries "linearization"
+# into the SSOT frozen dict; recompose_applied_baseline_yaml reads the
+# snapshot's "linearization" era-tolerantly and re-emits it. The HIGHEST
+# PRIORITY regression here is the snapshot round trip: build -> snapshot has
+# the key -> recompose re-emits IDENTICAL filters (this is the fix for the
+# CRITICAL silent-reversion gap -- before it, every /sound preference-EQ
+# recompose silently dropped an applied profile's linearization stage).
+
+
+def _linearization_payload() -> dict:
+    return {
+        "woofer": {
+            "role": "woofer",
+            "filters": [
+                {"biquad_type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2},
+            ],
+            "fit_band_hz": [150.0, 3951.5], "target_level_db": -20.22,
+            "residual_rms_db": 0.4, "residual_max_db": 1.1,
+            "reason_summary": {"250": "envelope_fitted"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 3,
+        },
+        "tweeter": {
+            "role": "tweeter",
+            "filters": [
+                {
+                    "biquad_type": "Highshelf", "freq": 8000.0,
+                    "q": 0.7071067811865476, "gain": -3.0,
+                },
+                {"biquad_type": "Peaking", "freq": 4063.6, "q": 1.89, "gain": -3.38},
+            ],
+            "fit_band_hz": [2020.0, 13905.2], "target_level_db": -8.63,
+            "residual_rms_db": 2.63, "residual_max_db": 7.13,
+            "reason_summary": {"2000": "envelope_fitted"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 3,
+        },
+    }
+
+
+def _linearization_filter_lines(text: str) -> dict:
+    payload = yaml_lib.safe_load(text)
+    return {
+        name: spec["parameters"]
+        for name, spec in payload["filters"].items()
+        if "linearization" in name
+    }
+
+
+async def test_apply_then_recompose_reemits_identical_linearization_filters(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """HIGHEST PRIORITY (#1668 PR-D gap 3): the applied profile's
+    linearization stage must survive recompose_applied_baseline_yaml (the
+    /sound preference-EQ seam and every other production recompose caller)
+    byte-for-byte identical filters, not just at the moment of apply."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-lin-1",
+        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization=_linearization_payload(),
+    )
+
+    async def load_config(path: str) -> bool:
+        return True
+
+    applied = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    assert applied["status"] == "applied"
+    profile = applied["profile"]
+    # Gap 3b: both the top-level mirror and the immutable snapshot carry it.
+    assert profile["linearization"]
+    assert profile["recomposition_snapshot"]["linearization"]
+
+    applied_text = Path(profile["config"]["path"]).read_text(encoding="utf-8")
+    assert "as_tweeter_linearization_shelf" in applied_text
+    assert "as_woofer_linearization_peak_1" in applied_text
+
+    recomposed_text, recompose_issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=profile,
+    )
+    assert recompose_issues == []
+    assert recomposed_text is not None
+    assert _linearization_filter_lines(recomposed_text) == _linearization_filter_lines(
+        applied_text
+    )
+
+
+async def test_recompose_of_legacy_snapshot_missing_linearization_emits_no_stage(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A pre-PR-D applied profile (recomposition_snapshot with NO
+    "linearization" key at all -- not merely an empty one) must recompose
+    cleanly with no linearization stage: era-tolerant, never a KeyError or a
+    phantom stage."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    candidate = _v2_candidate(preset, tweeter_gain_db=-2.0, delay_us=250.0)
+
+    async def load_config(path: str) -> bool:
+        return True
+
+    applied = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        load_config=load_config,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+    assert applied["status"] == "applied"
+    profile = deepcopy(applied["profile"])
+    profile.pop("linearization", None)
+    profile["recomposition_snapshot"].pop("linearization", None)
+
+    recomposed_text, recompose_issues = recompose_applied_baseline_yaml(
+        topology, applied_profile=profile,
+    )
+    assert recompose_issues == []
+    assert recomposed_text is not None
+    assert "linearization" not in recomposed_text
+
+
+def test_frozen_applied_profile_carries_linearization_top_level():
+    """Gap 3c: _frozen_applied_profile (a field-by-field allowlist, unlike
+    persist_applied_baseline_profile's whole-object spread) must copy
+    "linearization" -- otherwise a candidate saved OVER an applied,
+    linearized profile silently loses it from the retained
+    applied_recomposition_profile sidecar."""
+    saved = {
+        "status": "applied",
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_baseline_profile_candidate",
+        "baseline_id": "baseline-x",
+        "applied_at": "2026-07-23T00:00:00Z",
+        "source": {},
+        "config": {},
+        "corrections": {"woofer": {"gain_db": 0.0}},
+        "corrections_source": {},
+        "gain_provenance": {},
+        "corrections_provenance": {},
+        "level_match": {},
+        "tuning_owner": "automatic",
+        "provisional": False,
+        "linearization": {"woofer": [{"biquad_type": "Peaking"}]},
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "linearization": {"woofer": [{"biquad_type": "Peaking"}]},
+        },
+    }
+    from jasper.active_speaker.baseline_profile import _frozen_applied_profile
+
+    frozen = _frozen_applied_profile(saved)
+    assert frozen is not None
+    assert frozen["linearization"] == {"woofer": [{"biquad_type": "Peaking"}]}
+    assert frozen["recomposition_snapshot"]["linearization"] == {
+        "woofer": [{"biquad_type": "Peaking"}]
+    }
+
+
+def test_frozen_applied_profile_defaults_linearization_when_absent():
+    """Era-tolerant: a pre-PR-D applied dict with no "linearization" key at
+    all must not raise, defaulting to {}."""
+    from jasper.active_speaker.baseline_profile import _frozen_applied_profile
+
+    saved = {
+        "status": "applied",
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_baseline_profile_candidate",
+        "baseline_id": "baseline-x",
+        "applied_at": "2026-07-23T00:00:00Z",
+        "source": {},
+        "config": {},
+        "corrections": {},
+        "corrections_source": {},
+        "gain_provenance": {},
+        "corrections_provenance": {},
+        "level_match": {},
+        "tuning_owner": "automatic",
+        "provisional": False,
+        "recomposition_snapshot": {"schema_version": 1},
+    }
+    frozen = _frozen_applied_profile(saved)
+    assert frozen is not None
+    assert frozen["linearization"] == {}
+
+
+async def _linearization_restore_fixture(monkeypatch, tmp_path: Path):
+    """Shared setup for both restore-direction tests below: a preset plus
+    load_config/current_config_path recorders and the two candidate shapes
+    (linearized vs plain)."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply_state.json")
+    )
+    state_path = tmp_path / "baseline_profile.json"
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    current_path: str | None = None
+
+    async def load_config(path: str) -> bool:
+        nonlocal current_path
+        current_path = path
+        return True
+
+    async def current_config_path() -> str | None:
+        return current_path
+
+    linearized_candidate = MeasuredCrossoverCandidate(
+        program_id="prog-lin-a",
+        analysis={"drift_ppm": 2.0, "sweeps": ["w", "t", "w"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization=_linearization_payload(),
+    )
+    plain_candidate = _v2_candidate(preset, tweeter_gain_db=-2.5, delay_us=300.0)
+    return (
+        topology, draft, preview, state_path, config_path,
+        load_config, current_config_path, linearized_candidate, plain_candidate,
+    )
+
+
+async def test_restore_to_linearized_profile_brings_linearization_back(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Gap 3e (TRACE promote/restore genericity), direction A: apply a
+    linearized profile, capture it as "retained" (a write=False preview
+    always reflects whatever is CURRENTLY applied), apply a plain profile
+    over it, then restore back to the retained linearized snapshot ->
+    linearization is back, in both the JSON SSOT and the reloaded config
+    file. Pins that persist_applied_baseline_profile / restore_applied_
+    baseline_profile are whole-object copies, not field-by-field
+    allowlists, end to end (not just by code reading)."""
+    (
+        topology, draft, preview, state_path, config_path,
+        load_config, current_config_path, linearized_candidate, plain_candidate,
+    ) = await _linearization_restore_fixture(monkeypatch, tmp_path)
+
+    linearized_applied = await apply_baseline_profile(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        load_config=load_config, get_current_config_path=current_config_path,
+        state_path=state_path, config_path=config_path, validate=_valid_config,
+        tuning_owner="automatic", measured_candidate=linearized_candidate,
+    )
+    assert linearized_applied["status"] == "applied"
+    # Captured BEFORE the plain apply below supersedes it -- linearized IS
+    # the currently-applied profile at this point, so this preview build's
+    # own applied_recomposition_profile sidecar reflects it.
+    retained_linearized = build_baseline_profile_candidate(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        write=False, state_path=state_path, config_path=config_path,
+        tuning_owner="automatic", measured_candidate=plain_candidate,
+    )["applied_recomposition_profile"]
+    assert retained_linearized["linearization"]
+
+    plain_applied = await apply_baseline_profile(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        load_config=load_config, get_current_config_path=current_config_path,
+        state_path=state_path, config_path=config_path, validate=_valid_config,
+        tuning_owner="automatic", measured_candidate=plain_candidate,
+    )
+    assert plain_applied["status"] == "applied"
+    assert plain_applied["profile"]["linearization"] == {}
+
+    restored = await restore_applied_baseline_profile(
+        retained_linearized, load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path, config_path=config_path, validate=_valid_config,
+    )
+    assert restored["status"] == "restored", restored.get("issues")
+    restored_active = load_applied_baseline_profile_state(state_path)
+    assert restored_active is not None
+    assert restored_active["linearization"]
+    assert restored_active["recomposition_snapshot"]["linearization"]
+    restored_text = config_path.read_text(encoding="utf-8")
+    assert "as_tweeter_linearization_shelf" in restored_text
+
+
+async def test_restore_to_pre_linearization_profile_leaves_linearization_gone(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Gap 3e, direction B: apply a plain profile, capture it as "retained",
+    apply a linearized profile over it, then restore back to the retained
+    plain snapshot -> linearization is gone, in both the JSON SSOT and the
+    reloaded config file (never a phantom carry-forward from the
+    superseded linearized apply)."""
+    (
+        topology, draft, preview, state_path, config_path,
+        load_config, current_config_path, linearized_candidate, plain_candidate,
+    ) = await _linearization_restore_fixture(monkeypatch, tmp_path)
+
+    plain_applied = await apply_baseline_profile(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        load_config=load_config, get_current_config_path=current_config_path,
+        state_path=state_path, config_path=config_path, validate=_valid_config,
+        tuning_owner="automatic", measured_candidate=plain_candidate,
+    )
+    assert plain_applied["status"] == "applied"
+    # Captured BEFORE the linearized apply below supersedes it.
+    retained_plain = build_baseline_profile_candidate(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        write=False, state_path=state_path, config_path=config_path,
+        tuning_owner="automatic", measured_candidate=linearized_candidate,
+    )["applied_recomposition_profile"]
+    assert retained_plain["linearization"] == {}
+
+    linearized_applied = await apply_baseline_profile(
+        topology, design_draft=draft, crossover_preview=preview, measurements={},
+        load_config=load_config, get_current_config_path=current_config_path,
+        state_path=state_path, config_path=config_path, validate=_valid_config,
+        tuning_owner="automatic", measured_candidate=linearized_candidate,
+    )
+    assert linearized_applied["status"] == "applied"
+    assert linearized_applied["profile"]["linearization"]
+
+    restored = await restore_applied_baseline_profile(
+        retained_plain, load_config=load_config,
+        get_current_config_path=current_config_path,
+        state_path=state_path, config_path=config_path, validate=_valid_config,
+    )
+    assert restored["status"] == "restored", restored.get("issues")
+    restored_active = load_applied_baseline_profile_state(state_path)
+    assert restored_active is not None
+    assert restored_active["linearization"] == {}
+    restored_text = config_path.read_text(encoding="utf-8")
+    assert "linearization" not in restored_text
+
+
 async def test_apply_baseline_profile_refuses_stale_v2_candidate_fingerprint(
     monkeypatch, tmp_path: Path,
 ) -> None:

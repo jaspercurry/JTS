@@ -59,6 +59,8 @@ from .graph_evidence import (
     driver_baseline_limiter_name as _baseline_limiter_name,
     driver_delay_name as _driver_delay_name,
     driver_limiter_name,
+    driver_linearization_peak_name as _linearization_peak_name,
+    driver_linearization_shelf_name as _linearization_shelf_name,
     filter_params as _filter_params,
     filter_type as _filter_type,
     output_commission_mute_name as _commission_mute_name,
@@ -1079,6 +1081,77 @@ def _baseline_gain_limiter_safe(
     )
 
 
+def _linearization_filter_safe(
+    payload: dict[str, Any], *, name: str, biquad_type: str,
+) -> bool:
+    """One named linearization Biquad proves its own declared type + the
+    cut-only invariant (gain <= 0) -- the same posture
+    ``linearization_fit.fit_driver_linearization`` enforces at fit time,
+    re-proved independently here against the emitted graph."""
+
+    if _filter_type(payload, name) != "Biquad":
+        return False
+    params = _filter_params(payload, name)
+    if str(params.get("type") or "") != biquad_type:
+        return False
+    gain = _strict_finite_number(params.get("gain"))
+    return gain is not None and gain <= 0.0
+
+
+def _consume_linearization_chain(
+    chain: tuple[str, ...],
+    cursor: int,
+    payload: dict[str, Any],
+    role: str,
+) -> tuple[int, bool]:
+    """Advance ``cursor`` past a well-formed, provably-safe Layer-1a
+    linearization run (#1668 PR-D) for ``role``: an optional named shelf
+    then 0..N named peaking filters, in the emitter's own naming convention
+    (``camilla_yaml.driver_linearization_shelf_name`` /
+    ``driver_linearization_peak_name``, re-exported via ``graph_evidence``).
+
+    SELF-PROVING from the graph text alone -- unlike bass-extension (a
+    business decision an external profile/candidate declares, so its
+    presence/shape must be threaded in as evidence), a linearization
+    filter's full shape (which role, shelf-or-not, how many peaks) is
+    entirely recoverable from its own name + params. So no
+    ``linearization_summary`` parameter needs threading through this
+    module's public entry points (``classify_camilla_graph`` /
+    ``classify_bass_extension_graph``) or their ~8 external callers the way
+    ``bass_profile_summary`` does — this stays a purely-local addition to
+    ``_baseline_output_chain``.
+
+    Returns ``(new_cursor, ok)``. ``ok`` is False iff a recognized
+    linearization-named filter proves UNSAFE (wrong Biquad subtype or
+    positive gain) — fail closed, exactly like every other named-filter
+    proof in this module. A name at ``cursor`` that does not match the
+    linearization naming convention is not an error: zero filters are
+    consumed, and the ordinary tail check the caller runs next decides
+    whether what remains (unshifted) is a legal chain.
+    """
+
+    index = cursor
+    shelf_name = _linearization_shelf_name(role)
+    if index < len(chain) and chain[index] == shelf_name:
+        if not _linearization_filter_safe(
+            payload, name=shelf_name, biquad_type="Highshelf",
+        ):
+            return index, False
+        index += 1
+    peak_number = 1
+    while index < len(chain):
+        peak_name = _linearization_peak_name(role, peak_number)
+        if chain[index] != peak_name:
+            break
+        if not _linearization_filter_safe(
+            payload, name=peak_name, biquad_type="Peaking",
+        ):
+            return index, False
+        index += 1
+        peak_number += 1
+    return index, True
+
+
 def _baseline_output_chain(
     payload: dict[str, Any],
     *,
@@ -1152,6 +1225,17 @@ def _baseline_output_chain(
             return None
         crossovers.append((direction, name))
         cursor += 1
+    # Layer-1a driver linearization (#1668 PR-D): immediately after the
+    # crossover HP/LP, before bass-extension — mirrors the bass-extension
+    # slot above but is SELF-PROVING from the graph text alone (see
+    # _consume_linearization_chain's docstring for why no external "what
+    # linearization SHOULD be here" evidence needs threading through this
+    # module's callers the way bass_extension's boolean does).
+    cursor, linearization_ok = _consume_linearization_chain(
+        chain, cursor, payload, assignment.role,
+    )
+    if not linearization_ok:
+        return None
     if bass_extension:
         if tuple(chain[cursor : cursor + 2]) != (
             "bass_ext_lt",
