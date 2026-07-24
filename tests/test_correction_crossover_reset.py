@@ -206,10 +206,8 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
     candidate/verify/failure re-rendered "Ready to start again" with stale
     verify-fail actions and no start button (round-1 finding #4). NOT-applied
     ⇒ the clear is total (nothing worth preserving)."""
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from jasper.web import correction_crossover_v2 as v2
 
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     v2.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
         v2.save_v2_state({
@@ -239,10 +237,8 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
     fields so the envelope serves the clean start screen. A full clear here
     would strand the household on the applied graph with Undo permanently
     unreachable."""
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from jasper.web import correction_crossover_v2 as v2
 
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     v2.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
         pre_apply = {"candidate_fingerprint": "fp-prior", "config": {"path": "/x.yml"}}
@@ -283,10 +279,8 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
 def test_handle_reset_refusal_leaves_v2_state_intact(monkeypatch, tmp_path):
     """A refused reset (volume-safety unresolved / measurement still stopping)
     must NOT clear the v2 state — nothing was reset, so nothing is lost."""
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
     from jasper.web import correction_crossover_v2 as v2
 
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     v2.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
         v2.save_v2_state({"session_id": "cap_x", "accepted_phases": ["microphone_check"]})

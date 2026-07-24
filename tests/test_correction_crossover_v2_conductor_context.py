@@ -309,10 +309,8 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolated_v2_state(tmp_path, monkeypatch):
-    from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
 
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     yield
     v2host.set_state_path_for_tests(None)
     v2host.set_volume_plan_for_tests(None)

@@ -20,14 +20,12 @@ this doc is the current operational truth.
   speaker at tweeter height, tap Start, then follow the phone — apply is
   automatic (owner ruling, 2026-07-20; gotcha #18), no browser-tab step
   in between.
-- **Flow selector — `JASPER_CROSSOVER_FLOW`.** Resolved by
-  `active_crossover_flow()` in
-  [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py).
-  **The default is `v2`** (flipped from `legacy` on 2026-07-19 after W6
-  hardware validation); the single opt-out is the exact literal
-  `JASPER_CROSSOVER_FLOW=legacy` (case-insensitive, trimmed). Any
-  unrecognized value resolves to the default — fail-safe by
-  construction.
+- **Only flow — v2.** W5b (2026-07-24) retired the legacy per-driver
+  flow and the `JASPER_CROSSOVER_FLOW` selector.
+  `build_crossover_envelope` dispatches straight to
+  `build_crossover_envelope_v2` now; a stale
+  `JASPER_CROSSOVER_FLOW=legacy` carried on an old box no longer selects
+  anything (pinned by `test_legacy_env_still_serves_v2_envelope`).
 - **Phone capture page:** the Cloudflare Pages app under
   [`capture-page/`](../capture-page/README.md), served at
   `capture.jasper.tech`, relaying through `relay.jasper.tech`. Deploy
@@ -231,7 +229,6 @@ most visible thing on the screen.
 
 | File | Responsibility |
 |---|---|
-| [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py) | The `JASPER_CROSSOVER_FLOW` selector — `active_crossover_flow()` / `resolve_crossover_flow()`. No product policy. |
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. |
@@ -922,7 +919,8 @@ so waves could run in parallel.**
   see Future work. Deleting the only working flow before the replacement
   touched hardware was the one sequencing risk the plan refused.
 
-The default flips to `v2` on 2026-07-19. Legacy remains reachable via
-`JASPER_CROSSOVER_FLOW=legacy` until W5b deletes it.
+The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
+legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
+crossover-measurement flow now.
 
-Last verified: 2026-07-23
+Last verified: 2026-07-24

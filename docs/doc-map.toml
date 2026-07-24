@@ -785,7 +785,7 @@ requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
   "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
-  "The v2 crossover conductor flow (excitation program, phase state machine, session volume plan, JASPER_CROSSOVER_FLOW selector, or the v2 apply/verify/restore endpoints) changes — scan HANDOFF-crossover-measurement-v2.md.",
+  "The v2 crossover conductor flow (excitation program, phase state machine, session volume plan, or the v2 apply/verify/restore endpoints) changes — scan HANDOFF-crossover-measurement-v2.md.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",

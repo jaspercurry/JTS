@@ -38,7 +38,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_flow import CROSSOVER_FLOW_ENV
 from jasper.active_speaker.crossover_v2_flow import (
     PHASE_APPLYING,
     PHASE_CHECK,
@@ -80,7 +79,6 @@ _BINDING = "placement_abcdefghijklmnopqrstuv"
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "v2")
     v2host.reset_session_measurement_pause_for_tests()
     yield
     v2host.set_state_path_for_tests(None)
@@ -854,23 +852,7 @@ def test_verify_rearm_persists_pilot_transfer_baseline_for_a_later_rearm():
     assert state["verify_priors"]["pilot_transfer_baseline"] == {"summed": 0.0}
 
 
-# --- endpoint gates (selector + recovery) ----------------------------------------
-
-
-def test_prepare_refuses_under_legacy_flow(monkeypatch):
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.prepare_v2_session(
-            {}, status={}, run_async=None, camilla_factory=None
-        )
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.prepare_v2_verify(
-            {}, status={}, run_async=None, camilla_factory=None
-        )
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.handle_v2_apply({}, None, None)
-    with pytest.raises(v2host.CrossoverV2Refused):
-        v2host.handle_v2_restore(None, None)
+# --- endpoint gates (recovery) ----------------------------------------
 
 
 def test_prepare_refuses_when_volume_needs_recovery():
@@ -1838,11 +1820,6 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 # --- status block (S1b) -----------------------------------------------------------
 
 
-def test_status_block_none_under_legacy(monkeypatch):
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
-    assert v2host.crossover_v2_status_block() is None
-
-
 def test_status_block_reports_needs_recovery_and_phase():
     class _NeedsRecovery:
         needs_recovery = True
@@ -2292,7 +2269,7 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise():
     assert cam.vol == -15.0
 
 
-def test_v2_volume_recovery_active_tracks_needs_recovery(monkeypatch):
+def test_v2_volume_recovery_active_tracks_needs_recovery():
     class _NeedsRecovery:
         needs_recovery = True
 
@@ -2304,10 +2281,6 @@ def test_v2_volume_recovery_active_tracks_needs_recovery(monkeypatch):
 
     v2host.set_volume_plan_for_tests(_Clean())
     assert v2host.v2_volume_recovery_active() is False
-
-    monkeypatch.setenv(CROSSOVER_FLOW_ENV, "legacy")
-    v2host.set_volume_plan_for_tests(_NeedsRecovery())
-    assert v2host.v2_volume_recovery_active() is False  # legacy flow: never v2
 
 
 def test_recover_session_volume_routes_to_the_plan():
@@ -3486,7 +3459,6 @@ def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
 
     with pytest.raises(v2host.CrossoverV2Refused, match="first measured crossover"):
         v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
-
 
 
 # --- W6.11: the real session-start preview-ensure seam, end to end ---
