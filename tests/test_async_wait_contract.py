@@ -12,13 +12,19 @@ the point — the failure mode this guards against swallows the real error
 on a task nobody awaits, so a bare timeout would leave the next reader
 with nothing to go on.
 
-Structure: the race and cancellation tests listed in
-`BOUNDED_WAIT_TESTS` keep their waits bounded. Those tests hang forever
-on a loaded macOS box when written with a bare `await event.wait()` — a
-producer that misses a lock budget dies before it signals, and nothing
-ever wakes the test body. CI's Linux runners are quiet enough that they
-never see it, so only a static guard keeps the fix from silently
-regressing.
+Structure: NO async test anywhere under tests/ may coordinate through a
+bare `await <event>.wait()` in its own body, except the shrinking
+allowlist in `KNOWN_UNBOUNDED_WAITS`. Such a test hangs forever when its
+producer dies before signalling — a lock budget missed on a loaded box,
+say — and the producer's real exception stays swallowed on a task nobody
+awaits. CI's Linux runners are quiet enough that these never hang there,
+so the global pytest-timeout backstop never fires on them either; this
+static guard is the only thing that catches the pattern at CI time.
+
+The allowlist is a two-sided ratchet, mirroring
+`tests/test_atomic_io_conventions.py`: a new offender fails, AND a stale
+entry fails, so the list can only shrink. It is the burn-down list for
+the sites this bug class already has — not permission to add more.
 """
 
 from __future__ import annotations
@@ -31,34 +37,90 @@ import pytest
 
 from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled
 
-#: Waits bounded because they were observed to hang. Extend this as more
-#: of the same bug class is fixed; never shrink it.
-BOUNDED_WAIT_TESTS: dict[str, tuple[str, ...]] = {
-    "tests/test_active_speaker_commissioning_host.py": (
-        "test_two_independent_hosts_allow_only_one_issuance_to_execute",
-        "test_restored_in_flight_capture_cannot_be_recovered_by_peer",
-    ),
-    "tests/test_active_speaker_commissioning_runtime.py": (
-        "test_cancellation_during_safe_volume_set_restores_without_audio",
-        "test_cancellation_during_restore_continues_remaining_cleanup",
-        "test_external_cancellation_stops_interruptible_capture_and_restores",
-        "test_cancel_suppressed_by_late_callback_reports_completed_result",
-    ),
-    "tests/test_bass_extension_profile.py": (
-        "test_delayed_rollback_cannot_replay_consumed_intent_over_new_commit",
-        "test_delayed_rollback_refuses_different_newer_pending_intent",
-        "test_repeated_cancellation_during_rollback_drains_one_restore_task",
-        "test_rollback_failure_wins_over_repeated_cancellation",
-    ),
-    "tests/test_camilla_controller.py": (
-        "test_intent_publication_wins_race_before_direct_graph_mutation",
-    ),
-    "tests/test_dsp_apply.py": (
-        "test_cancelled_dsp_writer_waiter_cannot_acquire_late",
-        "test_cancelling_contended_owner_is_not_logged_as_wait_cancellation",
-        "test_dsp_writer_lock_acquires_after_contention_before_deadline",
-    ),
-}
+#: Burn-down list: async tests still coordinating through an unbounded
+#: `await <event>.wait()`. Each one can hang forever if its producer dies
+#: first. Fix with `wait_signalled()` and DELETE the entry — the guard
+#: fails on a stale entry too, so this only ever shrinks. Never add.
+KNOWN_UNBOUNDED_WAITS: frozenset[tuple[str, str]] = frozenset({
+    ("tests/test_audio_measurement_admitted_playback.py",
+     "test_playback_cancellation_preserves_admission_when_close_fails"),
+    ("tests/test_audio_measurement_admitted_playback.py",
+     "test_playback_failure_and_cancellation_have_correlated_terminal_events"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_cancellation_during_capture_restores_before_propagating"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_cancellation_settles_candidate_apply_before_restore"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_preserves_apply_failure_that_finishes_after_cancellation"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_repeated_cancellation_cannot_interrupt_restore"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_cancellation_during_success_cleanup_waits_for_restore"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_preserves_cleanup_cancellation_when_restore_fails_after_success"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_preserves_body_failure_cleanup_cancellation_and_restore_failure"),
+    ("tests/test_audio_measurement_null_walk.py",
+     "test_runner_preserves_repeated_cancellation_and_restore_failure"),
+    ("tests/test_audio_measurement_playback.py",
+     "test_continuous_tone_cancel_reaps_and_logs_lifecycle"),
+    ("tests/test_audio_measurement_playback.py",
+     "test_continuous_tone_unconfirmed_cancel_cleanup_is_bounded"),
+    ("tests/test_bass_extension_bench_activation.py",
+     "test_cancellation_still_restores"),
+    ("tests/test_bluetooth_engine.py",
+     "test_scan_refresh_replaces_timer_without_stacking_stop_calls"),
+    ("tests/test_bluetooth_engine.py",
+     "test_scan_refresh_wins_exact_expiry_race_and_remains_discovering"),
+    ("tests/test_bluetooth_engine.py",
+     "test_concurrent_device_operations_share_one_recovered_bus"),
+    ("tests/test_bluetooth_engine.py",
+     "test_engine_stop_during_start_does_not_resurrect_scan_or_timer"),
+    ("tests/test_camilla_controller.py",
+     "test_direct_graph_mutation_wins_race_before_intent_publication"),
+    ("tests/test_camilla_controller.py",
+     "test_cancellation_cancels_worker_still_queued_in_executor"),
+    ("tests/test_correction_coordinator.py",
+     "test_window_b_blocked_while_window_a_restore_in_flight"),
+    ("tests/test_correction_level_match.py",
+     "test_stop_after_locked_waits_for_terminal_ack_then_restores"),
+    ("tests/test_correction_level_match.py",
+     "test_session_ensure_and_restore_share_one_transition_lock"),
+    ("tests/test_correction_playback.py", "test_cancelled_sweep_kills_and_reaps_aplay"),
+    ("tests/test_correction_playback.py", "test_repeated_cancellation_still_reaps_aplay"),
+    ("tests/test_correction_session.py",
+     "test_emergency_stop_reaps_audio_task_before_reset"),
+    ("tests/test_correction_session.py",
+     "test_emergency_stop_gracefully_reaps_active_relay_level_ramp"),
+    ("tests/test_correction_session.py",
+     "test_emergency_stop_reaps_level_match_before_phone_arms"),
+    ("tests/test_crossover_driver_level_domain.py",
+     "test_level_cancel_during_restore_drains_then_discards_identity"),
+    ("tests/test_dsp_apply.py",
+     "test_pending_intent_race_orders_ordinary_writer_before_recovery"),
+    ("tests/test_mux.py", "test_source_observations_serialize_probe_and_record"),
+    ("tests/test_peering_discovery.py",
+     "test_slow_added_cannot_overwrite_later_updated_identity"),
+    ("tests/test_peering_discovery.py",
+     "test_removed_waits_for_slow_added_without_peer_resurrection"),
+    ("tests/test_voice_daemon_manual_start_guard.py",
+     "test_measurement_auto_clear_releases_reconcile_guard"),
+    ("tests/test_volume_coordinator.py",
+     "test_nonzero_intent_publishes_before_slow_spotify_dispatch"),
+    ("tests/test_volume_coordinator.py",
+     "test_mute_intent_is_local_and_published_before_slow_spotify"),
+    ("tests/test_volume_coordinator.py",
+     "test_mute_context_publishes_before_blocked_camilla_backstop"),
+    ("tests/test_volume_coordinator.py",
+     "test_overlapping_push_writes_keep_source_persistence_and_context_aligned"),
+    ("tests/test_volume_coordinator.py",
+     "test_context_snapshot_retries_after_concurrent_volume_change"),
+    ("tests/test_volume_coordinator.py",
+     "test_reconcile_in_flight_stops_when_measurement_begins"),
+    ("tests/test_volume_coordinator.py",
+     "test_measurement_pause_waits_for_in_flight_reconcile_write"),
+    ("tests/test_wake_events.py", "test_concurrent_sweeps_do_not_double_scan"),
+})
 
 #: Calls that bound whatever they enclose.
 _BOUNDING_CALLS = frozenset({"wait_for", "timeout", "wait_signalled"})
@@ -120,32 +182,64 @@ def _unbounded_waits(fn: ast.AsyncFunctionDef) -> list[int]:
     return lines
 
 
-@pytest.mark.parametrize(
-    ("relative_path", "test_name"),
-    [
-        (path, name)
-        for path, names in BOUNDED_WAIT_TESTS.items()
-        for name in names
-    ],
-)
-def test_race_tests_keep_their_event_waits_bounded(
-    relative_path: str,
-    test_name: str,
-) -> None:
-    source_path = _REPO_ROOT / relative_path
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    matches = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == test_name
-    ]
-    assert matches, f"{relative_path}::{test_name} no longer exists"
+def _offending_tests() -> dict[tuple[str, str], list[int]]:
+    """Every async test under tests/ with an unbounded wait in its body."""
 
-    unbounded = sorted(line for fn in matches for line in _unbounded_waits(fn))
-    assert not unbounded, (
-        f"{relative_path}::{test_name} has unbounded `await <event>.wait()` at "
-        f"line(s) {unbounded}. These hang forever when the producing task dies "
-        f"before signalling. Use wait_signalled() from tests/_async_wait.py."
+    offenders: dict[tuple[str, str], list[int]] = {}
+    for path in sorted((_REPO_ROOT / "tests").rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        relative = path.relative_to(_REPO_ROOT).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            if not node.name.startswith("test_"):
+                continue
+            lines = _unbounded_waits(node)
+            if lines:
+                offenders.setdefault((relative, node.name), []).extend(lines)
+    return offenders
+
+
+def test_no_new_test_coordinates_through_an_unbounded_event_wait() -> None:
+    """A bare `await <event>.wait()` in a test body can hang forever.
+
+    When the producing task dies before signalling — a lock budget missed
+    on a loaded box — nothing ever wakes the test, and the producer's real
+    exception stays swallowed on a task nobody awaits.
+    """
+
+    offenders = _offending_tests()
+    new = sorted(key for key in offenders if key not in KNOWN_UNBOUNDED_WAITS)
+
+    assert not new, (
+        "unbounded `await <event>.wait()` in a test body — these hang forever "
+        "when the producing task dies before signalling. Use wait_signalled() "
+        "from tests/_async_wait.py (it also reports the producer's exception "
+        "as the cause):\n"
+        + "\n".join(
+            f"  {path}::{name}  line(s) {offenders[(path, name)]}"
+            for path, name in new
+        )
+    )
+
+
+def test_known_unbounded_wait_allowlist_has_no_stale_entries() -> None:
+    """The ratchet only tightens.
+
+    A fixed (or deleted, or renamed) test must lose its entry, otherwise
+    the list stops describing real debt and quietly re-authorizes the
+    pattern for a name nobody is watching any more.
+    """
+
+    stale = sorted(KNOWN_UNBOUNDED_WAITS - set(_offending_tests()))
+
+    assert not stale, (
+        "stale KNOWN_UNBOUNDED_WAITS entries — the test was fixed, renamed, or "
+        "removed. Delete these so the ratchet keeps tightening:\n"
+        + "\n".join(f"  {path}::{name}" for path, name in stale)
     )
 
 
