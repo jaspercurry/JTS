@@ -89,7 +89,6 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     overlap_band_hz,
     predicted_branch_sum,
-    solve_branch_trims,
     solve_ripple_optimal_trim,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
@@ -902,19 +901,20 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
 # statement about what the program composes; the two happen to agree today.
 LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
 
-# How far the ripple-optimal tweeter trim may move from its OWN band-average
-# seed before that re-solve is treated as implausible and discarded in favor
-# of the band-average seed pair (with a WARNING — never a silent swap). The
-# guard is seed-anchored, not raw-anchored (#1668 CD-horn re-anchor): a
-# legitimate CD-horn give-back shifts the linearized band-average trim by
-# ~the full spend (~11 dB) vs the RAW trim, so a raw-anchored guard would
-# reject every honest give-back. What it DOES catch is a ripple-optimal scan
-# that walks far from its own seed — the "attenuate the tweeter toward
-# silence is always flatter against a flat woofer" degenerate the solver's
-# own +/-window scan can wander into. Magnitude protection against a garbage
-# correction itself lives upstream in the fit engine's structural caps
-# (per-filter <=12 dB cut, <=12 dB total normalization spend, realization
-# tolerance) plus the downstream VERIFY gate — not this trim guard.
+# How far the ripple-optimal tweeter trim may move from its ANCHORED trim
+# (raw trim + that branch's measured `correction_giveback_db`, normalized) before
+# the scan's result is treated as implausible and discarded in favor of the
+# anchored pair (with a WARNING — never a silent swap). ANCHOR-anchored since
+# the 2026-07-24 JTS3 runs (#1668): the anchor is measured give-back, not a
+# solver prediction, so it is trusted by construction and only the SCAN can
+# drift. What the guard catches is the scan wandering into the "attenuate the
+# tweeter toward silence is always flatter against a flat woofer" degenerate its
+# own +/-window allows. It no longer fights the give-back itself: the previous
+# overlap-band seed under-returned the correction and this guard then blocked the
+# scan's attempt to fix it on both live runs — the anchor removes that conflict.
+# Magnitude protection against a garbage correction lives upstream in the fit
+# engine's structural caps (per-filter <=12 dB cut, total normalization budget,
+# realization tolerance) plus the downstream VERIFY gate — not this trim guard.
 LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 
 # Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
@@ -2280,10 +2280,13 @@ class CrossoverV2Conductor:
         re-solve the trim from the LINEARIZED branch pair — the ordering
         the design doc calls out as structurally defusing #1667's band-
         average trim bias. Returns ``(role_attenuations_db, linearization)``;
-        falls back to the band-average SEED trim pair (with a WARNING) when
-        the ripple-optimal tweeter re-solve drifts implausibly far from its
-        own band-average seed (#1668 CD-horn re-anchor — NOT the raw trim,
-        which a legitimate give-back legitimately moves by ~the full spend).
+        falls back to the ANCHORED trim pair (with a WARNING) when the
+        ripple-optimal tweeter re-solve drifts implausibly far from that anchor.
+        The anchor is each branch's own raw trim plus the level its emitted
+        cascade removed from its reference band
+        (``LinearizationFit.correction_giveback_db``) — level-preserving by
+        construction, replacing the overlap-band solve seed that under-returned
+        the give-back on the 2026-07-24 JTS3 runs.
 
         Only called after :meth:`_linearization_eligible` — this method
         assumes both driver responses exist and are adequately repeated;
@@ -2372,58 +2375,77 @@ class CrossoverV2Conductor:
             if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
             else lo
         )
-        trim_w_lin, trim_t_lin_band_average, _lw, _lt = solve_branch_trims(
-            freqs, W_lin, T_lin, self._fc_hz, lo_hz=lo_clamped, hi_hz=hi,
-        )
-        # #1667: ripple-optimal re-solve on the LINEARIZED branch pair, same
-        # fix as the raw candidate's own re-solve
-        # (program_analysis._build_candidate) — see solve_ripple_optimal_trim's
-        # docstring. The wild-trim guard below is anchored to THIS call's own
-        # band-average seed, not the raw candidate's trim (#1668 CD-horn
-        # re-anchor). Why the seed and not a "raw + expected per-role shift"
-        # formula: the seed IS computed from the ACTUAL linearized branches
-        # (solve_branch_trims on W_lin/T_lin), so no closed-form decomposition
-        # of the seed into "raw level + correction offset" is ever needed — and
-        # any such decomposition would be wrong on two independent counts.
-        # (1) Power-domain, not linear-dB: solve_branch_trims levels branches
-        # via program_analysis._band_average_db, a POWER-domain mean
-        # (10·log10(mean(10^(dB/10)))), so a branch's linearized level is NOT
-        # its raw level plus the correction's dB band-average — additivity is
-        # exact only when the correction is band-flat over the overlap band
-        # (~0.28 dB off for a non-flat one). (2) Min-flip: solve_branch_trims
-        # then levels both branches DOWN to the quieter one, and a large tweeter
-        # cut on a well-padded rig can flip which branch is quieter, so a
-        # per-role additive formula mispredicts by ~the full spend in that case.
-        # The seed sidesteps both. The practical "a legit give-back shifts the
-        # tweeter's band-average by ~the full spend vs raw" intuition still
-        # holds because the CD-horn give-back is approximately band-flat (≈
-        # −spend, the Lowshelf floor well below its corner) across the crossover
-        # overlap band — flatness makes counts (1) small there, it does not make
-        # the guard rely on additivity. The woofer's committed trim IS trim_w_lin
-        # in both the resolved and seed pair (solve_ripple_optimal_trim holds
-        # trim_w_db fixed and only scans the tweeter), so the woofer's seed
-        # distance is zero by construction and only the tweeter can drift.
+        # ANCHORED give-back (#1668, replaces the overlap-band solve seed after
+        # the 2026-07-24 JTS3 runs). Each branch's linearized trim is its own
+        # COMMITTED raw trim plus exactly the level its own emitted cascade
+        # removed from its reference (core) band —
+        # ``LinearizationFit.correction_giveback_db``, the fit engine's SSOT.
+        # This is level-preserving BY CONSTRUCTION: every branch's audible band
+        # returns to the pre-correction system level the raw candidate already
+        # accepted, so no solver prediction, no min() reasoning, and no
+        # cross-branch coupling enter the give-back at all.
+        #
+        # Why not the old `solve_branch_trims(W_lin, T_lin)` band-average seed:
+        # it averaged over the CROSSOVER OVERLAP band (1.43-2.83 kHz on JTS3),
+        # which is the wrong reference for a top-octave correction on two
+        # counts — the tweeter's LR4 high-pass skirt lives there, and a
+        # power-domain mean weights the loudest (least-cut) bins hardest, so the
+        # average is dragged toward the region the shelf barely touches; and the
+        # Lowshelf's wide RBJ transition is not at full depth there either.
+        # Measured live 2026-07-24: it returned only 5.81 dB of a 9.27 dB spend
+        # (raw −22.21 → seed −16.396), leaving the whole tweeter band ~3 dB low.
+        # The ripple scan tried to correct it (−8.796, i.e. +13.4) and the
+        # seed-anchored guard rejected that at 7.6 > 6.0 on BOTH runs, so the
+        # under-returning seed shipped twice. The core-band anchor makes
+        # give-back ≈ spend by construction, so the scan no longer has to fight
+        # the seed and the guard no longer blocks the correction.
+        raw_trim = dict(cand.trim_db)
+        anchored_unnormalized = {
+            role: float(raw_trim.get(role, 0.0) + fits[role].correction_giveback_db)
+            for role in (woofer_role, tweeter_role)
+        }
+        # Normalize to non-positive: a branch whose own cuts give back more than
+        # its raw attenuation would otherwise land POSITIVE (a boost), which the
+        # emitter refuses and the hardware must never see. Subtracting the same
+        # shift from every role preserves the relative leveling exactly and is
+        # honest extra ledger (a little more max-SPL spent, disclosed below).
+        normalize_shift_db = max(0.0, max(anchored_unnormalized.values()))
+        anchored = {
+            role: value - normalize_shift_db
+            for role, value in anchored_unnormalized.items()
+        }
+
+        # Ripple fine-tune around the anchor: the anchor sets the LEVEL, the
+        # scan only polishes summed flatness near it. Same band/sign as before.
         assert analysis.alignment is not None  # MEASURE analyses always carry one
         trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
             freqs, W_lin, T_lin, self._fc_hz,
             lo_hz=lo_clamped, hi_hz=hi,
-            seed_trim_db=trim_t_lin_band_average,
-            trim_w_db=trim_w_lin,
+            seed_trim_db=anchored[tweeter_role],
+            trim_w_db=anchored[woofer_role],
             sign=analysis.alignment.polarity_sign,
         )
-        resolved = {woofer_role: float(trim_w_lin), tweeter_role: float(trim_t_lin)}
-        # The band-average seed pair — the fallback on a wild re-solve. The
-        # woofer entry equals resolved's (trim_w_lin, zero seed distance); only
-        # the tweeter differs (its ripple-optimal value vs its band-average
-        # seed).
-        seed_pair = {
-            woofer_role: float(trim_w_lin),
-            tweeter_role: float(trim_t_lin_band_average),
+        resolved = {
+            woofer_role: anchored[woofer_role], tweeter_role: float(trim_t_lin),
         }
 
-        raw_trim = dict(cand.trim_db)
+        log_event(
+            logger, "correction.crossover_v2_linearization_giveback",
+            session_id=self.session_id,
+            giveback_db={
+                role: round(float(fits[role].correction_giveback_db), 3)
+                for role in (woofer_role, tweeter_role)
+            },
+            raw_trim_db={k: round(v, 3) for k, v in raw_trim.items()},
+            anchored_trim_db={k: round(v, 3) for k, v in anchored.items()},
+            normalize_shift_db=round(float(normalize_shift_db), 3),
+        )
+
+        # The guard now measures the SCAN's drift from the anchor — the anchor
+        # itself is trusted by construction (it is measured give-back, not a
+        # prediction), so only a scan that walks far from it is suspect.
         wild = (
-            abs(trim_t_lin - trim_t_lin_band_average)
+            abs(trim_t_lin - anchored[tweeter_role])
             > LINEARIZATION_TRIM_SANITY_MARGIN_DB
         )
         if wild:
@@ -2432,11 +2454,10 @@ class CrossoverV2Conductor:
                 level=logging.WARNING, session_id=self.session_id,
                 raw_trim_db={k: round(v, 3) for k, v in raw_trim.items()},
                 resolved_trim_db={k: round(v, 3) for k, v in resolved.items()},
-                # #1668 CD-horn re-anchor: the seed the guard is measured
-                # against, and the pair actually committed on a rejection —
-                # forensics can now see the guard is seed-anchored, not raw.
-                seed_trim_db={k: round(v, 3) for k, v in seed_pair.items()},
-                fallback_trim_db={k: round(v, 3) for k, v in seed_pair.items()},
+                # #1668 anchored give-back: the anchor the guard is measured
+                # against, and the pair actually committed on a rejection.
+                anchored_trim_db={k: round(v, 3) for k, v in anchored.items()},
+                fallback_trim_db={k: round(v, 3) for k, v in anchored.items()},
                 margin_db=LINEARIZATION_TRIM_SANITY_MARGIN_DB,
                 # P4 telemetry (2026-07-24 review): the ripple at each trim lets
                 # live evidence distinguish "legitimate flatter optimum rejected"
@@ -2444,10 +2465,11 @@ class CrossoverV2Conductor:
                 resolved_ripple_db=round(float(ripple_lin), 3),
                 raw_predicted_ripple_db=round(float(cand.predicted_ripple_db), 3),
             )
-            # Fall back to the SEED pair, NOT the raw trim — the correction
+            # Fall back to the ANCHORED pair, NOT the raw trim — the correction
             # filters are emitted either way, and raw trim + emitted filters is
-            # the known deterministic VERIFY-mismatch class (#1668 PR-D).
-            role_attenuations_db = seed_pair
+            # the known deterministic VERIFY-mismatch class (#1668 PR-D). The
+            # anchor is the level-preserving choice by construction.
+            role_attenuations_db = anchored
             self._last_linearization_outcome = "trim_rejected"  # SF3
         else:
             role_attenuations_db = resolved

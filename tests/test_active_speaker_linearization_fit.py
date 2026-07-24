@@ -302,10 +302,10 @@ def test_normalization_budget_clamps_shelf_gain():
     (10 dB over 2 octaves = 5 dB/oct, comfortably past the slope gate)
     with an EXPLICIT plateau_level_db lets the cases below assert exact
     numbers. Written symbolically in ``MAX_NORMALIZATION_SPEND_DB`` so it
-    tracks the constant (now 12 dB, == PER_FILTER_CUT_CAP_DB) rather than a
-    baked-in 6: the plateau spends a chunk of the budget first, so the
-    REMAINING budget — not the ramp's own 10 dB total_drop nor the 12 dB
-    per-filter cap — is the binding ceiling on the shelf gain."""
+    tracks the constant (raised 6 → 12 → 18 as the CD-horn work progressed)
+    rather than a baked-in number: the plateau spends a chunk of the budget
+    first, so the REMAINING budget — not the ramp's own 10 dB total_drop nor
+    the 12 dB per-filter cap — is the binding ceiling on the shelf gain."""
     grid = np.geomspace(1000.0, 4000.0, 200)
     slope_db_per_oct = 5.0
     smoothed = slope_db_per_oct * np.log2(grid / 1000.0)  # 0 dB @1kHz, 10 dB @4kHz
@@ -313,29 +313,28 @@ def test_normalization_budget_clamps_shelf_gain():
     target = 0.0
     total_drop_db = 10.0  # the ramp's own value at the 4 kHz corner
 
-    # Core spent a 4 dB chunk of the budget (plateau 4 dB above target) -> the
-    # remaining budget (MAX-4) is below total_drop (10) and below the cap (12),
-    # so the budget is the SOLE binding ceiling.
-    plateau_spent = 4.0
-    assert MAX_NORMALIZATION_SPEND_DB - plateau_spent < total_drop_db
+    # Leave exactly 6 dB of budget (plateau spends the rest) -> the remaining
+    # budget is below total_drop (10) and below the per-filter cap (12), so the
+    # budget is the SOLE binding ceiling. Derived from the constant so the case
+    # stays budget-bound whatever MAX_NORMALIZATION_SPEND_DB is raised to.
+    remaining_target_db = 6.0
+    plateau_spent = MAX_NORMALIZATION_SPEND_DB - remaining_target_db
+    assert remaining_target_db < min(total_drop_db, PER_FILTER_CUT_CAP_DB)
     shelf_budget_bound = _shelf_stage(
         grid, smoothed, band_mask, 1000.0, 4000.0, target, plateau_spent,
     )
     assert shelf_budget_bound is not None
-    assert shelf_budget_bound.gain == pytest.approx(
-        -(MAX_NORMALIZATION_SPEND_DB - plateau_spent)
-    )
+    assert shelf_budget_bound.gain == pytest.approx(-remaining_target_db)
 
     # Core spent more (plateau higher) -> even less remains; the shelf gain
     # shrinks proportionally, proving the clamp tracks the remaining budget.
-    plateau_spent_more = 9.0
+    remaining_smaller_db = 2.0
+    plateau_spent_more = MAX_NORMALIZATION_SPEND_DB - remaining_smaller_db
     shelf_partial = _shelf_stage(
         grid, smoothed, band_mask, 1000.0, 4000.0, target, plateau_spent_more,
     )
     assert shelf_partial is not None
-    assert shelf_partial.gain == pytest.approx(
-        -(MAX_NORMALIZATION_SPEND_DB - plateau_spent_more)
-    )
+    assert shelf_partial.gain == pytest.approx(-remaining_smaller_db)
 
     # Core already spent the WHOLE budget (plateau >= MAX above target) ->
     # nothing left; the shelf must not fire (an honest gap, not a filter with
@@ -831,10 +830,10 @@ _CD_HORN_ANCHOR_HZ = np.array(
     [2000.0, 4000.0, 8000.0, 10000.0, 12000.0, 14000.0, 16000.0, 18000.0, 20000.0]
 )
 _CD_HORN_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -2.5, -5.8, -8.6, -11.5, -13.5, -15.0])
-# A slightly deeper rolloff whose top-octave deficit (~12.5 dB) EXCEEDS the
-# 12 dB normalization budget, so the spend is capped below the measured deficit
-# (the "partial correction visible via measured_deficit_at_ceiling_db" case).
-_CD_HORN_DEEP_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -3.0, -7.0, -10.0, -13.0, -14.0, -14.5])
+# The LIVE JTS3 rig's own shape (2026-07-24): a ~14.3 dB top-octave deficit at
+# the reference-tier ceiling. Exceeds PER_FILTER_CUT_CAP_DB, so it exercises the
+# Lowshelf clamp + peaking-residual absorption path.
+_CD_HORN_LIVE_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -3.2, -7.4, -11.0, -14.3, -16.0, -17.0])
 
 
 def _cd_horn_db(freqs_hz: np.ndarray, anchor_db: np.ndarray = _CD_HORN_ANCHOR_DB) -> np.ndarray:
@@ -920,14 +919,95 @@ def test_cd_horn_realized_cascade_tracks_cut_target_within_tolerance():
 
 
 def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
-    """When the measured top-octave deficit EXCEEDS the normalization budget,
-    the spend is capped at the budget but measured_deficit_at_ceiling_db still
-    reports the UNCAPPED measured value — so a partially-corrected top octave is
-    visible, not silently rounded to the capped spend."""
-    fit = _cd_horn_fit("compression_horn", anchor_db=_CD_HORN_DEEP_ANCHOR_DB)
+    """When the REMAINING normalization budget is smaller than the measured
+    top-octave deficit, the spend is capped but measured_deficit_at_ceiling_db
+    still reports the UNCAPPED measured value — so a partially-corrected top
+    octave is visible, not silently rounded to the capped spend.
+
+    The budget is bound here via the OTHER budget term — a narrow +9 dB core
+    bump, which raises `plateau_level_db` well above the median target and so
+    charges most of MAX_NORMALIZATION_SPEND_DB before the CD-horn stage runs.
+    (Binding it with a deeper top-octave rolloff instead no longer works: at an
+    18 dB budget a deficit that large makes the shape too steep for the
+    realization to track, so the fit-quality gate — not the budget — becomes the
+    binding constraint and the stage suppresses.)"""
+    mag = _cd_horn_db(_NATIVE_FREQS_HZ) + _bell(_NATIVE_FREQS_HZ, 3000.0, 9.0, 0.12)
+    resp = _tweeter_response(mag)
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="reference", driver_class="compression_horn",
+    )
+    fit = fit_driver_linearization(resp, envelope)
     assert fit.hf_continuation_spend_db > 0.0
-    assert fit.hf_continuation_spend_db == pytest.approx(MAX_NORMALIZATION_SPEND_DB)
+    assert fit.hf_continuation_suppressed_reason == ""
+    # Spend capped below the measured deficit by the remaining budget.
     assert fit.measured_deficit_at_ceiling_db > fit.hf_continuation_spend_db + 0.2
+    assert fit.hf_continuation_spend_db < MAX_NORMALIZATION_SPEND_DB
+
+
+def test_correction_giveback_approximates_spend_on_the_canonical_synthetic():
+    """The give-back SSOT: ``correction_giveback_db`` is the power-domain average
+    of the emitted cascade over the driver's own core (reference) band, reported
+    POSITIVE. On the canonical fired synthetic — a flat core, so the flattening
+    loop contributes nothing — it must land close to the CD-horn spend, which is
+    what makes the flow's anchored trim level-preserving.
+
+    Tolerance is 1.0 dB, not 0.5: the CD-horn stage's own residual peaking cut
+    near the onset lands INSIDE the core band and legitimately deepens the
+    measured average past `spend` (~0.8 dB here). That is not error — the anchor
+    consumes the MEASURED value, so a cascade that removed a little more level
+    correctly returns a little more."""
+    fit = _cd_horn_fit("compression_horn")
+    assert fit.hf_continuation_spend_db > 0.0
+    assert fit.correction_giveback_db == pytest.approx(
+        fit.hf_continuation_spend_db, abs=1.0
+    )
+    # Reported positive (a cut cascade gives level BACK).
+    assert fit.correction_giveback_db > 0.0
+
+
+def test_correction_giveback_is_zero_without_filters_and_positive_with_them():
+    """Era-tolerant default + the flattening-only case: a fit that emitted no
+    filters reports 0.0 give-back; a woofer carrying only ordinary flattening
+    cuts still reports a positive give-back, so the flow can anchor BOTH
+    branches, not just the CD-horn one."""
+    flat = _driver_response("woofer", np.zeros_like(_NATIVE_FREQS_HZ))
+    flat_fit = fit_driver_linearization(
+        flat, _envelope("woofer", flat, excited_band_hz=(150.0, 4000.0)),
+    )
+    assert flat_fit.filters == ()
+    assert flat_fit.correction_giveback_db == 0.0
+
+    bumped = _driver_response("woofer", _bell(_NATIVE_FREQS_HZ, 900.0, 8.0, 0.15))
+    woofer_fit = fit_driver_linearization(
+        bumped, _envelope("woofer", bumped, excited_band_hz=(150.0, 4000.0)),
+    )
+    assert woofer_fit.filters
+    assert woofer_fit.hf_continuation_spend_db == 0.0  # CD-horn stage never ran
+    assert woofer_fit.correction_giveback_db > 0.0
+
+
+def test_cd_horn_deep_deficit_respects_the_per_filter_cut_cap():
+    """The live JTS3 shape: a ~14 dB deficit now fits inside the raised
+    normalization budget, so `spend` EXCEEDS the 12 dB per-filter cut cap. No
+    single emitted filter may exceed that cap — the Lowshelf backbone clamps at
+    it and the peaking residual absorbs the remainder — while the realization
+    still tracks cut_target within tolerance, stays cut-only, and stays inside
+    the filter budget."""
+    fit = _cd_horn_fit("compression_horn", anchor_db=_CD_HORN_LIVE_ANCHOR_DB)
+    assert fit.hf_continuation_suppressed_reason == ""
+    assert fit.hf_continuation_spend_db > PER_FILTER_CUT_CAP_DB  # the interesting case
+    # The hard per-filter invariant holds even though the total spend exceeds it.
+    assert all(f.gain >= -PER_FILTER_CUT_CAP_DB - 1e-6 for f in fit.filters)
+    assert fit.filters[0].biquad_type == "Lowshelf"
+    assert fit.filters[0].gain == pytest.approx(-PER_FILTER_CUT_CAP_DB)
+    assert all(f.gain <= 0.0 for f in fit.filters)  # cut-only
+    assert len(fit.filters) <= MAX_FILTERS_PER_DRIVER
+    # The extra depth the clamped shelf could not carry is absorbed by the
+    # residual peaking cuts, so the give-back still tracks the spend.
+    assert fit.correction_giveback_db == pytest.approx(
+        fit.hf_continuation_spend_db, abs=1.0
+    )
 
 
 def test_cd_horn_disagreeing_repeats_suppress_the_stage():

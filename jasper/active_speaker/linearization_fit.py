@@ -87,21 +87,31 @@ PER_FILTER_CUT_CAP_DB: float = 12.0
 # the fit chase that rolloff arbitrarily deep, burning sensitivity for a
 # shape the driver was never going to deliver cleanly anyway.
 #
-# Why 12 (was 6): a real compression-driver-on-a-horn measures a top-octave
-# constant-directivity rolloff of ~11.5 dB at the reference-tier confidence
-# ceiling (~16.4 kHz). The CD-horn continuation stage (_hf_continuation_stage)
-# realizes that lift in the cut domain — it cuts everything BELOW the
-# compensation region by `spend`, so the flow's trim re-solve then levels the
-# branches back up and the top octave lands `spend` dB higher RELATIVELY. To
-# give back the full measured deficit the budget must cover it, so 6 dB was
-# too tight (it capped the CD-horn lift at roughly half the measured trend).
-# The spend is a max-SPL LEDGER cost, not a listening-level cost: the system's
-# absolute ceiling drops by ~spend, but ordinary listening recovers it via the
-# volume knob. The literal-boost realization that would reclaim the physical
-# L-pad margin instead of spending sensitivity is deliberately DEFERRED until
-# the closed-loop verify layer (design doc build-order step 2 / PR-E) exists
-# to bound an unverified boost claim. This constant is the single knob the
-# owner's listening ladder revisits.
+# Why 18 (6 → 12 on 2026-07-24, → 18 after that night's JTS3 hardware run):
+# the owner's "flat as a table top" directive requires the spend to actually
+# REACH the measured deficit. The live JTS3 tweeter measured a 14.2–14.3 dB
+# deficit at the reference-tier confidence ceiling (~16.4 kHz), but the 12 dB
+# budget capped spend at ~9.2 across both quiet-room runs — the correction was
+# budget-bound below the measured trend and the treble still sloped away. At
+# 18 the ledger covers it: total ledger = (plateau − target) + spend ≈ 17.3 on
+# that rig, inside the budget with margin.
+#
+# The CD-horn continuation stage (_hf_continuation_stage) realizes the lift in
+# the cut domain — it cuts everything BELOW the compensation region by `spend`,
+# and the flow's ANCHORED trim give-back (crossover_v2_flow._fit_linearization)
+# returns exactly what the emitted cascade removed, so the top octave lands
+# `spend` dB higher RELATIVELY. The spend is a max-SPL LEDGER cost, not a
+# listening-level cost: the system's absolute ceiling drops by ~spend, but
+# ordinary listening recovers it via the volume knob — and it is disclosed
+# (`correction_giveback_db`, `hf_continuation_spend_db`). The literal-boost
+# realization that would reclaim the physical L-pad margin instead of spending
+# sensitivity is deliberately DEFERRED until the closed-loop verify layer
+# (design doc build-order step 2 / PR-E) exists to bound an unverified boost
+# claim. This constant is the single knob the owner's listening ladder revisits.
+#
+# NOTE the spend can now exceed PER_FILTER_CUT_CAP_DB (12): no single filter
+# may, so the CD-horn stage clamps its Lowshelf backbone at the per-filter cap
+# and lets the peaking residual fit absorb the rest (see _hf_continuation_stage).
 #
 # Enforcement (see _shelf_stage and _hf_continuation_stage): a stage's spend
 # is clamped so the region it corrects never gets pulled more than the
@@ -114,7 +124,7 @@ PER_FILTER_CUT_CAP_DB: float = 12.0
 # corrected curve and target; for the CD-horn stage that gap is disclosed as
 # `measured_deficit_at_ceiling_db` (the uncapped measured deficit) so partial
 # correction is visible, not hidden.
-MAX_NORMALIZATION_SPEND_DB: float = 12.0
+MAX_NORMALIZATION_SPEND_DB: float = 18.0
 
 # Linear-regression slope (dB per octave, over log2(f)) above which the fit
 # band is treated as a genuine tilted shelf shape (CD-horn compensation,
@@ -221,6 +231,19 @@ HF_SUPPRESSION_REASONS: frozenset[str] = frozenset({
 # realize to within the same tolerance the summed response is later verified
 # against is not worth emitting.
 HF_REALIZATION_TOLERANCE_DB: float = 1.5
+
+# Flatness target for the CD-horn stage's own residual peaking fit — TIGHTER
+# than the flattening loop's `_PEAKING_FLATNESS_TARGET_DB` (1.0) because this
+# fit tracks a SHAPED target (`cut_target`) and is then judged by
+# HF_REALIZATION_TOLERANCE_DB. `design_peq` stops when its band RMS drops under
+# this AND no large peak remains; with the loose 1.0 the RMS over the (mostly
+# well-matched) fit band diluted the still-unfitted shelf-transition error and
+# it stopped early — measured on the live-rig-shaped 14.3 dB deficit: 2 of 7
+# slots used, 2.18 dB residual error, suppressed by the realization gate. At
+# 0.5 (a third of the gate it must satisfy) the same case uses 5 slots and
+# lands at 1.27 dB. Shallower deficits are unaffected (the canonical 11.4 dB
+# synthetic fits identically at either value).
+_HF_RESIDUAL_FLATNESS_TARGET_DB: float = 0.5
 
 # Max cut (dB) of the "taper" continuation policy's single trailing Highshelf.
 # Above the confidence ceiling nothing is measurable, so for breakup-prone /
@@ -392,6 +415,21 @@ class LinearizationFit:
     hf_continuation_policy: str = ""
     hf_continuation_suppressed_reason: str = ""
     measured_deficit_at_ceiling_db: float = 0.0
+    # How much LEVEL this driver's emitted cascade removed from its own
+    # reference (core) band, POSITIVE dB — the power-domain band average of the
+    # cascade's magnitude over the ``_core_or_fallback_mask`` region, negated.
+    # This is the SSOT for the trim give-back: ``crossover_v2_flow.
+    # _fit_linearization`` anchors each branch's linearized trim at
+    # ``raw_trim + correction_giveback_db``, which returns the branch's audible
+    # band to its pre-correction system level BY CONSTRUCTION — no solver
+    # prediction, no overlap-band averaging (measured live on JTS3 2026-07-24:
+    # the overlap-band route returned only 5.81 dB of a 9.27 dB spend, because
+    # the tweeter's LR4 skirt power-weights that average toward the least-cut
+    # region and the shelf's wide RBJ transition is not at full depth there).
+    # Computed for EVERY fit that emitted filters (0.0 when none), so a woofer
+    # carrying only flattening cuts anchors correctly too. When the CD-horn
+    # stage fires this reads ≈ spend + the flattening peaks' own in-band share.
+    correction_giveback_db: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -414,6 +452,7 @@ class LinearizationFit:
             "hf_continuation_policy": self.hf_continuation_policy,
             "hf_continuation_suppressed_reason": self.hf_continuation_suppressed_reason,
             "measured_deficit_at_ceiling_db": self.measured_deficit_at_ceiling_db,
+            "correction_giveback_db": self.correction_giveback_db,
         }
 
 
@@ -514,6 +553,30 @@ def linearization_filters_by_role(
             dict(entry) for entry in filters if isinstance(entry, Mapping)
         ]
     return out
+
+
+def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
+    """Power-domain band average of ``magnitude_db`` over ``mask``:
+    ``10*log10(mean(10**(dB/10)))``.
+
+    PARITY DUPLICATE of ``jasper.audio_measurement.program_analysis.
+    _band_average_db``'s averaging semantics (module-private there — see this
+    module's top docstring for the no-cross-module-private-imports convention),
+    evaluated against a boolean mask on this module's own fit grid rather than
+    a (lo, hi) frequency pair. LOCKSTEP REQUIREMENT: this MUST stay the same
+    power-domain mean the trim solver uses, because
+    :attr:`LinearizationFit.correction_giveback_db` is consumed by
+    ``crossover_v2_flow._fit_linearization`` as the level a branch's own
+    correction removed — if the two averaging domains disagreed, the anchored
+    trim would systematically mis-level the branch (a linear-dB mean here
+    would read ~0.3 dB different on a non-flat correction).
+
+    Returns 0.0 for an empty mask (no band to average — an honest no-op).
+    """
+    if not mask.any():
+        return 0.0
+    power = np.power(10.0, magnitude_db[mask] / 10.0)
+    return 10.0 * math.log10(max(float(np.mean(power)), 1e-12))
 
 
 def _octave_band_reason_summary(envelope: EnvelopeCurve) -> dict[str, str]:
@@ -973,8 +1036,18 @@ def _hf_continuation_stage(
     # biquad cascades commute acoustically, so inserting it at filter position
     # 0 (the emitter's shelf-before-peaks contract) is order-safe regardless
     # of the peaking cuts the flattening loop already placed.
+    #
+    # The shelf's own gain is CLAMPED at PER_FILTER_CUT_CAP_DB — a hard
+    # invariant on every emitted filter, independent of the (now larger) total
+    # spend budget. When `spend` exceeds the per-filter cap the shelf carries
+    # the first 12 dB and the peaking residual fit below absorbs the remainder
+    # (`cut_target` below the onset is the full −spend, so the residual
+    # design_peq sees is exactly the uncovered depth). Without this clamp a
+    # spend of 14+ would emit a single −14 dB biquad and silently break the
+    # per-filter ceiling the envelope/emitter both re-validate against.
+    shelf_gain_db = -min(spend, PER_FILTER_CUT_CAP_DB)
     lowshelf = LinearizationFilter(
-        biquad_type="Lowshelf", freq=onset_hz, q=_HIGHSHELF_Q, gain=-spend,
+        biquad_type="Lowshelf", freq=onset_hz, q=_HIGHSHELF_Q, gain=shelf_gain_db,
     )
     lowshelf_db = 20.0 * np.log10(
         np.maximum(np.abs(complex_correction_response((lowshelf,), grid_hz)), 1e-12)
@@ -1004,7 +1077,7 @@ def _hf_continuation_stage(
             max_cut_db=per_bin_cap_db,
             max_boost_db=0.0,
             cuts_only=True,
-            flatness_target_db=_PEAKING_FLATNESS_TARGET_DB,
+            flatness_target_db=_HF_RESIDUAL_FLATNESS_TARGET_DB,
             q_max=_PEAKING_Q_MAX,
             min_filter_gain_db=_MIN_FILTER_GAIN_DB,
         )
@@ -1170,6 +1243,26 @@ def fit_driver_linearization(
     if any(f.gain > 0.0 for f in filters):
         raise RuntimeError("linearization fit emitted a boost")
 
+    # Per-filter cut cap is a HARD invariant on every emitted filter, and the
+    # total normalization budget can now legitimately exceed it (see
+    # MAX_NORMALIZATION_SPEND_DB), so re-prove it here rather than trusting each
+    # stage's own clamp — same explicit-raise posture as the cut-only check.
+    if any(f.gain < -PER_FILTER_CUT_CAP_DB - 1e-6 for f in filters):
+        raise RuntimeError("linearization fit exceeded the per-filter cut cap")
+
+    # The give-back this driver's cascade actually removed from its own
+    # reference (core) band — the SSOT the flow anchors its linearized trim on.
+    # Power-domain average (matching the trim solver's own averaging domain) of
+    # the emitted cascade's magnitude, negated to read POSITIVE.
+    correction_giveback_db = 0.0
+    if filters:
+        cascade_db = 20.0 * np.log10(
+            np.maximum(
+                np.abs(complex_correction_response(tuple(filters), grid_hz)), 1e-12
+            )
+        )
+        correction_giveback_db = -_power_band_average_db(cascade_db, level_mask)
+
     # Give-back frame: when the CD-horn stage fired it cut the whole band by
     # `spend` so the flow's trim re-solve levels the branches back — so the
     # honest "flat" reference for the residual/verify/observe claims is
@@ -1226,4 +1319,5 @@ def fit_driver_linearization(
         hf_continuation_policy=hf.policy,
         hf_continuation_suppressed_reason=hf.suppressed_reason,
         measured_deficit_at_ceiling_db=hf.measured_deficit_at_ceiling_db,
+        correction_giveback_db=correction_giveback_db,
     )

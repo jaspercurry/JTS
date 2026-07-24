@@ -233,10 +233,14 @@ drivers cleared a paired ≥3-occurrence gate — otherwise the candidate is
 byte-identical to the plain trims-only shape from before this PR. When eligible,
 the fit is applied to each branch in the linear domain BEFORE the trim solve, so
 trim reflects the linearized (not raw) response — the ordering that structurally
-defuses #1667's band-average bias; an implausibly-drifted linearized re-solve
-(the ripple-optimal tweeter trim >6 dB from its OWN band-average seed, #1668
-CD-horn re-anchor — NOT the raw trim, which a legitimate give-back legitimately
-moves by ~the full spend) is discarded in favor of the band-average seed pair.
+defuses #1667's band-average bias. The linearized trim is then ANCHORED (#1668,
+after the 2026-07-24 JTS3 runs): each branch's raw committed trim plus the level
+its own emitted cascade removed from its reference band
+(`LinearizationFit.correction_giveback_db`), normalized non-positive — a
+level-preserving give-back that replaced the `solve_branch_trims` overlap-band
+seed, which returned only 5.81 dB of a 9.27 dB spend and left the tweeter band
+~3 dB low. A ripple scan that then drifts >6 dB from that anchor is discarded in
+favor of the anchored pair.
 The fit result travels on `MeasuredCrossoverCandidate.linearization` (empty
 dict = not attempted). Design and fitting-policy SSOT:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
@@ -429,7 +433,7 @@ most visible thing on the screen.
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
 | [`jasper/active_speaker/measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact (trims + `MeasuredCrossoverAlignment` + `linearization`), folded through `emit_active_speaker_baseline_config` (`camilla_yaml.py`) and the delay/graph-safety proofs. |
 | [`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | Layer-1a correction envelope (#1668 PR-B): `compose_envelope` → per-bin allowed correction depth + `ReasonCode`, `compute_sigma_curve`, `mic_trust_limit` / `repeatability_limit` / `class_prior_limit`. Pure computation, no policy. |
-| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only rising Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, the CD-horn top-octave `_hf_continuation_stage` — a Lowshelf-backbone give-back + declared-class hold/taper policy, #1668 — `MAX_NORMALIZATION_SPEND_DB` budget now 12 dB, the `verify_band_hz`/`observe_octave_summary` honesty-ladder fields added in PR-D). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. Also owns `linearization_filters_by_role`, the reduction the two rich-candidate emission call sites share (`recompose_applied_baseline_yaml` deliberately does not call it — see "Linearization EMISSION" above). |
+| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only rising Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, the CD-horn top-octave `_hf_continuation_stage` — a Lowshelf-backbone give-back + declared-class hold/taper policy, #1668 — `MAX_NORMALIZATION_SPEND_DB` budget now 18 dB, `correction_giveback_db` (the SSOT the conductor's anchored trim consumes), the `verify_band_hz`/`observe_octave_summary` honesty-ladder fields added in PR-D). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. Also owns `linearization_filters_by_role`, the reduction the two rich-candidate emission call sites share (`recompose_applied_baseline_yaml` deliberately does not call it — see "Linearization EMISSION" above). |
 | [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter. `emit_active_speaker_baseline_config`'s `linearization` parameter (#1668 PR-D) is what actually plays the Layer-1a fit — see "Linearization EMISSION" above; `_validated_linearization` independently re-validates it (Peaking/Highshelf/Lowshelf, non-positive gain, one leading shelf + one optional trailing Highshelf taper) before any filter reaches CamillaDSP. |
 | [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Relay protocol v3: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. |
 | [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the v3 session loop; `version.json` carries the supported protocol versions. |

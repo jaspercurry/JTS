@@ -236,41 +236,63 @@ runs AFTER the flattening peaking loop:
   never touches the sizing. `measured_deficit_at_ceiling_db` reports the
   UNCAPPED deficit so a budget-bound partial correction stays visible.
 - **Cut-domain realization + give-back.** cut_target = C − spend (≤ 0
-  everywhere) is realized with a Lowshelf backbone near the onset (gain ≈
-  −spend) + peaking cuts in the TRUSTED band; the top octave gets no filter.
-  Cutting everything below the compensation region by `spend` lets the flow's
-  trim re-solve level the branches back, raising the top octave RELATIVELY —
-  the acoustic lift with cut-only (hardware-safe) filters. A fit-quality gate
-  (realized vs cut_target, ±1.5 dB) suppresses a mis-shaped correction.
+  everywhere) is realized with a Lowshelf backbone near the onset + peaking cuts
+  in the TRUSTED band; the top octave gets no filter. Cutting everything below
+  the compensation region by `spend` lets the flow's trim give-back level the
+  branches back, raising the top octave RELATIVELY — the acoustic lift with
+  cut-only (hardware-safe) filters. A fit-quality gate (realized vs cut_target,
+  ±1.5 dB) suppresses a mis-shaped correction; its residual peaking fit uses a
+  tighter flatness target than the flattening loop so `design_peq`'s RMS-based
+  early stop cannot leave shelf-transition error unfitted while slots are free.
+  The shelf's own gain is CLAMPED at the 12 dB per-filter cut cap (a hard
+  per-filter invariant that the now-larger total budget may exceed); when spend
+  is deeper, the peaking residual absorbs the remainder.
 - **Plateau vs taper by declared type — the class's ONLY authority.** Above the
   ceiling nothing is measurable, so correction must not RISE.
   `HF_CONTINUATION_POLICY`: **hold** (compression horn, soft/beryllium/diamond
   dome, ribbon/AMT) keeps the lift constant; **taper** (metal dome, unknown)
   appends one trailing Highshelf CUT at ceiling×1.25 that walks the lift back
   down over the unseen band. Unknown → taper is the conservative default.
-- **Budget 12 (was 6) — a max-SPL ledger.** `MAX_NORMALIZATION_SPEND_DB` is
-  12 dB to cover the ~11.5 dB deficit; the spend drops the system's absolute
-  ceiling by ~spend (ordinary listening recovers via the volume knob), it is
-  NOT a listening-level cost. The literal-boost realization that reclaims the
-  physical L-pad margin instead of spending sensitivity is deferred until the
-  closed-loop verify layer (PR-E) can bound an unverified boost claim.
-- **Guard re-anchor.** The wild-trim guard in `_fit_linearization`
-  ([crossover_v2_flow.py](../jasper/active_speaker/crossover_v2_flow.py)) is
-  anchored to the ripple-optimal tweeter trim's OWN band-average seed, not the
-  raw trim. The seed is computed from the ACTUAL linearized branches
-  (`solve_branch_trims` on `W_lin`/`T_lin`) — never a "raw + expected shift"
-  decomposition, which would be wrong on two counts: `_band_average_db` is a
-  POWER-domain mean (10·log10 mean(10^(dB/10))), so a linearized level is not
-  its raw level plus the correction's dB band-average (exact only for a
-  band-flat correction, ~0.28 dB off otherwise); and the downward min-level
-  step can min-flip which branch is quieter under a large tweeter cut,
-  mispredicting by ~the full spend. A raw-anchored guard would reject every
-  honest give-back; the practical "shifts by ~the full spend vs raw" intuition
-  holds only because the give-back is ≈ band-flat (−spend) across the crossover
-  overlap band. On a wild seed drift it falls back to the band-average seed
-  pair, never raw + emitted filters (the known VERIFY-mismatch class).
-  Magnitude protection lives in the fit engine's structural caps (per-filter
-  12, budget 12, realization tolerance) plus the VERIFY gate.
+- **Budget 18 (6 → 12 → 18) — a max-SPL ledger.** `MAX_NORMALIZATION_SPEND_DB`
+  is 18 dB so the spend can actually REACH the measured deficit: the live JTS3
+  tweeter measured 14.2–14.3 dB at the ceiling but the 12 dB budget capped spend
+  at ~9.2 on both quiet-room runs, leaving the treble sloping away. Total ledger
+  = (plateau − target) + spend ≈ 17.3 on that rig. The spend drops the system's
+  absolute ceiling by ~spend (ordinary listening recovers via the volume knob),
+  it is NOT a listening-level cost, and it is disclosed. The literal-boost
+  realization that reclaims the physical L-pad margin instead of spending
+  sensitivity is deferred until the closed-loop verify layer (PR-E) can bound an
+  unverified boost claim. At this budget the practical binding constraint for
+  realistic horn shapes is the realization fit-quality gate, not the budget.
+- **Anchored give-back (the trim).** Each branch's linearized trim is its own
+  COMMITTED raw trim plus exactly the level its emitted cascade removed from its
+  reference (core) band — `LinearizationFit.correction_giveback_db`, the fit
+  engine's SSOT (the power-domain average of the cascade over the
+  `_core_or_fallback_mask` region, reported positive, computed for every fit with
+  filters). Level-preserving by construction: each branch's audible band returns
+  to the pre-correction system level, with no solver prediction and no
+  cross-branch coupling. A shared shift then normalizes the pair non-positive so
+  a branch whose give-back exceeds its raw attenuation can never become a boost;
+  the shift preserves relative leveling and is honest extra ledger.
+
+  This replaced the `solve_branch_trims` overlap-band seed after the 2026-07-24
+  JTS3 runs, where that seed returned only **5.81 dB of a 9.27 dB spend** (raw
+  −22.21 → seed −16.396) and left the whole tweeter band ~3 dB low. Two reasons
+  the overlap band is the wrong reference for a top-octave correction: the
+  tweeter's LR4 skirt lives there, and `_band_average_db` is a POWER-domain mean
+  that weights the loudest (least-cut) bins hardest — together dragging the
+  average toward the region the shelf barely touches, where its wide RBJ
+  transition is not at full depth either.
+- **Guard.** The wild-trim guard in `_fit_linearization`
+  ([crossover_v2_flow.py](../jasper/active_speaker/crossover_v2_flow.py)) now
+  measures the ripple scan's drift from that ANCHOR (±6 dB), and falls back to
+  the anchored pair — never raw + emitted filters (the known VERIFY-mismatch
+  class). The anchor is measured give-back, not a prediction, so only the scan
+  can drift. Under the old seed the guard actively blocked the fix: the scan
+  tried to push to −8.796 (+13.4) and was rejected at 7.6 > 6.0 on BOTH live
+  runs, so the under-returning seed shipped twice. Magnitude protection lives in
+  the fit engine's structural caps (per-filter 12, total budget, realization
+  tolerance) plus the VERIFY gate.
 
 Disclosure: octave centers above the ceiling report
 `envelope_beyond_measurement_confidence`; beyond the ceiling the lift is
