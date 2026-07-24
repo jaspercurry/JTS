@@ -89,12 +89,12 @@ from jasper.audio_measurement.program_analysis import (
     _locate_segments,
     _n_fft_for,
     _peak_dbfs,
-    _predicted_sum,
     _ripple_db,
     _sweep_occurrence_index,
     analysis_diagnostic_summary,
     analyze_program_capture,
     overlap_band_hz,
+    predicted_branch_sum,
     solve_branch_trims,
     solve_ripple_optimal_trim,
 )
@@ -959,7 +959,7 @@ def test_snap_production_path_preserves_parallax_contract(
         if response.validity_floor_hz is not None
     ]
     lo_hz = max([lo_hz, *floors])
-    predicted_aligned = _predicted_sum(
+    predicted_aligned = predicted_branch_sum(
         responses["woofer"].complex_tf,
         responses["tweeter"].complex_tf,
         result.candidate.trim_db["woofer"],
@@ -1843,12 +1843,12 @@ def test_gating_consistent_candidate_removes_reflection_notch_end_to_end():
     _f2, T_old = _old_fixed_window_branch_tf(tweeter_ir, n_fft)
     trim_w_old, trim_t_old, _lw, _lt = solve_branch_trims(freqs_old, W_old, T_old, fc_hz)
     old_ripple = _ripple_db(
-        freqs_old, _predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1), lo, hi,
+        freqs_old, predicted_branch_sum(W_old, T_old, trim_w_old, trim_t_old, +1), lo, hi,
     )
     assert old_ripple > 5.0
     assert old_ripple > candidate.predicted_ripple_db + 4.0
     old_pred_db = 20.0 * np.log10(np.maximum(
-        np.abs(_predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1)), 1e-12,
+        np.abs(predicted_branch_sum(W_old, T_old, trim_w_old, trim_t_old, +1)), 1e-12,
     ))
 
     # The REAL physical system (the reflection is reality — it doesn't get
@@ -2226,7 +2226,7 @@ def test_solve_ripple_optimal_trim_prefers_near_seed_shallow_bowl_over_far_globa
     # alternative (also within epsilon of the global min) -- confirms this
     # is a real two-option test, not one where the far option was
     # accidentally excluded by the search window or grid.
-    far_summed = _predicted_sum(W, T, 0.0, 12.6, 1)
+    far_summed = predicted_branch_sum(W, T, 0.0, 12.6, 1)
     far_ripple = _ripple_db(freqs, far_summed, lo, hi)
     assert far_ripple <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
     assert far_ripple < ripple_reg  # objectively flatter, yet regularization declines it

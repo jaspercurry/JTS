@@ -376,7 +376,15 @@ class MeasurementPriors:
     the VERIFY window; ``align_search_ms`` bounds the delay search;
     ``target_capture_dbfs`` is the MEASURE capture-peak target the CHECK gain
     solve aims for. ``predicted_sum`` is the MEASURE-predicted summed magnitude
-    ``(freqs_hz, magnitude_db)`` VERIFY compares against.
+    ``(freqs_hz, magnitude_db)`` VERIFY compares against — built from the RAW
+    measured branches by this module's own ``_build_candidate``, but the v2
+    conductor OVERRIDES it with a LINEARIZED-branch prediction whenever Layer-1a
+    linearization was fitted (#1668 PR-D VERIFY-prediction coherence fix; see
+    ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Conductor._fit_linearization``)
+    — the emitted graph carries the correction filters, so the persisted
+    prediction must model them too, or VERIFY's tracking comparison reads a
+    deterministic mismatch equal to the filters' own in-band response (measured
+    live on JTS3: ~1.7 dB against the ±1.5 dB tolerance).
 
     ``measure_tweeter_sweep_lo_hz``/``measure_woofer_sweep_hi_hz`` carry the
     MEASURE program's actual per-driver sweep bounds forward to VERIFY (§5.6
@@ -1697,7 +1705,7 @@ def _estimate_alignment(
     )
 
 
-def _predicted_sum(
+def predicted_branch_sum(
     W: np.ndarray,
     T: np.ndarray,
     trim_w_db: float,
@@ -1714,6 +1722,14 @@ def _predicted_sum(
     that frame: ``(D_t - D_w) + applied_signed_delay``. Passing the full
     applied delay would count the measured peak gap twice (the reverted fix-2
     failure mode).
+
+    Public (#1668 PR-D VERIFY-prediction coherence fix): the v2 conductor
+    rebuilds its persisted VERIFY prediction from the LINEARIZED branch pair
+    when Layer-1a linearization was fitted
+    (``jasper.active_speaker.crossover_v2_flow``'s ``_fit_linearization``) —
+    the exact model of what the emitted graph will do — reusing this SAME
+    machinery rather than a second implementation. No logic changed in this
+    rename.
     """
     g_w = 10.0 ** (trim_w_db / 20.0)
     g_t = 10.0 ** (trim_t_db / 20.0)
@@ -1791,7 +1807,7 @@ def solve_ripple_optimal_trim(
     instead of matching levels, scan the tweeter trim and keep whichever
     value minimizes the SUMMED branch response's ripple (max-min dB) over
     the SAME ``[lo_hz, hi_hz]`` band the band-average solve used — reusing
-    :func:`_predicted_sum` and :func:`_ripple_db` exactly as
+    :func:`predicted_branch_sum` and :func:`_ripple_db` exactly as
     ``predicted_ripple_db`` elsewhere on the candidate already does, rather
     than inventing a second flatness metric.
 
@@ -1860,7 +1876,9 @@ def solve_ripple_optimal_trim(
         candidate_trims = [min(max(seed_trim_db, RIPPLE_TRIM_MIN_DB), RIPPLE_TRIM_MAX_DB)]
     ripples_db = [
         _ripple_db(
-            freqs_band, _predicted_sum(w_band, t_band, trim_w_db, candidate_trim, sign), lo, hi,
+            freqs_band,
+            predicted_branch_sum(w_band, t_band, trim_w_db, candidate_trim, sign),
+            lo, hi,
         )
         for candidate_trim in candidate_trims
     ]
@@ -1900,8 +1918,8 @@ def _flatter_sum_polarity(
         tweeter_sweep_lo_hz=program.segment("sweep_t").f1_hz,
         woofer_sweep_hi_hz=program.segment("sweep_w").f2_hz,
     )
-    ripple_pos = _ripple_db(freqs, _predicted_sum(W, T, trim_w, trim_t, +1), lo, hi)
-    ripple_neg = _ripple_db(freqs, _predicted_sum(W, T, trim_w, trim_t, -1), lo, hi)
+    ripple_pos = _ripple_db(freqs, predicted_branch_sum(W, T, trim_w, trim_t, +1), lo, hi)
+    ripple_neg = _ripple_db(freqs, predicted_branch_sum(W, T, trim_w, trim_t, -1), lo, hi)
     return 1 if ripple_pos <= ripple_neg else -1
 
 
@@ -2644,7 +2662,7 @@ def _build_candidate(
             T_band = T[band]
 
             def _ripple_at(candidate_delay_us: float) -> float:
-                summed = _predicted_sum(
+                summed = predicted_branch_sum(
                     W_band, T_band, trim_w, trim_t, alignment.polarity_sign,
                     freqs_hz=freqs_band,
                     residual_delay_us=objective_reference_gap_us + candidate_delay_us,
@@ -2660,7 +2678,7 @@ def _build_candidate(
     # (design §5.6.6), not a candidate-specific model that can explain away a
     # wrong comb lobe. The selected applied delay above proves which correction
     # realizes this zero-residual target in the original physical frame.
-    predicted = _predicted_sum(
+    predicted = predicted_branch_sum(
         W,
         T,
         trim_w,

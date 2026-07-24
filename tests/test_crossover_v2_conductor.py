@@ -82,6 +82,7 @@ from jasper.audio_measurement.program_analysis import (
     PilotObservation,
     ProgramAnalysis,
     SegmentLocation,
+    predicted_branch_sum,
     solve_branch_trims,
 )
 from jasper.capture_relay.session import (
@@ -2970,3 +2971,196 @@ def test_measure_diag_linearization_field_empty_when_verdict_rejected_before_can
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is False
     assert 'linearization=""' in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# VERIFY-prediction coherence fix (hardware-validation-caught, #1668 PR-D)
+# --------------------------------------------------------------------------- #
+#
+# Measured live on JTS3: VERIFY's tracking comparison ran a deterministic
+# ~1.7 dB mismatch (three-attempt repeatability 1.688-1.699 dB against the
+# 1.5 dB VERIFY_TOLERANCE_DB) because the persisted prediction
+# (``c.measure_predicted_sum``, threaded into ``MeasurementPriors.
+# predicted_sum`` by ``_verify_priors``) was still built from the RAW
+# measured branches even when Layer-1a linearization was fitted and its
+# correction filters emitted into the live graph. Fix: whenever
+# ``_fit_linearization`` runs (the same eligibility gate that emits), it
+# also rebuilds the prediction from the SAME linearized branches (W_lin/
+# T_lin) at whichever trim this attempt actually committed to.
+
+
+def test_measure_predicted_sum_uses_linearized_branches_when_fitted(monkeypatch):
+    """The regression: once linearization is fitted (not the wild-trim
+    fallback), the persisted VERIFY prediction must equal
+    ``predicted_branch_sum`` evaluated on the SAME linearized branches
+    ``_fit_linearization`` used internally, at the resolved trim -- and must
+    differ measurably from the fixture's own raw (all-zero) prediction,
+    proving the override actually took effect."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    captured: dict = {}
+    real_solve = flow_mod.solve_ripple_optimal_trim
+
+    def _spy(*args, **kwargs):
+        # Positional call shape: solve_ripple_optimal_trim(freqs, w_tf,
+        # t_tf, fc_hz, *, ..., seed_trim_db=..., trim_w_db=..., sign=...).
+        freqs, w_tf, t_tf, fc_hz = args
+        captured.update(freqs=freqs, w_tf=w_tf, t_tf=t_tf, fc_hz=fc_hz, **kwargs)
+        return real_solve(*args, **kwargs)
+
+    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    # Sanity: this fixture really fitted (not the wild-trim fallback) --
+    # otherwise this test would trivially pass by exercising the untouched
+    # raw path.
+    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.role_attenuations_db != raw_trim
+    assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+
+    resolved_w = c.candidate.role_attenuations_db["woofer"]
+    resolved_t = c.candidate.role_attenuations_db["tweeter"]
+    expected_complex = predicted_branch_sum(
+        captured["w_tf"], captured["t_tf"], resolved_w, resolved_t, 1,
+    )
+    expected_db = 20.0 * np.log10(np.maximum(np.abs(expected_complex), 1e-12))
+
+    freqs_used, db_used = c.measure_predicted_sum
+    np.testing.assert_allclose(freqs_used, captured["freqs"])
+    np.testing.assert_allclose(db_used, expected_db)
+
+    # And this must actually differ from the fixture's own raw (all-zero)
+    # analysis.predicted_sum -- proves the override changed the persisted
+    # value, not merely happened to already agree with it.
+    assert not np.allclose(db_used, 0.0)
+
+
+def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monkeypatch):
+    """The wild-trim sanity guard only ever changes the TRIM applied -- the
+    correction filters are emitted either way
+    (test_wild_resolved_trim_falls_back_to_raw_with_warning already pins
+    this). The persisted VERIFY prediction must therefore still be built
+    from the LINEARIZED branches on this fallback sub-case too, just at the
+    RAW trim that actually ended up in role_attenuations_db -- never the
+    un-linearized branches, and never the REJECTED (resolved) trim."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    captured: dict = {}
+    real_solve = flow_mod.solve_ripple_optimal_trim
+
+    def _spy(*args, **kwargs):
+        freqs, w_tf, t_tf, fc_hz = args
+        captured.update(freqs=freqs, w_tf=w_tf, t_tf=t_tf, fc_hz=fc_hz, **kwargs)
+        return real_solve(*args, **kwargs)
+
+    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+
+    wild_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=wild_raw_trim)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    # Sanity: this really is the trim_rejected sub-case (falls back to raw).
+    assert c.candidate.role_attenuations_db == wild_raw_trim
+    assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+
+    expected_complex = predicted_branch_sum(
+        captured["w_tf"], captured["t_tf"],
+        wild_raw_trim["woofer"], wild_raw_trim["tweeter"], 1,
+    )
+    expected_db = 20.0 * np.log10(np.maximum(np.abs(expected_complex), 1e-12))
+    freqs_used, db_used = c.measure_predicted_sum
+    np.testing.assert_allclose(freqs_used, captured["freqs"])
+    np.testing.assert_allclose(db_used, expected_db)
+
+
+def test_measure_predicted_sum_unchanged_when_linearization_ineligible():
+    """The ineligible/raw path stays byte-identical to before this fix:
+    ``c.measure_predicted_sum`` is exactly ``analysis.predicted_sum`` -- the
+    fixture's own raw all-zero placeholder -- never overridden."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, mic_tier="consumer")
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.linearization == {}
+
+    freqs_used, db_used = c.measure_predicted_sum
+    np.testing.assert_array_equal(freqs_used, _LINEARIZABLE_FREQS_HZ)
+    np.testing.assert_array_equal(db_used, np.zeros_like(_LINEARIZABLE_FREQS_HZ))
+
+
+def test_measure_predicted_sum_unchanged_when_fit_engine_raises(monkeypatch):
+    """SF2 interaction: when the fit engine raises and the candidate build
+    degrades to the raw-trim/empty-linearization fallback, the persisted
+    VERIFY prediction must degrade with it -- exactly
+    ``analysis.predicted_sum``, never a half-computed linearized value left
+    over from a call that never reached its own tail."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    def _boom(analysis, cand):
+        raise ValueError("simulated fit engine bug")
+
+    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.linearization == {}
+
+    freqs_used, db_used = c.measure_predicted_sum
+    np.testing.assert_array_equal(freqs_used, _LINEARIZABLE_FREQS_HZ)
+    np.testing.assert_array_equal(db_used, np.zeros_like(_LINEARIZABLE_FREQS_HZ))
+
+
+def test_verify_rearm_measure_predicted_sum_era_round_trip():
+    """Era-tolerance: a verify-only re-arm conductor supplied a persisted
+    ``measure_predicted_sum`` from BEFORE this coherence fix (a plain
+    raw-branch prediction, no linearization awareness) must carry it
+    through completely UNCHANGED. This fix only changes what
+    ``_measure_verdict`` COMPUTES on a fresh MEASURE accept -- a re-arm
+    conductor never calls ``_measure_verdict``/``_fit_linearization`` at all
+    (MEASURE is already accepted, see ``index_phase_map={1: PHASE_VERIFY}``),
+    so whatever value the constructor was handed is exactly what VERIFY
+    compares against, byte for byte."""
+    freqs = np.linspace(100.0, 20000.0, 64)
+    old_era_prediction = (freqs, np.full(64, -3.0))
+    fakes = FakeSeams()
+    c = CrossoverV2Conductor(
+        session_id="era_rearm_session",
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=fakes.seams(),
+        driver_spacing_m=0.15,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+        gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
+        index_phase_map={1: PHASE_VERIFY},
+        measure_predicted_sum=old_era_prediction,
+        measure_gate_window_ms=8.0,
+    )
+    got_freqs, got_db = c.measure_predicted_sum
+    np.testing.assert_array_equal(got_freqs, freqs)
+    np.testing.assert_array_equal(got_db, old_era_prediction[1])
+
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is True
+    assert c.verify_outcome == "pass"
+    # Untouched by the VERIFY walk -- still exactly the supplied era tuple.
+    got_freqs2, got_db2 = c.measure_predicted_sum
+    np.testing.assert_array_equal(got_freqs2, freqs)
+    np.testing.assert_array_equal(got_db2, old_era_prediction[1])

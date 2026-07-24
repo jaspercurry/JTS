@@ -49,6 +49,29 @@ in-session, and hardware-free-tested; it is explicitly gated on JTS3
 validation and the owner's listening-ladder protocol before merge — do not
 treat this section as confirming an audible result yet.
 
+**2026-07-24 — VERIFY-prediction coherence bug found in that same JTS3
+validation, fixed.** Every eligible+fitted candidate failed VERIFY at a
+deterministic ~1.7 dB tracking mismatch (three-attempt repeatability
+1.688–1.699 dB against the ±1.5 dB `VERIFY_TOLERANCE_DB`): the persisted
+prediction `_verify_priors` hands VERIFY was still built from the RAW
+measured branches even though the emitted graph carried the Layer-1a
+correction filters (PR-D, above) — so the correctly-linearized measured
+summation was compared against a prediction that never modeled them. Fixed
+in `CrossoverV2Conductor._fit_linearization`
+([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)):
+whenever it fits (the same eligibility that emits), it now also rebuilds
+the persisted prediction from the SAME linearized branches (`W_lin`/
+`T_lin`, reusing `program_analysis.predicted_branch_sum` — no second
+implementation) at the trim this attempt actually committed to. The
+ineligible/raw path and pre-fix persisted eras are untouched — pinned by
+`tests/test_crossover_v2_conductor.py`. Offline replay on the real #1667
+N=3 capture confirms the mechanism: the predicted tracking mismatch
+collapses from a nonzero value (matching the fitted filters' own response)
+to exactly 0 dB once the persisted prediction models the same curves the
+emitter realizes. Still gated on the SAME JTS3 re-validation as the
+paragraph above — this closes a known-bad comparison, it does not by
+itself confirm an audible result.
+
 Waves W1–W6 complete (PRs #1578–#1604). Hardware-validated on JTS3 +
 UMIK-2: first fully-calibrated run 2026-07-19. **Legacy is deprecated**
 and scheduled for deletion in W5b (see Future work). The v2 acoustic

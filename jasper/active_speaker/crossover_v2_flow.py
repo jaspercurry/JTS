@@ -88,6 +88,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
     overlap_band_hz,
+    predicted_branch_sum,
     solve_branch_trims,
     solve_ripple_optimal_trim,
 )
@@ -1206,6 +1207,21 @@ class CrossoverV2Conductor:
         # never consulted by ``_measure_verdict`` itself, so a bug here
         # cannot change a verdict.
         self._last_linearization_outcome: str = ""
+        # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
+        # PR-D): stamped by ``_fit_linearization`` on the SAME "fitted"/
+        # "trim_rejected" sub-outcomes as ``_last_linearization_outcome``
+        # above — both emit the correction filters into the live graph (only
+        # the trim differs between them), so both need the persisted VERIFY
+        # prediction rebuilt from the LINEARIZED branches, never the raw
+        # ones. ``None`` on every other path (ineligible, fit_failed, or a
+        # verdict that never reached ``_build_candidate`` this attempt),
+        # which ``_measure_verdict`` reads as "use ``analysis.predicted_sum``
+        # (the raw branches) instead" — byte-identical to before this fix.
+        # Reset at the top of every ``_measure_verdict`` call, mirroring
+        # ``_last_linearization_outcome``'s own reset discipline: a stale
+        # value from a PRIOR attempt must never leak into THIS attempt's
+        # persisted VERIFY prior.
+        self._last_linearized_predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
 
     # --- program composition -------------------------------------------------
 
@@ -1633,6 +1649,7 @@ class CrossoverV2Conductor:
         # leak into THIS attempt's diagnostic (see __init__'s comment).
         self._last_measure_guard = ""
         self._last_linearization_outcome = ""
+        self._last_linearized_predicted_sum = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.glitch_detected:
@@ -1709,7 +1726,20 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_LOW_ALIGNMENT_CONFIDENCE)
         candidate = self._build_candidate(analysis)
         self._candidate = candidate
-        self._measure_predicted_sum = analysis.predicted_sum
+        # VERIFY-prediction coherence fix (hardware-validation-caught, #1668
+        # PR-D): when this attempt fitted Layer-1a linearization (fitted OR
+        # trim_rejected — both emit the correction filters, see
+        # ``_fit_linearization``'s tail), the persisted prediction VERIFY
+        # compares against must be the LINEARIZED model, the exact thing the
+        # emitted graph now carries — never the raw-branch one. The
+        # ineligible/fit_failed path is untouched: ``_last_linearized_
+        # predicted_sum`` stays ``None`` there, so this stays byte-identical
+        # to ``analysis.predicted_sum``, exactly as before this fix.
+        self._measure_predicted_sum = (
+            self._last_linearized_predicted_sum
+            if self._last_linearized_predicted_sum is not None
+            else analysis.predicted_sum
+        )
         self._measure_gate_window_ms = self._measure_gate(analysis)
         self._seams.publish_candidate(candidate)
         return PhaseVerdict(
@@ -2190,7 +2220,15 @@ class CrossoverV2Conductor:
         Side effect: stamps ``self._last_linearization_outcome`` with
         ``"fitted"`` or ``"trim_rejected"`` (SF3) — mirrors
         ``_linearization_eligible``'s own convention; read by
-        ``_log_measure_diag``.
+        ``_log_measure_diag``. Also stamps ``self._last_linearized_
+        predicted_sum`` with the LINEARIZED-branch VERIFY prediction
+        (hardware-validation-caught coherence fix, #1668 PR-D) — the same
+        ``W_lin``/``T_lin`` this method's own trim re-solve used, at
+        whichever trim this call actually committed to (the sanity-guarded
+        ``role_attenuations_db`` return value, not necessarily the re-solved
+        ``resolved`` — the correction filters are emitted either way, only
+        the trim differs on a rejection). Read by ``_measure_verdict`` to
+        override ``self._measure_predicted_sum``.
         """
         woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
         woofer_resp = _driver_response_by_role(analysis, woofer_role)
@@ -2295,6 +2333,31 @@ class CrossoverV2Conductor:
         else:
             role_attenuations_db = resolved
             self._last_linearization_outcome = "fitted"  # SF3
+
+        # VERIFY-prediction coherence fix (hardware-validation-caught live
+        # finding, #1668 PR-D): the emitted graph carries these SAME W_lin/
+        # T_lin correction filters regardless of which branch above ran —
+        # the wild-trim guard only ever changes the TRIM, never whether the
+        # filters are emitted (``linearization`` below is populated in both
+        # cases) — so the persisted VERIFY prediction must be rebuilt from
+        # them too, at whichever trim ``role_attenuations_db`` actually ended
+        # up holding. Mirrors ``program_analysis._build_candidate``'s own
+        # final predicted-sum call exactly: full-grid branches, no
+        # residual-delay term (the branches are already in the
+        # argmax-referenced frame). Without this, VERIFY compared the
+        # correctly-linearized measured summation against a prediction still
+        # built from the raw branches — a deterministic mismatch equal to
+        # the filters' own in-band response (measured live on JTS3:
+        # 1.688-1.699 dB across three attempts, against the 1.5 dB
+        # tolerance).
+        predicted_lin = predicted_branch_sum(
+            W_lin, T_lin,
+            role_attenuations_db[woofer_role], role_attenuations_db[tweeter_role],
+            analysis.alignment.polarity_sign,
+        )
+        self._last_linearized_predicted_sum = (
+            freqs, 20.0 * np.log10(np.maximum(np.abs(predicted_lin), 1e-12)),
+        )
 
         linearization = {role: fit.to_dict() for role, fit in fits.items()}
         return role_attenuations_db, linearization
