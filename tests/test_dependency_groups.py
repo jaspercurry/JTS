@@ -56,6 +56,99 @@ def test_dev_dependency_group_matches_dev_extra() -> None:
     )
 
 
+def _dependabot() -> dict:
+    import yaml
+
+    return yaml.safe_load(
+        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    )
+
+
+def _uv_update_entry() -> dict:
+    entries = [
+        entry
+        for entry in _dependabot()["updates"]
+        if entry["package-ecosystem"] == "uv"
+    ]
+    assert len(entries) == 1, "expected exactly one uv ecosystem entry"
+    return entries[0]
+
+
+def test_dependabot_dev_tooling_group_covers_every_dev_dependency() -> None:
+    """Every dev dependency must match the dev-tooling group, not the catch-all.
+
+    Third declaration of "which packages are dev tooling": pyproject's `dev`
+    extra, its `dev` dependency-group, and the dependabot group's globs. The
+    first two are already pinned to each other by
+    test_dev_dependency_group_matches_dev_extra; without this, adding a dev
+    tool (pre-commit, coverage, a types-* stub) silently drops it into
+    `python-runtime` and defeats the split's stated purpose — holding a
+    runtime SDK update behind lint work.
+
+    `dependency-type: development` would be the declarative seam, but GitHub
+    documents it for bundler/composer/mix/maven/npm/pip and NOT for `uv`, so
+    the name enumeration is forced and needs a guard instead.
+    """
+
+    import fnmatch
+
+    patterns = _uv_update_entry()["groups"]["python-dev-tooling"]["patterns"]
+    unmatched = [
+        requirement
+        for requirement in _pyproject()["dependency-groups"]["dev"]
+        if not any(
+            fnmatch.fnmatch(_requirement_name(requirement), pattern)
+            for pattern in patterns
+        )
+    ]
+
+    assert not unmatched, (
+        "dev dependencies that would fall into the python-runtime catch-all; "
+        f"extend python-dev-tooling patterns in .github/dependabot.yml: {unmatched}"
+    )
+
+
+def _requirement_name(requirement: str) -> str:
+    """Strip version specifiers/extras from a PEP 508 requirement string."""
+
+    name = requirement.strip()
+    for separator in ("[", ">", "<", "=", "!", "~", ";", " "):
+        name = name.split(separator, 1)[0]
+    return name.strip()
+
+
+def test_dependabot_dev_tooling_group_precedes_the_catch_all() -> None:
+    """Dependabot assigns a dependency to the FIRST group it matches.
+
+    So `python-dev-tooling` must be declared before the `["*"]` catch-all;
+    reordering them would silently make the narrow group dead with no signal.
+    """
+
+    groups = list(_uv_update_entry()["groups"])
+
+    assert groups.index("python-dev-tooling") < groups.index("python-runtime")
+    assert _uv_update_entry()["groups"]["python-runtime"]["patterns"] == ["*"]
+
+
+def test_dependabot_groups_leave_security_updates_ungrouped() -> None:
+    """No group may claim security updates.
+
+    `applies-to` defaults to "version-updates"; setting it to
+    "security-updates" (or "all") on any group would fold CVE fixes into a
+    batched PR that a single unrelated broken bump can hold up. Security
+    updates are also exempt from open-pull-requests-limit, so they must stay
+    on their own channel.
+    """
+
+    for entry in _dependabot()["updates"]:
+        for name, config in entry.get("groups", {}).items():
+            assert "applies-to" not in config, (
+                f"{entry['package-ecosystem']} group {name!r} overrides "
+                "applies-to; security updates must stay ungrouped"
+            )
+            assert config.get("patterns"), f"group {name!r} has no patterns"
+
+
 def test_openwakeword_onnx_group_covers_ci_helper_deps() -> None:
     """Only openWakeWord itself is installed outside uv sync in CI."""
 
