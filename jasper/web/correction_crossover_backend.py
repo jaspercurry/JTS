@@ -2582,128 +2582,6 @@ def commissioning_region_status() -> dict[str, Any]:
         }
 
 
-def attest_commissioning_region_geometry(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """Persist the operator's signed path difference for the current region."""
-
-    expected = str(raw.get("expected_target_fingerprint") or "")
-    if not expected:
-        raise ValueError("the current crossover region identity is required")
-    return _commissioning_capture_service().attest_geometry(
-        expected_target_fingerprint=expected,
-        signed_acoustic_path_difference_mm=raw.get(
-            "signed_acoustic_path_difference_mm"
-        ),
-    )
-
-
-def prepare_commissioning_candidate() -> dict[str, Any]:
-    """Publish the exact current measured candidate, or idempotently reopen it."""
-
-    from jasper.active_speaker.commissioning_service import (
-        CommissioningServiceError,
-    )
-
-    service = _commissioning_capture_service()
-    try:
-        candidate = service.publish_candidate()
-    except CommissioningServiceError as exc:
-        if exc.code != "candidate_scoring_failed":
-            raise
-        status = service.status()
-        if status.get("status") != "candidate_refused":
-            raise RuntimeError(
-                "candidate refusal did not reopen as authoritative status"
-            ) from exc
-        return status
-    return {"status": "candidate_ready", "candidate": candidate}
-
-
-async def restore_commissioning_candidate(
-    *, camilla_factory: CamillaFactory
-) -> dict[str, Any]:
-    """Restore a pending strict candidate apply from its exact predecessor."""
-
-    from jasper.active_speaker.commissioning_service import (
-        commissioning_runtime_port,
-    )
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    service = _commissioning_capture_service()
-    cam = camilla_factory()
-    return await service.restore_candidate(
-        runtime_port=commissioning_runtime_port(cam),
-        load_config_path=lambda path: cam.set_config_file_path(
-            path, best_effort=False
-        ),
-    )
-
-
-async def capture_next_commissioning_region(
-    raw_capture_transport: Any,
-    *,
-    camilla_factory: CamillaFactory,
-) -> dict[str, Any]:
-    """Execute one server-selected normal/reverse/delay recorder capture."""
-
-    from jasper.active_speaker.commissioning_service import (
-        CommissioningServiceError,
-        commissioning_runtime_port,
-    )
-    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    service = _commissioning_capture_service()
-    before = service.status()
-    if before.get("status") != "collecting":
-        raise ValueError("the commissioning run has no recorder capture ready")
-    camilla = camilla_factory()
-    capture = await service.capture_next(
-        commissioning_runtime_port(camilla),
-        raw_capture_transport=raw_capture_transport,
-        config_dir=str(DEFAULT_CAMILLA_CONFIG_DIR),
-    )
-    if capture is None:
-        raise RuntimeError("the server did not issue the expected recorder capture")
-    after = service.status()
-    if after.get("status") == "measured":
-        try:
-            service.publish_candidate()
-        except CommissioningServiceError as exc:
-            if exc.code != "candidate_scoring_failed":
-                raise
-        after = service.status()
-    return {
-        "status": "recorded",
-        "capture_fingerprint": capture.fingerprint,
-        "evidence_kind": capture.evidence_kind,
-        "speaker_group_id": capture.speaker_group_id,
-        "region_id": capture.region_id,
-        "next": after,
-    }
-
-
-async def capture_next_commissioning_verification(
-    raw_capture_transport: Any,
-    *,
-    camilla_factory: CamillaFactory,
-) -> dict[str, Any]:
-    """Capture one server-selected post-apply combined-response repeat."""
-
-    from jasper.active_speaker.commissioning_service import commissioning_runtime_port
-    from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    service = _commissioning_capture_service()
-    if service.status().get("status") != "applied_unverified":
-        raise ValueError("the commissioning run has no post-apply capture ready")
-    camilla = camilla_factory()
-    return await service.capture_post_apply(
-        commissioning_runtime_port(camilla),
-        raw_capture_transport=raw_capture_transport,
-        config_dir=str(DEFAULT_CAMILLA_CONFIG_DIR),
-    )
-
-
 def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence."""
 
@@ -2809,10 +2687,8 @@ def status_payload() -> dict[str, Any]:
         current_context_id=current_context_id
     )
     payload["applied_profile"] = load_applied_baseline_profile_state()
-    # v2 conductor state (Wave 5a): present ONLY when JASPER_CROSSOVER_FLOW=v2
-    # (crossover_v2_status_block returns None under legacy), so the legacy
-    # status payload stays byte-identical. Fail-soft: an unreadable v2 state
-    # must never take down the whole status surface.
+    # v2 conductor state (Wave 5a). Fail-soft: an unreadable v2 state must
+    # never take down the whole status surface.
     try:
         from .correction_crossover_v2 import crossover_v2_status_block
 
@@ -3460,30 +3336,3 @@ def _extract_level_evidence(
     ):
         return None
     return float(peak), float(effective), clipping
-
-
-def record_summed_capture(
-    raw: Mapping[str, Any],
-    wav_bytes: bytes,
-    *,
-    placement_proof: Mapping[str, Any] | None = None,
-    preset: Any = None,
-) -> dict[str, Any]:
-    """Analyze one secure browser WAV and record summed-crossover evidence."""
-
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    payload = web_measurement.record_summed_capture(
-        raw,
-        wav_bytes,
-        placement_proof=placement_proof,
-        preset=preset,
-    )
-    log_event(
-        logger,
-        "correction.crossover_summed_capture",
-        status="recorded" if payload.get("recorded") else "not_recorded",
-        group_id=raw.get("speaker_group_id"),
-        verdict=payload.get("verdict"),
-        placement_policy=(placement_proof or {}).get("policy_id"),
-    )
-    return payload
