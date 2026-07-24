@@ -1,5 +1,255 @@
 # HANDOFF: active speaker DSP commissioning
 
+This doc is the canonical handoff for JTS speakers where CamillaDSP
+directly drives woofer/midrange/tweeter amplifier channels (an
+"active" speaker) instead of a passive in-cabinet crossover. JTS3
+(DAC8x + a real bi/tri-amp speaker) is the only hardware running this
+path today; other production units use the passive stereo path.
+
+It owns DSP topology, layer boundaries, and hardware-safety contracts.
+Product behavior, the manual-vs-measured parameter split, the guided
+user journey, and delivery acceptance criteria are canonical in
+[active-crossover-information-design.md](active-crossover-information-design.md).
+The crossover *measurement* flow (how CHECK/MEASURE/APPLY/VERIFY
+actually run today) is canonical in
+[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+The output *transport* (how a commissioned graph reaches the DAC) is
+canonical in
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+This doc links to both rather than restating them.
+
+## Current Operational Truth
+
+### What this is
+
+Active speaker DSP asks "what should this speaker be before the room
+is considered?" — a separate question from room correction ("what
+should be compensated at this listening position?") and preference
+voicing ("what tonal tilt does this listener like?"). The
+`/correction/` room-correction wizard must never rewrite crossover,
+polarity, per-driver gain, driver delay, or limiter policy; those
+belong here.
+
+### The layer model (adopted 2026-07-23)
+
+Active speaker tuning is five layers, composed in fixed order inside
+one CamillaDSP graph. Full rationale, the correction-envelope math,
+and the phased execution plan are in
+[active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-design.md)
+— read that before touching linearization, trim-solve, or
+verification code.
+
+| # | Layer | Job | Re-runs when |
+|---|---|---|---|
+| 1a | Driver linearization | flatten each driver within its own band on the design axis (horn/CD compensation, baffle step, breakup) | hardware change (driver, horn, pad) |
+| 1b | Crossover integration | drivers sum correctly: crossover filters, scalar trim per driver, relative delay, polarity | hardware/geometry change |
+| 2 | Bass | sub/extension integration below the gated measurement floor | hardware/placement change |
+| 3 | Room correction | modal peaks below the transition, at most a gentle broadband tilt above | placement/room change |
+| 4 | Preference | declared taste on top of honest-flat | whenever |
+
+Layers 1a+1b are **the speaker layer** — what earlier revisions of
+this doc called "Layer A." Layer 1a is new: the fit engine landed
+2026-07-23 (#1668 PR-A/B/C —
+[`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) +
+[`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py)).
+**As of this writing, MEASURE computes and persists a per-driver
+linearization curve on the measured candidate, but nothing yet emits
+it into the CamillaDSP baseline graph** — wiring a per-role
+linearization filter stage into `emit_active_speaker_baseline_config`
+is the next phase. Do not assume linearization is audible yet; check
+the design doc's "Execution plan for the implementing session" for
+current phase status. Layers 3 and 4 (room correction, preference)
+are unchanged from before and already land on the active graph for a
+solo speaker — see "Layer Boundary" implementation status in the
+appendix, still accurate.
+
+### The two commissioning surfaces
+
+Two web surfaces, two different jobs, run in sequence:
+
+1. **`/sound/`** (Active crossover setup) — physical topology: detect
+   DAC outputs, group them into speakers, assign driver roles up to
+   3-way, mark subwoofers, confirm each driver's identity and level by
+   ear (`commission-load` / `commission-ramp-*`), stage a
+   muted/protected startup graph. This is prerequisite substrate for
+   *both* measurement flows below and doesn't change with which one is
+   active. Backed by `jasper.output_topology` and
+   `jasper.active_speaker.{staging,startup_load,commission_ramp,
+   calibration_level,safe_playback,bringup,playback}`.
+2. **`/correction/crossover/`** — measures and applies crossover
+   level/delay/polarity (and, once wired, linearization). **The
+   default flow is v2** (selector `JASPER_CROSSOVER_FLOW`, default
+   `v2` since 2026-07-19 — see
+   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
+   canonical for this flow's file map and invariants). v2 replaced the
+   legacy near-field/null-depth/gated-summed triad described at length
+   in the appendix below: **that legacy flow is opt-out only**
+   (`JASPER_CROSSOVER_FLOW=legacy`, case-insensitive/trimmed; any other
+   value fails safe to v2), is deprecated, and
+   is scheduled for deletion (W5b). Do not treat the appendix's
+   "Consumer Wizard Triad," "Delay, Phase, and Null Verification," or
+   the Wave 1-3 commissioning-receipt narrative as current — they
+   describe the legacy flow's `jasper.active_speaker.commissioning_*`
+   family (`commissioning_run.py`, `commissioning_host.py`,
+   `commissioning_receipt.py`, `driver_acoustics.py`, and siblings),
+   which is still in the tree but is not what a fresh install runs.
+
+### File map (entry points only)
+
+`jasper/active_speaker/` is 75 modules. Per-file responsibility
+tables for the measurement flow live in the canonical docs linked
+above; this is only the entry points:
+
+| File | Owns |
+|---|---|
+| [`jasper/output_topology.py`](../jasper/output_topology.py) | Physical DAC-lane / speaker-group / driver-role topology. No audio side effects. |
+| [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | Every CamillaDSP YAML emitter — startup, commissioning-masked, and baseline. |
+| [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py) | Compiles and applies the durable active-speaker baseline; owns the candidate/promote lifecycle below. |
+| [`jasper/active_speaker/staging.py`](../jasper/active_speaker/staging.py), [`startup_load.py`](../jasper/active_speaker/startup_load.py), [`commission_ramp.py`](../jasper/active_speaker/commission_ramp.py) | `/sound/` topology-setup substrate: stage a muted graph, load it, run the per-driver by-ear ramp. |
+| [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py) | Classifies saved topology against the running/candidate CamillaDSP graph; the doctor's fail-closed authority. |
+| [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py) | The `JASPER_CROSSOVER_FLOW` v2/legacy selector. No product policy. |
+| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py), [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The v2 conductor and the Layer 1a fit/envelope. Full map: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md) "File map". |
+| `jasper/active_speaker/commissioning_*.py`, [`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py) | Legacy flow only (the Wave 1-3 nine-state receipt lifecycle). Opt-in, deprecated. |
+
+### Key invariants
+
+- **Two-invariant protection model.** Every audible path enforces
+  exactly two things: never too loud (one derived per-driver ceiling
+  from declared sensitivities) and never the wrong frequency range
+  (declared band behind a proven high-pass before any full-range
+  content reaches a driver). Canonical statement:
+  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  "Contracts & invariants". The appendix's longer "Hard Safety Rules"
+  and "Failure Modes To Keep Visible" lists are still true detail,
+  just superseded as the primary framing.
+- **One audio path.** Commissioning tests, measures, and applies
+  through the same production outputd-owned active CamillaDSP graph
+  that plays music — never a direct-DAC bypass. There is no separate
+  validation path; a config that can't reach the production active
+  lane can't be commissioned. (The historical direct-DAC path was
+  deleted 2026-06-17; narrative in the appendix's "Single audio path
+  commissioning.")
+- **Crash recovery always lands muted.** Per-driver unmute states
+  during commissioning are transient; only the final validated freeze
+  step persists a loadable config, and every staged boot candidate is
+  asserted fully muted (`staged_candidate_fully_muted`).
+- **The applied baseline candidate is always a content-addressed
+  sibling, never the canonical filename, until a promote step runs
+  (issue #1666).** `baseline_profile.build_baseline_profile_candidate`
+  writes every candidate to
+  `active_speaker_baseline_candidate_<fingerprint>.yml` beside the
+  canonical `active_speaker_baseline.yml` — never in place — so a
+  candidate that fails validation or activation can never appear at
+  the canonical name. (Before this fix, the target alternated
+  canonical/sibling across successive applies, so roughly half the
+  time unvalidated bytes landed on the canonical name before
+  CamillaDSP confirmed them.) Only after `apply_dsp_config` has
+  confirmed the candidate live does
+  `baseline_profile.promote_applied_baseline_candidate` byte-copy it
+  onto the canonical name — fail-soft: a copy failure never fails an
+  otherwise-successful apply. Promote also prunes candidate siblings
+  down to the newest 20 (`_MAX_BASELINE_CANDIDATE_FILES`). Every
+  apply/restore transaction in `baseline_profile.py`, and
+  `commissioning_apply`'s `finalize_retained_candidate_apply`, runs
+  promote right after its own `apply_dsp_config` succeeds. The running
+  CamillaDSP graph and the JSON SSOT (`config.path`) are correct the
+  instant apply succeeds; promote only keeps the canonical *filename*
+  current for readers who trust it by name — the multiroom follower's
+  solo-restore fallback, `jasper-doctor`, or an operator reading the
+  file directly.
+- **The doctor is the divergence check, not a second source of
+  truth.** `jasper-doctor`'s `active speaker baseline canonical` check
+  (`check_active_speaker_baseline_canonical` in
+  [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py))
+  compares the live applied candidate's Layer-A fingerprint against
+  the canonical file's and WARNs — never fails — on mismatch; the
+  running graph is always the audible truth regardless. Its sibling
+  `active speaker runtime graph` check
+  (`check_active_speaker_runtime_graph`) FAILs closed if a saved
+  roleful/protected topology (any tweeter or subwoofer role) is
+  running a flat full-range graph: `classify_output_contract` +
+  `classify_bass_extension_graph` in `runtime_contract.py` are the
+  shared classifier install/deploy must go through
+  (`jasper-active-speaker runtime-safe-graph`), never a hand-written
+  outputd statefile. A fourth check,
+  `check_active_speaker_output_hardware_match`, flags a saved topology
+  that no longer matches observed hardware.
+- **Room correction is solo-active only.** A grouped active leader
+  returns `active_grouped_room_correction_not_supported`
+  (`jasper.active_speaker.setup_status`); grouped support needs a
+  later identity spanning both the leader and follower CamillaDSP
+  instances. See
+  [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md).
+- **The DAC-agnostic active-output transport is design-of-record and
+  mostly built**, not still-in-progress the way the appendix's
+  "Staged, hardware-verified build sequence" narrates it — that
+  section is the historical build log, not an open TODO list.
+  Dispatch is on clock-domain shape (single coherent DAC vs. paired
+  composite), never a per-DAC branch, so a new DAC of an established
+  shape is a `DacProfile` row. Current status:
+  [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+  "Current Operational Truth" and "DAC-agnostic active-output
+  transport".
+
+### Operational commands
+
+CLI (`jasper-active-speaker`): `startup-template`, `path-audit`,
+`path-probe`, `environment-probe`, `runtime-safe-graph`,
+`commission-load`, `commission-rollback`, `commission-ramp
+{step,ack,status,abort}`. Full flags and the complete
+`/sound/active-speaker/*` web-route table:
+[testing-tooling.md](testing-tooling.md) (search "active-speaker") —
+canonical, kept current there rather than duplicated here.
+
+Recovery when a saved topology has drifted from physical reality (for
+example a physically passive box still carrying a stale roleful
+topology, which fails closed and can block a deploy):
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-output-topology-reset --dry-run
+sudo /opt/jasper/.venv/bin/jasper-output-topology-reset --yes
+```
+
+### Debugging entry points
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep -i "active speaker\|bass extension"
+curl -s http://jts.local:8780/state | jq .active_speaker_output_safety
+curl -s http://jts.local/correction/crossover/status | jq   # v2 conductor status
+```
+
+For crossover-measurement-specific debugging (capture retention,
+per-capture diagnostic events, failure taxonomy), see
+[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+"Failure taxonomy & debugging". For general log/journal fetching, see
+[testing-tooling.md](testing-tooling.md) "Pi-side diagnostics" and
+AGENTS.md "Debugging — fetch evidence before guessing".
+
+---
+
+## Appendix — investigation history
+
+> **Historical appendix — not current truth.** (Note: it preserves the ORIGINAL
+> doc verbatim, including its own now-superseded “Current Operational
+> Truth” heading and mid-appendix `Last verified:` line — do not read
+> those as current.) Everything below this line is this doc's
+> original chronological narrative (2026-05-25 through 2026-07-16),
+> preserved verbatim for primary-source archaeology. It predates the
+> five-layer tuning model, the v2 crossover conductor flow, and the
+> issue-#1666 candidate-promotion fix described above. Several of its
+> claims are superseded and should not be read as current: the
+> near-field/null-depth/gated-summed measurement triad presented as
+> *the* measurement protocol (superseded by v2 — see "Current
+> Operational Truth" above), the Wave 1-3 commissioning-receipt
+> lifecycle presented as the live commissioning path (it is the
+> legacy flow's machinery, opt-in only), and the "Staged,
+> hardware-verified build sequence" presented as in-progress (the
+> transport it describes is now design-of-record and mostly built).
+> Read this appendix for the narrative and the reasoning behind
+> still-standing safety invariants, not for current file paths, line
+> numbers, or "what's shipped" status. Current operational truth is
+> the section above.
+
 > **Status: planning baseline.** Created 2026-05-25 from three local
 > deep-research reports on DIY DSP speaker commissioning; updated
 > 2026-05-26 with the proposal-v3 active speaker commissioning
@@ -2303,3 +2553,19 @@ core flow, one-intent save/apply, and the 10 dB audible ramp step. Prior
 reset recovery and stale `/sound/output-topology` POST guard against
 `jasper.web.sound_setup`; active-speaker commissioning state against the focused
 `/sound/` tests.)
+
+Last verified: 2026-07-24 (restructured into the canonical current-state-first
+HANDOFF shape per issue #1681; the "Current Operational Truth" section above
+was freshly re-verified against code at commit f59d5a776 -- the five-layer
+tuning model (active-speaker-tuning-layers-design.md), the v2/legacy
+crossover-flow split (crossover_flow.py, JASPER_CROSSOVER_FLOW), the #1666
+candidate-promote lifecycle (baseline_profile.build_baseline_profile_candidate
+/ promote_applied_baseline_candidate), the doctor's baseline-canonical and
+runtime-graph checks (jasper/cli/doctor/audio.py), the jasper-active-speaker
+CLI and /sound/active-speaker/* route surface, and the cross-links into
+HANDOFF-crossover-measurement-v2.md, HANDOFF-speaker-output-reference.md, and
+active-speaker-tuning-layers-design.md. The appendix below is preserved
+verbatim as historical narrative and was not independently re-verified in
+this pass beyond the corrections called out in its own status note; treat its
+file paths, line numbers, and "what's shipped" claims as of their original
+dates, not current.)
