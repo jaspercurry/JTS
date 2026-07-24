@@ -110,6 +110,22 @@ function renderNudges(nudges, expertDetails) {
   els.nudges.replaceChildren(...rows);
 }
 
+// Gauge fix (2026-07-24): plain-language text for
+// crossover_envelope_v2._candidate_review_payload's "linearization_outcome"
+// enum (jasper.active_speaker.crossover_v2_flow's
+// _last_linearization_outcome — the SAME six values that enum can hold).
+// Mirrors the existing polarity enum-to-text mapping just above in this
+// file; an unrecognized/empty value renders nothing (e.g. "" means
+// linearization was never evaluated this attempt).
+const LINEARIZATION_OUTCOME_TEXT = {
+  fitted: 'driver linearization: fitted',
+  trim_rejected:
+    'driver linearization: filters fitted, re-solved trim rejected (used the measured trim)',
+  ineligible_mic_tier: 'driver linearization: skipped — needs a reference-tier mic',
+  ineligible_repeats: 'driver linearization: skipped — not enough repeat measurements',
+  fit_failed: 'driver linearization: skipped — fit engine error',
+};
+
 // The measured-crossover candidate the household reviews before applying
 // (crossover_envelope_v2._candidate_review_payload — trims / delay / polarity,
 // derived from the conductor's _candidate_summary). W6.10 blocker #2: the prior
@@ -175,6 +191,24 @@ function renderCandidateReview(review) {
     details.push(`predicted ripple ${review.ripple_db.toFixed(1)} dB`);
   }
   if (review.fingerprint) details.push(`candidate ${review.fingerprint}`);
+  // Gauge fix (2026-07-24): the linearization run/skip outcome — the
+  // failure mode this kills is linearization silently not running while
+  // every other screen looks the same.
+  const outcomeText = LINEARIZATION_OUTCOME_TEXT[review.linearization_outcome];
+  if (outcomeText) details.push(outcomeText);
+  // Gauge fix (2026-07-24): per-role top-octave deficits (measured vs fit
+  // target, achieved-minus-target dB) — the number that says "the top
+  // octave is 9 dB down and nothing corrected it." Uncorrected regions show
+  // their natural deficit here, never a pass/fail.
+  const octaveRows = Array.isArray(review.linearization_octaves) ?
+    review.linearization_octaves : [];
+  octaveRows.forEach((row) => {
+    const bands = Array.isArray(row && row.bands) ? row.bands : [];
+    if (!bands.length) return;
+    const parts = bands.map((band) =>
+      `${Math.round(Number(band.hz) / 1000)}k ${Number(band.delta_db).toFixed(1)} dB`);
+    details.push(`${row.role} measured vs fit target: ${parts.join(', ')}`);
+  });
   if (details.length) {
     rows.push(el('details', {class: 'candidate-provenance'}, [
       el('summary', {text: 'Technical details'}),

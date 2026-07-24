@@ -300,6 +300,49 @@ def test_done_candidate_review_carries_the_measured_numbers():
     assert review["fingerprint"] == "fp-123"
 
 
+def test_done_candidate_review_carries_linearization_outcome_and_octaves():
+    """Gauge fix (2026-07-24): items 2/3 — the linearization run/skip
+    outcome and per-role top-octave deficits ride the SAME candidate_review
+    shape as trims/delay/polarity, sourced straight from
+    jasper.web.correction_crossover_v2._candidate_summary's new fields."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            linearization_outcome="fitted",
+            linearization_octaves={
+                "woofer": {"8000": -0.3, "12000": -1.1, "16000": -2.8, "500": 0.1},
+                "tweeter": {"8000": -0.1, "12000": -3.2, "16000": -9.4},
+            },
+        ),
+    ))
+    review = env["candidate_review"]
+    assert review["linearization_outcome"] == "fitted"
+    octaves = {row["role"]: row["bands"] for row in review["linearization_octaves"]}
+    # Only the top three octaves (>= 8k) render — "500" is silently excluded,
+    # matching the item's own scope ("at least the 8k/12k/16k values").
+    assert octaves["woofer"] == [
+        {"hz": 8000, "delta_db": -0.3},
+        {"hz": 12000, "delta_db": -1.1},
+        {"hz": 16000, "delta_db": -2.8},
+    ]
+    assert octaves["tweeter"] == [
+        {"hz": 8000, "delta_db": -0.1},
+        {"hz": 12000, "delta_db": -3.2},
+        {"hz": 16000, "delta_db": -9.4},
+    ]
+
+
+def test_done_candidate_review_omits_linearization_fields_when_absent():
+    """A candidate with no linearization at all (ineligible / plain trims)
+    renders an empty outcome string and no octave rows — never a phantom
+    "0 dB" or a KeyError."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    review = env["candidate_review"]
+    assert review["linearization_outcome"] == ""
+    assert review["linearization_octaves"] == []
+
+
 # --- volume recovery (W2 gate ruling) ----------------------------------------------
 
 
@@ -454,6 +497,67 @@ def test_verify_fail_folds_tracking_numbers_behind_expert_details():
         phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
     ))
     assert bare["expert_details"] == []
+
+
+def test_verify_fail_folds_flatness_numbers_alongside_integration_evidence():
+    """Gauge fix (2026-07-24): flatness is a SIBLING claim, distinctly
+    labeled from the integration-verify numbers above — both travel in the
+    SAME collapsed disclosure since verify_fail only has the one mechanism.
+    "report-only" in the flatness line is the honesty label distinguishing
+    it from the gated "limit" line right above it."""
+    env = build_crossover_envelope_v2(_status(
+        phase="verify",
+        failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
+        verify={
+            "outcome": "fail",
+            "evidence": {
+                "max_db": 2.34, "rms_db": 0.81,
+                "tracking_band_lo_hz": 1000.0, "tracking_band_hi_hz": 4000.0,
+                "tolerance_db": 1.5,
+            },
+            "flatness": {
+                "max_db": 13.3, "rms_db": 4.2,
+                "band_lo_hz": 187.0, "band_hi_hz": 16000.0, "tolerance_db": 3.0,
+            },
+        },
+    ))
+    details = env["expert_details"]
+    # Integration-verify: unchanged, still there.
+    assert "level error 2.34 dB (limit 1.5 dB)" in details
+    # Flatness: report-only, distinctly labeled — never says "limit".
+    assert "flatness 13.30 dB from flat (report-only; target 3.0 dB, not yet enforced)" in details
+    assert "flatness average error 4.20 dB" in details
+    assert "flatness checked 187–16000 Hz" in details
+    assert not any("limit" in line and "flatness" in line for line in details)
+
+
+def test_done_folds_flatness_numbers_on_a_pass():
+    """The reported bug, closed: a household on the "Your speaker is tuned"
+    RESULT screen (a clean PASS — no verify.evidence ever shows here, by
+    unchanged product design) now sees the flatness number too, instead of
+    silently watching a passing VERIFY with no visibility into how far from
+    flat the summed response actually was."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done",
+        verify={
+            "outcome": "pass",
+            "flatness": {
+                "max_db": 13.3, "rms_db": 4.2,
+                "band_lo_hz": 187.0, "band_hi_hz": 16000.0, "tolerance_db": 3.0,
+            },
+        },
+        candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == "done"
+    details = env["expert_details"]
+    assert "flatness 13.30 dB from flat (report-only; target 3.0 dB, not yet enforced)" in details
+
+
+def test_done_expert_details_empty_when_no_flatness_evidence():
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert env["expert_details"] == []
 
 
 def test_verify_level_shift_renders_the_same_verify_fail_screen_shape():

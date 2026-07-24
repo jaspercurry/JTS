@@ -1036,6 +1036,17 @@ def _frozen_applied_profile(
         # that want "what's currently applied" without unpacking the
         # snapshot. Absent on any pre-PR-D applied profile (era-tolerant).
         "linearization": dict(applied.get("linearization") or {}),
+        # Gauge fix (2026-07-24): mirrors "linearization" immediately
+        # above — same top-level convenience copy, same era-tolerant
+        # absence. This is the field setup_status.read_active_speaker_setup_status
+        # reads (via load_applied_baseline_profile_state -> here) to surface
+        # WHY linearization did or didn't run on /state's protected_profile;
+        # dropping it here (an allowlist function, unlike
+        # persist_applied_baseline_profile's whole-object spread) would
+        # silently strip it on every read even though the write side
+        # persists it — see test_frozen_applied_profile_carries_linearization_top_level's
+        # own docstring for the identical Gap 3c bug class this mirrors.
+        "linearization_outcome": str(applied.get("linearization_outcome") or ""),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
         # Quality state belongs to the immutable applied anchor too.  Dropping
         # it here lets an older sensitivity-only profile masquerade as a
@@ -1635,6 +1646,16 @@ def build_baseline_profile_candidate(
     linearization = linearization_filters_by_role(
         getattr(measured_candidate, "linearization", None) or {}
     )
+    # Gauge fix (2026-07-24): the single writer's own verdict for WHY
+    # linearization did or didn't run this attempt — "" (empty, the
+    # ``getattr`` default) for a plain trims candidate, a legacy
+    # MeasuredElectricalCandidate (no ``.linearization_outcome`` attribute),
+    # or a pre-gauge-fix persisted MeasuredCrossoverCandidate. Never
+    # re-derived here — see MeasuredCrossoverCandidate.linearization_outcome's
+    # own docstring.
+    linearization_outcome = str(
+        getattr(measured_candidate, "linearization_outcome", "") or ""
+    )
     if preserved_applied_profile is not None:
         preserved_corrections = (
             preserved_applied_profile.get("corrections")
@@ -1892,6 +1913,18 @@ def build_baseline_profile_candidate(
         # recompose_applied_baseline_yaml reads -- see that field's own
         # comment inside recomposition_snapshot below.
         "linearization": linearization,
+        # Gauge fix (2026-07-24): WHY linearization did or didn't run for
+        # THIS candidate — "" / "fitted" / "trim_rejected" /
+        # "ineligible_mic_tier" / "ineligible_repeats" / "fit_failed". Top
+        # level only (not inside recomposition_snapshot): unlike
+        # "linearization" above, this is not an input a later recompose
+        # needs to re-emit the graph, only descriptive provenance about how
+        # the currently-applied filters (or their absence) came to be.
+        # setup_status.read_active_speaker_setup_status surfaces this on
+        # /state's protected_profile (the applied artifact), and the v2
+        # wizard surfaces the in-session equivalent straight off the live
+        # candidate.
+        "linearization_outcome": linearization_outcome,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
         # An unmeasured per-driver trim is explicitly provisional. Surfaced in

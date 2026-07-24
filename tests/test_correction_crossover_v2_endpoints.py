@@ -1982,6 +1982,150 @@ def test_verify_fail_persists_expert_evidence_through_the_real_persist_path():
     assert verify["evidence"]["tolerance_db"] == 1.5
 
 
+_FLATNESS_FIXTURE = {
+    "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
+}
+
+
+def test_verify_flatness_persists_through_the_real_persist_path_on_pass():
+    """Gauge fix (2026-07-24): unlike verify["evidence"] (persisted only on
+    a non-pass outcome by product design), verify["flatness"] persists
+    through the SAME real persist_conductor_state on a CLEAN PASS too. This
+    is the exact reported bug: a household watching "VERIFY PASS" for weeks
+    with zero visibility into how far from flat the summed response
+    actually was — that visibility now survives the session via the same
+    durable v2 state file the wizard polls."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        analyses={
+            "verify": lambda program: replace(
+                _verify_analysis(program), flatness_tracking=_FLATNESS_FIXTURE,
+            ),
+        },
+    )
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.note_apply_complete()  # arm VERIFY
+    conductor.consume_capture(3, 3, CaptureResult(wav=b"fake-verify"))
+    v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
+
+    assert conductor.verify_outcome == "pass"
+    verify = v2host.load_v2_state()["verify"]
+    assert verify["outcome"] == "pass"
+    assert "evidence" not in verify  # unchanged: a pass never persists this
+    assert verify["flatness"]["max_db"] == 13.3
+    assert verify["flatness"]["rms_db"] == 4.2
+    assert verify["flatness"]["band_lo_hz"] == 150.0
+    assert verify["flatness"]["band_hi_hz"] == 16000.0
+    assert verify["flatness"]["tolerance_db"] == 3.0
+
+
+def test_verify_flatness_persists_through_the_real_persist_path_on_fail():
+    """Symmetric with the pass case above -- flatness is a SIBLING claim
+    that persists regardless of the integration-verify outcome, alongside
+    "evidence" when that ALSO persists (a fail)."""
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(
+        backend, session, phone, published=[],
+        analyses={
+            "verify": lambda program: replace(
+                _verify_analysis(program, max_db=2.4), flatness_tracking=_FLATNESS_FIXTURE,
+            ),
+        },
+    )
+    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.note_apply_complete()  # arm VERIFY
+    conductor.consume_capture(3, 3, CaptureResult(wav=b"fake-verify"))
+    v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
+
+    assert conductor.verify_outcome == "fail"
+    verify = v2host.load_v2_state()["verify"]
+    assert verify["outcome"] == "fail"
+    assert verify["evidence"]["max_db"] == 2.4
+    assert verify["flatness"]["max_db"] == 13.3
+
+
+def test_candidate_summary_surfaces_linearization_outcome_and_octaves():
+    """Gauge fix (2026-07-24): items 2/3 -- _candidate_summary reads
+    linearization_outcome straight off the candidate, and reduces the rich
+    per-role linearization dict down to just observe_octave_summary (the
+    OBSERVE-layer honesty-ladder disclosure) for the wizard payload -- never
+    persisting the rest of LinearizationFit.to_dict()'s cargo (filters,
+    residuals, reason_summary, ...) into this session-scoped view."""
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-abc",
+        analysis={"alignment_confidence": 0.9, "predicted_ripple_db": 1.1},
+        source_preset=_preset(),
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization={
+            "woofer": {
+                "role": "woofer", "filters": [], "fit_band_hz": [150.0, 3951.5],
+                "target_level_db": -20.22, "residual_rms_db": 4.16,
+                "residual_max_db": 12.21, "reason_summary": {},
+                "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+                "observe_octave_summary": {"8000": -0.3, "12000": -1.1, "16000": -2.8},
+            },
+            "tweeter": {
+                "role": "tweeter", "filters": [], "fit_band_hz": [2020.0, 13905.2],
+                "target_level_db": -8.63, "residual_rms_db": 2.63,
+                "residual_max_db": 7.13, "reason_summary": {},
+                "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+                "observe_octave_summary": {"8000": -0.1, "12000": -3.2, "16000": -9.4},
+            },
+        },
+        linearization_outcome="fitted",
+    )
+
+    summary = v2host._candidate_summary(candidate)
+
+    assert summary["linearization_outcome"] == "fitted"
+    assert summary["linearization_octaves"] == {
+        "woofer": {"8000": -0.3, "12000": -1.1, "16000": -2.8},
+        "tweeter": {"8000": -0.1, "12000": -3.2, "16000": -9.4},
+    }
+    # Only the octave dict is threaded — confirm the rest of the rich
+    # LinearizationFit.to_dict() cargo (filters, residuals, ...) is NOT
+    # duplicated into this session-scoped view.
+    assert "filters" not in summary
+    assert "residual_rms_db" not in summary
+
+
+def test_candidate_summary_linearization_fields_default_empty():
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-abc",
+        analysis={"alignment_confidence": 0.9},
+        source_preset=_preset(),
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+    )
+
+    summary = v2host._candidate_summary(candidate)
+
+    assert summary["linearization_outcome"] == ""
+    assert summary["linearization_octaves"] == {}
+
+
+def test_candidate_summary_none_candidate_returns_none():
+    assert v2host._candidate_summary(None) is None
+
+
 def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
     """SF2 (adversarial review, 2026-07-20): ``_persist_terminal_failure``
     used to reset ``accepted_phases`` for EVERY terminal code, including

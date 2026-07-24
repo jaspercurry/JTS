@@ -97,12 +97,51 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 # falls to the end alphabetically.
 _ROLE_ORDER = {"woofer": 0, "tweeter": 1}
 
+# Gauge fix (2026-07-24): the top-octave centers the RESULT screen discloses
+# per driver — "at least the 8k/12k/16k values" (the item's own scope). The
+# fit engine computes more (down to 250 Hz — see
+# linearization_fit._OCTAVE_BAND_CENTERS_HZ), but the household-facing
+# disclosure only needs the top of the ladder, where an uncorrected driver's
+# natural rolloff is otherwise invisible on every other screen.
+_TOP_OCTAVES_HZ = ("8000", "12000", "16000")
+
 
 def _finite(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
     return number if number == number and abs(number) != float("inf") else None
+
+
+def _linearization_octave_rows(
+    octaves: Any,
+) -> list[dict[str, Any]]:
+    """Gauge fix (2026-07-24): per-role top-octave rows (>= 8k/12k/16k) —
+    the OBSERVE-layer honesty ladder's disclosure numbers
+    (``linearization_fit.LinearizationFit.observe_octave_summary``), already
+    computed by the fit engine and threaded through
+    ``jasper.web.correction_crossover_v2._candidate_summary``. Each value is
+    achieved-minus-target dB: a large negative number at an octave means the
+    driver's natural response is that far down there and nothing corrected
+    it — "uncorrected regions show their natural deficit, never a
+    pass/fail" (LinearizationFit's own docstring). Empty for a role whose
+    fit never ran.
+    """
+    rows: list[dict[str, Any]] = []
+    for role, per_role in sorted(
+        _mapping(octaves).items(),
+        key=lambda kv: (_ROLE_ORDER.get(str(kv[0]), 99), str(kv[0])),
+    ):
+        if not isinstance(per_role, Mapping):
+            continue
+        bands: list[dict[str, Any]] = []
+        for hz in _TOP_OCTAVES_HZ:
+            db = _finite(per_role.get(hz))
+            if db is not None:
+                bands.append({"hz": int(hz), "delta_db": db})
+        if bands:
+            rows.append({"role": str(role), "bands": bands})
+    return rows
 
 
 def _candidate_review_payload(
@@ -150,6 +189,14 @@ def _candidate_review_payload(
         "ripple_db": _finite(candidate.get("predicted_ripple_db")),
         "fingerprint": str(candidate.get("fingerprint") or ""),
         "program_id": str(candidate.get("program_id") or ""),
+        # Gauge fix (2026-07-24): WHY Layer-1a driver linearization did or
+        # didn't run — the JS renderer maps this enum to plain language
+        # (mirrors how it already maps "polarity" below).
+        "linearization_outcome": str(candidate.get("linearization_outcome") or ""),
+        # Gauge fix (2026-07-24): per-role top-octave deficits.
+        "linearization_octaves": _linearization_octave_rows(
+            candidate.get("linearization_octaves")
+        ),
     }
     # A candidate with nothing displayable (no trims, no alignment) stays
     # hidden rather than rendering an empty card.
@@ -180,6 +227,39 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     hi = _finite(evidence.get("tracking_band_hi_hz"))
     if lo is not None and hi is not None:
         lines.append(f"checked {lo:.0f}–{hi:.0f} Hz")
+    return lines
+
+
+def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
+    """Gauge fix (2026-07-24): the flatness-verify report-only numbers,
+    distinctly labeled from :func:`_verify_expert_details`'s integration-verify
+    lines above — that claim answers "did the crossover integrate as
+    predicted" (gates); this one answers "how far from flat is the summed
+    response, validity-floor to 16 kHz" (report-only, never a gate). Shown
+    regardless of pass/fail (see ``persist_conductor_state``'s own comment
+    on why flatness is persisted on every outcome). Empty when the
+    conductor persisted no flatness evidence (no usable validity floor this
+    capture, or no VERIFY capture yet)."""
+    flatness = _mapping(_mapping(_v2(status).get("verify")).get("flatness"))
+    if not flatness:
+        return []
+    lines: list[str] = []
+    max_db = _finite(flatness.get("max_db"))
+    tolerance_db = _finite(flatness.get("tolerance_db"))
+    if max_db is not None and tolerance_db is not None:
+        lines.append(
+            f"flatness {max_db:.2f} dB from flat "
+            f"(report-only; target {tolerance_db:.1f} dB, not yet enforced)"
+        )
+    elif max_db is not None:
+        lines.append(f"flatness {max_db:.2f} dB from flat (report-only)")
+    rms_db = _finite(flatness.get("rms_db"))
+    if rms_db is not None:
+        lines.append(f"flatness average error {rms_db:.2f} dB")
+    lo = _finite(flatness.get("band_lo_hz"))
+    hi = _finite(flatness.get("band_hi_hz"))
+    if lo is not None and hi is not None:
+        lines.append(f"flatness checked {lo:.0f}–{hi:.0f} Hz")
     return lines
 
 
@@ -341,7 +421,11 @@ def _verify_fail_envelope(
             },
         ],
         status=status,
-        expert_details=_verify_expert_details(status),
+        # Gauge fix (2026-07-24): the flatness lines are a SIBLING claim to
+        # the integration-verify numbers above, distinctly labeled — both
+        # travel in the same collapsed disclosure since this screen only
+        # has the one "Expert details" mechanism.
+        expert_details=_verify_expert_details(status) + _flatness_details_lines(status),
     )
 
 
@@ -645,6 +729,14 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             ),
             status=status,
             candidate_review=_candidate_review_payload(candidate or None),
+            # Gauge fix (2026-07-24): the flatness numbers previously never
+            # reached this screen at all — a household could watch "Your
+            # speaker is tuned" (a PASS) with no visibility into how far
+            # from flat the summed response actually was. Report-only, so
+            # it rides the same collapsed disclosure as the integration
+            # numbers would on a fail — this screen has none of those (a
+            # PASS never showed verify_evidence, unchanged by this fix).
+            expert_details=_flatness_details_lines(status),
         )
         # Terminal: mark every step done.
         env["steps"] = _step_payload("", set(_STEP_IDS))

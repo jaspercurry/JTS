@@ -738,6 +738,40 @@ def _verify_evidence_from_tracking(
     }
 
 
+def _flatness_evidence_from_tracking(
+    flatness: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Gauge fix (2026-07-24): the flatness-verify report-only numbers,
+    mirroring :func:`_verify_evidence_from_tracking`'s shape for the SIBLING
+    flatness claim (see ``program_analysis.FLATNESS_VERIFY_HI_HZ``'s own
+    comment — never folded into the integration-verify evidence above).
+    Unlike ``verify_evidence``, this is meant to be persisted and shown
+    REGARDLESS of pass/fail: it is the number that answers "how far from
+    flat is the summed response", independent of whether the crossover
+    integrated as predicted. Returns None when ``flatness`` carries no
+    usable max (e.g. this capture had no usable validity floor)."""
+    if not flatness:
+        return None
+    max_db = flatness.get("max_db")
+    if not isinstance(max_db, (int, float)):
+        return None
+    rms_db = flatness.get("rms_db")
+    band = flatness.get("band_hz")
+    lo = hi = None
+    if isinstance(band, (list, tuple)) and len(band) == 2:
+        lo, hi = band
+    tolerance_db = flatness.get("tolerance_db")
+    return {
+        "max_db": float(max_db),
+        "rms_db": float(rms_db) if isinstance(rms_db, (int, float)) else None,
+        "band_lo_hz": float(lo) if isinstance(lo, (int, float)) else None,
+        "band_hi_hz": float(hi) if isinstance(hi, (int, float)) else None,
+        "tolerance_db": (
+            float(tolerance_db) if isinstance(tolerance_db, (int, float)) else None
+        ),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # diagnostic-logging helpers (Part 1 — additive; feed no verdict)
 # --------------------------------------------------------------------------- #
@@ -1153,6 +1187,12 @@ class CrossoverV2Conductor:
         # verdicts (locate/agc/gate/level-shift) leave it None so no half-empty
         # disclosure renders.
         self._verify_evidence: dict[str, Any] | None = None
+        # Gauge fix (2026-07-24): the flatness-verify report-only numbers
+        # (#1668 PR-D), stashed the SAME moment as ``_verify_evidence``
+        # above but never gated on pass/fail — see
+        # ``_flatness_evidence_from_tracking``'s own docstring for why this
+        # must be visible on a PASS too, not just the verify_fail screen.
+        self._flatness_evidence: dict[str, Any] | None = None
         self._last_failure_code: str | None = None
         # G3 (measurement-honesty gate, 2026-07-22): the FIRST usable VERIFY
         # attempt's per-role pilot transfer becomes the reference every LATER
@@ -1364,6 +1404,13 @@ class CrossoverV2Conductor:
     def verify_evidence(self) -> dict[str, Any] | None:
         """The verify_fail expert-disclosure numbers (#1605), or None."""
         return dict(self._verify_evidence) if self._verify_evidence else None
+
+    @property
+    def flatness_evidence(self) -> dict[str, Any] | None:
+        """Gauge fix (2026-07-24): the flatness-verify report-only numbers
+        (#1668 PR-D), or None. Distinct from ``verify_evidence`` — this
+        SIBLING claim never gates and is set on both PASS and FAIL."""
+        return dict(self._flatness_evidence) if self._flatness_evidence else None
 
     @property
     def applied(self) -> bool:
@@ -1775,6 +1822,10 @@ class CrossoverV2Conductor:
         # comparison below carries expert-disclosure evidence (#1605); the
         # early returns must not surface a prior attempt's numbers.
         self._verify_evidence = None
+        # Gauge fix (2026-07-24): same reset discipline for the flatness
+        # SIBLING stash — an early return here must not leave a PRIOR
+        # attempt's flatness number visible for THIS attempt.
+        self._flatness_evidence = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.linearity_ok is False:
@@ -1820,6 +1871,14 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
+        # Gauge fix (2026-07-24): stash the flatness-verify report-only
+        # numbers the SAME moment as verify_evidence above, on every VERIFY
+        # attempt that reaches here — never gated on the pass/fail decided
+        # below, so persist_conductor_state can show it regardless of
+        # outcome (see _flatness_evidence_from_tracking's own docstring).
+        self._flatness_evidence = _flatness_evidence_from_tracking(
+            analysis.flatness_tracking
+        )
         # Flatness-verify (#1668 PR-D): a SIBLING report, relayed alongside
         # integration-verify's own tracking on BOTH branches below. Never
         # consulted by accepted/code — see FLATNESS_VERIFY_HI_HZ's own
@@ -2173,6 +2232,12 @@ class CrossoverV2Conductor:
             role_attenuations_db=role_attenuations_db,
             alignment=alignment,
             linearization=linearization,
+            # Gauge fix (2026-07-24): the single writer's own verdict,
+            # stamped verbatim onto the candidate at the exact moment it
+            # reaches its final value for this attempt — see
+            # MeasuredCrossoverCandidate.linearization_outcome's own
+            # docstring for why this module never re-derives it.
+            linearization_outcome=self._last_linearization_outcome,
         )
 
     def _linearization_eligible(self, analysis: ProgramAnalysis) -> bool:

@@ -728,6 +728,42 @@ def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
     }
 
 
+def _finite(value: Any) -> float | None:
+    """Mirrors ``crossover_envelope_v2._finite``'s exact guard (reject
+    bool, reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review
+    follow-up): this module and that one stay symmetric about what counts
+    as a displayable number, rather than one layer trusting a raw
+    ``float(v)`` the other layer would refuse."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
+    """Gauge fix (2026-07-24): per-role OBSERVE-layer octave deficits
+    (``LinearizationFit.observe_octave_summary`` — already computed by the
+    fit engine, achieved-minus-target dB at each octave center), read
+    straight off the live candidate's own rich ``linearization`` dict. Empty
+    for a role whose fit never ran (ineligible/fit_failed/no fit) — nothing
+    to disclose."""
+    out: dict[str, dict[str, float]] = {}
+    for role, fit in (linearization or {}).items():
+        if not isinstance(fit, Mapping):
+            continue
+        octaves = fit.get("observe_octave_summary")
+        if not isinstance(octaves, Mapping) or not octaves:
+            continue
+        role_octaves: dict[str, float] = {}
+        for hz, value in octaves.items():
+            db = _finite(value)
+            if db is not None:
+                role_octaves[str(hz)] = db
+        if role_octaves:
+            out[str(role)] = role_octaves
+    return out
+
+
 def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
     if candidate is None:
         return None
@@ -744,6 +780,15 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # RESULT-screen expert disclosure only (crossover_envelope_v2
         # ._candidate_review_payload's "ripple_db").
         "predicted_ripple_db": analysis.get("predicted_ripple_db"),
+        # Gauge fix (2026-07-24): WHY Layer-1a driver linearization did or
+        # didn't run this attempt — "" / "fitted" / "trim_rejected" /
+        # "ineligible_mic_tier" / "ineligible_repeats" / "fit_failed".
+        "linearization_outcome": str(
+            getattr(candidate, "linearization_outcome", "") or ""
+        ),
+        # Gauge fix (2026-07-24): per-role top-octave deficits (the number
+        # that says "the top octave is 9 dB down and nothing corrected it").
+        "linearization_octaves": _candidate_octave_summary(candidate.linearization),
     }
 
 
@@ -772,6 +817,18 @@ def persist_conductor_state(
                 **(
                     {"evidence": dict(conductor.verify_evidence)}
                     if (verify_outcome != "pass" and conductor.verify_evidence)
+                    else {}
+                ),
+                # Gauge fix (2026-07-24): the flatness-verify report-only
+                # numbers, persisted on EVERY outcome (pass or fail) —
+                # unlike "evidence" above, flatness is a SIBLING claim that
+                # never gates, so it must not disappear on a pass (that was
+                # the reported bug: a household could watch "VERIFY PASS"
+                # for weeks with no visibility into how far from flat the
+                # summed response actually was).
+                **(
+                    {"flatness": dict(conductor.flatness_evidence)}
+                    if conductor.flatness_evidence
                     else {}
                 ),
             }

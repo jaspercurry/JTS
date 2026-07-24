@@ -567,15 +567,27 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     }
   }
 
+  // Gauge fix (2026-07-24): "0deg"/"90deg" -> a household-legible degree
+  // symbol; "unknown" (or anything else unrecognized) renders nothing
+  // rather than a confusing "unknown orientation" — the honest common case
+  // for a manual upload with no declared orientation.
+  function orientationLabel(orientation) {
+    if (orientation === '0deg') return '0°';
+    if (orientation === '90deg') return '90°';
+    return null;
+  }
+
   function showCalibrationLoaded(payload) {
     selectedCalibrationMeta = payload.calibration || null;
     selectedCalibrationId = selectedCalibrationMeta ?
       selectedCalibrationMeta.calibration_id : null;
     if (!selectedCalibrationId) return;
     calibrationStatus.className = 'mic-status ok';
+    var orientation = orientationLabel(selectedCalibrationMeta.orientation);
     calibrationStatus.textContent =
       'Loaded ' + selectedCalibrationMeta.label + ' calibration (' +
-      selectedCalibrationMeta.point_count + ' points).';
+      selectedCalibrationMeta.point_count + ' points' +
+      (orientation ? ', ' + orientation + ' orientation' : '') + ').';
     if (payload.preview && payload.preview.freqs_hz) {
       var n = payload.preview.freqs_hz.length;
       var f0 = payload.preview.freqs_hz[0];
