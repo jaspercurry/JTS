@@ -9,6 +9,24 @@
 # Scope note: Python CI consumes uv.lock, so Python dependency PRs must
 # update the lock alongside pyproject.toml. GitHub Actions and Rust crates
 # remain separate ecosystems below.
+#
+# Why every ecosystem is grouped: without `groups`, Dependabot raises one PR
+# per dependency per directory. The two cargo entries below share the same
+# crates (serde, serde_json, anyhow, libc), so a single weekly cycle fanned
+# out into 8+ near-identical Rust PRs — and with four ecosystems each allowed
+# 5 open PRs, up to 20 can land within seconds of each other. That happened
+# on 2026-07-21 20:24Z: eight dependabot runs were created inside 20 seconds
+# and saturated the 20-concurrent-job GitHub Actions ceiling, delaying their
+# own jobs by 137-559s. It is the only contention-driven CI queueing episode
+# in the measured window. Grouping collapses that weekly fan-out from ~16
+# open PRs to ~5 and removes the burst, at the cost of a broken bump making
+# its whole group's PR red (exclude that one package, or ask Dependabot to
+# split, when it happens).
+#
+# `groups` deliberately omits `applies-to`, which defaults to
+# "version-updates". SECURITY updates therefore stay ungrouped and keep
+# arriving as individual PRs — they are exempt from
+# open-pull-requests-limit and should not wait behind an unrelated bump.
 version: 2
 updates:
   - package-ecosystem: "uv"
@@ -16,21 +34,53 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    groups:
+      # Dependabot assigns a dependency to the FIRST group it matches, so
+      # this narrow group must precede the catch-all below. Dev tooling is
+      # split out because a ruff or mypy bump routinely requires source
+      # fixes (new lint rules, stricter inference) and `pyproject.toml`'s
+      # frozen suppression counts are asserted by
+      # tests/test_lint_contracts.py. Bundled with the runtime SDKs, one
+      # such bump would hold back an openai/google-genai/httpx security
+      # update behind unrelated lint work.
+      python-dev-tooling:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest*"
+      python-runtime:
+        patterns:
+          - "*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
+  # Both cargo entries pin the same shared crates, so each is grouped
+  # separately: Dependabot groups cannot span `updates` entries, and one
+  # PR per daemon keeps a red Cargo.lock scoped to the daemon that broke.
   - package-ecosystem: "cargo"
     directory: "/rust/jasper-fanin"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    groups:
+      jasper-fanin-crates:
+        patterns:
+          - "*"
 
   - package-ecosystem: "cargo"
     directory: "/rust/jasper-outputd"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    groups:
+      jasper-outputd-crates:
+        patterns:
+          - "*"
