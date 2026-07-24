@@ -947,9 +947,11 @@ until the round-trip exists, so 2a secretly dragged in the outputd rework.**
   enters the shared stream — each speaker's OWN replies mix locally,
   post-round-trip, pre-reference, which is exactly inv-A's tap requirement;
   `PROGRAM_DUCK` rides the same socket, so ducking is member-local too).
-  Because that lane is already post-DSP, outputd parses but deliberately
-  ignores `VOLUME_CONTEXT`; applying fanin's downstream-Camilla compensation
-  there would double-compensate assistant loudness.
+  Because that lane is already post-DSP, outputd consumes `VOLUME_CONTEXT`
+  through `MixStage::PostDsp`: it honors mute, the quiet-room envelope, and
+  live canonical changes while structurally treating downstream Camilla gain
+  as zero. Turn-start context is atomic in `PREPARE_ASSISTANT`; absent or
+  rejected context keeps the local post-DSP reply silent.
   Active endpoints deliberately do not arm that socket; they keep TTS on
   fan-in upstream of CamillaDSP, where it is split/protected by the active
   graph. Wireless sub followers are parked and keep outputd TTS unarmed so
@@ -2828,7 +2830,9 @@ deferred/unmeasured until the spike runs on hardware.)
 
 ---
 
-Last verified: 2026-07-16 (`JASPER_TTS_MIX_STAGE=post_dsp` ownership and the
+Last verified: 2026-07-24 (post-DSP outputd volume-context parity and its
+atomic turn-start fail-closed rule checked against the reconciled passive-member
+route; prior 2026-07-16 pass covered `JASPER_TTS_MIX_STAGE=post_dsp` ownership and the
 socket-only rolling-upgrade fail-closed rule rechecked against
 `jasper.multiroom.reconcile` and `jasper.tts_routing`; prior 2026-07-14
 active/dumb follower transition deny and local-source role ownership rechecked against

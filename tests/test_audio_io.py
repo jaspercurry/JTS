@@ -751,8 +751,8 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
             ),
         )
         assert child.recv(160) == (
-            b"VOLUME_CONTEXT -30.000 0.000 -42.340 0 123456\n"
-            b"PREPARE_ASSISTANT openai gpt-realtime-2 verse -42.34\n"
+            b"PREPARE_ASSISTANT openai gpt-realtime-2 verse -42.34 "
+            b"-30.000 0.000 -42.340 0 123456\n"
         )
         adapter.pause_content_meter()
         assert child.recv(128) == b"CONTENT_METER_PAUSE\n"

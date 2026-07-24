@@ -708,6 +708,29 @@ impl TtsMixer {
         self.metrics.mark_pending(self.pending_frames());
     }
 
+    fn apply_volume_context(&mut self, context: VolumeContext) {
+        if self.loudness.update_volume_context(context) {
+            self.metrics.mark_volume_context(context);
+            info!(
+                "event=fanin.volume_context canonical_db={:.1} downstream_db={:.1} tts_envelope_lufs={:.1} muted={} stamp_boot_ns={}",
+                context.canonical_db,
+                context.downstream_db,
+                context.tts_envelope_lufs,
+                context.muted,
+                context.stamp_boot_ns,
+            );
+        } else {
+            self.metrics.mark_volume_context_rejected();
+            warn!(
+                "event=fanin.volume_context_rejected reason=stale_or_invalid incoming_stamp_boot_ns={} accepted_stamp_boot_ns={}",
+                context.stamp_boot_ns,
+                self.loudness
+                    .current_volume_context()
+                    .map_or(0, |accepted| accepted.stamp_boot_ns),
+            );
+        }
+    }
+
     fn drain_commands(&mut self) {
         loop {
             let Ok(queued) = self.rx.try_recv() else {
@@ -823,7 +846,11 @@ impl TtsMixer {
                     model,
                     voice,
                     tts_envelope_lufs,
+                    volume_context,
                 } => {
+                    if let Some(context) = volume_context {
+                        self.apply_volume_context(context);
+                    }
                     self.loudness
                         .prepare_context(provider, model, voice, tts_envelope_lufs);
                     self.metrics.mark_loudness(
@@ -833,26 +860,7 @@ impl TtsMixer {
                     );
                 }
                 TtsCommand::VolumeContext(context) => {
-                    if self.loudness.update_volume_context(context) {
-                        self.metrics.mark_volume_context(context);
-                        info!(
-                            "event=fanin.volume_context canonical_db={:.1} downstream_db={:.1} tts_envelope_lufs={:.1} muted={} stamp_boot_ns={}",
-                            context.canonical_db,
-                            context.downstream_db,
-                            context.tts_envelope_lufs,
-                            context.muted,
-                            context.stamp_boot_ns,
-                        );
-                    } else {
-                        self.metrics.mark_volume_context_rejected();
-                        warn!(
-                            "event=fanin.volume_context_rejected reason=stale_or_invalid incoming_stamp_boot_ns={} accepted_stamp_boot_ns={}",
-                            context.stamp_boot_ns,
-                            self.loudness
-                                .current_volume_context()
-                                .map_or(0, |accepted| accepted.stamp_boot_ns),
-                        );
-                    }
+                    self.apply_volume_context(context);
                 }
                 TtsCommand::ContentMeterPause => {
                     self.content_meter_paused = true;
@@ -1595,6 +1603,7 @@ mod tests {
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
                 tts_envelope_lufs: -38.5,
+                volume_context: None,
             })
         );
         assert_eq!(
@@ -1765,6 +1774,7 @@ mod tests {
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
                 tts_envelope_lufs: -38.0,
+                volume_context: None,
             },
         })
         .unwrap();
@@ -1831,6 +1841,7 @@ mod tests {
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
                 tts_envelope_lufs: -30.0,
+                volume_context: None,
             },
             TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,
@@ -1853,6 +1864,7 @@ mod tests {
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
                 tts_envelope_lufs: -30.0,
+                volume_context: None,
             },
             TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,
@@ -1896,22 +1908,18 @@ mod tests {
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::VolumeContext(VolumeContext {
-                canonical_db: -30.0,
-                downstream_db: 0.0,
-                tts_envelope_lufs: -41.0,
-                muted: false,
-                stamp_boot_ns: 1,
-            }),
-        })
-        .unwrap();
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
             command: TtsCommand::PrepareAssistant {
                 provider: "openai".to_string(),
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
                 tts_envelope_lufs: -41.0,
+                volume_context: Some(VolumeContext {
+                    canonical_db: -30.0,
+                    downstream_db: 0.0,
+                    tts_envelope_lufs: -41.0,
+                    muted: false,
+                    stamp_boot_ns: 1,
+                }),
             },
         })
         .unwrap();
@@ -2009,6 +2017,7 @@ mod tests {
                 model: "m".to_string(),
                 voice: "v".to_string(),
                 tts_envelope_lufs: -41.0,
+                volume_context: None,
             },
         })
         .unwrap();
@@ -2093,6 +2102,7 @@ mod tests {
                 model: "m".to_string(),
                 voice: "v".to_string(),
                 tts_envelope_lufs: -41.0,
+                volume_context: None,
             },
             TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,
@@ -2217,6 +2227,7 @@ mod tests {
                 model: "m".to_string(),
                 voice: "v".to_string(),
                 tts_envelope_lufs: -41.0,
+                volume_context: None,
             },
             TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,

@@ -325,6 +325,10 @@ impl AssistantLoudness {
         self.current_volume_context
     }
 
+    pub fn clear_volume_context(&mut self) {
+        self.current_volume_context = None;
+    }
+
     pub fn clear_context(&mut self) {
         self.pending_context = None;
     }

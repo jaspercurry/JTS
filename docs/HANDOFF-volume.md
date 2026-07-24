@@ -305,10 +305,13 @@ older even if its socket write is delayed until after a newer update.
 The mute bit is fail-safe: persisted pre-mute intent, canonical 0%, or observed
 Camilla mute can raise it; a stale/unreadable observation can never lower user
 intent.
-Fan-in rejects a context older than the last accepted stamp. Voice sends the
-same standalone message immediately before `PREPARE_ASSISTANT` on one ordered
-connection, which gives a restarted fan-in a current snapshot without letting
-PREPARE overwrite a newer dial update.
+Fan-in rejects a context older than the last accepted stamp. At turn start,
+voice embeds the same five fields directly in `PREPARE_ASSISTANT`, so the
+identity and safety snapshot are one atomic command rather than two separately
+queued messages. The legacy four-field prepare still parses for rolling
+upgrades; fan-in can continue from its latest separately published context,
+while the post-DSP outputd consumer treats a missing or rejected turn-start
+context as silence.
 
 Slow push-mode actuators are ordered differently from local Camilla writes.
 For Spotify/Bluetooth, the coordinator publishes the already-known user intent
@@ -329,7 +332,8 @@ never mutate `downstream_db` to 0 (the post-DSP consumer's shared
 means the normal `pre_dsp` fan-in path only when there is no grouping-owned
 socket override. A legacy socket-only grouping file is ambiguous during a
 rolling upgrade and fails closed (neither pre-DSP nor post-DSP compensation is
-published). Callers use `tts_socket_feeds_pre_dsp_fanin()` /
+published, and outputd silences context-free prepares). Callers use
+`tts_socket_feeds_pre_dsp_fanin()` /
 `tts_socket_feeds_post_dsp_outputd()` rather than inferring stage from a socket
 pathname or duck transport. The message contains no source name or gain policy:
 source dispatch stays in `VolumeCoordinator`, while fan-in / outputd own
@@ -684,4 +688,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-07-23 (post-DSP outputd volume-context parity for #1547: the shared `AssistantLoudness` `MixStage` engine, the widened `tts_socket_feeds_post_dsp_outputd()` producer gate, and the never-mutate-downstream-to-0 wire contract checked against the branch; prior 2026-07-16 pass covered pre-DSP mix-stage ownership, stamped standalone volume context, quiet-room envelope tracking, and equal-level downstream republish against the PR #1542 implementation; prior pass covered fan-in/Camilla lock separation and mid-TTS adjustment; prior 2026-07-12 pass covered bounded CamillaDSP cancellation/retry; prior 2026-07-11 pass covered measurement-scoped reconciliation and STATUS observability)
+Last verified: 2026-07-24 (post-DSP turn-start context is atomic in `PREPARE_ASSISTANT`, and outputd fails closed to silence when that context is missing or rejected; prior 2026-07-23 pass covered the shared `AssistantLoudness` `MixStage` engine, post-DSP producer gate, and never-mutate-downstream-to-0 wire contract; prior 2026-07-16 pass covered pre-DSP mix-stage ownership, stamped standalone volume updates, quiet-room envelope tracking, and equal-level downstream republish against the PR #1542 implementation)

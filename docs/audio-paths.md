@@ -308,17 +308,15 @@ in `jasper-fanin`.
    before program ducking and before TTS is mixed, so the assistant
    baseline tracks the renderer content level rather than the temporary
    ducked level.
-2. At wake turn start, `jasper-voice` writes a standalone
-   `VOLUME_CONTEXT` immediately before `PREPARE_ASSISTANT` on the same ordered
-   connection. The context is absolute: canonical user dB, downstream Camilla
+2. At wake turn start, `jasper-voice` embeds `VOLUME_CONTEXT` directly in
+   `PREPARE_ASSISTANT`, making the safety snapshot and assistant identity one
+   atomic command. The context is absolute: canonical user dB, downstream Camilla
    dB, the quiet-room `tts_envelope(listening_level)` target, mute, and a
    `CLOCK_BOOTTIME` nanosecond stamp captured at snapshot acquisition and
-   carried unchanged through publication. Fan-in rejects a stamp older than
-   the latest accepted one. PREPARE then supplies only the
-   active provider/model/voice and conservative envelope target; it cannot
-   overwrite a newer dial publisher. Treating the envelope as a speaker target
-   is load-bearing: fan-in subtracts downstream attenuation before gain
-   calculation, so Camilla cannot attenuate the target twice.
+   carried unchanged through publication. Separately published live updates
+   retain the standalone `VOLUME_CONTEXT` command. Treating the envelope as a
+   speaker target is load-bearing: fan-in subtracts downstream attenuation
+   before gain calculation, so Camilla cannot attenuate the target twice.
 3. The mix owner snapshots the current content loudness before ducking,
    then ignores content-meter updates while the voice turn or correction
    measurement window is active.
@@ -387,14 +385,12 @@ in `jasper-fanin`.
    candidate, and any muted rendered frame disqualifies the whole segment:
    interrupted/unheard tails, mute, cues, and chirps never train the record.
 
-The passive bonded-member route is explicitly outside this parity claim. Its
-grouping env sets `JASPER_TTS_MIX_STAGE=post_dsp`, and voice/coordinator send no
-pre-DSP `VOLUME_CONTEXT` to outputd. Outputd continues the pre-volume-context
-post-round-trip behavior until
-[Outputd post-DSP assistant-volume parity](https://github.com/jaspercurry/JTS/issues/1547)
-gives gain policy an explicit mix-stage input and adds mute plus live re-gain
-in outputd's mix loop. Do not reuse fan-in's
-`- downstream_db` algebra at a post-DSP mixer.
+The passive bonded-member route sets `JASPER_TTS_MIX_STAGE=post_dsp` and uses
+the same absolute context with `MixStage::PostDsp`. Outputd structurally treats
+`downstream_db` as zero, because its assistant mix is already after CamillaDSP;
+reusing fan-in's `- downstream_db` algebra there would double-compensate.
+Outputd honors mute and live re-gain, and fails closed to silence when an
+atomic turn-start context is missing or rejected.
 
 Python owns only provider source profiles:
 
@@ -711,7 +707,9 @@ fan-in output `hw:Loopback,1,7` before CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-07-22 (source-preemption ownership, AirPlay
+Last verified: 2026-07-24 (atomic turn-start volume context and outputd's
+missing/rejected-context silence rule checked against both Rust consumers and
+the Python transport. Prior 2026-07-22: source-preemption ownership, AirPlay
 receiver-session cleanup ordering, compatibility fallback, and failure
 semantics rechecked against `jasper/mux.py` and mux contract tests. Prior
 2026-07-16: pre-DSP loudness ownership, stamped FIFO volume state, gentle-envelope offset learning, music-reference expiry, drained-before-end commit, and passive outputd scope checked against PR #1542; prior pass covered assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning

@@ -142,6 +142,7 @@ pub enum TtsCommand {
         model: String,
         voice: String,
         tts_envelope_lufs: f32,
+        volume_context: Option<VolumeContext>,
     },
     VolumeContext(VolumeContext),
     ContentMeterPause,
@@ -382,12 +383,59 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                 "missing PREPARE_ASSISTANT silence target",
             )
         })?;
-        if parts.next().is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "PREPARE_ASSISTANT expects exactly four arguments",
-            ));
-        }
+        let volume_context = match parts.next() {
+            None => None,
+            Some(canonical_db) => {
+                let downstream_db = parts.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "missing PREPARE_ASSISTANT downstream dB",
+                    )
+                })?;
+                let context_tts_envelope_lufs = parts.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "missing PREPARE_ASSISTANT context silence target",
+                    )
+                })?;
+                let muted = parts.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "missing PREPARE_ASSISTANT mute")
+                })?;
+                let stamp_boot_ns = parts.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "missing PREPARE_ASSISTANT context stamp",
+                    )
+                })?;
+                if parts.next().is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "PREPARE_ASSISTANT expects four or nine arguments",
+                    ));
+                }
+                Some(VolumeContext {
+                    canonical_db: parse_required_f32(
+                        canonical_db,
+                        "PREPARE_ASSISTANT canonical dB",
+                    )?,
+                    downstream_db: parse_required_f32(
+                        downstream_db,
+                        "PREPARE_ASSISTANT downstream dB",
+                    )?,
+                    tts_envelope_lufs: parse_required_f32(
+                        context_tts_envelope_lufs,
+                        "PREPARE_ASSISTANT context silence target",
+                    )?,
+                    muted: parse_bool_token(muted, "PREPARE_ASSISTANT mute")?,
+                    stamp_boot_ns: stamp_boot_ns.parse::<u64>().map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid PREPARE_ASSISTANT context stamp",
+                        )
+                    })?,
+                })
+            }
+        };
         validate_token(provider, "PREPARE_ASSISTANT provider")?;
         validate_token(model, "PREPARE_ASSISTANT model")?;
         validate_token(voice, "PREPARE_ASSISTANT voice")?;
@@ -399,6 +447,7 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
                 tts_envelope,
                 "PREPARE_ASSISTANT silence target",
             )?,
+            volume_context,
         }));
     }
     Err(io::Error::new(
@@ -536,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_accepts_stamped_volume_context_and_separate_prepare() {
+    fn parser_accepts_stamped_volume_context_and_legacy_prepare() {
         let cmds = parse_all(
             b"VOLUME_CONTEXT -36.4 -36.4 -45.2 0 123456\nPREPARE_ASSISTANT openai m v -45.2\n",
         );
@@ -552,12 +601,39 @@ mod tests {
         );
         match &cmds[1] {
             TtsCommand::PrepareAssistant {
-                tts_envelope_lufs, ..
+                tts_envelope_lufs,
+                volume_context,
+                ..
             } => {
                 assert_eq!(*tts_envelope_lufs, -45.2);
+                assert_eq!(*volume_context, None);
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn parser_accepts_atomic_prepare_volume_context() {
+        let mut reader = Cursor::new(
+            b"PREPARE_ASSISTANT openai m v -45.2 -36.4 -36.4 -45.2 1 123456\n".to_vec(),
+        );
+
+        assert_eq!(
+            read_command(&mut reader).unwrap(),
+            Some(TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "m".to_string(),
+                voice: "v".to_string(),
+                tts_envelope_lufs: -45.2,
+                volume_context: Some(VolumeContext {
+                    canonical_db: -36.4,
+                    downstream_db: -36.4,
+                    tts_envelope_lufs: -45.2,
+                    muted: true,
+                    stamp_boot_ns: 123456,
+                }),
+            })
+        );
     }
 
     #[test]

@@ -24,9 +24,11 @@
 //! socket path per grouping role. The wire layer itself (command
 //! vocabulary + `read_command` parser) lives ONCE in the shared
 //! `jasper-tts-protocol` crate, imported by both daemons — the twins
-//! structurally cannot drift when the protocol grows. Outputd deliberately
-//! parses but ignores VOLUME_CONTEXT because its lane is post-DSP; applying
-//! fan-in's downstream-Camilla compensation there would double-compensate.
+//! structurally cannot drift when the protocol grows. Outputd interprets
+//! `VOLUME_CONTEXT` with a post-DSP mix stage: it honors mute and live
+//! canonical-volume changes while structurally zeroing Camilla's downstream
+//! compensation. `PREPARE_ASSISTANT` carries the turn-start context atomically;
+//! a missing or rejected context leaves post-DSP speech silent.
 //!
 //! ## What is NOT duplicated: the engine
 //!
@@ -533,7 +535,37 @@ impl TtsBridge {
                     model,
                     voice,
                     tts_envelope_lufs,
+                    volume_context,
                 } => {
+                    let context_ready = match volume_context {
+                        Some(context) if core.update_volume_context(context) => {
+                            eprintln!(
+                                "event=outputd.volume_context canonical_db={:.1} downstream_db={:.1} tts_envelope_lufs={:.1} muted={} stamp_boot_ns={} source=prepare",
+                                context.canonical_db,
+                                context.downstream_db,
+                                context.tts_envelope_lufs,
+                                context.muted,
+                                context.stamp_boot_ns,
+                            );
+                            true
+                        }
+                        Some(context) => {
+                            eprintln!(
+                                "event=outputd.volume_context_rejected reason=stale_or_invalid incoming_stamp_boot_ns={} action=fail_closed",
+                                context.stamp_boot_ns,
+                            );
+                            false
+                        }
+                        None => {
+                            eprintln!(
+                                "event=outputd.volume_context_unavailable reason=prepare_without_context action=fail_closed"
+                            );
+                            false
+                        }
+                    };
+                    if !context_ready {
+                        core.clear_volume_context();
+                    }
                     core.prepare_assistant_context(provider, model, voice, tts_envelope_lufs);
                 }
                 TtsCommand::VolumeContext(context) => {
@@ -656,6 +688,23 @@ mod tests {
         send(
             &tx,
             0,
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                tts_envelope_lufs: -41.0,
+                volume_context: Some(jasper_tts_protocol::VolumeContext {
+                    canonical_db: -30.0,
+                    downstream_db: -30.0,
+                    tts_envelope_lufs: -41.0,
+                    muted: false,
+                    stamp_boot_ns: 1,
+                }),
+            },
+        );
+        send(
+            &tx,
+            0,
             TtsCommand::SegmentStart {
                 kind: SegmentKind::Assistant,
                 provider_item_id: Some("item-9".into()),
@@ -674,6 +723,61 @@ mod tests {
         assert!(
             written.iter().all(|&s| s > 100),
             "assistant missing: {written:?}"
+        );
+    }
+
+    #[test]
+    fn prepare_without_volume_context_clears_prior_context_and_stays_silent() {
+        let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
+        send(
+            &tx,
+            0,
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                tts_envelope_lufs: -41.0,
+                volume_context: Some(jasper_tts_protocol::VolumeContext {
+                    canonical_db: -30.0,
+                    downstream_db: -30.0,
+                    tts_envelope_lufs: -41.0,
+                    muted: false,
+                    stamp_boot_ns: 1,
+                }),
+            },
+        );
+        bridge.drain(&mut core);
+        assert!(core.current_volume_context().is_some());
+
+        send(
+            &tx,
+            0,
+            TtsCommand::PrepareAssistant {
+                provider: "openai".to_string(),
+                model: "gpt-realtime-2".to_string(),
+                voice: "marin".to_string(),
+                tts_envelope_lufs: -41.0,
+                volume_context: None,
+            },
+        );
+        send(
+            &tx,
+            0,
+            TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("missing-context".into()),
+                profile: None,
+            },
+        );
+        send(&tx, 0, TtsCommand::Audio(vec![4000i16; 8]));
+        bridge.drain(&mut core);
+        assert_eq!(core.current_volume_context(), None);
+
+        core.push_content_period(vec![0i16; 8]);
+        core.step();
+        assert!(
+            core.dac().periods[0].iter().all(|&sample| sample == 0),
+            "post-DSP speech must fail closed without a turn-start context"
         );
     }
 
@@ -701,22 +805,18 @@ mod tests {
         send(
             tx,
             0,
-            TtsCommand::VolumeContext(jasper_tts_protocol::VolumeContext {
-                canonical_db,
-                downstream_db,
-                tts_envelope_lufs: -41.0,
-                muted: false,
-                stamp_boot_ns: 1,
-            }),
-        );
-        send(
-            tx,
-            0,
             TtsCommand::PrepareAssistant {
                 provider: "openai".to_string(),
                 model: "gpt-realtime-2".to_string(),
                 voice: "marin".to_string(),
                 tts_envelope_lufs: -41.0,
+                volume_context: Some(jasper_tts_protocol::VolumeContext {
+                    canonical_db,
+                    downstream_db,
+                    tts_envelope_lufs: -41.0,
+                    muted: false,
+                    stamp_boot_ns: 1,
+                }),
             },
         );
         send(

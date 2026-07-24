@@ -410,6 +410,10 @@ impl OutputCore {
         self.loudness.current_volume_context()
     }
 
+    pub fn clear_volume_context(&mut self) {
+        self.loudness.clear_volume_context();
+    }
+
     /// Arm the persistence sink for the learned quiet-room assistant reference.
     /// The daemon spawns the writer thread and hands its sender here; the fake
     /// developer/test path leaves it unset (learned references are dropped).
@@ -532,9 +536,14 @@ mod tests {
         vec![value; frames * (CHANNELS as usize)]
     }
 
+    fn authorize_unmuted_assistant(core: &mut OutputCore) {
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+    }
+
     #[test]
     fn step_mixes_content_and_assistant_and_advances_reference_sequence() {
         let mut core = OutputCore::new(4);
+        authorize_unmuted_assistant(&mut core);
         core.push_content_period(stereo(10_000, 4));
         core.enqueue_assistant_segment(
             Some("item-1".to_string()),
@@ -553,6 +562,7 @@ mod tests {
     #[test]
     fn step_reports_clipping_and_preserves_sequence_numbers() {
         let mut core = OutputCore::new(2);
+        authorize_unmuted_assistant(&mut core);
         core.push_content_period(stereo(30_000, 2));
         core.enqueue_assistant_segment(None, SegmentKind::Cue, 12.0, stereo(30_000, 2));
 
@@ -567,6 +577,7 @@ mod tests {
     #[test]
     fn outputd_uses_loudness_decided_assistant_gain_before_mixing() {
         let mut core = OutputCore::new(2);
+        authorize_unmuted_assistant(&mut core);
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
@@ -612,6 +623,7 @@ mod tests {
     #[test]
     fn prepare_does_not_publish_or_mark_playout_until_commit() {
         let mut core = OutputCore::new(2);
+        authorize_unmuted_assistant(&mut core);
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
