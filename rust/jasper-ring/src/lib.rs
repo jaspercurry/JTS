@@ -187,7 +187,10 @@ pub use layout::{
     Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MIN_N_SLOTS, SAMPLE_FORMAT_S16LE,
     SAMPLE_FORMAT_S32LE, VERSION,
 };
-pub use writer::{PublishOutcome, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS};
+pub use writer::{
+    PublishOutcome, ReaderLiveness, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS,
+    STUCK_READER_GRACE_NS,
+};
 
 /// Result of a single non-blocking [`RingReader::try_consume_slot`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1120,7 +1123,11 @@ fn is_owned_ring_path(path: &str) -> bool {
     std::path::Path::new(path).parent() == Some(std::path::Path::new("/dev/shm/jts-ring"))
 }
 
-fn monotonic_ns() -> u64 {
+/// `CLOCK_MONOTONIC` nanoseconds — the single monotonic source both ring halves
+/// (and the fan-in mixer's stall tracker, which reads it via this re-export)
+/// stamp against. Public so the mixer's edge-triggered stall event uses the same
+/// clock the writer's `last_read_seq_advance_ns` is stamped with.
+pub fn monotonic_ns() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,

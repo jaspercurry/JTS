@@ -31,6 +31,7 @@ from jasper.audio_measurement.program import (
     KIND_SILENCE,
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
+    MEASURE_SWEEP_F_HI_HZ,
     MESM_GAP_FLOOR_S,
     PHASE_CHECK,
     PHASE_MEASURE,
@@ -111,37 +112,107 @@ def test_check_gaps_are_at_least_half_second():
 # --------------------------------------------------------------------------- #
 
 
-def test_measure_program_layout_repeat_bit_identical():
+def test_measure_program_layout_is_n3_interleaved_repeats_bit_identical():
+    """Sweep-composition PR-A (#1668): the default program (N=3, no explicit
+    ``repeat_count``) is the fully interleaved w1,t1,w2,t2,w3,t3 shape, and
+    EVERY later occurrence of a driver is a bit-identical stimulus to that
+    driver's first occurrence — not just the woofer, as before."""
     prog = build_measure_program(
         _gain_plan(), _roles(), sweep_durations={"woofer": 0.6, "tweeter": 0.5},
     )
     assert prog.phase == PHASE_MEASURE
     assert prog.channels == 2
     ids = [s.segment_id for s in prog.segments]
-    assert ids == ["guard", "sweep_w", "gap_w_t", "sweep_t", "gap_t_w", "sweep_w_rep", "tail"]
+    assert ids == [
+        "guard",
+        "sweep_w", "gap_w_t", "sweep_t", "gap_t_w",
+        "sweep_w_rep", "gap_w_t_rep", "sweep_t_rep", "gap_t_w_rep",
+        "sweep_w_rep2", "gap_w_t_rep2", "sweep_t_rep2",
+        "tail",
+    ]
 
     sweep_w = prog.segment("sweep_w")
-    sweep_rep = prog.segment("sweep_w_rep")
-    # The repeat is a bit-identical stimulus (same band/duration/gain).
-    assert sweep_rep.n_samples == sweep_w.n_samples
-    assert sweep_rep.f1_hz == sweep_w.f1_hz and sweep_rep.f2_hz == sweep_w.f2_hz
-    assert sweep_rep.gain_db == sweep_w.gain_db
-    assert np.array_equal(segment_stimulus(sweep_w), segment_stimulus(sweep_rep))
-    # Woofer on ch0, tweeter on ch1.
-    assert sweep_w.channel == 0
-    assert prog.segment("sweep_t").channel == 1
+    sweep_t = prog.segment("sweep_t")
+    for w_rep_id, t_rep_id in (("sweep_w_rep", "sweep_t_rep"), ("sweep_w_rep2", "sweep_t_rep2")):
+        w_rep = prog.segment(w_rep_id)
+        t_rep = prog.segment(t_rep_id)
+        assert w_rep.n_samples == sweep_w.n_samples
+        assert w_rep.f1_hz == sweep_w.f1_hz and w_rep.f2_hz == sweep_w.f2_hz
+        assert w_rep.gain_db == sweep_w.gain_db
+        assert np.array_equal(segment_stimulus(sweep_w), segment_stimulus(w_rep))
+        assert t_rep.n_samples == sweep_t.n_samples
+        assert t_rep.f1_hz == sweep_t.f1_hz and t_rep.f2_hz == sweep_t.f2_hz
+        assert t_rep.gain_db == sweep_t.gain_db
+        assert np.array_equal(segment_stimulus(sweep_t), segment_stimulus(t_rep))
+    # Woofer on ch0, tweeter on ch1 — every occurrence, not just the first.
+    for seg_id in ("sweep_w", "sweep_w_rep", "sweep_w_rep2"):
+        assert prog.segment(seg_id).channel == 0
+    for seg_id in ("sweep_t", "sweep_t_rep", "sweep_t_rep2"):
+        assert prog.segment(seg_id).channel == 1
+
+
+def test_measure_repeat_count_is_configurable():
+    # repeat_count=1: one cycle, no repeats at all — a degenerate but valid
+    # composition (distinct from the pre-#1668 asymmetric "woofer repeats
+    # once, tweeter never" shape, which no longer exists as any repeat_count
+    # value: this composer is symmetric by construction).
+    prog = build_measure_program(_gain_plan(), _roles(), repeat_count=1)
+    assert [s.segment_id for s in prog.segments] == [
+        "guard", "sweep_w", "gap_w_t", "sweep_t", "tail",
+    ]
+    with pytest.raises(ValueError):
+        build_measure_program(_gain_plan(), _roles(), repeat_count=0)
 
 
 def test_measure_sweeps_band_limited_to_measurement_window():
     prog = build_measure_program(_gain_plan(), _roles())
-    # Tweeter declared band [300, 20000] ∩ [150, 20000] = [300, 20000].
+    # Tweeter declared band [300, 20000] ∩ [150, 23000] = [300, 20000].
     sweep_t = prog.segment("sweep_t")
     assert sweep_t.f1_hz == pytest.approx(300.0)
     assert sweep_t.f2_hz == pytest.approx(20000.0)
-    # Woofer declared band [150, 6000] ∩ [150, 20000] = [150, 6000].
+    # Woofer declared band [150, 6000] ∩ [150, 23000] = [150, 6000].
     sweep_w = prog.segment("sweep_w")
     assert sweep_w.f1_hz == pytest.approx(150.0)
     assert sweep_w.f2_hz == pytest.approx(6000.0)
+
+
+def test_measure_sweep_window_widened_to_23khz():
+    """Sweep-composition PR-A (#1668): a driver band topping above the OLD
+    20 kHz ceiling now composes up to the new 23 kHz one. A fixture topping
+    at exactly 20 000 would false-pass against the old ceiling too, so this
+    uses 23 500 — comfortably above 20 kHz and only clamped by the NEW window."""
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(300.0, 23_500.0)),
+    ]
+    prog = build_measure_program(_gain_plan(), roles)
+    sweep_t = prog.segment("sweep_t")
+    assert sweep_t.f2_hz == pytest.approx(23_000.0)
+
+
+def test_measure_sweep_ceiling_constant_is_in_lockstep_with_test_signal_plan():
+    """The desync trap named by the scoping pass: MEASURE_SWEEP_F_HI_HZ and
+    test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ name the SAME "no driver
+    test signal goes above this" global ceiling and must move together."""
+    from jasper.active_speaker.test_signal_plan import MAX_DRIVER_TEST_FREQUENCY_HZ
+
+    assert MEASURE_SWEEP_F_HI_HZ == MAX_DRIVER_TEST_FREQUENCY_HZ
+
+
+def test_measure_composer_raises_clear_error_if_ceiling_ever_exceeded_nyquist(monkeypatch):
+    """Defense in depth (design item 4): MEASURE_SWEEP_F_HI_HZ is always
+    < Nyquist today, so this can't fire in production — but if a future edit
+    ever raised the ceiling past Nyquist without noticing, the composer must
+    fail with ITS OWN clear error rather than the sweep kernel's deep raise."""
+    monkeypatch.setattr(
+        "jasper.audio_measurement.program.MEASURE_SWEEP_F_HI_HZ", 25_000.0,
+    )
+    roles = [
+        RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+        RoleBand("tweeter", 1, FrequencyBand(300.0, 30_000.0)),
+    ]
+    with pytest.raises(ValueError, match="Nyquist"):
+        build_measure_program(_gain_plan(), roles)
 
 
 def test_measure_requires_two_drivers_and_all_gains():

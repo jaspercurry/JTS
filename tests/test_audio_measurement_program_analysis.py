@@ -36,10 +36,19 @@ from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import deconv, program_analysis
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
+    KIND_SWEEP,
+    PHASE_MEASURE,
     RoleBand,
+    _finalize,
+    _occurrence_suffix,
+    _seconds_to_samples,
+    _silence,
+    _stimulus,
+    _sweep_meta,
     build_check_program,
     build_measure_program,
     build_verify_program,
+    mesm_gap_samples,
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
@@ -69,13 +78,14 @@ from jasper.audio_measurement.program_analysis import (
     _global_offset,
     _locate_segments,
     _n_fft_for,
-    _overlap_band_hz,
     _peak_dbfs,
     _predicted_sum,
     _ripple_db,
-    _solve_trims,
+    _sweep_occurrence_index,
     analysis_diagnostic_summary,
     analyze_program_capture,
+    overlap_band_hz,
+    solve_branch_trims,
 )
 
 SR = 48_000
@@ -349,6 +359,140 @@ def test_measure_no_drift_delay_is_tight():
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
     assert res.alignment.delay_us == pytest.approx(-tau_true / SR * 1e6, abs=5.0)
     assert res.drift.epsilon_ppm == pytest.approx(0.0, abs=2.0)
+
+
+# --------------------------------------------------------------------------- #
+# sweep-composition PR-A (#1668): N-repeat exposure + era tolerance
+# --------------------------------------------------------------------------- #
+
+
+def _build_old_shaped_measure_program():
+    """Hand-built replica of the PRE-#1668 ``build_measure_program`` output:
+    guard, sweep_w, gap_w_t, sweep_t, gap_t_w, sweep_w_rep, tail — the woofer
+    repeated once, the tweeter never repeated. The current composer can no
+    longer produce this asymmetric shape (it is symmetric by construction —
+    see ``program.build_measure_program``'s docstring), so era-tolerance
+    coverage for the NEW analysis reading an OLD-shaped program has to
+    construct it directly from the same primitives the old composer used.
+    """
+    woofer = RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0))
+    tweeter = RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0))
+    gain_plan = {"woofer": -11.0, "tweeter": -13.0}
+    w_dur, t_dur = 0.8, 0.6
+    w_f1, w_f2 = 150.0, 6000.0
+    t_f1, t_f2 = 300.0, 20000.0
+    w_meta = _sweep_meta(w_f1, w_f2, w_dur, gain_plan["woofer"])
+    t_meta = _sweep_meta(t_f1, t_f2, t_dur, gain_plan["tweeter"])
+
+    segments = []
+    cursor = 0
+    guard_n = _seconds_to_samples(2.0, SR)
+    segments.append(_silence("guard", cursor, guard_n))
+    cursor += guard_n
+
+    def _sw(seg_id, rb, f1, f2, dur):
+        return _stimulus(
+            segment_id=seg_id, kind=KIND_SWEEP, role=rb.role, channel=rb.channel,
+            start=cursor, f1_hz=f1, f2_hz=f2, duration_s=dur,
+            gain_db=gain_plan[rb.role], downstream_gain_db=0.0,
+        )
+
+    sweep_w = _sw("sweep_w", woofer, w_f1, w_f2, w_dur)
+    segments.append(sweep_w)
+    cursor += sweep_w.n_samples
+    gap_w = mesm_gap_samples(w_meta, ir_tail_s=0.5)
+    segments.append(_silence("gap_w_t", cursor, gap_w))
+    cursor += gap_w
+
+    sweep_t = _sw("sweep_t", tweeter, t_f1, t_f2, t_dur)
+    segments.append(sweep_t)
+    cursor += sweep_t.n_samples
+    gap_t = mesm_gap_samples(t_meta, ir_tail_s=0.5)
+    segments.append(_silence("gap_t_w", cursor, gap_t))
+    cursor += gap_t
+
+    sweep_w_rep = _sw("sweep_w_rep", woofer, w_f1, w_f2, w_dur)
+    segments.append(sweep_w_rep)
+    cursor += sweep_w_rep.n_samples
+
+    tail_n = _seconds_to_samples(0.5, SR)
+    segments.append(_silence("tail", cursor, tail_n))
+    cursor += tail_n
+
+    return _finalize(PHASE_MEASURE, 2, segments, cursor)
+
+
+def test_measure_repeat_responses_recover_the_primary_magnitude():
+    """Design item 7/8: every occurrence past a driver's first is deconvolved
+    + gated + TF'd and attached as ``repeat_responses`` on the primary — this
+    pins BOTH the count (N-1 repeats per driver at the N=3 default) and that
+    each repeat's recovered magnitude agrees with the primary within noise
+    tolerance (they are bit-identical stimuli through the SAME synthetic IR)."""
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert not res.glitch_detected
+    assert res.drift is not None
+    # Diagnostic-only per-role epsilon now covers the tweeter too (it repeats
+    # under N=3, unlike the pre-#1668 asymmetric shape).
+    assert set(res.drift.per_role_epsilon_ppm) == {"woofer", "tweeter"}
+
+    by_role = {resp.role: resp for resp in res.driver_responses}
+    assert set(by_role) == {"woofer", "tweeter"}
+    for role, resp in by_role.items():
+        assert resp.repeat_index is None  # primaries are never themselves a repeat
+        assert len(resp.repeat_responses) == 2  # N=3 ⇒ 2 repeats past the primary
+        assert [r.repeat_index for r in resp.repeat_responses] == [1, 2]
+        mask = (resp.freqs_hz > 500.0) & (resp.freqs_hz < 2000.0)
+        assert mask.any()
+        for repeat in resp.repeat_responses:
+            assert repeat.role == role
+            assert repeat.repeat_responses == ()  # a repeat never carries its own repeats
+            diff_db = np.abs(resp.magnitude_db[mask] - repeat.magnitude_db[mask])
+            assert float(diff_db.max()) < 0.5  # bit-identical stimuli, noise-level agreement
+
+
+def test_era_tolerance_old_shaped_program_analyzes_without_crash_or_version_flag():
+    """An old-shaped (pre-#1668) MEASURE program — woofer repeated once,
+    tweeter never — must still analyze cleanly through the NEW analysis: no
+    crash, no version flag, woofer gets exactly one repeat response, the
+    tweeter gets none."""
+    prog = _build_old_shaped_measure_program()
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert not res.glitch_detected
+    assert res.drift is not None
+    # Woofer-pair-only: the tweeter has just one located occurrence, so it
+    # contributes no per-role epsilon diagnostic (never a crash either way).
+    assert set(res.drift.per_role_epsilon_ppm) == {"woofer"}
+
+    by_role = {resp.role: resp for resp in res.driver_responses}
+    assert len(by_role["woofer"].repeat_responses) == 1
+    assert by_role["woofer"].repeat_responses[0].repeat_index == 1
+    assert by_role["tweeter"].repeat_responses == ()
+
+
+@pytest.mark.parametrize("n", [0, 1, 2, 5])
+def test_sweep_occurrence_index_round_trips_through_occurrence_suffix(n):
+    """Analysis-side ``_sweep_occurrence_index`` must invert composition-side
+    ``_occurrence_suffix`` exactly — the contract ``_sweep_occurrences_by_role``
+    relies on to group located sweeps by occurrence order rather than physical
+    schedule position under the N=3 interleaved MEASURE layout (design §5.4,
+    sweep-composition PR-A #1668)."""
+    assert _sweep_occurrence_index(f"sweep_w{_occurrence_suffix(n)}") == n
 
 
 # --------------------------------------------------------------------------- #
@@ -793,7 +937,7 @@ def test_snap_production_path_preserves_parallax_contract(
     # improvement is recorded but not constrained to be non-negative.
     assert result.candidate.flatness_improvement_db is not None
     responses = {response.role: response for response in result.driver_responses}
-    lo_hz, hi_hz = _overlap_band_hz(
+    lo_hz, hi_hz = overlap_band_hz(
         FC_HZ,
         tweeter_sweep_lo_hz=prog.segment("sweep_t").f1_hz,
         woofer_sweep_hi_hz=prog.segment("sweep_w").f2_hz,
@@ -1596,7 +1740,7 @@ def test_gating_consistent_candidate_removes_reflection_notch_end_to_end():
     # would fail the same ±1.5 dB VERIFY tolerance the run-7/8 bug tripped.
     freqs_old, W_old = _old_fixed_window_branch_tf(woofer_ir, n_fft)
     _f2, T_old = _old_fixed_window_branch_tf(tweeter_ir, n_fft)
-    trim_w_old, trim_t_old, _lw, _lt = _solve_trims(freqs_old, W_old, T_old, fc_hz)
+    trim_w_old, trim_t_old, _lw, _lt = solve_branch_trims(freqs_old, W_old, T_old, fc_hz)
     old_ripple = _ripple_db(
         freqs_old, _predicted_sum(W_old, T_old, trim_w_old, trim_t_old, +1), lo, hi,
     )
@@ -1705,7 +1849,7 @@ def test_validity_floor_clamp_excludes_only_sub_floor_divergence():
 
 def test_build_candidate_raises_when_validity_floor_consumes_whole_band():
     """If a branch's reflection gate is tight enough that the clamped low
-    edge reaches/exceeds the band's high edge, `_solve_trims`/`_ripple_db`
+    edge reaches/exceeds the band's high edge, `solve_branch_trims`/`_ripple_db`
     raise on the now-empty mask rather than silently computing over nothing.
     This is deliberate: `jasper.web.correction_crossover_v2`'s existing
     catch-all seam already classifies an analyze-time ValueError as
@@ -1740,22 +1884,22 @@ def test_overlap_band_hz_clamps_to_true_driver_sweep():
     # Tweeter excited only from Fc (its own MEASURE sweep starts at 2000 Hz,
     # the real-world root cause) — the nominal Fc/2=1000 Hz floor is noise
     # for that branch, so the helper clamps `lo` up to it.
-    lo, hi = _overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=6000.0)
+    lo, hi = overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=6000.0)
     assert lo == pytest.approx(2000.0)
     assert hi == pytest.approx(4000.0)  # woofer's 6000 Hz ceiling doesn't bind here
 
     # Woofer's own sweep ceiling narrower than the nominal 2*Fc ⇒ hi clamps down.
-    lo, hi = _overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=300.0, woofer_sweep_hi_hz=3000.0)
+    lo, hi = overlap_band_hz(fc_hz, tweeter_sweep_lo_hz=300.0, woofer_sweep_hi_hz=3000.0)
     assert lo == pytest.approx(1000.0)  # tweeter's 300 Hz doesn't bind
     assert hi == pytest.approx(3000.0)
 
     # No sweep-segment evidence (legacy callers) ⇒ byte-identical nominal band.
-    assert _overlap_band_hz(fc_hz) == (1000.0, 4000.0)
+    assert overlap_band_hz(fc_hz) == (1000.0, 4000.0)
 
 
 def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     """Fix 1, consumer wiring: `_build_candidate` must compute lo/hi via the
-    SAME SSOT `_overlap_band_hz` helper (clamped to the true driver-sweep
+    SAME SSOT `overlap_band_hz` helper (clamped to the true driver-sweep
     bounds) and pass that band into the ripple calculation — not silently
     keep computing its own unclamped [Fc/2, 2*Fc] locally. Spies on
     `_ripple_db` (rather than asserting on DSP output numbers, which are
@@ -1787,7 +1931,7 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     # the ripple call's band is exactly the SSOT helper's output — proving
     # `_build_candidate` threads the sweep bounds through, not just accepts
     # and ignores them.
-    expected_lo, expected_hi = _overlap_band_hz(
+    expected_lo, expected_hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=fc_hz, woofer_sweep_hi_hz=3000.0,
     )
     assert seen_lo_hi == [(expected_lo, expected_hi)]

@@ -77,6 +77,8 @@ def parse_name_status_z(payload: bytes) -> tuple[Change, ...]:
         while cursor < len(fields):
             status = fields[cursor].decode("utf-8")
             cursor += 1
+            if not status.isascii() or not status.isprintable():
+                raise ChangedFileError("unsafe or invalid change status")
             path_count = 2 if status.startswith(("R", "C")) else 1
             raw_paths = fields[cursor : cursor + path_count]
             if len(raw_paths) != path_count:
@@ -88,8 +90,7 @@ def parse_name_status_z(payload: bytes) -> tuple[Change, ...]:
             if any(
                 not path
                 or path.startswith("/")
-                or "\n" in path
-                or "\r" in path
+                or not path.isprintable()
                 for path in paths
             ):
                 raise ChangedFileError(
@@ -223,7 +224,7 @@ def render_summary(decision: Decision) -> str:
         "## CI lane",
         "",
         f"- Lane: **{html.escape(decision.lane)}**",
-        f"- Reason: {html.escape(decision.reason)}",
+        f"- Reason: <code>{html.escape(decision.reason)}</code>",
         "- Changed paths:",
     ]
     if not decision.changes:

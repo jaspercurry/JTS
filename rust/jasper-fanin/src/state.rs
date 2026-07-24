@@ -1069,12 +1069,15 @@ impl StateServer {
         push_kv_str(&mut buf, "transport", self.coupling.transport);
         // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
         // live write_seq-read_seq depth; `published` slots reached a live reader;
-        // `full_waits` is the bounded live-reader back-pressure count; `drops`
-        // folds no-reader + stuck-reader drops; `mirror_frames` / `mirror_drops`
-        // are the lossy aloop side-tap's written-frame and drop counts (never
-        // load-bearing; parity with music_output's frames_written/drops). Only
-        // present under shm_ring — byte-identical observability to today under
-        // loopback.
+        // `full_waits` is the bounded live-reader back-pressure count. The stuck
+        // vs no-reader drop counts are UN-FOLDED (issue #1524): `stuck_reader_drops`
+        // is a heartbeat-live-but-frozen reader (bounded-wait give-ups + sticky
+        // demotions), `drop_no_reader` a dead/absent reader (normal reload
+        // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
+        // episode. `mirror_frames` / `mirror_drops` are the lossy aloop side-tap's
+        // written-frame and drop counts (never load-bearing; parity with
+        // music_output's frames_written/drops). Only present under shm_ring —
+        // byte-identical observability to today under loopback.
         if let Some(ring) = &self.coupling.ring {
             buf.push(',');
             buf.push_str(r#""ring":{"#);
@@ -1100,7 +1103,29 @@ impl StateServer {
                 ring.full_waits.load(Ordering::Relaxed),
             );
             buf.push(',');
-            push_kv_u64(&mut buf, "drops", ring.drops.load(Ordering::Relaxed));
+            push_kv_u64(
+                &mut buf,
+                "stuck_reader_drops",
+                ring.stuck_reader_drops.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "drop_no_reader",
+                ring.drop_no_reader.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_bool(
+                &mut buf,
+                "stall_active",
+                ring.stall_active.load(Ordering::Relaxed),
+            );
+            buf.push(',');
+            push_kv_u64(
+                &mut buf,
+                "last_stall_ms",
+                ring.last_stall_ms.load(Ordering::Relaxed),
+            );
             buf.push(',');
             push_kv_u64(
                 &mut buf,
@@ -1674,7 +1699,10 @@ mod tests {
                 occupancy: Arc::new(AtomicU64::new(6)),
                 published: Arc::new(AtomicU64::new(12345)),
                 full_waits: Arc::new(AtomicU64::new(9)),
-                drops: Arc::new(AtomicU64::new(4)),
+                stuck_reader_drops: Arc::new(AtomicU64::new(4)),
+                drop_no_reader: Arc::new(AtomicU64::new(3)),
+                stall_active: Arc::new(AtomicBool::new(true)),
+                last_stall_ms: Arc::new(AtomicU64::new(1500)),
                 mirror_frames: Arc::new(AtomicU64::new(7654)),
                 mirror_drops: Arc::new(AtomicU64::new(2)),
             }),
@@ -1929,7 +1957,6 @@ mod tests {
         assert!(j.contains(r#""occupancy":6"#), "missing occupancy: {j}");
         assert!(j.contains(r#""published":12345"#), "missing published: {j}");
         assert!(j.contains(r#""full_waits":9"#), "missing full_waits: {j}");
-        assert!(j.contains(r#""drops":4"#), "missing drops: {j}");
         assert!(
             j.contains(r#""mirror_frames":7654"#),
             "missing mirror_frames: {j}"
@@ -1938,6 +1965,24 @@ mod tests {
             j.contains(r#""mirror_drops":2"#),
             "missing mirror_drops: {j}"
         );
+        // Un-folded drop counters (issue #1524): parse the ring object and assert
+        // the folded `drops` key is GONE while the split stuck-vs-no-reader keys
+        // and the stall fields are present. (A whole-document substring check
+        // would false-match the legitimate `music_output.drops`.)
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        let ring = &parsed["output"]["ring"];
+        assert!(
+            ring.is_object(),
+            "shm_ring output.ring must be an object: {j}"
+        );
+        assert!(
+            ring.get("drops").is_none(),
+            "the folded `drops` key must be un-folded away: {ring}"
+        );
+        assert_eq!(ring["stuck_reader_drops"], 4, "stuck_reader_drops: {ring}");
+        assert_eq!(ring["drop_no_reader"], 3, "drop_no_reader: {ring}");
+        assert_eq!(ring["stall_active"], true, "stall_active: {ring}");
+        assert_eq!(ring["last_stall_ms"], 1500, "last_stall_ms: {ring}");
         // shm_ring carries NO pipe block.
         assert!(
             !j.contains(r#""pipe":{"#),

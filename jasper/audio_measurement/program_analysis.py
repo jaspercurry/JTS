@@ -45,7 +45,8 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, replace
+import re
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
@@ -299,7 +300,7 @@ class MeasurementPriors:
     ``measure_tweeter_sweep_lo_hz``/``measure_woofer_sweep_hi_hz`` carry the
     MEASURE program's actual per-driver sweep bounds forward to VERIFY (§5.6
     fix) — ``predicted_sum`` was itself built only inside that true overlap
-    (see ``_overlap_band_hz``), so VERIFY's tracking comparison must trust the
+    (see ``overlap_band_hz``), so VERIFY's tracking comparison must trust the
     SAME band; a wider nominal Fc±1-octave band would compare real VERIFY
     capture data against sub-floor noise inherited from an unexcited MEASURE
     branch. ``None`` (legacy callers) falls back to the unclamped nominal band.
@@ -310,6 +311,15 @@ class MeasurementPriors:
     drift-corrected physical peak gap orients and centers one ±half-period
     signed lobe inside it. GCC remains the confidence/polarity seed and the
     fallback estimate. ``None`` keeps GCC as the applied-delay estimate.
+
+    ``mic_tier`` (#1668 PR-C) is the correction-envelope trust tier
+    (``jasper.active_speaker.linearization_envelope.MIC_TIERS`` — "reference"
+    / "consumer" / "phone") the measurement mic resolved to, threaded in by
+    ``jasper.web.correction_crossover_v2.bind_production_analyze`` via
+    ``jasper.audio_measurement.calibration.mic_tier_for_model``. ``None``
+    (every construction site that predates this field, and CHECK/VERIFY
+    priors, which never set it) means "no tier known" — the v2 conductor's
+    Layer-1a linearization gate treats that as ineligible, never a guess.
     """
 
     crossover_fc_hz: float | None = None
@@ -320,6 +330,7 @@ class MeasurementPriors:
     measure_tweeter_sweep_lo_hz: float | None = None
     measure_woofer_sweep_hi_hz: float | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
+    mic_tier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -349,6 +360,14 @@ class DriftEstimate:
     on BOTH a passing and a failing capture, not only the WARN-level line a
     glitch fires. Defaults to ``0.0`` for legacy construction sites that
     predate this field.
+
+    ``per_role_epsilon_ppm`` (sweep-composition PR-A, #1668) is a first-vs-LAST
+    epsilon estimate for EVERY role with ≥2 located sweep occurrences —
+    diagnostic only, never gated (only the woofer pair above decides
+    ``glitch_detected``, unchanged). Free evidence for a future PR's deeper
+    per-role drift hardening (G2). Empty for a role with <2 occurrences (an
+    old-shaped program's un-repeated tweeter, or any degenerate single-sweep
+    role) and for legacy construction sites that predate this field.
     """
 
     epsilon_ppm: float
@@ -356,11 +375,25 @@ class DriftEstimate:
     max_residual_samples: float
     glitch_detected: bool
     repeat_level_delta_db: float = 0.0
+    per_role_epsilon_ppm: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class DriverResponse:
-    """One driver's gated complex response, calibrated if a cal was supplied."""
+    """One driver's gated complex response, calibrated if a cal was supplied.
+
+    ``repeat_responses`` (sweep-composition PR-A, #1668) holds this SAME
+    driver's additional located sweep occurrences — each independently
+    deconvolved/gated/transformed exactly like the primary — in occurrence
+    order, ``repeat_index`` 1, 2, …. Only ever populated on a PRIMARY
+    response (the tuple this dataclass's other fields describe, built from
+    the driver's first/canonical sweep — ``sweep_w``/``sweep_t``); a repeat's
+    own ``DriverResponse`` carries an empty ``repeat_responses`` and its own
+    ``repeat_index``. Diagnostic evidence only — nothing here feeds the
+    candidate/trim/alignment math, which stays anchored to the primary
+    response exactly as before. Defaults keep every pre-existing
+    construction site valid.
+    """
 
     role: str
     freqs_hz: np.ndarray
@@ -369,6 +402,8 @@ class DriverResponse:
     gating: dict[str, Any]
     snr: dict[str, Any] | None
     validity_floor_hz: float | None
+    repeat_responses: tuple["DriverResponse", ...] = ()
+    repeat_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -550,6 +585,13 @@ class ProgramAnalysis:
     alignment: AlignmentEstimate | None = None
     candidate: CrossoverCandidate | None = None
     ambient_report: dict[str, Any] | None = None
+    # Pure passthrough of MeasurementPriors.mic_tier (#1668 PR-C) — set only
+    # by _analyze_measure (see that function's return statement); CHECK and
+    # VERIFY analyses never set it (the v2 conductor's Layer-1a fit only
+    # ever reads it off a MEASURE analysis). See MeasurementPriors.mic_tier's
+    # docstring for the trust-tier vocabulary and "None means unknown, never
+    # a guess" contract.
+    mic_tier: str | None = None
     pilots: tuple[PilotObservation, ...] = ()
     linearity_ok: bool | None = None
     channel_map_ok: bool | None = None
@@ -1028,6 +1070,74 @@ def _locate_segments(
 # drift (MEASURE)
 # --------------------------------------------------------------------------- #
 
+# A MEASURE sweep segment ID's occurrence suffix (build_measure_program's
+# _occurrence_suffix): bare = first/primary, "_rep" = second, "_repN" = the
+# (N+1)-th. Anchored at the END of the id so a driver token embedded earlier
+# (today "w"/"t") never matters here.
+_SWEEP_OCCURRENCE_SUFFIX_RE = re.compile(r"_rep(\d*)$")
+
+
+def _sweep_occurrence_index(segment_id: str) -> int:
+    """0-based occurrence index encoded in a MEASURE sweep segment ID's
+    suffix (mirrors ``program.build_measure_program``'s ``_occurrence_suffix``):
+    bare id ⇒ 0 (first/primary), ``_rep`` ⇒ 1, ``_rep{n}`` ⇒ n (n ≥ 2).
+    """
+    m = _SWEEP_OCCURRENCE_SUFFIX_RE.search(segment_id)
+    if m is None:
+        return 0
+    digits = m.group(1)
+    return 1 if digits == "" else int(digits)
+
+
+def _sweep_occurrences_by_role(
+    locations: Sequence[SegmentLocation],
+) -> dict[str, list[SegmentLocation]]:
+    """Group MEASURE ``KIND_SWEEP`` locations by driver role, each role's list
+    ordered first→last by its ID-encoded occurrence index
+    (:func:`_sweep_occurrence_index`) rather than physical schedule position
+    (the N=3 interleaved layout — design §5.4, sweep-composition PR-A #1668 —
+    physically interleaves w1,t1,w2,t2,... so schedule order is NOT occurrence
+    order across roles). Tolerates ANY occurrence count ≥1 per role, including
+    a role entirely absent from ``locations`` or present only once (era
+    tolerance: an old-shaped program's un-repeated tweeter yields a
+    one-element list, never a crash).
+    """
+    by_role: dict[str, list[tuple[int, SegmentLocation]]] = {}
+    for loc in locations:
+        if loc.kind != KIND_SWEEP or not loc.role:
+            continue
+        by_role.setdefault(loc.role, []).append(
+            (_sweep_occurrence_index(loc.segment_id), loc)
+        )
+    return {
+        role: [loc for _idx, loc in sorted(pairs, key=lambda pair: pair[0])]
+        for role, pairs in by_role.items()
+    }
+
+
+def _repeat_epsilon(
+    capture: np.ndarray,
+    program: ExcitationProgram,
+    first: SegmentLocation,
+    last: SegmentLocation,
+) -> tuple[float, float] | None:
+    """Sub-sample + integer-only clock-drift epsilon from a role's FIRST vs
+    LAST located sweep occurrence (Gamper's repeat-ratio idea — the wider the
+    baseline the more precise the estimate, design §3.1 / §5.6.3). ``None``
+    when the two share a (degenerate) scheduled start.
+    """
+    seg_first = program.segment(first.segment_id)
+    seg_last = program.segment(last.segment_id)
+    scheduled_sep = seg_last.start_sample - seg_first.start_sample
+    if scheduled_sep <= 0:
+        return None
+    measured_sep = _subsample_separation(
+        capture, first.located_start, last.located_start, seg_first.n_samples
+    )
+    epsilon = measured_sep / scheduled_sep - 1.0
+    eps_int = (last.located_start - first.located_start) / scheduled_sep - 1.0
+    return epsilon, eps_int
+
 
 def _estimate_drift(
     program: ExcitationProgram,
@@ -1036,9 +1146,7 @@ def _estimate_drift(
     global_offset: int,
     locations: Sequence[SegmentLocation],
 ) -> DriftEstimate:
-    by_id = {loc.segment_id: loc for loc in locations}
-    w1 = by_id.get("sweep_w")
-    w2 = by_id.get("sweep_w_rep")
+    occurrences_by_role = _sweep_occurrences_by_role(locations)
     # Only the SWEEP-kind stimuli anchor the drift baselines / residual guard.
     # A v2 MEASURE program may open with a leading pilot pair (linearity probe,
     # design §5.2) whose short/quiet windows are located more coarsely; folding
@@ -1046,36 +1154,47 @@ def _estimate_drift(
     # judged separately (their own linearity verdict), never as a drift baseline.
     stimulus_locs = [loc for loc in locations if loc.kind == KIND_SWEEP]
 
+    # Primary gate: the WOOFER's first-vs-LAST located occurrence — byte-
+    # identical gating semantics to the pre-N=3 composer (which had exactly
+    # one woofer repeat, so "first vs last" there IS "sweep_w" vs
+    # "sweep_w_rep", today's exact pair). This IS the first dereference of
+    # "sweep_w" in the analysis flow (`_estimate_drift` runs before
+    # `_analyze_measure` resolves its own `seg_w`/`seg_t`) — but a MEASURE
+    # program is required to contain "sweep_w" with a role, and this
+    # analysis hard-depends on that invariant throughout, so it is the one
+    # literal anchor kept — see `_sweep_occurrences_by_role` for why every
+    # OTHER role/occurrence is discovered rather than hardcoded.
+    woofer_role = program.segment("sweep_w").role
+    assert woofer_role is not None, "a MEASURE sweep segment always carries a role"
+    woofer_occurrences = occurrences_by_role.get(woofer_role, [])
+    w1 = woofer_occurrences[0] if woofer_occurrences else None
+    w2 = woofer_occurrences[-1] if len(woofer_occurrences) >= 2 else None
+
     baselines: dict[str, float] = {}
     epsilon = 0.0
     if w1 is not None and w2 is not None:
-        seg_w = program.segment("sweep_w")
-        scheduled_sep = program.segment("sweep_w_rep").start_sample - seg_w.start_sample
-        if scheduled_sep > 0:
-            # Primary: sub-sample separation of the two identical woofer sweeps
+        result = _repeat_epsilon(capture, program, w1, w2)
+        if result is not None:
+            # Primary: sub-sample separation of two identical woofer sweeps
             # (τ cancels; drift is the ratio). Design §3.1 / §5.6.3.
-            measured_sep = _subsample_separation(
-                capture, w1.located_start, w2.located_start, seg_w.n_samples
-            )
-            epsilon = measured_sep / scheduled_sep - 1.0
+            epsilon, eps_int = result
             baselines["woofer_repeat"] = epsilon * 1e6
             # Cross-check baseline: the integer-located separation ratio (no
             # sub-sample refinement) — a coarse independent view of the same span.
-            eps_int = (w2.located_start - w1.located_start) / scheduled_sep - 1.0
             baselines["woofer_repeat_integer"] = eps_int * 1e6
 
     # Per-driver-demeaned schedule residual after applying ε. A driver's own
     # acoustic delay is a constant offset (removed by demeaning), so this does
     # NOT flag the real tweeter-vs-woofer delay; it catches a within-driver
     # desync (a dropped buffer between a driver's own repeated sweeps). A
-    # mid-program dropped buffer between the two woofer sweeps instead surfaces
-    # as an out-of-band ε (the ppm bound below), because the repeat spans it.
-    # NOTE: with one located sweep per role the demeaned residual is
+    # mid-program dropped buffer between two same-role sweeps instead surfaces
+    # as an out-of-band ε (the ppm bound below) whenever the woofer pair spans
+    # it. NOTE: with one located sweep per role the demeaned residual is
     # identically zero, so this guard only ACTIVATES for a role with ≥2
-    # located sweeps — in the 2-way 3-sweep MEASURE program that is the woofer
-    # pair only; the single-sweep tweeter is covered by the ε ppm bound alone.
-    # A future program shape with per-role repeats gets the residual guard on
-    # every role for free.
+    # located sweeps — under the N=3 interleaved MEASURE program that is BOTH
+    # drivers (three occurrences each); an old-shaped 3-sweep program still
+    # gets it for the woofer pair only, the single-sweep tweeter covered by
+    # the ε ppm bound alone.
     groups: dict[Any, list[float]] = {}
     for loc in stimulus_locs:
         start = program.segment(loc.segment_id).start_sample
@@ -1087,23 +1206,29 @@ def _estimate_drift(
         for r in resids:
             max_residual = max(max_residual, abs(r - mean))
 
-    # Woofer-repeat LEVEL agreement (design §5.2): the two woofer sweeps are
-    # bit-identical stimuli, so a clean capture reproduces the same captured
-    # level for both. Measured band-relative — in-band RMS over the woofer's
-    # OWN declared band (`_band_power`, the same Hann+bandpass mechanism
-    # `_pilot_observations` uses), after trimming the composer's fixed edge
-    # fade (`_pilot_trim_fade`) — never full-band single-sample PEAK: a
-    # low-frequency, room-mode-excited sweep's full-band peak is an unstable
-    # estimator (the loudest sample jumps between otherwise-identical sweeps),
-    # the same bug class already fixed for the channel-map discriminator
-    # (#1594) and the pilot linearity gate (#1615). Two real hardware captures
-    # (Dayton iMM-6C AND UMIK-2, 2026-07-20) measured two genuinely-identical
-    # woofer sweeps 0.64 dB apart by full-band peak — enough to trip this gate
-    # — but only 0.06-0.24 dB apart by in-band RMS. Real AGC gain-riding (this
-    # gate's actual purpose) still shows up in-band (a uniform per-sweep gain
-    # shift survives band-limiting), so this keeps the gate's teeth while
-    # dropping the false rejection. A larger delta REUSES the
-    # drift-baselines-disagree glitch verdict — never a new user-facing code.
+    # Woofer-repeat LEVEL agreement (design §5.2): the woofer's first and LAST
+    # sweeps are bit-identical stimuli, so a clean capture reproduces the same
+    # captured level for both. Measured band-relative — in-band RMS over the
+    # woofer's OWN declared band (`_band_power`, the same Hann+bandpass
+    # mechanism `_pilot_observations` uses), after trimming the composer's
+    # fixed edge fade (`_pilot_trim_fade`) — never full-band single-sample
+    # PEAK: a low-frequency, room-mode-excited sweep's full-band peak is an
+    # unstable estimator (the loudest sample jumps between otherwise-identical
+    # sweeps), the same bug class already fixed for the channel-map
+    # discriminator (#1594) and the pilot linearity gate (#1615). Two real
+    # hardware captures (Dayton iMM-6C AND UMIK-2, 2026-07-20) measured two
+    # genuinely-identical woofer sweeps 0.64 dB apart by full-band peak —
+    # enough to trip this gate — but only 0.06-0.24 dB apart by in-band RMS.
+    # Real AGC gain-riding (this gate's actual purpose) still shows up in-band
+    # (a uniform per-sweep gain shift survives band-limiting), so this keeps
+    # the gate's teeth while dropping the false rejection. A larger delta
+    # REUSES the drift-baselines-disagree glitch verdict — never a new
+    # user-facing code. Scope note (sweep-composition PR-A, #1668): this
+    # first-vs-last pairing only sees the woofer's TWO endpoint occurrences —
+    # a level step confined to a middle repeat (or anywhere on the tweeter,
+    # which this gate has never covered) does not trip it. Deferred to a
+    # future PR's G2 hardening; `per_role_epsilon_ppm` below is the timing
+    # analogue already exposed as diagnostic evidence.
     repeat_level_delta_db = 0.0
     repeat_level_disagrees = False
     if w1 is not None and w2 is not None:
@@ -1120,6 +1245,17 @@ def _estimate_drift(
         level_w2 = _band_rms_dbfs(w2_samples, sample_rate, level_seg_w.f1_hz, level_seg_w.f2_hz)
         repeat_level_delta_db = abs(level_w1 - level_w2)
         repeat_level_disagrees = repeat_level_delta_db > REPEAT_LEVEL_TOLERANCE_DB
+
+    # Per-role first-vs-last epsilon diagnostics (design §5, sweep-composition
+    # PR-A #1668): free evidence for a future PR's G2 hardening. NEVER gates
+    # `glitch_detected` — only the woofer pair above does that, unchanged.
+    per_role_epsilon_ppm: dict[str, float] = {}
+    for role, occurrences in occurrences_by_role.items():
+        if len(occurrences) < 2:
+            continue
+        result = _repeat_epsilon(capture, program, occurrences[0], occurrences[-1])
+        if result is not None:
+            per_role_epsilon_ppm[role] = result[0] * 1e6
 
     glitch = (
         abs(epsilon) * 1e6 > MAX_DRIFT_PPM
@@ -1143,6 +1279,7 @@ def _estimate_drift(
         max_residual_samples=max_residual,
         glitch_detected=glitch,
         repeat_level_delta_db=repeat_level_delta_db,
+        per_role_epsilon_ppm=per_role_epsilon_ppm,
     )
 
 
@@ -1301,7 +1438,7 @@ def _aligned_branch_tf(
     return freqs, H, fragment
 
 
-def _overlap_band_hz(
+def overlap_band_hz(
     fc_hz: float,
     *,
     tweeter_sweep_lo_hz: float | None = None,
@@ -1351,7 +1488,7 @@ def _estimate_alignment(
 ) -> AlignmentEstimate:
     seg_w = program.segment("sweep_w")
     seg_t = program.segment("sweep_t")
-    lo, hi = _overlap_band_hz(
+    lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
     )
 
@@ -1501,7 +1638,7 @@ def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -
     return float(np.max(band_db) - np.min(band_db))
 
 
-def _solve_trims(
+def solve_branch_trims(
     freqs: np.ndarray,
     W: np.ndarray,
     T: np.ndarray,
@@ -1516,6 +1653,11 @@ def _solve_trims(
     overlap — the candidate's gating-consistent trim solve (`_build_candidate`)
     clamps ``lo_hz`` up to a branch's validity floor when a room reflection
     gates it tighter than the nominal band.
+
+    Public (#1668 PR-C): the v2 conductor re-solves trims against a
+    linearized branch pair (`jasper.active_speaker.crossover_v2_flow`), so
+    this — and its sibling :func:`overlap_band_hz` — are no longer
+    module-private. No logic changed in this rename.
     """
     lo = lo_hz if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
     hi = hi_hz if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
@@ -1532,11 +1674,11 @@ def _flatter_sum_polarity(
     n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
     freqs, W, _gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=None)
     _f2, T, _gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=None)
-    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz)
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(freqs, W, T, fc_hz)
     # SSOT overlap band (fix 1) — clamps the nominal Fc±1-oct span to the real
     # driver-sweep overlap so this ripple check can't drift out of sync with
     # the alignment/trim/VERIFY bands that already use this helper.
-    lo, hi = _overlap_band_hz(
+    lo, hi = overlap_band_hz(
         fc_hz,
         tweeter_sweep_lo_hz=program.segment("sweep_t").f1_hz,
         woofer_sweep_hi_hz=program.segment("sweep_w").f2_hz,
@@ -2032,6 +2174,53 @@ def _analyze_check(
     )
 
 
+def _repeat_driver_responses(
+    program: ExcitationProgram,
+    capture: np.ndarray,
+    sample_rate: int,
+    global_offset: int,
+    epsilon: float,
+    occurrences: Sequence[SegmentLocation],
+    *,
+    role: str,
+    calibration: "CalibrationCurve | None",
+    ambient_report: Mapping[str, Any] | None,
+    fc_hz: float,
+    n_fft: int,
+) -> tuple[DriverResponse, ...]:
+    """Deconvolve + gate + TF every occurrence AFTER the first (design item 7,
+    sweep-composition PR-A #1668): free per-repeat evidence for a future PR's
+    deeper drift/G2 hardening. Individually bounded exactly like the primary
+    response (same ``n_fft``); no caching or parallelism added — Pi
+    measurement is not latency-critical here, and this triples the
+    deconvolution call count (2→6) on purpose per the design. The PRIMARY
+    response (the driver's canonical ``sweep_w``/``sweep_t`` occurrence) is
+    built by the caller and untouched by this function; repeats never feed
+    the candidate/trim/alignment math. ``role`` is the primary's own
+    already-resolved role: every location in ``occurrences`` shares it by
+    construction of the caller's per-role grouping
+    (``_sweep_occurrences_by_role``), so it is threaded through explicitly
+    rather than re-derived per segment as an ``Optional[str]``.
+
+    Consumed by ``jasper.active_speaker.linearization_envelope.
+    compute_sigma_curve`` — the Layer-1a repeatability term.
+    """
+    out: list[DriverResponse] = []
+    for repeat_index, loc in enumerate(occurrences[1:], start=1):
+        seg = program.segment(loc.segment_id)
+        full_ir, _pre = _deconvolve_window(
+            capture, seg, global_offset + seg.start_sample, sample_rate,
+            epsilon=epsilon,
+        )
+        resp = _driver_response(
+            role, full_ir, sample_rate,
+            calibration=calibration, ambient_report=ambient_report,
+            fc_hz=fc_hz, n_fft=n_fft,
+        )
+        out.append(replace(resp, repeat_index=repeat_index))
+    return tuple(out)
+
+
 def _analyze_measure(
     program, capture, sample_rate, global_offset, locations,
     calibration, geometry, priors,
@@ -2058,17 +2247,36 @@ def _analyze_measure(
     pre_samples = min(pre_w, pre_t)
     n_fft = _n_fft_for(woofer_full_ir, tweeter_full_ir)
 
-    responses = (
-        _driver_response(
-            seg_w.role, woofer_full_ir, sample_rate,
-            calibration=calibration, ambient_report=priors.ambient_report,
-            fc_hz=fc_hz, n_fft=n_fft,
-        ),
-        _driver_response(
-            seg_t.role, tweeter_full_ir, sample_rate,
-            calibration=calibration, ambient_report=priors.ambient_report,
-            fc_hz=fc_hz, n_fft=n_fft,
-        ),
+    # Primary responses stay EXACTLY first-occurrence-derived — today's
+    # semantics, byte-identical (built from woofer_full_ir/tweeter_full_ir
+    # exactly as before). Repeats (sweep-composition PR-A, #1668) are
+    # additionally deconvolved/gated/TF'd and attached as diagnostic-only
+    # `repeat_responses` on the matching primary; they never change a
+    # primary's own freqs_hz/magnitude_db/complex_tf/gating/snr/validity_floor.
+    occurrences_by_role = _sweep_occurrences_by_role(locations)
+    responses = tuple(
+        replace(
+            resp,
+            repeat_responses=_repeat_driver_responses(
+                program, capture, sample_rate, global_offset, epsilon,
+                occurrences_by_role.get(resp.role, ()),
+                role=resp.role,
+                calibration=calibration, ambient_report=priors.ambient_report,
+                fc_hz=fc_hz, n_fft=n_fft,
+            ),
+        )
+        for resp in (
+            _driver_response(
+                seg_w.role, woofer_full_ir, sample_rate,
+                calibration=calibration, ambient_report=priors.ambient_report,
+                fc_hz=fc_hz, n_fft=n_fft,
+            ),
+            _driver_response(
+                seg_t.role, tweeter_full_ir, sample_rate,
+                calibration=calibration, ambient_report=priors.ambient_report,
+                fc_hz=fc_hz, n_fft=n_fft,
+            ),
+        )
     )
 
     alignment = _estimate_alignment(
@@ -2106,6 +2314,7 @@ def _analyze_measure(
         driver_responses=responses,
         alignment=alignment,
         candidate=candidate,
+        mic_tier=priors.mic_tier,
         pilots=pilots,
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,
@@ -2125,7 +2334,7 @@ def _build_candidate(
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
-    lo, hi = _overlap_band_hz(
+    lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=tweeter_sweep_lo_hz, woofer_sweep_hi_hz=woofer_sweep_hi_hz,
     )
     # Gating-consistent prediction (W6.9 forensics): ``_aligned_branch_tf`` now
@@ -2134,7 +2343,7 @@ def _build_candidate(
     # HIGHER than the nominal Fc±1-oct band. Clamp every quantity derived from
     # W/T — the trim solve, the predicted sum's ripple — to the worse (higher)
     # of the two branches' floors, never silently trusting sub-floor bins.
-    # If the floor consumes the whole band, `_solve_trims`/`_ripple_db` raise
+    # If the floor consumes the whole band, `solve_branch_trims`/`_ripple_db` raise
     # ValueError on the now-empty mask — the existing catch-all seam in
     # `jasper.web.correction_crossover_v2` already classifies that as
     # `internal_error` (see its comment: "analyze/emit raise ValueError"), so
@@ -2148,7 +2357,7 @@ def _build_candidate(
         if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
         else lo
     )
-    trim_w, trim_t, _lw, _lt = _solve_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
+    trim_w, trim_t, _lw, _lt = solve_branch_trims(freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi)
     delay_us = alignment.delay_us
     seed_ripple_db = None
     flatness_improvement_db = None
@@ -2249,7 +2458,7 @@ def _analyze_verify(
     ripple = None
     tracking = None
     if fc_hz is not None:
-        lo, hi = _overlap_band_hz(
+        lo, hi = overlap_band_hz(
             fc_hz,
             tweeter_sweep_lo_hz=priors.measure_tweeter_sweep_lo_hz,
             woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
@@ -2374,6 +2583,10 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             float(getattr(drift, "repeat_level_delta_db", 0.0)), 3
         )
         out["glitch_detected"] = bool(drift.glitch_detected)
+        # Diagnostic-only, never gated (sweep-composition PR-A, #1668) — see
+        # DriftEstimate.per_role_epsilon_ppm's docstring.
+        for role, eps in (getattr(drift, "per_role_epsilon_ppm", None) or {}).items():
+            out[f"{role}_repeat_epsilon_ppm"] = round(float(eps), 3)
 
     alignment = getattr(analysis, "alignment", None)
     if alignment is not None:

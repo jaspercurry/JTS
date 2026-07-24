@@ -57,6 +57,17 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+import numpy as np
+
+from jasper.active_speaker.linearization_envelope import (
+    DEFAULT_ENVELOPE_GRID_HZ,
+    compose_envelope,
+    compute_sigma_curve,
+)
+from jasper.active_speaker.linearization_fit import (
+    fit_driver_linearization,
+    predicted_correction_db,
+)
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
@@ -75,6 +86,8 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
     ProgramAnalysis,
+    overlap_band_hz,
+    solve_branch_trims,
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 from jasper.log_event import log_event
@@ -769,6 +782,111 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
 
 
 # --------------------------------------------------------------------------- #
+# Layer-1a driver-linearization wiring (#1668 PR-C)
+# --------------------------------------------------------------------------- #
+#
+# The fit engine (jasper.active_speaker.linearization_fit) and the envelope
+# core (jasper.active_speaker.linearization_envelope) are pure, policy-free
+# computation. This conductor is where their outputs become a PRODUCT
+# decision: gate eligibility (mic tier + paired repeat count), σ-composition
+# policy, and the trim re-solve + sanity backstop. See
+# docs/active-speaker-tuning-layers-design.md "Layer 1a concretely".
+
+# Both drivers of the pair must carry at least this many in-capture
+# occurrences (primary + repeats) before Layer-1a trusts ANY repeatability
+# evidence — the "paired gate" (sigma-seeding report finding 5: "don't trust
+# live sigma alone until N>=3 for BOTH drivers"). Mirrors the v2 MEASURE
+# program's own default repeat count
+# (jasper.audio_measurement.program.MEASURE_REPEAT_COUNT) — not imported,
+# since this is a POLICY floor (what linearization requires), not a
+# statement about what the program composes; the two happen to agree today.
+LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
+
+# How far the trim re-solved from the LINEARIZED branch responses may move
+# from the raw (unlinearized) trim before it is treated as implausible and
+# discarded in favor of the raw value (with a WARNING — never a silent
+# swap). A correction that is honoring its own envelope caps (<=12 dB cut
+# per bin, <=6 dB total normalization spend) cannot plausibly move a
+# BAND-AVERAGE trim this far; a bigger swing means something upstream (a
+# bad calibration, a badly time-aligned response) fed the re-solve garbage.
+LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
+
+# Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
+# (module-private there — see that module's top docstring for the "no
+# cross-module private imports" convention this repo follows). LOCKSTEP
+# REQUIREMENT: any change to that table must be mirrored here, or this
+# conductor's sigma floor and the envelope module's own
+# repeatability_limit() disagree about what "tolerable" means per tier.
+_SIGMA_TOLERABLE_DB: Mapping[str, float] = {
+    "reference": 0.5,
+    "consumer": 1.0,
+    "phone": 1.5,
+}
+
+
+def _compose_sigma_db(
+    own: Any,
+    sibling: Any,
+    *,
+    tier: str,
+    valid_band_hz: tuple[float, float],
+    grid_hz: np.ndarray = DEFAULT_ENVELOPE_GRID_HZ,
+) -> np.ndarray | None:
+    """PR-C's σ-composition policy: the paired-N gate + the per-tier floor.
+
+    ``own``/``sibling`` are the two :class:`~jasper.audio_measurement.
+    program_analysis.DriverResponse` of a crossover pair (typed ``Any`` —
+    matching this module's own convention of not importing program_analysis
+    dataclasses purely for type hints). Returns ``None`` (no evidence, no
+    permission — the same contract
+    :func:`~jasper.active_speaker.linearization_envelope.compute_sigma_curve`
+    itself uses) when EITHER driver has fewer than
+    :data:`LINEARIZATION_MIN_PAIRED_OCCURRENCES` occurrences (primary +
+    repeats) — an under-repeated sibling voids the pair's trust even if
+    ``own`` alone has plenty. This gate is deliberately redundant with the
+    conductor's own outer eligibility gate (:meth:`CrossoverV2Conductor.
+    _linearization_eligible`) — belt-and-suspenders, so this function stays
+    independently correct/safe if ever called from a different context.
+
+    Otherwise computes ``own``'s live σ(f)
+    (:func:`~jasper.active_speaker.linearization_envelope.compute_sigma_curve`)
+    and floors it at the tier's own tolerable value:
+    ``sigma_eff = max(sigma_tolerable(tier), live)``.
+
+    **This floor is currently BEHAVIORALLY INERT.** ``repeatability_limit``'s
+    own formula is ``D_cap * min(1, sigma_tolerable / max(sigma, eps))`` —
+    for ANY ``live <= sigma_tolerable`` that expression already saturates at
+    ``D_cap * 1`` (the full ceiling), identically whether ``live`` is floored
+    up to ``sigma_tolerable`` or left alone. Flooring at EXACTLY the tier's
+    own tolerable value therefore changes nothing about the resulting
+    envelope today; it exists as a SEAM for a future PR that might set the
+    floor HIGHER than ``sigma_tolerable`` for genuine extra conservatism
+    (e.g. a stricter product-taste floor independent of the envelope
+    module's own per-tier table). Do not assume this floor currently does
+    more than the paired-N gate above.
+
+    N2 (2026-07-24 adversarial review): flagged this same inertness;
+    coordinator ruling was to KEEP it as-is — it is the σ-seeding report's
+    own recommended composition, already honestly documented here and
+    pinned by ``test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit``,
+    and cutting it now only to re-add it for the same future seam later
+    would cost more than carrying it.
+    """
+    own_n = 1 + len(own.repeat_responses)
+    sibling_n = 1 + len(sibling.repeat_responses)
+    if (
+        own_n < LINEARIZATION_MIN_PAIRED_OCCURRENCES
+        or sibling_n < LINEARIZATION_MIN_PAIRED_OCCURRENCES
+    ):
+        return None
+    live = compute_sigma_curve(own, valid_band_hz=valid_band_hz, grid_hz=grid_hz)
+    if live is None:
+        return None
+    floor_db = _SIGMA_TOLERABLE_DB[tier]
+    return np.maximum(floor_db, live)
+
+
+# --------------------------------------------------------------------------- #
 # seams + snapshot
 # --------------------------------------------------------------------------- #
 
@@ -903,6 +1021,7 @@ class CrossoverV2Conductor:
         measure_predicted_sum: Any = None,
         measure_gate_window_ms: float | None = None,
         verify_pilot_transfer_baseline: Mapping[str, float] | None = None,
+        driver_class_by_role: Mapping[str, str] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -915,6 +1034,14 @@ class CrossoverV2Conductor:
         self._caps = dict(driver_caps_dbfs)
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
+        # Layer-1a linearization (#1668 PR-C): per-role driver class, used by
+        # class_prior_limit(). "unknown" (the conservative default) until
+        # #1665 lands component-entry declarations — no production caller
+        # populates this yet, matching linearization_envelope.compose_envelope's
+        # own "unknown" default.
+        self._driver_class_by_role = (
+            dict(driver_class_by_role) if driver_class_by_role else {}
+        )
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
@@ -994,6 +1121,20 @@ class CrossoverV2Conductor:
         # channel can. Read by ``_log_measure_diag``; never consulted by
         # ``_measure_verdict`` itself, so a bug here cannot change a verdict.
         self._last_measure_guard: str = ""
+        # SF3 (2026-07-24 adversarial review): which linearization path this
+        # attempt's candidate build took — set by ``_linearization_eligible``
+        # (the ineligible branches) and ``_fit_linearization`` (fitted vs the
+        # wild-trim sanity fallback) or ``_build_candidate`` (a raised fit
+        # bug). Mirrors ``_last_measure_guard`` exactly: reset at the top of
+        # every ``_measure_verdict`` call so a stale value from a PRIOR
+        # attempt — or from a verdict that never reached ``_build_candidate``
+        # — can never leak into this attempt's diagnostic. One of "",
+        # "ineligible_mic_tier", "ineligible_repeats", "fitted",
+        # "trim_rejected", or "fit_failed"; empty means "not evaluated this
+        # attempt." Read by ``_log_measure_diag``'s ``linearization=`` field;
+        # never consulted by ``_measure_verdict`` itself, so a bug here
+        # cannot change a verdict.
+        self._last_linearization_outcome: str = ""
 
     # --- program composition -------------------------------------------------
 
@@ -1412,6 +1553,7 @@ class CrossoverV2Conductor:
         # Reset every call — a stale value from a PRIOR attempt must never
         # leak into THIS attempt's diagnostic (see __init__'s comment).
         self._last_measure_guard = ""
+        self._last_linearization_outcome = ""
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.glitch_detected:
@@ -1660,6 +1802,17 @@ class CrossoverV2Conductor:
         sweep_residual_ms_worst, sweep_locate_confidence_min = _sweep_schedule_diag_fields(
             analysis, self._program_for_phase(PHASE_MEASURE).sample_rate_hz
         )
+        # First-vs-last per-role epsilon (sweep-composition PR-A, #1668) —
+        # diagnostic only, never gated (DriftEstimate.per_role_epsilon_ppm's
+        # own docstring). None-safe for a legacy construction site that
+        # predates the field (empty mapping) or a role absent from it (<2
+        # located occurrences that role).
+        woofer_repeat_epsilon_ppm = (
+            drift.per_role_epsilon_ppm.get(self._woofer.role) if drift else None
+        )
+        tweeter_repeat_epsilon_ppm = (
+            drift.per_role_epsilon_ppm.get(self._tweeter.role) if drift else None
+        )
         log_event(
             logger, "correction.crossover_v2_measure_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
@@ -1679,6 +1832,14 @@ class CrossoverV2Conductor:
             max_residual_samples=round(float(drift.max_residual_samples), 3) if drift else None,
             repeat_level_delta_db=(
                 round(float(drift.repeat_level_delta_db), 3) if drift else None
+            ),
+            woofer_repeat_epsilon_ppm=(
+                round(float(woofer_repeat_epsilon_ppm), 3)
+                if woofer_repeat_epsilon_ppm is not None else None
+            ),
+            tweeter_repeat_epsilon_ppm=(
+                round(float(tweeter_repeat_epsilon_ppm), 3)
+                if tweeter_repeat_epsilon_ppm is not None else None
             ),
             delay_us=round(delay_us, 3) if delay_us is not None else None,
             delay_role=delay_role,
@@ -1720,6 +1881,11 @@ class CrossoverV2Conductor:
             # shares its reused reason code (see __init__'s comment on
             # ``_last_measure_guard``).
             guard=self._last_measure_guard,
+            # SF3 (adversarial review): which linearization path this
+            # attempt's candidate build took — "" when the verdict was
+            # rejected before ``_build_candidate`` ever ran (see __init__'s
+            # comment on ``_last_linearization_outcome``).
+            linearization=self._last_linearization_outcome,
         )
 
     def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
@@ -1796,13 +1962,190 @@ class CrossoverV2Conductor:
             if delay_role is not None
             else MeasuredCrossoverAlignment()
         )
+
+        # Layer-1a driver linearization (#1668 PR-C). HARD GATE: reference-tier
+        # mic AND both drivers paired N>=3 — anything else is byte-identical
+        # to the pre-PR-C trims-only path (analysis.candidate.trim_db, empty
+        # linearization dict). See _linearization_eligible/_fit_linearization.
+        role_attenuations_db: Mapping[str, float] = dict(cand.trim_db)
+        linearization: Mapping[str, Any] = {}
+        if self._linearization_eligible(analysis):
+            try:
+                role_attenuations_db, linearization = self._fit_linearization(
+                    analysis, cand
+                )
+            except (
+                ArithmeticError, AttributeError, RuntimeError, TypeError, ValueError,
+                KeyError, IndexError,
+            ) as exc:
+                # SF2 (adversarial review, 2026-07-24): the fit path is
+                # strictly additive — an eligible speaker with a bug in the
+                # (still-young) fit engine must degrade EXACTLY to the
+                # ineligible path, never fail the whole MEASURE accept.
+                # Mirrors _safe_log_diag's "never let enrichment logic break
+                # the primary path" posture, one layer earlier (this guards
+                # the candidate build itself, not just its diagnostic log
+                # line). The caught set matches _safe_log_diag's own
+                # (attribute/key/index/type/value access on structured
+                # data), extended with ArithmeticError since this call site
+                # does floating-point curve fitting (division, log,
+                # exponentiation), not plain field extraction, and with
+                # RuntimeError because linearization_fit.fit_driver_linearization
+                # (N1, this same review) raises exactly that on its own
+                # cut-only invariant violation — without it here, N1's safety
+                # net would escape SF2's and crash this accept instead of
+                # degrading to it.
+                log_event(
+                    logger, "correction.crossover_v2_linearization_fit_failed",
+                    level=logging.WARNING, session_id=self.session_id,
+                    reason=type(exc).__name__, exc_info=True,
+                )
+                role_attenuations_db = dict(cand.trim_db)
+                linearization = {}
+                self._last_linearization_outcome = "fit_failed"
+
         return MeasuredCrossoverCandidate(
             program_id=analysis.program_id,
             analysis=_analysis_json(analysis),
             source_preset=self._preset,
-            role_attenuations_db=dict(cand.trim_db),
+            role_attenuations_db=role_attenuations_db,
             alignment=alignment,
+            linearization=linearization,
         )
+
+    def _linearization_eligible(self, analysis: ProgramAnalysis) -> bool:
+        """HARD GATE for the Layer-1a fit path: reference-tier mic AND both
+        drivers paired N>=3 in-capture occurrences. Anything else falls back
+        to the plain trims-only candidate, byte-identical to before this PR.
+
+        Side effect: stamps ``self._last_linearization_outcome`` with WHY on
+        every ineligible return (SF3) — mirrors ``_last_measure_guard``'s own
+        set-during-the-walk convention; read by ``_log_measure_diag``.
+        """
+        if analysis.mic_tier != "reference":
+            self._last_linearization_outcome = "ineligible_mic_tier"
+            return False
+        woofer_resp = _driver_response_by_role(analysis, self._woofer.role)
+        tweeter_resp = _driver_response_by_role(analysis, self._tweeter.role)
+        if woofer_resp is None or tweeter_resp is None:
+            self._last_linearization_outcome = "ineligible_repeats"
+            return False
+        woofer_n = 1 + len(woofer_resp.repeat_responses)
+        tweeter_n = 1 + len(tweeter_resp.repeat_responses)
+        if (
+            woofer_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
+            and tweeter_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
+        ):
+            return True
+        self._last_linearization_outcome = "ineligible_repeats"
+        return False
+
+    def _fit_linearization(
+        self, analysis: ProgramAnalysis, cand: Any,
+    ) -> tuple[dict[str, float], dict[str, Any]]:
+        """Fit both drivers, apply the correction in the linear domain, and
+        re-solve the trim from the LINEARIZED branch pair — the ordering
+        the design doc calls out as structurally defusing #1667's band-
+        average trim bias. Returns ``(role_attenuations_db, linearization)``;
+        falls back to ``cand.trim_db`` (with a WARNING) when the re-solved
+        trim is implausibly far from the raw solve.
+
+        Only called after :meth:`_linearization_eligible` — this method
+        assumes both driver responses exist and are adequately repeated;
+        it does not re-check. May raise on a fit-engine bug; the caller
+        (``_build_candidate``) is responsible for catching that (SF2).
+
+        Side effect: stamps ``self._last_linearization_outcome`` with
+        ``"fitted"`` or ``"trim_rejected"`` (SF3) — mirrors
+        ``_linearization_eligible``'s own convention; read by
+        ``_log_measure_diag``.
+        """
+        woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
+        woofer_resp = _driver_response_by_role(analysis, woofer_role)
+        tweeter_resp = _driver_response_by_role(analysis, tweeter_role)
+        assert woofer_resp is not None and tweeter_resp is not None  # eligibility checked this
+
+        measure_program = self._program_for_phase(PHASE_MEASURE)
+        seg_w = measure_program.segment("sweep_w")
+        seg_t = measure_program.segment("sweep_t")
+        # ProgramSegment.f1_hz/f2_hz are typed float | None (the general
+        # ProgramSegment shape also covers non-stimulus/silence segments);
+        # __post_init__ guarantees a KIND_SWEEP stimulus segment (which
+        # "sweep_w"/"sweep_t" always are) never has either as None. Narrow
+        # explicitly for mypy and as a defensive invariant check.
+        assert seg_w.f1_hz is not None and seg_w.f2_hz is not None
+        assert seg_t.f1_hz is not None and seg_t.f2_hz is not None
+        excited_band_hz: dict[str, tuple[float, float]] = {
+            woofer_role: (seg_w.f1_hz, seg_w.f2_hz),
+            tweeter_role: (seg_t.f1_hz, seg_t.f2_hz),
+        }
+        responses = {woofer_role: woofer_resp, tweeter_role: tweeter_resp}
+        siblings = {woofer_role: tweeter_resp, tweeter_role: woofer_resp}
+        mic_tier = str(analysis.mic_tier)
+
+        fits: dict[str, Any] = {}
+        corrections: dict[str, np.ndarray] = {}
+        for role in (woofer_role, tweeter_role):
+            resp = responses[role]
+            sigma_db = _compose_sigma_db(
+                resp, siblings[role],
+                tier=mic_tier, valid_band_hz=excited_band_hz[role],
+            )
+            envelope = compose_envelope(
+                role, resp,
+                excited_band_hz=excited_band_hz[role],
+                mic_tier=mic_tier,
+                driver_class=self._driver_class_by_role.get(role, "unknown"),
+                sigma_db=sigma_db,
+            )
+            fit = fit_driver_linearization(resp, envelope)
+            fits[role] = fit
+            corrections[role] = predicted_correction_db(fit.filters, resp.freqs_hz)
+
+        freqs = woofer_resp.freqs_hz
+        W_lin = woofer_resp.complex_tf * (10.0 ** (corrections[woofer_role] / 20.0))
+        T_lin = tweeter_resp.complex_tf * (10.0 ** (corrections[tweeter_role] / 20.0))
+
+        # Same gating-consistent overlap band the raw trim solve used
+        # (program_analysis._build_candidate's own branch_floor_hz clamp —
+        # _measure_validity_floor_hz mirrors it), so the comparison below is
+        # apples to apples: same band, linearized vs raw branch content.
+        lo, hi = overlap_band_hz(
+            self._fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
+        )
+        branch_floor_hz = _measure_validity_floor_hz(analysis)
+        lo_clamped = (
+            max(lo, branch_floor_hz)
+            if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
+            else lo
+        )
+        trim_w_lin, trim_t_lin, _lw, _lt = solve_branch_trims(
+            freqs, W_lin, T_lin, self._fc_hz, lo_hz=lo_clamped, hi_hz=hi,
+        )
+        resolved = {woofer_role: float(trim_w_lin), tweeter_role: float(trim_t_lin)}
+
+        raw_trim = dict(cand.trim_db)
+        wild = any(
+            abs(resolved[role] - raw_trim[role]) > LINEARIZATION_TRIM_SANITY_MARGIN_DB
+            for role in (woofer_role, tweeter_role)
+            if role in raw_trim
+        )
+        if wild:
+            log_event(
+                logger, "correction.crossover_v2_linearization_trim_rejected",
+                level=logging.WARNING, session_id=self.session_id,
+                raw_trim_db={k: round(v, 3) for k, v in raw_trim.items()},
+                resolved_trim_db={k: round(v, 3) for k, v in resolved.items()},
+                margin_db=LINEARIZATION_TRIM_SANITY_MARGIN_DB,
+            )
+            role_attenuations_db = raw_trim
+            self._last_linearization_outcome = "trim_rejected"  # SF3
+        else:
+            role_attenuations_db = resolved
+            self._last_linearization_outcome = "fitted"  # SF3
+
+        linearization = {role: fit.to_dict() for role, fit in fits.items()}
+        return role_attenuations_db, linearization
 
 
 # --------------------------------------------------------------------------- #

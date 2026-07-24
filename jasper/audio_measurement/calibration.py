@@ -44,28 +44,75 @@ DEFAULT_CALIBRATION_DIR = Path("/var/lib/jasper/correction/calibration_mics")
 # wizard's label-based auto-inference (see model_label_aliases). Optional
 # `label_aliases` overrides the default (the vendor_model) when a mic's OS
 # device label doesn't contain its vendor model string.
+#
+# `tier` is the correction-envelope trust tier (#1668 PR-B) — see
+# `mic_tier_for_model` below and
+# jasper.active_speaker.linearization_envelope.MIC_TIERS for the vocabulary
+# ("reference" / "consumer" / "phone"). Not imported from here: audio_measurement
+# is a lower architectural layer than active_speaker (every existing import
+# between the two packages runs active_speaker -> audio_measurement, never
+# the reverse), so the tier vocabulary is duplicated as plain string
+# literals rather than imported upward.
 SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
     "dayton_imm6": {
         "provider": "dayton_audio",
         "vendor_model": "iMM-6",
         "label": "Dayton Audio iMM-6 / iMM-6C",
+        "tier": "consumer",
     },
     "dayton_umm6": {
         "provider": "dayton_audio",
         "vendor_model": "UMM-6",
         "label": "Dayton Audio UMM-6",
+        "tier": "consumer",
     },
     "minidsp_umik1": {
         "provider": "minidsp",
         "vendor_model": "umik-1",
         "label": "miniDSP UMIK-1",
+        "tier": "reference",
     },
     "minidsp_umik2": {
         "provider": "minidsp",
         "vendor_model": "umik-2",
         "label": "miniDSP UMIK-2",
+        "tier": "reference",
     },
 }
+
+
+def mic_tier_for_model(model_key: str | None) -> str:
+    """Resolve a calibration model key to its correction-envelope trust
+    tier ("reference" / "consumer" / "phone" —
+    jasper.active_speaker.linearization_envelope.MIC_TIERS).
+
+    ``None`` (no measurement mic selected/known) resolves to "phone", the
+    most conservative tier — absence of mic information must never read as
+    "trust it like a reference mic." ``"other"`` (the wizard's "Other
+    calibrated mic" bring-your-own-curve option, see
+    ``jasper/web/correction_setup.py``) resolves to "consumer": a
+    calibrated but uncatalogued mic gets the middle trust level, never
+    "reference" (product-taste call ratified 2026-07-23, revisit under
+    #1672 once transfer-calibration gives a real basis for trusting a
+    specific BYO mic at reference level). An unrecognized non-``None`` key
+    (a stale or renamed registry entry) also resolves to "consumer" rather
+    than raising — this is a display/trust-tier seam, not a safety gate,
+    and a KeyError here would be a worse failure mode than a conservative
+    guess.
+
+    Not yet wired into the production analyze path
+    (``bind_production_analyze`` in
+    ``jasper/web/correction_crossover_v2.py``) — that wiring belongs to the
+    PR that actually calls ``compose_envelope`` in the measure/fit flow.
+    """
+    if model_key is None:
+        return "phone"
+    if model_key == "other":
+        return "consumer"
+    spec = SUPPORTED_MODELS.get(model_key)
+    if spec is None:
+        return "consumer"
+    return str(spec["tier"])
 
 
 def model_label_aliases(model_key: str) -> list[str]:
