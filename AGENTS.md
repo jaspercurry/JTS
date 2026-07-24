@@ -55,6 +55,7 @@ document order):
 - [Testing](#testing)
 - [Branch and remote](#branch-and-remote)
 - [PR workflow on a fast-moving `main` — read before you push](#pr-workflow-on-a-fast-moving-main--read-before-you-push)
+- [Worktree hygiene — clean up agent worktrees](#worktree-hygiene--clean-up-agent-worktrees)
 
 ---
 
@@ -3252,3 +3253,35 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
    instead of re-deriving that state. The sweep never closes PRs, deletes
    branches, or pushes — acting on its recommendations is a
    human-supervised session's job.
+
+
+## Worktree hygiene — clean up agent worktrees
+
+Multi-agent runs, `/deep-audit`, and `--worktree` sessions create isolated
+checkouts under `.claude/worktrees/` (Claude), `~/.codex/worktrees/` (Codex),
+or an explicitly chosen temporary/sibling path. `git worktree list` is the
+authority; directory-name guesses are not.
+These are **disposable orchestration state, not source** — each is 20–100 MB and
+they accumulate fast; hundreds once filled the disk. Because worktrees share the
+main repo's object database, **commits on a branch survive removal** (the branch
+lives in `.git`). Uncommitted changes and commits reachable only from a detached
+worktree do not have that protection. So:
+
+- **Remove a worktree as soon as its agent/task is done** — don't leave it lying
+  around: `git worktree remove <path>` (add `--force` only to discard changes you
+  intend to lose).
+- **Prune dead pointers regularly:** `git worktree prune` clears registrations
+  whose directories are already gone. Always safe; never touches a live tree.
+- **Never remove a worktree with uncommitted or unpushed work.** Check
+  `git -C <path> status --porcelain` and
+  `git -C <path> branch -r --contains HEAD` first. If the first command reports
+  changes, or the second reports no remote branch containing the worktree's
+  current commit, keep it until you deliberately preserve or discard that work.
+- **Periodic sweep (human-in-the-loop, ~weekly):** `git worktree list` to review,
+  remove the clean/stale ones, then `git worktree prune`.
+
+Automated backstop (already configured): `.claude/worktrees/` is gitignored (via
+`.claude/*`), and `cleanupPeriodDays` in `.claude/settings.local.json` makes
+Claude Code auto-remove orphaned, **clean** subagent worktrees older than that
+many days at startup. This markdown guidance is a nudge, not enforcement — the
+setting and periodic prune are the real guardrails.
