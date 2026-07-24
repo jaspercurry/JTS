@@ -49,8 +49,10 @@ supervised on-device pass gate any hardware playback) is
 plan's **Wave status** table in
 [`HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md) is the one
 place that states what each wave is authorized or blocked to do *right now*; the
-reviewed amendments — [`limiter-evidence-protocol.md`](limiter-evidence-protocol.md)
-and [`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md) — are
+reviewed amendments — [`limiter-evidence-protocol.md`](limiter-evidence-protocol.md),
+[`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md),
+[`limiter-bench-runner-activation.md`](limiter-bench-runner-activation.md), and
+[`limiter-tap-realization.md`](limiter-tap-realization.md) — are
 the authorization deltas layered on the wave prompts. Two conventions keep this
 from drifting: (1) **cross-reference an amendment by its file name, never by
 another wave's `Revision N`** — those revision numbers are per-wave changelog
