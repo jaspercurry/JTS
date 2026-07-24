@@ -81,28 +81,45 @@ DOCS_ROUTING_MAP = "docs/doc-map.toml"
 #
 # Static discovery is NOT sufficient on its own, so this list is the union of
 # the guard's output and a runtime audit -- an audit hook that recorded every
-# open() of a document across all 667 test files.  The audit found four
-# readers the guard structurally cannot see, in two classes:
+# open() of a document across all 667 test files (17/17 batches, per-batch
+# collection summing to the full 14679).  The audit found readers the guard
+# structurally cannot see, in three classes:
 #
 #   - Transitive reads through imported production code.  The
 #     tests/test_calibration_agent_*.py entries below import
-#     jasper.calibration_agent, whose tools.py sweeps the guidance corpus with
-#     `corpus.rglob("*.md")` -- so docs/calibration-agent/** is a RUNTIME
-#     corpus the product consumes, and nothing in the test source names it.
-#     tests/test_run_wake_training_phase0.py reads README.md the same way, via
-#     an importlib-loaded script.
+#     jasper.calibration_agent, whose tools.py resolves
+#     DEFAULT_CORPUS_CANDIDATES to `Path.cwd()/"docs"/"calibration-agent"` and
+#     sweeps it with `corpus.rglob("*.md")` -- so docs/calibration-agent/** is
+#     a RUNTIME corpus the product consumes.  Several of these tests write a
+#     FAKE corpus into tmp_path, which makes them look isolated when reading
+#     the source; they are not.
 #   - Generic directory sweeps.  tests/test_env_vars_codified.py walks
 #     `path.rglob("*")`, so no statically visible pattern names a document.
+#   - Child-process reads.  tests/test_script_help_excludes_spdx.py runs
+#     `bash scripts/doc-freshness.sh 90 --all`, which enumerates every doc in
+#     a subprocess -- opens a Python audit hook can never observe.
+#     doc-freshness.sh is the ONLY script under scripts/, deploy/, or .github/
+#     that enumerates `*.md`, and this is its only test-side caller, so
+#     registering it closes this class completely.
 #
 # Every hand-registered entry keeps a note saying why discovery misses it, and
 # test_hand_registered_doc_readers_are_still_invisible_to_discovery pins that
 # they really are invisible, so a refactor cannot leave these notes stale.
 #
+# tests/test_run_wake_training_phase0.py is registered for completeness but its
+# read is INCIDENTAL: scripts/_run_wake_training_phase0.py records
+# `artifacts["readme"] = "README.md"` as a bare relative name and hashes it
+# via `Path(value)`, which resolves against CWD, so under pytest it hashes the
+# repo README rather than the run's own.  The test never asserts on
+# artifact_hashes, so a README edit cannot fail it; if that path bug is fixed
+# the read disappears and this entry can go.
+#
 # Deliberately NOT registered despite opening a .md during the audit:
 # tests/test_shell_awk_environ_convention.py shebang-probes every file under
-# `deploy` and `scripts` only, so the one document it touched
-# (scripts/ring-proto/README.md) is not a docs-lane subject and no change this
-# lane can carry is able to affect it.
+# `deploy` and `scripts` only (SCAN_DIRS), so the one document it touched
+# (scripts/ring-proto/README.md) is not a docs-lane subject -- no change this
+# lane can carry is able to reach it.  That is a structural argument, not a
+# judgement about whether its assertions happen to be strict today.
 DOCS_TEST_FILES = (
     "tests/test_agents_md_toc.py",
     "tests/test_audio_slice_membership_docs.py",
@@ -124,6 +141,7 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
+    "tests/test_script_help_excludes_spdx.py",
     "tests/test_system_supervisor.py",
     "tests/test_tool_failure_contract_doc.py",
     "tests/test_voice_eval_registry.py",

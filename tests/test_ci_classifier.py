@@ -492,13 +492,14 @@ def test_docs_bundle_is_sorted_and_exists_on_disk() -> None:
 def test_hand_registered_doc_readers_are_still_invisible_to_discovery() -> None:
     """Pin the reason each hand-registered entry is not auto-discovered.
 
-    These four were found by a runtime audit hook, not by the guard: three
-    read docs/calibration-agent/** transitively through
-    jasper.calibration_agent's `corpus.rglob("*.md")`, one reads README.md
-    through an importlib-loaded script, and test_env_vars_codified.py walks
-    `path.rglob("*")`. If a refactor makes any of them statically visible,
-    the corresponding note in DOCS_TEST_FILES is now misleading -- delete the
-    note and this entry together.
+    These were found by a runtime audit hook, not by the guard, in three
+    classes: three read docs/calibration-agent/** transitively through
+    jasper.calibration_agent's `corpus.rglob("*.md")`; two reach a document
+    through a generic sweep or a CWD-relative path; and one shells out to
+    `doc-freshness.sh`, whose child-process opens no audit hook can see. If a
+    refactor makes any of them statically visible, the corresponding note in
+    DOCS_TEST_FILES is now misleading -- delete the note and this entry
+    together.
     """
 
     discovered = set(_direct_doc_test_files())
@@ -508,6 +509,7 @@ def test_hand_registered_doc_readers_are_still_invisible_to_discovery() -> None:
         "tests/test_calibration_agent_sound_actions.py",
         "tests/test_env_vars_codified.py",
         "tests/test_run_wake_training_phase0.py",
+        "tests/test_script_help_excludes_spdx.py",
     }
 
     assert hand_registered <= set(ci_classifier.DOCS_TEST_FILES)
