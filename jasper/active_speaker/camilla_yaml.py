@@ -838,17 +838,19 @@ def _validated_driver_corrections(
 # test asserts the two constants stay numerically equal.
 MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
-_LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf"})
+_LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
-# The RBJ Highshelf's fixed Butterworth Q, expressed as CamillaDSP's own
-# Highshelf ``slope`` parametrization: mirrors jasper.sound.profile._SHELF_Q
-# and jasper.active_speaker.linearization_fit._HIGHSHELF_Q (both
-# 1/sqrt(2)) -- CamillaDSP's advanced-shelf ``slope: 6.0`` realizes exactly
-# that Q (see jasper.sound.profile._biquad_coeffs's own comment: "Shelves
-# use a fixed Butterworth Q ... to mirror CamillaDSP's 6 dB/oct advanced-
-# shelf emit"). The fit engine never varies its shelf Q, so this is the one
-# and only slope a linearization Highshelf is ever emitted at.
-_LINEARIZATION_HIGHSHELF_SLOPE = 6.0
+# The RBJ shelf's fixed Butterworth Q, expressed as CamillaDSP's own advanced-
+# shelf ``slope`` parametrization: mirrors jasper.sound.profile._SHELF_Q and
+# jasper.active_speaker.linearization_fit._HIGHSHELF_Q (both 1/sqrt(2)) --
+# CamillaDSP's advanced-shelf ``slope: 6.0`` realizes exactly that Q (see
+# jasper.sound.profile._biquad_coeffs's own comment: "Shelves use a fixed
+# Butterworth Q ... to mirror CamillaDSP's 6 dB/oct advanced-shelf emit").
+# BOTH shelf types the fit engine emits -- the rising-slope Highshelf and the
+# CD-horn Lowshelf backbone / trailing Highshelf taper (#1668) -- share this
+# one fixed Q, so this is the one and only slope any linearization shelf is
+# ever emitted at.
+_LINEARIZATION_SHELF_SLOPE = 6.0
 
 
 def _driver_linearization_shelf_name(role: str) -> str:
@@ -859,12 +861,49 @@ def _driver_linearization_peak_name(role: str, index: int) -> str:
     return f"as_{_name_token(role)}_linearization_peak_{index}"
 
 
+def _driver_linearization_taper_name(role: str) -> str:
+    # The CD-horn stage's optional TRAILING Highshelf taper (#1668). A distinct
+    # name from the leading shelf so both a Lowshelf-led backbone and its taper
+    # can coexist in one driver's chain without a duplicate filter name (which
+    # CamillaDSP would reject / silently collapse).
+    return f"as_{_name_token(role)}_linearization_taper"
+
+
+def _linearization_slot(
+    index: int, count: int, filters: Sequence[Mapping[str, Any]],
+) -> str:
+    """Classify one filter's role in a linearization chain by POSITION:
+    ``"shelf"`` (a leading Highshelf/Lowshelf at index 0), ``"taper"`` (a
+    trailing Highshelf after a Lowshelf lead, #1668), else ``"peak"``.
+
+    The single source of the shelf-first / taper-last structural rule, shared
+    by the validation gate, the chain namer, and the definition emitter so the
+    three can never disagree about which slot an entry occupies. It classifies
+    whatever order the input carries; enforcing that order is
+    ``_validate_linearization_shelf_structure``'s job (a shelf-type entry that
+    lands in a ``"peak"`` slot is what that gate rejects).
+    """
+    biquad_type = filters[index]["biquad_type"]
+    leading_is_lowshelf = count > 0 and filters[0]["biquad_type"] == "Lowshelf"
+    if index == 0 and biquad_type in ("Highshelf", "Lowshelf"):
+        return "shelf"
+    if (
+        index == count - 1
+        and index != 0
+        and biquad_type == "Highshelf"
+        and leading_is_lowshelf
+    ):
+        return "taper"
+    return "peak"
+
+
 # Public aliases (matching the driver_baseline_gain_name convention above):
 # the runtime-safety verifier (graph_evidence -> runtime_contract) re-proves
 # the linearization stage against the EMITTED graph text and must spell these
 # names identically rather than re-deriving the format.
 driver_linearization_shelf_name = _driver_linearization_shelf_name
 driver_linearization_peak_name = _driver_linearization_peak_name
+driver_linearization_taper_name = _driver_linearization_taper_name
 
 
 def _validated_linearization(
@@ -932,9 +971,41 @@ def _validated_linearization(
                 "q": q,
                 "gain": gain,
             })
+        _validate_linearization_shelf_structure(role, role_filters)
         if role_filters:
             safe[role] = role_filters
     return safe
+
+
+def _validate_linearization_shelf_structure(
+    role: str, role_filters: list[dict[str, Any]],
+) -> None:
+    """Fail-closed structural gate on shelf placement (#1668). The fit engine
+    only ever emits shelves in ONE of two shapes: a single LEADING shelf
+    (rising-slope Highshelf OR CD-horn Lowshelf backbone) at position 0, and —
+    only after a Lowshelf lead — a single TRAILING Highshelf taper as the last
+    entry. Everything else is Peaking. Any other shelf placement (a shelf mid-
+    chain, two leading shelves, a taper without a Lowshelf lead, a taper that
+    isn't last, a second Lowshelf) means the persisted candidate was corrupted
+    or produced by something other than the fit engine — raise, so a duplicate
+    filter name can never reach the graph. Peaking anywhere is always fine.
+    """
+    shelf_types = {"Highshelf", "Lowshelf"}
+    n = len(role_filters)
+    for i, entry in enumerate(role_filters):
+        biquad_type = entry["biquad_type"]
+        # A shelf-type entry is legal only where it occupies a shelf/taper slot;
+        # one that classifies as a "peak" slot (a shelf mid-chain, a second
+        # shelf, a taper without a Lowshelf lead, a taper not last) is invalid.
+        if (
+            biquad_type in shelf_types
+            and _linearization_slot(i, n, role_filters) == "peak"
+        ):
+            raise ActiveSpeakerConfigError(
+                f"linearization shelf placement for {role} is invalid: a "
+                f"{biquad_type} may only appear as the leading filter, or (a "
+                f"Highshelf taper) as the trailing filter after a Lowshelf lead"
+            )
 
 
 def _driver_linearization_chain_names(
@@ -942,19 +1013,26 @@ def _driver_linearization_chain_names(
     role: str,
 ) -> list[str]:
     """The filter-name list for ``role``'s linearization stage, one name per
-    entry in ``filters`` IN INPUT ORDER: a Highshelf entry gets the shelf
-    name, everything else gets the next peak name. This function does not
-    reorder or otherwise enforce "shelf first" -- it names whatever order
-    the input list already carries. Shelf-before-peaks is a construction
-    guarantee of the fit engine (``linearization_fit.fit_driver_linearization``),
-    not something enforced here."""
+    entry in ``filters`` IN INPUT ORDER: a leading shelf-type entry (Highshelf
+    OR CD-horn Lowshelf, #1668) at position 0 gets the shelf name; a TRAILING
+    Highshelf after a Lowshelf lead gets the taper name; everything else gets
+    the next peak name. This function does not reorder or otherwise enforce the
+    "shelf first / taper last" order -- it names whatever order the input list
+    already carries. That order is a construction guarantee of the fit engine
+    (``linearization_fit.fit_driver_linearization``) and is fail-closed re-
+    validated at the emitter boundary (``_validate_linearization_shelf_
+    structure``), not enforced here."""
 
     filters = linearization.get(role) or []
     names: list[str] = []
     peak_index = 0
-    for entry in filters:
-        if entry["biquad_type"] == "Highshelf":
+    count = len(filters)
+    for i in range(count):
+        slot = _linearization_slot(i, count, filters)
+        if slot == "shelf":
             names.append(_driver_linearization_shelf_name(role))
+        elif slot == "taper":
+            names.append(_driver_linearization_taper_name(role))
         else:
             peak_index += 1
             names.append(_driver_linearization_peak_name(role, peak_index))
@@ -966,25 +1044,38 @@ def _emit_driver_linearization_definitions(
 ) -> list[str]:
     """Definitions for every role's linearization filters, via the shared
     ``emit_filter_spec`` leaf (the same primitive preference-EQ bands use) so
-    a Peaking/Highshelf band is spelled identically everywhere in this
-    codebase. Highshelf entries always pass the fixed
-    ``_LINEARIZATION_HIGHSHELF_SLOPE`` -- see that constant's own comment for
-    why that is the one CamillaDSP slope equivalent to the fit engine's fixed
-    Butterworth Q; ``q`` is not carried onto a Highshelf FilterSpec since
-    ``emit_filter_spec`` reads ``slope`` (not ``q``) for shelf types.
+    a Peaking/Highshelf/Lowshelf band is spelled identically everywhere in
+    this codebase. Shelf-type entries (a leading Highshelf/Lowshelf, or a
+    trailing Highshelf taper after a Lowshelf lead, #1668) always pass the
+    fixed ``_LINEARIZATION_SHELF_SLOPE`` -- see that constant's own comment
+    for why that is the one CamillaDSP slope equivalent to the fit engine's
+    fixed Butterworth Q; ``q`` is not carried onto a shelf FilterSpec since
+    ``emit_filter_spec`` reads ``slope`` (not ``q``) for shelf types. Position-
+    aware naming mirrors ``_driver_linearization_chain_names`` exactly so the
+    emitted definitions and pipeline names cannot disagree.
     """
 
     lines: list[str] = []
     for role, filters in linearization.items():
         peak_index = 0
-        for entry in filters:
-            if entry["biquad_type"] == "Highshelf":
+        count = len(filters)
+        for i, entry in enumerate(filters):
+            slot = _linearization_slot(i, count, filters)
+            if slot == "shelf":
                 spec = FilterSpec(
                     name=_driver_linearization_shelf_name(role),
+                    biquad_type=entry["biquad_type"],
+                    freq=entry["freq"],
+                    gain=entry["gain"],
+                    slope=_LINEARIZATION_SHELF_SLOPE,
+                )
+            elif slot == "taper":
+                spec = FilterSpec(
+                    name=_driver_linearization_taper_name(role),
                     biquad_type="Highshelf",
                     freq=entry["freq"],
                     gain=entry["gain"],
-                    slope=_LINEARIZATION_HIGHSHELF_SLOPE,
+                    slope=_LINEARIZATION_SHELF_SLOPE,
                 )
             else:
                 peak_index += 1
@@ -2425,8 +2516,10 @@ def emit_active_speaker_baseline_config(
     are emitted immediately after that driver's crossover HP/LP and before
     bass-extension (mirrors the bass-extension addon's own slot exactly), via
     the shared ``emit_filter_spec`` primitive. Independently re-validated here
-    (``_validated_linearization``): ``biquad_type`` in {Peaking, Highshelf},
-    finite positive ``freq``/``q``, non-positive ``gain`` — a hardware-bound
+    (``_validated_linearization``): ``biquad_type`` in {Peaking, Highshelf,
+    Lowshelf}, finite positive ``freq``/``q``, non-positive ``gain``, plus the
+    fail-closed shelf-placement structure (one leading shelf, one optional
+    trailing Highshelf taper after a Lowshelf lead — #1668) — a hardware-bound
     safety invariant re-proved at the emitter boundary, not assumed from the
     caller. The empty default keeps every existing caller byte-identical.
     """

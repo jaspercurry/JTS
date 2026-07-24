@@ -203,6 +203,79 @@ far-field (near-field destroys inter-driver geometry, and a horn's response
 does not exist at its mouth). Below the near-field splice's own limits,
 bass and room layers own the problem with in-room instruments.
 
+### CD-horn compensation — the top-octave HF stage (#1668)
+
+The tweeter-on-a-horn measures a falling top octave (calibrated deficit
+≈ −2.5 dB @10k, −5.8 @12k, −8.6 @14k, −11.5 @16k relative to its trusted
+4–8 kHz band). The 4-lens review panel ruled this is the **horn's
+constant-directivity rolloff, not driver mass** — the compression driver is
+flat to ~16 k on its datasheet horn — so it is a broad, real, EQ-able trend
+**sized from measurement, not from the driver class.** The per-serial-calibrated
+UMIK-2 protocol resolves that band to ±1.5 dB @12k / ±2.3 @16k, and the deficit
+exceeds that 4–6×, so correcting the measured trend is objectively justified up
+to a ~16 kHz confidence ceiling. **Owner ethos: no subjectivity** — sizing is
+measurement; where measurement runs out, a declared-driver-type continuation
+policy takes over, disclosed as such.
+
+The stage (`_hf_continuation_stage`,
+[jasper/active_speaker/linearization_fit.py](../jasper/active_speaker/linearization_fit.py))
+runs AFTER the flattening peaking loop:
+
+- **Confidence ceiling from mic trust.** The ceiling is the mic-trust term's
+  taper-zero (~16.4 kHz reference tier); the knee is where its taper begins
+  (~8.2 kHz). Eligible only when the fit band reaches the ceiling region
+  (`fit_hi ≥ knee`) — woofers/mids fall out with no per-role branch.
+- **Repeat-agreement gate (objective, replaces judgment).** Per-bin spread
+  across the capture's repeats must stay under 1.0 dB below 10 kHz / 2.0 dB in
+  [10 k, ceiling] (the measurement-uncertainty research), else the stage is
+  suppressed (`repeat_disagreement`); <2 repeats → `insufficient_repeats`.
+- **Class-blind sizing (measured inverse).** C(f) = max(0, target − working)
+  over [onset, ceiling], rescaled to `spend = min(measured deficit, remaining
+  budget)`. Identical for two hold-class drivers on the same curve — the
+  mic-trust taper dominates the per-bin cap in the taper region, so the class
+  never touches the sizing. `measured_deficit_at_ceiling_db` reports the
+  UNCAPPED deficit so a budget-bound partial correction stays visible.
+- **Cut-domain realization + give-back.** cut_target = C − spend (≤ 0
+  everywhere) is realized with a Lowshelf backbone near the onset (gain ≈
+  −spend) + peaking cuts in the TRUSTED band; the top octave gets no filter.
+  Cutting everything below the compensation region by `spend` lets the flow's
+  trim re-solve level the branches back, raising the top octave RELATIVELY —
+  the acoustic lift with cut-only (hardware-safe) filters. A fit-quality gate
+  (realized vs cut_target, ±1.5 dB) suppresses a mis-shaped correction.
+- **Plateau vs taper by declared type — the class's ONLY authority.** Above the
+  ceiling nothing is measurable, so correction must not RISE.
+  `HF_CONTINUATION_POLICY`: **hold** (compression horn, soft/beryllium/diamond
+  dome, ribbon/AMT) keeps the lift constant; **taper** (metal dome, unknown)
+  appends one trailing Highshelf CUT at ceiling×1.25 that walks the lift back
+  down over the unseen band. Unknown → taper is the conservative default.
+- **Budget 12 (was 6) — a max-SPL ledger.** `MAX_NORMALIZATION_SPEND_DB` is
+  12 dB to cover the ~11.5 dB deficit; the spend drops the system's absolute
+  ceiling by ~spend (ordinary listening recovers via the volume knob), it is
+  NOT a listening-level cost. The literal-boost realization that reclaims the
+  physical L-pad margin instead of spending sensitivity is deferred until the
+  closed-loop verify layer (PR-E) can bound an unverified boost claim.
+- **Guard re-anchor.** The wild-trim guard in `_fit_linearization`
+  ([crossover_v2_flow.py](../jasper/active_speaker/crossover_v2_flow.py)) is
+  anchored to the ripple-optimal tweeter trim's OWN band-average seed, not the
+  raw trim. The seed is computed from the ACTUAL linearized branches
+  (`solve_branch_trims` on `W_lin`/`T_lin`) — never a "raw + expected shift"
+  decomposition, which would be wrong on two counts: `_band_average_db` is a
+  POWER-domain mean (10·log10 mean(10^(dB/10))), so a linearized level is not
+  its raw level plus the correction's dB band-average (exact only for a
+  band-flat correction, ~0.28 dB off otherwise); and the downward min-level
+  step can min-flip which branch is quieter under a large tweeter cut,
+  mispredicting by ~the full spend. A raw-anchored guard would reject every
+  honest give-back; the practical "shifts by ~the full spend vs raw" intuition
+  holds only because the give-back is ≈ band-flat (−spend) across the crossover
+  overlap band. On a wild seed drift it falls back to the band-average seed
+  pair, never raw + emitted filters (the known VERIFY-mismatch class).
+  Magnitude protection lives in the fit engine's structural caps (per-filter
+  12, budget 12, realization tolerance) plus the VERIFY gate.
+
+Disclosure: octave centers above the ceiling report
+`envelope_beyond_measurement_confidence`; beyond the ceiling the lift is
+declared best-effort, never a measured claim.
+
 ## Session operating model (how the implementing session runs)
 
 Fable is the brains, not the hands: architect, coordinator, debugger, and

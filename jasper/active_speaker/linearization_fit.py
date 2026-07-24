@@ -77,32 +77,44 @@ from .linearization_envelope import (
 # envelope's own allowed depth) — design doc "cuts generous (-12 dB, Q<=8)".
 PER_FILTER_CUT_CAP_DB: float = 12.0
 
-# The coordinator's ruling (new vs. the original design-doc brief, decided
-# 2026-07-23): a bound on TOTAL normalization spend across the whole fit —
-# how far below the driver's own core-passband peak the fit is allowed to
-# settle. Cut-only slope-flattening "spends" driver sensitivity (every dB
-# cut here is a dB of max-SPL headroom the corrected driver gives up); left
-# unbounded, a driver with a naturally rolling-off passband (e.g. a
-# compression driver approaching its own Fc rolloff) could have the fit
-# chase that rolloff arbitrarily deep, burning sensitivity for a shape the
-# driver was never going to deliver cleanly anyway. 6 dB is a starting
-# value — the owner's listening ladder is the actual arbiter of whether it
-# is too tight or too loose; this constant is the single knob to revisit.
+# The coordinator's ruling (original 6 dB decided 2026-07-23; RAISED to
+# 12 dB 2026-07-24 for CD-horn compensation give-back): a bound on TOTAL
+# normalization spend across the whole fit — how far below the driver's own
+# core-passband peak the fit is allowed to settle. Cut-only slope-flattening
+# and the CD-horn continuation stage both "spend" driver sensitivity (every
+# dB cut here is a dB of max-SPL headroom the corrected driver gives up);
+# left unbounded, a driver with a naturally rolling-off passband could have
+# the fit chase that rolloff arbitrarily deep, burning sensitivity for a
+# shape the driver was never going to deliver cleanly anyway.
 #
-# Enforcement (see _shelf_stage): the shelf's own gain is clamped so the
-# region it corrects never gets pulled more than this many dB below the
-# core-passband peak. `target_level_db` itself (the median used by BOTH the
-# shelf and the peaking loop) is left UNCLAMPED — it is a plain median of
-# the trusted core region (see _target_and_plateau_db) and in the
-# overwhelmingly common case already sits well within this budget of the
-# core's own peak. Only when a correction would additionally push a region
-# further down does the budget bind, and it binds the SHELF specifically
-# (the peaking loop's own per-bin envelope caps are a separate, independent
-# ceiling). A clamped shelf leaves an honest gap between the corrected
-# curve and target in its affected region — that gap is not hidden; it
-# shows up as ordinary fit residual (residual_max_db/residual_rms_db), not
-# a new reason code.
-MAX_NORMALIZATION_SPEND_DB: float = 6.0
+# Why 12 (was 6): a real compression-driver-on-a-horn measures a top-octave
+# constant-directivity rolloff of ~11.5 dB at the reference-tier confidence
+# ceiling (~16.4 kHz). The CD-horn continuation stage (_hf_continuation_stage)
+# realizes that lift in the cut domain — it cuts everything BELOW the
+# compensation region by `spend`, so the flow's trim re-solve then levels the
+# branches back up and the top octave lands `spend` dB higher RELATIVELY. To
+# give back the full measured deficit the budget must cover it, so 6 dB was
+# too tight (it capped the CD-horn lift at roughly half the measured trend).
+# The spend is a max-SPL LEDGER cost, not a listening-level cost: the system's
+# absolute ceiling drops by ~spend, but ordinary listening recovers it via the
+# volume knob. The literal-boost realization that would reclaim the physical
+# L-pad margin instead of spending sensitivity is deliberately DEFERRED until
+# the closed-loop verify layer (design doc build-order step 2 / PR-E) exists
+# to bound an unverified boost claim. This constant is the single knob the
+# owner's listening ladder revisits.
+#
+# Enforcement (see _shelf_stage and _hf_continuation_stage): a stage's spend
+# is clamped so the region it corrects never gets pulled more than the
+# REMAINING budget below the core-passband peak (`MAX_NORMALIZATION_SPEND_DB
+# − (plateau_level_db − target_level_db)`, floored at 0 — the plain
+# target-vs-plateau gap the core already spends is charged first).
+# `target_level_db` itself (the median used by the shelf and the peaking
+# loop) is left UNCLAMPED — a plain median of the trusted core region (see
+# _target_and_plateau_db). A clamped stage leaves an honest gap between the
+# corrected curve and target; for the CD-horn stage that gap is disclosed as
+# `measured_deficit_at_ceiling_db` (the uncapped measured deficit) so partial
+# correction is visible, not hidden.
+MAX_NORMALIZATION_SPEND_DB: float = 12.0
 
 # Linear-regression slope (dB per octave, over log2(f)) above which the fit
 # band is treated as a genuine tilted shelf shape (CD-horn compensation,
@@ -149,6 +161,95 @@ _HIGHSHELF_Q: float = 1.0 / math.sqrt(2.0)
 _OCTAVE_BAND_CENTERS_HZ: tuple[float, ...] = (
     250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0, 16000.0, 20000.0,
 )
+
+# --------------------------------------------------------------------------- #
+# CD-horn compensation stage constants (#1668)
+# --------------------------------------------------------------------------- #
+
+# Low bound of the CD-horn continuation stage's compensation/agreement band.
+# The measured top-octave deficit is expressed RELATIVE to the driver's
+# trusted 4-8 kHz band (owner brief, 2026-07-24), so agreement is checked
+# from 4 kHz up to the confidence ceiling — below 4 kHz the deficit is not
+# what this stage compensates.
+HF_COMPENSATION_BAND_LO_HZ: float = 4_000.0
+
+# Repeat-agreement gate (objective suppression). Per-bin spread (max-min
+# across the capture's repeat sweeps, ladder-smoothed) over the compensation
+# band [HF_COMPENSATION_BAND_LO_HZ, ceiling] must stay under these limits or
+# the stage is suppressed (no filters, reason="repeat_disagreement"). Two
+# tiers because measurement noise grows with frequency: 1.0 dB below 10 kHz,
+# 2.0 dB in [10 kHz, ceiling]. Sourced from the owner's per-serial-calibrated
+# UMIK-2 measurement-uncertainty research (2026-07-24): the stock-cal
+# protocol's own uncertainty is ~+/-1.5 dB @12 kHz / +/-2.3 dB @16 kHz, so
+# repeats disagreeing by more than these tighter limits are a red flag that
+# THIS capture is noisier than the protocol's baseline and its top-octave
+# trend should not be trusted enough to correct. This replaces any subjective
+# "does the curve look clean" judgment with a measured gate.
+HF_AGREEMENT_LIMIT_LOW_DB: float = 1.0
+HF_AGREEMENT_LIMIT_HIGH_DB: float = 2.0
+
+# The frequency (Hz) below which HF_AGREEMENT_LIMIT_LOW_DB applies (and at/
+# above which HF_AGREEMENT_LIMIT_HIGH_DB applies) within the agreement band.
+_HF_AGREEMENT_TIER_SPLIT_HZ: float = 10_000.0
+
+# Minimum sweep occurrences (primary + repeats) the agreement gate needs to
+# evaluate reproducibility — the N>=3-total "paired gate" (sigma-seeding
+# report finding 5). LOCKSTEP with the flow layer's
+# ``crossover_v2_flow.LINEARIZATION_MIN_PAIRED_OCCURRENCES`` (3); kept as a
+# local constant rather than imported because the flow imports THIS module
+# (a fit->flow import would be a cycle), mirroring this module's other
+# lockstep-duplicate constants. Below this the gate returns
+# "insufficient_repeats".
+_HF_MIN_OCCURRENCES: int = 3
+
+# The closed vocabulary of CD-horn continuation suppression reasons — every
+# non-empty ``hf_continuation_suppressed_reason`` a fit can carry. Pinned by a
+# test so a new suppression path can't ship an un-enumerated reason string.
+HF_SUPPRESSION_REASONS: frozenset[str] = frozenset({
+    "insufficient_repeats",
+    "repeat_disagreement",
+    "fit_quality",
+    "no_filter_budget",
+})
+
+# Max magnitude error (dB) tolerated between the realized cut-domain cascade
+# (lowshelf + peaking cuts) and the desired cut_target over [onset, ceiling].
+# Above this the whole stage is suppressed (reason="fit_quality") rather than
+# ship a mis-shaped correction — the realized shape, not just its peak, has
+# to track the measured inverse. 1.5 dB mirrors the crossover VERIFY
+# tolerance (owner ruling, 2026-07-24): a correction the fit engine cannot
+# realize to within the same tolerance the summed response is later verified
+# against is not worth emitting.
+HF_REALIZATION_TOLERANCE_DB: float = 1.5
+
+# Max cut (dB) of the "taper" continuation policy's single trailing Highshelf.
+# Above the confidence ceiling nothing is measurable, so for breakup-prone /
+# unknown driver tops the stage walks the relative lift back DOWN with a
+# gentle shelf cut of min(spend/2, this). Capped at 6 dB (owner ruling,
+# 2026-07-24) so the taper protects the unseen top without itself becoming a
+# large unverified move.
+HF_TAPER_MAX_DB: float = 6.0
+
+# Continuation policy above the confidence ceiling, keyed by DECLARED driver
+# class — the driver class's ONLY remaining authority over the CD-horn stage
+# (owner-confirmed 2026-07-24; sizing is class-blind, from measurement).
+# "hold": nothing extra above the ceiling — the cut_target is already 0 there,
+# so the relative lift stays constant and smooth by construction. Appropriate
+# for drivers whose top is trusted to keep extending (compression horn,
+# soft/beryllium/diamond domes, ribbon/AMT). "taper": append one trailing
+# Highshelf CUT that walks the lift back down above the band we cannot see —
+# for a rising-breakup metal dome, and for an UNKNOWN driver where the
+# conservative default is to not project a lift into a top we know nothing
+# about. Keys MUST cover DRIVER_CLASSES exactly (pinned by a test) so a new
+# declared class can never fall through to an undefined policy.
+HF_CONTINUATION_POLICY: Mapping[str, str] = {
+    "compression_horn": "hold",
+    "soft_dome": "hold",
+    "beryllium_diamond_dome": "hold",
+    "ribbon_amt": "hold",
+    "metal_dome": "taper",
+    "unknown": "taper",
+}
 
 
 def _ladder_smooth(grid_hz: np.ndarray, magnitude_db: np.ndarray) -> np.ndarray:
@@ -220,7 +321,7 @@ class LinearizationFilter:
     is always implicitly Peaking).
     """
 
-    biquad_type: str  # "Peaking" | "Highshelf"
+    biquad_type: str  # "Peaking" | "Highshelf" | "Lowshelf"
     freq: float
     q: float
     gain: float  # dB; always <= 0 (cut-only invariant)
@@ -275,6 +376,22 @@ class LinearizationFit:
     verify_residual_rms_db: float = 0.0
     verify_residual_max_db: float = 0.0
     observe_octave_summary: Mapping[str, float] = field(default_factory=dict)
+    # CD-horn compensation stage (#1668). All default to the zeroed/empty
+    # "did-not-fire" state so every driver/session that never runs the stage
+    # (woofers, mids, any driver whose fit band doesn't reach the confidence
+    # ceiling) serializes byte-identically to before this stage existed.
+    # ``hf_continuation_policy`` is "hold"/"taper" only when the stage fired;
+    # ``hf_continuation_suppressed_reason`` is set only when an objective gate
+    # (repeat disagreement / insufficient repeats / fit quality) suppressed it;
+    # ``measured_deficit_at_ceiling_db`` reports the UNCAPPED measured deficit
+    # at the ceiling (before the normalization-budget cap) so a partially-
+    # corrected top octave (budget bound the spend below the full deficit) is
+    # visible rather than silently rounded away.
+    hf_continuation_spend_db: float = 0.0
+    hf_continuation_ceiling_hz: float = 0.0
+    hf_continuation_policy: str = ""
+    hf_continuation_suppressed_reason: str = ""
+    measured_deficit_at_ceiling_db: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -292,6 +409,11 @@ class LinearizationFit:
             "verify_residual_rms_db": self.verify_residual_rms_db,
             "verify_residual_max_db": self.verify_residual_max_db,
             "observe_octave_summary": dict(self.observe_octave_summary),
+            "hf_continuation_spend_db": self.hf_continuation_spend_db,
+            "hf_continuation_ceiling_hz": self.hf_continuation_ceiling_hz,
+            "hf_continuation_policy": self.hf_continuation_policy,
+            "hf_continuation_suppressed_reason": self.hf_continuation_suppressed_reason,
+            "measured_deficit_at_ceiling_db": self.measured_deficit_at_ceiling_db,
         }
 
 
@@ -564,19 +686,20 @@ def _adaptive_band_trim(
     return fit_lo_idx, fit_hi_idx
 
 
-# DEFERRED (P2, 2026-07-24 adversarial review adjudication): a falling-slope
-# Lowshelf counterpart to the rising-slope Highshelf below. Not built — the
-# ruling was that a flat SUMMED response is the actual design goal, and the
-# crossover's own low-pass already owns a woofer's rolloff region
-# approaching Fc, so a driver's honest falling response there is not itself
-# a defect worth correcting. Revisit only with listening evidence that the
-# summed response actually suffers from it. If it is ever built, the
-# reviewed minimal shape is: trigger on a slope more negative than
-# ``-SHELF_SLOPE_THRESHOLD_DB_PER_OCT`` (the mirror of ``_shelf_stage``'s
-# own rising-slope trigger below), corner the shelf at ``fit_lo_hz``, and
-# extend ``MAX_NORMALIZATION_SPEND_DB``'s budget accounting to also cover
-# spend BELOW ``target_level_db`` (today's accounting only covers spend
-# above it — see that constant's own comment).
+# A falling top octave IS now compensated — by ``_hf_continuation_stage``
+# below, NOT by the falling-slope Lowshelf once sketched here. That earlier
+# "corner the shelf at ``fit_lo_hz``" guidance was the wrong shape: a shelf
+# cornered at the fit band's LOW edge would pull the whole band down, and its
+# budget accounting would have had to cover spend below ``target_level_db``.
+# The ruled CD-horn design (owner ruling + 4-lens panel, 2026-07-24) instead
+# corners a Lowshelf near the deficit's ONSET and works in the cut domain: it
+# cuts everything below the compensation region by ``spend`` so the flow's
+# trim re-solve levels the branches back and the top octave lands ``spend`` dB
+# higher RELATIVELY (the measured-inverse give-back). See
+# ``_hf_continuation_stage`` and docs/active-speaker-tuning-layers-design.md
+# "Layer 1a" HF section. ``_shelf_stage`` below stays the RISING-slope
+# Highshelf; the two are mutually exclusive (a genuinely rising response has
+# no falling top-octave deficit to compensate).
 def _shelf_stage(
     grid_hz: np.ndarray,
     smoothed_db: np.ndarray,
@@ -627,6 +750,307 @@ def _shelf_stage(
     )
 
 
+@dataclass(frozen=True)
+class _HfContinuation:
+    """Result of :func:`_hf_continuation_stage`.
+
+    ``filters`` is empty on every non-firing path (ineligible, skipped, or
+    suppressed). When the stage FIRES it is ``(lowshelf, *peaking_cuts,
+    taper?)`` in the emitter's shelf-first / taper-last order — the caller
+    inserts ``filters[0]`` (the Lowshelf backbone) at position 0 of the fit's
+    filter list and appends the rest. Every other field is zeroed/empty unless
+    the stage fired; ``suppressed_reason`` is the sole non-empty field on an
+    objective-gate suppression, everything else zeroed there too.
+    """
+
+    filters: tuple[LinearizationFilter, ...]
+    spend_db: float
+    ceiling_hz: float
+    policy: str
+    suppressed_reason: str
+    measured_deficit_at_ceiling_db: float
+
+
+# The empty/zeroed "did not fire, no objective suppression" result — an
+# ineligible driver or a nothing-to-do skip. Shared so those paths cannot
+# drift from each other.
+_HF_INERT = _HfContinuation(
+    filters=(), spend_db=0.0, ceiling_hz=0.0, policy="",
+    suppressed_reason="", measured_deficit_at_ceiling_db=0.0,
+)
+
+
+def _hf_suppressed(reason: str) -> _HfContinuation:
+    """An objective-gate suppression: no filters, only ``suppressed_reason``
+    set, everything else zeroed (design ruling: suppression is visible and
+    named, never a silent no-op)."""
+    return _HfContinuation(
+        filters=(), spend_db=0.0, ceiling_hz=0.0, policy="",
+        suppressed_reason=reason, measured_deficit_at_ceiling_db=0.0,
+    )
+
+
+def _hf_confidence_ceiling_and_knee_hz(
+    grid_hz: np.ndarray, mic_trust_term: np.ndarray,
+) -> tuple[float, float]:
+    """``(ceiling_hz, knee_hz)`` from the mic-trust term's own taper.
+
+    ``ceiling_hz`` is the first bin where mic-trust reaches ~0 (its taper-zero
+    — the frequency above which the calibrated mic resolves nothing, ~16.4 kHz
+    on the reference tier); ``grid_hz[-1]`` if the term never reaches 0 on this
+    grid. ``knee_hz`` is the first bin BELOW the ceiling sentinel (where the
+    taper begins) — the ``np.isclose(term, ENVELOPE_CEILING_SENTINEL_DB)``
+    test is deliberately the same one :func:`_core_or_fallback_mask` uses so
+    "still fully trusted" means one identical thing across this module.
+    """
+    zero_bins = np.flatnonzero(np.isclose(mic_trust_term, 0.0))
+    ceiling_hz = (
+        float(grid_hz[int(zero_bins[0])]) if zero_bins.size else float(grid_hz[-1])
+    )
+    below_sentinel = np.flatnonzero(
+        ~np.isclose(mic_trust_term, ENVELOPE_CEILING_SENTINEL_DB)
+    )
+    knee_hz = (
+        float(grid_hz[int(below_sentinel[0])])
+        if below_sentinel.size else float(grid_hz[-1])
+    )
+    return ceiling_hz, knee_hz
+
+
+def _hf_repeat_spread_ok(
+    grid_hz: np.ndarray,
+    primary: DriverResponse,
+    ceiling_hz: float,
+) -> str:
+    """The repeat-agreement gate. Returns an empty string when the repeats
+    agree well enough over the compensation band, else a suppression reason
+    (``"insufficient_repeats"`` / ``"repeat_disagreement"``).
+
+    Spread is the per-bin ``max - min`` across ALL of the capture's sweep
+    occurrences — the PRIMARY plus its ``repeat_responses`` — matching
+    :func:`jasper.active_speaker.linearization_envelope.compute_sigma_curve`'s
+    own occurrence set. The primary MUST be in the spread: the fit is sized
+    from the primary, so a primary that carries an outlier artifact its repeats
+    do not reproduce (e.g. a −12 dB top-octave glitch while two repeats agree
+    at −5) has to be caught here, or the stage would size a several-dB-too-hot
+    lift from that one bad sweep. Each occurrence is resampled + ladder-smoothed
+    onto the grid exactly as the primary is. Fewer than
+    :data:`_HF_MIN_OCCURRENCES` total occurrences is no reproducibility
+    evidence (the N>=3-total "paired gate," sigma-seeding report finding 5,
+    consistent with ``crossover_v2_flow.LINEARIZATION_MIN_PAIRED_OCCURRENCES``)
+    → suppressed. Otherwise the spread must stay under
+    :data:`HF_AGREEMENT_LIMIT_LOW_DB` below
+    :data:`_HF_AGREEMENT_TIER_SPLIT_HZ` and
+    :data:`HF_AGREEMENT_LIMIT_HIGH_DB` from there to the ceiling.
+    """
+    occurrences: tuple[DriverResponse, ...] = (primary, *primary.repeat_responses)
+    if len(occurrences) < _HF_MIN_OCCURRENCES:
+        return "insufficient_repeats"
+    smoothed = np.stack([
+        _ladder_smooth(grid_hz, np.interp(grid_hz, o.freqs_hz, o.magnitude_db))
+        for o in occurrences
+    ])
+    spread = np.max(smoothed, axis=0) - np.min(smoothed, axis=0)
+    band = (grid_hz >= HF_COMPENSATION_BAND_LO_HZ) & (grid_hz <= ceiling_hz)
+    low = band & (grid_hz < _HF_AGREEMENT_TIER_SPLIT_HZ)
+    high = band & (grid_hz >= _HF_AGREEMENT_TIER_SPLIT_HZ)
+    if np.any(spread[low] > HF_AGREEMENT_LIMIT_LOW_DB) or np.any(
+        spread[high] > HF_AGREEMENT_LIMIT_HIGH_DB
+    ):
+        return "repeat_disagreement"
+    return ""
+
+
+def _hf_continuation_stage(
+    grid_hz: np.ndarray,
+    working_db: np.ndarray,
+    target_level_db: float,
+    plateau_level_db: float,
+    envelope: EnvelopeCurve,
+    primary: DriverResponse,
+    fit_lo_hz: float,
+    fit_hi_hz: float,
+    filters: Sequence[LinearizationFilter],
+) -> _HfContinuation:
+    """The CD-horn compensation stage (#1668): measured-inverse top-octave
+    lift, realized cut-only via give-back. Runs AFTER the peaking loop.
+
+    The tweeter-on-a-horn measures a real, EQ-able falling top octave (the
+    horn's constant-directivity rolloff, not driver mass). This stage sizes a
+    lift from that MEASURED deficit (class-blind), realizes it in the CUT
+    domain — cut everything below the compensation region by ``spend`` so the
+    flow's trim re-solve levels the branches back and the top octave lands
+    ``spend`` dB higher RELATIVELY — and, only above the confidence ceiling
+    where nothing is measurable, applies a declared-driver-class continuation
+    policy (hold / taper). Objective gates (fit-band reach, repeat agreement,
+    realization fit-quality) suppress it rather than ship a guess. See the
+    module's own falling-slope note above ``_shelf_stage`` and
+    docs/active-speaker-tuning-layers-design.md.
+
+    Every filter it can emit is a cut (Lowshelf backbone + Peaking cuts +
+    optional Highshelf taper, all gain <= 0) — the fit engine's cut-only
+    invariant binds here too.
+    """
+    mic_trust = envelope.terms[ReasonCode.LIMITED_BY_MIC_TIER]
+    ceiling_hz, knee_hz = _hf_confidence_ceiling_and_knee_hz(grid_hz, mic_trust)
+
+    # -- Applicability (not-applicable → silent inert result) --------------
+    # Fit band must reach the confidence-ceiling region: a woofer/mid whose
+    # trimmed fit band tops out below the mic knee has no top-octave deficit
+    # to compensate. This is what keeps the stage role-agnostic without a
+    # per-role branch. A rising-slope Highshelf already emitted means the stage
+    # does not apply at all (mutual exclusivity: a genuinely rising response
+    # has no falling top-octave deficit). Both are "not this driver" — inert,
+    # no reason.
+    if fit_hi_hz < knee_hz:
+        return _HF_INERT
+    if any(f.biquad_type == "Highshelf" for f in filters):
+        return _HF_INERT
+    # The stage APPLIES but the flattening loop already spent every slot — a
+    # named suppression (observable via /state + doctor), not a silent inert,
+    # because it means an eligible CD-horn lift was dropped for lack of budget.
+    if len(filters) >= MAX_FILTERS_PER_DRIVER:
+        return _hf_suppressed("no_filter_budget")
+
+    # -- Agreement gate (objective suppression) ----------------------------
+    disagreement = _hf_repeat_spread_ok(grid_hz, primary, ceiling_hz)
+    if disagreement:
+        return _hf_suppressed(disagreement)
+
+    ceiling_idx = int(np.argmin(np.abs(grid_hz - ceiling_hz)))
+
+    # -- Desired compensation C(f) (the measured inverse) ------------------
+    deficit_db = target_level_db - working_db
+    measured_deficit_at_ceiling_db = float(max(0.0, deficit_db[ceiling_idx]))
+
+    # Onset: the first bin ABOVE the trusted band's lower half (its geometric
+    # midpoint) where the smoothed deficit rises through _MIN_FILTER_GAIN_DB
+    # AND stays positive all the way to the ceiling (a contiguous, real
+    # falling region — not a lone blip in the otherwise-flat trusted band).
+    # The trusted band is [fit_lo_hz, knee_hz]; its lower-half boundary is the
+    # geometric midpoint (log-domain, consistent with the smoothing ladder).
+    trusted_mid_hz = math.sqrt(max(fit_lo_hz, 1.0) * knee_hz)
+    onset_idx: int | None = None
+    for i in range(len(grid_hz)):
+        if grid_hz[i] <= trusted_mid_hz or i > ceiling_idx:
+            continue
+        if deficit_db[i] > _MIN_FILTER_GAIN_DB and bool(
+            np.all(deficit_db[i:ceiling_idx + 1] > 0.0)
+        ):
+            onset_idx = i
+            break
+    if onset_idx is None or measured_deficit_at_ceiling_db <= 0.0:
+        # No contiguous falling top octave (flat or rising) — nothing to do.
+        return _HF_INERT
+    onset_hz = float(grid_hz[onset_idx])
+
+    remaining_budget_db = max(
+        0.0, MAX_NORMALIZATION_SPEND_DB - (plateau_level_db - target_level_db)
+    )
+    spend = min(measured_deficit_at_ceiling_db, remaining_budget_db)
+    if spend < _MIN_FILTER_GAIN_DB:
+        # Nothing meaningful to give back (the budget is exhausted or the
+        # measured deficit is sub-threshold). Skip, no reason — this is an
+        # honest no-op, not an objective suppression.
+        return _HF_INERT
+
+    # C(f): 0 below onset, the deficit rescaled so it hits exactly ``spend`` at
+    # the ceiling, clamped to [0, spend], and held at ``spend`` above the
+    # ceiling (the plateau — correction never RISES past confidence).
+    scale = spend / measured_deficit_at_ceiling_db
+    compensation_db = np.zeros_like(grid_hz)
+    band = (np.arange(len(grid_hz)) >= onset_idx) & (np.arange(len(grid_hz)) <= ceiling_idx)
+    compensation_db[band] = np.clip(
+        np.maximum(0.0, deficit_db[band]) * scale, 0.0, spend
+    )
+    compensation_db[np.arange(len(grid_hz)) > ceiling_idx] = spend
+    # Cut-domain transform: cut_target <= 0 everywhere — -spend below the
+    # onset, rising smoothly to 0 at the ceiling, 0 above (the "hold").
+    cut_target_db = compensation_db - spend
+
+    # -- Cut-domain realization: Lowshelf backbone + peaking residual ------
+    # One Lowshelf cornered near the onset carries the backbone give-back;
+    # biquad cascades commute acoustically, so inserting it at filter position
+    # 0 (the emitter's shelf-before-peaks contract) is order-safe regardless
+    # of the peaking cuts the flattening loop already placed.
+    lowshelf = LinearizationFilter(
+        biquad_type="Lowshelf", freq=onset_hz, q=_HIGHSHELF_Q, gain=-spend,
+    )
+    lowshelf_db = 20.0 * np.log10(
+        np.maximum(np.abs(complex_correction_response((lowshelf,), grid_hz)), 1e-12)
+    )
+
+    # Reserve slots: 1 for the lowshelf, 1 for a taper if the policy wants one.
+    policy = HF_CONTINUATION_POLICY[envelope.driver_class]
+    slots_free = MAX_FILTERS_PER_DRIVER - len(filters)
+    peaking_slots = slots_free - 1
+    if policy == "taper" and peaking_slots >= 1:
+        peaking_slots -= 1
+    peaking_slots = max(0, peaking_slots)
+
+    # Fit the residual (cut_target - lowshelf) with peaking cuts, capped
+    # per-bin by min(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db) exactly
+    # as the flattening loop does. The cuts land in the TRUSTED band (where the
+    # lowshelf floor hasn't fully settled and near its corner), so the honesty
+    # envelope's per-bin caps are naturally satisfied; the top octave itself
+    # gets NO peaking filter — its lift arrives via the give-back.
+    per_bin_cap_db = -np.minimum(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db)
+    hf_peaks: list[LinearizationFilter] = []
+    if peaking_slots > 0:
+        peqs = design_peq(
+            lowshelf_db, cut_target_db, grid_hz,
+            f_low=fit_lo_hz, f_high=ceiling_hz,
+            max_filters=peaking_slots,
+            max_cut_db=per_bin_cap_db,
+            max_boost_db=0.0,
+            cuts_only=True,
+            flatness_target_db=_PEAKING_FLATNESS_TARGET_DB,
+            q_max=_PEAKING_Q_MAX,
+            min_filter_gain_db=_MIN_FILTER_GAIN_DB,
+        )
+        hf_peaks = [
+            LinearizationFilter(biquad_type="Peaking", freq=p.freq, q=p.q, gain=p.gain)
+            for p in peqs
+        ]
+
+    # Fit-quality check: the realized cut cascade (lowshelf + peaks) must track
+    # cut_target across [onset, ceiling] to within HF_REALIZATION_TOLERANCE_DB,
+    # or the whole stage is suppressed rather than ship a mis-shaped lift. The
+    # single complex_correction_response seam (never a magnitude duplicate).
+    realized = tuple([lowshelf, *hf_peaks])
+    realized_db = 20.0 * np.log10(
+        np.maximum(np.abs(complex_correction_response(realized, grid_hz)), 1e-12)
+    )
+    check_band = (grid_hz >= onset_hz) & (grid_hz <= ceiling_hz)
+    if check_band.any():
+        max_err = float(np.max(np.abs(realized_db - cut_target_db)[check_band]))
+        if max_err > HF_REALIZATION_TOLERANCE_DB:
+            return _hf_suppressed("fit_quality")
+
+    # -- Continuation policy above the ceiling (declared class's authority) -
+    emitted = [lowshelf, *hf_peaks]
+    if policy == "taper" and len(filters) + len(emitted) < MAX_FILTERS_PER_DRIVER:
+        # One trailing Highshelf CUT above ceiling*1.25 walks the relative lift
+        # back DOWN across the band we cannot see — protecting an unknown /
+        # breakup-prone top from a projected lift with no measurement behind
+        # it. Appended LAST (the emitter's taper-last construction contract).
+        taper_gain = -min(spend / 2.0, HF_TAPER_MAX_DB)
+        if -taper_gain >= _MIN_FILTER_GAIN_DB:
+            emitted.append(LinearizationFilter(
+                biquad_type="Highshelf", freq=ceiling_hz * 1.25,
+                q=_HIGHSHELF_Q, gain=taper_gain,
+            ))
+
+    return _HfContinuation(
+        filters=tuple(emitted),
+        spend_db=spend,
+        ceiling_hz=ceiling_hz,
+        policy=policy,
+        suppressed_reason="",
+        measured_deficit_at_ceiling_db=measured_deficit_at_ceiling_db,
+    )
+
+
 def fit_driver_linearization(
     primary: DriverResponse, envelope: EnvelopeCurve,
 ) -> LinearizationFit:
@@ -651,6 +1075,13 @@ def fit_driver_linearization(
       5. Peaking loop: ``jasper.correction.peq.design_peq`` on the
          post-shelf residual, cuts-only, capped per-bin by
          ``min(PER_FILTER_CUT_CAP_DB, envelope.allowed_depth_db)``.
+      6. CD-horn compensation stage (``_hf_continuation_stage``, #1668): for a
+         driver whose fit band reaches the confidence ceiling, a measured-
+         inverse top-octave lift realized cut-only via give-back (a Lowshelf
+         backbone + peaking cuts, plus a declared-class continuation policy
+         above the ceiling). Gated by repeat agreement and realization
+         fit-quality. When it fires, the residual/verify/observe claims are
+         computed in the give-back frame (``target_level_db - spend``).
 
     Returns a :class:`LinearizationFit` with zero filters (an honest no-op)
     when the envelope allows correction nowhere.
@@ -714,30 +1145,66 @@ def fit_driver_linearization(
                 for p in peqs
             )
 
+    # CD-horn compensation stage (#1668): measured-inverse top-octave lift,
+    # realized cut-only via give-back. Runs AFTER the peaking loop so its
+    # deficit is measured against the post-flattening working curve.
+    hf = _hf_continuation_stage(
+        grid_hz, working_db, target_level_db, plateau_level_db,
+        envelope, primary, fit_lo_hz, fit_hi_hz, filters,
+    )
+    if hf.filters:
+        # The Lowshelf backbone goes to position 0 (the emitter's shelf-before-
+        # peaks contract); the peaking cuts + optional taper are appended after
+        # the flattening peaks (which are all Peaking, so order is preserved).
+        filters = [hf.filters[0], *filters, *hf.filters[1:]]
+        working_db = working_db + 20.0 * np.log10(
+            np.maximum(np.abs(complex_correction_response(hf.filters, grid_hz)), 1e-12)
+        )
+
     # N1 (adversarial review, 2026-07-24): an explicit raise, not a bare
     # `assert` -- this is a safety invariant on HARDWARE-BOUND output (a
     # filter here eventually reaches a real driver's EQ), and `assert` is
-    # stripped entirely under `python -O`. A future bug in the shelf/PEQ
-    # stages above must still be caught in every runtime mode, not just an
-    # unoptimized one.
+    # stripped entirely under `python -O`. A future bug in the shelf/PEQ/
+    # CD-horn stages above must still be caught in every runtime mode, not
+    # just an unoptimized one.
     if any(f.gain > 0.0 for f in filters):
         raise RuntimeError("linearization fit emitted a boost")
 
-    residual = (working_db - target_level_db)[band_mask]
+    # Give-back frame: when the CD-horn stage fired it cut the whole band by
+    # `spend` so the flow's trim re-solve levels the branches back — so the
+    # honest "flat" reference for the residual/verify/observe claims is
+    # `target_level_db - spend`, not the original median. `hf.spend_db` is 0
+    # when the stage did not fire, so untouched paths keep the original frame.
+    # The `target_level_db` FIELD still reports the original median.
+    frame_target_db = target_level_db - hf.spend_db
+    residual = (working_db - frame_target_db)[band_mask]
     residual_rms_db = float(np.sqrt(np.mean(residual ** 2))) if residual.size else 0.0
     residual_max_db = float(np.max(np.abs(residual))) if residual.size else 0.0
 
     # Honesty-ladder levels 2/3 (#1668 PR-D) — see LinearizationFit's own
-    # docstring. Computed over the SAME post-filter working_db/target_level_db
-    # the FIT claim above used, just wider/full-range bands.
+    # docstring. Computed over the SAME post-filter working_db and give-back
+    # frame the FIT claim above used, just wider/full-range bands.
     verify_band_hz, verify_residual_rms_db, verify_residual_max_db = (
         _verify_band_and_residual(
-            grid_hz, working_db, target_level_db, fit_lo_hz, fit_hi_hz,
+            grid_hz, working_db, frame_target_db, fit_lo_hz, fit_hi_hz,
         )
     )
     observe_octave_summary = _observe_octave_summary(
-        grid_hz, working_db, target_level_db,
+        grid_hz, working_db, frame_target_db,
     )
+
+    # Reason summary: octave centers ABOVE the confidence ceiling are disclosed
+    # as beyond-measurement-confidence when the CD-horn stage fired (their
+    # relative lift is a declared-class continuation, not a measured claim).
+    reason_summary = _octave_band_reason_summary(envelope)
+    if hf.filters:
+        reason_summary = {
+            center: (
+                ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE.value
+                if float(center) > hf.ceiling_hz else code
+            )
+            for center, code in reason_summary.items()
+        }
 
     return LinearizationFit(
         role=envelope.role,
@@ -746,7 +1213,7 @@ def fit_driver_linearization(
         target_level_db=target_level_db,
         residual_rms_db=residual_rms_db,
         residual_max_db=residual_max_db,
-        reason_summary=_octave_band_reason_summary(envelope),
+        reason_summary=reason_summary,
         mic_tier=envelope.mic_tier,
         driver_class=envelope.driver_class,
         n_repeats=envelope.n_repeats,
@@ -754,4 +1221,9 @@ def fit_driver_linearization(
         verify_residual_rms_db=verify_residual_rms_db,
         verify_residual_max_db=verify_residual_max_db,
         observe_octave_summary=observe_octave_summary,
+        hf_continuation_spend_db=hf.spend_db,
+        hf_continuation_ceiling_hz=hf.ceiling_hz,
+        hf_continuation_policy=hf.policy,
+        hf_continuation_suppressed_reason=hf.suppressed_reason,
+        measured_deficit_at_ceiling_db=hf.measured_deficit_at_ceiling_db,
     )

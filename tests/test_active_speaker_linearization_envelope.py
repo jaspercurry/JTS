@@ -762,8 +762,12 @@ def test_reason_code_vocabulary_is_stable():
         ReasonCode.LIMITED_BY_VERIFY_DIVERGENCE
         == "envelope_limited_by_verify_divergence"
     )
+    assert (
+        ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE
+        == "envelope_beyond_measurement_confidence"
+    )
     assert ReasonCode.OUT_OF_BAND == "envelope_out_of_band"
-    assert len(list(ReasonCode)) == 8
+    assert len(list(ReasonCode)) == 9
 
 
 def test_mic_tiers_and_driver_classes_vocabulary_is_stable():

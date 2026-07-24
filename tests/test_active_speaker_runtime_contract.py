@@ -25,6 +25,8 @@ from jasper.active_speaker import (
 from jasper.active_speaker.camilla_yaml import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
+    driver_linearization_shelf_name,
+    driver_linearization_taper_name,
 )
 from jasper.active_speaker.runtime_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
@@ -1632,6 +1634,103 @@ def _classify_baseline(text: str):
 def _dump_baseline(base: str, payload: dict) -> str:
     source = next(line for line in base.splitlines() if line.startswith("# Source:"))
     return f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+
+# --- #1668 CD-horn linearization: Lowshelf-led + trailing-taper re-proof -----
+#
+# The emit<->re-proof keystone for the CD-horn stage's new shelf shapes. A
+# Lowshelf backbone at the shelf slot (with and without a trailing Highshelf
+# taper) must reprove as approved; a rising-slope Highshelf must still be
+# accepted at the shelf slot; and a wrong subtype or positive gain tampered
+# into either the shelf or taper slot must fail closed.
+
+
+def _cd_lowshelf() -> dict:
+    return {"biquad_type": "Lowshelf", "freq": 8400.0, "q": 0.7071067811865476, "gain": -11.0}
+
+
+def _cd_highshelf() -> dict:
+    return {"biquad_type": "Highshelf", "freq": 6000.0, "q": 0.7071067811865476, "gain": -3.0}
+
+
+def _cd_taper() -> dict:
+    return {"biquad_type": "Highshelf", "freq": 20500.0, "q": 0.7071067811865476, "gain": -5.0}
+
+
+def _cd_peak(freq: float, gain: float) -> dict:
+    return {"biquad_type": "Peaking", "freq": freq, "q": 3.0, "gain": gain}
+
+
+def _cd_linearized_baseline(linearization: dict) -> str:
+    return emit_active_speaker_baseline_config(
+        ActiveSpeakerPreset.from_mapping(_two_way_preset("mono")),
+        playback_device=ACTIVE_PCM,
+        linearization=linearization,
+    )
+
+
+def test_cd_horn_lowshelf_led_graph_reproves_safe() -> None:
+    text = _cd_linearized_baseline({"tweeter": [_cd_lowshelf(), _cd_peak(6000.0, -5.0)]})
+    graph = _classify_baseline(text)
+    assert graph.allowed is True
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+
+def test_cd_horn_lowshelf_led_with_taper_graph_reproves_safe() -> None:
+    text = _cd_linearized_baseline(
+        {"tweeter": [_cd_lowshelf(), _cd_peak(6000.0, -5.0), _cd_taper()]}
+    )
+    graph = _classify_baseline(text)
+    assert graph.allowed is True
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+
+def test_cd_horn_highshelf_still_accepted_at_shelf_slot() -> None:
+    text = _cd_linearized_baseline({"tweeter": [_cd_highshelf(), _cd_peak(3400.0, -1.5)]})
+    graph = _classify_baseline(text)
+    assert graph.allowed is True
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+
+@pytest.mark.parametrize("bad_type", ["Peaking", "Notch"])
+def test_cd_horn_wrong_subtype_at_shelf_slot_fails_closed(bad_type: str) -> None:
+    text = _cd_linearized_baseline({"tweeter": [_cd_lowshelf(), _cd_peak(6000.0, -5.0)]})
+    payload = yaml.safe_load(text)
+    name = driver_linearization_shelf_name("tweeter")
+    payload["filters"][name]["parameters"]["type"] = bad_type
+    graph = _classify_baseline(_dump_baseline(text, payload))
+    assert graph.allowed is False
+
+
+def test_cd_horn_positive_gain_at_shelf_slot_fails_closed() -> None:
+    text = _cd_linearized_baseline({"tweeter": [_cd_lowshelf(), _cd_peak(6000.0, -5.0)]})
+    payload = yaml.safe_load(text)
+    name = driver_linearization_shelf_name("tweeter")
+    payload["filters"][name]["parameters"]["gain"] = 2.0
+    graph = _classify_baseline(_dump_baseline(text, payload))
+    assert graph.allowed is False
+
+
+def test_cd_horn_wrong_subtype_at_taper_slot_fails_closed() -> None:
+    text = _cd_linearized_baseline(
+        {"tweeter": [_cd_lowshelf(), _cd_peak(6000.0, -5.0), _cd_taper()]}
+    )
+    payload = yaml.safe_load(text)
+    name = driver_linearization_taper_name("tweeter")
+    payload["filters"][name]["parameters"]["type"] = "Lowshelf"  # taper slot is Highshelf-only
+    graph = _classify_baseline(_dump_baseline(text, payload))
+    assert graph.allowed is False
+
+
+def test_cd_horn_positive_gain_at_taper_slot_fails_closed() -> None:
+    text = _cd_linearized_baseline(
+        {"tweeter": [_cd_lowshelf(), _cd_peak(6000.0, -5.0), _cd_taper()]}
+    )
+    payload = yaml.safe_load(text)
+    name = driver_linearization_taper_name("tweeter")
+    payload["filters"][name]["parameters"]["gain"] = 1.0
+    graph = _classify_baseline(_dump_baseline(text, payload))
+    assert graph.allowed is False
 
 
 def _isolated_baseline_yaml(
