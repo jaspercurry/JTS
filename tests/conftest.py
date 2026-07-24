@@ -56,16 +56,40 @@ if sys.version_info < (3, 11):
 # second of pure teardown sleep.
 #
 # Measured on this machine, one start/request/shutdown cycle:
-#   default (0.5 s poll) : 418 ms mean  (max 507 ms)
-#   poll_interval=0.01   :   9 ms mean  (max  12 ms)
+#   default (0.5 s poll) : ~500 ms median  (max 502 ms)
+#   poll_interval=0.01   :   ~11 ms median (max  13 ms)
 #
-# tests/test_control_server.py alone has 220 tests and spent ~90 s almost
-# entirely here; the 23 affected files were together ~23% of total suite
-# runtime. Lowering the default is a pure latency win: poll_interval only
+# Quote the MEDIAN, not the mean: the mean wanders between runs (418-500 ms
+# observed) because a fraction of cycles hit a race where the accept loop
+# notices the shutdown flag without ever consulting poll_interval. That race
+# is real and is why tests/test_server_shutdown_latency.py asserts the
+# explicit-override property by interception rather than by timing.
+#
+# tests/test_control_server.py alone has 233 tests and spent ~90 s almost
+# entirely here (~9 s after); the 23 affected files (51 call sites, exactly
+# one already passing poll_interval) were together ~23% of LOCAL suite
+# runtime, and a local full-suite A/B moved 483 s -> 346 s at -n 4.
+#
+# The CI gain is smaller, and the reason matters. Measured on the merge
+# commit: py3.11 350 s, py3.13 358 s, py3.12 375 s, against a 428-431 s
+# baseline. `ci` waits on ALL THREE matrix legs, so the gate improves by the
+# SLOWEST leg: 375 s, i.e. about -12%, not the -28% the local A/B suggests.
+#
+# Fewer cores recover LESS of this, not more. On a 10-core box with -n 4
+# there are idle cores, so a worker parked in select() is pure added wall
+# time and removing it returns ~1:1. On a 4-vCPU runner with -n 4 a parked
+# worker yields its core to a sibling's CPU-bound work, so part of the sleep
+# was already hidden behind useful work and cannot be recovered. Do not
+# re-derive this as "the sleep is identical regardless of CPU count" — that
+# reasoning is backwards and predicts the wrong direction.
+#
+# Lowering the default is still a pure latency win: poll_interval only
 # controls how often the accept loop wakes to re-check the flag, so it
 # changes no request handling, no ordering, and no isolation. Tests that
 # want a different cadence still pass `poll_interval=` explicitly, which
-# continues to win because this only rebinds the DEFAULT.
+# continues to win because this only rebinds the DEFAULT
+# (tests/test_control_server.py's serve_forever heartbeat test is the live
+# example, and tests/test_server_shutdown_latency.py pins the forwarding).
 #
 # Deliberately scoped to the test suite. Production keeps the lazy 0.5 s
 # poll (jasper/web/*_setup.py, jasper/control/server.py): there the trade
@@ -80,6 +104,12 @@ def _serve_forever_with_fast_shutdown(
     self: socketserver.BaseServer,
     poll_interval: float = SERVER_POLL_INTERVAL_SEC,
 ) -> None:
+    """socketserver.BaseServer.serve_forever with a test-suite default.
+
+    Identical to the stdlib method except that `poll_interval` defaults to
+    SERVER_POLL_INTERVAL_SEC instead of 0.5 s. Resolves the original as a
+    module global so a test can intercept the forwarding call.
+    """
     return _stdlib_serve_forever(self, poll_interval)
 
 
