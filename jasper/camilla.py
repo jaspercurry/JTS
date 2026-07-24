@@ -91,6 +91,22 @@ def _level_pair(levels: Sequence[float | None] | None) -> tuple[float, float]:
     return left, right
 
 
+def _level_list(levels: Sequence[float | None] | None) -> list[float]:
+    """List analog of `_level_pair`: normalizes Camilla's full per-channel
+    meter return shape without truncating or mirroring down to a stereo
+    pair. Every channel Camilla reports is preserved, in order.
+
+    Per-element ``None`` (an individual channel Camilla reports as silent
+    or unavailable) normalizes to ``float("-inf")``, exactly like
+    `_level_pair`. An empty or missing ``levels`` (no channel data at all)
+    returns an empty list — the list analog of `_level_pair`'s
+    ``(-inf, -inf)`` sentinel pair.
+    """
+    if not levels:
+        return []
+    return [float(v) if v is not None else float("-inf") for v in levels]
+
+
 class CamillaUnavailable(Exception):
     """CamillaDSP websocket can't be reached after a reconnect attempt.
 
@@ -451,6 +467,43 @@ class CamillaController:
             if best_effort:
                 logger.debug(
                     "camilla unavailable; get_playback_peak -> None: %s", e,
+                )
+                return None
+            raise
+
+    async def get_playback_peak_all(
+        self, *, best_effort: bool = False,
+    ) -> list[float] | None:
+        """Full per-channel playback peak in dBFS for the last processed
+        chunk.
+
+        `get_playback_peak` is the stereo-master metering surface: it
+        truncates/mirrors CamillaDSP's per-channel meter down to a 2-tuple
+        via `_level_pair` and remains the surface for main L/R metering.
+        This method is additive to it, not a replacement — it exists for
+        multi-channel owner metering (the bass-extension bench R10 live
+        cross-check's planned stereo extension, issue #1723), where an
+        "owner" channel can live beyond index 0/1. It returns every channel
+        CamillaDSP reports, in channel order, with no truncation and no
+        mirroring. It reuses the exact same `c.levels.playback_peak()`
+        websocket call `get_playback_peak` uses — no new websocket surface.
+
+        Returns an empty list when Camilla reports no channel data at all
+        (the list analog of `_level_pair`'s ``(-inf, -inf)`` sentinel pair
+        used by `get_playback_peak`); an individual channel Camilla reports
+        as ``None`` normalizes to ``float("-inf")``, same as
+        `get_playback_peak`. Returns None if ``best_effort=True`` and
+        camilla is unreachable.
+        """
+        def read(c):
+            return _level_list(c.levels.playback_peak())
+        try:
+            return await self._call(read)
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_playback_peak_all -> None: %s",
+                    e,
                 )
                 return None
             raise
