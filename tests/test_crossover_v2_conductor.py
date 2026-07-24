@@ -83,7 +83,6 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     SegmentLocation,
     predicted_branch_sum,
-    solve_branch_trims,
 )
 from jasper.capture_relay.session import (
     CaptureBeginDeferred,
@@ -2692,19 +2691,18 @@ def test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_optimal
         assert role_fit["driver_class"] == "unknown"
 
 
-def test_fit_linearization_wires_ripple_optimal_seeded_by_linearized_band_average(
+def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     monkeypatch,
 ):
-    """#1667 wiring (linearized population): `_fit_linearization`'s re-solve
-    must call `solve_ripple_optimal_trim` on the LINEARIZED branch pair — not
-    merely trust `solve_branch_trims`'s band-average on that pair directly.
-    Spies on the module-level imported name (mirrors
-    test_build_candidate_threads_overlap_band_into_trim_and_ripple's spy on
-    program_analysis._ripple_db) to pin that the call happened exactly once,
-    seeded by solve_branch_trims's own band-average result on the SAME
-    linearized pair (not the raw candidate's band-average), with the
-    woofer's linearized trim held fixed and the analysis's own polarity
-    sign passed through."""
+    """#1668 anchored give-back: `_fit_linearization`'s ripple fine-tune must be
+    seeded by the ANCHORED trim — each branch's own raw candidate trim plus the
+    level its emitted cascade removed from its reference band
+    (`LinearizationFit.correction_giveback_db`), normalized non-positive — NOT
+    the old `solve_branch_trims` overlap-band average on the linearized pair
+    (which under-returned the give-back on the live JTS3 runs). Spies on the
+    module-level imported name to pin that the call happened exactly once, with
+    the anchored woofer trim held fixed and the analysis's own polarity sign
+    passed through."""
     from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     calls = []
@@ -2732,16 +2730,18 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_linearized_band_averag
     call = calls[0]
     assert call["fc_hz"] == FC_HZ
     assert call["sign"] == 1  # _alignment()'s default polarity="normal"
-    # Seeded by the LINEARIZED band-average (re-derived here the same way
-    # _fit_linearization does, on the SAME W_lin/T_lin this call received)
-    # -- not the raw candidate's -2.211 band-average.
-    expected_trim_w_lin, expected_seed, _lw, _lt = solve_branch_trims(
-        call["freqs"], call["w_tf"], call["t_tf"], FC_HZ,
-        lo_hz=call["lo_hz"], hi_hz=call["hi_hz"],
-    )
-    assert call["trim_w_db"] == pytest.approx(expected_trim_w_lin)
-    assert call["seed_trim_db"] == pytest.approx(expected_seed)
-    assert call["seed_trim_db"] != pytest.approx(-2.211)  # NOT the raw candidate's seed
+    # Anchored seed = raw trim + that branch's own measured give-back, with the
+    # shared non-positive normalization shift applied to both roles.
+    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    giveback = {
+        role: c.candidate.linearization[role]["correction_giveback_db"]
+        for role in ("woofer", "tweeter")
+    }
+    unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
+    shift = max(0.0, max(unnormalized.values()))
+    expected_anchored = {r: v - shift for r, v in unnormalized.items()}
+    assert call["trim_w_db"] == pytest.approx(expected_anchored["woofer"])
+    assert call["seed_trim_db"] == pytest.approx(expected_anchored["tweeter"])
 
     # The call's own return value is exactly what the conductor applied
     # (modulo the sanity guard, which this fixture's default does not trip
@@ -2909,14 +2909,14 @@ def test_large_raw_shift_is_accepted_by_seed_anchored_guard(caplog):
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
 
 
-def test_wild_seed_drift_falls_back_to_seed_pair_with_warning(caplog, monkeypatch):
-    """#1668 CD-horn re-anchor, guard pair (b): when the ripple-optimal tweeter
-    re-solve drifts implausibly far from its OWN band-average seed, the guard
-    fires and the conductor falls back to the band-average SEED pair — NOT the
-    raw trim (raw trim + emitted filters is the known VERIFY-mismatch class).
-    The rejection event carries seed_trim_db/fallback_trim_db. Crafting a scan
-    that walks that far from its seed against a synthetic fixture is awkward, so
-    the ripple-optimal solve is monkeypatched to return a far-from-seed trim."""
+def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkeypatch):
+    """#1668 anchored give-back, guard pair (b): when the ripple-optimal tweeter
+    scan drifts implausibly far from the ANCHOR, the guard fires and the
+    conductor falls back to the ANCHORED pair — NOT the raw trim (raw trim +
+    emitted filters is the known VERIFY-mismatch class). The rejection event
+    carries anchored_trim_db/fallback_trim_db. Crafting a scan that walks that
+    far against a synthetic fixture is awkward, so the ripple-optimal solve is
+    monkeypatched to return a far-from-anchor trim."""
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
 
@@ -2924,7 +2924,7 @@ def test_wild_seed_drift_falls_back_to_seed_pair_with_warning(caplog, monkeypatc
 
     def _spy(*args, **kwargs):
         captured.update(kwargs)
-        # Force the resolved tweeter trim 20 dB below its band-average seed.
+        # Force the resolved tweeter trim 20 dB below the anchored seed.
         return kwargs["seed_trim_db"] - 20.0, 0.0, kwargs["seed_trim_db"]
 
     monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
@@ -2936,18 +2936,99 @@ def test_wild_seed_drift_falls_back_to_seed_pair_with_warning(caplog, monkeypatc
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
-    # Committed the SEED pair (woofer=trim_w_lin, tweeter=band-average seed),
-    # NOT the raw trim and NOT the wild resolved value.
+    # Committed the ANCHORED pair, NOT the raw trim and NOT the wild scan value.
     committed = c.candidate.role_attenuations_db
     assert set(committed) == {"woofer", "tweeter"}
     assert committed["woofer"] == pytest.approx(captured["trim_w_db"])
     assert committed["tweeter"] == pytest.approx(captured["seed_trim_db"])
     assert committed != far_raw_trim
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    assert "seed_trim_db=" in caplog.text
+    assert "anchored_trim_db=" in caplog.text
     assert "fallback_trim_db=" in caplog.text
     # linearization itself still gets reported — only the trim falls back.
     assert set(c.candidate.linearization) == {"woofer", "tweeter"}
+
+
+def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
+    """#1668 anchored give-back, the core math: each role's committed trim is
+    its raw trim plus that branch's own measured `correction_giveback_db`, with
+    a shared shift applied so no role lands POSITIVE (a boost the emitter would
+    refuse). Pinned end-to-end against the conductor's committed trims."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    raw_trim = {"woofer": 0.0, "tweeter": -2.211}
+    giveback = {
+        role: c.candidate.linearization[role]["correction_giveback_db"]
+        for role in ("woofer", "tweeter")
+    }
+    # Every branch that emitted filters reports a positive give-back.
+    assert giveback["tweeter"] > 0.0
+    unnormalized = {r: raw_trim[r] + giveback[r] for r in ("woofer", "tweeter")}
+    shift = max(0.0, max(unnormalized.values()))
+    anchored = {r: v - shift for r, v in unnormalized.items()}
+
+    committed = c.candidate.role_attenuations_db
+    # No committed trim is a boost.
+    assert all(v <= 1e-9 for v in committed.values())
+    # The woofer is committed at its anchor exactly (only the tweeter is scanned).
+    assert committed["woofer"] == pytest.approx(anchored["woofer"])
+    # The tweeter sits at/near its anchor (the scan only fine-tunes around it).
+    assert abs(committed["tweeter"] - anchored["tweeter"]) <= (
+        LINEARIZATION_TRIM_SANITY_MARGIN_DB
+    )
+    # And the give-back genuinely moved it up from the raw trim toward level
+    # preservation -- the whole point of the anchor.
+    assert committed["tweeter"] > raw_trim["tweeter"] - 1e-9
+
+
+def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
+    """The normalize step: when a branch's own give-back exceeds its raw
+    attenuation the unnormalized anchor would be POSITIVE; the shared shift must
+    pull every role non-positive while preserving their RELATIVE leveling."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    captured: dict = {}
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        # Commit the anchor itself (no scan drift) so the committed pair is the
+        # normalized anchor verbatim.
+        return kwargs["seed_trim_db"], 0.0, kwargs["seed_trim_db"]
+
+    monkeypatch.setattr(flow_mod, "solve_ripple_optimal_trim", _spy)
+
+    # Raw trims at 0 dB for BOTH roles -> any positive give-back pushes the
+    # unnormalized anchor above 0 and forces the shift.
+    zero_raw = {"woofer": 0.0, "tweeter": 0.0}
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=zero_raw)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+
+    giveback = {
+        role: c.candidate.linearization[role]["correction_giveback_db"]
+        for role in ("woofer", "tweeter")
+    }
+    unnormalized = {r: zero_raw[r] + giveback[r] for r in ("woofer", "tweeter")}
+    assert max(unnormalized.values()) > 0.0, "fixture must actually need the shift"
+    shift = max(unnormalized.values())
+    expected = {r: v - shift for r, v in unnormalized.items()}
+
+    committed = c.candidate.role_attenuations_db
+    assert all(v <= 1e-9 for v in committed.values())  # nothing became a boost
+    assert committed["woofer"] == pytest.approx(expected["woofer"])
+    assert committed["tweeter"] == pytest.approx(expected["tweeter"])
+    # Relative leveling preserved exactly by the shared shift.
+    assert (committed["tweeter"] - committed["woofer"]) == pytest.approx(
+        unnormalized["tweeter"] - unnormalized["woofer"]
+    )
 
 
 def test_wild_trim_boundary_exact_passes_just_above_falls_back(monkeypatch):
