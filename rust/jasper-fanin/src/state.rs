@@ -65,7 +65,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use jasper_tts_protocol::loudness::HeldLoudnessReference;
 use log::{info, warn};
 
 use crate::impulse_tap::{TapConfig, TapState};
@@ -1207,99 +1206,14 @@ impl StateServer {
                     metrics.program_duck_active(),
                 );
                 buf.push(',');
-                buf.push_str(r#""assistant_loudness":{"#);
-                let loudness = metrics.loudness_snapshot();
-                push_kv_f64_opt(
+                // Render through the shared writer so fan-in and outputd cannot
+                // drift on the assistant_loudness key set (pinned by a contract
+                // test on both daemons against ASSISTANT_LOUDNESS_STATUS_KEYS).
+                buf.push_str(r#""assistant_loudness":"#);
+                jasper_tts_protocol::loudness::render_assistant_loudness(
                     &mut buf,
-                    "content_short_lufs",
-                    loudness.content_short_lufs,
-                    1,
+                    &metrics.loudness_snapshot(),
                 );
-                buf.push(',');
-                push_kv_f64_opt(
-                    &mut buf,
-                    "content_anchor_lufs",
-                    loudness.content_anchor_lufs,
-                    1,
-                );
-                buf.push(',');
-                push_kv_bool(&mut buf, "decision_seen", loudness.decision_seen);
-                buf.push(',');
-                push_kv_bool(&mut buf, "calibrated", loudness.calibrated);
-                buf.push(',');
-                push_kv_f64(
-                    &mut buf,
-                    "profile_confidence",
-                    loudness.profile_confidence,
-                    2,
-                );
-                buf.push(',');
-                push_kv_f64_opt(&mut buf, "baseline_lufs", loudness.baseline_lufs, 1);
-                buf.push(',');
-                push_kv_f64_opt(&mut buf, "target_lufs", loudness.target_lufs, 1);
-                buf.push(',');
-                push_kv_f64_opt(&mut buf, "source_lufs", loudness.source_lufs, 1);
-                buf.push(',');
-                push_kv_f64_opt(&mut buf, "source_peak_dbfs", loudness.source_peak_dbfs, 1);
-                buf.push(',');
-                push_kv_f64_opt(&mut buf, "requested_gain_db", loudness.requested_gain_db, 1);
-                buf.push(',');
-                push_kv_f64_opt(&mut buf, "peak_cap_gain_db", loudness.peak_cap_gain_db, 1);
-                buf.push(',');
-                push_kv_f64_opt(&mut buf, "final_gain_db", loudness.final_gain_db, 1);
-                buf.push(',');
-                push_kv_f64_opt(
-                    &mut buf,
-                    "target_speaker_lufs",
-                    loudness.target_speaker_lufs,
-                    1,
-                );
-                buf.push(',');
-                push_kv_f64_opt(
-                    &mut buf,
-                    "envelope_offset_lu",
-                    loudness.envelope_offset_lu,
-                    1,
-                );
-                buf.push(',');
-                match loudness.reference_kind {
-                    Some(kind) => push_kv_str(&mut buf, "reference_kind", kind),
-                    None => buf.push_str(r#""reference_kind":null"#),
-                }
-                buf.push(',');
-                buf.push_str(r#""volume_context":"#);
-                match loudness.volume_context {
-                    Some(context) => {
-                        buf.push('{');
-                        push_kv_f64(&mut buf, "canonical_db", context.canonical_db as f64, 1);
-                        buf.push(',');
-                        push_kv_f64(&mut buf, "downstream_db", context.downstream_db as f64, 1);
-                        buf.push(',');
-                        push_kv_f64(
-                            &mut buf,
-                            "tts_envelope_lufs",
-                            context.tts_envelope_lufs as f64,
-                            1,
-                        );
-                        buf.push(',');
-                        push_kv_bool(&mut buf, "muted", context.muted);
-                        buf.push(',');
-                        push_kv_u64(&mut buf, "stamp_boot_ns", context.stamp_boot_ns);
-                        buf.push('}');
-                    }
-                    None => buf.push_str("null"),
-                }
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "volume_context_rejected",
-                    loudness.volume_context_rejected,
-                );
-                buf.push(',');
-                push_reference(&mut buf, "held_content", loudness.held_content);
-                buf.push(',');
-                push_reference(&mut buf, "held_assistant", loudness.held_assistant);
-                buf.push('}');
             }
             None => {
                 push_kv_bool(&mut buf, "enabled", false);
@@ -1429,28 +1343,6 @@ fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: us
         Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
         None => buf.push_str("null"),
     }
-}
-
-fn push_reference(buf: &mut String, key: &str, reference: Option<HeldLoudnessReference>) {
-    buf.push('"');
-    buf.push_str(key);
-    buf.push_str("\":");
-    let Some(reference) = reference else {
-        buf.push_str("null");
-        return;
-    };
-    buf.push('{');
-    push_kv_f64(buf, "speaker_lufs", reference.speaker_lufs as f64, 1);
-    buf.push(',');
-    push_kv_f64(buf, "canonical_db", reference.canonical_db as f64, 1);
-    buf.push(',');
-    push_kv_f64(
-        buf,
-        "calibration_offset_lu",
-        reference.calibration_offset_lu as f64,
-        1,
-    );
-    buf.push('}');
 }
 
 #[cfg(test)]
@@ -2046,6 +1938,22 @@ mod tests {
         assert!(j.contains(r#""volume_context_rejected":0"#));
         assert!(j.contains(r#""held_content":null"#));
         assert!(j.contains(r#""held_assistant":null"#));
+    }
+
+    #[test]
+    fn snapshot_json_assistant_loudness_satisfies_shared_key_contract() {
+        // The mirror of outputd's guard: fan-in's assistant_loudness STATUS
+        // object must carry every shared key, so the two daemons' /state shapes
+        // cannot drift under one dashboard consumer.
+        use jasper_tts_protocol::loudness::ASSISTANT_LOUDNESS_STATUS_KEYS;
+        let server = make_test_server();
+        let j = server.snapshot_json();
+        for key in ASSISTANT_LOUDNESS_STATUS_KEYS {
+            assert!(
+                j.contains(&format!("\"{key}\":")),
+                "fan-in assistant_loudness missing key {key}: {j}"
+            );
+        }
     }
 
     #[test]

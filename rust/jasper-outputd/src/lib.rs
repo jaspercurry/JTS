@@ -17,6 +17,10 @@
 
 pub mod aec_clock;
 pub mod alsa_backend;
+// The learned quiet-room assistant reference persistence (bonded-member
+// post-DSP mix), mirroring fan-in's assistant_reference so the calibration
+// survives restarts on a grouped follower the way it does solo.
+pub mod assistant_reference;
 pub mod config;
 pub mod content_bridge;
 pub mod core;

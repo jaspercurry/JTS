@@ -94,6 +94,35 @@ pub struct HeldLoudnessReference {
     pub calibration_offset_lu: f32,
 }
 
+/// Where in the output chain the assistant lane this engine governs is mixed.
+///
+/// The one structural difference between fan-in (solo/leader, pre-DSP) and
+/// outputd (passive grouped follower, post-DSP) is whether CamillaDSP's gain
+/// is *downstream* of the assistant lane. Fan-in mixes assistant audio
+/// **before** CamillaDSP, so ``VolumeContext::downstream_db`` (Camilla's gain)
+/// genuinely attenuates the assistant lane and the mixer must pre-compensate
+/// for it. Outputd mixes assistant audio **after** CamillaDSP, so nothing
+/// applies volume after the mix — the effective downstream attenuation of the
+/// assistant lane is structurally **zero**. Every difference between the two
+/// daemons' loudness behaviour collapses to that single fact, so it is the
+/// single parameter this engine takes: `PostDsp` treats `downstream_db` as
+/// 0.0 wherever the code converts between mixer-lane loudness and achieved
+/// speaker loudness (the "subtract/add downstream" positions), while still
+/// honouring `canonical_db`, `tts_envelope_lufs`, and `muted` unchanged.
+/// `PreDsp` (the default) is byte-identical to the pre-`MixStage` engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MixStage {
+    /// Assistant audio is mixed before CamillaDSP (fan-in solo/leader). The
+    /// downstream Camilla gain attenuates the assistant lane and is
+    /// compensated for.
+    #[default]
+    PreDsp,
+    /// Assistant audio is mixed after CamillaDSP (outputd passive grouped
+    /// follower). No stage applies volume after the mix, so `downstream_db`
+    /// is treated as 0.0 in every mixer-to-speaker conversion.
+    PostDsp,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssistantGainDecision {
     pub provider: Option<String>,
@@ -117,6 +146,7 @@ pub struct AssistantGainDecision {
 
 pub struct AssistantLoudness {
     config: AssistantLoudnessConfig,
+    mix_stage: MixStage,
     content: KWeightedWindow,
     pending_context: Option<AssistantContext>,
     last_decision: Option<AssistantGainDecision>,
@@ -129,9 +159,19 @@ pub struct AssistantLoudness {
 }
 
 impl AssistantLoudness {
+    /// Construct a pre-DSP engine (fan-in solo/leader). Byte-identical to the
+    /// pre-`MixStage` engine — the default.
     pub fn new(config: AssistantLoudnessConfig) -> Self {
+        Self::new_with_stage(config, MixStage::PreDsp)
+    }
+
+    /// Construct an engine for an explicit mix stage. `PostDsp` is the
+    /// outputd passive-follower path: `downstream_db` is treated as 0.0 in
+    /// every mixer-to-speaker conversion (see [`MixStage`]).
+    pub fn new_with_stage(config: AssistantLoudnessConfig, mix_stage: MixStage) -> Self {
         Self {
             config,
+            mix_stage,
             content: KWeightedWindow::new(CONTENT_ANCHOR_FRAMES),
             pending_context: None,
             last_decision: None,
@@ -142,6 +182,26 @@ impl AssistantLoudness {
             content_audible_frames: 0,
             content_silence_frames: 0,
         }
+    }
+
+    /// The downstream attenuation to apply for `context` at this mix stage.
+    ///
+    /// Pre-DSP, CamillaDSP sits after the assistant mixer, so its gain
+    /// (`downstream_db`) genuinely attenuates the assistant lane and every
+    /// mixer-to-speaker conversion must account for it. Post-DSP, nothing
+    /// applies volume after the mix, so the effective downstream attenuation
+    /// is structurally 0.0 — the single fact that distinguishes the two
+    /// daemons. The stored wire value is left untouched; only its *use* here
+    /// is stage-aware, so `/state` still reports the honest Camilla gain.
+    fn effective_downstream_db(&self, context: &VolumeContext) -> f32 {
+        match self.mix_stage {
+            MixStage::PreDsp => context.downstream_db,
+            MixStage::PostDsp => 0.0,
+        }
+    }
+
+    pub fn mix_stage(&self) -> MixStage {
+        self.mix_stage
     }
 
     pub fn observe_content_period(&mut self, samples: &[i16]) {
@@ -175,8 +235,18 @@ impl AssistantLoudness {
         if context.muted {
             return;
         }
+        // `speaker_lufs` is the observed content loudness converted to the
+        // achieved-at-the-speaker scale. Pre-DSP the mixer's output is later
+        // attenuated by `downstream_db`, so add it back; post-DSP the content
+        // outputd observes is ALREADY at speaker level (post-Camilla), so the
+        // effective downstream is 0.0 and the two representations coincide.
+        // This must stay consistent with the HeldContent branch of
+        // `decide_gain`, which subtracts the same effective downstream — the
+        // round trip cancels, so a stale Camilla gain can never inflate the
+        // held-content target post-DSP (the double-compensation this fix
+        // exists to prevent).
         self.held_content = Some(HeldLoudnessReference {
-            speaker_lufs: content_lufs + context.downstream_db,
+            speaker_lufs: content_lufs + self.effective_downstream_db(&context),
             canonical_db: context.canonical_db,
             calibration_offset_lu: 0.0,
         });
@@ -287,7 +357,7 @@ impl AssistantLoudness {
                 (
                     baseline,
                     target,
-                    volume_context.map(|ctx| target + ctx.downstream_db),
+                    volume_context.map(|ctx| target + self.effective_downstream_db(&ctx)),
                     ReferenceKind::LiveContent,
                     None,
                 )
@@ -295,7 +365,7 @@ impl AssistantLoudness {
                 let target_speaker = reference.speaker_lufs
                     + (current.canonical_db - reference.canonical_db)
                     + self.config.assistant_offset_lu;
-                let target = target_speaker - current.downstream_db;
+                let target = target_speaker - self.effective_downstream_db(&current);
                 (
                     target - self.config.assistant_offset_lu,
                     target,
@@ -313,7 +383,7 @@ impl AssistantLoudness {
                     self.config.assistant_envelope_offset_limit_lu,
                 );
                 let target_speaker = baseline + offset;
-                let target = target_speaker - current.downstream_db;
+                let target = target_speaker - self.effective_downstream_db(&current);
                 (
                     baseline,
                     target,
@@ -334,7 +404,7 @@ impl AssistantLoudness {
                 );
                 let target_speaker = baseline;
                 let target = volume_context.map_or(target_speaker, |current| {
-                    target_speaker - current.downstream_db
+                    target_speaker - self.effective_downstream_db(&current)
                 });
                 (
                     baseline,
@@ -419,6 +489,40 @@ impl AssistantLoudness {
         self.last_decision.as_ref()
     }
 
+    /// Build the STATUS `assistant_loudness` snapshot directly from engine
+    /// state (outputd's path; fan-in derives an equivalent snapshot from its
+    /// seqlock'd atomics). `volume_context_rejected` is the daemon-owned reject
+    /// counter (the engine does not count rejections). Decision-derived fields
+    /// are `None` until the first decision, matching fan-in's gating.
+    pub fn loudness_snapshot(&self, volume_context_rejected: u64) -> TtsLoudnessSnapshot {
+        let decision = self.last_decision.as_ref();
+        TtsLoudnessSnapshot {
+            content_short_lufs: self.content.short_lufs().map(|v| v as f64),
+            content_anchor_lufs: self.content.anchor_lufs().map(|v| v as f64),
+            decision_seen: decision.is_some(),
+            calibrated: decision.is_some_and(|d| d.calibrated),
+            profile_confidence: decision.map_or(0.0, |d| d.profile_confidence as f64),
+            baseline_lufs: decision.map(|d| d.baseline_lufs as f64),
+            target_lufs: decision.map(|d| d.target_lufs as f64),
+            source_lufs: decision.map(|d| d.source_lufs as f64),
+            source_peak_dbfs: decision.map(|d| d.source_peak_dbfs as f64),
+            requested_gain_db: decision.map(|d| d.requested_gain_db as f64),
+            peak_cap_gain_db: decision.map(|d| d.peak_cap_gain_db as f64),
+            final_gain_db: decision.map(|d| d.final_gain_db as f64),
+            target_speaker_lufs: decision
+                .and_then(|d| d.target_speaker_lufs)
+                .map(|v| v as f64),
+            envelope_offset_lu: decision
+                .and_then(|d| d.envelope_offset_lu)
+                .map(|v| v as f64),
+            reference_kind: decision.map(|d| d.reference_kind.as_str()),
+            volume_context: self.current_volume_context,
+            volume_context_rejected,
+            held_content: self.held_content,
+            held_assistant: self.held_assistant,
+        }
+    }
+
     /// Residual mixer gain needed after an absolute user-volume update.
     ///
     /// If Camilla already carried the user change, canonical and downstream
@@ -429,14 +533,18 @@ impl AssistantLoudness {
         else {
             return 0.0;
         };
+        // Post-DSP the downstream (Camilla) delta is not applied to the
+        // assistant lane at all, so it cannot cancel a canonical/envelope
+        // change — the mixer itself must carry the full user delta. Zeroing
+        // the effective downstream at both endpoints makes that term vanish.
+        let downstream_delta =
+            self.effective_downstream_db(&current) - self.effective_downstream_db(&initial);
         match decision.reference_kind {
             ReferenceKind::LiveContent | ReferenceKind::HeldContent => {
-                (current.canonical_db - initial.canonical_db)
-                    - (current.downstream_db - initial.downstream_db)
+                (current.canonical_db - initial.canonical_db) - downstream_delta
             }
             ReferenceKind::HeldAssistant | ReferenceKind::FirstUseFallback => {
-                (current.tts_envelope_lufs - initial.tts_envelope_lufs)
-                    - (current.downstream_db - initial.downstream_db)
+                (current.tts_envelope_lufs - initial.tts_envelope_lufs) - downstream_delta
             }
         }
     }
@@ -467,7 +575,9 @@ impl AssistantLoudness {
         if playout_context.muted || !effective_gain_db.is_finite() {
             return None;
         }
-        let speaker_lufs = decision.source_lufs + effective_gain_db + playout_context.downstream_db;
+        let speaker_lufs = decision.source_lufs
+            + effective_gain_db
+            + self.effective_downstream_db(&playout_context);
         let deterministic_target = playout_context.tts_envelope_lufs;
         let reference = HeldLoudnessReference {
             speaker_lufs,
@@ -521,6 +631,281 @@ pub fn linear_to_db(gain_linear: f32) -> f32 {
 pub fn apply_gain_i16(sample: i16, gain_linear: f32) -> i16 {
     let scaled = (sample as f32) * gain_linear;
     scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
+/// The one snapshot of assistant-loudness state both daemons surface under
+/// `tts.assistant_loudness` in STATUS. fan-in derives it from its seqlock'd
+/// atomics; outputd derives it directly from the engine. The struct and its
+/// renderer ([`render_assistant_loudness`]) live here so the two daemons'
+/// `/state` shapes cannot drift — the same "one wire vocabulary, per-daemon
+/// values" rule the FLUSH_SYNC ack follows.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TtsLoudnessSnapshot {
+    pub content_short_lufs: Option<f64>,
+    pub content_anchor_lufs: Option<f64>,
+    pub decision_seen: bool,
+    pub calibrated: bool,
+    pub profile_confidence: f64,
+    pub baseline_lufs: Option<f64>,
+    pub target_lufs: Option<f64>,
+    pub source_lufs: Option<f64>,
+    pub source_peak_dbfs: Option<f64>,
+    pub requested_gain_db: Option<f64>,
+    pub peak_cap_gain_db: Option<f64>,
+    pub final_gain_db: Option<f64>,
+    pub target_speaker_lufs: Option<f64>,
+    pub envelope_offset_lu: Option<f64>,
+    pub reference_kind: Option<&'static str>,
+    pub volume_context: Option<VolumeContext>,
+    pub volume_context_rejected: u64,
+    pub held_content: Option<HeldLoudnessReference>,
+    pub held_assistant: Option<HeldLoudnessReference>,
+}
+
+/// Canonical top-level JSON keys of the `tts.assistant_loudness` STATUS object.
+///
+/// Both fan-in and outputd render this object through
+/// [`render_assistant_loudness`], and each daemon's state test asserts the
+/// rendered object carries every key here — so the two `/state` surfaces cannot
+/// drift, the same contract [`crate::FLUSH_SYNC_ACK_KEYS`] enforces for the ack.
+pub const ASSISTANT_LOUDNESS_STATUS_KEYS: &[&str] = &[
+    "content_short_lufs",
+    "content_anchor_lufs",
+    "decision_seen",
+    "calibrated",
+    "profile_confidence",
+    "baseline_lufs",
+    "target_lufs",
+    "source_lufs",
+    "source_peak_dbfs",
+    "requested_gain_db",
+    "peak_cap_gain_db",
+    "final_gain_db",
+    "target_speaker_lufs",
+    "envelope_offset_lu",
+    "reference_kind",
+    "volume_context",
+    "volume_context_rejected",
+    "held_content",
+    "held_assistant",
+];
+
+/// Canonical JSON keys of the nested `volume_context` object (when present).
+pub const ASSISTANT_LOUDNESS_VOLUME_CONTEXT_KEYS: &[&str] = &[
+    "canonical_db",
+    "downstream_db",
+    "tts_envelope_lufs",
+    "muted",
+    "stamp_boot_ns",
+];
+
+/// Canonical JSON keys of a nested held-reference object (`held_content` /
+/// `held_assistant`, when present).
+pub const ASSISTANT_LOUDNESS_REFERENCE_KEYS: &[&str] =
+    &["speaker_lufs", "canonical_db", "calibration_offset_lu"];
+
+/// Render `snapshot` as the `tts.assistant_loudness` JSON object (including the
+/// enclosing braces) into `buf`. Both daemons call this so their STATUS shapes
+/// are byte-identical — the single writer of these keys.
+pub fn render_assistant_loudness(buf: &mut String, snapshot: &TtsLoudnessSnapshot) {
+    buf.push('{');
+    push_json_f64_opt(buf, "content_short_lufs", snapshot.content_short_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "content_anchor_lufs", snapshot.content_anchor_lufs, 1);
+    buf.push(',');
+    push_json_bool(buf, "decision_seen", snapshot.decision_seen);
+    buf.push(',');
+    push_json_bool(buf, "calibrated", snapshot.calibrated);
+    buf.push(',');
+    push_json_f64(buf, "profile_confidence", snapshot.profile_confidence, 2);
+    buf.push(',');
+    push_json_f64_opt(buf, "baseline_lufs", snapshot.baseline_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "target_lufs", snapshot.target_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "source_lufs", snapshot.source_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "source_peak_dbfs", snapshot.source_peak_dbfs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "requested_gain_db", snapshot.requested_gain_db, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "peak_cap_gain_db", snapshot.peak_cap_gain_db, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "final_gain_db", snapshot.final_gain_db, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "target_speaker_lufs", snapshot.target_speaker_lufs, 1);
+    buf.push(',');
+    push_json_f64_opt(buf, "envelope_offset_lu", snapshot.envelope_offset_lu, 1);
+    buf.push(',');
+    match snapshot.reference_kind {
+        Some(kind) => {
+            buf.push_str(r#""reference_kind":""#);
+            buf.push_str(kind);
+            buf.push('"');
+        }
+        None => buf.push_str(r#""reference_kind":null"#),
+    }
+    buf.push(',');
+    buf.push_str(r#""volume_context":"#);
+    match snapshot.volume_context {
+        Some(context) => {
+            buf.push('{');
+            push_json_f64(buf, "canonical_db", context.canonical_db as f64, 1);
+            buf.push(',');
+            push_json_f64(buf, "downstream_db", context.downstream_db as f64, 1);
+            buf.push(',');
+            push_json_f64(
+                buf,
+                "tts_envelope_lufs",
+                context.tts_envelope_lufs as f64,
+                1,
+            );
+            buf.push(',');
+            push_json_bool(buf, "muted", context.muted);
+            buf.push(',');
+            push_json_u64(buf, "stamp_boot_ns", context.stamp_boot_ns);
+            buf.push('}');
+        }
+        None => buf.push_str("null"),
+    }
+    buf.push(',');
+    push_json_u64(
+        buf,
+        "volume_context_rejected",
+        snapshot.volume_context_rejected,
+    );
+    buf.push(',');
+    push_json_reference(buf, "held_content", snapshot.held_content);
+    buf.push(',');
+    push_json_reference(buf, "held_assistant", snapshot.held_assistant);
+    buf.push('}');
+}
+
+fn push_json_key(buf: &mut String, key: &str) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+}
+
+fn push_json_bool(buf: &mut String, key: &str, value: bool) {
+    push_json_key(buf, key);
+    buf.push_str(if value { "true" } else { "false" });
+}
+
+fn push_json_u64(buf: &mut String, key: &str, value: u64) {
+    push_json_key(buf, key);
+    buf.push_str(&value.to_string());
+}
+
+fn push_json_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
+    push_json_key(buf, key);
+    buf.push_str(&format!("{value:.decimals$}"));
+}
+
+fn push_json_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
+    push_json_key(buf, key);
+    match value {
+        Some(value) => buf.push_str(&format!("{value:.decimals$}")),
+        None => buf.push_str("null"),
+    }
+}
+
+fn push_json_reference(buf: &mut String, key: &str, reference: Option<HeldLoudnessReference>) {
+    push_json_key(buf, key);
+    let Some(reference) = reference else {
+        buf.push_str("null");
+        return;
+    };
+    buf.push('{');
+    push_json_f64(buf, "speaker_lufs", reference.speaker_lufs as f64, 1);
+    buf.push(',');
+    push_json_f64(buf, "canonical_db", reference.canonical_db as f64, 1);
+    buf.push(',');
+    push_json_f64(
+        buf,
+        "calibration_offset_lu",
+        reference.calibration_offset_lu as f64,
+        1,
+    );
+    buf.push('}');
+}
+
+/// Frames over which a live gain change ramps to its new target (100 ms).
+pub const LIVE_VOLUME_RAMP_FRAMES: u32 = SAMPLE_RATE / 10;
+
+/// A per-frame linear gain ramp shared by the fan-in and outputd mix loops.
+///
+/// The first target snaps in (no ramp from zero); later targets glide over
+/// [`LIVE_VOLUME_RAMP_FRAMES`] so a mid-turn volume change is inaudible.
+/// `force_silent` collapses to zero and re-arms so the next non-muted target
+/// always ramps back up from silence — even at the gain floor. This is the
+/// extraction of fan-in's private ramp so outputd's post-DSP mix loop applies
+/// live re-gain and mute identically; the ramp math is now unit-tested once
+/// here in the hardware-free crate.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GainRamp {
+    initialized: bool,
+    current_linear: f32,
+    target_linear: f32,
+    step_linear: f32,
+    remaining_frames: u32,
+    target_db: f32,
+}
+
+impl GainRamp {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Force the ramp to silence and re-arm, so the next non-muted `retarget`
+    /// always ramps up from zero (mute → unmute never snaps loud).
+    pub fn force_silent(&mut self) {
+        self.initialized = true;
+        self.current_linear = 0.0;
+        self.target_linear = 0.0;
+        self.step_linear = 0.0;
+        self.remaining_frames = 0;
+        // NaN forces the next `retarget` through, even when the new target is
+        // the -60 dB floor, so unmute always ramps from zero.
+        self.target_db = f32::NAN;
+    }
+
+    /// Point the ramp at a new target. The first ever target snaps in; a
+    /// changed target glides over `LIVE_VOLUME_RAMP_FRAMES`.
+    pub fn retarget(&mut self, target_db: f32) {
+        if self.initialized && (target_db - self.target_db).abs() < 0.01 {
+            return;
+        }
+        let target_linear = gain_db_to_linear(target_db);
+        if !self.initialized {
+            self.initialized = true;
+            self.current_linear = target_linear;
+            self.target_linear = target_linear;
+            self.target_db = target_db;
+            return;
+        }
+        self.target_linear = target_linear;
+        self.target_db = target_db;
+        self.remaining_frames = LIVE_VOLUME_RAMP_FRAMES;
+        self.step_linear = (target_linear - self.current_linear) / (LIVE_VOLUME_RAMP_FRAMES as f32);
+    }
+
+    /// Advance one frame and return the current linear gain.
+    pub fn next_frame(&mut self) -> f32 {
+        if self.remaining_frames > 0 {
+            self.current_linear += self.step_linear;
+            self.remaining_frames -= 1;
+            if self.remaining_frames == 0 {
+                self.current_linear = self.target_linear;
+            }
+        }
+        self.current_linear
+    }
+
+    /// The current linear gain without advancing (diagnostics/tests).
+    pub fn current_linear(&self) -> f32 {
+        self.current_linear
+    }
 }
 
 struct KWeightedWindow {
@@ -1228,6 +1613,297 @@ mod tests {
 
         loudness.update_volume_context(volume_context(-18.0, -24.0, -37.88, 3));
         assert!((loudness.live_gain_delta_db(&decision) - -2.88).abs() < 0.01);
+    }
+
+    fn post_dsp() -> AssistantLoudness {
+        AssistantLoudness::new_with_stage(AssistantLoudnessConfig::default(), MixStage::PostDsp)
+    }
+
+    #[test]
+    fn post_dsp_decide_gain_zeroes_downstream_but_honors_canonical_envelope_muted() {
+        // Downstream is structurally zero post-DSP: a large Camilla gain is
+        // NOT compensated, so first-use speech lands on the envelope itself
+        // (a PRE-DSP engine would add |downstream| back and target -11 LUFS).
+        let mut loudness = post_dsp();
+        loudness.prepare_context_with_volume(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+            Some(volume_context(-30.0, -30.0, -41.0, 1)),
+        );
+        let decision =
+            loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(decision.reference_kind, ReferenceKind::FirstUseFallback);
+        assert_eq!(decision.target_speaker_lufs, Some(-41.0));
+        assert_eq!(decision.target_lufs, -41.0);
+        assert_eq!(decision.requested_gain_db, -16.0);
+
+        // The envelope (tts_envelope_lufs) still drives the target one-for-one.
+        loudness.prepare_context_with_volume(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -35.0,
+            Some(volume_context(-30.0, -30.0, -35.0, 2)),
+        );
+        let louder = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(louder.target_lufs, -35.0);
+
+        // Canonical user-delta is still tracked through a held-content
+        // reference: raising the knob +6 dB raises the target +6 dB, and the
+        // downstream term is zeroed at BOTH the store (observe) and the decide,
+        // so it cannot inflate the held target (the double-compensation guard).
+        let mut held = post_dsp();
+        held.update_volume_context(volume_context(-30.0, -30.0, -41.0, 1));
+        held.observe_content_period(&stereo_sine(0.08, (SAMPLE_RATE as usize) * 3));
+        // A brief silence makes content no longer "currently audible", so the
+        // next decision uses HeldContent (not LiveContent) — but never expires.
+        held.observe_content_period(&vec![
+            0i16;
+            (SAMPLE_RATE as usize) / 2 * (CHANNELS as usize)
+        ]);
+        held.prepare_context("o".to_string(), "m".to_string(), "v".to_string(), -41.0);
+        let at_low = held.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(at_low.reference_kind, ReferenceKind::HeldContent);
+
+        held.update_volume_context(volume_context(-24.0, -30.0, -41.0, 2));
+        held.observe_content_period(&vec![
+            0i16;
+            (SAMPLE_RATE as usize) / 2 * (CHANNELS as usize)
+        ]);
+        held.prepare_context("o".to_string(), "m".to_string(), "v".to_string(), -41.0);
+        let at_high = held.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(at_high.reference_kind, ReferenceKind::HeldContent);
+        assert!(
+            (at_high.target_lufs - at_low.target_lufs - 6.0).abs() < 0.01,
+            "canonical +6 must move the held-content target +6: {} vs {}",
+            at_high.target_lufs,
+            at_low.target_lufs,
+        );
+
+        // Mute still blocks learning post-DSP — the follower safety guard.
+        let mut muted_ctx = volume_context(-30.0, -30.0, -41.0, 3);
+        muted_ctx.muted = true;
+        loudness.update_volume_context(muted_ctx);
+        assert_eq!(
+            loudness.complete_assistant_segment(&decision, decision.final_gain_db),
+            None
+        );
+    }
+
+    #[test]
+    fn post_dsp_and_pre_dsp_decide_differently_with_nonzero_downstream() {
+        // The core "no double-compensation" property at the engine level: the
+        // SAME VolumeContext with a nonzero downstream yields a different gain
+        // pre- vs post-DSP. Pre-DSP compensates for Camilla (+14 dB); post-DSP
+        // must not (-16 dB).
+        let ctx = volume_context(-30.0, -30.0, -41.0, 1);
+        let decide = |stage| {
+            let mut loudness =
+                AssistantLoudness::new_with_stage(AssistantLoudnessConfig::default(), stage);
+            loudness.prepare_context_with_volume(
+                "o".to_string(),
+                "m".to_string(),
+                "v".to_string(),
+                -41.0,
+                Some(ctx),
+            );
+            loudness
+                .decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)))
+                .final_gain_db
+        };
+        let pre = decide(MixStage::PreDsp);
+        let post = decide(MixStage::PostDsp);
+        assert_eq!(pre, 14.0);
+        assert_eq!(post, -16.0);
+        assert_ne!(pre, post);
+    }
+
+    #[test]
+    fn post_dsp_learns_and_reuses_clamped_envelope_offset_without_progressive_quieting() {
+        let mut loudness = post_dsp();
+        // Nonzero Camilla downstream that must be IGNORED when learning.
+        loudness.prepare_context_with_volume(
+            "o".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+            Some(volume_context(-30.0, -30.0, -41.0, 1)),
+        );
+        let first = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(first.reference_kind, ReferenceKind::FirstUseFallback);
+        assert_eq!(first.target_speaker_lufs, Some(-41.0));
+
+        // Achieved gain -20 dB → speaker = source(-25) + (-20) + downstream(0)
+        // = -45 LUFS vs envelope -41 → offset -4, comfortably inside the ±8
+        // clamp. A PRE-DSP engine would fold the -30 downstream in and saturate
+        // the clamp at -8 instead — so this value proves downstream is ignored.
+        let learned = loudness
+            .complete_assistant_segment(&first, -20.0)
+            .expect("completed turn");
+        assert!((learned.calibration_offset_lu - -4.0).abs() < 1e-4);
+
+        // Reuse: the next turn targets envelope+offset, no re-application.
+        loudness.prepare_context_with_volume(
+            "o".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+            Some(volume_context(-30.0, -30.0, -41.0, 2)),
+        );
+        let second = loudness.decide_gain(SegmentKind::Assistant, 0.0, Some(profile(-25.0, -30.0)));
+        assert_eq!(second.reference_kind, ReferenceKind::HeldAssistant);
+        assert_eq!(second.envelope_offset_lu, Some(-4.0));
+        assert_eq!(second.target_speaker_lufs, Some(-45.0));
+        assert_eq!(second.target_lufs, -45.0);
+
+        // Replaying the achieved gain does not drift the offset (no
+        // progressive quieting).
+        for _ in 0..3 {
+            let replay = loudness
+                .complete_assistant_segment(&second, second.final_gain_db)
+                .expect("completed replay");
+            assert!((replay.calibration_offset_lu - -4.0).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn gain_ramp_snaps_first_target_then_ramps_from_silence_on_unmute() {
+        // First target snaps in — no ramp-up from zero on the first frame, so a
+        // steady segment renders at its decided gain from sample one.
+        let mut ramp = GainRamp::new();
+        ramp.retarget(0.0);
+        assert_eq!(ramp.next_frame(), 1.0);
+
+        // Mute collapses to silence and re-arms; unmute ramps up from zero even
+        // when the new target is the -60 dB floor (never a loud snap).
+        ramp.force_silent();
+        ramp.retarget(MIN_TTS_GAIN_DB);
+        let first = ramp.next_frame();
+        assert!(first > 0.0);
+        assert!(first < gain_db_to_linear(MIN_TTS_GAIN_DB));
+        for _ in 1..LIVE_VOLUME_RAMP_FRAMES {
+            ramp.next_frame();
+        }
+        assert!((ramp.current_linear() - gain_db_to_linear(MIN_TTS_GAIN_DB)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn assistant_loudness_status_keys_are_stable() {
+        // The shared STATUS wire shape. Both daemons render through
+        // `render_assistant_loudness` and each asserts its rendered block
+        // carries these keys — changing this list is a deliberate wire change.
+        assert_eq!(
+            ASSISTANT_LOUDNESS_STATUS_KEYS,
+            [
+                "content_short_lufs",
+                "content_anchor_lufs",
+                "decision_seen",
+                "calibrated",
+                "profile_confidence",
+                "baseline_lufs",
+                "target_lufs",
+                "source_lufs",
+                "source_peak_dbfs",
+                "requested_gain_db",
+                "peak_cap_gain_db",
+                "final_gain_db",
+                "target_speaker_lufs",
+                "envelope_offset_lu",
+                "reference_kind",
+                "volume_context",
+                "volume_context_rejected",
+                "held_content",
+                "held_assistant",
+            ]
+        );
+        assert_eq!(
+            ASSISTANT_LOUDNESS_VOLUME_CONTEXT_KEYS,
+            [
+                "canonical_db",
+                "downstream_db",
+                "tts_envelope_lufs",
+                "muted",
+                "stamp_boot_ns"
+            ]
+        );
+        assert_eq!(
+            ASSISTANT_LOUDNESS_REFERENCE_KEYS,
+            ["speaker_lufs", "canonical_db", "calibration_offset_lu"]
+        );
+    }
+
+    #[test]
+    fn render_assistant_loudness_emits_every_status_key() {
+        let populated = TtsLoudnessSnapshot {
+            content_short_lufs: Some(-18.0),
+            content_anchor_lufs: Some(-19.0),
+            decision_seen: true,
+            calibrated: true,
+            profile_confidence: 0.9,
+            baseline_lufs: Some(-41.0),
+            target_lufs: Some(-40.0),
+            source_lufs: Some(-25.0),
+            source_peak_dbfs: Some(-8.0),
+            requested_gain_db: Some(-15.0),
+            peak_cap_gain_db: Some(5.0),
+            final_gain_db: Some(-15.0),
+            target_speaker_lufs: Some(-40.0),
+            envelope_offset_lu: Some(0.5),
+            reference_kind: Some("held_assistant"),
+            volume_context: Some(VolumeContext {
+                canonical_db: -30.0,
+                downstream_db: -30.0,
+                tts_envelope_lufs: -41.0,
+                muted: false,
+                stamp_boot_ns: 7,
+            }),
+            volume_context_rejected: 2,
+            held_content: Some(HeldLoudnessReference {
+                speaker_lufs: -20.0,
+                canonical_db: -30.0,
+                calibration_offset_lu: 0.0,
+            }),
+            held_assistant: Some(HeldLoudnessReference {
+                speaker_lufs: -40.0,
+                canonical_db: -30.0,
+                calibration_offset_lu: 0.5,
+            }),
+        };
+        let mut buf = String::new();
+        render_assistant_loudness(&mut buf, &populated);
+        for key in ASSISTANT_LOUDNESS_STATUS_KEYS {
+            assert!(
+                buf.contains(&format!("\"{key}\":")),
+                "missing key {key}: {buf}"
+            );
+        }
+        for key in ASSISTANT_LOUDNESS_VOLUME_CONTEXT_KEYS {
+            assert!(
+                buf.contains(&format!("\"{key}\":")),
+                "missing volume_context key {key}: {buf}"
+            );
+        }
+        for key in ASSISTANT_LOUDNESS_REFERENCE_KEYS {
+            assert!(
+                buf.contains(&format!("\"{key}\":")),
+                "missing reference key {key}: {buf}"
+            );
+        }
+        assert!(buf.starts_with('{') && buf.ends_with('}'));
+
+        // The empty snapshot still emits every top-level key (nulls/false).
+        let mut empty = String::new();
+        render_assistant_loudness(&mut empty, &TtsLoudnessSnapshot::default());
+        for key in ASSISTANT_LOUDNESS_STATUS_KEYS {
+            assert!(
+                empty.contains(&format!("\"{key}\":")),
+                "empty missing key {key}: {empty}"
+            );
+        }
+        assert!(empty.contains(r#""volume_context":null"#));
+        assert!(empty.contains(r#""held_assistant":null"#));
     }
 
     #[test]

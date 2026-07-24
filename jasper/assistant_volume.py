@@ -34,6 +34,7 @@ from .tts_routing import (
     GROUPING_VOICE_ENV_FILE,
     VOICE_TTS_SOCKET_ENV,
     resolve_tts_routing_snapshot,
+    resolved_tts_socket_feeds_post_dsp_outputd,
     resolved_tts_socket_feeds_pre_dsp_fanin,
 )
 
@@ -91,17 +92,43 @@ def make_volume_context_publisher(
     return publish
 
 
+def _resolved_route_consumes_volume_context(
+    resolved: Mapping[str, str],
+    *,
+    grouping_socket_override: bool,
+) -> bool:
+    """Whether the resolved TTS route interprets a published VolumeContext.
+
+    Two routes do: the pre-DSP fan-in mix (solo/leader) and the CONFIRMED
+    post-DSP outputd mix (a reconciled passive member, since #1547). The SAME
+    absolute wire message is sent to whichever socket the route resolved — the
+    post-DSP consumer owns the structural fact that its downstream attenuation
+    is zero (``downstream_db`` is never mutated to 0 in Python). Ambiguous
+    legacy grouping files and unknown stages fail closed in both classifiers.
+    """
+    return resolved_tts_socket_feeds_pre_dsp_fanin(
+        resolved,
+        grouping_socket_override=grouping_socket_override,
+    ) or resolved_tts_socket_feeds_post_dsp_outputd(
+        resolved,
+        grouping_socket_override=grouping_socket_override,
+    )
+
+
 def volume_context_publisher_for_runtime(
     env: Mapping[str, str],
     *,
     grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
     dynamic_topology: bool = False,
 ) -> VolumeContextPublisher | None:
-    """Build a publisher only when fan-in owns the pre-DSP speech mix.
+    """Build a publisher when the active TTS route interprets VolumeContext.
 
-    The legacy/outputd route sits at a different point in the signal chain,
-    so Camilla gain is not its downstream attenuation and must not be sent as
-    though it were.
+    That is the pre-DSP fan-in mix (solo/leader) or the confirmed post-DSP
+    outputd mix (a reconciled passive member). Both receive the SAME absolute
+    wire message on the socket the route resolved. Routes whose mix stage is
+    ambiguous (a legacy socket-only grouping file) or Camilla-mastered fail
+    closed — publishing pre-DSP compensation into an uncertain stage can create
+    a large level error.
     """
     process_env = dict(env)
     if process_env.get(DUCK_TRANSPORT_ENV, "fanin").strip().lower() != "fanin":
@@ -112,7 +139,7 @@ def volume_context_publisher_for_runtime(
                 process_env,
                 grouping_env_path=grouping_env_path,
             )
-            if not resolved_tts_socket_feeds_pre_dsp_fanin(
+            if not _resolved_route_consumes_volume_context(
                 current,
                 grouping_socket_override=grouping_socket_override,
             ):
@@ -128,7 +155,7 @@ def volume_context_publisher_for_runtime(
         process_env,
         grouping_env_path=grouping_env_path,
     )
-    if not resolved_tts_socket_feeds_pre_dsp_fanin(
+    if not _resolved_route_consumes_volume_context(
         resolved,
         grouping_socket_override=grouping_socket_override,
     ):

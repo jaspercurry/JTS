@@ -4,11 +4,21 @@
 
 //! Output-owner core with fake transports for tests and developer runs.
 
-use crate::fake::{FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentWrite};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+
+use crate::fake::{
+    DrainedPlayback, FakeAssistantSource, FakeContentSource, FakeDacSink, SegmentPlayback,
+    SegmentWrite,
+};
 use crate::ledger::{PlayoutEvent, PlayoutLedger, SegmentId, DEFAULT_TERMINAL_SEGMENT_RETENTION};
-use crate::loudness::{AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig};
-use crate::mixer::{gain_db_to_linear, mix_i16_saturating, sanitize_tts_gain_db};
+use crate::loudness::{
+    linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
+    HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
+};
+use crate::mixer::{mix_i16_saturating, sanitize_tts_gain_db};
 use crate::types::{AssistantProfile, AudioFormat, SegmentKind, CHANNELS, SAMPLE_RATE};
+use jasper_tts_protocol::VolumeContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodReport {
@@ -26,6 +36,25 @@ pub struct OutputCore {
     next_reference_sequence: u64,
     ledger: PlayoutLedger,
     loudness: AssistantLoudness,
+    /// The most recent segment's gain decision, kept so appended audio for the
+    /// currently-open segment can carry its peak-cap ceiling and live re-gain
+    /// residual into the per-period mix (matched by segment id).
+    active_assistant_decision: Option<(SegmentId, Arc<AssistantGainDecision>)>,
+    /// Persistence sink for the learned quiet-room assistant reference. `None`
+    /// (the default / fake-run case) simply drops learned references.
+    assistant_reference_tx: Option<Sender<HeldLoudnessReference>>,
+    /// Reusable scratch for the per-period drained-segment completions from the
+    /// assistant source (kept to keep the audio loop allocation-free).
+    drained_playbacks: Vec<DrainedPlayback>,
+    /// Segments whose audio drained before SEGMENT_END arrived: their playout
+    /// facts wait here until END fires, then the reference is committed.
+    drained_pending_end: Vec<(SegmentId, Option<SegmentPlayback>)>,
+    /// Shared STATUS snapshot cell (the daemon's TtsMetrics), published each
+    /// period. `None` on the fake/developer path.
+    loudness_sink: Option<Arc<Mutex<TtsLoudnessSnapshot>>>,
+    /// Count of stale/invalid VolumeContext updates the engine rejected,
+    /// surfaced in the snapshot like fan-in's `volume_context_rejected`.
+    volume_context_rejected: u64,
     content_buf: Vec<i16>,
     assistant_buf: Vec<i16>,
     output_buf: Vec<i16>,
@@ -58,7 +87,21 @@ impl OutputCore {
             dac,
             next_reference_sequence: 0,
             ledger: PlayoutLedger::new(SAMPLE_RATE),
-            loudness: AssistantLoudness::new(AssistantLoudnessConfig::default()),
+            // outputd is structurally post-DSP: its assistant mix is downstream
+            // of CamillaDSP, so the loudness engine treats VolumeContext's
+            // downstream_db as 0.0 (see MixStage). Applying fan-in's pre-DSP
+            // downstream compensation here would double-compensate by the full
+            // Camilla gain.
+            loudness: AssistantLoudness::new_with_stage(
+                AssistantLoudnessConfig::default(),
+                MixStage::PostDsp,
+            ),
+            active_assistant_decision: None,
+            assistant_reference_tx: None,
+            drained_playbacks: Vec::new(),
+            drained_pending_end: Vec::new(),
+            loudness_sink: None,
+            volume_context_rejected: 0,
             content_buf: vec![0; period_samples],
             assistant_buf: vec![0; period_samples],
             output_buf: vec![0; period_samples],
@@ -108,29 +151,82 @@ impl OutputCore {
         let decision = self.loudness.decide_gain(kind, fallback_gain, profile);
         log_assistant_loudness_decision(kind, &decision);
         let clamped_gain = decision.final_gain_db;
-        self.ledger
-            .start_segment(provider_item_id, kind, clamped_gain, self.monotonic_ns)
+        let id = self
+            .ledger
+            .start_segment(provider_item_id, kind, clamped_gain, self.monotonic_ns);
+        // Retain the decision so this segment's appended audio can carry its
+        // peak cap + live re-gain residual into the per-period mix.
+        self.active_assistant_decision = Some((id, Arc::new(decision)));
+        id
     }
 
     pub fn append_assistant_audio(&mut self, id: SegmentId, gain: f32, samples: Vec<i16>) {
+        // Legacy direct path: render at the given gain with no headroom
+        // (peak cap == base), no live tracking, and no reference learning.
+        self.append_assistant_audio_planned(id, gain, None, false, samples);
+    }
+
+    pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
+        let segment = self.ledger.segment(id);
+        let base_gain_db = segment.gain;
+        // Only Assistant-kind segments train the learned quiet-room reference;
+        // cues and chirps never do.
+        let reference_eligible = segment.kind == SegmentKind::Assistant;
+        let decision = match &self.active_assistant_decision {
+            Some((decision_id, decision)) if *decision_id == id => Some(Arc::clone(decision)),
+            _ => None,
+        };
+        self.append_assistant_audio_planned(
+            id,
+            base_gain_db,
+            decision,
+            reference_eligible,
+            samples,
+        );
+    }
+
+    fn append_assistant_audio_planned(
+        &mut self,
+        id: SegmentId,
+        base_gain_db: f32,
+        decision: Option<Arc<AssistantGainDecision>>,
+        reference_eligible: bool,
+        samples: Vec<i16>,
+    ) {
         assert_eq!(samples.len() % (self.format.channels as usize), 0);
         if samples.is_empty() {
             return;
         }
-        let sanitized_gain = sanitize_tts_gain_db(gain);
+        let base_gain_db = sanitize_tts_gain_db(base_gain_db);
+        // The peak-cap ceiling comes from the decision; without one, the
+        // segment renders at exactly its base gain (cap == base).
+        let peak_cap_gain_db = decision
+            .as_deref()
+            .map_or(base_gain_db, |decision| decision.peak_cap_gain_db);
         let frames = (samples.len() / (self.format.channels as usize)) as u64;
         self.ledger.queue_frames(id, frames);
-        self.assistant
-            .enqueue_segment(id, samples, gain_db_to_linear(sanitized_gain));
-    }
-
-    pub fn append_assistant_audio_with_segment_gain(&mut self, id: SegmentId, samples: Vec<i16>) {
-        let gain = self.ledger.segment(id).gain;
-        self.append_assistant_audio(id, gain, samples);
+        self.assistant.enqueue_segment(
+            id,
+            samples,
+            base_gain_db,
+            peak_cap_gain_db,
+            decision,
+            reference_eligible,
+        );
     }
 
     pub fn end_assistant_segment(&mut self, id: SegmentId) {
         self.ledger.end_segment(id, self.monotonic_ns);
+        // If this segment's audio already drained (END arrived after playout),
+        // its playout facts are waiting — commit the learned reference now.
+        if let Some(pos) = self
+            .drained_pending_end
+            .iter()
+            .position(|(pending_id, _)| *pending_id == id)
+        {
+            let (_, playback) = self.drained_pending_end.remove(pos);
+            self.complete_assistant_reference(playback);
+        }
     }
 
     pub fn step(&mut self) -> PeriodReport {
@@ -167,8 +263,20 @@ impl OutputCore {
         if !self.content_meter_paused {
             self.loudness.observe_content_period(&self.content_buf);
         }
-        self.assistant
-            .read_period_into(&mut self.assistant_buf, &mut self.segment_writes);
+        // The loudness engine is passed in so the mix applies mute + live
+        // re-gain per period (the volume context was drained before this).
+        // Assistant segments that finish draining this period are reported in
+        // `drained_playbacks` for reference learning.
+        self.assistant.read_period_into(
+            &mut self.assistant_buf,
+            &mut self.segment_writes,
+            &self.loudness,
+            &mut self.drained_playbacks,
+        );
+        self.process_drained_playbacks();
+        // Publish the loudness snapshot for STATUS once per period (after
+        // observe + any completions this period). No-op without a sink.
+        self.publish_loudness_snapshot();
 
         let mix_stats =
             mix_i16_saturating(&self.content_buf, &self.assistant_buf, &mut self.output_buf);
@@ -219,6 +327,11 @@ impl OutputCore {
 
     pub fn flush_assistant(&mut self) -> Vec<PlayoutEvent> {
         self.assistant.flush();
+        self.active_assistant_decision = None;
+        // A barge-in discards the reply: no reference is learned from truncated
+        // or in-flight speech.
+        self.drained_playbacks.clear();
+        self.drained_pending_end.clear();
         let events = self.ledger.flush_open_segments(self.monotonic_ns);
         self.ledger
             .prune_terminal_segments(DEFAULT_TERMINAL_SEGMENT_RETENTION);
@@ -255,7 +368,103 @@ impl OutputCore {
     }
 
     pub fn set_assistant_loudness_config(&mut self, config: AssistantLoudnessConfig) {
-        self.loudness = AssistantLoudness::new(config);
+        // Preserve outputd's post-DSP mix stage across a config swap.
+        self.loudness = AssistantLoudness::new_with_stage(config, MixStage::PostDsp);
+    }
+
+    /// Accept an absolute speaker-volume context from the voice daemon.
+    ///
+    /// Returns whether the update won the boot-clock stale-stamp guard (the
+    /// same guard fan-in uses). Post-DSP, the stored downstream_db is retained
+    /// verbatim for observability; only its *use* inside the engine is zeroed
+    /// (see MixStage) so this lane never inherits pre-DSP compensation.
+    pub fn update_volume_context(&mut self, context: VolumeContext) -> bool {
+        let accepted = self.loudness.update_volume_context(context);
+        if !accepted {
+            self.volume_context_rejected = self.volume_context_rejected.saturating_add(1);
+        }
+        accepted
+    }
+
+    /// Arm the shared STATUS snapshot cell (from the daemon's `TtsMetrics`).
+    /// Once set, the audio loop publishes the loudness snapshot each period.
+    pub fn set_loudness_sink(&mut self, sink: Arc<Mutex<TtsLoudnessSnapshot>>) {
+        self.loudness_sink = Some(sink);
+    }
+
+    /// Publish the current engine snapshot into the shared STATUS cell. Called
+    /// once per period; `try_lock` so the audio loop never blocks on a state
+    /// read. No-op when no sink is armed (fake/developer path).
+    fn publish_loudness_snapshot(&self) {
+        let Some(sink) = &self.loudness_sink else {
+            return;
+        };
+        if let Ok(mut slot) = sink.try_lock() {
+            *slot = self
+                .loudness
+                .loudness_snapshot(self.volume_context_rejected);
+        }
+    }
+
+    pub fn current_volume_context(&self) -> Option<VolumeContext> {
+        self.loudness.current_volume_context()
+    }
+
+    /// Arm the persistence sink for the learned quiet-room assistant reference.
+    /// The daemon spawns the writer thread and hands its sender here; the fake
+    /// developer/test path leaves it unset (learned references are dropped).
+    pub fn set_assistant_reference_sink(&mut self, tx: Sender<HeldLoudnessReference>) {
+        self.assistant_reference_tx = Some(tx);
+    }
+
+    /// Seed the learned quiet-room reference at startup (from disk). Validated
+    /// and ±24 LU-clamped inside the engine.
+    pub fn set_held_assistant_reference(&mut self, reference: Option<HeldLoudnessReference>) {
+        self.loudness.set_held_assistant(reference);
+    }
+
+    #[cfg(test)]
+    pub fn held_assistant_reference(&self) -> Option<HeldLoudnessReference> {
+        self.loudness.held_assistant()
+    }
+
+    /// Pair each drained assistant segment with SEGMENT_END: complete the
+    /// reference now if END already fired, else defer until it does.
+    fn process_drained_playbacks(&mut self) {
+        if self.drained_playbacks.is_empty() {
+            return;
+        }
+        // Take the scratch out to satisfy the borrow checker, then restore it
+        // (empty) so its capacity is reused across periods.
+        let mut drained = std::mem::take(&mut self.drained_playbacks);
+        for completion in drained.drain(..) {
+            if self.ledger.is_ended(completion.id) {
+                self.complete_assistant_reference(completion.playback);
+            } else {
+                self.drained_pending_end
+                    .push((completion.id, completion.playback));
+            }
+        }
+        self.drained_playbacks = drained;
+    }
+
+    /// Commit one completed segment's learned reference. `None` playback means
+    /// the segment was disqualified (muted, or no volume context) and must not
+    /// learn. The engine itself returns `None` for music-anchored references
+    /// (only first-use / held-assistant quiet-room speech trains the offset).
+    fn complete_assistant_reference(&mut self, playback: Option<SegmentPlayback>) {
+        let Some(playback) = playback else {
+            return;
+        };
+        let effective_gain_db = linear_to_db(playback.last_gain_linear);
+        let reference = self.loudness.complete_assistant_segment_at(
+            &playback.decision,
+            effective_gain_db,
+            playback.context,
+        );
+        if let (Some(reference), Some(tx)) = (reference, &self.assistant_reference_tx) {
+            let _ = tx.send(reference); // writer gone = degrade to no persistence
+        }
     }
 
     pub fn prepare_assistant_context(
@@ -544,5 +753,210 @@ mod tests {
             core.ledger().segment(segment).status,
             crate::ledger::SegmentStatus::Flushed
         );
+    }
+
+    fn vc(
+        canonical_db: f32,
+        downstream_db: f32,
+        tts_envelope_lufs: f32,
+        muted: bool,
+        stamp: u64,
+    ) -> VolumeContext {
+        VolumeContext {
+            canonical_db,
+            downstream_db,
+            tts_envelope_lufs,
+            muted,
+            stamp_boot_ns: stamp,
+        }
+    }
+
+    fn profile(source_lufs: f32, source_peak_dbfs: f32) -> AssistantProfile {
+        AssistantProfile {
+            provider: "openai".to_string(),
+            model: "m".to_string(),
+            voice: "v".to_string(),
+            source_lufs: Some(source_lufs),
+            source_peak_dbfs: Some(source_peak_dbfs),
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn post_dsp_muted_forces_silent_then_ramps_on_unmute() {
+        let mut core = OutputCore::new(4);
+        // Post-DSP: downstream is ignored, and envelope(-41) == source(-41) so
+        // the decided gain is 0 dB — the assistant passes at full amplitude.
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-41.0, -3.0)),
+        );
+        assert_eq!(core.ledger().segment(id).gain, 0.0);
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 12));
+        core.end_assistant_segment(id);
+
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        assert!(
+            core.dac().periods[0].iter().all(|&s| s == 8000),
+            "unmuted assistant passes at full amplitude: {:?}",
+            core.dac().periods[0]
+        );
+
+        // Mute mid-turn: the follower reply is silenced downstream even though
+        // frames remain queued — the real safety edge (a Camilla mute upstream
+        // cannot silence a reply mixed after CamillaDSP).
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, true, 2)));
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        assert!(
+            core.dac().periods[1].iter().all(|&s| s == 0),
+            "muted assistant is silent: {:?}",
+            core.dac().periods[1]
+        );
+
+        // Unmute: ramps back up from silence — audible but below full on the
+        // first frame (never a loud snap).
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 3)));
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        let unmuted = &core.dac().periods[2];
+        assert!(
+            unmuted[0] > 0 && unmuted[0] < 8000,
+            "unmute ramps from silence: {}",
+            unmuted[0]
+        );
+    }
+
+    #[test]
+    fn post_dsp_live_volume_change_regains_queued_speech() {
+        use crate::loudness::{apply_gain_i16, gain_db_to_linear, LIVE_VOLUME_RAMP_FRAMES};
+
+        const PERIOD: u32 = LIVE_VOLUME_RAMP_FRAMES; // ramp completes in one period
+        let mut core = OutputCore::new(PERIOD);
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        // Ample peak headroom (source_peak -20 → cap +17 dB) so a +6 dB re-gain
+        // is not clamped; decided gain is 0 dB (envelope == source).
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-41.0, -20.0)),
+        );
+        assert_eq!(core.ledger().segment(id).gain, 0.0);
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, (PERIOD as usize) * 2));
+        core.end_assistant_segment(id);
+
+        core.push_content_period(stereo(0, PERIOD as usize));
+        core.step();
+        assert!(core.dac().periods[0].iter().all(|&s| s == 8000));
+
+        // Raise the room target +6 dB (envelope -41 → -35) mid-turn. Post-DSP
+        // the downstream is ignored, so the mixer carries the full +6 dB.
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -35.0, false, 2)));
+        core.push_content_period(stereo(0, PERIOD as usize));
+        core.step();
+        let regained = &core.dac().periods[1];
+        assert!(
+            (regained[0] - 8000).abs() <= 4,
+            "ramp starts without a step discontinuity: {}",
+            regained[0]
+        );
+        let expected = apply_gain_i16(8000, gain_db_to_linear(6.0)) as i32;
+        let last = *regained.last().unwrap() as i32;
+        assert!(
+            (last - expected).abs() <= 2,
+            "ramp reaches +6 dB louder: {last} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn post_dsp_learns_and_persists_reference_on_segment_completion() {
+        let mut core = OutputCore::new(4);
+        let (tx, rx) = std::sync::mpsc::channel();
+        core.set_assistant_reference_sink(tx);
+        // Nonzero downstream that must be ignored when learning post-DSP.
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        // FirstUseFallback with source -25 → decided gain -16 dB; ample peak
+        // headroom so nothing clamps.
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-25.0, -20.0)),
+        );
+        assert_eq!(core.ledger().segment(id).gain, -16.0);
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 4));
+        // END arrives before the audio drains; the reference commits once the
+        // audio finishes playing this period.
+        core.end_assistant_segment(id);
+
+        core.push_content_period(stereo(0, 4));
+        core.step();
+
+        let reference = rx.try_recv().expect("a completed reply learns a reference");
+        // speaker = source(-25) + gain(-16) + downstream(ignored, 0) = -41,
+        // which equals the envelope, so the calibration offset is ~0.
+        assert!((reference.speaker_lufs - -41.0).abs() < 0.05);
+        assert_eq!(reference.canonical_db, -30.0);
+        assert!((reference.calibration_offset_lu - 0.0).abs() < 0.05);
+        assert_eq!(core.held_assistant_reference(), Some(reference));
+    }
+
+    #[test]
+    fn post_dsp_muted_reply_does_not_learn_a_reference() {
+        let mut core = OutputCore::new(4);
+        let (tx, rx) = std::sync::mpsc::channel();
+        core.set_assistant_reference_sink(tx);
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, false, 1)));
+        core.prepare_assistant_context(
+            "openai".to_string(),
+            "m".to_string(),
+            "v".to_string(),
+            -41.0,
+        );
+        let id = core.start_assistant_segment_with_profile(
+            Some("s".to_string()),
+            SegmentKind::Assistant,
+            0.0,
+            Some(profile(-25.0, -20.0)),
+        );
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 8));
+        core.end_assistant_segment(id);
+
+        // First period unmuted, then mute before the reply finishes: a silenced
+        // reply must never train the learned reference.
+        core.push_content_period(stereo(0, 4));
+        core.step();
+        assert!(core.update_volume_context(vc(-30.0, -30.0, -41.0, true, 2)));
+        core.push_content_period(stereo(0, 4));
+        core.step();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a muted reply must not learn a reference"
+        );
+        assert_eq!(core.held_assistant_reference(), None);
     }
 }
