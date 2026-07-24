@@ -229,7 +229,7 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 
 ## Appendix — investigation history
 
-> **Status: historical.** (Note: the appendix preserves the ORIGINAL
+> **Historical appendix — not current truth.** (Note: it preserves the ORIGINAL
 > doc verbatim, including its own now-superseded “Current Operational
 > Truth” heading and mid-appendix `Last verified:` line — do not read
 > those as current.) Everything below this line is this doc's
