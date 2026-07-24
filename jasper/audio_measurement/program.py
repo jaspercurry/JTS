@@ -130,7 +130,8 @@ MEASURE_SWEEP_F_HI_HZ = 23_000.0
 # At the defaults this composes a ~35.8 s / ~3.4 MB mono-WAV MEASURE
 # capture against the 5 MB
 # jasper.active_speaker.test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES
-# upload cap (headroom ~2.9 MB pre-#1668 → ~1.5 MB today) — raising
+# upload cap (headroom ~2.9 MB pre-#1668 → ~1.2 MB today, after the N=3
+# repeats AND the #1677 courtesy prelude's ~0.33 MB) — raising
 # repeat_count OR any role's sweep_durations must re-check that cap.
 MEASURE_REPEAT_COUNT = 3
 
@@ -662,7 +663,8 @@ def _courtesy_tone_burst(gain_db: float):
     amp = 10.0 ** (gain_db / 20.0)
     t = np.arange(beep_n, dtype=np.float64) / sr
     beep = (amp * np.sin(2.0 * np.pi * COURTESY_TONE_BEEP_HZ * t)).astype(np.float32)
-    # Short raised-cosine-squared fade in/out per beep — avoids the click a
+    # Short quadratic power-ramp fade in/out per beep (linspace**2, mirroring
+    # the sweep fade) — avoids the click a
     # hard-edged tone burst would leave (mirrors sweep.py's fade-in/out).
     fade_n = min(max(8, int(0.005 * sr)), beep_n // 2)
     if fade_n > 0:

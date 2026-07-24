@@ -708,3 +708,29 @@ def test_write_program_wav_with_courtesy_prelude(tmp_path):
     tone0 = prog.segment("courtesy_tone_ch0")
     window = data[tone0.start_sample:tone0.start_sample + tone0.n_samples, 0]
     assert np.max(np.abs(window)) > 0
+
+
+def test_worst_case_measure_with_prelude_stays_under_capture_wav_cap():
+    """Pin the 5 MiB capture-upload budget against the composed program.
+
+    MEASURE is the longest capture; the #1668 N=3 repeats and the #1677
+    courtesy prelude each silently spend headroom against
+    ``CROSSOVER_CAPTURE_MAX_WAV_BYTES``.  Render the production worst-case
+    shape (leading pilots + prelude + N=3 default) and assert the capture-side
+    mono 16-bit byte count stays under the cap with real margin, so the next
+    duration-growing change fails HERE instead of at upload time.
+    """
+    from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
+
+    program = build_measure_program(
+        _gain_plan(), _roles(),
+        leading_pilot_gains_db=(-6.0, -6.0), leading_pilot_role="woofer",
+        courtesy_prelude=True,
+    )
+    # Capture-side WAV: mono 16-bit, program length + the relay capture-plan
+    # margin (2000 ms — lockstep with crossover_v2_flow.CAPTURE_ENTRY_MARGIN_MS;
+    # mirrored, not imported, per the audio_measurement layering boundary).
+    margin_samples = int(round(2.0 * program.sample_rate_hz))
+    wav_bytes = 44 + 2 * (program.total_samples + margin_samples)
+    assert wav_bytes < CROSSOVER_CAPTURE_MAX_WAV_BYTES
+    assert CROSSOVER_CAPTURE_MAX_WAV_BYTES - wav_bytes > 512 * 1024
