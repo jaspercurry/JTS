@@ -708,16 +708,17 @@
   [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
   **Session-spanning capture protocol v3 (SPEC W2.3, Wave-2 Pi finale,
   2026-07-17):** driver-sweep relay captures now build their spec with a
-  `capture_plan` (`capture_target=3`, `max_attempts=4` — the SAME numbers
-  `commissioning_capture.DEFAULT_REPEAT_TARGET` /
-  `repeat_admission.MAX_ATTEMPTS` already enforce) and are driven by
+  `capture_plan` (`capture_target=3`, `max_attempts=`
+  `repeat_admission.MAX_ATTEMPTS`=4 — the session-local AUDIBLE budget, since a
+  transport failure ends the relay session and `reserve()` refuses past the
+  audible budget) and are driven by
   `correction_crossover_flow.build_crossover_relay_plan_run_and_consume`
   instead of the v2 per-capture runner — one relay session now carries a
   driver's whole 3-repeat set, the phone requesting each capture itself over
   the authenticated relay event channel (`jasper.capture_relay.session
   .run_capture_plan`, landed dormant with #1550). `authorize_begin` wraps the
   SAME `repeat_admission` reservation seam the v2 path used (budget stays
-  Pi-owned, unchanged); `consume_capture` calls the SAME
+  Pi-owned); `consume_capture` calls the SAME
   `record_driver_capture` analysis/record path, so per-capture solve
   escalation and the completion-time correction (#1555) are unchanged —
   they are the identical function call, just invoked from inside the plan
@@ -734,6 +735,28 @@
   Worker → page publish → the Pi build carrying this flip deploys last. See
   [phone-mic-relay-plan.md](phone-mic-relay-plan.md)'s "Session-spanning
   capture plans" section for the wire choreography.
+  **Infra-phase failures are refunded from the acceptance budget (#1513):**
+  the repeat set has TWO budgets now. The audible MEASUREMENT budget
+  (`repeat_admission.MAX_ATTEMPTS`=4) is DERIVED from the durable results —
+  `measurement_attempts()` counts only attempts that provably played a tone
+  (`audio_emitted is True`; unknown audio fails closed and counts, a proven
+  no-audio transport failure `audio_emitted is False` is refunded). A separate
+  `MAX_RESERVATIONS`=8 infra circuit-breaker caps total reservations so an
+  always-failing box terminates with a distinct `infra_retry_exhausted` reason
+  instead of blaming the room. `reserve()` refuses on either gate;
+  `finish()` persists a strict-tristate `audio_emitted` per result; both
+  eligibility gates (`crossover_eligibility.driver_repeat_completed` /
+  `driver_acoustic_usable`) and the record-side `admission_attempts` compute
+  over the measurement-bearing subset. Consequence: `admission_attempts` and
+  the stored `per_repeat` length stay <=4, but the RAW reservation `attempt`
+  VALUE can reach `MAX_RESERVATIONS` when the third accept lands after refunded
+  transport failures — so the lease store (`append_driver_repeat`) and the
+  durable summary (`measurement._durable_repeat_summary`'s `per_repeat.attempt`)
+  accept attempt values up to `MAX_RESERVATIONS`, while count-type fields keep
+  the 4 ceiling. The v3 `capture_plan.max_attempts` stays at the audible
+  `MAX_ATTEMPTS` because it is session-local and a transport failure ends the
+  session; the cross-session reservation headroom lives only in the durable
+  ledger.
   **Hardware blocker fixed (run 21, jts3):** the v3 order (reserve → phone
   arms → guard) made `on_armed`'s envelope-derivation guard
   (`_assert_crossover_driver_action`, built for v2's guard → reserve → capture

@@ -6410,6 +6410,12 @@ def _handle_crossover_relay_capture(
         ):
             return
 
+        # Cheap necessary-condition pre-gate on the RAW reservation attempt:
+        # finalize_driver_repeats_after_terminal_failure self-gates on the
+        # audible MEASUREMENT budget (measurement_attempts), and raw attempt >=
+        # measurement always, so this can only ever run finalize a hair early —
+        # never skip a salvage the measurement gate would have taken. Keeping it
+        # raw avoids re-reading the store here just to decide whether to look.
         if int(reservation.get("attempt") or 0) >= repeat_admission.MAX_ATTEMPTS:
             # The attempt may fail seconds after armed-time validation. Re-read
             # topology/profile/comparison before old accepted evidence can be

@@ -1868,6 +1868,13 @@ class CrossoverLevelLease:
         item: Mapping[str, Any],
         attempt: int | None = None,
     ) -> list[dict[str, Any]]:
+        # ``attempt`` is the RAW durable reservation number (record_driver_capture
+        # passes reservation_attempt), so a set that survived refunded transport
+        # failures reaches its third accept at an attempt up to MAX_RESERVATIONS —
+        # the audible measurement budget still caps the number of stored (audio-
+        # emitting) items at MAX_ATTEMPTS.
+        from jasper.active_speaker.repeat_admission import MAX_RESERVATIONS
+
         with self._repeat_lock:
             session = self._repeat_sessions.setdefault(
                 key,
@@ -1877,7 +1884,7 @@ class CrossoverLevelLease:
                 raise RuntimeError("crossover repeat target changed during capture")
             items = session["items"]
             index = int(attempt) if attempt is not None else len(items) + 1
-            if not 1 <= index <= 4 or index in items:
+            if not 1 <= index <= MAX_RESERVATIONS or index in items:
                 raise RuntimeError("crossover repeat attempt is duplicate or out of bounds")
             items[index] = dict(item)
             self._repeat_failures.pop(target_id, None)
