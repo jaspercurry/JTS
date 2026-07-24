@@ -66,6 +66,14 @@ session — its master prompt, merge-gate duties, sequencing rules, and
 escalation boundaries live in [`coordinator.md`](coordinator.md). The
 coordinator launches the wave sessions; it never implements.
 
+**Reconciled UX design input for Wave 6.**
+[`bass-commissioning-ux.md`](bass-commissioning-ux.md) reconciles an
+external UX/UI research report against the frozen `/bassext/*` contract
+(wave-4) and the plan's honesty/status-vocabulary sections. It is design
+intent, not an authorization amendment — it does not move Wave 6 off "not
+started," and wave-6-ui.md's own Revision 1 note records what it adopts
+and rejects.
+
 ---
 
 ## The engineering charter (binding for every wave)

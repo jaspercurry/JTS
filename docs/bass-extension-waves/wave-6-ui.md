@@ -1,5 +1,34 @@
 # Wave 6 — commissioning UI + low-frequency overview (Codex prompt)
 
+> **Revision 1 (2026-07-24) — reconciled UX input adopted as design intent;
+> wave still NOT STARTED.**
+> [`bass-commissioning-ux.md`](bass-commissioning-ux.md) reconciles an
+> external UX/UI research report against this file's frozen contract and
+> the plan's §5.3/§7/§10.2. Adopted as design intent for the Wizard
+> requirements below: the four-act information architecture (CHECK /
+> MEASURE / REVIEW-ACCEPT / DONE), its honesty-branched refusal copy, its
+> full status-chip vocabulary, and its microcopy set. Rejected (one line
+> each — see bass-commissioning-ux.md §11 for reasons):
+> - a shared "conductor shell" refactor across Crossover/Room/Bass;
+> - the stale "mirrors Crossover CHECK→MEASURE→REVIEW/APPLY→VERIFY" framing;
+> - a resume-after-Stop action;
+> - an A/B before/after audition at review;
+> - wiring the visible Stop button to `ladder/abort`;
+> - the "works automatically" done-screen claim (false until Wave 5 ships,
+>   and false for ported/PR regardless);
+> - deferring the mandatory family/anchor table, predicted-curves plot,
+>   expert drawer, or deep-mode toggle to an "Advanced" tier;
+> - a bespoke journey header (the sanctioned mechanism is the read-only
+>   journey strip in `correction-journey-design.md`, not yet built);
+> - inventing a Room-before-Bass gate.
+>
+> This revision changes no requirement below and authorizes no
+> implementation: this wave remains **not started** (plan's Wave status
+> table), and its own Preflight facts below — chiefly "Wave 4's endpoints
+> exist and `GET /bassext/state` returns `available_actions`" — remain
+> unmet; `jasper/web/bassext_backend.py` does not exist on `main` as of
+> this revision.
+
 Read `docs/bass-extension-waves/README.md` (binding charter) first,
 then this file completely. Prereqs: Wave 4 merged (its HTTP contract
 is your API); Wave 5 merged if you wire live status (else render

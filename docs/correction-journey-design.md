@@ -17,8 +17,11 @@
 A household calibrates a JTS speaker in a fixed physical order:
 
 1. **Crossover** — commission the active speaker itself (the v2
-   conductor flow: CHECK → MEASURE → REVIEW/APPLY → VERIFY). Makes the
-   drivers coherent. Passive speakers skip this step entirely.
+   conductor flow: CHECK → gain solve → MEASURE → candidate → APPLYING
+   (auto) → VERIFY — the 2026-07-20 owner ruling removed the earlier
+   human mid-flow Apply gate; a trusted candidate is applied by the
+   conductor itself, per `crossover_v2_flow.py`). Makes the drivers
+   coherent. Passive speakers skip this step entirely.
 2. **Room** — measure and apply room correction at the listening
    position. Already **gated on step 1** by the shipped Active-to-Room
    eligibility receipt.
@@ -223,7 +226,7 @@ without revealing guard state). Response:
 {
   "schema_version": 1,
   "steps": [
-    {"id": "crossover", "label": "Crossover", "state": "done",
+    {"id": "crossover", "label": "Active speaker", "state": "done",
      "detail": "Measured & applied", "href": "/correction/crossover/"},
     {"id": "room", "label": "Room", "state": "todo",
      "detail": null, "href": "/correction/room/"},
