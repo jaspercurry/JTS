@@ -862,6 +862,73 @@ def test_pad_error_surfaces_as_design_draft_error():
         )
 
 
+def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_raising():
+    # #1665 follow-up bug + fix: normalise_pad wrote attenuation_db /
+    # effective_impedance_ohm into the pad record it returned, then rejected
+    # those same fields as unknown input when that returned record was fed
+    # back in as fresh input. This reproduces the exact live JTS3 failure
+    # shape: crossover-v2 session-start calls
+    # web_commissioning.regenerate_crossover_preview_from_current_draft,
+    # which reloads the saved design draft and rebuilds it via (read
+    # verbatim from that function, ~line 276-284 as of #1665):
+    #
+    #     draft = build_design_draft(
+    #         topology,
+    #         driver_research_request=draft.get("driver_research_request"),
+    #         driver_research=draft.get("driver_research"),
+    #         manual_settings=draft.get("manual_settings"),
+    #         operator_inputs=draft.get("operator_inputs"),
+    #         prior_safety_profile=draft.get("driver_safety_profile"),
+    #         created_at=draft.get("created_at"),
+    #     )
+    #
+    # -- feeding the ALREADY-NORMALISED manual_settings (derived pad fields
+    # included) straight back in. Mirrored here exactly rather than
+    # re-derived, per AGENTS.md "verify at the user's surface": on the
+    # pre-fix code this call raises ActiveSpeakerDesignDraftError(
+    # "manual_settings.driver.pad has unknown fields: effective_impedance_ohm").
+    topology = _topology()
+
+    saved = build_design_draft(
+        topology,
+        manual_settings={
+            "drivers": [
+                {"role": "woofer", "model": "A"},
+                {
+                    "role": "tweeter",
+                    "model": "B",
+                    "nominal_impedance_ohm": 8,
+                    "sensitivity_db_2v83_1m": 108.0,
+                    "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
+                },
+            ],
+            "crossover_candidates": [],
+        },
+    )
+    _woofer, tweeter = saved["manual_settings"]["drivers"]
+    expected_pad = {
+        "kind": "l_pad",
+        "series_ohm": 6.8,
+        "shunt_ohm": 2.0,
+        "attenuation_db": -14.4,
+        "effective_impedance_ohm": 8.4,
+    }
+    assert tweeter["pad"] == expected_pad
+
+    # The regenerate-path rebuild call, verbatim in argument shape.
+    regenerated = build_design_draft(
+        topology,
+        driver_research_request=saved.get("driver_research_request"),
+        driver_research=saved.get("driver_research"),
+        manual_settings=saved.get("manual_settings"),
+        operator_inputs=saved.get("operator_inputs"),
+        prior_safety_profile=saved.get("driver_safety_profile"),
+        created_at=saved.get("created_at"),
+    )
+    _woofer2, tweeter2 = regenerated["manual_settings"]["drivers"]
+    assert tweeter2["pad"] == expected_pad
+
+
 def test_research_and_manual_drivers_share_the_new_fields_too():
     common = {
         "role": "tweeter",

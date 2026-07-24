@@ -20,6 +20,55 @@ def test_pad_kinds_is_the_closed_four_value_vocabulary():
     assert PAD_KINDS == ("none", "series_resistor", "l_pad", "direct_db")
 
 
+# --- idempotence: normalise_pad(normalise_pad(x)) == normalise_pad(x) --------
+#
+# #1665 follow-up bug: normalise_pad WRITES attenuation_db /
+# effective_impedance_ohm into the record it returns, then REJECTED those
+# same fields as unknown/forbidden input when that returned record was fed
+# back in. Live failure: crossover-v2 session-start rebuilds the design
+# draft from the saved manual_settings on every prepare
+# (web_commissioning.regenerate_crossover_preview_from_current_draft), so a
+# saved l_pad/series_resistor pad 400ed on the very next session start. One
+# normalisation must be a fixed point of itself for every kind.
+
+
+@pytest.mark.parametrize(
+    "raw,nominal_impedance_ohm",
+    [
+        pytest.param(None, 8.0, id="absent"),
+        pytest.param({"kind": "none"}, 8.0, id="explicit_none"),
+        pytest.param(
+            {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
+            8.0,
+            id="l_pad",
+        ),
+        pytest.param(
+            {"kind": "series_resistor", "series_ohm": 10.0},
+            8.0,
+            id="series_resistor",
+        ),
+        pytest.param(
+            {"kind": "direct_db", "attenuation_db": -3.5},
+            8.0,
+            id="direct_db_with_impedance",
+        ),
+        pytest.param(
+            {"kind": "direct_db", "attenuation_db": -6.0},
+            None,
+            id="direct_db_without_impedance",
+        ),
+    ],
+)
+def test_normalise_pad_is_idempotent(raw, nominal_impedance_ohm):
+    once = normalise_pad(
+        raw, nominal_impedance_ohm=nominal_impedance_ohm, field_name="driver.pad"
+    )
+    twice = normalise_pad(
+        once, nominal_impedance_ohm=nominal_impedance_ohm, field_name="driver.pad"
+    )
+    assert twice == once
+
+
 # --- l_pad: the JTS3 tweeter acceptance check --------------------------------
 #
 # 6.8 ohm series + 2.0 ohm shunt against an 8 ohm nominal driver. Verified
@@ -107,21 +156,50 @@ def test_series_resistor_rejects_a_stray_shunt():
         )
 
 
-def test_resistor_kinds_reject_a_client_supplied_derived_attenuation():
-    # attenuation_db is server-computed for l_pad/series_resistor; a client
-    # that echoes back the last readout instead of leaving it out is a bug,
-    # not a legitimate round-trip -- see driver_pad.py's docstring.
-    with pytest.raises(DriverPadError, match=r"attenuation_db is derived for kind=l_pad"):
-        normalise_pad(
-            {
-                "kind": "l_pad",
-                "series_ohm": 6.8,
-                "shunt_ohm": 2.0,
-                "attenuation_db": -14.4,
-            },
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
+def test_resistor_kinds_ignore_and_recompute_a_client_supplied_derived_attenuation():
+    # attenuation_db is server-computed for l_pad/series_resistor. This is
+    # exactly the shape normalise_pad's own output takes -- and the shape a
+    # saved pad record has -- so it must round-trip cleanly rather than
+    # erroring: see the idempotence contract in driver_pad.py's docstring
+    # (#1665 follow-up: a saved pad record 400ed when re-normalised, e.g.
+    # crossover-v2 session-start rebuilding the design draft from disk).
+    out = normalise_pad(
+        {
+            "kind": "l_pad",
+            "series_ohm": 6.8,
+            "shunt_ohm": 2.0,
+            "attenuation_db": -14.4,
+        },
+        nominal_impedance_ohm=8.0,
+        field_name="driver.pad",
+    )
+    assert out == {
+        "kind": "l_pad",
+        "series_ohm": 6.8,
+        "shunt_ohm": 2.0,
+        "attenuation_db": -14.4,
+        "effective_impedance_ohm": 8.4,
+    }
+
+
+def test_resistor_kinds_discard_a_wrong_supplied_attenuation_rather_than_trusting_it():
+    # The anti-confusion property that survives the fix above: an operator
+    # still cannot MAKE UP an attenuation for a resistor pad. A deliberately
+    # wrong echoed value is silently discarded (no consistency check) and the
+    # correct figure is recomputed from the resistor values, never taken on
+    # faith and never raised as an inconsistency error.
+    out = normalise_pad(
+        {
+            "kind": "l_pad",
+            "series_ohm": 6.8,
+            "shunt_ohm": 2.0,
+            "attenuation_db": -99.9,
+        },
+        nominal_impedance_ohm=8.0,
+        field_name="driver.pad",
+    )
+    assert out is not None
+    assert out["attenuation_db"] == -14.4
 
 
 # --- direct_db: operator-known attenuation, no resistor topology -------------

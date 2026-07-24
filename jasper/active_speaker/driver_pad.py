@@ -38,7 +38,13 @@ from typing import Any, Mapping
 # normalise_pad returns None for either so there is exactly one no-pad shape.
 PAD_KINDS: tuple[str, ...] = ("none", "series_resistor", "l_pad", "direct_db")
 
-_PAD_FIELDS = {"kind", "series_ohm", "shunt_ohm", "attenuation_db"}
+_PAD_FIELDS = {
+    "kind",
+    "series_ohm",
+    "shunt_ohm",
+    "attenuation_db",
+    "effective_impedance_ohm",
+}
 
 
 class DriverPadError(ValueError):
@@ -86,6 +92,26 @@ def normalise_pad(
     ``attenuation_db`` (``direct_db``) that kind needs. Returns ``None`` for
     an absent pad or an explicit ``kind: "none"``.
 
+    Idempotence contract: ``normalise_pad(normalise_pad(x, ...), ...) ==
+    normalise_pad(x, ...)`` for any ``x`` that normalises successfully. This
+    function's own output is a legal input to itself -- callers that persist
+    the return value and later re-normalise it (e.g. rebuilding a design
+    draft from a saved record) must not have to strip derived keys first.
+    Concretely: for ``l_pad`` / ``series_resistor``, ``attenuation_db`` and
+    ``effective_impedance_ohm`` are OUTPUTS -- if either is present on input
+    it is ignored and silently dropped (recomputed from the resistor values
+    with no consistency check against the incoming value), never rejected.
+    An operator still cannot invent an attenuation for a resistor pad -- it
+    is always recomputed, never taken on faith -- so the anti-confusion
+    intent survives; only the "reject the field outright" enforcement of it
+    is gone. For ``direct_db``, ``attenuation_db`` is the one derived-looking
+    key that is genuinely an INPUT for that kind and stays required;
+    ``effective_impedance_ohm`` is still ignored-and-dropped (a bare dB
+    figure has no impedance model to store one), not rejected. A resistor
+    field (``series_ohm`` / ``shunt_ohm``) declared on a ``direct_db`` pad
+    remains rejected -- that is a genuine kind mismatch, not a derived-field
+    echo.
+
     Raises :class:`DriverPadError` when a required field is missing, an
     irrelevant field is set for the chosen kind, or (``l_pad`` /
     ``series_resistor``) the record has no declared ``nominal_impedance_ohm``
@@ -107,27 +133,34 @@ def normalise_pad(
 
     series = _positive_float(raw.get("series_ohm"), f"{field_name}.series_ohm")
     shunt = _positive_float(raw.get("shunt_ohm"), f"{field_name}.shunt_ohm")
-    direct_db = _finite_float(raw.get("attenuation_db"), f"{field_name}.attenuation_db")
 
     if kind == "direct_db":
         if series is not None or shunt is not None:
             raise DriverPadError(
                 f"{field_name} must not declare resistor values for kind=direct_db"
             )
+        direct_db = _finite_float(
+            raw.get("attenuation_db"), f"{field_name}.attenuation_db"
+        )
         if direct_db is None:
             raise DriverPadError(
                 f"{field_name}.attenuation_db is required for kind=direct_db"
             )
         if direct_db > 0:
             raise DriverPadError(f"{field_name}.attenuation_db must be <= 0")
+        # effective_impedance_ohm has no meaning for a bare dB figure. It is
+        # accepted (see _PAD_FIELDS) so a saved record's own derived-output
+        # echo round-trips, but never stored -- direct_db has no impedance
+        # model to store one in.
         return {"kind": kind, "attenuation_db": direct_db}
 
     # l_pad / series_resistor: attenuation_db and effective_impedance_ohm are
-    # DERIVED below, never accepted as input.
-    if direct_db is not None:
-        raise DriverPadError(
-            f"{field_name}.attenuation_db is derived for kind={kind}; do not set it"
-        )
+    # OUTPUTS, computed below from the resistor values. Either key may be
+    # present on input -- typically a verbatim echo of this function's own
+    # last output -- and is ignored and recomputed rather than validated, so
+    # a saved pad record re-normalises cleanly (see the idempotence contract
+    # in the docstring above). Deliberately not even type-checked here: the
+    # value is never read, so there's nothing to validate.
     if series is None:
         raise DriverPadError(f"{field_name}.series_ohm is required for kind={kind}")
     if kind == "series_resistor" and shunt is not None:
