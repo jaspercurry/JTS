@@ -35,6 +35,15 @@ import pytest_asyncio
 from jasper.config import Config
 
 
+#: Seconds before the hang backstop kills a voice_eval test. The repo
+#: default (300s, pyproject) is sized for hardware-free tests; a scenario
+#: here is a pass^3 — three sequential PAID live sessions, each with the
+#: harness's own 30s per-turn bound — so 300s can kill legitimate work.
+#: 900s still converts "wedged paid session bills forever" into a bounded
+#: burn; the harness never retries, so the ceiling is one session.
+VOICE_EVAL_TIMEOUT_S = 900
+
+
 def pytest_collection_modifyitems(items) -> None:
     """Pin every voice_eval test to the session event loop.
 
@@ -48,6 +57,10 @@ def pytest_collection_modifyitems(items) -> None:
     "goodbye" — see PR #610's investigation). Prepending makes the pin
     the closest marker, so the whole suite genuinely shares the session
     loop, matching how the daemon runs.
+
+    The same pass raises the hang backstop to VOICE_EVAL_TIMEOUT_S.
+    Appended, not prepended: nothing else sets a timeout marker here, and
+    the asyncio pin above is the only one that depends on being closest.
     """
     suite_dir = os.path.dirname(os.path.abspath(__file__))
     for item in items:
@@ -55,6 +68,7 @@ def pytest_collection_modifyitems(items) -> None:
             item.add_marker(
                 pytest.mark.asyncio(loop_scope="session"), append=False,
             )
+            item.add_marker(pytest.mark.timeout(VOICE_EVAL_TIMEOUT_S))
 
 
 def _provider_key_present(cfg: Config) -> bool:

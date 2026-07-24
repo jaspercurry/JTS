@@ -48,9 +48,50 @@
 | Check wizard-socket ListenStream ports match nginx upstreams (PR #118 502 class) | [`tests/test_deploy_wiring_guards.py`](../tests/test_deploy_wiring_guards.py) — two-sided socket↔nginx parity guard |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
 | Pin a documented invariant / convention with a test (registry coverage, SSOT readers, env-var codification, cross-language wire shapes) | [Guard & contract test patterns](#guard--contract-test-patterns) |
+| Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture from a non-bridge source (satellite mic, raw chip) | [Capture: alternative sources](#capture-alternative-sources) |
+
+---
+
+## Hang backstop (pytest-timeout)
+
+Every test is bounded at **300 s** (`timeout` / `timeout_method` in
+`[tool.pytest.ini_options]`, pinned by
+`tests/test_dependency_groups.py::test_hang_backstop_is_configured_and_uses_the_signal_method`).
+
+**What it is for.** An unbounded await whose producer dies never returns.
+Before the backstop, one such test blocked the whole local suite with no
+failing test to point at, and the producer's real exception stayed
+swallowed on a task nobody awaited. The backstop turns any hang — an
+`asyncio.Event` nobody sets, a wedged socket read, a blocking
+`subprocess.run` — into a reported failure with the stuck stack.
+
+**`timeout_method = "signal"` is load-bearing.** Measured both ways:
+`thread` dumps the stack and then kills the whole pytest process, losing
+every result after the stuck test; `signal` fails only that test and lets
+the run continue. It also survives `pytest-xdist` (`scripts/test-merge`
+runs `-n 4`). Its limits: it cannot interrupt a hang inside a C extension
+or at collection/import time, so CI's job-level `timeout-minutes` stays
+as the outer belt.
+
+**300 s is a hang-breaker, not a timing assertion.** The slowest healthy
+test measures ~15 s, so this is ~20x headroom, sized so a loaded dev box
+does not go red. Never tighten it to make a slow test fail — assert
+timing in the test itself.
+
+**Overrides.** `@pytest.mark.timeout(N)` on a test or module; `N = 0`
+disables. `tests/voice_eval/conftest.py` raises the whole paid suite to
+`VOICE_EVAL_TIMEOUT_S` (900 s) because a pass^3 scenario is three
+sequential live sessions.
+
+**Related:** the backstop is the broad, slow net. For the specific
+`await <event>.wait()` shape, `tests/_async_wait.py::wait_signalled()`
+fails in ~10 s *and names the producing task's exception*, and the guard
+in `tests/test_async_wait_contract.py` catches the pattern at CI time —
+where quiet Linux runners mean the backstop never fires. See the
+bounded-wait row in [Guard & contract test patterns](#guard--contract-test-patterns).
 
 ---
 
