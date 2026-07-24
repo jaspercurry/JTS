@@ -71,6 +71,7 @@ from jasper.audio_measurement.null_walk import (
     NullWalkSpec,
 )
 from jasper.output_topology import OutputTopology
+from tests._async_wait import wait_signalled
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_commissioning_evidence import (
     _Harness,
@@ -1127,7 +1128,7 @@ async def test_two_independent_hosts_allow_only_one_issuance_to_execute(
             config_dir=str(tmp_path),
         )
     )
-    await capture_started.wait()
+    await wait_signalled(capture_started, "host capture began", producer=first)
     with pytest.raises(CommissioningHostError) as raised:
         peer_host._runtime_mutation_journal(peer_operation)
     assert raised.value.code == "operation_stale"
@@ -1173,7 +1174,11 @@ async def test_restored_in_flight_capture_cannot_be_recovered_by_peer(
             config_dir=str(tmp_path),
         )
     )
-    await runtime_restored.wait()
+    await wait_signalled(
+        runtime_restored,
+        "host runtime reached the restored mutation",
+        producer=first,
+    )
 
     with pytest.raises(CommissioningHostError) as planned:
         peer.next_operation()

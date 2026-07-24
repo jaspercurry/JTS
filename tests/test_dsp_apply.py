@@ -37,6 +37,8 @@ from jasper.dsp_apply import (
     validate_camilla_config,
 )
 
+from ._async_wait import wait_signalled
+
 
 def _fake_camilladsp(tmp_path: Path, *, exit_code: int = 0) -> Path:
     script = tmp_path / "camilladsp"
@@ -142,7 +144,7 @@ async def test_cancelled_dsp_writer_waiter_cannot_acquire_late(tmp_path: Path):
             await release_holder.wait()
 
     holder = asyncio.create_task(hold())
-    await holder_entered.wait()
+    await wait_signalled(holder_entered, "holder acquired the lock", producer=holder)
 
     async def wait_then_mark() -> None:
         async with dsp_writer_lock(
@@ -214,7 +216,7 @@ async def test_cancelling_contended_owner_is_not_logged_as_wait_cancellation(
             await release_holder.wait()
 
     holder = asyncio.create_task(hold())
-    await holder_entered.wait()
+    await wait_signalled(holder_entered, "holder acquired the lock", producer=holder)
     owner_entered = asyncio.Event()
 
     async def own_then_wait() -> None:
@@ -230,7 +232,14 @@ async def test_cancelling_contended_owner_is_not_logged_as_wait_cancellation(
     await asyncio.sleep(0.03)
     release_holder.set()
     await holder
-    await owner_entered.wait()
+    # The owner only signals if it wins the lock inside its 0.5 s budget.
+    # A loaded box can miss that, killing the task with
+    # DspWriterLockTimeout; bounded so that surfaces instead of hanging.
+    await wait_signalled(
+        owner_entered,
+        "contended owner acquired the lock",
+        producer=owner,
+    )
     owner.cancel()
     with pytest.raises(asyncio.CancelledError):
         await owner
@@ -255,7 +264,7 @@ async def test_dsp_writer_lock_acquires_after_contention_before_deadline(
             await release_holder.wait()
 
     holder = asyncio.create_task(hold())
-    await holder_entered.wait()
+    await wait_signalled(holder_entered, "holder acquired the lock", producer=holder)
     acquired = asyncio.Event()
 
     async def contend() -> None:

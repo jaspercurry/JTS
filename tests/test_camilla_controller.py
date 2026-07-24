@@ -24,6 +24,8 @@ from jasper.camilla import (
 )
 from jasper.dsp_apply import BassExtensionApplyPending, dsp_writer_lock
 
+from ._async_wait import wait_signalled
+
 
 class _FakeVolume:
     def __init__(self) -> None:
@@ -347,7 +349,11 @@ async def test_intent_publication_wins_race_before_direct_graph_mutation(
             await release_publication.wait()
 
     publisher = asyncio.create_task(publish_intent())
-    await publication_entered.wait()
+    await wait_signalled(
+        publication_entered,
+        "intent publication took the writer lock",
+        producer=publisher,
+    )
     mutation = asyncio.create_task(cam.reload())
     await asyncio.wait_for(lock_contended.wait(), timeout=1.0)
     assert not mutation.done()

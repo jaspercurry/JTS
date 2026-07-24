@@ -49,6 +49,8 @@ from jasper.bass_extension.profile import (
 from jasper.bass_extension.targets import AnchorPoint
 from jasper.output_topology import OutputTopology
 
+from ._async_wait import wait_signalled
+
 
 def _topology(topology_id: str = "test-speaker") -> OutputTopology:
     return OutputTopology.from_mapping({
@@ -769,7 +771,11 @@ async def test_delayed_rollback_cannot_replay_consumed_intent_over_new_commit(
     monkeypatch.setattr(bass_extension_module, "_active_proof", fail_first_final)
 
     first = asyncio.create_task(apply_bass_extension(desired, **paths))
-    await rollback_waiting.wait()
+    await wait_signalled(
+        rollback_waiting,
+        "first apply reached rollback",
+        producer=first,
+    )
     await apply_bass_extension(desired, **paths)
     assert selected.read_text(encoding="utf-8") == "---\ngraph: plain\n"
     assert load_bass_extension_profile(profile_path) == desired
@@ -839,9 +845,17 @@ async def test_delayed_rollback_refuses_different_newer_pending_intent(
     monkeypatch.setattr(bass_extension_module, "_active_proof", fail_each_final)
 
     first = asyncio.create_task(apply_bass_extension(desired, **paths))
-    await first_rollback_waiting.wait()
+    await wait_signalled(
+        first_rollback_waiting,
+        "first apply reached rollback",
+        producer=first,
+    )
     second = asyncio.create_task(apply_bass_extension(desired, **paths))
-    await second_rollback_waiting.wait()
+    await wait_signalled(
+        second_rollback_waiting,
+        "second apply reached rollback",
+        producer=second,
+    )
     newer_intent = intent_path.read_bytes()
 
     release_first.set()
@@ -907,9 +921,13 @@ async def test_repeated_cancellation_during_rollback_drains_one_restore_task(
     )
 
     apply_task = asyncio.create_task(apply_bass_extension(desired, **paths))
-    await proof_started.wait()
+    await wait_signalled(
+        proof_started,
+        "apply reached the final proof",
+        producer=apply_task,
+    )
     apply_task.cancel()
-    await restore_started.wait()
+    await wait_signalled(restore_started, "cancellation started the restore")
     for _ in range(2):
         apply_task.cancel()
         await asyncio.sleep(0)
@@ -970,9 +988,13 @@ async def test_rollback_failure_wins_over_repeated_cancellation(
     )
 
     apply_task = asyncio.create_task(apply_bass_extension(desired, **paths))
-    await proof_started.wait()
+    await wait_signalled(
+        proof_started,
+        "apply reached the final proof",
+        producer=apply_task,
+    )
     apply_task.cancel()
-    await restore_started.wait()
+    await wait_signalled(restore_started, "cancellation started the restore")
     for _ in range(2):
         apply_task.cancel()
         await asyncio.sleep(0)
