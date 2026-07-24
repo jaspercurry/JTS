@@ -53,6 +53,23 @@ ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
     "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
 }
 
+# The closed driver-technology vocabulary (design doc "Microphone doctrine" /
+# artifact 02 §5's driver-class table). Hoisted here (#1665) from
+# linearization_envelope.py so component-entry code (design_draft.py's schema,
+# the /sound/ wizard's declared "driver type" pick) and the correction-envelope
+# math (linearization_envelope.compose_envelope's class_prior_limit term) share
+# one vocabulary without either side importing the other's module.
+# linearization_envelope re-exports this name so its own callers/tests are
+# unaffected.
+DRIVER_CLASSES: tuple[str, ...] = (
+    "compression_horn",
+    "soft_dome",
+    "metal_dome",
+    "beryllium_diamond_dome",
+    "ribbon_amt",
+    "unknown",
+)
+
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 

@@ -2477,16 +2477,24 @@ def test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_optimal
     for role_fit in candidate.linearization.values():
         assert role_fit["mic_tier"] == "reference"
         assert role_fit["n_repeats"] == 2
-        # No caller populates driver_class_by_role yet (#1665 not landed) —
-        # every role fits under the conservative "unknown" default.
+        # This test passes no driver_class_by_role override, so every role
+        # fits under the ctor's conservative "unknown" default. A production
+        # caller now exists (#1665's resolve_conductor_context — see
+        # test_declared_driver_class_reaches_the_compose_envelope_seam
+        # below); this test is deliberately about the no-override path.
         assert role_fit["driver_class"] == "unknown"
 
 
 def test_driver_class_by_role_ctor_param_threads_into_the_fit():
-    """The optional driver_class_by_role ctor param (default None -> every
-    role "unknown") is a forward-looking seam for #1665's component-entry
-    declarations — no production caller populates it yet, but the wiring
-    itself must work when a caller does."""
+    """The driver_class_by_role ctor param (default None -> every role
+    "unknown") was #1668 PR-C's forward-looking seam for #1665's
+    component-entry declarations. #1665 has since landed
+    (jasper.web.correction_crossover_v2.resolve_conductor_context is the
+    production caller); this test pins the ctor-level wiring with a
+    hand-typed override, and
+    test_declared_driver_class_reaches_the_compose_envelope_seam below closes
+    the other half by driving this SAME param from the resolver's real
+    output."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes, driver_class_by_role={"tweeter": "compression_horn"})
@@ -2495,6 +2503,41 @@ def test_driver_class_by_role_ctor_param_threads_into_the_fit():
     assert verdict["accepted"] is True
     assert c.candidate.linearization["tweeter"]["driver_class"] == "compression_horn"
     # The woofer wasn't named in the override -> stays "unknown".
+    assert c.candidate.linearization["woofer"]["driver_class"] == "unknown"
+
+
+def test_declared_driver_class_reaches_the_compose_envelope_seam():
+    """#1665: a design draft's declared driver_class, resolved by the REAL
+    production helper (jasper.web.correction_crossover_v2's
+    _resolve_driver_class_by_role — not a hand-typed literal), reaches
+    compose_envelope through the exact ctor param the sibling test above
+    proved works. Closes the seam #1668 PR-C's own test left open (its
+    docstring said "no production caller populates it yet")."""
+    from jasper.web.correction_crossover_v2 import _resolve_driver_class_by_role
+
+    draft = {
+        "manual_settings": {
+            "drivers": [
+                {"role": "woofer", "model": "A"},
+                {
+                    "role": "tweeter",
+                    "model": "B",
+                    "driver_class": "compression_horn",
+                },
+            ],
+            "crossover_candidates": [],
+        },
+    }
+    driver_class_by_role = _resolve_driver_class_by_role(draft)
+    assert driver_class_by_role == {"tweeter": "compression_horn"}
+
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes, driver_class_by_role=driver_class_by_role)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert c.candidate.linearization["tweeter"]["driver_class"] == "compression_horn"
     assert c.candidate.linearization["woofer"]["driver_class"] == "unknown"
 
 

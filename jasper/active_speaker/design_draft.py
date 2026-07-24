@@ -22,7 +22,8 @@ from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology
-from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
+from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, DRIVER_CLASSES, issue as _issue
+from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     DriverSafetyProfileError,
@@ -80,6 +81,14 @@ _MANUAL_DRIVER_FIELDS = {
     "level_duration_limits",
     "cabinet",
     "source",
+    # #1665 component entry. driver_class/radiating_diameter_mm/
+    # horn_coverage_deg are AI-researchable (see driver_safety's research
+    # prompt); pad is deliberately NOT researched -- the operator is the only
+    # one who knows what resistors they actually wired in.
+    "driver_class",
+    "radiating_diameter_mm",
+    "horn_coverage_deg",
+    "pad",
 }
 _CANDIDATE_FIELDS = {
     "between_roles",
@@ -263,6 +272,24 @@ def _frequency_range(raw: Any, field_name: str) -> list[float] | None:
     return [low, high]
 
 
+def _driver_class(raw: Any, field_name: str) -> str | None:
+    value = _text(raw, field_name, max_chars=40)
+    if value is None:
+        return None
+    if value not in DRIVER_CLASSES:
+        raise ActiveSpeakerDesignDraftError(
+            f"{field_name} must be one of: {', '.join(DRIVER_CLASSES)}"
+        )
+    return value
+
+
+def _horn_coverage_deg(raw: Any, field_name: str) -> float | None:
+    value = _positive_float(raw, field_name)
+    if value is not None and value > 360:
+        raise ActiveSpeakerDesignDraftError(f"{field_name} must be <= 360")
+    return value
+
+
 def _normalise_driver_common(
     raw: Any,
     prefix: str,
@@ -277,6 +304,10 @@ def _normalise_driver_common(
         raw.get("gain_offset_db"),
         f"{prefix}.gain_offset_db",
     )
+    nominal_impedance_ohm = _positive_float(
+        raw.get("nominal_impedance_ohm"),
+        f"{prefix}.nominal_impedance_ohm",
+    )
     driver: dict[str, Any] = {
         "role": _role(raw.get("role"), f"{prefix}.role"),
         "model": _text(
@@ -290,10 +321,7 @@ def _normalise_driver_common(
             f"{prefix}.manufacturer",
             max_chars=120,
         ),
-        "nominal_impedance_ohm": _positive_float(
-            raw.get("nominal_impedance_ohm"),
-            f"{prefix}.nominal_impedance_ohm",
-        ),
+        "nominal_impedance_ohm": nominal_impedance_ohm,
         "sensitivity_db_2v83_1m": _finite_float(
             raw.get("sensitivity_db_2v83_1m"),
             f"{prefix}.sensitivity_db_2v83_1m",
@@ -329,6 +357,21 @@ def _normalise_driver_common(
             f"{prefix}.notes",
             max_chars=MAX_DRIVER_NOTE_CHARS,
         ),
+        # #1665 component entry: physical facts about the driver itself, not
+        # a safety limit. driver_class feeds
+        # linearization_envelope.compose_envelope's class_prior_limit term;
+        # radiating_diameter_mm/horn_coverage_deg are the ka-beaming-guidance
+        # inputs (#1675) and are mutually exclusive by driver geometry (a
+        # piston has a diameter, a horn has a coverage angle).
+        "driver_class": _driver_class(raw.get("driver_class"), f"{prefix}.driver_class"),
+        "radiating_diameter_mm": _positive_float(
+            raw.get("radiating_diameter_mm"),
+            f"{prefix}.radiating_diameter_mm",
+        ),
+        "horn_coverage_deg": _horn_coverage_deg(
+            raw.get("horn_coverage_deg"),
+            f"{prefix}.horn_coverage_deg",
+        ),
     }
     if include_sources:
         driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
@@ -340,7 +383,17 @@ def _normalise_driver_common(
                 include_research_evidence=include_research_safety_evidence,
             )
         )
-    except DriverSafetyProfileError as exc:
+        # Pad is deliberately outside normalise_driver_safety_fields (a
+        # research/safety-profile surface pad is never part of): it is an
+        # operator-only, never-researched fact, folded into effective
+        # sensitivity by declared_effective_driver_sensitivities() below and
+        # by baseline_profile._derive_corrections, not a safety limit.
+        driver["pad"] = normalise_pad(
+            raw.get("pad"),
+            nominal_impedance_ohm=nominal_impedance_ohm,
+            field_name=f"{prefix}.pad",
+        )
+    except (DriverSafetyProfileError, DriverPadError) as exc:
         raise ActiveSpeakerDesignDraftError(str(exc)) from exc
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
@@ -610,7 +663,9 @@ def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, 
 
     The declaration (``manual_settings.drivers``) is the ONE owner of driver
     sensitivity -- a declared physical property of the driver, not a safety
-    limit -- so the W6.5 sensitivity-derived HF measurement ceiling
+    limit -- so the W6.5 sensitivity-derived HF measurement ceiling (which now reads the
+    pad-folded :func:`declared_effective_driver_sensitivities` instead of this
+    naked reader)
     (:func:`jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings`)
     reads it from here rather than duplicating it onto the confirmed safety
     profile. That keeps one copy of the fact and needs zero migration: every
@@ -647,6 +702,59 @@ def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, 
             conflicted.add(role)
             continue
         out[role] = number
+    for role in conflicted:
+        out.pop(role, None)
+    return out
+
+
+def declared_effective_driver_sensitivities(
+    draft: Mapping[str, Any] | None,
+) -> dict[str, float]:
+    """Per-role declared sensitivities with any in-line pad folded in.
+
+    Sibling of :func:`declared_driver_sensitivities` -- same declaration, same
+    role-keyed / conflict-drops-the-role shape -- except each row's naked
+    ``sensitivity_db_2v83_1m`` is first folded through
+    :func:`jasper.active_speaker.driver_pad.effective_sensitivity_db` using
+    that same row's own ``pad``. This is what excitation-ceiling derivation,
+    session-volume planning, and playback admission should read (#1665): an
+    L-pad'd tweeter's effective output is quieter than its bare datasheet
+    figure, and every one of those consumers needs the number a microphone
+    would actually measure at the driver terminals, not the naked rating.
+
+    A role is dropped on ANY disagreement between rows for that role -- in
+    the naked sensitivity, the pad, or both -- since either kind of
+    disagreement makes the effective figure ambiguous. Returns ``{}`` when
+    the draft carries no declaration.
+    """
+
+    if not isinstance(draft, Mapping):
+        return {}
+    manual = draft.get("manual_settings")
+    if not isinstance(manual, Mapping):
+        return {}
+    drivers = manual.get("drivers")
+    out: dict[str, float] = {}
+    conflicted: set[str] = set()
+    for driver in drivers if isinstance(drivers, list) else []:
+        if not isinstance(driver, Mapping):
+            continue
+        role = str(driver.get("role") or "")
+        value = driver.get("sensitivity_db_2v83_1m")
+        if (
+            not role
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            continue
+        effective = effective_sensitivity_db(float(value), driver.get("pad"))
+        if effective is None:
+            continue
+        if role in out and out[role] != effective:
+            conflicted.add(role)
+            continue
+        out[role] = effective
     for role in conflicted:
         out.pop(role, None)
     return out
@@ -701,6 +809,38 @@ def normalise_operator_inputs(raw: Any) -> dict[str, Any]:
     return out
 
 
+# The research staleness-comparison field set — one of the four allowlist
+# gates for per-driver fields (see tests/test_active_speaker_driver_safety.py
+# ::test_component_entry_fields_present_in_all_four_allowlist_gates).
+_V2_RESEARCH_COMPARABLE_FIELDS = frozenset({
+        "role",
+        "model",
+        "nominal_impedance_ohm",
+        "sensitivity_db_2v83_1m",
+        "recommended_highpass_hz",
+        "recommended_lowpass_hz",
+        "do_not_test_below_hz",
+        "gain_offset_db",
+        "gain_offset_db_provenance",
+        "hard_excitation_band_hz",
+        "required_protection_filters",
+        "measurement_band_hz",
+        "crossover_search_band_hz",
+        "level_duration_limits",
+        "cabinet",
+        # #1665 component entry: driver_class/radiating_diameter_mm/
+        # horn_coverage_deg are researchable, so a stale bound packet must be
+        # caught the same way as any other editable field. pad is never
+        # researched (never present on a research_driver), so this entry is
+        # inert for it -- included anyway for consistency with the other
+        # three allowlists that all gained the same four keys together.
+        "driver_class",
+        "radiating_diameter_mm",
+        "horn_coverage_deg",
+        "pad",
+    })
+
+
 def _validate_v2_research_prefill(
     research: Mapping[str, Any],
     manual: Mapping[str, Any] | None,
@@ -718,23 +858,7 @@ def _validate_v2_research_prefill(
         for driver in (manual or {}).get("drivers", [])
         if isinstance(driver, Mapping) and driver.get("target_id")
     }
-    comparable = {
-        "role",
-        "model",
-        "nominal_impedance_ohm",
-        "sensitivity_db_2v83_1m",
-        "recommended_highpass_hz",
-        "recommended_lowpass_hz",
-        "do_not_test_below_hz",
-        "gain_offset_db",
-        "gain_offset_db_provenance",
-        "hard_excitation_band_hz",
-        "required_protection_filters",
-        "measurement_band_hz",
-        "crossover_search_band_hz",
-        "level_duration_limits",
-        "cabinet",
-    }
+    comparable = _V2_RESEARCH_COMPARABLE_FIELDS
     for research_driver in research.get("drivers", []):
         target_id = str(research_driver.get("target_id") or "")
         visible = manual_by_target.get(target_id)

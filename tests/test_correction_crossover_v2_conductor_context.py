@@ -302,6 +302,118 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         assert context.driver_caps_dbfs[role] == pytest.approx(admission_cap)
 
 
+def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
+    """#1665 component entry, closing the seam #1668 PR-C left data-untested.
+
+    PR-C's own conductor-level test
+    (test_driver_class_by_role_ctor_param_threads_into_the_fit in
+    test_crossover_v2_conductor.py) already proved "IF the ctor param is
+    populated, it reaches compose_envelope." What it could NOT prove yet —
+    because #1665 hadn't landed — is that a REAL design draft's declared
+    driver_class actually reaches that ctor param. This test closes that
+    half: runs the real resolver against a real confirmed safety profile
+    plus a declaration-shaped draft (the same JTS3 shape as the sibling test
+    above) and asserts driver_class_by_role is derived correctly. It also
+    confirms declared_sensitivities now reads the PAD-FOLDED effective
+    figure, not the naked one — the other half of #1665's resolver swap.
+    """
+    from jasper.active_speaker.driver_safety import build_driver_safety_profile
+    from jasper.active_speaker.measurement import active_driver_targets
+
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+
+    def _driver(role, peak, filters, diameter, **extra):
+        return {
+            "target_id": f"mono:{role}",
+            "role": role,
+            "model": f"model-{role}",
+            "hard_excitation_band_hz": [500, 20_000],
+            "measurement_band_hz": [500, 10_000],
+            "crossover_search_band_hz": [1500, 2500],
+            "level_duration_limits": {
+                "max_effective_peak_dbfs": peak,
+                "max_sweep_duration_s": 6,
+                "max_repeat_count": 3,
+                "minimum_cooldown_s": 0,
+            },
+            "required_protection_filters": filters,
+            "cabinet": {
+                "enclosure_kind": "sealed",
+                "radiator_count": 1,
+                "effective_radiating_diameter_mm": diameter,
+                **extra,
+            },
+        }
+
+    settings = {
+        "drivers": [
+            _driver(
+                "woofer", -8,
+                [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}],
+                132, baffle_width_mm=210,
+            ),
+            _driver(
+                "tweeter", -65,
+                [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
+                25,
+            ),
+        ],
+        "crossover_candidates": [],
+    }
+    profile = build_driver_safety_profile(
+        topo,
+        manual_settings=settings,
+        driver_research=None,
+        confirm=True,
+        confirmed_at="2026-07-19T12:00:00Z",
+    )
+    targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topo)}
+    status = {
+        "active": True,
+        "setup": {"status": "ready"},
+        "targets": {
+            "drivers": [
+                {"role": role, "target_fingerprint": fingerprint}
+                for role, fingerprint in targets.items()
+            ],
+        },
+    }
+    draft = {
+        "driver_safety_profile": profile,
+        "manual_settings": {
+            "drivers": [
+                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {
+                    "role": "tweeter",
+                    "sensitivity_db_2v83_1m": 108.5,
+                    "driver_class": "compression_horn",
+                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
+                },
+            ],
+            "crossover_candidates": [],
+        },
+    }
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: draft)
+    monkeypatch.setattr(
+        excitation_safety_plan_mod,
+        "resolve_driver_excitation_ceilings",
+        _REAL_RESOLVE_CEILINGS,
+    )
+    monkeypatch.setattr(
+        crossover_v2_flow, "derive_session_volume_db", _REAL_DERIVE_SESSION_VOLUME
+    )
+
+    context = v2host.resolve_conductor_context(status)
+
+    assert context.driver_class_by_role == {"tweeter": "compression_horn"}
+    # 108.5 naked minus the declared -14.4 dB pad = 94.1 effective, not 108.5.
+    assert context.declared_sensitivities == {
+        "woofer": 83.3,
+        "tweeter": pytest.approx(94.1),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # endpoint-level: the real resolver actually runs behind prepare_v2_session
 # --------------------------------------------------------------------------- #

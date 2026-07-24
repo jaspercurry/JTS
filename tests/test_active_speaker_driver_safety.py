@@ -316,6 +316,25 @@ def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     assert request["request_fingerprint"] in prompt
 
 
+def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:
+    """#1665: driver_class/radiating_diameter_mm/horn_coverage_deg are
+    AI-researchable and must appear in both the instruction prose and the
+    result-shape JSON; pad is operator-only and must never be prompted for."""
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+    prompt = build_driver_research_prompt(request)
+
+    assert "driver_class" in prompt
+    assert "radiating_diameter_mm" in prompt
+    assert "horn_coverage_deg" in prompt
+    assert "compression_horn" in prompt
+    # Never prompted: pad is an operator-only fact (they wired the resistors),
+    # never something research can discover.
+    assert '"pad"' not in prompt
+    assert "in-line" not in prompt.lower()
+    assert "l-pad" not in prompt.lower()
+
+
 def test_v2_research_refuses_stale_request_or_target_binding() -> None:
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_request(topology, _operator_inputs())
@@ -1110,3 +1129,26 @@ def test_later_confirmation_records_confirmation_time_not_draft_creation(
     assert confirmed["driver_safety_profile"]["confirmation"]["confirmed_at"] == (
         "2026-07-13T12:05:00Z"
     )
+
+
+def test_component_entry_fields_present_in_all_four_allowlist_gates():
+    """Drift guard for the four independent allowlist copies (#1665).
+
+    ``driver_class``/``radiating_diameter_mm``/``horn_coverage_deg``/``pad``
+    must be accepted by every gate that re-validates the same driver record:
+    the two save-path allowlists (whose drift 500s a save), the AI-research
+    paste-back allowlist, and the research staleness-comparison set.  One
+    superset assertion per copy so the next field lands in all four or fails
+    loudly here.
+    """
+    from jasper.active_speaker import design_draft as dd
+    from jasper.active_speaker import driver_safety as ds
+
+    new_fields = {"driver_class", "radiating_diameter_mm", "horn_coverage_deg", "pad"}
+    assert new_fields <= set(dd._MANUAL_DRIVER_FIELDS)
+    assert new_fields <= set(ds._MANUAL_DRIVER_FIELDS)
+    # pad is deliberately NOT researchable; the research gates carry the
+    # three researchable fields only.
+    researchable = new_fields - {"pad"}
+    assert researchable <= set(ds._V2_RESEARCH_DRIVER_FIELDS)
+    assert researchable <= set(dd._V2_RESEARCH_COMPARABLE_FIELDS)

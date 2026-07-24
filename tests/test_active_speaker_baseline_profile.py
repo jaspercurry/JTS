@@ -2242,6 +2242,26 @@ def test_baseline_profile_no_trim_when_sensitivities_match(tmp_path: Path) -> No
     }
 
 
+def test_baseline_profile_folds_declared_pad_into_the_sensitivity_gap(
+    tmp_path: Path,
+) -> None:
+    """#1665: an L-pad'd (or otherwise attenuated) tweeter's EFFECTIVE
+    sensitivity -- naked minus the pad's own hardware attenuation -- is what
+    should set the software trim. Double-attenuating (a full naked-sensitivity
+    trim stacked on top of a hardware pad already doing part of the work)
+    would needlessly starve the tweeter."""
+    topology = _dual_apple_topology()
+    research = _research_with_sensitivity()  # naked gap 25.2 dB, no explicit gain
+    research["drivers"][1]["pad"] = {"kind": "direct_db", "attenuation_db": -10.0}
+    payload = _baseline_payload(topology, research, tmp_path)
+
+    assert payload["status"] == "ready_to_apply"
+    # Naked gap is 25.2 dB (108.5 - 83.3); a -10 dB pad already does some of
+    # that work in hardware, so the remaining software trim is 15.2 dB.
+    assert payload["corrections"]["tweeter"]["gain_db"] == -15.2
+    assert payload["corrections"]["woofer"]["gain_db"] == 0.0
+
+
 def test_recompose_baseline_yaml_matches_durable_builder_when_flat(
     tmp_path: Path,
 ) -> None:

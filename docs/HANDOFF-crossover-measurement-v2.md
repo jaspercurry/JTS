@@ -298,11 +298,16 @@ most visible thing on the screen.
      carries each driver's crossover filter by construction, so the
      tweeter is always behind its ≥24 dB/oct HP.
 2. **Sensitivities live in exactly one place: the declaration.**
-   `declared_driver_sensitivities(draft)` (`design_draft.py`) is the
-   SSOT (`manual_settings.drivers[].sensitivity_db_2v83_1m`). The same
-   mapping threads into program admission *and* play-time readmission,
-   so composed levels and the admission gate can never disagree about a
-   derived ceiling.
+   `declared_effective_driver_sensitivities(draft)` (`design_draft.py`,
+   #1665) is the SSOT (`manual_settings.drivers[].sensitivity_db_2v83_1m`,
+   folded through any declared in-line pad —
+   `jasper.active_speaker.driver_pad.effective_sensitivity_db`; the older
+   `declared_driver_sensitivities` reader still exists but no longer feeds
+   `resolve_conductor_context`). The same mapping threads into program
+   admission *and* play-time readmission, so composed levels and the
+   admission gate can never disagree about a derived ceiling — and, as of
+   #1665, an L-pad'd driver's EFFECTIVE (not naked) sensitivity is what
+   sets that ceiling and the session measurement volume.
 3. **Session volume is `min(−20 dB, max(caps))`, not `min(caps)`.**
    `session_measurement_volume_db` lets the least-sensitive driver reach
    the reference level; more-sensitive drivers attenuate down digitally.
