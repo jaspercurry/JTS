@@ -58,6 +58,8 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
 
+from ._common import DRIVER_CLASSES
+
 
 class ReasonCode(StrEnum):
     """Per-bin honesty-guard vocabulary — why a bin's allowed depth is what
@@ -88,16 +90,10 @@ class ReasonCode(StrEnum):
 # Closed vocabularies (design doc "Microphone doctrine" / artifact 02 §5).
 # `compose_envelope` and every term function that accepts a tier/class
 # rejects anything outside these tuples — see `_validate_tier` /
-# `_validate_driver_class`.
+# `_validate_driver_class`. DRIVER_CLASSES itself now lives in ._common
+# (#1665 vocabulary hoist) and is re-exported here so this module's own
+# callers/tests are unaffected.
 MIC_TIERS: tuple[str, ...] = ("reference", "consumer", "phone")
-DRIVER_CLASSES: tuple[str, ...] = (
-    "compression_horn",
-    "soft_dome",
-    "metal_dome",
-    "beryllium_diamond_dome",
-    "ribbon_amt",
-    "unknown",
-)
 
 # Shared working grid: 1/24-octave-scale log spacing, 150 Hz (the design
 # doc's stated gated-measurement validity floor, "~143-200 Hz in the JTS3

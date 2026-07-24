@@ -316,6 +316,25 @@ def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     assert request["request_fingerprint"] in prompt
 
 
+def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:
+    """#1665: driver_class/radiating_diameter_mm/horn_coverage_deg are
+    AI-researchable and must appear in both the instruction prose and the
+    result-shape JSON; pad is operator-only and must never be prompted for."""
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+    prompt = build_driver_research_prompt(request)
+
+    assert "driver_class" in prompt
+    assert "radiating_diameter_mm" in prompt
+    assert "horn_coverage_deg" in prompt
+    assert "compression_horn" in prompt
+    # Never prompted: pad is an operator-only fact (they wired the resistors),
+    # never something research can discover.
+    assert '"pad"' not in prompt
+    assert "in-line" not in prompt.lower()
+    assert "l-pad" not in prompt.lower()
+
+
 def test_v2_research_refuses_stale_request_or_target_binding() -> None:
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_request(topology, _operator_inputs())

@@ -1070,6 +1070,76 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var entry = hfDriverStyleEntry(style);
     return entry ? entry.label : String(style || '').replace(/_/g, ' ');
   }
+  // #1665 component entry: the driver's physical technology, which feeds
+  // jasper.active_speaker.linearization_envelope.compose_envelope's
+  // class_prior_limit() term (a more conservative correction ceiling for a
+  // class known to run out of linear excursion or HF extension sooner).
+  // Distinct from driver_style above (topology-owned, drives ONLY the
+  // tweeter's protective high-pass floor): driver_class applies to every
+  // role and is saved on manual_settings.drivers, mirroring DRIVER_CLASSES
+  // in jasper/active_speaker/_common.py.
+  function driverClasses() {
+    return [
+      {value: 'unknown', label: 'Unknown'},
+      {value: 'soft_dome', label: 'Soft dome'},
+      {value: 'metal_dome', label: 'Metal dome'},
+      {value: 'beryllium_diamond_dome', label: 'Beryllium / diamond dome'},
+      {value: 'ribbon_amt', label: 'Ribbon / AMT'},
+      {value: 'compression_horn', label: 'Compression horn'}
+    ];
+  }
+  // A driver is either a round radiator (diameter matters, feeds the ka
+  // guidance below) or horn-loaded (coverage angle matters instead) or,
+  // for ribbon/AMT, neither simple shape applies. Mutually exclusive by
+  // design -- see design_draft.py's _normalise_driver_common docstring.
+  function driverClassGeometryField(driverClass) {
+    if (driverClass === 'compression_horn') return 'horn';
+    if (driverClass === 'ribbon_amt') return 'none';
+    return 'diameter';
+  }
+  function driverClassGeometryFieldHtml(targetId, setting) {
+    var field = driverClassGeometryField(setting.driver_class || 'unknown');
+    if (field === 'horn') {
+      return driverSafetyNumberField(targetId, setting, 'horn_coverage_deg',
+        'Horn nominal coverage', {min: 1, max: 360, placeholder: 'degrees'});
+    }
+    if (field === 'diameter') {
+      return driverSafetyNumberField(targetId, setting, 'radiating_diameter_mm',
+        'Radiating diameter', {min: 1, placeholder: 'mm'});
+    }
+    return '';
+  }
+  // #1665: an operator-declared in-line pad (L-pad / series resistor / a
+  // purchased fixed attenuator). A PHYSICAL fact about how the driver is
+  // wired -- distinct from gain_offset_db (a level trim baked into the
+  // crossover filter) -- so it is never AI-researched; only the operator
+  // knows what resistors they actually wired in. Mirrors PAD_KINDS in
+  // jasper/active_speaker/driver_pad.py.
+  function padKinds() {
+    return [
+      {value: 'none', label: 'No pad'},
+      {value: 'l_pad', label: 'L-pad (series + shunt resistor)'},
+      {value: 'series_resistor', label: 'Series resistor only'},
+      {value: 'direct_db', label: 'Known attenuation (dB)'}
+    ];
+  }
+  // #1675 (simple v1): ka-beaming guidance. f_ka1 is the frequency at which
+  // a circular piston of this diameter starts to narrow its directivity
+  // (ka=1, the classic onset heuristic); f_ka2 (ka=2) is where it is
+  // beaming outright -- a geometry limit no EQ curve can correct. f_ka1 is
+  // rounded to an integer FIRST so the displayed "2x" relationship is always
+  // exact (343/(2*pi*r) computed then doubled can differ from the isolated
+  // ka=2 formula by a rounding unit at the last digit; rounding once here
+  // avoids ever showing two numbers whose ratio looks like a bug). Mirrored
+  // in Python by test_ka_beaming_onset_hz_matches_the_js_closed_form in
+  // tests/test_active_speaker_driver_pad.py -- keep the two in lockstep.
+  function kaBeamingOnsetHz(diameterMm) {
+    var d = Number(diameterMm);
+    if (!isFinite(d) || d <= 0) return null;
+    var radiusM = d / 2000;
+    var ka1Hz = Math.round(343 / (2 * Math.PI * radiusM));
+    return {ka1Hz: ka1Hz, ka2Hz: ka1Hz * 2};
+  }
   // One-sentence restatement of the confirmed tweeter style(s) + floor for
   // the safety-confirmation toast. Floor is only stated for styles the local
   // table knows; anything else stays label-only (server is the authority).
@@ -1363,6 +1433,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.researchRequest = null;
     driverResearch.promptCopied = false;
     driverResearch.promptSelected = false;
+    // driver_class/pad_kind each gate which OTHER fields this row shows
+    // (diameter vs horn coverage; resistor inputs vs the direct-dB input) --
+    // unlike every other manual-driver field above, a selection here must
+    // re-render immediately or the newly-relevant field stays hidden until
+    // some unrelated action repaints the page. Mirrors
+    // setOutputChannelDriverStyle's existing full-repaint-on-select pattern.
+    if (field === 'driver_class' || field === 'pad_kind') render();
   }
   function setManualCrossoverField(pairKey, field, value) {
     if (!driverResearch.settings.crossovers[pairKey]) {
@@ -1422,6 +1499,32 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     return out;
   }
+  // #1665: mirrors cabinetFromSetting above, packing the flat pad_* operator
+  // inputs into the nested shape jasper.active_speaker.driver_pad.normalise_pad
+  // expects. Unlike cabinet, 'none' is omitted rather than always sent -- 'no
+  // pad' and 'field never touched' are the same fact server-side (normalise_pad
+  // returns None for either), so there is no default worth stating explicitly.
+  // Only the fields the chosen kind actually uses are packed: attenuation_db is
+  // NEVER sent for l_pad/series_resistor (it is server-derived, not an input --
+  // see applyDriverSafetyToSetting, which never writes it back into
+  // pad_attenuation_db for those kinds either).
+  function padFromSetting(setting) {
+    var kind = setting.pad_kind || 'none';
+    if (kind === 'none') return null;
+    var out = {kind: kind};
+    if (kind === 'direct_db') {
+      var db = manualNumberValue(setting.pad_attenuation_db);
+      if (db != null) out.attenuation_db = db;
+      return out;
+    }
+    var series = manualNumberValue(setting.pad_series_ohm);
+    if (series != null) out.series_ohm = series;
+    if (kind === 'l_pad') {
+      var shunt = manualNumberValue(setting.pad_shunt_ohm);
+      if (shunt != null) out.shunt_ohm = shunt;
+    }
+    return out;
+  }
   function levelDurationLimitsFromSetting(setting) {
     var out = {};
     [
@@ -1450,7 +1553,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'recommended_highpass_hz',
         'recommended_lowpass_hz',
         'do_not_test_below_hz',
-        'gain_offset_db'
+        'gain_offset_db',
+        'radiating_diameter_mm',
+        'horn_coverage_deg'
       ].forEach(function(field) {
         var value = manualNumberValue(setting[field]);
         if (value != null) out[field] = value;
@@ -1459,6 +1564,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         out.gain_offset_db_provenance =
           setting.gain_offset_db_provenance || 'operator_pinned';
       }
+      // driver_class is left absent (not defaulted to 'unknown' the way
+      // cabinet's enclosure_kind is) so an untouched driver's saved payload
+      // doesn't grow a field the operator never set -- the server already
+      // treats an absent class the same as 'unknown'.
+      if ((setting.driver_class || '').trim()) out.driver_class = setting.driver_class;
       if ((setting.notes || '').trim()) out.notes = String(setting.notes).trim();
       var hardBand = safetyBandFromSetting(setting, 'hard_excitation');
       var measurementBand = safetyBandFromSetting(setting, 'measurement');
@@ -1468,6 +1578,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (searchBand) out.crossover_search_band_hz = searchBand;
       out.required_protection_filters = protectionFiltersFromSetting(setting);
       out.cabinet = cabinetFromSetting(setting);
+      var pad = padFromSetting(setting);
+      if (pad) out.pad = pad;
       var limits = levelDurationLimitsFromSetting(setting);
       if (Object.keys(limits).length) out.level_duration_limits = limits;
       return out;
@@ -1479,6 +1591,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         driver.recommended_lowpass_hz != null ||
         driver.do_not_test_below_hz != null ||
         driver.gain_offset_db != null ||
+        driver.radiating_diameter_mm != null ||
+        driver.horn_coverage_deg != null ||
+        driver.driver_class ||
+        driver.pad ||
         driver.hard_excitation_band_hz ||
         driver.measurement_band_hz ||
         driver.crossover_search_band_hz ||
@@ -1582,6 +1698,30 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ].forEach(function(field) {
       if (limits[field] != null) setting[field] = limits[field];
     });
+    // #1665: driver_class/radiating_diameter_mm/horn_coverage_deg are
+    // AI-researchable, so this unpacks them the same as every other
+    // researched field above. pad never appears in research JSON (it is
+    // operator-only), but IS present here when `driver` is a persisted
+    // manual_settings.drivers[] record reloaded after a save (ingestDesignDraft
+    // merges the whole record onto `setting` first, so setting.pad already
+    // holds the server-computed attenuation_db/effective_impedance_ohm before
+    // this runs -- see renderDriverPadSettings' read-only readout, which
+    // reads setting.pad directly rather than the pad_* input fields below).
+    if (driver.driver_class) setting.driver_class = driver.driver_class;
+    if (driver.radiating_diameter_mm != null) {
+      setting.radiating_diameter_mm = driver.radiating_diameter_mm;
+    }
+    if (driver.horn_coverage_deg != null) setting.horn_coverage_deg = driver.horn_coverage_deg;
+    var pad = driver.pad || null;
+    if (pad && pad.kind) {
+      setting.pad_kind = pad.kind;
+      if (pad.kind === 'direct_db') {
+        if (pad.attenuation_db != null) setting.pad_attenuation_db = pad.attenuation_db;
+      } else {
+        if (pad.series_ohm != null) setting.pad_series_ohm = pad.series_ohm;
+        if (pad.shunt_ohm != null) setting.pad_shunt_ohm = pad.shunt_ohm;
+      }
+    }
   }
   function applyDriverResearchToManualSettings(payload) {
     if (!payload || typeof payload !== 'object') return;
@@ -2446,6 +2586,55 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<p class="setting-row__hint">Unknown or unsupported cabinet geometry stays explicit. JTS will refuse low-frequency reconstruction rather than infer a port or passive radiator.</p>' +
     '</details>';
   }
+  // #1665: in-line pad readout. v1 is server-computed only, populated from
+  // the persisted record AFTER a save (setting.pad -- see
+  // applyDriverSafetyToSetting's docstring) -- there is no client-side
+  // recomputation of the L-pad formula here, so this can go briefly stale
+  // while the operator edits the fields below and reflects "as of last save"
+  // rather than the in-progress values. A live client-side preview is a
+  // deliberate follow-up, not this slice.
+  function padReadoutHtml(setting) {
+    var pad = setting.pad;
+    if (!pad || pad.attenuation_db == null) return '';
+    var impedance = pad.effective_impedance_ohm != null
+      ? ', ' + pad.effective_impedance_ohm.toFixed(1) + ' ohm effective load'
+      : '';
+    return '<p class="setting-row__hint">Computed on last save: ' +
+      escapeHtml(fmtDb(pad.attenuation_db) + ' dB' + impedance) + '.</p>';
+  }
+  function renderDriverPadSettings(targetId, setting) {
+    var kind = setting.pad_kind || 'none';
+    return '<details class="advanced driver-research__advanced"' +
+        (kind !== 'none' ? ' open' : '') + '>' +
+      '<summary>In-line attenuation (L-pad / resistor)</summary>' +
+      '<p class="setting-row__hint">Only if you wired a resistor pad in front of this driver to match its level to the others. Leave as No pad if it is wired straight to the amp.</p>' +
+      '<div class="driver-research__fields">' +
+        '<label class="driver-research__field">' +
+          '<span>Pad type</span>' +
+          '<select data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="pad_kind">' +
+            padKinds().map(function(item) {
+              return '<option value="' + escapeHtml(item.value) + '"' +
+                (kind === item.value ? ' selected' : '') +
+                '>' + escapeHtml(item.label) + '</option>';
+            }).join('') +
+          '</select>' +
+        '</label>' +
+        (kind === 'l_pad' || kind === 'series_resistor'
+          ? driverSafetyNumberField(targetId, setting, 'pad_series_ohm',
+              'Series resistor', {min: 0.1, step: 0.1, placeholder: 'ohm'})
+          : '') +
+        (kind === 'l_pad'
+          ? driverSafetyNumberField(targetId, setting, 'pad_shunt_ohm',
+              'Shunt resistor', {min: 0.1, step: 0.1, placeholder: 'ohm'})
+          : '') +
+        (kind === 'direct_db'
+          ? driverSafetyNumberField(targetId, setting, 'pad_attenuation_db',
+              'Attenuation', {max: 0, step: 0.1, placeholder: 'dB'})
+          : '') +
+      '</div>' +
+      padReadoutHtml(setting) +
+    '</details>';
+  }
   function renderManualDriverSettings(topology) {
     var targets = driverResearchTargets(topology);
     var profileTargets = driverResearch.safetyDirty ? [] :
@@ -2495,6 +2684,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             escapeHtml(setting.sensitivity_db_2v83_1m == null ? '' : String(setting.sensitivity_db_2v83_1m)) +
             '" placeholder="dB">' +
         '</label>' +
+        // Nominal impedance has no dedicated input elsewhere in this form
+        // (previously settable only via AI-research paste-back). #1665 needs
+        // it here too: an l_pad/series_resistor pad's derived attenuation
+        // requires a declared impedance and never assumes 8 ohms.
+        driverSafetyNumberField(targetId, setting, 'nominal_impedance_ohm',
+          'Nominal impedance', {min: 1, step: 0.1, placeholder: 'ohm'}) +
+        '<label class="driver-research__field">' +
+          '<span>Driver type</span>' +
+          '<select data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="driver_class">' +
+            driverClasses().map(function(item) {
+              return '<option value="' + escapeHtml(item.value) + '"' +
+                ((setting.driver_class || 'unknown') === item.value ? ' selected' : '') +
+                '>' + escapeHtml(item.label) + '</option>';
+            }).join('') +
+          '</select>' +
+        '</label>' +
+        '<p class="setting-row__hint">Sets a conservative correction ceiling for this driver during measurement. Pick the closest match, or leave Unknown if you are not sure.</p>' +
+        driverClassGeometryFieldHtml(targetId, setting) +
         '<label class="driver-research__field">' +
           '<span>Legacy advisory floor (not enforced)</span>' +
           '<input type="number" inputmode="numeric" min="1" data-manual-driver="' + escapeHtml(targetId) + '" ' +
@@ -2510,6 +2717,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             '" placeholder="dB">' +
         '</label>' +
         renderDriverSafetyLimits(targetId, setting, evidence) +
+        renderDriverPadSettings(targetId, setting) +
       '</div>';
     }).join('') + '</div>';
   }
@@ -2563,6 +2771,34 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>' +
     '</details>';
   }
+  // #1675 (simple v1): ka-beaming guidance for the crossover point. Whether
+  // the LOWER-role driver of this pair (the one reproducing UP TO the
+  // chosen Fc from below -- the upper/tweeter role is not evaluated, its
+  // own beaming onset is a separate question from where THIS crossover sits)
+  // is still acting as a small, uniform piston at that frequency, or has
+  // grown acoustically large enough to narrow its directivity (ka=1) or beam
+  // outright (ka=2) -- a geometry limit no EQ curve can correct. Circular-
+  // piston approximation, so only meaningful when the driver has a declared
+  // radiating_diameter_mm (never shown otherwise -- e.g. ribbon/AMT or an
+  // undeclared driver). Bessel beamwidth-vs-horn-coverage matching is
+  // DEFERRED (see driverClassGeometryField above) -- not this slice, #1675
+  // tracks it.
+  function kaBeamingNoteHtml(pair, fcRaw, topology) {
+    var target = driverResearchTargets(topology).filter(function(item) {
+      return item.role === pair[0];
+    })[0];
+    var diameterMm = target
+      ? manualNumberValue(driverSetting(target.target_id).radiating_diameter_mm)
+      : null;
+    var ka = diameterMm != null ? kaBeamingOnsetHz(diameterMm) : null;
+    var fc = manualNumberValue(fcRaw);
+    if (!ka || fc == null || fc < ka.ka1Hz) return '';
+    var text = fc < ka.ka2Hz
+      ? humanRole(pair[0]) + ' is starting to narrow (ka≈1–2) by ' + fmtFreq(fc) + '.'
+      : humanRole(pair[0]) + ' is beaming (ka≥2) by ' + fmtFreq(fc) +
+        ' — EQ cannot fix that, only geometry (a smaller or horn-loaded driver) can.';
+    return '<p class="setting-row__hint">' + escapeHtml(text) + '</p>';
+  }
   function renderManualCrossoverSettings(topology) {
     var pairs = activeCrossoverPairs(topology);
     if (!pairs.length) {
@@ -2583,6 +2819,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             escapeHtml(setting.frequency_hz == null ? '' : String(setting.frequency_hz)) +
             '" placeholder="Hz">' +
         '</label>' +
+        '<div data-ka-note="' + escapeHtml(key) + '">' +
+          kaBeamingNoteHtml(pair, setting.frequency_hz, topology) +
+        '</div>' +
         '<label class="driver-research__field">' +
           '<span>Slope</span>' +
           '<input type="number" inputmode="numeric" min="6" step="6" data-manual-crossover="' + escapeHtml(key) + '" ' +
@@ -4231,11 +4470,24 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-manual-crossover')) {
-      setManualCrossoverField(
-        ev.target.getAttribute('data-manual-crossover') || '',
-        ev.target.getAttribute('data-manual-field') || '',
-        ev.target.value
-      );
+      var crossoverKey = ev.target.getAttribute('data-manual-crossover') || '';
+      var crossoverField = ev.target.getAttribute('data-manual-field') || '';
+      setManualCrossoverField(crossoverKey, crossoverField, ev.target.value);
+      // #1675: update the ka-beaming note live as Fc is typed, WITHOUT the
+      // full render() a select-driven change gets elsewhere (that would drop
+      // focus out of this number input on every keystroke). Mirrors the EQ
+      // band sliders' own targeted-readout pattern just below in this same
+      // listener (querySelector + textContent, not a repaint).
+      if (crossoverField === 'frequency_hz') {
+        var noteEl = el('view-body').querySelector(
+          '[data-ka-note="' + crossoverKey + '"]'
+        );
+        if (noteEl) {
+          noteEl.innerHTML = kaBeamingNoteHtml(
+            crossoverKey.split(':'), ev.target.value, currentOutputTopology()
+          );
+        }
+      }
       return;
     }
     var field = ev.target.getAttribute('data-field');

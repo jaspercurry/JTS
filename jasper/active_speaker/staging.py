@@ -244,6 +244,12 @@ def _driver_spec_from_preview(role: str, raw: Any) -> DriverSpec:
     model = str(driver.get("model") or role).strip() or role
     manufacturer = str(driver.get("manufacturer") or "Operator research").strip()
     try:
+        # #1665: DriverSpec.sensitivity_db is a descriptive label (the staged
+        # config's operator-facing card) with no level-affecting consumer --
+        # confirmed by inspection, nothing downstream reads it. Left naked
+        # (not folded through driver_pad.effective_sensitivity_db) on
+        # purpose: baseline_profile._derive_corrections is the one place a
+        # pad's attenuation must reach the actual trim math.
         sensitivity = driver.get("sensitivity_db_2v83_1m")
         sensitivity_db = float(sensitivity) if sensitivity is not None else None
     except (TypeError, ValueError):
