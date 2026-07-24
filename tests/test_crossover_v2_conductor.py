@@ -35,7 +35,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
+    CAPTURE_ENTRY_MARGIN_MS,
     CAPTURE_PLAN_TARGET,
+    COURTESY_PRELUDE_ENABLED,
     GAIN_CAP_BACKOFF_DB,
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
@@ -56,17 +58,19 @@ from jasper.active_speaker.crossover_v2_flow import (
     V2FlowSeams,
     _analysis_json,
     _compose_sigma_db,
+    _program_duration_ms,
     abandon_measurement_volume,
     alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
     back_off_gain,
     build_v2_capture_plan,
     build_v2_session_spec,
+    build_v2_verify_capture_plan,
     open_measurement_volume,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.program import RoleBand
+from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
@@ -1272,6 +1276,125 @@ def test_capture_plan_entries_carry_auto_advance_policy():
     # Durations are per-entry (heterogeneous) and positive.
     assert all(entry.duration_ms > 0 for entry in plan.entries)
     assert len({entry.duration_ms for entry in plan.entries}) > 1
+
+
+# --- courtesy-tone prelude (issue #1677): phone-contract duration ------------
+#
+# The phone's recording window (CapturePlanEntry.duration_ms) is derived from
+# build_v2_capture_plan's OWN nominal composition, entirely separate from the
+# conductor's real _compose_*_program calls that actually play. Both must
+# enable the prelude via the SAME COURTESY_PRELUDE_ENABLED constant, or the
+# phone would stop recording before the real (longer) program finishes --
+# mirrors the existing +15 s MEASURE-lengthening proof from sweep-composition
+# PR-A (#1668).
+
+
+def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
+    assert COURTESY_PRELUDE_ENABLED is True
+    plan = build_v2_capture_plan(_roles(), FC_HZ)
+    check, measure, verify = plan.entries
+
+    from jasper.audio_measurement.program import (
+        BASE_STIMULUS_PEAK_DBFS,
+        build_check_program,
+        build_measure_program,
+        build_verify_program,
+    )
+
+    roles = _roles()
+    nominal_gains = {rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}
+    nominal_check = build_check_program(roles, courtesy_prelude=True)
+    nominal_measure = build_measure_program(
+        nominal_gains, roles,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+        courtesy_prelude=True,
+    )
+    nominal_verify = build_verify_program(
+        FC_HZ,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+        courtesy_prelude=True,
+    )
+    assert check.duration_ms == _program_duration_ms(nominal_check) + CAPTURE_ENTRY_MARGIN_MS
+    assert measure.duration_ms == _program_duration_ms(nominal_measure) + CAPTURE_ENTRY_MARGIN_MS
+    assert verify.duration_ms == _program_duration_ms(nominal_verify) + CAPTURE_ENTRY_MARGIN_MS
+
+
+def test_capture_plan_duration_is_longer_than_the_pre_1677_shape():
+    """Direct proof the prelude actually lengthens the phone's recording
+    budget (not just that the two composition paths agree with EACH OTHER,
+    which the previous test already pins) -- the "+15 s"-style regression
+    check named in the issue."""
+    from jasper.audio_measurement.program import (
+        COURTESY_TONE_BEEP_COUNT,
+        COURTESY_TONE_BEEP_DURATION_S,
+        COURTESY_TONE_BEEP_GAP_S,
+        COURTESY_TONE_TRAILING_SILENCE_S,
+        build_check_program,
+    )
+
+    expected_prelude_ms = 1000.0 * (
+        COURTESY_TONE_BEEP_COUNT * COURTESY_TONE_BEEP_DURATION_S
+        + (COURTESY_TONE_BEEP_COUNT - 1) * COURTESY_TONE_BEEP_GAP_S
+        + COURTESY_TONE_TRAILING_SILENCE_S
+    )
+    roles = _roles()
+    legacy_check = build_check_program(roles)
+    prelude_check = build_check_program(roles, courtesy_prelude=True)
+    delta_ms = _program_duration_ms(prelude_check) - _program_duration_ms(legacy_check)
+    assert delta_ms == pytest.approx(expected_prelude_ms, abs=1)
+
+    plan = build_v2_capture_plan(roles, FC_HZ)
+    check_entry = plan.entries[0]
+    legacy_entry_duration_ms = _program_duration_ms(legacy_check) + CAPTURE_ENTRY_MARGIN_MS
+    assert check_entry.duration_ms > legacy_entry_duration_ms
+    assert check_entry.duration_ms - legacy_entry_duration_ms == pytest.approx(
+        expected_prelude_ms, abs=1,
+    )
+
+
+def test_verify_only_capture_plan_duration_includes_courtesy_prelude():
+    from jasper.audio_measurement.program import (
+        BASE_STIMULUS_PEAK_DBFS,
+        build_verify_program,
+    )
+
+    plan = build_v2_verify_capture_plan(FC_HZ)
+    entry = plan.entries[0]
+    nominal_verify = build_verify_program(
+        FC_HZ,
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
+        ),
+        courtesy_prelude=True,
+    )
+    assert entry.duration_ms == _program_duration_ms(nominal_verify) + CAPTURE_ENTRY_MARGIN_MS
+
+
+def test_conductor_composed_programs_include_courtesy_tone_by_default():
+    """The conductor's REAL playback composition (not the nominal planning
+    path above) also carries the prelude -- COURTESY_PRELUDE_ENABLED wired
+    into every _compose_*_program call."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    check_tone_ids = {
+        s.segment_id for s in c._check_program.segments if s.kind == KIND_COURTESY_TONE
+    }
+    assert check_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
+
+    measure_prog = c._compose_measure_program({"woofer": -11.0, "tweeter": -13.0})
+    measure_tone_ids = {
+        s.segment_id for s in measure_prog.segments if s.kind == KIND_COURTESY_TONE
+    }
+    assert measure_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
+
+    verify_tone_ids = {
+        s.segment_id for s in c._verify_program.segments if s.kind == KIND_COURTESY_TONE
+    }
+    assert verify_tone_ids == {"courtesy_tone_ch0"}  # VERIFY is mono
 
 
 def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):

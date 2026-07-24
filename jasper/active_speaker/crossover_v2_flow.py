@@ -421,6 +421,23 @@ SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 # PROVISIONAL pending W6 bench validation.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
+# Pre-capture courtesy tone (issue #1677): default ON, no env/config switch.
+# The owner's live-incident report (a headless session's first sweep started
+# while music was playing, forcing a void + re-run) plus the house
+# "no-silent-failure" / "no speculative flexibility" rules both point the
+# same way — every household benefits from the warning, and there is no
+# stated case for wanting it off. Every ``build_v2_capture_plan`` /
+# ``build_v2_verify_capture_plan`` (phone duration budget) and conductor
+# ``_compose_*_program`` (actual playback) call in this module passes this
+# SAME constant, so the two can never disagree about whether the prelude is
+# present — the phone would otherwise budget a shorter recording window than
+# the program it's actually capturing (see the ``+3.6 s`` proof in
+# ``test_crossover_v2_conductor.py``, mirroring PR-A's ``+15 s`` MEASURE
+# lengthening). ``jasper.audio_measurement.program``'s own composers default
+# ``courtesy_prelude`` to ``False`` so every OTHER caller (tests, future
+# tools) keeps today's byte-identical shape unless it opts in explicitly.
+COURTESY_PRELUDE_ENABLED = True
+
 
 class CrossoverV2FlowError(RuntimeError):
     """The v2 conductor could not form a safe phase transition."""
@@ -1161,6 +1178,7 @@ class CrossoverV2Conductor:
             self._roles,
             downstream_gain_db=self._session_volume_db,
             role_base_peak_dbfs=role_base,
+            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
         )
 
     def _pilot_gains(self, hi_gain_db: float) -> tuple[float, float]:
@@ -1182,6 +1200,7 @@ class CrossoverV2Conductor:
             downstream_gain_db=self._session_volume_db,
             leading_pilot_gains_db=self._pilot_gains(gains[self._woofer.role]),
             leading_pilot_role=self._woofer.role,
+            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
         )
 
     def _compose_verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
@@ -1208,6 +1227,7 @@ class CrossoverV2Conductor:
             gain_db=gain,
             downstream_gain_db=self._session_volume_db,
             leading_pilot_gains_db=self._pilot_gains(gain),
+            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
         )
 
     # --- priors per phase ----------------------------------------------------
@@ -2201,19 +2221,25 @@ def build_v2_capture_plan(
     )
 
     roles = tuple(roles_bands)
-    check = build_check_program(roles)
+    # courtesy_prelude=COURTESY_PRELUDE_ENABLED on every composed program below
+    # (issue #1677): this is the phone's DURATION BUDGET, so it must agree with
+    # what the conductor's own _compose_*_program methods actually play, or the
+    # phone stops recording before the real (prelude-lengthened) program ends.
+    check = build_check_program(roles, courtesy_prelude=COURTESY_PRELUDE_ENABLED)
     nominal_gains = {rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}
     measure = build_measure_program(
         nominal_gains, roles,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
+        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
     verify = build_verify_program(
         fc_hz,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
+        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
     entries = (
         CapturePlanEntry(
@@ -2296,6 +2322,7 @@ def build_v2_verify_capture_plan(fc_hz: float) -> Any:
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
+        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
     entry = CapturePlanEntry(
         index=0,
