@@ -26,6 +26,11 @@ def test_bass_extension_plan_pins_merged_waves_and_remaining_gate() -> None:
     assert "crossover-program hardware burn-in prerequisite is **met**" in text
     assert "contract rev 8 freezes limiter protocol revision `2026-07-19b`" in text
     assert "reviewed bench runner/temporary activation owner" in text
+    # Truth pin (2026-07-24): the bench runner (#1630) is merged, but its
+    # live on-device executor is not — pin the honest gap so a future edit
+    # cannot silently claim the runner is fully wired without also updating
+    # this assertion.
+    assert "live pre/post-limiter tap executor" in text
     assert "no real\n> target-specific limiter result is established yet" in text
     assert "No implementation is authorized by revision 6" not in text
     assert "no frozen contract maps ladder/sustain" not in text
