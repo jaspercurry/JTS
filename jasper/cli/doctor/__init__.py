@@ -221,6 +221,7 @@ from .memory import (
     _bounded_dir_size,
     check_correction_storage,
     check_wake_events_storage,
+    check_journald_persistence,
 )
 from . import resilience as resilience
 from .resilience import (
@@ -552,6 +553,7 @@ __all__ = [
     "_bounded_dir_size",
     "check_correction_storage",
     "check_wake_events_storage",
+    "check_journald_persistence",
     "_EXPECTED_START_LIMIT_POLICY",
     "_classify_supervisor_snapshots",
     "check_start_limit_action",
