@@ -44,6 +44,7 @@ from ._common import issue as _issue, region_key as _region_key
 from .calibration_level import classify_mic_meter
 from .capture_geometry import REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID
 from .profile import ADJACENT_PAIRS_BY_WAY
+from .repeat_admission import MAX_RESERVATIONS
 from .safe_playback import playback_target_signature
 
 logger = logging.getLogger(__name__)
@@ -1167,14 +1168,22 @@ _DURABLE_REPEAT_ENTRY_KEYS = (
 _PROCESS_REPEAT_KEYS = frozenset({"aggregate_repeat"})
 
 
-def _repeat_int(value: Any, field: str, *, minimum: int = 0) -> int:
+def _repeat_int(
+    value: Any, field: str, *, minimum: int = 0, maximum: int = 4
+) -> int:
+    # ``maximum`` defaults to the audible ``MAX_ATTEMPTS`` budget (4), the
+    # ceiling on accept/reject/target counts and per_repeat length. Only the
+    # raw reservation ``per_repeat.attempt`` VALUE rides higher — a set that
+    # survived refunded transport failures reaches its third accept at a
+    # reservation number up to ``MAX_RESERVATIONS`` — so that one field passes
+    # the wider ceiling explicitly.
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not minimum <= value <= 4
+        or not minimum <= value <= maximum
     ):
         raise ValueError(
-            f"repeat summary {field} must be an integer from {minimum} to 4"
+            f"repeat summary {field} must be an integer from {minimum} to {maximum}"
         )
     return value
 
@@ -1261,7 +1270,10 @@ def _durable_repeat_summary(raw: Any) -> dict[str, Any] | None:
         per_repeat.append({
             "index": _repeat_int(item["index"], "per_repeat.index"),
             "attempt": _repeat_int(
-                item["attempt"], "per_repeat.attempt", minimum=1
+                item["attempt"],
+                "per_repeat.attempt",
+                minimum=1,
+                maximum=MAX_RESERVATIONS,
             ),
             "verdict": _repeat_text(
                 item["verdict"], "per_repeat.verdict", limit=80, optional=True

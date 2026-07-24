@@ -62,10 +62,15 @@ def test_four_attempts_are_authoritative_and_fifth_is_refused(tmp_path):
     ] == 4
 
 
-def test_fourth_transport_failure_is_terminal_and_actionable():
+def test_transport_failures_retry_until_the_reservation_circuit_breaker():
+    # A transport/infra failure never plays a tone, so it is refunded from the
+    # audible measurement budget and the set stays retryable — only reaching
+    # the reservation cap makes an infra failure terminal so an always-failing
+    # box cannot loop forever.
     assert admission.failure_status(1) == "active"
-    assert admission.failure_status(3) == "active"
-    assert admission.failure_status(4) == "refused"
+    assert admission.failure_status(admission.MAX_ATTEMPTS) == "active"
+    assert admission.failure_status(admission.MAX_RESERVATIONS - 1) == "active"
+    assert admission.failure_status(admission.MAX_RESERVATIONS) == "refused"
     assert admission.failure_status("malformed") == "refused"
 
 
@@ -402,7 +407,7 @@ def test_complete_write_failure_stays_ready_and_blocks_fifth(tmp_path, monkeypat
     [
         {"attempts": -1},
         {"attempts": 0},
-        {"attempts": 5},
+        {"attempts": 9},
         {"attempts": None, "results": [{"attempt": 1}]},
         {"status": "mystery"},
         {"inflight": "short"},
@@ -444,3 +449,176 @@ def test_empty_target_binding_is_rejected_before_write(
             path=path,
         )
     assert path.read_bytes() == before
+
+
+# --- #1513: infra-phase failures must not consume the acceptance budget ------
+
+_UNSET = object()
+_FP = "mono:woofer-fingerprint"
+
+
+def _finish(path, comparison, reservation, *, accepted, audio_emitted=_UNSET,
+            status="active", **extra):
+    result = {"accepted": accepted, **extra}
+    if audio_emitted is not _UNSET:
+        result["audio_emitted"] = audio_emitted
+    return admission.finish(
+        comparison,
+        target_id="mono:woofer",
+        target_fingerprint=_FP,
+        token=reservation["token"],
+        result=result,
+        status=status,
+        path=path,
+    )
+
+
+def _target(path, comparison):
+    return admission.snapshot(comparison, path=path)["targets"]["mono:woofer"]
+
+
+def test_transport_failures_are_refunded_from_the_measurement_budget(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    # Two proven-infra failures (no tone played) never advance the audible
+    # budget, though the honest reservation counter does climb.
+    for _ in range(2):
+        _finish(
+            path, comparison, _reserve(path, comparison),
+            accepted=False, audio_emitted=False, phase="transport",
+            reject_reason="capture_failed",
+        )
+    target = _target(path, comparison)
+    assert target["attempts"] == 2
+    assert admission.measurement_attempts(target["results"]) == 0
+    # Three accepted audio-emitting attempts now complete the set — impossible
+    # before the fix, because the two infra failures would have spent the
+    # 4-attempt budget down to one.
+    for i in range(3):
+        _finish(
+            path, comparison, _reserve(path, comparison),
+            accepted=True, audio_emitted=True,
+            status="ready" if i == 2 else "active",
+        )
+    admission.complete(
+        comparison, target_id="mono:woofer", target_fingerprint=_FP, path=path
+    )
+    target = _target(path, comparison)
+    assert target["attempts"] == 5  # monotonic reservation audit trail
+    assert admission.measurement_attempts(target["results"]) == 3
+    assert target["status"] == "completed"
+
+
+def test_reservation_circuit_breaker_refuses_with_a_distinct_infra_reason(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    # Keep every infra failure non-terminal to isolate the reservation-cap gate
+    # in reserve() from the failure_status() terminal path.
+    for _ in range(admission.MAX_RESERVATIONS):
+        _finish(
+            path, comparison, _reserve(path, comparison),
+            accepted=False, audio_emitted=False, phase="transport",
+        )
+    target = _target(path, comparison)
+    assert target["attempts"] == admission.MAX_RESERVATIONS
+    assert target["status"] == "active"
+    # Budget is fully refunded (0), yet the box cannot loop forever: the cap
+    # refuses with the infra-exhausted reason, distinct from the acoustic
+    # "already used four attempts" insufficiency.
+    assert admission.measurement_attempts(target["results"]) == 0
+    with pytest.raises(ValueError, match=admission.INFRA_RETRY_EXHAUSTED):
+        _reserve(path, comparison)
+    with pytest.raises(ValueError) as excinfo:
+        _reserve(path, comparison)
+    assert "four attempts" not in str(excinfo.value)
+
+
+def test_measurement_budget_still_refuses_a_fifth_audio_attempt(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    # Four audio-emitting attempts spend the whole audible budget regardless of
+    # acceptance — the acoustic gate is unchanged for real captures.
+    for _ in range(admission.MAX_ATTEMPTS):
+        _finish(
+            path, comparison, _reserve(path, comparison),
+            accepted=False, audio_emitted=True, reject_reason="level_outlier",
+        )
+    assert admission.measurement_attempts(_target(path, comparison)["results"]) == 4
+    with pytest.raises(ValueError, match="four attempts"):
+        _reserve(path, comparison)
+
+
+def test_finish_normalizes_audio_emitted_to_a_strict_tristate(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+
+    def stored(value):
+        # Re-activate a fresh set each call so this normalization check never
+        # bumps into the measurement budget.
+        admission.activate(comparison, path=path)
+        return _finish(
+            path, comparison, _reserve(path, comparison),
+            accepted=False, audio_emitted=value,
+        )["results"][-1]
+
+    assert stored(True)["audio_emitted"] is True
+    assert stored(False)["audio_emitted"] is False
+    # Absent stays absent (byte-identical to legacy results) and every non-bool
+    # value is dropped as unknown → fail-closed budget-consuming.
+    assert "audio_emitted" not in stored(_UNSET)
+    assert "audio_emitted" not in stored("yes")
+    assert "audio_emitted" not in stored(1)
+    assert "audio_emitted" not in stored(None)
+
+
+def test_unknown_audio_is_not_refunded_fail_closed(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    # Only a PROVEN no-audio attempt (audio_emitted is False) is refunded; an
+    # attempt whose audio state is unknown consumes the budget like a real
+    # acoustic rejection.
+    _finish(path, comparison, _reserve(path, comparison),
+            accepted=False, audio_emitted=False)      # refunded
+    _finish(path, comparison, _reserve(path, comparison),
+            accepted=False)                           # unknown → consumes
+    _finish(path, comparison, _reserve(path, comparison),
+            accepted=False, audio_emitted=True)       # acoustic → consumes
+    assert admission.measurement_attempts(_target(path, comparison)["results"]) == 2
+
+
+def test_refinishing_a_transport_token_does_not_double_refund(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    reservation = _reserve(path, comparison)
+    _finish(path, comparison, reservation, accepted=False, audio_emitted=False,
+            phase="transport")
+    target = _target(path, comparison)
+    assert len(target["results"]) == 1
+    assert admission.measurement_attempts(target["results"]) == 0
+    # Re-finishing the already-consumed token has no matching inflight, so the
+    # single durable result (and its refund) can never be double-written.
+    with pytest.raises(ValueError, match="matching inflight"):
+        _finish(path, comparison, reservation, accepted=False,
+                audio_emitted=False, phase="transport")
+    target = _target(path, comparison)
+    assert len(target["results"]) == 1
+    assert admission.measurement_attempts(target["results"]) == 0
+
+
+def test_tampered_audio_emitted_type_fails_closed_on_load(tmp_path):
+    path = tmp_path / "repeat.json"
+    comparison = _comparison()
+    admission.activate(comparison, path=path)
+    reservation = _reserve(path, comparison)
+    _finish(path, comparison, reservation, accepted=True, audio_emitted=True)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["targets"]["mono:woofer"]["results"][0]["audio_emitted"] = "yes"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="state is invalid"):
+        admission.snapshot(comparison, path=path)

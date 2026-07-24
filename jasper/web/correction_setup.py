@@ -6194,12 +6194,19 @@ def _handle_crossover_relay_capture(
     # Session-spanning capture plan (protocol v3, SPEC W2.3) — driver-sweep
     # specs ALWAYS carry one now (unconditional in code; the coordinator's
     # deploy sequencing, not a flag here, protects it — see the PR body).
-    # capture_target/max_attempts mirror the SAME numbers the existing
-    # repeat_admission/commissioning_capture ledger already enforces
-    # (DEFAULT_REPEAT_TARGET=3 accepted repeats within MAX_ATTEMPTS=4 admitted
-    # attempts), so the plan's own bookkeeping and the durable ledger's
-    # bookkeeping can never drift out of lockstep. Summed/verification stay
-    # on the v2 per-capture path untouched.
+    # capture_target/max_attempts mirror the SAME numbers the durable
+    # repeat_admission ledger enforces (DEFAULT_REPEAT_TARGET=3 accepted
+    # repeats within the audible MAX_ATTEMPTS budget). This bound is
+    # SESSION-LOCAL: `authorize_begin` ignores the plan's attempt and calls the
+    # durable `reserve_repeat_attempt`, and a transport failure ends the
+    # relay session, so one session's audio begins can never exceed the audible
+    # budget (reserve() raises once it is spent → CaptureBeginRefused). The
+    # cross-session headroom that lets a set carry a couple of refunded infra
+    # retries lives in the durable ledger (repeat_admission's MAX_RESERVATIONS
+    # cap + record_driver_capture's reservation-attempt validation), NOT here —
+    # keeping max_attempts at MAX_ATTEMPTS preserves the graceful
+    # `capture_set_exhausted` terminal for a room that simply cannot pass.
+    # Summed/verification stay on the v2 per-capture path untouched.
     capture_plan: Any = None
     if kind_id == "driver":
         from jasper.active_speaker.commissioning_capture import (
@@ -6403,6 +6410,12 @@ def _handle_crossover_relay_capture(
         ):
             return
 
+        # Cheap necessary-condition pre-gate on the RAW reservation attempt:
+        # finalize_driver_repeats_after_terminal_failure self-gates on the
+        # audible MEASUREMENT budget (measurement_attempts), and raw attempt >=
+        # measurement always, so this can only ever run finalize a hair early —
+        # never skip a salvage the measurement gate would have taken. Keeping it
+        # raw avoids re-reading the store here just to decide whether to look.
         if int(reservation.get("attempt") or 0) >= repeat_admission.MAX_ATTEMPTS:
             # The attempt may fail seconds after armed-time validation. Re-read
             # topology/profile/comparison before old accepted evidence can be
@@ -6431,6 +6444,10 @@ def _handle_crossover_relay_capture(
                 "reject_reason": "capture_failed",
                 "failure_type": str(failure_type)[:80],
                 "phase": "transport",
+                # No tone played, so this attempt is refunded from the audible
+                # measurement budget (repeat_admission.measurement_attempts);
+                # it stays retryable until the reservation circuit-breaker.
+                "audio_emitted": False,
             },
             status=repeat_admission.failure_status(reservation.get("attempt")),
         )
