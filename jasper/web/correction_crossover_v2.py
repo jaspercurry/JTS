@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import dataclasses
 import hashlib
 import json
 import logging
@@ -984,6 +985,7 @@ def bind_production_analyze(
 
     def _analyze(program: Any, result: Any, priors: Any, geometry: Any) -> Any:
         from jasper.audio_measurement import program_analysis as _pa
+        from jasper.audio_measurement.calibration import mic_tier_for_model
 
         wav = getattr(result, "wav", result)
         samples, rate = _wav_bytes_to_samples(wav)
@@ -1035,6 +1037,20 @@ def bind_production_analyze(
                 "applied": curve is not None,
                 "calibration_id": getattr(record, "calibration_id", None),
             }
+        # Layer-1a linearization gate input (#1668 PR-C): resolve the
+        # measurement mic's correction-envelope trust tier from the SAME
+        # resolved calibration record this binding already computed above —
+        # no second resolve, no new failure mode. `record` is `None` (no
+        # calibration resolved) or lacks a `model` attribute (a bare
+        # CalibrationCurve test double) exactly as often as `curve` above,
+        # and `mic_tier_for_model(None)` already resolves to the
+        # conservative "phone" tier for that case — never a guess at
+        # "reference". Threaded onto every phase's priors (not just
+        # MEASURE); only `ProgramAnalysis` from a MEASURE analysis actually
+        # surfaces it (see program_analysis.ProgramAnalysis.mic_tier).
+        priors = dataclasses.replace(
+            priors, mic_tier=mic_tier_for_model(getattr(record, "model", None)),
+        )
         analysis = _pa.analyze_program_capture(
             program,
             samples,

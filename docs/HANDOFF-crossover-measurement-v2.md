@@ -194,6 +194,23 @@ conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
    drift-corrected physical peak gap supplies the sign and centers one
    ±half-period comb lobe inside the range; GCC is deliberately not the lobe
    prior because its periodic peak can identify a neighboring comb basin.
+**Layer 1a driver linearization (#1668 PR-C).** MEASURE additionally fits
+a per-driver cut-only linearization (Highshelf + Peaking, honoring the
+correction envelope's per-bin depth ceiling) whenever the mic resolved to
+the "reference" trust tier AND both drivers cleared a paired ≥3-occurrence
+gate — otherwise the candidate is byte-identical to the plain trims-only
+shape from before this PR. When eligible, the fit is applied to each
+branch in the linear domain BEFORE the trim solve, so trim reflects the
+linearized (not raw) response — the ordering that structurally defuses
+#1667's band-average bias; an implausible re-solved trim (>6 dB from the
+raw solve) is distrusted and discarded in favor of the raw value. The
+fit result travels on `MeasuredCrossoverCandidate.linearization` (empty
+dict = not attempted). Design and fitting-policy SSOT:
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+"Layer 1a concretely"; engine at
+[`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py),
+correction-envelope core at
+[`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py).
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
@@ -238,7 +255,9 @@ most visible thing on the screen.
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
-| [`jasper/active_speaker/measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact (trims + `MeasuredCrossoverAlignment`), folded through `emit_active_speaker_baseline_config` (`camilla_yaml.py`) and the delay/graph-safety proofs. |
+| [`jasper/active_speaker/measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact (trims + `MeasuredCrossoverAlignment` + `linearization`), folded through `emit_active_speaker_baseline_config` (`camilla_yaml.py`) and the delay/graph-safety proofs. |
+| [`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | Layer-1a correction envelope (#1668 PR-B): `compose_envelope` → per-bin allowed correction depth + `ReasonCode`, `compute_sigma_curve`, `mic_trust_limit` / `repeatability_limit` / `class_prior_limit`. Pure computation, no policy. |
+| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, `MAX_NORMALIZATION_SPEND_DB` budget). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. |
 | [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Relay protocol v3: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. |
 | [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the v3 session loop; `version.json` carries the supported protocol versions. |
 
