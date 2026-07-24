@@ -167,11 +167,24 @@ OVERLAP_OCTAVE_RATIO = 2.0
 RIPPLE_TRIM_SEARCH_WINDOW_DB = 10.0
 RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
 
-# Floating-point tolerance for "tied for minimum ripple" in the scan above —
-# well below the search grid's own 0.1 dB resolution, just enough to treat
-# two candidates as equal when they genuinely are (e.g. a perfectly flat
-# synthetic fixture) without being fooled by float rounding noise.
-_RIPPLE_TIE_TOLERANCE_DB = 1e-9
+# Flat-minimum regularization (#1667 follow-up, architect review): the exact
+# minimizer of a SHALLOW ripple bowl (a wide, nearly-flat region straddling
+# the true minimum — e.g. 0.31 dB of ripple spread across 2+ dB of trim, an
+# observed shape on the real N=3 hardware capture) is sensitive to
+# measurement noise and can wander session to session; an applied trim that
+# shifts audibly between re-measurements is a worse product property than a
+# fraction-of-a-dB of extra ripple. Among every candidate within this many
+# dB of the scan's GLOBAL minimum ripple — a set that collapses to a single
+# point for a sharp/unique minimum, or spans a wide plateau for a shallow
+# one — the search prefers whichever is CLOSEST TO THE SEED (the
+# band-average trim), trading a negligible, inaudible amount of measured
+# flatness for session-to-session repeatability. This subsumes plain
+# exact-tie breaking (an exact tie is trivially within epsilon too). 0.25 dB
+# is below the threshold of an audible ripple difference and comfortably
+# above the scan grid's own 0.1 dB step, so a genuinely sharp minimum's
+# single best point is never accidentally widened into a multi-candidate
+# plateau by grid quantization alone.
+RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB = 0.25
 
 # How far the ripple-optimal trim may move from the band-average seed before
 # it is treated as untrustworthy and discarded in favor of the seed (with a
@@ -1763,9 +1776,11 @@ def solve_ripple_optimal_trim(
     sign: int,
     window_db: float = RIPPLE_TRIM_SEARCH_WINDOW_DB,
     step_db: float = RIPPLE_TRIM_SEARCH_STEP_DB,
+    flat_minimum_epsilon_db: float = RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
 ) -> tuple[float, float, float]:
-    """Ripple-minimizing tweeter trim, scanned around the band-average seed
-    (#1667).
+    """Ripple-minimizing tweeter trim, scanned around the band-average seed,
+    regularized toward the seed on a flat minimum (#1667; flat-minimum
+    regularization is a follow-up architect review).
 
     ``solve_branch_trims`` matches band-AVERAGE levels, which is biased
     whenever the evaluation band sits inside one branch's own filter
@@ -1796,10 +1811,23 @@ def solve_ripple_optimal_trim(
     [:data:`RIPPLE_TRIM_MIN_DB`, :data:`RIPPLE_TRIM_MAX_DB`] — a trim is
     never net gain and never beyond the shared -60 dB floor, so the scan
     must not even EVALUATE an unphysical candidate (a flatter-but-invalid
-    "trim" is not a real answer). Ties (a flat ripple minimum, e.g. a wide
-    symmetric notch) break TOWARD THE SEED — the tied candidate closest to
-    the band-average value wins, so a flat objective never introduces
-    gratuitous drift away from the conventional solve.
+    "trim" is not a real answer).
+
+    Selection is flat-minimum-regularized, not a bare argmin: among every
+    scanned candidate whose ripple is within ``flat_minimum_epsilon_db``
+    (default :data:`RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`, 0.25 dB) of the
+    GLOBAL minimum ripple found in this scan, the one CLOSEST TO THE SEED
+    wins — never merely the first/lowest-ripple candidate encountered. A
+    sharp, unique minimum degenerates to that single point (bare argmin,
+    unaffected); a shallow bowl (a wide, nearly-flat region straddling the
+    true minimum — real hardware shape, not just a synthetic edge case)
+    instead prefers whichever near-optimal candidate drifts LEAST from the
+    conventional band-average trim, trading a negligible/inaudible amount
+    of measured flatness for session-to-session repeatability — the exact
+    minimizer of a shallow bowl is sensitive to measurement noise and would
+    otherwise wander between re-measurements of the same speaker. Plain
+    exact ties are a special case of this rule (trivially within epsilon of
+    each other) and need no separate handling.
 
     Returns ``(trim_t_db, ripple_db, seed_trim_db)``: the selected trim, the
     summed-response ripple (dB, max-min) AT that trim, and the seed it was
@@ -1842,7 +1870,11 @@ def solve_ripple_optimal_trim(
     best_ripple = min_ripple
     best_distance = math.inf
     for candidate_trim, ripple in zip(candidate_trims, ripples_db):
-        if ripple > min_ripple + _RIPPLE_TIE_TOLERANCE_DB:
+        # Flat-minimum regularization: not just the argmin, but the
+        # closest-to-seed candidate among everything within epsilon of the
+        # GLOBAL minimum (see the docstring) — a sharp minimum has only one
+        # such candidate, so this is a strict generalization of bare argmin.
+        if ripple > min_ripple + flat_minimum_epsilon_db:
             continue
         distance = abs(candidate_trim - seed_trim_db)
         if distance < best_distance:

@@ -261,7 +261,13 @@ scanned in a bounded window (±10 dB, `RIPPLE_TRIM_SEARCH_WINDOW_DB`)
 around the band-average seed and clamped to the physically valid
 attenuation range; a result more than `RIPPLE_TRIM_SANITY_MARGIN_DB`
 (6 dB) from the seed is distrusted and discarded in favor of band-average,
-with a WARNING (never a silent wild trim). Wired into BOTH the raw
+with a WARNING (never a silent wild trim). Selection is flat-minimum-
+regularized (architect follow-up): among every scanned candidate within
+`RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB` (0.25 dB) of the scan's global
+minimum ripple, the one closest to the band-average seed wins — a shallow
+ripple bowl's exact minimizer is sensitive to measurement noise and would
+otherwise wander session to session, which is a worse product property
+than a fraction-of-a-dB of extra ripple. Wired into BOTH the raw
 candidate (`CrossoverCandidate.trim_db`, with the band-average seed
 preserved as `trim_band_average_db` evidence) and the Layer 1a linearized
 re-solve above, so consumer/phone-tier captures — ineligible for

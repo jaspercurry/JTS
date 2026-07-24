@@ -67,6 +67,7 @@ from jasper.audio_measurement.program_analysis import (
     LINEARITY_SNR_BIAS_BUDGET_FRACTION,
     LINEARITY_TOLERANCE_DB,
     PILOT_MIN_SNR_DB,
+    RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
     RIPPLE_TRIM_MIN_DB,
     RIPPLE_TRIM_SANITY_MARGIN_DB,
@@ -2093,8 +2094,19 @@ def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_asymmetric_overlap_bia
     evaluation band clamps to ``[Fc, 2*Fc]``, entirely inside the woofer's
     own LR4 rolloff skirt — band-average level-matching over that skirt
     drags the tweeter's trim far into over-attenuation.
-    ``solve_ripple_optimal_trim`` must recover close to the true 0.0 dB
-    optimum instead."""
+
+    The LR4 bowl near 0.0 dB is WIDE relative to
+    ``RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`` (verified below, not assumed —
+    ripple stays under ~0.26 dB across roughly [-0.6, +0.6] dB of trim
+    around the true optimum), so flat-minimum regularization (architect
+    follow-up) legitimately pulls the DEFAULT-regularized result away from
+    the exact 0.0 dB optimum, toward the (far more negative) band-average
+    seed — by design, trading a negligible amount of extra ripple for
+    session-to-session stability. This test therefore asserts on RIPPLE
+    (within epsilon of the sharp optimum), not on the regularized TRIM
+    value, and separately pins the SHARP (epsilon effectively disabled)
+    optimum at the exact analytic 0.0 dB truth so the underlying objective
+    itself stays verified precisely."""
     fc_hz = 2000.0
     freqs = np.geomspace(200.0, 8000.0, 2000)
     ratio4 = (freqs / fc_hz) ** 4
@@ -2112,23 +2124,38 @@ def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_asymmetric_overlap_bia
     assert trim_w == pytest.approx(0.0)  # woofer is the quieter (unattenuated) branch
     assert trim_t_band_average < -5.0  # badly biased: the true optimum is 0.0 dB
 
-    trim_t_ripple, ripple_db, seed = solve_ripple_optimal_trim(
+    # Sharp optimum: epsilon effectively disabled, recovers the
+    # analytically known 0.0 dB truth to within one scan step
+    # (RIPPLE_TRIM_SEARCH_STEP_DB = 0.1 dB) — exactly the pre-
+    # regularization behavior.
+    trim_t_sharp, ripple_sharp, seed = solve_ripple_optimal_trim(
+        freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
+        seed_trim_db=trim_t_band_average, trim_w_db=trim_w, sign=1,
+        flat_minimum_epsilon_db=1e-9,
+    )
+    assert seed == trim_t_band_average
+    assert trim_t_sharp == pytest.approx(0.0, abs=0.15)
+    assert ripple_sharp < 0.1  # near-perfect LR4 cancellation at the sharp optimum
+
+    # Regularized (default epsilon): pulled toward the (very negative)
+    # seed, away from 0.0 -- asserted on ripple, not the trim value.
+    trim_t_reg, ripple_reg, _seed = solve_ripple_optimal_trim(
         freqs, W, T, fc_hz, lo_hz=lo, hi_hz=hi,
         seed_trim_db=trim_t_band_average, trim_w_db=trim_w, sign=1,
     )
-    assert seed == trim_t_band_average
-    # Recovers the analytically known optimum (0.0 dB) to within one scan
-    # step (RIPPLE_TRIM_SEARCH_STEP_DB = 0.1 dB).
-    assert trim_t_ripple == pytest.approx(0.0, abs=0.15)
-    assert ripple_db < 0.1  # near-perfect LR4 cancellation at the recovered trim
+    assert ripple_reg <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
+    assert trim_t_reg < trim_t_sharp  # pulled toward the very-negative seed
+    assert trim_t_reg > trim_t_band_average  # but nowhere near all the way back
 
 
 def test_solve_ripple_optimal_trim_ties_break_toward_seed():
-    """A frequency-independent (flat) branch pair sums to a CONSTANT for
-    every trim — no frequency-dependent magnitude on either side to create
-    ripple — so every candidate in the scan window ties for minimum ripple
-    (~0 exactly). The tie-break rule must pick the seed itself, not drift to
-    an arbitrary tied candidate."""
+    """The exact-tie case, a special case of the broader flat-minimum
+    epsilon-region rule (architect follow-up): a frequency-independent
+    (flat) branch pair sums to a CONSTANT for every trim — no frequency-
+    dependent magnitude on either side to create ripple — so every
+    candidate in the scan window ties for minimum ripple (~0 exactly, an
+    epsilon-region spanning the ENTIRE window). The selection rule must
+    pick the seed itself, not drift to an arbitrary tied candidate."""
     freqs = np.linspace(500.0, 4000.0, 256)
     W = np.full_like(freqs, 1.0)
     T = np.full_like(freqs, 0.5)
@@ -2140,6 +2167,69 @@ def test_solve_ripple_optimal_trim_ties_break_toward_seed():
     assert returned_seed == seed
     assert trim_t == pytest.approx(seed, abs=1e-9)
     assert ripple_db < 1e-6
+
+
+def test_solve_ripple_optimal_trim_prefers_near_seed_shallow_bowl_over_far_global_min():
+    """Flat-minimum regularization (architect follow-up, #1667): a
+    synthetic shallow bowl with TWO distinct, well-separated, comparably-low
+    ripple minima -- built from a flat background region plus a second
+    region whose T is ~180 degrees out of phase with W (a genuine magnitude
+    interference null). The null's OWN curve dips toward that
+    cancellation and recovers on the far side, crossing the background
+    region's level once on EACH side of the null -- exactly the
+    multi-minimum shape real hardware gets from imperfect time alignment/
+    comb-filtering, not a contrived edge case.
+
+    The FAR minimum (~+12.6 dB) has objectively LOWER ripple than the NEAR
+    one (~-2.3 dB, verified below to be the sharp/unregularized global
+    minimum on this exact scan), but both are comfortably within
+    ``RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`` of each other. The regularized
+    selection must prefer the NEAR one — closer to the band-average seed —
+    trading the far candidate's marginally better flatness for
+    session-to-session repeatability."""
+    n_bg, n_null = 200, 200
+    freqs = np.linspace(1000.0, 3000.0, n_bg + n_null)
+    W = np.empty(freqs.size, dtype=complex)
+    T = np.empty(freqs.size, dtype=complex)
+    W[:n_bg] = 0.5
+    T[:n_bg] = 0.15
+    W[n_bg:] = 1.0
+    T[n_bg:] = -0.5  # ~180 degrees out of phase from W -> an interference null
+    lo, hi = float(freqs[0]), float(freqs[-1])
+
+    seed = -3.28  # close to the near minimum, far from the far one
+
+    # Sharp (epsilon effectively disabled): confirms the fixture's TRUE
+    # global minimum is the NEAR basin, not the far one -- the premise the
+    # rest of this test depends on.
+    trim_sharp, ripple_sharp, _seed = solve_ripple_optimal_trim(
+        freqs, W, T, 2000.0, lo_hz=lo, hi_hz=hi,
+        seed_trim_db=seed, trim_w_db=0.0, sign=1, window_db=20.0,
+        flat_minimum_epsilon_db=1e-9,
+    )
+    assert trim_sharp == pytest.approx(-2.28, abs=0.15)
+
+    trim_reg, ripple_reg, seed_out = solve_ripple_optimal_trim(
+        freqs, W, T, 2000.0, lo_hz=lo, hi_hz=hi,
+        seed_trim_db=seed, trim_w_db=0.0, sign=1, window_db=20.0,
+    )
+    assert seed_out == seed
+    # Stays in the NEAR basin (close to seed), nowhere near the far one.
+    assert trim_reg < 5.0
+    assert abs(trim_reg - seed) < abs(trim_reg - 12.6)
+    # Within the promised epsilon budget of the true sharp optimum -- the
+    # regularization traded distance for flatness within budget, not an
+    # unbounded amount.
+    assert ripple_reg <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
+
+    # The far basin's own best discrete candidate is a GENUINE, comparable
+    # alternative (also within epsilon of the global min) -- confirms this
+    # is a real two-option test, not one where the far option was
+    # accidentally excluded by the search window or grid.
+    far_summed = _predicted_sum(W, T, 0.0, 12.6, 1)
+    far_ripple = _ripple_db(freqs, far_summed, lo, hi)
+    assert far_ripple <= ripple_sharp + RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB
+    assert far_ripple < ripple_reg  # objectively flatter, yet regularization declines it
 
 
 def test_solve_ripple_optimal_trim_never_exceeds_physical_attenuation_bounds():
