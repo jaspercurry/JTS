@@ -52,6 +52,7 @@ def _candidate(
     alignment: MeasuredCrossoverAlignment | None = None,
     program_id: str = "prog-abc123",
     linearization: dict | None = None,
+    linearization_outcome: str | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
@@ -60,6 +61,8 @@ def _candidate(
         kwargs["alignment"] = alignment
     if linearization is not None:
         kwargs["linearization"] = linearization
+    if linearization_outcome is not None:
+        kwargs["linearization_outcome"] = linearization_outcome
     return MeasuredCrossoverCandidate(
         program_id=program_id,
         analysis={"drift_ppm": 12.5, "sweeps": ["w", "t", "w"]},
@@ -436,9 +439,9 @@ def test_from_mapping_accepts_pre_prc_shape_missing_linearization_key():
 
 
 def test_from_mapping_still_rejects_other_missing_fields():
-    """"linearization" is the ONE optional field — every sibling
-    (alignment, role_attenuations_db, ...) stays strictly required, exactly
-    as before this PR."""
+    """"linearization" and "linearization_outcome" are the only two optional
+    fields — every sibling (alignment, role_attenuations_db, ...) stays
+    strictly required, exactly as before either was added."""
     candidate = _candidate()
     raw = candidate.to_dict()
     del raw["role_attenuations_db"]
@@ -447,24 +450,146 @@ def test_from_mapping_still_rejects_other_missing_fields():
     assert excinfo.value.code == "candidate_malformed"
 
 
+# --- linearization_outcome (gauge fix, 2026-07-24) --------------------------
+#
+# Mirrors "linearization" above field-for-field: optional, era-tolerant,
+# omitted from the fingerprint when empty ("" means "not evaluated," the
+# same claim absence makes), and tamper-protected when non-empty.
+
+
+def test_linearization_outcome_defaults_to_empty_string():
+    candidate = _candidate()
+    assert candidate.linearization_outcome == ""
+    assert candidate.to_dict()["linearization_outcome"] == ""
+
+
+def test_linearization_outcome_empty_string_round_trips():
+    """Empty string = not evaluated -- the shape every pre-gauge-fix
+    candidate has -- must round-trip through from_mapping exactly like any
+    other field, with zero special-casing."""
+    candidate = _candidate()
+    reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
+    assert reopened.fingerprint == candidate.fingerprint
+    assert reopened.linearization_outcome == ""
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["fitted", "trim_rejected", "ineligible_mic_tier", "ineligible_repeats", "fit_failed"],
+)
+def test_linearization_outcome_populated_round_trips(outcome):
+    candidate = _candidate(linearization_outcome=outcome)
+    assert candidate.linearization_outcome == outcome
+    reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
+    assert reopened.fingerprint == candidate.fingerprint
+    assert reopened.linearization_outcome == outcome
+
+
+def test_linearization_outcome_participates_in_the_fingerprint():
+    preset = _preset()
+    base = _candidate(preset=preset, linearization_outcome="")
+    fitted = _candidate(preset=preset, linearization_outcome="fitted")
+    assert base.fingerprint != fitted.fingerprint
+
+
+def test_linearization_outcome_tampering_trips_the_tamper_check():
+    """Verified, not assumed: mutating the persisted linearization_outcome
+    without updating the fingerprint must be caught by from_mapping's
+    exact-JSON re-derivation, the SAME mechanism every other field uses."""
+    candidate = _candidate(linearization_outcome="ineligible_mic_tier")
+    raw = dict(candidate.to_dict())
+    tampered = dict(raw)
+    tampered["linearization_outcome"] = "fitted"
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(tampered)
+    assert excinfo.value.code == "candidate_tampered"
+
+
+def test_linearization_outcome_rejects_unrecognized_value():
+    """Validated defensively (unlike the free-string "linearization" filter
+    payload): the single writer (CrossoverV2Conductor) only ever stamps one
+    of six literal values, so a typo there should fail loudly at
+    construction rather than silently persist garbage a UI would have to
+    guess how to render."""
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        _candidate(linearization_outcome="fitted_maybe")
+    assert excinfo.value.code == "linearization_outcome_invalid"
+
+
+def test_empty_linearization_outcome_is_omitted_from_the_fingerprinted_core():
+    """The independent proof, not a self-referential round trip: hand-build
+    the EXACT pre-gauge-fix ``_core()`` shape (no "linearization_outcome"
+    key at all) and confirm ``json_fingerprint`` of THAT dict equals the
+    current code's fingerprint for a not-evaluated candidate. This never
+    calls ``_core()`` or any of this module's own code, so it cannot be
+    fooled by a bug in how ``_core()`` itself decides to omit the key."""
+    from jasper.audio_measurement.evidence_identity import json_fingerprint
+
+    candidate = _candidate()  # linearization_outcome defaults to ""
+    pre_gauge_fix_core = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": CANDIDATE_KIND,
+        "program_id": candidate.program_id,
+        "analysis": candidate.analysis,
+        "source_preset": candidate.source_preset.to_dict(),
+        "role_attenuations_db": dict(candidate.role_attenuations_db),
+        "alignment": candidate.alignment.to_dict(),
+        # Deliberately no "linearization" or "linearization_outcome" key —
+        # every candidate persisted before either existed looked exactly
+        # like this.
+    }
+    assert json_fingerprint(pre_gauge_fix_core) == candidate.fingerprint
+
+
+def test_from_mapping_accepts_shape_missing_linearization_outcome_key():
+    """Era tolerance: a candidate.json published by a build that predates
+    "linearization_outcome" must load cleanly — not refuse
+    candidate_malformed — default to linearization_outcome=="", and its
+    RECOMPUTED fingerprint must equal the ORIGINAL persisted one
+    (independently proven identical to the pre-gauge-fix shape by the
+    previous test)."""
+    candidate = _candidate()
+    raw = candidate.to_dict()
+    original_fingerprint = raw["fingerprint"]
+    # to_dict is always the current, full shape.
+    assert "linearization_outcome" in raw
+    del raw["linearization_outcome"]  # simulate the pre-gauge-fix persisted shape
+
+    reopened = MeasuredCrossoverCandidate.from_mapping(raw)
+
+    assert reopened.linearization_outcome == ""
+    assert reopened.fingerprint == original_fingerprint
+
+
+def test_from_mapping_rejects_non_string_linearization_outcome():
+    candidate = _candidate()
+    raw = {**candidate.to_dict(), "linearization_outcome": 7}
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+    assert excinfo.value.code == "linearization_outcome_malformed"
+
+
 def test_to_dict_canonical_shape_always_includes_linearization_key():
     """Canonical to_dict shape (forward-shape consistency, chosen over
     omitting the key when empty): every NEWLY-serialized candidate always
-    carries "linearization", populated or not — only an OLD,
-    already-persisted pre-PR-C payload is ever missing the key. This is
-    what lets from_mapping's tamper check compare raw's fields byte-for-
-    byte without a special case for a fresh empty-linearization write:
-    to_dict() and a freshly-built raw dict always agree. ``_core()`` (the
-    fingerprint input) intentionally does NOT follow this rule — see
-    test_empty_linearization_is_omitted_from_the_fingerprinted_core for why
-    the two disagree."""
+    carries "linearization" and "linearization_outcome", populated or not —
+    only an OLD, already-persisted pre-PR-C / pre-gauge-fix payload is ever
+    missing either key. This is what lets from_mapping's tamper check
+    compare raw's fields byte-for-byte without a special case for a fresh
+    empty write: to_dict() and a freshly-built raw dict always agree.
+    ``_core()`` (the fingerprint input) intentionally does NOT follow this
+    rule — see test_empty_linearization_is_omitted_from_the_fingerprinted_core
+    for why the two disagree."""
     candidate = _candidate()
     assert candidate.linearization == {}
+    assert candidate.linearization_outcome == ""
     raw = candidate.to_dict()
     assert raw["linearization"] == {}
+    assert raw["linearization_outcome"] == ""
     assert set(raw) == {
         "schema_version", "kind", "program_id", "analysis", "source_preset",
-        "role_attenuations_db", "alignment", "linearization", "fingerprint",
+        "role_attenuations_db", "alignment", "linearization",
+        "linearization_outcome", "fingerprint",
     }
 
 

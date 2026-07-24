@@ -383,6 +383,80 @@ def test_fetch_vendor_calibration_stores_known_mic_record(tmp_path: Path):
     assert "7001234" not in str(public)
     assert record.serial_hash
     assert Path(record.raw_path).exists()
+    # Gauge fix (2026-07-24): the winning URL ends in "7001234.txt" (0-degree),
+    # so the stored orientation must be stamped "0deg" -- not the pre-fetch
+    # "unknown" default this call never overrode.
+    assert record.orientation == "0deg"
+
+
+# --- gauge fix (2026-07-24): stamp the orientation the vendor actually served ----
+
+
+def test_fetch_vendor_calibration_stamps_0deg_from_the_winning_url(tmp_path: Path):
+    def fake_open(req, timeout):
+        if req.full_url.endswith("/7001234.txt"):
+            return b"20 -1\n100 0\n1000 1\n"
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+    record = calibration.fetch_vendor_calibration(
+        model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
+    )
+    assert record.source.endswith("/7001234.txt")
+    assert record.orientation == "0deg"
+
+
+def test_fetch_vendor_calibration_stamps_90deg_from_the_winning_url(tmp_path: Path):
+    """A serial whose 0-degree file 404s but whose 90-degree file resolves
+    must be stamped "90deg" -- the real served orientation -- even though
+    the caller's hint stayed the default "unknown"."""
+    def fake_open(req, timeout):
+        if req.full_url.endswith("_90deg.txt"):
+            return b"20 -1\n100 0\n1000 1\n"
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+    record = calibration.fetch_vendor_calibration(
+        model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
+    )
+    assert record.source.endswith("_90deg.txt")
+    assert record.orientation == "90deg"
+
+
+def test_fetch_vendor_calibration_stamps_real_orientation_regardless_of_hint(
+    tmp_path: Path,
+):
+    """The primary regression this fix targets: the phone-relay serial-fetch
+    flow (the household's main onboarding path) never sends an orientation
+    at all, so `orientation` stays its "unknown" default on every call --
+    yet the STORED record must carry the REAL served orientation, not
+    "unknown", regardless of what hint (if any) the caller passed."""
+    def fake_open(req, timeout):
+        if req.full_url.endswith("_90deg.txt"):
+            return b"20 -1\n100 0\n1000 1\n"
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+    record = calibration.fetch_vendor_calibration(
+        model_key="minidsp_umik1",
+        serial="700-1234",
+        orientation="unknown",  # the phone flow's literal default
+        root=tmp_path,
+        opener=fake_open,
+    )
+    assert record.orientation == "90deg"
+
+
+def test_fetch_vendor_calibration_dayton_orientation_unaffected(tmp_path: Path):
+    """Scoped to the minidsp provider branch only -- Dayton iMM-6/UMM-6 have
+    no 0deg/90deg file concept, so fetch_dayton_calibration_text has no
+    orientation parameter at all. The Dayton branch must keep echoing
+    whatever hint the caller passed, unchanged by this fix."""
+    def fake_open(req, timeout):
+        return b"20 -1\n100 0\n1000 1\n"
+
+    record = calibration.fetch_vendor_calibration(
+        model_key="dayton_imm6", serial="ABC123", root=tmp_path, opener=fake_open,
+    )
+    assert record.provider == "dayton_audio"
+    assert record.orientation == "unknown"
 
 
 # --- F1: registry-driven label inference -----------------------------------
@@ -470,6 +544,66 @@ def test_find_stored_calibration_respects_orientation(tmp_path: Path):
         provider="minidsp", model_key="minidsp_umik1", serial="7001234",
         orientation="90deg", root=tmp_path,
     ) is None
+
+
+def test_find_stored_calibration_unknown_query_matches_any_stored_orientation(
+    tmp_path: Path,
+):
+    """Gauge fix (2026-07-24): once the write side (fetch_vendor_calibration)
+    started stamping the REAL served orientation instead of always
+    "unknown", a lookup that still passes the default "unknown" hint (the
+    phone-relay flow, which never declares an orientation) must NOT
+    permanently miss a "0deg"/"90deg"-tagged record — that would silently
+    turn every phone-flow visit into a live vendor re-fetch instead of a
+    cache hit. "unknown" means "caller doesn't know/care", so it matches
+    ANY stored orientation; a caller that explicitly wants "90deg" still
+    gets exact matching (test_find_stored_calibration_respects_orientation
+    above, unchanged)."""
+    calibration.store_calibration(
+        text="20 -1\n1000 0\n20000 1\n", provider="minidsp",
+        model="minidsp_umik1", label="UMIK-1", source="vendor",
+        serial="7001234", orientation="0deg", root=tmp_path,
+    )
+    found = calibration.find_stored_calibration(
+        provider="minidsp", model_key="minidsp_umik1", serial="7001234",
+        orientation="unknown", root=tmp_path,
+    )
+    assert found is not None
+    assert found.orientation == "0deg"
+
+
+def test_fetch_vendor_calibration_cache_hit_survives_unknown_hint_across_calls(
+    tmp_path: Path,
+):
+    """End-to-end regression guard: a phone-flow-shaped repeat lookup (hint
+    stays "unknown" on every call) must hit the local cache on the SECOND
+    fetch, not re-hit the vendor -- verified by making the opener explode
+    if it is ever called again."""
+    call_count = 0
+
+    def fake_open(req, timeout):
+        nonlocal call_count
+        call_count += 1
+        if req.full_url.endswith("_90deg.txt"):
+            return b"20 -1\n100 0\n1000 1\n"
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+    first = calibration.fetch_vendor_calibration(
+        model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
+    )
+    assert first.orientation == "90deg"
+    assert call_count > 0
+    calls_after_first_fetch = call_count
+
+    def boom(req, timeout):
+        raise AssertionError("must not re-fetch from the vendor on a cache hit")
+
+    second = calibration.fetch_vendor_calibration(
+        model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=boom,
+    )
+    assert second.orientation == "90deg"
+    assert second.calibration_id == first.calibration_id
+    assert call_count == calls_after_first_fetch  # boom() never ran
 
 
 # --- household-mic persistence: additive content-hash lookup for uploads ----

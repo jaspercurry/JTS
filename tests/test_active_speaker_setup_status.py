@@ -812,6 +812,9 @@ def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
             "topology_current": True,
         "provisional": False,
         "recomposition_snapshot_available": False,
+        # Gauge fix (2026-07-24): absent from the fixture profile dict, so
+        # the "" (never evaluated) default.
+        "linearization_outcome": "",
         "layer_a_binding": {
             "status": "unverifiable",
             "matches": False,

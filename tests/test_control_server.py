@@ -3209,6 +3209,64 @@ def test_state_active_speaker_commissioning_block_passes_through(
     assert body["active_speaker_setup"]["commissioning"] == fake_commissioning
 
 
+def test_state_active_speaker_protected_profile_linearization_outcome_passes_through(
+    server_with_coordinator, monkeypatch,
+):
+    """Gauge fix (2026-07-24): the linearization run/skip outcome
+    (setup_status.read_active_speaker_setup_status's protected_profile
+    block, read fresh off the applied baseline artifact) rides through
+    _get_state's existing active_speaker_setup pass-through the same way
+    commissioning does above -- no structural change needed in
+    state_aggregate.py for it either."""
+    base, _ = server_with_coordinator
+    from jasper.control import state_aggregate
+
+    fake_protected_profile = {
+        "available": True,
+        "status": "ready",
+        "linearization_outcome": "ineligible_mic_tier",
+    }
+    monkeypatch.setattr(
+        state_aggregate,
+        "read_active_speaker_setup_status",
+        lambda **kwargs: {  # noqa: ARG005
+            "active": True,
+            "protected_profile": fake_protected_profile,
+        },
+    )
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert (
+        body["active_speaker_setup"]["protected_profile"]["linearization_outcome"]
+        == "ineligible_mic_tier"
+    )
+
+
+def test_state_active_speaker_setup_fails_soft_to_null_on_read_error(
+    server_with_coordinator, monkeypatch,
+):
+    """A broken active-speaker setup read (any of the exceptions
+    _get_state's own try/except catches) must not take down the whole
+    /state response -- the section degrades to null, matching every other
+    fail-soft section (bass_extension_state, output_hardware_state, ...).
+    This wrapper predates the gauge fix; guarded here because
+    linearization_outcome now depends on it staying total."""
+    base, _ = server_with_coordinator
+    from jasper.control import state_aggregate
+
+    def _boom(**kwargs):  # noqa: ARG001
+        raise RuntimeError("simulated active speaker setup read failure")
+
+    monkeypatch.setattr(state_aggregate, "read_active_speaker_setup_status", _boom)
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["active_speaker_setup"] is None
+
+
 def test_state_aec_probe_failure_is_fail_soft(
     server_with_coordinator, monkeypatch,
 ):

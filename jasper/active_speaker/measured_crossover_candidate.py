@@ -95,6 +95,21 @@ _MAX_ATTENUATION_DB = -60.0
 
 _POLARITY_VALUES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
+# Gauge fix (2026-07-24): the exact set crossover_v2_flow.CrossoverV2Conductor
+# stamps onto ``self._last_linearization_outcome`` (see that attribute's own
+# __init__ comment) — "" means "linearization was never evaluated this
+# attempt" (a pre-#1668 candidate, or a MEASURE verdict rejected before
+# ``_build_candidate`` ran). Validated here so a typo in the single writer
+# fails loudly at construction instead of silently persisting garbage.
+_LINEARIZATION_OUTCOME_VALUES = frozenset({
+    "",
+    "fitted",
+    "trim_rejected",
+    "ineligible_mic_tier",
+    "ineligible_repeats",
+    "fit_failed",
+})
+
 
 class MeasuredCrossoverCandidateError(ValueError):
     """A measured crossover candidate value is malformed or unsafe."""
@@ -227,6 +242,16 @@ class MeasuredCrossoverCandidate:
     fingerprint included. ``from_mapping`` accepts the key's outright
     absence the same way (see its own docstring). This module does NOT
     persist the underlying ``EnvelopeCurve`` — only the compact fit result.
+
+    ``linearization_outcome`` (gauge fix, 2026-07-24) is the WHY behind
+    ``linearization`` above: one of "fitted" / "trim_rejected" /
+    "ineligible_mic_tier" / "ineligible_repeats" / "fit_failed", or "" when
+    linearization was never evaluated this attempt. This is the single
+    writer's own verdict (``CrossoverV2Conductor._last_linearization_outcome``,
+    stamped verbatim at candidate-build time) — this module never re-derives
+    it. Era-tolerant exactly like ``linearization``: omitted from the
+    fingerprint when empty, and accepted absent on ``from_mapping`` (every
+    candidate persisted before this field existed implicitly claimed "").
     """
 
     program_id: str
@@ -235,6 +260,7 @@ class MeasuredCrossoverCandidate:
     role_attenuations_db: Mapping[str, float]
     alignment: MeasuredCrossoverAlignment = _NO_ALIGNMENT
     linearization: Mapping[str, Any] = field(default_factory=dict)
+    linearization_outcome: str = ""
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -305,6 +331,12 @@ class MeasuredCrossoverCandidate:
                 "linearization_invalid", f"linearization must be exact JSON data: {exc}"
             )
         object.__setattr__(self, "linearization", frozen_linearization)
+        if self.linearization_outcome not in _LINEARIZATION_OUTCOME_VALUES:
+            _refuse(
+                "linearization_outcome_invalid",
+                "linearization_outcome must be one of "
+                f"{sorted(_LINEARIZATION_OUTCOME_VALUES)}",
+            )
         try:
             fingerprint = json_fingerprint(self._core())
         except EvidenceIdentityError as exc:
@@ -326,6 +358,11 @@ class MeasuredCrossoverCandidate:
         fingerprint, tripping ``from_mapping``'s ``candidate_tampered``
         refusal. ``to_dict()`` does NOT mirror this omission (see its own
         docstring) — the two intentionally disagree.
+
+        ``linearization_outcome`` (gauge fix, 2026-07-24) follows the exact
+        same omit-when-empty convention, for the same era-tolerance reason:
+        an empty string means "not evaluated," identical to every candidate
+        produced before this field existed.
         """
         core: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -338,22 +375,27 @@ class MeasuredCrossoverCandidate:
         }
         if self.linearization:
             core["linearization"] = dict(self.linearization)
+        if self.linearization_outcome:
+            core["linearization_outcome"] = self.linearization_outcome
         return core
 
     def to_dict(self) -> dict[str, Any]:
-        """The full persisted shape — ALWAYS carries ``linearization``.
+        """The full persisted shape — ALWAYS carries ``linearization`` and
+        ``linearization_outcome``.
 
-        Unlike ``_core()`` (the fingerprint input), this never omits the
+        Unlike ``_core()`` (the fingerprint input), this never omits either
         key, even when empty — every freshly-serialized candidate has the
         current, full field set, so a fresh write and a freshly-built
         ``raw`` dict always agree byte-for-byte (what ``from_mapping``'s
-        tamper check relies on). Only an ALREADY-PERSISTED, pre-PR-C
-        payload is missing the key — that era-tolerance lives in
-        ``from_mapping`` on the READ side, not here on the write side.
+        tamper check relies on). Only an ALREADY-PERSISTED, pre-PR-C /
+        pre-gauge-fix payload is missing either key — that era-tolerance
+        lives in ``from_mapping`` on the READ side, not here on the write
+        side.
         """
         return {
             **self._core(),
             "linearization": dict(self.linearization),
+            "linearization_outcome": self.linearization_outcome,
             "fingerprint": self.fingerprint,
         }
 
@@ -372,15 +414,18 @@ class MeasuredCrossoverCandidate:
     def from_mapping(cls, raw: Any) -> "MeasuredCrossoverCandidate":
         """Strictly reopen one persisted candidate without re-deriving evidence.
 
-        ``linearization`` (#1668 PR-C) is the one OPTIONAL field: every
-        candidate persisted before that PR lacks the key entirely, and
+        ``linearization`` (#1668 PR-C) and ``linearization_outcome`` (gauge
+        fix, 2026-07-24) are the two OPTIONAL fields: every candidate
+        persisted before those changes lacks the keys entirely, and
         ``jasper.web.correction_crossover_v2._reopen_candidate_artifact``
-        can hand this method exactly that pre-PR-C ``candidate.json`` shape
+        can hand this method exactly that older ``candidate.json`` shape
         across a deploy straddle — a candidate published moments before an
         install, reopened moments after it by code that now expects the
-        newer shape. Absent means the same thing an explicit ``{}`` means:
-        "no linearization was fit." Every other field stays strictly
-        required, matching every prior era of this schema.
+        newer shape. Absent ``linearization`` means the same thing an
+        explicit ``{}`` means: "no linearization was fit." Absent
+        ``linearization_outcome`` means the same thing an explicit ``""``
+        means: "not evaluated." Every other field stays strictly required,
+        matching every prior era of this schema.
         """
 
         required = {
@@ -393,7 +438,8 @@ class MeasuredCrossoverCandidate:
             "alignment",
             "fingerprint",
         }
-        if not isinstance(raw, Mapping) or set(raw) - {"linearization"} != required:
+        optional = {"linearization", "linearization_outcome"}
+        if not isinstance(raw, Mapping) or set(raw) - optional != required:
             _refuse(
                 "candidate_malformed",
                 "measured crossover candidate has unknown or missing fields",
@@ -425,6 +471,14 @@ class MeasuredCrossoverCandidate:
             _refuse(
                 "linearization_malformed", "candidate linearization is malformed"
             )
+        # Absent -> "" (era tolerance, see the docstring above); present ->
+        # validated by __post_init__ against _LINEARIZATION_OUTCOME_VALUES.
+        linearization_outcome_raw = raw.get("linearization_outcome", "")
+        if not isinstance(linearization_outcome_raw, str):
+            _refuse(
+                "linearization_outcome_malformed",
+                "candidate linearization_outcome is malformed",
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -437,19 +491,21 @@ class MeasuredCrossoverCandidate:
                     polarity=alignment_raw["polarity"],
                 ),
                 linearization=dict(linearization_raw),
+                linearization_outcome=linearization_outcome_raw,
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(
                 "candidate_malformed", str(exc)
             ) from exc
-        # candidate.to_dict() always carries "linearization" (forward-shape
-        # consistency — see its own docstring); a pre-PR-C `raw` implicitly
-        # claimed {} by never mentioning the field at all, so compare
-        # against that same claim made explicit — otherwise a payload that
-        # predates this field would spuriously fail its own honest round
-        # trip and refuse as tampered.
+        # candidate.to_dict() always carries "linearization" and
+        # "linearization_outcome" (forward-shape consistency — see its own
+        # docstring); an older `raw` implicitly claimed {} / "" by never
+        # mentioning either field, so compare against that same claim made
+        # explicit — otherwise a payload that predates these fields would
+        # spuriously fail its own honest round trip and refuse as tampered.
         raw_for_comparison = dict(raw)
         raw_for_comparison.setdefault("linearization", {})
+        raw_for_comparison.setdefault("linearization_outcome", "")
         if candidate.to_dict() != raw_for_comparison:
             _refuse(
                 "candidate_tampered",

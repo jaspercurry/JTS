@@ -270,6 +270,32 @@ evidence parameter needed threading through `classify_camilla_graph`'s
 other callers. Emission is empty by default; a candidate/snapshot with no
 `linearization` key, or an empty one, stays byte-identical to the
 pre-PR-D graph.
+
+**Gauge fix (2026-07-24): the WHY travels alongside the WHAT, and the
+OBSERVE-layer honesty ladder reaches the wizard.** Before this fix, the
+conductor's `_last_linearization_outcome` (one of "fitted" /
+"trim_rejected" / "ineligible_mic_tier" / "ineligible_repeats" /
+"fit_failed" / "" — see `crossover_v2_flow.py`'s own `__init__` comment)
+lived only as an in-memory attribute logged once per MEASURE attempt —
+linearization could silently not run while every screen looked the same.
+`MeasuredCrossoverCandidate.linearization_outcome` now carries the SAME
+verdict as a new, era-tolerant, fingerprinted field, threaded verbatim
+through `build_baseline_profile_candidate` (top-level `linearization_outcome`,
+sibling to `linearization`) and `_frozen_applied_profile` (same allowlist
+fix `linearization` itself needed for Gap 3c) into
+`setup_status.read_active_speaker_setup_status`'s `protected_profile`
+block, surfaced on `/state.active_speaker_setup.protected_profile.
+linearization_outcome`. Separately, `jasper.web.correction_crossover_v2.
+_candidate_summary` reads each role's `observe_octave_summary` (the
+OBSERVE-layer honesty-ladder field above) straight off the live session's
+rich candidate and threads the 8k/12k/16k values into the wizard's RESULT
+screen (`candidate_review.linearization_octaves`,
+`candidate_review.linearization_outcome`) — the number that says "the top
+octave is 9 dB down and nothing corrected it." That reduction is
+session-scoped only (mirrors `linearization`'s own reduced applied-profile
+copy, which strips the honesty-ladder fields via
+`linearization_filters_by_role` — see that function's docstring); it does
+not thread into the durable applied-profile artifact.
 **Ripple-optimal trim solve (#1667 Phase 3).** The applied trim is no
 longer bare band-average level matching — `solve_branch_trims`'s average
 over the overlap band is systematically biased whenever the two driver
@@ -336,6 +362,20 @@ validity floor could not be established) and logged with a
 `FLATNESS_VERIFY_TOLERANCE_DB` (3.0, PROVISIONAL) is not yet a gate —
 nothing in `_verify_verdict`'s accepted/code logic reads it; a future PR-E
 wires the accept/reject threshold once bench-derived.
+
+**Gauge fix (2026-07-24): flatness now reaches a human, not just the log
+line.** Before this fix, the numbers above existed only in the ephemeral
+per-capture relay payload and the diagnostic log — a household could watch
+a clean "VERIFY PASS" for weeks with zero visibility into how far from flat
+the summed response actually was. `CrossoverV2Conductor.flatness_evidence`
+(mirroring `verify_evidence`'s own shape, but stamped on BOTH pass and fail
+— see its docstring) now persists into the durable v2 state's
+`verify.flatness` via `persist_conductor_state`, and
+`crossover_envelope_v2._flatness_details_lines` renders it into
+`expert_details` on both the verify_fail screen (alongside the
+integration-verify numbers, distinctly labeled "report-only") and the
+"done"/RESULT screen (where no expert numbers rendered at all before this
+fix). Still report-only — no gating-semantics changed.
 
 **One mic position for the whole session: ~1 m on the listening axis,
 tweeter height, facing the speaker.** The placement screen encodes a

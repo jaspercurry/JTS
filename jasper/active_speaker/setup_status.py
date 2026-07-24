@@ -828,6 +828,20 @@ def read_active_speaker_setup_status(
                 else False
             ),
             "recomposition_snapshot_available": protected_snapshot is not None,
+            # Gauge fix (2026-07-24): WHY Layer-1a driver linearization did
+            # or didn't run for the CURRENTLY APPLIED candidate — "" when
+            # absent/never evaluated (a pre-gauge-fix profile, or a plain
+            # trims-only apply). Read straight off the applied artifact
+            # (protected_profile, loaded fresh by
+            # load_applied_baseline_profile_state above) rather than the
+            # freshly-recomputed `profile` above: `profile` is built with no
+            # `measured_candidate` in this function, so it can never carry an
+            # honest outcome — only the durable applied artifact can.
+            "linearization_outcome": (
+                str(protected_profile.get("linearization_outcome") or "")
+                if isinstance(protected_profile, Mapping)
+                else ""
+            ),
         }
 
         if not protected_ready and isinstance(protected_profile, Mapping):

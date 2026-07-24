@@ -734,6 +734,20 @@ def find_stored_calibration(
     lookup skip the vendor round-trip (resilient to the vendor being down, and
     faster). Returns the most recently fetched match. Corrupt records are
     skipped, not fatal.
+
+    ``orientation="unknown"`` (the default — "caller has no preference/does
+    not know") matches ANY stored orientation rather than requiring a
+    literal ``"unknown"``-tagged record. Gauge fix (2026-07-24): before the
+    write side started stamping the REAL inferred orientation
+    (``fetch_vendor_calibration``), an "unknown" hint always matched an
+    "unknown"-tagged stored record, so the phone-relay flow — which never
+    declares an orientation — hit the cache every time. Once the write side
+    started stamping "0deg"/"90deg", a literal-match lookup would have
+    permanently missed that same cache on every subsequent phone-flow
+    lookup (a real regression: silently re-fetching from the vendor on
+    every visit instead of serving the local copy). A caller that DOES know
+    which orientation it wants (a literal "0deg"/"90deg") still gets exact
+    matching, unchanged — this only widens the "don't care" case.
     """
     sh = serial_hash(serial)
     if not sh:
@@ -747,7 +761,7 @@ def find_stored_calibration(
             continue
         if data.get("serial_hash") != sh:
             continue
-        if str(data.get("orientation") or "unknown") != orientation:
+        if orientation != "unknown" and str(data.get("orientation") or "unknown") != orientation:
             continue
         try:
             rec = CalibrationRecord.from_dict(data)
@@ -845,6 +859,18 @@ def fetch_vendor_calibration(
                 orientation=orientation,
                 opener=opener,
             )
+            # Gauge fix (2026-07-24): stamp the orientation the vendor
+            # ACTUALLY served, not the pre-fetch hint. Every miniDSP
+            # candidate URL (_minidsp_candidate_urls, both UMIK-1 and
+            # UMIK-2) ends in exactly one of two suffixes —
+            # "<serial>.txt" (0-degree) or "<serial>_90deg.txt"
+            # (90-degree) — so the winning `source` URL is ground truth.
+            # Before this fix, every miniDSP vendor-fetch record was
+            # stamped with the caller's hint verbatim; the phone-relay
+            # serial-fetch flow (the primary onboarding path) never sends
+            # an orientation at all, so its records were always "unknown"
+            # regardless of which file was actually served.
+            orientation = "90deg" if source.endswith("_90deg.txt") else "0deg"
         else:
             raise ValueError(f"no fetcher for provider: {provider}")
         record = store_calibration(

@@ -1003,6 +1003,112 @@ def test_verify_flatness_tracking_absent_relays_as_explicit_none():
     assert verdict["flatness_tracking"] is None
 
 
+# --- gauge fix (2026-07-24): conductor.flatness_evidence property --------------
+
+
+def test_flatness_evidence_set_on_pass_not_just_fail():
+    """Unlike verify_evidence (persisted only for a non-pass outcome, by
+    product design), flatness_evidence must be available on a PASS too —
+    the reported bug was a household watching a clean "VERIFY PASS" for
+    weeks with zero visibility into how far from flat the summed response
+    actually was."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    flatness = {
+        "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
+    }
+
+    def _with_flatness(program, **kwargs):
+        return replace(_verify_analysis(program, **kwargs), flatness_tracking=flatness)
+
+    fakes.verify = lambda program: _with_flatness(program)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.verify_outcome == "pass"
+    evidence = c.flatness_evidence
+    assert evidence is not None
+    assert evidence["max_db"] == 13.3
+    assert evidence["rms_db"] == 4.2
+    assert evidence["band_lo_hz"] == 150.0
+    assert evidence["band_hi_hz"] == 16000.0
+    assert evidence["tolerance_db"] == 3.0
+
+
+def test_flatness_evidence_also_set_on_fail():
+    """Symmetric with the pass case above — flatness is a SIBLING claim
+    that never depends on the integration-verify outcome (design doc
+    "Verification splits into two named claims")."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    flatness = {
+        "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
+    }
+
+    def _with_flatness(program, **kwargs):
+        return replace(_verify_analysis(program, **kwargs), flatness_tracking=flatness)
+
+    fakes.verify = lambda program: _with_flatness(program, max_db=2.4)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is False
+    assert c.verify_outcome == "fail"
+    evidence = c.flatness_evidence
+    assert evidence is not None
+    assert evidence["max_db"] == 13.3
+
+
+def test_flatness_evidence_none_when_flatness_tracking_absent():
+    """No usable validity floor this capture -> flatness_tracking defaults
+    to None on ProgramAnalysis -> flatness_evidence stays None too (no
+    phantom numbers)."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = _verify_analysis  # flatness_tracking defaults to None
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert c.flatness_evidence is None
+
+
+def test_flatness_evidence_reset_on_early_return():
+    """Mirrors verify_evidence's own reset-on-early-return discipline
+    (test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return):
+    a verdict that never reaches the tracking comparison resets both
+    evidence stashes to None, so no stale flatness number leaks into a
+    later attempt's disclosure."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    flatness = {
+        "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
+    }
+    fakes.verify = lambda program: replace(
+        _verify_analysis(program, max_db=2.4), flatness_tracking=flatness,
+    )
+    _run_phase(c, 3, 3)
+    assert c.flatness_evidence is not None
+
+    # Early-return (gate-comparability inconclusive) never reaches the
+    # tracking numbers.
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
+    _run_phase(c, 3, 4)
+    assert c.verify_outcome == "inconclusive"
+    assert c.flatness_evidence is None
+
+
 # --- measurement-honesty gate G3: verify inter-attempt pilot consistency --------
 
 
@@ -2870,6 +2976,7 @@ def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch)
     assert verdict["accepted"] is True
     assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
     assert c.candidate.linearization == {}
+    assert c.candidate.linearization_outcome == "fit_failed"
     assert "event=correction.crossover_v2_linearization_fit_failed" in caplog.text
     assert "reason=ValueError" in caplog.text
     assert "linearization=fit_failed" in caplog.text
@@ -2912,6 +3019,10 @@ def test_measure_diag_linearization_field_fitted(caplog):
     assert verdict["accepted"] is True
     assert "event=correction.crossover_v2_measure_diag" in caplog.text
     assert "linearization=fitted" in caplog.text
+    # Gauge fix (2026-07-24): the SAME outcome is now stamped onto the
+    # persisted candidate — this is the single writer's value threading all
+    # the way to the artifact, not just the log line.
+    assert c.candidate.linearization_outcome == "fitted"
 
 
 def test_measure_diag_linearization_field_ineligible_mic_tier(caplog):
@@ -2924,6 +3035,7 @@ def test_measure_diag_linearization_field_ineligible_mic_tier(caplog):
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert "linearization=ineligible_mic_tier" in caplog.text
+    assert c.candidate.linearization_outcome == "ineligible_mic_tier"
 
 
 def test_measure_diag_linearization_field_ineligible_repeats(caplog):
@@ -2938,6 +3050,7 @@ def test_measure_diag_linearization_field_ineligible_repeats(caplog):
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert "linearization=ineligible_repeats" in caplog.text
+    assert c.candidate.linearization_outcome == "ineligible_repeats"
 
 
 def test_measure_diag_linearization_field_trim_rejected(caplog):
@@ -2953,6 +3066,7 @@ def test_measure_diag_linearization_field_trim_rejected(caplog):
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert "linearization=trim_rejected" in caplog.text
+    assert c.candidate.linearization_outcome == "trim_rejected"
 
 
 def test_measure_diag_linearization_field_empty_when_verdict_rejected_before_candidate(

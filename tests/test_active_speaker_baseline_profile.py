@@ -4160,6 +4160,72 @@ def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
     assert payload["candidate_fingerprint"] is not None
 
 
+def test_build_baseline_profile_candidate_threads_linearization_outcome(
+    tmp_path: Path,
+) -> None:
+    """Gauge fix (2026-07-24): the single writer's linearization_outcome —
+    read straight off ``measured_candidate``, never re-derived — lands on
+    the persisted payload's top level, matching "linearization"'s own
+    top-level convenience-copy placement."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = MeasuredCrossoverCandidate(
+        program_id="prog-v2-1",
+        analysis={"drift_ppm": 3.0, "sweeps": ["w", "t", "w"]},
+        source_preset=preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        linearization_outcome="ineligible_mic_tier",
+    )
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+
+    assert payload["linearization_outcome"] == "ineligible_mic_tier"
+
+
+def test_build_baseline_profile_candidate_linearization_outcome_defaults_empty(
+    tmp_path: Path,
+) -> None:
+    """A measured_candidate that never set linearization_outcome (the
+    field's own dataclass default) threads through as "" — same shape
+    every pre-gauge-fix / plain trims-only candidate produces."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    candidate = _v2_candidate(preset)
+    assert candidate.linearization_outcome == ""
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=False,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=candidate,
+    )
+
+    assert payload["linearization_outcome"] == ""
+
+
 def test_build_baseline_profile_candidate_v2_candidate_requires_automatic(
     tmp_path: Path,
 ) -> None:
@@ -4786,6 +4852,70 @@ def test_frozen_applied_profile_defaults_linearization_when_absent():
     frozen = _frozen_applied_profile(saved)
     assert frozen is not None
     assert frozen["linearization"] == {}
+
+
+def test_frozen_applied_profile_carries_linearization_outcome_top_level():
+    """Gauge fix (2026-07-24): mirrors
+    test_frozen_applied_profile_carries_linearization_top_level for the new
+    field — this is a field-by-field allowlist, so a candidate saved OVER
+    an applied, linearized profile must not silently lose
+    linearization_outcome from the retained applied_recomposition_profile
+    sidecar (the same Gap 3c bug class "linearization" itself was fixed
+    for)."""
+    saved = {
+        "status": "applied",
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_baseline_profile_candidate",
+        "baseline_id": "baseline-x",
+        "applied_at": "2026-07-23T00:00:00Z",
+        "source": {},
+        "config": {},
+        "corrections": {"woofer": {"gain_db": 0.0}},
+        "corrections_source": {},
+        "gain_provenance": {},
+        "corrections_provenance": {},
+        "level_match": {},
+        "tuning_owner": "automatic",
+        "provisional": False,
+        "linearization": {"woofer": [{"biquad_type": "Peaking"}]},
+        "linearization_outcome": "fitted",
+        "recomposition_snapshot": {
+            "schema_version": 1,
+            "linearization": {"woofer": [{"biquad_type": "Peaking"}]},
+        },
+    }
+    from jasper.active_speaker.baseline_profile import _frozen_applied_profile
+
+    frozen = _frozen_applied_profile(saved)
+    assert frozen is not None
+    assert frozen["linearization_outcome"] == "fitted"
+
+
+def test_frozen_applied_profile_defaults_linearization_outcome_when_absent():
+    """Era-tolerant: a pre-gauge-fix applied dict with no
+    "linearization_outcome" key at all must not raise, defaulting to ""."""
+    from jasper.active_speaker.baseline_profile import _frozen_applied_profile
+
+    saved = {
+        "status": "applied",
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_baseline_profile_candidate",
+        "baseline_id": "baseline-x",
+        "applied_at": "2026-07-23T00:00:00Z",
+        "source": {},
+        "config": {},
+        "corrections": {},
+        "corrections_source": {},
+        "gain_provenance": {},
+        "corrections_provenance": {},
+        "level_match": {},
+        "tuning_owner": "automatic",
+        "provisional": False,
+        "recomposition_snapshot": {"schema_version": 1},
+    }
+    frozen = _frozen_applied_profile(saved)
+    assert frozen is not None
+    assert frozen["linearization_outcome"] == ""
 
 
 async def _linearization_restore_fixture(monkeypatch, tmp_path: Path):
