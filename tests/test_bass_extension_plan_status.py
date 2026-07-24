@@ -31,6 +31,10 @@ def test_bass_extension_plan_pins_merged_waves_and_remaining_gate() -> None:
     # cannot silently claim the runner is fully wired without also updating
     # this assertion.
     assert "live pre/post-limiter tap executor" in text
+    # Truth pin (2026-07-24): the rev-9 hardware-free ladder slice is now on
+    # main — pin its landed status so a future edit cannot silently regress
+    # the plan back to describing it as pending review + merge.
+    assert "jasper/bass_extension/ladder.py" in text
     assert "no real\n> target-specific limiter result is established yet" in text
     assert "No implementation is authorized by revision 6" not in text
     assert "no frozen contract maps ladder/sustain" not in text
@@ -54,7 +58,6 @@ def test_readme_does_not_claim_bass_extension_has_no_code() -> None:
     assert "Waves 1–3 are merged" in entry.group()
     assert "No code exists yet" not in entry.group()
     for unshipped_surface in (
-        "jasper/bass_extension/ladder.py",
         "jasper/web/bassext_backend.py",
         "jasper/bass_extension/scheduler.py",
         "jasper/bass_extension/runtime.py",
