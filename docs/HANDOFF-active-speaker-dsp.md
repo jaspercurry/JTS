@@ -84,7 +84,8 @@ Two web surfaces, two different jobs, run in sequence:
    canonical for this flow's file map and invariants). v2 replaced the
    legacy near-field/null-depth/gated-summed triad described at length
    in the appendix below: **that legacy flow is opt-out only**
-   (`JASPER_CROSSOVER_FLOW=legacy`, exact literal), is deprecated, and
+   (`JASPER_CROSSOVER_FLOW=legacy`, case-insensitive/trimmed; any other
+   value fails safe to v2), is deprecated, and
    is scheduled for deletion (W5b). Do not treat the appendix's
    "Consumer Wizard Triad," "Delay, Phase, and Null Verification," or
    the Wave 1-3 commissioning-receipt narrative as current — they
@@ -95,7 +96,7 @@ Two web surfaces, two different jobs, run in sequence:
 
 ### File map (entry points only)
 
-`jasper/active_speaker/` is ~76 modules. Per-file responsibility
+`jasper/active_speaker/` is 75 modules. Per-file responsibility
 tables for the measurement flow live in the canonical docs linked
 above; this is only the entry points:
 
@@ -228,7 +229,10 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 
 ## Appendix — investigation history
 
-> **Status: historical.** Everything below this line is this doc's
+> **Status: historical.** (Note: the appendix preserves the ORIGINAL
+> doc verbatim, including its own now-superseded “Current Operational
+> Truth” heading and mid-appendix `Last verified:` line — do not read
+> those as current.) Everything below this line is this doc's
 > original chronological narrative (2026-05-25 through 2026-07-16),
 > preserved verbatim for primary-source archaeology. It predates the
 > five-layer tuning model, the v2 crossover conductor flow, and the
