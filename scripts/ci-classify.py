@@ -57,14 +57,37 @@ DOCS_PROSE_FILES = frozenset((
     ".github/PULL_REQUEST_TEMPLATE.md",
     "AGENTS.md",
     "BRINGUP.md",
+    "CHANGELOG.md",
     "CLAUDE.md",
+    "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
+    "LICENSE-third-party.md",
     "PLAN.md",
     "PRIVACY.md",
     "QUICKSTART.md",
     "README.md",
     "SECURITY.md",
 ))
+# Documents under docs/ that are NOT inert prose: the product reads them at
+# runtime, on the speaker.  install.sh rsyncs the whole `docs/` tree into
+# /opt/jasper (deploy/lib/install/python-runtime.sh, the rsync whose excludes
+# cover .venv/__pycache__/.git/tests/deploy/build/*.egg-info but not docs), and
+# jasper/calibration_agent/tools.py resolves DEFAULT_CORPUS_CANDIDATES to
+# `<parents[2]>/docs/calibration-agent` — i.e. /opt/jasper/docs/calibration-agent
+# on a deployed speaker — then sweeps it with `corpus.rglob("*.md")` and feeds
+# the hits into the advisor packet that jasper/web/correction_setup.py serves
+# from the live /correction/ wizard.
+#
+# Editing that subtree therefore changes product behaviour and LLM prompt
+# input, which is precisely what this lane's existence claims a change cannot
+# do.  It takes the full farm instead.  Note this is a POLICY-COHERENCE fix,
+# not a safety regression being closed: `full` has no corpus-content contract
+# either (only 5 of the 12 tracked corpus files are opened by any test), so
+# the real gap is missing corpus coverage and is tracked separately.
+#
+# "Ships to the speaker" is deliberately NOT the discriminator — all of docs/
+# ships. "Read by the product at runtime" is.
+DOCS_PRODUCT_DATA_PREFIXES = ("docs/calibration-agent/",)
 # The doc routing map is data for an informational, non-blocking PR comment
 # (see its own header), not a safety policy — so it rides the docs lane.  The
 # lane runs `docs-impact.py --validate-only` plus tests/test_docs_impact.py,
@@ -102,24 +125,53 @@ DOCS_ROUTING_MAP = "docs/doc-map.toml"
 #     that enumerates `*.md`, and this is its only test-side caller, so
 #     registering it closes this class completely.
 #
-# Every hand-registered entry keeps a note saying why discovery misses it, and
-# test_hand_registered_doc_readers_are_still_invisible_to_discovery pins that
-# they really are invisible, so a refactor cannot leave these notes stale.
-#
-# tests/test_run_wake_training_phase0.py is registered for completeness but its
-# read is INCIDENTAL: scripts/_run_wake_training_phase0.py records
-# `artifacts["readme"] = "README.md"` as a bare relative name and hashes it
-# via `Path(value)`, which resolves against CWD, so under pytest it hashes the
-# repo README rather than the run's own.  The test never asserts on
-# artifact_hashes, so a README edit cannot fail it; if that path bug is fixed
-# the read disappears and this entry can go.
-#
 # Deliberately NOT registered despite opening a .md during the audit:
 # tests/test_shell_awk_environ_convention.py shebang-probes every file under
 # `deploy` and `scripts` only (SCAN_DIRS), so the one document it touched
 # (scripts/ring-proto/README.md) is not a docs-lane subject -- no change this
 # lane can carry is able to reach it.  That is a structural argument, not a
 # judgement about whether its assertions happen to be strict today.
+#
+# Every hand-registered entry below carries its reason as DATA, so
+# tests/test_ci_classifier.py can assert SET EQUALITY against
+# `DOCS_TEST_FILES - discovered` rather than re-listing the same fact.  Without
+# that, a future undiscoverable entry could be added with no note at all and
+# every guard would still pass.
+DOCS_HAND_REGISTERED_READERS = {
+    # Transitive reads through imported production code: these import
+    # jasper.calibration_agent, whose tools.py resolves
+    # DEFAULT_CORPUS_CANDIDATES to `<parents[2]>/docs/calibration-agent` and
+    # sweeps it with `corpus.rglob("*.md")`.  Several write a FAKE corpus into
+    # tmp_path, which makes them look isolated when reading the source.
+    "tests/test_calibration_agent_actions.py": "corpus rglob via production code",
+    "tests/test_calibration_agent_response.py": "corpus rglob via production code",
+    "tests/test_calibration_agent_sound_actions.py": (
+        "corpus rglob via production code"
+    ),
+    # Generic directory sweeps: no statically visible pattern names a document.
+    # test_env_vars_codified.py walks `path.rglob("*")` over _SURFACES, which
+    # contains no `docs` entry -- the only document it reaches is
+    # scripts/ring-proto/README.md, structurally the same evidence as the
+    # EXCLUDED test_shell_awk_environ_convention.py above.  Kept because
+    # over-registering is safe; the honest reason is the structural one.
+    "tests/test_env_vars_codified.py": "rglob('*') over non-docs surfaces",
+    # Child-process reads, which a Python audit hook can never observe.
+    # doc-freshness.sh is the ONLY script under scripts/, deploy/ or .github/
+    # that enumerates `*.md`, and this is its only test-side invoker, so
+    # registering it closes this class completely.
+    "tests/test_script_help_excludes_spdx.py": (
+        "shells out to doc-freshness.sh, which enumerates every doc"
+    ),
+    # Incidental, not a contract: scripts/_run_wake_training_phase0.py records
+    # `artifacts["readme"] = "README.md"` as a bare relative name and hashes it
+    # via `Path(value)`, which resolves against CWD -- so under pytest it
+    # hashes the repo README rather than the run's own.  The test never asserts
+    # on artifact_hashes, so a README edit cannot fail it; when that path bug
+    # is fixed the read disappears and this entry can go.
+    "tests/test_run_wake_training_phase0.py": (
+        "CWD-relative README hashed by an importlib-loaded script"
+    ),
+}
 DOCS_TEST_FILES = (
     "tests/test_agents_md_toc.py",
     "tests/test_audio_slice_membership_docs.py",
@@ -149,12 +201,27 @@ DOCS_TEST_FILES = (
     "tests/test_waveform_fusion_experiment.py",
     "tests/test_web_correction_setup.py",
 )
-DOCS_PYTEST_TARGETS = DOCS_TEST_FILES
+# The bundle RUNS the classifier's own test, so every docs PR re-validates the
+# registration guard.  But a docs PR must not be able to EDIT that guard while
+# only the edited guard runs -- that is a two-PR path to an unguarded bundle.
+# So the classifier's test is a bundle member, not an allowed companion: change
+# it and the diff takes the full farm.  (scripts/ci-classify.py and
+# .github/** already fall through to `full` because they are not docs paths.)
+DOCS_POLICY_TEST_FILES = frozenset(("tests/test_ci_classifier.py",))
+DOCS_COMPANION_TEST_FILES = frozenset(DOCS_TEST_FILES) - DOCS_POLICY_TEST_FILES
+
+
+def is_docs_product_data(path: str) -> bool:
+    """True for a doc the product reads at runtime on the speaker."""
+
+    return path.startswith(DOCS_PRODUCT_DATA_PREFIXES)
 
 
 def is_docs_subject(path: str) -> bool:
     """True for a document whose presence can select the ``docs`` lane."""
 
+    if is_docs_product_data(path):
+        return False
     if path in DOCS_PROSE_FILES or path == DOCS_ROUTING_MAP:
         return True
     return path.startswith("docs/") and path.endswith(".md")
@@ -163,7 +230,7 @@ def is_docs_subject(path: str) -> bool:
 def is_docs_lane_path(path: str) -> bool:
     """True for anything the ``docs`` lane is allowed to carry."""
 
-    return is_docs_subject(path) or path in DOCS_TEST_FILES
+    return is_docs_subject(path) or path in DOCS_COMPANION_TEST_FILES
 
 
 class ChangedFileError(RuntimeError):
@@ -284,8 +351,8 @@ def classify(event_name: str, changes: Sequence[Change]) -> Decision:
             return Decision(
                 lane="full",
                 reason=(
-                    f"change status {change.status!r} is not safe for the "
-                    "landing-page lane"
+                    f"change status {change.status!r} is not safe for any "
+                    "narrow lane"
                 ),
                 changes=frozen_changes,
             )
@@ -428,7 +495,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("\n".join(LANDING_PYTEST_TARGETS))
         return 0
     if args.docs_pytest_targets:
-        print("\n".join(DOCS_PYTEST_TARGETS))
+        print("\n".join(DOCS_TEST_FILES))
         return 0
 
     decision = decision_from_git(args.event, args.base, args.head)

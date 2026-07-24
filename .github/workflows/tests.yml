@@ -80,22 +80,36 @@ jobs:
           .venv/bin/pytest -q --tb=short "${landing_tests[@]}"
 
   docs:
-    # Documentation-only changes: prose under docs/, the root operational
-    # docs, the PR template, and the doc routing map. Roughly a fifth of
-    # merged PRs are this shape, and they were paying the full ~8m24s farm
-    # for a change that cannot affect a running speaker.
+    name: docs
+    # Documentation-only changes: inert prose under docs/, the root
+    # operational docs, the PR template, and the doc routing map. Roughly a
+    # fifth of merged PRs are this shape, and they were paying the full
+    # ~8m24s farm for it.
+    #
+    # "Inert" is load-bearing and is enforced by the classifier, not assumed:
+    # install rsyncs the whole docs/ tree to /opt/jasper, and
+    # docs/calibration-agent/** is read there at runtime by
+    # jasper/calibration_agent/tools.py and injected into an LLM prompt on
+    # the live /correction/ wizard. That subtree is product data, so
+    # DOCS_PRODUCT_DATA_PREFIXES sends it to the full farm.
     #
     # The bundle is the registered set of tests that READ documentation --
     # the "pin promises with tests" contracts (AGENTS.md), which assert that
     # a doc still says what the code does. Those are exactly the tests a
-    # prose edit can break, and they are pure text assertions: 361 tests in
-    # ~27s. tests/test_ci_classifier.py is itself in the bundle, so every
-    # docs PR re-validates the lane's own registration guard.
+    # prose edit can break, and they are pure text assertions. Counts are
+    # deliberately not quoted here; the bundle is expected to grow, and
+    # `scripts/ci-classify.py --docs-pytest-targets` is the one source of
+    # truth for its membership.
     #
-    # This lane is a STRICTER gate than the status quo, not a weaker one:
-    # docs-linkcheck runs here as required work, whereas docs-links.yml is
-    # an advisory non-required workflow. A docs PR that breaks an internal
-    # link now blocks instead of merely earning a comment.
+    # The bundle RUNS tests/test_ci_classifier.py, so every docs PR
+    # re-validates the lane's own registration guard -- but that file is a
+    # bundle member, NOT an allowed companion, so a docs PR cannot edit the
+    # guard while only the edited guard runs.
+    #
+    # docs-linkcheck runs here as REQUIRED work. docs-links.yml already goes
+    # red on a broken link (it exits non-zero), but it is not a required
+    # check -- branch protection requires only `ci` -- so before this lane a
+    # docs PR could merge over a red link check. Now it cannot.
     needs: classify
     if: ${{ needs.classify.outputs.lane == 'docs' }}
     runs-on: ubuntu-latest
@@ -106,8 +120,9 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           # docs-linkcheck diffs base...head to find changed Markdown, and
-          # tests/test_docs_handoff_freshness.py falls back to `git log` for
-          # per-file dates when a doc has no `Last verified:` footer.
+          # tests/test_script_help_excludes_spdx.py shells out to
+          # `doc-freshness.sh 90 --all`, which uses `git log` for per-file
+          # dates when a doc has no `Last verified:` footer.
           fetch-depth: 0
 
       - name: System deps for sounddevice (portaudio)

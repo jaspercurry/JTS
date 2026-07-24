@@ -120,8 +120,12 @@ Two operational notes:
     the registered tests that read documentation. Runs the documentation
     contract bundle plus `docs-impact --validate-only`, the changed-Markdown
     link check, and `ruff`. Note this is a *stricter* gate than the full farm
-    for a prose change: `docs-links.yml` is advisory and non-required, so a
-    broken internal link only blocks on this lane.
+    for a prose change: `docs-links.yml` already fails on a broken internal
+    link, but it is not a required check (branch protection requires only
+    `ci`), so before this lane a docs PR could merge over a red link check.
+    Excluded from this lane: `docs/calibration-agent/**`, which install
+    rsyncs to `/opt/jasper` and the product reads at runtime — that is
+    product data, not prose, so it takes the full farm.
 
   Everything else — including renames, deletions, mixed/unknown files,
   dependencies, CI infrastructure, comparison failures, and every `main`

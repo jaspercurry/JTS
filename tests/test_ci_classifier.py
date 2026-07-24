@@ -167,7 +167,34 @@ def _changes(*paths: str, status: str = "M"):
         (
             "docs-all-registered-companions",
             "pull_request",
-            _changes("README.md", *ci_classifier.DOCS_TEST_FILES),
+            _changes(
+                "README.md",
+                *sorted(ci_classifier.DOCS_COMPANION_TEST_FILES),
+            ),
+            "docs",
+        ),
+        (
+            "docs-plus-the-policy-test-is-not-a-companion",
+            "pull_request",
+            _changes("README.md", "tests/test_ci_classifier.py"),
+            "full",
+        ),
+        (
+            "docs-plus-runtime-corpus-is-product-data",
+            "pull_request",
+            _changes("README.md", "docs/calibration-agent/README.md"),
+            "full",
+        ),
+        (
+            "runtime-corpus-alone-is-not-a-subject",
+            "pull_request",
+            _changes("docs/calibration-agent/concepts/spatial-averaging.md"),
+            "full",
+        ),
+        (
+            "docs-newly-admitted-root-prose",
+            "pull_request",
+            _changes("CHANGELOG.md", "CODE_OF_CONDUCT.md"),
             "docs",
         ),
         # --- docs lane must fail closed ---
@@ -459,7 +486,7 @@ def test_docs_bundle_registers_every_discoverable_doc_reading_test() -> None:
     """A new test that names a doc path must join the docs bundle.
 
     Deliberately a SUBSET assertion, not equality: over-registering is safe
-    (a few extra seconds of a 27s bundle) while under-registering would let a
+    (a few extra seconds of bundle runtime) while under-registering would let a
     prose edit merge green past a contract it breaks. Readers that reach a
     document through a non-literal pattern are invisible here and are
     registered by hand from a runtime audit -- see DOCS_TEST_FILES.
@@ -486,36 +513,84 @@ def test_docs_bundle_is_sorted_and_exists_on_disk() -> None:
         assert (ROOT / path).is_file(), path
     # The guard lives in this file, so the lane must run this file.
     assert "tests/test_ci_classifier.py" in ci_classifier.DOCS_TEST_FILES
-    assert ci_classifier.DOCS_PYTEST_TARGETS == ci_classifier.DOCS_TEST_FILES
+    assert not hasattr(ci_classifier, "DOCS_PYTEST_TARGETS"), (
+        "redundant alias reintroduced; DOCS_TEST_FILES is the one registry"
+    )
 
 
-def test_hand_registered_doc_readers_are_still_invisible_to_discovery() -> None:
-    """Pin the reason each hand-registered entry is not auto-discovered.
+def test_every_undiscoverable_bundle_entry_carries_a_recorded_reason() -> None:
+    """The hand-registered set must be exactly what discovery cannot see.
 
-    These were found by a runtime audit hook, not by the guard, in three
-    classes: three read docs/calibration-agent/** transitively through
-    jasper.calibration_agent's `corpus.rglob("*.md")`; two reach a document
-    through a generic sweep or a CWD-relative path; and one shells out to
-    `doc-freshness.sh`, whose child-process opens no audit hook can see. If a
-    refactor makes any of them statically visible, the corresponding note in
-    DOCS_TEST_FILES is now misleading -- delete the note and this entry
-    together.
+    Set EQUALITY, in both directions, against DOCS_HAND_REGISTERED_READERS:
+
+    - `registered - discovered` must not exceed the documented set, so a
+      future undiscoverable entry cannot be added with no reason at all.
+    - the documented set must not exceed `registered - discovered`, so a
+      refactor that makes an entry statically visible fails here instead of
+      leaving a misleading note behind.
+
+    That second direction is what the previous subset-only assertion left
+    open, and it is the one that rots silently.
     """
 
     discovered = set(_direct_doc_test_files())
-    hand_registered = {
-        "tests/test_calibration_agent_actions.py",
-        "tests/test_calibration_agent_response.py",
-        "tests/test_calibration_agent_sound_actions.py",
-        "tests/test_env_vars_codified.py",
-        "tests/test_run_wake_training_phase0.py",
-        "tests/test_script_help_excludes_spdx.py",
-    }
+    registered = set(ci_classifier.DOCS_TEST_FILES)
+    documented = set(ci_classifier.DOCS_HAND_REGISTERED_READERS)
 
-    assert hand_registered <= set(ci_classifier.DOCS_TEST_FILES)
-    assert not (hand_registered & discovered), sorted(
-        hand_registered & discovered
+    assert registered - discovered == documented, (
+        "DOCS_HAND_REGISTERED_READERS must exactly describe the bundle entries "
+        "static discovery cannot find.\n"
+        f"  undocumented: {sorted((registered - discovered) - documented)}\n"
+        f"  now discoverable (delete the note): "
+        f"{sorted(documented - (registered - discovered))}"
     )
+    assert all(
+        reason.strip() for reason in
+        ci_classifier.DOCS_HAND_REGISTERED_READERS.values()
+    )
+
+
+def test_runtime_product_data_under_docs_is_not_a_docs_subject() -> None:
+    """docs/calibration-agent/** is product data, not inert prose.
+
+    install rsyncs the whole docs/ tree to /opt/jasper, and
+    jasper/calibration_agent/tools.py sweeps
+    `<parents[2]>/docs/calibration-agent` with `rglob("*.md")` at runtime,
+    feeding the hits into the advisor packet the live /correction/ wizard
+    serves. Editing it changes product behaviour and LLM prompt input, so it
+    cannot ride a lane whose premise is that the change is inert.
+    """
+
+    assert not ci_classifier.is_docs_subject("docs/calibration-agent/README.md")
+    assert not ci_classifier.is_docs_subject(
+        "docs/calibration-agent/concepts/spatial-averaging.md"
+    )
+    assert not ci_classifier.is_docs_lane_path(
+        "docs/calibration-agent/README.md"
+    )
+    # The sibling prose tree is unaffected.
+    assert ci_classifier.is_docs_subject("docs/HANDOFF-aec.md")
+
+    corpus = ROOT / "docs" / "calibration-agent"
+    assert corpus.is_dir(), "corpus moved; update DOCS_PRODUCT_DATA_PREFIXES"
+    assert list(corpus.rglob("*.md")), "corpus is empty; is the prefix stale?"
+
+
+def test_the_registration_guard_is_a_bundle_member_not_a_companion() -> None:
+    """A docs PR must not be able to edit the guard that polices it.
+
+    The bundle RUNS tests/test_ci_classifier.py so every docs PR re-validates
+    its own registration. But allowing it as a *companion* would let a docs
+    PR weaken the guard with only the weakened guard running -- a two-PR path
+    to an unguarded bundle.
+    """
+
+    assert "tests/test_ci_classifier.py" in ci_classifier.DOCS_TEST_FILES
+    assert (
+        "tests/test_ci_classifier.py"
+        not in ci_classifier.DOCS_COMPANION_TEST_FILES
+    )
+    assert not ci_classifier.is_docs_lane_path("tests/test_ci_classifier.py")
 
 
 def test_docs_guard_finds_glob_and_literal_doc_reads(tmp_path: Path) -> None:
@@ -648,21 +723,44 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
 def test_every_workflow_cancels_superseded_pull_request_runs() -> None:
     """A superseded run must not keep occupying a finite runner slot.
 
-    GitHub Actions caps concurrent jobs per account (20 on the Free plan),
-    so an abandoned run competes with the required `tests` workflow. `main`
-    pushes stay uncancellable so post-merge coverage always completes.
+    GitHub Actions caps concurrent jobs per account, so an abandoned run
+    competes with the required `tests` workflow. Asserted as an INVARIANT
+    rather than an exact expression: a future scheduled or `main`-only
+    workflow should not be forced into a PR-shaped literal that is
+    meaningless for it (and would make two scheduled runs queue instead of
+    overlap). What matters is that the group is per-workflow-per-ref and that
+    cancellation is scoped to pull requests, leaving `main` pushes to run to
+    completion so post-merge coverage always finishes.
     """
 
-    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+    workflows = sorted(
+        path
+        for suffix in ("*.yml", "*.yaml")
+        for path in (ROOT / ".github" / "workflows").glob(suffix)
+    )
+    assert workflows
+
+    for path in workflows:
         parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
         concurrency = parsed.get("concurrency")
         assert concurrency, f"{path.name} has no concurrency group"
-        assert concurrency["group"] == "${{ github.workflow }}-${{ github.ref }}", (
-            path.name
-        )
-        assert concurrency["cancel-in-progress"] == (
-            "${{ github.event_name == 'pull_request' }}"
-        ), path.name
+
+        group = concurrency["group"]
+        assert "github.workflow" in group, path.name
+        assert "github.ref" in group, path.name
+
+        cancel = str(concurrency.get("cancel-in-progress", ""))
+        triggers = parsed.get("on", parsed.get(True)) or {}
+        if "pull_request" in triggers:
+            # Must cancel superseded PR runs, but must NOT cancel `main`.
+            assert "pull_request" in cancel, (
+                f"{path.name} does not scope cancellation to pull requests"
+            )
+            assert cancel not in ("True", "true"), (
+                f"{path.name} cancels unconditionally, which would also "
+                "cancel main pushes"
+            )
+
 
 
 def _aggregate_script() -> str:

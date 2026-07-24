@@ -3225,7 +3225,12 @@ branch sat while `main` advanced 23 commits and silently went un-mergeable.
 5. **What the CI gate covers — and does NOT.** The classifier and
    fail-closed `ci` aggregate always report. A landing-only PR runs the
    complete registered landing contract bundle plus cheap syntax,
-   provenance, and doc-map validation. Every other PR keeps the full farm:
+   provenance, and doc-map validation. A documentation-only PR runs the
+   registered documentation-contract bundle plus `docs-impact
+   --validate-only`, the changed-Markdown link check, and `ruff` — see the
+   two-lane description above for what "documentation-only" excludes
+   (notably `docs/calibration-agent/**`, which the product reads at
+   runtime). Every other PR keeps the full farm:
    the hardware-free Python merge lane (`scripts/test-merge`, with
    voice_eval excluded because it is the paid LLM suite) on Python 3.11,
    3.12, and 3.13; `ruff` and lenient `mypy` in the 3.13 pytest leg; the
