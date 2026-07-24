@@ -56,6 +56,8 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
+    FLATNESS_VERIFY_HI_HZ,
+    FLATNESS_VERIFY_TOLERANCE_DB,
     GAIN_MAX_DIGITAL_PEAK_DBFS,
     GCC_SNAP_RADIUS_PERIODS,
     GCC_UPSAMPLE,
@@ -65,6 +67,7 @@ from jasper.audio_measurement.program_analysis import (
     LINEARITY_TOLERANCE_DB,
     PILOT_MIN_SNR_DB,
     AlignmentEstimate,
+    DriverResponse,
     MeasurementGeometry,
     MeasurementPriors,
     _aligned_branch_tf,
@@ -72,6 +75,7 @@ from jasper.audio_measurement.program_analysis import (
     _build_candidate,
     _complex_tf,
     _deconvolve_window,
+    _flatness_tracking,
     _gate_floor_hz,
     _gcc_local_peak_snap,
     _gcc_phat,
@@ -1455,6 +1459,96 @@ def test_verify_summed_response_and_ripple():
     # A flat synthetic IR sums flat ⇒ small ripple through the crossover.
     assert res.summed_ripple_db is not None
     assert res.summed_ripple_db < 3.0
+
+
+# --------------------------------------------------------------------------- #
+# flatness-verify (#1668 PR-D) -- a SIBLING claim to integration-verify,
+# computed independently of fc_hz/priors.predicted_sum.
+# --------------------------------------------------------------------------- #
+
+
+def test_flatness_tracking_populated_even_without_predicted_sum():
+    """The defining independence property: THIS test's own predecessor
+    (test_verify_summed_response_and_ripple, same fixture) supplies NO
+    predicted_sum, so verify_tracking stays None -- flatness_tracking must
+    still be populated, because it depends on summed_response alone."""
+    prog = build_verify_program(FC_HZ, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    ir = _band_impulse(200, 150.0, 20000.0, 1.0, n=8192)
+    mono = fftconvolve(pcm[:, 0], ir)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(5).normal(0.0, 1e-4, cap.size)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert res.verify_tracking is None
+    assert res.flatness_tracking is not None
+    assert res.flatness_tracking["band_hz"][1] == FLATNESS_VERIFY_HI_HZ
+    assert res.flatness_tracking["tolerance_db"] == FLATNESS_VERIFY_TOLERANCE_DB
+
+
+def test_flatness_tracking_populated_with_no_fc_hz_at_all():
+    """Independent of Fc too, not just predicted_sum: a VERIFY analysis with
+    NO crossover_fc_hz prior (fc_hz is None, so integration-verify's whole
+    ripple/tracking block never runs) must still populate flatness_tracking."""
+    prog = build_verify_program(FC_HZ, sweep_s=1.5)
+    pcm = render_program_pcm(prog)
+    ir = _band_impulse(200, 150.0, 20000.0, 1.0, n=8192)
+    mono = fftconvolve(pcm[:, 0], ir)[: pcm.shape[0]]
+    cap = np.concatenate([np.zeros(800), mono, np.zeros(5000)])
+    cap = cap + np.random.default_rng(5).normal(0.0, 1e-4, cap.size)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    assert res.summed_ripple_db is None
+    assert res.verify_tracking is None
+    assert res.flatness_tracking is not None
+
+
+def test_flatness_tracking_offset_invariant_to_a_uniform_level_shift():
+    """A uniform +6 dB level shift (mic gain, session volume) must not by
+    itself change the flatness verdict -- tracking_error_db mean-centers
+    the error before scoring it."""
+    freqs = np.linspace(20.0, 24000.0, 4000)
+    flat_db = np.zeros_like(freqs)
+    resp = DriverResponse(
+        role="summed", freqs_hz=freqs, magnitude_db=flat_db,
+        complex_tf=(10.0 ** (flat_db / 20.0)).astype(complex),
+        gating={}, snr=None, validity_floor_hz=150.0,
+    )
+    baseline = _flatness_tracking(resp)
+    assert baseline is not None
+
+    shifted = DriverResponse(
+        role="summed", freqs_hz=freqs, magnitude_db=flat_db + 6.0,
+        complex_tf=(10.0 ** ((flat_db + 6.0) / 20.0)).astype(complex),
+        gating={}, snr=None, validity_floor_hz=150.0,
+    )
+    lifted = _flatness_tracking(shifted)
+    assert lifted is not None
+    assert lifted["rms_db"] == pytest.approx(baseline["rms_db"], abs=1e-9)
+    assert lifted["max_db"] == pytest.approx(baseline["max_db"], abs=1e-9)
+
+
+def test_flatness_tracking_none_when_validity_floor_missing():
+    freqs = np.linspace(20.0, 24000.0, 4000)
+    flat_db = np.zeros_like(freqs)
+    resp = DriverResponse(
+        role="summed", freqs_hz=freqs, magnitude_db=flat_db,
+        complex_tf=(10.0 ** (flat_db / 20.0)).astype(complex),
+        gating={}, snr=None, validity_floor_hz=None,
+    )
+    assert _flatness_tracking(resp) is None
+
+
+def test_flatness_tracking_reports_a_real_deviation_for_a_sloped_response():
+    freqs = np.linspace(20.0, 24000.0, 4000)
+    ramp_db = np.linspace(0.0, -6.0, freqs.size)
+    resp = DriverResponse(
+        role="summed", freqs_hz=freqs, magnitude_db=ramp_db,
+        complex_tf=(10.0 ** (ramp_db / 20.0)).astype(complex),
+        gating={}, snr=None, validity_floor_hz=150.0,
+    )
+    out = _flatness_tracking(resp)
+    assert out is not None
+    assert out["rms_db"] > 0.5
+    assert out["max_db"] > out["rms_db"]
 
 
 def test_verify_tracking_against_predicted_sum():

@@ -638,6 +638,84 @@ def test_compile_emits_trims():
     assert parsed["filters"]["as_tweeter_baseline_gain"]["parameters"]["gain"] == -6.0
 
 
+# --- compile threads candidate.linearization (#1668 PR-D) -------------------
+
+
+def test_compile_without_linearization_emits_no_stage():
+    """A plain trims candidate (linearization={}, every pre-PR-D candidate's
+    shape) must not emit any linearization filter."""
+    candidate = _candidate()
+    assert candidate.linearization == {}
+    yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    assert "linearization" not in yaml_text
+
+
+def test_compile_with_linearization_emits_the_reduced_filters():
+    payload = {
+        "woofer": {
+            "role": "woofer", "filters": [
+                {"biquad_type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2},
+            ],
+            "fit_band_hz": [150.0, 3951.5], "target_level_db": -20.22,
+            "residual_rms_db": 0.4, "residual_max_db": 1.1,
+            "reason_summary": {"250": "envelope_fitted"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+        },
+        "tweeter": {
+            "role": "tweeter",
+            "filters": [
+                {"biquad_type": "Highshelf", "freq": 8000.0, "q": 0.7071067811865476, "gain": -3.0},
+                {"biquad_type": "Peaking", "freq": 4063.6, "q": 1.89, "gain": -3.38},
+            ],
+            "fit_band_hz": [2020.0, 13905.2], "target_level_db": -8.63,
+            "residual_rms_db": 2.63, "residual_max_db": 7.13,
+            "reason_summary": {"2000": "envelope_fitted"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+        },
+    }
+    candidate = _candidate(linearization=payload)
+    yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    parsed = yaml_lib.safe_load(yaml_text)
+
+    assert parsed["filters"]["as_woofer_linearization_peak_1"]["parameters"] == {
+        "type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2,
+    }
+    shelf = parsed["filters"]["as_tweeter_linearization_shelf"]["parameters"]
+    assert shelf["type"] == "Highshelf"
+    assert shelf["gain"] == -3.0
+    assert parsed["filters"]["as_tweeter_linearization_peak_1"]["parameters"]["freq"] == (
+        pytest.approx(4063.6)
+    )
+    # Positioned in the pipeline names before the delay/gain/limiter tail.
+    for step in parsed["pipeline"]:
+        if step.get("channels") == [1]:
+            assert step["names"].index("as_tweeter_linearization_shelf") < step["names"].index(
+                "as_tweeter_delay"
+            )
+
+
+def test_compile_linearization_reduction_drops_the_rich_fit_fields():
+    """compile_candidate_config must reduce the rich LinearizationFit shape
+    down to {biquad_type, freq, q, gain} -- fit_band_hz/residuals/reason_
+    summary/mic_tier/etc. are candidate evidence, never emitter input, and
+    must never leak into the CamillaDSP YAML."""
+    payload = {
+        "woofer": {
+            "role": "woofer",
+            "filters": [{"biquad_type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2}],
+            "fit_band_hz": [150.0, 3951.5], "target_level_db": -20.22,
+            "residual_rms_db": 0.4, "residual_max_db": 1.1,
+            "reason_summary": {"250": "envelope_fitted"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+        },
+    }
+    candidate = _candidate(linearization=payload)
+    yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    assert "fit_band_hz" not in yaml_text
+    assert "residual_rms_db" not in yaml_text
+    assert "mic_tier" not in yaml_text
+
+
 # --- proofs: delay_graph + graph_safety -------------------------------------
 
 

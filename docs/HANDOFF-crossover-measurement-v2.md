@@ -40,6 +40,15 @@ this doc is the current operational truth.
 
 ## Current status (2026-07-22)
 
+**2026-07-24 — Layer-1a linearization now EMITS (#1668 PR-D), not yet
+hardware-validated.** The fit engine's output (PR-C) now actually reaches
+the applied graph — see "Linearization EMISSION" and "Flatness-verify"
+below, and [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+for the full Layer-1a design. Landed on a branch, adversarially reviewed
+in-session, and hardware-free-tested; it is explicitly gated on JTS3
+validation and the owner's listening-ladder protocol before merge — do not
+treat this section as confirming an audible result yet.
+
 Waves W1–W6 complete (PRs #1578–#1604). Hardware-validated on JTS3 +
 UMIK-2: first fully-calibrated run 2026-07-19. **Legacy is deprecated**
 and scheduled for deletion in W5b (see Future work). The v2 acoustic
@@ -209,6 +218,35 @@ dict = not attempted). Design and fitting-policy SSOT:
 [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py),
 correction-envelope core at
 [`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py).
+
+**Linearization EMISSION (#1668 PR-D).** The fit result is no longer
+evidence-only: `emit_active_speaker_baseline_config` (`camilla_yaml.py`)
+gained a `linearization` parameter — one Peaking/Highshelf chain per role,
+emitted immediately after that driver's crossover HP/LP and before
+bass-extension, via the shared `emit_filter_spec` primitive. The two
+RICH-candidate seams —
+`measured_crossover_candidate.compile_candidate_config` and
+`baseline_profile.build_baseline_profile_candidate` (which also carries the
+reduced result in the applied profile's `recomposition_snapshot` and
+top-level payload) — thread a persisted `LinearizationFit` result through
+the shared reduction, `linearization_fit.linearization_filters_by_role`.
+`baseline_profile.recompose_applied_baseline_yaml` (the `/sound`
+preference-EQ seam) — the fix for a since-closed silent-reversion gap —
+deliberately does NOT call that helper: its snapshot's `linearization` key
+is already in the reduced shape `build_baseline_profile_candidate` wrote,
+so it re-validates that shape inline, era-tolerantly, instead of re-reducing
+it (calling the shared helper on an already-reduced mapping silently
+returns nothing for every role). The net effect is the same — recompose no
+longer silently drops the stage on every EQ/room recompose — but the
+reduction path differs; do not "consolidate" the two onto one helper call.
+The runtime-safety verifier
+(`runtime_contract._baseline_output_chain`) independently re-proves any
+linearization-named filter in the emitted chain (Peaking/Highshelf type,
+non-positive gain) — self-proving from the graph text alone, so no new
+evidence parameter needed threading through `classify_camilla_graph`'s
+other callers. Emission is empty by default; a candidate/snapshot with no
+`linearization` key, or an empty one, stays byte-identical to the
+pre-PR-D graph.
 3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
@@ -228,6 +266,24 @@ correction-envelope core at
    Pass = notch-excluded, validity-floor-clamped tracking error ≤ ±1.5 dB.
    On fail the applied graph **stays in force** (proof-checked safe) and
    the household is offered Try again / Undo.
+
+**Flatness-verify (#1668 PR-D) — a SIBLING claim, report-only.** The same
+VERIFY capture also computes `ProgramAnalysis.flatness_tracking`: gated
+response flatness from this capture's own validity floor to 16 kHz,
+independent of `fc_hz`/`priors.predicted_sum` (`summed_response` alone) —
+see `program_analysis.FLATNESS_VERIFY_HI_HZ`'s own comment for why this is
+deliberately never folded into `verify_tracking` above. It answers a
+different question ("is the gated response flat broadband") than
+integration-verify ("did the applied crossover realize its own predicted
+summation") — the design doc's finding was that integration-verify alone
+cannot see an uncompensated tweeter rolloff, because the prediction shares
+that rolloff. Relayed alongside `tracking` in the conductor's
+`PhaseVerdict` payload (`flatness_tracking`, `None` when this capture's
+validity floor could not be established) and logged with a
+`flatness_`-prefixed field set in `event=correction.crossover_v2_verify_diag`.
+`FLATNESS_VERIFY_TOLERANCE_DB` (3.0, PROVISIONAL) is not yet a gate —
+nothing in `_verify_verdict`'s accepted/code logic reads it; a future PR-E
+wires the accept/reject threshold once bench-derived.
 
 **One mic position for the whole session: ~1 m on the listening axis,
 tweeter height, facing the speaker.** The placement screen encodes a
@@ -269,13 +325,14 @@ most visible thing on the screen.
 |---|---|
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
-| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. |
+| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. Also owns flatness-verify (#1668 PR-D): `_flatness_tracking` / `FLATNESS_VERIFY_HI_HZ` / `FLATNESS_VERIFY_TOLERANCE_DB` — see "Flatness-verify" above. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
 | [`jasper/active_speaker/measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact (trims + `MeasuredCrossoverAlignment` + `linearization`), folded through `emit_active_speaker_baseline_config` (`camilla_yaml.py`) and the delay/graph-safety proofs. |
 | [`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | Layer-1a correction envelope (#1668 PR-B): `compose_envelope` → per-bin allowed correction depth + `ReasonCode`, `compute_sigma_curve`, `mic_trust_limit` / `repeatability_limit` / `class_prior_limit`. Pure computation, no policy. |
-| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, `MAX_NORMALIZATION_SPEND_DB` budget). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. |
+| [`jasper/active_speaker/linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | Layer-1a fit engine (#1668 PR-C): `fit_driver_linearization` → `LinearizationFit` (cut-only Highshelf + `jasper.correction.peq.design_peq` peaking loop, adaptive band trim, `MAX_NORMALIZATION_SPEND_DB` budget, the `verify_band_hz`/`observe_octave_summary` honesty-ladder fields added in PR-D). Pure computation; the conductor (`crossover_v2_flow._compose_sigma_db` / `_build_candidate`) owns eligibility policy and wiring. Also owns `linearization_filters_by_role`, the reduction the two rich-candidate emission call sites share (`recompose_applied_baseline_yaml` deliberately does not call it — see "Linearization EMISSION" above). |
+| [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter. `emit_active_speaker_baseline_config`'s `linearization` parameter (#1668 PR-D) is what actually plays the Layer-1a fit — see "Linearization EMISSION" above; `_validated_linearization` independently re-validates it (Peaking/Highshelf, non-positive gain) before any filter reaches CamillaDSP. |
 | [`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py), [`spec.py`](../jasper/capture_relay/spec.py) | Relay protocol v3: `CapturePlanEntry`, `CaptureBeginDeferred` / `CaptureBeginRefused`, `run_capture_plan`, hold/timeout budgets. |
 | [`capture-page/`](../capture-page/README.md) | The static phone recorder (Cloudflare Pages). `js/main.js` runs the v3 session loop; `version.json` carries the supported protocol versions. |
 
@@ -353,6 +410,16 @@ most visible thing on the screen.
 10. **CamillaDSP safety ceiling stays.** As everywhere in the DSP
     graph, `devices.volume_limit = 0.0` and positive writes clamp to
     0 dB. The program graph adds no headroom beyond the main volume.
+11. **Linearization emission is independently re-validated at every
+    boundary, never trust-the-caller (#1668 PR-D).** The emitter
+    (`_validated_linearization`) and the runtime-safety verifier
+    (`_consume_linearization_chain`) each re-prove biquad type ∈
+    {Peaking, Highshelf} and non-positive gain from scratch — the
+    fit engine's own cut-only invariant is not assumed to have
+    survived a JSON round-trip. Full safety-posture rationale (the
+    non-positive-gain policy, the boost-cap deferral) is owned by
+    [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md);
+    this doc does not restate it.
 
 ## Failure taxonomy & debugging
 

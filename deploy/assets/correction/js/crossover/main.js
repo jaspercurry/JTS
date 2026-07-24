@@ -504,7 +504,7 @@ async function runAction(action, button) {
     try {
       await refresh();
       if (candidateChanged) {
-        setStatus('Crossover review refreshed. Review the current candidate.', '');
+        setStatus('Active speaker review refreshed. Review the current candidate.', '');
       } else {
         setStatus(failureMessage, 'bad');
       }

@@ -82,6 +82,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
+    FLATNESS_VERIFY_TOLERANCE_DB,
     GainPlan,
     MeasurementGeometry,
     MeasurementPriors,
@@ -1780,6 +1781,14 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
+        # Flatness-verify (#1668 PR-D): a SIBLING report, relayed alongside
+        # integration-verify's own tracking on BOTH branches below. Never
+        # consulted by accepted/code — see FLATNESS_VERIFY_HI_HZ's own
+        # comment for why the two claims stay separate (design doc
+        # "Verification splits into two named claims").
+        flatness_payload = (
+            dict(analysis.flatness_tracking) if analysis.flatness_tracking else None
+        )
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
         # max — and both are now computed over `tracking["tracking_band_hz"]`,
@@ -1801,11 +1810,18 @@ class CrossoverV2Conductor:
             self._verify_outcome = "fail"
             return PhaseVerdict(
                 False, REASON_VERIFY_OUT_OF_TOLERANCE,
-                payload={"tracking": dict(tracking)},
+                payload={
+                    "tracking": dict(tracking),
+                    "flatness_tracking": flatness_payload,
+                },
             )
         self._verify_outcome = "pass"
         return PhaseVerdict(
-            True, payload={"measurement_phase": PHASE_VERIFY, "tracking": dict(tracking)}
+            True, payload={
+                "measurement_phase": PHASE_VERIFY,
+                "tracking": dict(tracking),
+                "flatness_tracking": flatness_payload,
+            }
         )
 
     # --- diagnostic logging (Part 1) ------------------------------------------
@@ -1973,6 +1989,16 @@ class CrossoverV2Conductor:
             analysis.summed_response.validity_floor_hz
             if analysis.summed_response is not None else None
         )
+        # Flatness-verify (#1668 PR-D): a SIBLING claim, logged with its own
+        # flatness_-prefixed fields alongside integration-verify's above —
+        # never folded into the tracking_*/rms_db/max_db fields (see
+        # FLATNESS_VERIFY_HI_HZ's own comment).
+        flatness = analysis.flatness_tracking or {}
+        flatness_band = flatness.get("band_hz")
+        flatness_band_lo_hz: float | None = None
+        flatness_band_hi_hz: float | None = None
+        if isinstance(flatness_band, (list, tuple)) and len(flatness_band) == 2:
+            flatness_band_lo_hz, flatness_band_hi_hz = flatness_band[0], flatness_band[1]
         # Measurement-honesty gate G3's own diagnostics: the current
         # attempt's raw pilot transfer (re-derived fresh, read-only — never
         # the mutated conductor state) and the step vs baseline
@@ -1989,6 +2015,11 @@ class CrossoverV2Conductor:
             tracking_band_lo_hz=tracking_band_lo_hz,
             tracking_band_hi_hz=tracking_band_hi_hz,
             rms_db=tracking.get("rms_db"),
+            flatness_rms_db=flatness.get("rms_db"),
+            flatness_max_db=flatness.get("max_db"),
+            flatness_tolerance_db=FLATNESS_VERIFY_TOLERANCE_DB,
+            flatness_band_lo_hz=flatness_band_lo_hz,
+            flatness_band_hi_hz=flatness_band_hi_hz,
             pilot_transfer_db=(
                 round(pilot_transfer_db, 3) if pilot_transfer_db is not None else None
             ),

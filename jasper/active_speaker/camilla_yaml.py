@@ -15,7 +15,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import yaml
 
@@ -671,6 +671,7 @@ def _driver_baseline_filter_chain(
     preset: ActiveSpeakerPreset,
     role: str,
     bass_extension: dict[str, Any] | None = None,
+    linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     names: list[str] = []
     # Bass-management high-pass FIRST: the lowest driver's program is high-passed
@@ -684,6 +685,14 @@ def _driver_baseline_filter_chain(
             names.append(_crossover_filter_name(role, region, highpass=False))
         if region.upper_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=True))
+    # Layer-1a driver linearization (#1668 PR-D): immediately after the
+    # crossover HP/LP, before bass-extension — mirrors the bass-extension
+    # addon's own slot exactly (design doc "Layer 1a concretely"). Empty
+    # linearization is a no-op, so an un-linearized/legacy baseline stays
+    # byte-identical to before this stage existed.
+    names.extend(
+        _driver_linearization_chain_names(linearization or {}, role)
+    )
     names.extend(_bass_extension_chain_names(bass_extension, role=role))
     names.append(_driver_delay_name(role))
     names.append(_driver_baseline_gain_name(role))
@@ -808,12 +817,195 @@ def _validated_driver_corrections(
     return safe_corrections
 
 
+# --- Layer-1a driver-linearization emission (#1668 PR-D) ---------------------
+#
+# Reduced shape only: {role: [{biquad_type, freq, q, gain}, ...]}. The richer
+# LinearizationFit.to_dict() (fit_band_hz, residuals, reason_summary, mic_tier,
+# driver_class, n_repeats, the honesty-ladder fields) is candidate/profile
+# evidence, not emitter input -- jasper.active_speaker.linearization_fit's
+# shared linearization_filters_by_role() reduces the richer shape down to
+# this one before any caller reaches this module, so the emitter itself never
+# needs to know the fit engine's own artifact shape.
+
+# Hard cap on filters per driver (shelf + peaking combined). LOCKSTEP
+# DUPLICATE of jasper.active_speaker.linearization_fit.MAX_FILTERS_PER_DRIVER
+# -- not imported, mirroring this module's existing PARITY DUPLICATE pattern
+# (see e.g. linearization_fit.py's own top docstring on why it duplicates
+# camilla_yaml/sound.profile math rather than importing it): the emitter is
+# an independent re-validation of whatever a persisted candidate claims, not
+# a trust-the-caller pass-through, so it must not import the fit engine's
+# own policy constant and inherit a future change to it silently. A pinning
+# test asserts the two constants stay numerically equal.
+MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
+
+_LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf"})
+
+# The RBJ Highshelf's fixed Butterworth Q, expressed as CamillaDSP's own
+# Highshelf ``slope`` parametrization: mirrors jasper.sound.profile._SHELF_Q
+# and jasper.active_speaker.linearization_fit._HIGHSHELF_Q (both
+# 1/sqrt(2)) -- CamillaDSP's advanced-shelf ``slope: 6.0`` realizes exactly
+# that Q (see jasper.sound.profile._biquad_coeffs's own comment: "Shelves
+# use a fixed Butterworth Q ... to mirror CamillaDSP's 6 dB/oct advanced-
+# shelf emit"). The fit engine never varies its shelf Q, so this is the one
+# and only slope a linearization Highshelf is ever emitted at.
+_LINEARIZATION_HIGHSHELF_SLOPE = 6.0
+
+
+def _driver_linearization_shelf_name(role: str) -> str:
+    return f"as_{_name_token(role)}_linearization_shelf"
+
+
+def _driver_linearization_peak_name(role: str, index: int) -> str:
+    return f"as_{_name_token(role)}_linearization_peak_{index}"
+
+
+# Public aliases (matching the driver_baseline_gain_name convention above):
+# the runtime-safety verifier (graph_evidence -> runtime_contract) re-proves
+# the linearization stage against the EMITTED graph text and must spell these
+# names identically rather than re-deriving the format.
+driver_linearization_shelf_name = _driver_linearization_shelf_name
+driver_linearization_peak_name = _driver_linearization_peak_name
+
+
+def _validated_linearization(
+    preset: ActiveSpeakerPreset,
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Normalize + independently re-validate the per-driver linearization
+    filter list, mirroring ``_validated_driver_corrections``'s shape/spirit.
+
+    ``linearization`` crosses a JSON round-trip before it ever reaches this
+    emitter (a persisted ``MeasuredCrossoverCandidate``/applied-profile
+    snapshot, not the fit engine's own dataclass), so this is an independent
+    fail-closed gate -- not a trust-the-caller pass-through -- exactly like
+    every other correction/gain field this module re-validates. An unknown
+    role is dropped (mirrors ``_validated_driver_corrections``); a known
+    role's filter list is validated field-by-field and RAISES
+    ``ActiveSpeakerConfigError`` on the first violation (never silently
+    dropped or clamped -- a hardware-bound safety invariant, matching the
+    fit engine's own explicit-raise cut-only invariant).
+    """
+
+    safe: dict[str, list[dict[str, Any]]] = {}
+    for role, filters in (linearization or {}).items():
+        if role not in required_driver_roles(preset.way_count):
+            continue
+        if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
+            raise ActiveSpeakerConfigError(
+                f"linearization filters for {role} must be a list"
+            )
+        if len(filters) > MAX_LINEARIZATION_FILTERS_PER_DRIVER:
+            raise ActiveSpeakerConfigError(
+                f"linearization filter count for {role} exceeds "
+                f"{MAX_LINEARIZATION_FILTERS_PER_DRIVER}"
+            )
+        role_filters: list[dict[str, Any]] = []
+        for entry in filters:
+            if not isinstance(entry, Mapping):
+                raise ActiveSpeakerConfigError(
+                    f"linearization filter for {role} must be a mapping"
+                )
+            biquad_type = entry.get("biquad_type")
+            if biquad_type not in _LINEARIZATION_BIQUAD_TYPES:
+                raise ActiveSpeakerConfigError(
+                    f"linearization biquad_type for {role} must be one of "
+                    f"{sorted(_LINEARIZATION_BIQUAD_TYPES)}, not {biquad_type!r}"
+                )
+            freq = _finite_float(entry.get("freq"), f"{role} linearization freq")
+            q = _finite_float(entry.get("q"), f"{role} linearization q")
+            gain = _finite_float(entry.get("gain"), f"{role} linearization gain")
+            if freq <= 0:
+                raise ActiveSpeakerConfigError(
+                    f"linearization freq for {role} must be positive"
+                )
+            if q <= 0:
+                raise ActiveSpeakerConfigError(
+                    f"linearization q for {role} must be positive"
+                )
+            if gain > 0:
+                raise ActiveSpeakerConfigError(
+                    f"linearization gain for {role} must not be positive"
+                )
+            role_filters.append({
+                "biquad_type": biquad_type,
+                "freq": freq,
+                "q": q,
+                "gain": gain,
+            })
+        if role_filters:
+            safe[role] = role_filters
+    return safe
+
+
+def _driver_linearization_chain_names(
+    linearization: dict[str, list[dict[str, Any]]],
+    role: str,
+) -> list[str]:
+    """The filter-name list for ``role``'s linearization stage, one name per
+    entry in ``filters`` IN INPUT ORDER: a Highshelf entry gets the shelf
+    name, everything else gets the next peak name. This function does not
+    reorder or otherwise enforce "shelf first" -- it names whatever order
+    the input list already carries. Shelf-before-peaks is a construction
+    guarantee of the fit engine (``linearization_fit.fit_driver_linearization``),
+    not something enforced here."""
+
+    filters = linearization.get(role) or []
+    names: list[str] = []
+    peak_index = 0
+    for entry in filters:
+        if entry["biquad_type"] == "Highshelf":
+            names.append(_driver_linearization_shelf_name(role))
+        else:
+            peak_index += 1
+            names.append(_driver_linearization_peak_name(role, peak_index))
+    return names
+
+
+def _emit_driver_linearization_definitions(
+    linearization: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    """Definitions for every role's linearization filters, via the shared
+    ``emit_filter_spec`` leaf (the same primitive preference-EQ bands use) so
+    a Peaking/Highshelf band is spelled identically everywhere in this
+    codebase. Highshelf entries always pass the fixed
+    ``_LINEARIZATION_HIGHSHELF_SLOPE`` -- see that constant's own comment for
+    why that is the one CamillaDSP slope equivalent to the fit engine's fixed
+    Butterworth Q; ``q`` is not carried onto a Highshelf FilterSpec since
+    ``emit_filter_spec`` reads ``slope`` (not ``q``) for shelf types.
+    """
+
+    lines: list[str] = []
+    for role, filters in linearization.items():
+        peak_index = 0
+        for entry in filters:
+            if entry["biquad_type"] == "Highshelf":
+                spec = FilterSpec(
+                    name=_driver_linearization_shelf_name(role),
+                    biquad_type="Highshelf",
+                    freq=entry["freq"],
+                    gain=entry["gain"],
+                    slope=_LINEARIZATION_HIGHSHELF_SLOPE,
+                )
+            else:
+                peak_index += 1
+                spec = FilterSpec(
+                    name=_driver_linearization_peak_name(role, peak_index),
+                    biquad_type="Peaking",
+                    freq=entry["freq"],
+                    gain=entry["gain"],
+                    q=entry["q"],
+                )
+            lines.extend(emit_filter_spec(spec))
+    return lines
+
+
 def _emit_baseline_driver_definitions(
     preset: ActiveSpeakerPreset,
     *,
     limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
     bass_extension: dict[str, Any] | None = None,
+    linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     """The driver-domain (Layer A) filter definitions shared by the solo/leader
     baseline and the follower's driver-domain-only graph.
@@ -823,7 +1015,10 @@ def _emit_baseline_driver_definitions(
     *intra-speaker* half — it has no program-domain headroom and no preference
     EQ (those are program-domain, wired only by the baseline caller). The
     follower's driver-domain emit reuses this verbatim so the relocated Layer A
-    is byte-for-byte the same protective chain a solo speaker runs.
+    is byte-for-byte the same protective chain a solo speaker runs. ``linearization``
+    is threaded only by the solo/leader baseline caller today — the follower's
+    driver-domain emit never passes it, so its graph stays exactly the pre-PR-D
+    protective chain (Layer 1a linearization ships to a follower in a later slice).
     """
     lines: list[str] = []
     for region in _ordered_regions(preset):
@@ -839,6 +1034,11 @@ def _emit_baseline_driver_definitions(
             freq_hz=region.fc_hz,
             order=region.order,
         ))
+    # Layer-1a driver linearization (#1668 PR-D): immediately after the
+    # crossover HP/LP definitions, before bass-management/bass-extension —
+    # mirrors the bass-extension addon's own slot. Empty linearization emits
+    # nothing.
+    lines.extend(_emit_driver_linearization_definitions(linearization or {}))
     # Bass-management high-pass on the lowest driver (the complementary upper half
     # of the single sub crossover). Emitted only when a local sub is present.
     sub = preset.local_subwoofer
@@ -1002,6 +1202,7 @@ def _emit_baseline_filter_definitions(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     bass_extension: dict[str, Any] | None = None,
+    linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
     lines: list[str] = []
     room_peqs = tuple(room_peqs)
@@ -1041,6 +1242,7 @@ def _emit_baseline_filter_definitions(
         limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=corrections,
         bass_extension=bass_extension,
+        linearization=linearization,
     ))
     # Program-domain preference EQ (Layer C) definitions. Emitted via the shared
     # leaf emit_filter_spec (the same one emit_sound_config uses), so the active
@@ -1084,6 +1286,7 @@ def _emit_baseline_pipeline(
     room_peq_names: Sequence[str] = (),
     preference_filter_names: Sequence[str] = (),
     bass_extension: dict[str, Any] | None = None,
+    linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
     lines: list[str] = []
     # Room PEQs (Layer B) run on the stereo program bus before the common
@@ -1121,9 +1324,9 @@ def _emit_baseline_pipeline(
     for role in required_driver_roles(preset.way_count):
         channels = _channels_for_role(preset, role)
         chain = ", ".join(
-            _driver_baseline_filter_chain(preset, role)
-            if bass_extension is None
-            else _driver_baseline_filter_chain(preset, role, bass_extension)
+            _driver_baseline_filter_chain(
+                preset, role, bass_extension, linearization,
+            )
         )
         lines.extend([
             "  - type: Filter",
@@ -2182,6 +2385,7 @@ def emit_active_speaker_baseline_config(
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -2211,9 +2415,28 @@ def emit_active_speaker_baseline_config(
     ``emit_sound_config``. It is applied only when ``preference_filters`` is
     non-empty (a flat profile can't clip from EQ and plays at unity), so the
     default keeps the no-EQ baseline byte-identical.
+
+    ``linearization`` (Layer 1a, #1668 PR-D) is the per-driver cut-only
+    EQ/shelf stage the driver-linearization fit engine
+    (``jasper.active_speaker.linearization_fit``) designs — the REDUCED shape
+    ``{role: [{biquad_type, freq, q, gain}, ...]}``, produced from a
+    ``LinearizationFit``/candidate by
+    ``linearization_fit.linearization_filters_by_role``. Each role's filters
+    are emitted immediately after that driver's crossover HP/LP and before
+    bass-extension (mirrors the bass-extension addon's own slot exactly), via
+    the shared ``emit_filter_spec`` primitive. Independently re-validated here
+    (``_validated_linearization``): ``biquad_type`` in {Peaking, Highshelf},
+    finite positive ``freq``/``q``, non-positive ``gain`` — a hardware-bound
+    safety invariant re-proved at the emitter boundary, not assumed from the
+    caller. The empty default keeps every existing caller byte-identical.
     """
 
     preset.validate()
+    # N3 (#1668 PR-D review): normalize the optional linearization mapping
+    # here rather than defaulting the parameter to a mutable ``{}`` literal
+    # -- matches how every other optional dict/sequence param on this
+    # function is handled.
+    linearization = linearization or {}
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)
     if forbidden_token:
@@ -2252,6 +2475,7 @@ def emit_active_speaker_baseline_config(
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
     bass_extension = _bass_extension_emission(preset, bass_extension_profile)
+    safe_linearization = _validated_linearization(preset, linearization)
 
     # Drop inactive bands (a near-zero gain rounds to a no-op) exactly like the
     # stereo emitter's build_sound_filters does, so an "all flat" preference
@@ -2271,6 +2495,7 @@ def emit_active_speaker_baseline_config(
         preference_filters=active_preference_filters,
         output_trim_db=output_trim_db,
         bass_extension=bass_extension,
+        linearization=safe_linearization,
     )
     # apply_region_polarity=False: this graph carries polarity through
     # ``safe_corrections`` (a per-driver Gain filter below), so the mixer must
@@ -2281,6 +2506,7 @@ def emit_active_speaker_baseline_config(
         room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
         preference_filter_names=[spec.name for spec in active_preference_filters],
         bass_extension=bass_extension,
+        linearization=safe_linearization,
     )
     metadata_comments = [f"# preset_id={preset.preset_id}"]
     if baseline_id:

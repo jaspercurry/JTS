@@ -50,7 +50,7 @@ module can produce is a cut (see the cut-only invariant above).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -242,6 +242,21 @@ class LinearizationFit:
     ``reason_summary`` still carry honest values in that degenerate case
     (target 0.0, reason summary reflecting the envelope's own out-of-band
     verdicts).
+
+    ``verify_band_hz``/``verify_residual_rms_db``/``verify_residual_max_db``
+    and ``observe_octave_summary`` (#1668 PR-D) are the Layer-1a honesty
+    ladder's remaining two levels (design doc "three honesty levels": fit /
+    verify / observe). ``fit_band_hz``/``residual_*_db`` above are the FIT
+    claim — accuracy strictly inside the envelope-allowed, adaptively-trimmed
+    band. VERIFY claims the SAME residual math roughly an octave past the
+    fit band's own top (``[fit_lo_hz, min(2*fit_hi_hz, grid_top_hz)]``), so a
+    fit that only "worked" right at its own edge shows up here even when FIT
+    itself looks clean. OBSERVE is the disclosure layer: per-octave
+    achieved-vs-target magnitude all the way to the grid's own top (20 kHz on
+    the production grid) — "the top octave appears in the technical
+    disclosure as the driver's measured natural response, never as a
+    pass/fail." All four are REPORT-ONLY in this PR; nothing gates on them
+    yet (design doc build-order step 2, closed-loop verify, is a later PR).
     """
 
     role: str
@@ -254,6 +269,10 @@ class LinearizationFit:
     mic_tier: str
     driver_class: str
     n_repeats: int
+    verify_band_hz: tuple[float, float] = (0.0, 0.0)
+    verify_residual_rms_db: float = 0.0
+    verify_residual_max_db: float = 0.0
+    observe_octave_summary: Mapping[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -267,6 +286,10 @@ class LinearizationFit:
             "mic_tier": self.mic_tier,
             "driver_class": self.driver_class,
             "n_repeats": self.n_repeats,
+            "verify_band_hz": list(self.verify_band_hz),
+            "verify_residual_rms_db": self.verify_residual_rms_db,
+            "verify_residual_max_db": self.verify_residual_max_db,
+            "observe_octave_summary": dict(self.observe_octave_summary),
         }
 
 
@@ -296,6 +319,54 @@ def predicted_correction_db(
     return total
 
 
+def linearization_filters_by_role(
+    linearization_mapping: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Reduce a persisted ``{role: LinearizationFit.to_dict()}`` mapping down
+    to the emitter's own reduced input shape: ``{role: [filter_dict, ...]}``.
+
+    Shared by the two RICH-candidate call sites that thread a persisted
+    linearization result into
+    :func:`jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config`
+    (#1668 PR-D) — ``measured_crossover_candidate.compile_candidate_config``
+    and ``baseline_profile.build_baseline_profile_candidate`` — so the
+    reduction is defined once rather than twice.
+
+    ``baseline_profile.recompose_applied_baseline_yaml`` deliberately does
+    NOT call this helper. Its snapshot's ``"linearization"`` key is already
+    in this function's OUTPUT shape (``build_baseline_profile_candidate``
+    is what wrote it), not this function's INPUT shape — calling this
+    helper on an already-reduced mapping silently returns ``{}`` for every
+    role (each value is a ``list``, which fails the ``isinstance(fit,
+    Mapping)`` check below, not an error). recompose re-validates the
+    already-reduced shape inline instead, era-tolerantly. Do not
+    "consolidate" that seam onto this helper — see
+    ``test_linearization_filters_by_role_on_already_reduced_shape_is_empty``
+    in ``tests/test_active_speaker_linearization_fit.py`` for the pinned trap.
+
+    ``linearization_mapping`` is whatever a rich candidate carries under its
+    ``"linearization"`` key: era-tolerant absence is the caller's job (this
+    function treats a missing/malformed role or filter list as simply not
+    present, matching "no linearization was fit" rather than raising).
+
+    Defensive, not authoritative: this only reshapes trusted-enough
+    persisted data. The emitter's own ``_validated_linearization`` is the
+    fail-closed gate that actually enforces shape/safety on what reaches
+    CamillaDSP.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for role, fit in (linearization_mapping or {}).items():
+        if not isinstance(fit, Mapping):
+            continue
+        filters = fit.get("filters")
+        if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
+            continue
+        out[str(role)] = [
+            dict(entry) for entry in filters if isinstance(entry, Mapping)
+        ]
+    return out
+
+
 def _octave_band_reason_summary(envelope: EnvelopeCurve) -> dict[str, str]:
     grid = envelope.freqs_hz
     out: dict[str, str] = {}
@@ -319,7 +390,58 @@ def _empty_fit(envelope: EnvelopeCurve) -> LinearizationFit:
         mic_tier=envelope.mic_tier,
         driver_class=envelope.driver_class,
         n_repeats=envelope.n_repeats,
+        # Honesty-ladder levels 2/3 (#1668 PR-D) are degenerate placeholders
+        # here too, exactly like fit_band_hz/target_level_db/residual_*_db
+        # above -- no fit was attempted (the envelope allows correction
+        # nowhere), so there is nothing to verify and observe_octave_summary
+        # would have no honest target to compare against.
+        verify_band_hz=(0.0, 0.0),
+        verify_residual_rms_db=0.0,
+        verify_residual_max_db=0.0,
+        observe_octave_summary={},
     )
+
+
+def _verify_band_and_residual(
+    grid_hz: np.ndarray,
+    working_db: np.ndarray,
+    target_level_db: float,
+    fit_lo_hz: float,
+    fit_hi_hz: float,
+) -> tuple[tuple[float, float], float, float]:
+    """The honesty ladder's VERIFY level: the SAME residual math the fit
+    claim itself uses (post-filter ``working_db`` vs the fit's own
+    ``target_level_db``), evaluated over a band extending roughly an octave
+    PAST the fit band's own top — ``[fit_lo_hz, min(2*fit_hi_hz,
+    grid_hz[-1])]``. Report-only (see :class:`LinearizationFit`'s docstring).
+    """
+    verify_hi_hz = min(2.0 * fit_hi_hz, float(grid_hz[-1]))
+    verify_band_hz = (fit_lo_hz, verify_hi_hz)
+    verify_mask = (grid_hz >= fit_lo_hz) & (grid_hz <= verify_hi_hz)
+    residual = (working_db - target_level_db)[verify_mask]
+    rms_db = float(np.sqrt(np.mean(residual ** 2))) if residual.size else 0.0
+    max_db = float(np.max(np.abs(residual))) if residual.size else 0.0
+    return verify_band_hz, rms_db, max_db
+
+
+def _observe_octave_summary(
+    grid_hz: np.ndarray, working_db: np.ndarray, target_level_db: float,
+) -> dict[str, float]:
+    """The honesty ladder's OBSERVE level: per-octave achieved-vs-target
+    magnitude to the grid's own top (20 kHz on the production grid),
+    independent of the fit/verify bands — the disclosure layer (see
+    :class:`LinearizationFit`'s docstring). Mirrors
+    :func:`_octave_band_reason_summary`'s own octave-center sampling
+    (same :data:`_OCTAVE_BAND_CENTERS_HZ`, same "nearest grid bin" pick,
+    same range guard), so the two dicts key identically band-for-band.
+    """
+    out: dict[str, float] = {}
+    for center in _OCTAVE_BAND_CENTERS_HZ:
+        if center < grid_hz[0] or center > grid_hz[-1]:
+            continue
+        idx = int(np.argmin(np.abs(grid_hz - center)))
+        out[str(int(center))] = float(working_db[idx] - target_level_db)
+    return out
 
 
 def _core_or_fallback_mask(
@@ -578,6 +700,18 @@ def fit_driver_linearization(
     residual_rms_db = float(np.sqrt(np.mean(residual ** 2))) if residual.size else 0.0
     residual_max_db = float(np.max(np.abs(residual))) if residual.size else 0.0
 
+    # Honesty-ladder levels 2/3 (#1668 PR-D) — see LinearizationFit's own
+    # docstring. Computed over the SAME post-filter working_db/target_level_db
+    # the FIT claim above used, just wider/full-range bands.
+    verify_band_hz, verify_residual_rms_db, verify_residual_max_db = (
+        _verify_band_and_residual(
+            grid_hz, working_db, target_level_db, fit_lo_hz, fit_hi_hz,
+        )
+    )
+    observe_octave_summary = _observe_octave_summary(
+        grid_hz, working_db, target_level_db,
+    )
+
     return LinearizationFit(
         role=envelope.role,
         filters=tuple(filters),
@@ -589,4 +723,8 @@ def fit_driver_linearization(
         mic_tier=envelope.mic_tier,
         driver_class=envelope.driver_class,
         n_repeats=envelope.n_repeats,
+        verify_band_hz=verify_band_hz,
+        verify_residual_rms_db=verify_residual_rms_db,
+        verify_residual_max_db=verify_residual_max_db,
+        observe_octave_summary=observe_octave_summary,
     )

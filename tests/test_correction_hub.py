@@ -14,8 +14,9 @@ def test_section_tabs_marks_only_the_active_section() -> None:
     assert 'role="tab"' not in rendered
     assert 'role="tablist"' not in rendered
     assert rendered.count('aria-current="page"') == 1
+    # Label only (#1670 rename) — slug/href stay "crossover".
     assert (
-        'aria-current="page" href="/correction/crossover/">Crossover</a>'
+        'aria-current="page" href="/correction/crossover/">Active speaker</a>'
         in rendered
     )
 

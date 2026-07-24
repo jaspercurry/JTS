@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -940,6 +940,65 @@ def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
     _run_phase(c, 3, 4)
     assert c.verify_outcome == "inconclusive"
     assert c.verify_evidence is None
+
+
+# --- flatness-verify relay (#1668 PR-D) — a SIBLING report, never a gate --------
+
+
+def test_verify_flatness_tracking_relays_without_changing_accepted_or_code():
+    """flatness_tracking rides BOTH PhaseVerdict branches as a report-only
+    SIBLING of integration-verify's own tracking — accepted/code stay
+    governed EXCLUSIVELY by the pre-existing tracking/max_db logic,
+    unchanged by this addition (design doc "Verification splits into two
+    named claims": one must never imply the other)."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    flatness = {
+        "band_hz": [150.0, 16000.0], "rms_db": 0.8, "max_db": 2.1, "tolerance_db": 3.0,
+    }
+
+    def _with_flatness(program, **kwargs):
+        return replace(_verify_analysis(program, **kwargs), flatness_tracking=flatness)
+
+    # Pass branch: identical accepted/code to the no-flatness baseline
+    # (test_verify_out_of_tolerance_and_inconclusive's own clean re-verify);
+    # flatness_tracking is simply present alongside it.
+    fakes.verify = lambda program: _with_flatness(program)
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert verdict["flatness_tracking"] == flatness
+
+    # Fail branch (out-of-tolerance — the SAME trigger
+    # test_verify_out_of_tolerance_and_inconclusive uses): the failure
+    # code/template are UNCHANGED, and flatness_tracking travels here too.
+    fakes.verify = lambda program: _with_flatness(program, max_db=2.4)
+    verdict = _run_phase(c, 3, 4)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "verify_out_of_tolerance"
+    assert verdict["template"] == "verify_fail"
+    assert verdict["flatness_tracking"] == flatness
+
+
+def test_verify_flatness_tracking_absent_relays_as_explicit_none():
+    """When the ProgramAnalysis carries no flatness_tracking (the field's
+    own default — e.g. a capture whose validity floor could not be
+    established), the relay payload key is explicit None, not silently
+    dropped and not a phantom empty dict."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    fakes.verify = _verify_analysis  # flatness_tracking defaults to None
+    verdict = _run_phase(c, 3, 3)
+    assert verdict["accepted"] is True
+    assert "flatness_tracking" in verdict
+    assert verdict["flatness_tracking"] is None
 
 
 # --- measurement-honesty gate G3: verify inter-attempt pilot consistency --------

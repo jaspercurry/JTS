@@ -24,6 +24,7 @@ from jasper.active_speaker.linearization_envelope import (
     compose_envelope,
 )
 from jasper.active_speaker.linearization_fit import (
+    MAX_FILTERS_PER_DRIVER,
     MAX_NORMALIZATION_SPEND_DB,
     PER_FILTER_CUT_CAP_DB,
     LinearizationFilter,
@@ -33,6 +34,7 @@ from jasper.active_speaker.linearization_fit import (
     _ladder_smooth,
     _shelf_stage,
     fit_driver_linearization,
+    linearization_filters_by_role,
     predicted_correction_db,
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
@@ -485,6 +487,183 @@ def test_ladder_smooth_matches_hand_rolled_reference():
     coarse = smooth_fractional_octave(grid, magnitude, fraction=2)
     expected = np.where(grid < 4_000.0, fine, np.where(grid < 10_000.0, mid, coarse))
     np.testing.assert_array_equal(_ladder_smooth(grid, magnitude), expected)
+
+
+# --------------------------------------------------------------------------- #
+# honesty ladder -- verify_band_hz / observe_octave_summary (#1668 PR-D)
+# --------------------------------------------------------------------------- #
+
+
+def test_verify_band_extends_from_fit_lo_to_double_fit_hi():
+    db = _bell(_NATIVE_FREQS_HZ, 1000.0, 8.0, 0.15)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    fit = fit_driver_linearization(resp, envelope)
+
+    assert fit.fit_band_hz != (0.0, 0.0)
+    fit_lo, fit_hi = fit.fit_band_hz
+    assert fit.verify_band_hz[0] == pytest.approx(fit_lo)
+    assert fit.verify_band_hz[1] == pytest.approx(min(2.0 * fit_hi, DEFAULT_ENVELOPE_GRID_HZ[-1]))
+    # A genuinely wider band than the fit claim -- the whole point of the
+    # honesty-ladder level 2 escalation.
+    assert fit.verify_band_hz[1] > fit_hi
+
+
+def test_verify_band_clamps_to_grid_top_when_double_fit_hi_overflows():
+    """A driver band that already reaches near the grid's own top must not
+    ask verify_band_hz to extend PAST the grid -- it clamps."""
+    db = _bell(_NATIVE_FREQS_HZ, 18000.0, 6.0, 0.2)
+    resp = _driver_response("tweeter", db)
+    envelope = _envelope(
+        "tweeter", resp, excited_band_hz=(8000.0, 20000.0), driver_class="unknown",
+    )
+    fit = fit_driver_linearization(resp, envelope)
+    if fit.fit_band_hz == (0.0, 0.0):
+        pytest.skip("envelope allowed no correction for this synthetic tier/class")
+    assert fit.verify_band_hz[1] <= DEFAULT_ENVELOPE_GRID_HZ[-1] + 1e-6
+
+
+def test_verify_residual_uses_same_residual_math_as_fit_over_its_own_band():
+    """Over the FIT band itself (a subset of the verify band), the verify
+    residual can only be >= what fit measured there -- adding more (worse or
+    equal, never better on average) bins to an RMS/max can't lower it below
+    the sub-band's own value in the max case, and the two must agree exactly
+    when verify_band_hz == fit_band_hz (a driver whose fit already reaches
+    the grid top)."""
+    db = _bell(_NATIVE_FREQS_HZ, 1000.0, 8.0, 0.15)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.fit_band_hz != (0.0, 0.0)
+    # verify_max is the max ABS residual over a superset band -> never smaller.
+    assert fit.verify_residual_max_db >= fit.residual_max_db - 1e-9
+
+
+def test_empty_fit_has_degenerate_honesty_ladder_placeholders():
+    """The envelope-allows-nowhere degenerate case (_empty_fit) must carry
+    the SAME kind of honest placeholder for the new fields as the existing
+    fit_band_hz=(0,0)/residual=0 fields do. Mirrors
+    test_empty_envelope_returns_degenerate_no_op_fit's own no-repeats
+    fixture -- zero in-capture repeats forces repeatability_limit to zero
+    the envelope everywhere, the reliable way to reach _empty_fit."""
+    db = _bell(_NATIVE_FREQS_HZ, 1000.0, 10.0, 0.15)
+    resp = _driver_response("woofer", db, n_repeats=0)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    assert np.all(envelope.allowed_depth_db == 0.0)
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.fit_band_hz == (0.0, 0.0)
+    assert fit.verify_band_hz == (0.0, 0.0)
+    assert fit.verify_residual_rms_db == 0.0
+    assert fit.verify_residual_max_db == 0.0
+    assert fit.observe_octave_summary == {}
+
+
+def test_observe_octave_summary_keys_match_reason_summary_octave_centers():
+    """observe_octave_summary is the disclosure sibling of reason_summary --
+    same octave centers, same range guard, so the two dicts key identically
+    band for band."""
+    db = _bell(_NATIVE_FREQS_HZ, 1000.0, 8.0, 0.15)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    fit = fit_driver_linearization(resp, envelope)
+    assert set(fit.observe_octave_summary) == set(fit.reason_summary)
+    assert len(fit.observe_octave_summary) > 0
+
+
+def test_observe_octave_summary_reaches_above_the_fit_band_top():
+    """The disclosure layer's whole point: it reports octaves the fit/verify
+    claims never touch (design doc: "the top octave appears ... as the
+    driver's measured natural response, never as a pass/fail")."""
+    db = _bell(_NATIVE_FREQS_HZ, 1000.0, 8.0, 0.15)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    fit = fit_driver_linearization(resp, envelope)
+    observed_hz = {int(k) for k in fit.observe_octave_summary}
+    assert any(hz > fit.verify_band_hz[1] for hz in observed_hz)
+
+
+def test_to_dict_serializes_the_honesty_ladder_fields():
+    db = _bell(_NATIVE_FREQS_HZ, 1000.0, 8.0, 0.15)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    fit = fit_driver_linearization(resp, envelope)
+    d = fit.to_dict()
+    assert d["verify_band_hz"] == list(fit.verify_band_hz)
+    assert d["verify_residual_rms_db"] == fit.verify_residual_rms_db
+    assert d["verify_residual_max_db"] == fit.verify_residual_max_db
+    assert d["observe_octave_summary"] == dict(fit.observe_octave_summary)
+
+
+# --------------------------------------------------------------------------- #
+# linearization_filters_by_role -- the shared reduction helper (#1668 PR-D)
+# --------------------------------------------------------------------------- #
+
+
+def test_linearization_filters_by_role_reduces_rich_shape_to_filter_lists():
+    rich = {
+        "woofer": {
+            "role": "woofer",
+            "filters": [{"biquad_type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2}],
+            "fit_band_hz": [150.0, 3951.5], "target_level_db": -20.22,
+            "residual_rms_db": 0.4, "residual_max_db": 1.1,
+            "reason_summary": {"250": "envelope_fitted"},
+            "mic_tier": "reference", "driver_class": "unknown", "n_repeats": 2,
+        },
+    }
+    reduced = linearization_filters_by_role(rich)
+    assert reduced == {
+        "woofer": [{"biquad_type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2}],
+    }
+
+
+def test_linearization_filters_by_role_empty_input_is_empty_output():
+    assert linearization_filters_by_role({}) == {}
+    assert linearization_filters_by_role(None) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"woofer": "not-a-mapping"},
+        {"woofer": {"filters": "not-a-list"}},
+        {"woofer": {"no_filters_key": True}},
+        {"woofer": None},
+    ],
+)
+def test_linearization_filters_by_role_drops_malformed_role_entries(malformed):
+    """Defensive, not authoritative -- era-tolerant reads a persisted
+    candidate might hand it should degrade to "nothing for this role", not
+    raise. The emitter's own _validated_linearization is the fail-closed
+    gate; this helper only reshapes."""
+    assert linearization_filters_by_role(malformed) == {}
+
+
+def test_linearization_filters_by_role_drops_non_mapping_filter_entries():
+    rich = {"woofer": {"filters": ["not-a-mapping", {"biquad_type": "Peaking"}]}}
+    reduced = linearization_filters_by_role(rich)
+    assert reduced == {"woofer": [{"biquad_type": "Peaking"}]}
+
+
+def test_linearization_filters_by_role_on_already_reduced_shape_is_empty():
+    """THE TRAP (#1668 PR-D review SF1): this helper expects the RICH
+    ``{role: {filters: [...]}}`` shape, not its own already-reduced
+    ``{role: [filter_dict, ...]}`` output. Calling it again on the reduced
+    shape returns {} for every role (each value is a list, which fails the
+    isinstance(fit, Mapping) check) -- exactly why
+    baseline_profile.recompose_applied_baseline_yaml does NOT call this
+    helper and instead re-validates the already-reduced snapshot inline."""
+    already_reduced = {
+        "woofer": [{"biquad_type": "Peaking", "freq": 900.0, "q": 3.0, "gain": -1.2}],
+    }
+    assert linearization_filters_by_role(already_reduced) == {}
+
+
+def test_max_filters_per_driver_is_the_shelf_plus_peaking_cap():
+    """Pins the value the camilla_yaml.py emitter's own
+    MAX_LINEARIZATION_FILTERS_PER_DRIVER must equal (see that constant's
+    own LOCKSTEP DUPLICATE comment) -- this test lives on THIS side of the
+    pair; the emitter side has its own pinning test."""
+    assert MAX_FILTERS_PER_DRIVER == 8
 
 
 # --------------------------------------------------------------------------- #

@@ -544,9 +544,10 @@ def compile_candidate_config(
     """Compile the candidate's baseline YAML — the one Layer-A emission path.
 
     Delegates entirely to ``emit_active_speaker_baseline_config``; this
-    function only supplies the preset (with alignment folded in) and the
-    derived ``corrections`` mapping. ``emit_kwargs`` forwards any other
-    emitter keyword (``capture_device``, ``out_path``, ...) unchanged.
+    function only supplies the preset (with alignment folded in), the
+    derived ``corrections`` mapping, and the derived ``linearization`` filter
+    list (#1668 PR-D). ``emit_kwargs`` forwards any other emitter keyword
+    (``capture_device``, ``out_path``, ...) unchanged.
 
     CONVENTION (shared with ``baseline_profile.build_baseline_profile_candidate``,
     the production emit site): the emitter derives delay and inversion from
@@ -558,14 +559,29 @@ def compile_candidate_config(
     ``effective_preset`` — same corrections, byte-identical graph. If a
     future emitter change starts reading region delay/polarity fields
     directly, both call sites must be revisited together or they diverge.
+
+    ``candidate.linearization`` (empty for a plain trims candidate or a
+    pre-PR-C persisted one) is reduced to the emitter's own filter-list shape
+    by the shared helper,
+    ``jasper.active_speaker.linearization_fit.linearization_filters_by_role``
+    — the same reduction ``baseline_profile.build_baseline_profile_candidate``
+    uses, so the two RICH-candidate call sites never drift. NOT shared with
+    ``baseline_profile.recompose_applied_baseline_yaml``: that seam reads an
+    already-reduced snapshot and deliberately re-validates it inline instead
+    (see ``linearization_filters_by_role``'s own docstring for why calling
+    it on an already-reduced mapping is a trap, not a valid consolidation).
     """
+
+    from .linearization_fit import linearization_filters_by_role
 
     preset = effective_preset(candidate)
     corrections = driver_corrections(candidate)
+    linearization = linearization_filters_by_role(candidate.linearization)
     return emit_active_speaker_baseline_config(
         preset,
         playback_device=playback_device,
         corrections=corrections,
+        linearization=linearization,
         **emit_kwargs,
     )
 

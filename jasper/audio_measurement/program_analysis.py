@@ -248,6 +248,27 @@ VERIFY_TRACKING_SMOOTHING_FRACTION = 6
 # bench distributions on notch depth/shift variability.
 VERIFY_NOTCH_EXCLUSION_DB = 12.0
 
+# Flatness-verify (#1668 PR-D) — a SIBLING claim to integration-verify
+# (verify_tracking) above, deliberately never folded into it (design doc
+# "Verification splits into two named claims": integration-verify checks the
+# applied crossover realized ITS OWN predicted summation — a comparison that
+# structurally cannot see an uncompensated tweeter rolloff, since the
+# prediction shares that rolloff; flatness-verify is a broadband "is the
+# gated response flat" claim, independent of Fc/priors). Do not name
+# anything here bare "flatness" — jasper.audio_measurement.program_analysis.
+# CrossoverCandidate.flatness_improvement_db is an UNRELATED Layer-1b metric
+# (anchor-vs-selected-delay ripple improvement), not this stage.
+#
+# Upper band edge: the design doc's "top of the table" contract runs to
+# ~16 kHz. The lower edge is this capture's OWN gated validity floor
+# (DriverResponse.validity_floor_hz) — no fixed lower constant, since the
+# floor is capture/room-dependent (~143-200 Hz in the JTS3 room).
+FLATNESS_VERIFY_HI_HZ = 16_000.0
+# PROVISIONAL — bench-derive. Report-only in this PR; nothing gates on it
+# until PR-E wires an accept/reject threshold (design doc build-order step 2,
+# closed-loop verify).
+FLATNESS_VERIFY_TOLERANCE_DB = 3.0
+
 ANALYSIS_KIND = "jts_program_analysis"
 
 
@@ -606,6 +627,12 @@ class ProgramAnalysis:
     summed_response: DriverResponse | None = None
     summed_ripple_db: float | None = None
     verify_tracking: dict[str, Any] | None = None
+    # Flatness-verify (#1668 PR-D) — set only by _analyze_verify, independent
+    # of fc_hz/priors.predicted_sum (summed_response only; see
+    # FLATNESS_VERIFY_HI_HZ's own comment for why this is a SIBLING of
+    # verify_tracking, never folded into it). None when summed_response
+    # carries no usable validity floor (see _flatness_tracking).
+    flatness_tracking: dict[str, Any] | None = None
     # MEASURE-predicted aligned target magnitude ``(freqs_hz, magnitude_db)`` —
     # the flattest-achievable zero-residual sum (design §5.6.6). The
     # v2 conductor hands this to the VERIFY analysis as
@@ -2441,6 +2468,50 @@ def _build_candidate(
     return candidate, (freqs, predicted_db)
 
 
+def _flatness_tracking(summed: DriverResponse) -> dict[str, Any] | None:
+    """Flatness-verify (#1668 PR-D): gated response flatness from this
+    capture's OWN validity floor to :data:`FLATNESS_VERIFY_HI_HZ`, computed
+    independently of crossover Fc/priors — ``summed_response`` alone.
+
+    Reuses :func:`~jasper.audio_measurement.analysis.tracking_error_db` with
+    a CONSTANT (all-zero) "predicted" curve: that comparator mean-centers
+    the error before scoring it
+    (``analysis._offset_invariant_rms_and_max``), so subtracting any
+    constant and re-mean-centering is a no-op — the actual constant chosen
+    is irrelevant to the result. This reduces the shared tracking
+    comparator to pure flatness-vs-band-mean with no second code path
+    (pinned by a level-shift-invariance test).
+
+    Returns ``None`` when this capture carries no usable (finite, below the
+    ceiling) validity floor — there is then no honest lower band edge to
+    measure from.
+    """
+    floor_hz = summed.validity_floor_hz
+    if (
+        floor_hz is None
+        or not math.isfinite(floor_hz)
+        or floor_hz <= 0.0
+        or floor_hz >= FLATNESS_VERIFY_HI_HZ
+    ):
+        return None
+    band = (floor_hz, FLATNESS_VERIFY_HI_HZ)
+    # Same smoothing fraction as integration-verify's own tracking comparator
+    # — this is the sibling claim, not a differently-tuned one.
+    measured_db = analysis_mod.smooth_fractional_octave(
+        summed.freqs_hz, summed.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION,
+    )
+    flat_target_db = np.zeros_like(measured_db)
+    rms_db, max_db = analysis_mod.tracking_error_db(
+        summed.freqs_hz, measured_db, flat_target_db, band,
+    )
+    return {
+        "band_hz": [band[0], band[1]],
+        "rms_db": rms_db,
+        "max_db": max_db,
+        "tolerance_db": FLATNESS_VERIFY_TOLERANCE_DB,
+    }
+
+
 def _analyze_verify(
     program, capture, sample_rate, global_offset, locations,
     calibration, priors,
@@ -2455,6 +2526,10 @@ def _analyze_verify(
         "summed", full_ir, sample_rate,
         calibration=calibration, ambient_report=None, fc_hz=fc_hz, n_fft=n_fft,
     )
+    # Flatness-verify (#1668 PR-D): computed unconditionally (independent of
+    # fc_hz/priors — see _flatness_tracking's own docstring), unlike
+    # integration-verify's tracking below which requires both.
+    flatness = _flatness_tracking(summed)
     ripple = None
     tracking = None
     if fc_hz is not None:
@@ -2533,6 +2608,7 @@ def _analyze_verify(
         summed_response=summed,
         summed_ripple_db=ripple,
         verify_tracking=tracking,
+        flatness_tracking=flatness,
         pilots=pilots,
         linearity_ok=linearity_ok,
         channel_map_ok=channel_map_ok,

@@ -1029,6 +1029,13 @@ def _frozen_applied_profile(
         "gain_provenance": dict(applied.get("gain_provenance") or {}),
         "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
+        # Layer-1a driver linearization (#1668 PR-D). Mirrors "corrections"'s
+        # own top-level convenience copy — the authoritative copy consumed by
+        # recompose_applied_baseline_yaml lives inside recomposition_snapshot
+        # (already carried whole below); this top-level key is for callers
+        # that want "what's currently applied" without unpacking the
+        # snapshot. Absent on any pre-PR-D applied profile (era-tolerant).
+        "linearization": dict(applied.get("linearization") or {}),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
         # Quality state belongs to the immutable applied anchor too.  Dropping
         # it here lets an older sensitivity-only profile masquerade as a
@@ -1608,6 +1615,26 @@ def build_baseline_profile_candidate(
             applied_profile_context=applied_anchor,
         )
     issues.extend(correction_issues)
+    # Layer-1a driver linearization (#1668 PR-D). Threads whatever the
+    # measured candidate carries: empty for a plain trims candidate, a
+    # legacy MeasuredElectricalCandidate (no ``.linearization`` attribute —
+    # hence ``getattr`` with a default), or a pre-PR-C persisted
+    # MeasuredCrossoverCandidate. Reduced to the emitter's own input shape by
+    # the shared helper, ``linearization_fit.linearization_filters_by_role``
+    # — the same reduction ``measured_crossover_candidate.compile_candidate_config``
+    # uses, so the two RICH-candidate call sites reduce identically. NOT
+    # shared with ``recompose_applied_baseline_yaml`` below: that seam reads
+    # THIS function's already-reduced output back out of a persisted
+    # snapshot, so it deliberately re-validates the reduced shape inline
+    # instead of calling this helper again (calling it on an already-reduced
+    # mapping silently returns {} for every role — see
+    # linearization_filters_by_role's own docstring). Do not "consolidate"
+    # the two.
+    from .linearization_fit import linearization_filters_by_role
+
+    linearization = linearization_filters_by_role(
+        getattr(measured_candidate, "linearization", None) or {}
+    )
     if preserved_applied_profile is not None:
         preserved_corrections = (
             preserved_applied_profile.get("corrections")
@@ -1750,6 +1777,7 @@ def build_baseline_profile_candidate(
                 out_path=config_target,
                 baseline_id=f"baseline-{_safe_id(topology.topology_id)}",
                 bass_extension_profile=bass_extension_profile,
+                linearization=linearization,
             )
             # A v2 measured candidate carrying delay/polarity re-proves its
             # exact requested delay binding against the freshly compiled text
@@ -1856,6 +1884,14 @@ def build_baseline_profile_candidate(
         "gain_provenance": correction_meta["gain_provenance"],
         "corrections_provenance": correction_meta["corrections_provenance"],
         "level_match": correction_meta["level_match"],
+        # Layer-1a driver linearization (#1668 PR-D) — same reduced
+        # {role: [filter_dict, ...]} shape emit_active_speaker_baseline_config
+        # consumes; mirrors "corrections" (top-level convenience copy of what
+        # the immutable recomposition_snapshot below also carries). N1
+        # (#1668 PR-D review): this top-level copy is NOT what
+        # recompose_applied_baseline_yaml reads -- see that field's own
+        # comment inside recomposition_snapshot below.
+        "linearization": linearization,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
         # An unmeasured per-driver trim is explicitly provisional. Surfaced in
@@ -1897,6 +1933,13 @@ def build_baseline_profile_candidate(
             "corrections_provenance": correction_meta["corrections_provenance"],
             "level_match": correction_meta["level_match"],
             "tuning_owner": tuning_owner,
+            # Layer-1a driver linearization (#1668 PR-D): the immutable input
+            # every future recompose (room/preference EQ, /sound) re-emits
+            # verbatim — THIS is the copy recompose_applied_baseline_yaml
+            # reads (not the top-level mirror above). Absent/empty for every
+            # profile saved before this stage existed (era-tolerant on read;
+            # see that function's own snapshot.get("linearization", {})).
+            "linearization": linearization,
             **candidate_graph_context,
         },
     }
@@ -2007,6 +2050,26 @@ def recompose_applied_baseline_yaml(
             "applied_baseline_snapshot_invalid",
             "the applied active-speaker snapshot is missing corrections or playback device",
         )]
+    # Layer-1a driver linearization (#1668 PR-D): read era-tolerantly (absent
+    # on any pre-PR-D snapshot -> {}, "no linearization was fit" — the same
+    # convention MeasuredCrossoverCandidate.from_mapping uses for its own
+    # "linearization" key). Already in the emitter's reduced input shape —
+    # build_baseline_profile_candidate stores it that way (see its own
+    # linearization_filters_by_role call) — so no further reduction here.
+    # This is the fix for the CRITICAL silent-reversion gap: before this
+    # read, every /sound preference-EQ recompose (and any other
+    # recompose_applied_baseline_yaml caller) silently dropped an applied
+    # profile's linearization stage on the next recompose.
+    linearization_raw = snapshot.get("linearization")
+    linearization = (
+        {
+            str(role): list(filters)
+            for role, filters in linearization_raw.items()
+            if isinstance(filters, Sequence) and not isinstance(filters, (str, bytes))
+        }
+        if isinstance(linearization_raw, Mapping)
+        else {}
+    )
     yaml = emit_active_speaker_baseline_config(
         preset,
         playback_device=playback_device,
@@ -2024,6 +2087,7 @@ def recompose_applied_baseline_yaml(
             if isinstance(bass_extension_profile, BassExtensionProfile)
             else None
         ),
+        linearization=linearization,
     )
     return yaml, []
 
@@ -2768,6 +2832,27 @@ async def _apply_baseline_profile_locked(
         candidate_fingerprint=candidate_identity,
         applied_fingerprint=candidate_identity,
         applied_at=applied["applied_at"],
+    )
+    # Layer-1a driver linearization observability (#1668 PR-D review SF3):
+    # one line per successful apply recording what linearization (if any)
+    # reached hardware -- per-role filter counts, or none=true when the
+    # candidate carried no linearization stage. Read from the candidate's
+    # own top-level "linearization" mirror (see
+    # build_baseline_profile_candidate), the same reduced
+    # {role: [filter_dict, ...]} shape the emitter consumed.
+    applied_linearization = candidate.get("linearization")
+    if not isinstance(applied_linearization, Mapping):
+        applied_linearization = {}
+    log_event(
+        logger,
+        "dsp.baseline_linearization",
+        baseline_id=candidate.get("baseline_id"),
+        topology_id=topology.topology_id,
+        **(
+            {role: len(filters) for role, filters in applied_linearization.items()}
+            if applied_linearization
+            else {"none": True}
+        ),
     )
     await _record_apply_outcome_into_bundle(
         measurements,
