@@ -11,8 +11,8 @@ controls on the Pi side:
   - "PCM Capture Switch"   (bool — Mac mute toggle)
 
 This module polls those controls at 4 Hz via `amixer cget`, maps the
-raw value to JTS's 0-100 listening_level (amplitude-normalized over
-the mixer's dB range — see `_raw_to_pct`), and POSTs to
+raw value to JTS's 0-100 listening_level by inverting macOS's observed
+square-root step transfer (see `_raw_to_pct`), and POSTs to
 jasper-control's /volume/set endpoint with
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
@@ -46,6 +46,7 @@ import asyncio
 import logging
 import re
 import subprocess
+import time
 from typing import Optional
 
 from jasper.control.client import AsyncControlClient, ControlError
@@ -57,6 +58,11 @@ logger = logging.getLogger(__name__)
 # Poll cadence. 250 ms = 4 Hz. Faster wastes CPU; slower introduces
 # perceptible lag.
 POLL_INTERVAL_SEC = 0.25
+# When jasper-control declines an observation because USB is not the active
+# source yet, retry at a bounded cadence. This closes the boot/deploy race where
+# the first mixer read arrived before source activation and was then cached
+# forever. A changed host value bypasses the delay and publishes immediately.
+POST_RETRY_INTERVAL_SEC = 1.0
 
 # Mixer control names as the u_audio gadget driver exposes them.
 # These are fixed by the kernel module, not by our gadget descriptor —
@@ -131,11 +137,6 @@ USBSINK_VOLUME_STEP_DB = 1.0
 # tests/test_usbsink_volume_bridge.py — the bridge only reads physical dB back.
 
 
-def _db_to_amplitude(db: float) -> float:
-    """Physical dB -> linear amplitude (10**(dB/20))."""
-    return 10.0 ** (db / 20.0)
-
-
 class VolumeBridge:
     """Polls the gadget mixer at 4 Hz, POSTs changes to jasper-control.
 
@@ -143,9 +144,10 @@ class VolumeBridge:
         bridge.run()  # async, blocks until cancelled
 
     The bridge does NOT cache jasper-control state. Every observed
-    mixer change triggers one POST; the coordinator on the receiving
-    side dedupes via observe_source_volume's echo logic. This keeps
-    the bridge stateless and easy to restart.
+    mixer change triggers one POST; a value declined because USB is
+    not active yet is retried at a bounded cadence until the controller
+    acknowledges it. Accepted values are deduplicated locally, while
+    the coordinator owns source and echo policy.
     """
 
     def __init__(
@@ -178,9 +180,12 @@ class VolumeBridge:
         self._db_source: str = "reconstructed"
 
         # Last value we POSTed — dedupes successive identical polls.
-        # None until the first successful read; -1 sentinel would also
-        # work but None is clearer for "no observation yet".
+        # None until jasper-control confirms that the observation was accepted;
+        # transport success alone is insufficient because the controller
+        # deliberately declines observations from an inactive source.
         self._last_published_pct: Optional[int] = None
+        self._last_attempted_pct: Optional[int] = None
+        self._retry_not_before: float = 0.0
 
         # Bound once `run()` clears mixer discovery (mirrors where the old
         # httpx client was opened). None means discovery has not succeeded
@@ -340,67 +345,55 @@ class VolumeBridge:
         pct = 0 if muted else self._raw_to_pct(raw_vol)
         if pct == self._last_published_pct:
             return
-        await self._post(pct)
-        self._last_published_pct = pct
+        now = time.monotonic()
+        if (
+            pct == self._last_attempted_pct
+            and now < self._retry_not_before
+        ):
+            return
+        self._last_attempted_pct = pct
+        accepted = await self._post(pct)
+        if accepted:
+            self._last_published_pct = pct
+            self._retry_not_before = 0.0
+        else:
+            self._retry_not_before = now + POST_RETRY_INTERVAL_SEC
 
     def _raw_to_pct(self, raw: int) -> int:
         """THE volume curve: raw mixer STEP INDEX -> JTS 0-100 percent.
 
-        Two steps, in order:
+        The kernel u_audio control reports a 0-based step index, not dB (see
+        the amixer-format comment above). On the live Mac/UAC2 path, macOS
+        maps its visible slider fraction to approximately the square root of
+        that normalized step index. The bridge must invert that transfer:
 
-        1. Recover PHYSICAL dB from the step index. The kernel u_audio
-           control reports a 0-based step index, not dB (see the
-           amixer-format comment above), so we must map index -> dB first.
-           `_index_to_db` interpolates linearly across the physical dB
-           endpoints (`_db_min`.._db_max, from the DB_MINMAX TLV or the
-           advertised-range fallback) — steps are uniform in dB, so this is
-           exact. Skipping this and normalizing the raw index directly is
-           the reverted-units bug: the index spans a tiny ~0.5-"dB" range if
-           misread as centi-dB and the curve collapses to ~linear.
+            visible_fraction = normalized_step_fraction ** 2
 
-        2. Normalize in the AMPLITUDE domain, not linearly in dB. macOS maps
-           its slider POSITION perceptually (~logarithmically) onto the
-           advertised dB range, so a linear-in-dB inverse over-reads the
-           bottom half of the slider (a low-mid slider read ~73% before this
-           fix; issue #1698). Converting the recovered dB to a linear
-           amplitude (10**(dB/20)) and normalizing THAT approximates the
-           perceptual taper — the standard close approximation. Exact
-           25%<->25% tracking would need Apple's undocumented transfer curve;
-           this, plus the narrow advertised range (-50..0 dB, written by
-           jasper-usbgadget-up), is what lands a real mid-slider near mid.
-           Final feel needs an on-Mac slider check.
+        Hardware points pin the contract: Mac 13% -> step 18/50 -> 12.96%;
+        Mac 25% -> step 25/50 -> 25%; and Mac 64% -> step 40/50 -> 64%.
+        The prior physical-dB-to-amplitude conversion double-applied a
+        perceptual correction: step 40 is -10 dB and became 31.6%, producing
+        the observed Mac 64% / JTS 31% mismatch.
 
         This is one END of a two-ended contract. The other end is
         jasper.volume_curve.percent_to_db, which turns the resulting
         listening_level back into a CamillaDSP output dB over the SAME
         -50 dB floor we advertise to the host. Keep the two aligned:
-        host slider -> UAC2 dB (over -50..0) -> _raw_to_pct (here) ->
+        host slider -> UAC2 step index (over the advertised -50..0 dB) ->
+        _raw_to_pct (here) ->
         listening_level -> percent_to_db.
+
+        The DB_MINMAX TLV remains load-bearing observability: it proves that
+        configfs accepted the intended physical range. It is not the Mac
+        slider's displayed percent and must not be amplitude-normalized.
         """
-        if self._vol_max - self._vol_min <= 0:
+        span = self._vol_max - self._vol_min
+        if span <= 0:
             return 50  # degenerate step range; pick something sane
-        amp = _db_to_amplitude(self._index_to_db(raw))
-        amp_min = _db_to_amplitude(self._db_min)
-        amp_max = _db_to_amplitude(self._db_max)
-        denom = amp_max - amp_min
-        if denom <= 0:
-            return 50  # degenerate dB range; pick something sane
-        pct = (amp - amp_min) / denom * 100.0
+        step_fraction = (raw - self._vol_min) / span
+        step_fraction = max(0.0, min(1.0, step_fraction))
+        pct = step_fraction * step_fraction * 100.0
         return max(0, min(100, round(pct)))
-
-    def _index_to_db(self, index: int) -> float:
-        """Map a 0-based ALSA step index to physical dB.
-
-        Linear interpolation across the physical dB endpoints
-        (`_db_min`.._db_max) using the step-index span. Steps are uniform in
-        dB, so this recovers the true dB exactly; index below/above the range
-        extrapolates and is clamped downstream by the [0,100] percent clamp.
-        """
-        idx_span = self._vol_max - self._vol_min
-        if idx_span <= 0:
-            return self._db_max
-        frac = (index - self._vol_min) / idx_span
-        return self._db_min + frac * (self._db_max - self._db_min)
 
     # ------------------------------------------------------------------
     # amixer subprocess helpers
@@ -444,9 +437,9 @@ class VolumeBridge:
     # jasper-control POST
     # ------------------------------------------------------------------
 
-    async def _post(self, pct: int) -> None:
+    async def _post(self, pct: int) -> bool:
         if self._control is None:
-            return
+            return False
         try:
             resp = await self._control.set_volume(pct, source="usbsink")
         except ControlError as e:
@@ -457,7 +450,7 @@ class VolumeBridge:
                 error=e,
                 level=logging.WARNING,
             )
-            return
+            return False
         if not resp.ok:
             log_event(
                 logger,
@@ -466,13 +459,38 @@ class VolumeBridge:
                 status=resp.status,
                 level=logging.WARNING,
             )
-            return
+            return False
+        try:
+            payload = resp.json()
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            accepted = payload.get("observation_applied")
+            if accepted is None:
+                # Rolling-upgrade compatibility with an older control daemon:
+                # its response lacks the explicit acknowledgement, but an
+                # echoed canonical percent still proves the value landed.
+                accepted = payload.get("percent") == pct
+            if not bool(accepted):
+                log_event(
+                    logger,
+                    "usbsink.volume_observation_deferred",
+                    pct=pct,
+                    canonical_pct=payload.get("percent", "unknown"),
+                    level=logging.DEBUG,
+                )
+                return False
+        else:
+            # A successful but unparseable response cannot prove that the
+            # source-active gate accepted the observation.
+            return False
         log_event(
             logger,
             "usbsink.volume_observed",
             pct=pct,
             source="host_slider",
         )
+        return True
 
 
 class VolumeBridgeUnavailable(RuntimeError):

@@ -572,7 +572,12 @@ Concretely, in `jasper.volume_coordinator.VolumeCoordinator`:
   robustness and one fewer dependency — see the module docstring). When
   the user moves the Mac slider, it calls
   `coordinator.observe_source_volume(Source.USBSINK, value_pct)`,
-  which translates and updates `listening_level` + `camilla.main_volume`
+  which translates and updates `listening_level` + `camilla.main_volume`.
+  The controller explicitly acknowledges whether the source-active gate
+  accepted the observation. A value first seen while USB is idle is retried
+  once per second until USB becomes active; only an accepted value is
+  deduplicated. This prevents a deploy/control restart from caching a
+  declined initial read forever.
 - Outbound: dial twist / voice "louder" goes through the normal
   `_set_camilla` path. **No write back to the gadget mixer**.
 
@@ -616,9 +621,11 @@ sliders.
 - **The physical dB scale rides a DB_MINMAX TLV.** `u_audio_volume_tlv`
   attaches a `DB_MINMAX` TLV; `amixer cget` decodes it as
   `dBminmax-min=-50.00dB,max=0.00dB`. That is the ground-truth dB, so the
-  bridge parses it to recover physical dB from the step index. When the
-  TLV can't be parsed it reconstructs dB from the advertised-range
-  constants (`USBSINK_VOLUME_DB_MIN/MAX`).
+  bridge parses it for startup observability: it proves the descriptor
+  range actually stuck. When the TLV can't be parsed it reports the
+  advertised-range constants (`USBSINK_VOLUME_DB_MIN/MAX`) as its
+  reconstructed diagnostic range. The displayed-slider mapping below does
+  not convert this physical dB scale to amplitude.
 
 **Two coupled levers make the Mac slider track JTS (issue #1698):**
 
@@ -634,36 +641,32 @@ sliders.
    (`write_if_present`), so an older kernel that lacks the attrs falls
    back to the default range rather than failing gadget bring-up.
 
-2. **Recover physical dB from the step index, then normalize in the
-   amplitude domain** (not linearly in dB). macOS maps its slider POSITION
-   perceptually (~logarithmically) onto the dB range, so a linear inverse
-   over-reads the low half of the slider. Converting the recovered dB to a
-   linear amplitude and normalizing THAT approximates the perceptual taper:
+2. **Invert macOS's observed step transfer, not the physical dB amplitude.**
+   The live Mac/UAC2 path maps the visible slider fraction to approximately
+   the square root of the normalized ALSA step index. Therefore the bridge
+   squares the normalized step fraction to recover the displayed percentage.
+   Converting the TLV dB to amplitude was a double perceptual correction: live
+   step 40/50 is -10 dB, so it produced 31%, while the Mac visibly showed 64%.
 
 ```python
-# volume_bridge.py:_raw_to_pct — index -> physical dB -> amplitude %.
-# `idx` is the 0-based STEP INDEX from `amixer cget`; db_min/db_max are the
-# physical endpoints from the DB_MINMAX TLV (or reconstruction).
-def _raw_to_pct(idx, idx_min, idx_max, db_min, db_max):   # idx 0..50, db -50..0
-    frac = (idx - idx_min) / (idx_max - idx_min)          # step -> 0..1
-    db   = db_min + frac * (db_max - db_min)              # -> physical dB
-    amp     = 10 ** (db     / 20)                         # dB -> amplitude
-    amp_min = 10 ** (db_min / 20)
-    amp_max = 10 ** (db_max / 20)
-    return max(0, min(100, round((amp - amp_min) / (amp_max - amp_min) * 100)))
+# volume_bridge.py:_raw_to_pct — index -> visible Mac slider %.
+# `idx` is the 0-based STEP INDEX from `amixer cget`.
+def _raw_to_pct(idx, idx_min, idx_max):
+    frac = (idx - idx_min) / (idx_max - idx_min)
+    frac = max(0.0, min(1.0, frac))
+    return round(frac * frac * 100)
 ```
 
-Reference points over -50..0 dB: step 0 → 0%, step 25 (-25 dB) → ~5%,
-step 44 (-6 dB) → ~50%, step 50 → 100% (most of the percent range lives
-in the top few dB, which is what cancels Apple's taper).
+Live reference points over the 0..50 step range: step 18 → 13%, step 25
+→ 25%, step 40 → 64%, and step 50 → 100%. Because the gadget exposes
+1 dB steps, 50% and 75% quantize to roughly 49–52% and 74%.
 
 `_raw_to_pct` and `percent_to_db` are the two ends of one contract
-(host slider → UAC2 dB over -50..0 → `_raw_to_pct` → `listening_level`
+(host slider → UAC2 step index over -50..0 dB → `_raw_to_pct` → `listening_level`
 → `percent_to_db` → Camilla dB); keep them aligned. Exact 25%↔25%
-tracking needs Apple's undocumented transfer curve — this is the
-standard close approximation, and the final feel wants an on-Mac slider
-check (set the Mac to 25/50/75%, read `listening_level`, confirm they
-track). One-shot on-Pi verification of the live representation:
+tracking is observed at step 25/50; the remaining difference is the
+one-step quantization of the advertised control. One-shot on-Pi verification
+of the live representation:
 `amixer -c UAC2Gadget cget numid=<PCM Capture Volume>` — expect
 `min=0,max=50` and a `dBminmax-min=-50.00dB,max=0.00dB` TLV line. The
 translation lives entirely in `jasper/usbsink/volume_bridge.py`; the
@@ -1934,7 +1937,7 @@ sufficient for incident debugging.
 ### Hardware-free tests (`.venv/bin/pytest`)
 
 `tests/test_usbsink_volume.py`:
-- `gadget_raw_to_pct()` math: 0 dB → 100%, min → 0%, mid → 50%
+- `gadget_raw_to_pct()` math: step fraction squared, endpoints preserved
 - listening-level conversion symmetry
 - amixer stub: feed synthetic `amixer cget` output, verify POST payload
 
@@ -2019,14 +2022,11 @@ blockers; defaults are documented for each.
    -50..0 dB capture-volume range (`c_volume_min/max/res` =
    -12800/0/256 in 1/256 dB, best-effort) aligned with `percent_to_db`'s
    -50 dB floor, instead of the kernel's wide ~-128..0 dB default that
-   compressed the slider; (b) `volume_bridge._raw_to_pct` recovers
-   physical dB from the step index (via the DB_MINMAX TLV, advertised
-   range as fallback) then normalizes in the AMPLITUDE domain
-   (`10**(dB/20)`), the standard close approximation of the perceptual
-   taper. See §3.2 "Translation" for the unit facts and the amplitude
-   mapping. Exact 25%↔25% needs Apple's undocumented transfer curve —
-   the advertised range + amplitude curve land a real mid-slider near
-   mid, but the final values still want an on-Mac slider-feel check.
+   compressed the slider; (b) `volume_bridge._raw_to_pct` treats the ALSA
+   value as a step index and squares its normalized fraction, inverting the
+   transfer measured on the live Mac. The DB_MINMAX TLV remains the
+   ground-truth physical-range check; it is observability, not the displayed
+   slider percentage. See §3.2 "Translation" for the unit facts and mapping.
 4. **Preempt-release window**: how long after all other sources go
    idle before USB un-mutes? Instant feels right (matches mux's tick
    cadence). **Default: instant on next mux tick (1 s max delay).**
@@ -2336,7 +2336,10 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-07-22 (source-neutral latest-start-wins arbitration,
+Last verified: 2026-07-24 (live UAC2 volume evidence confirmed the kernel
+step-index/TLV model and replaced the double-correcting dB-amplitude mapping
+with the observed square-law inverse: Mac 13%→step 18→13%, 25%→25→25%, and
+64%→40→64%. Prior 2026-07-22: source-neutral latest-start-wins arbitration,
 process-local activation order, persistent-pin/disable opt-outs, alert/patrol
 single-policy ownership, AirPlay receiver-session cleanup after USB wins, and
 UI guidance rechecked against `jasper/mux.py`, mux contract tests, and both

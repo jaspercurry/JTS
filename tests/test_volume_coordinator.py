@@ -2376,7 +2376,8 @@ async def test_observe_usbsink_updates_listening_level_when_active(tmp_path):
     persistence.save_listening_level(80)
 
     # Mac slider drops to 45%. Volume bridge POSTs that through.
-    await coord.observe_source_volume(Source.USBSINK, 45)
+    accepted = await coord.observe_source_volume(Source.USBSINK, 45)
+    assert accepted is True
     assert coord.get_listening_level() == 45
     assert persistence.load().listening_level == 45
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(45))
@@ -2548,7 +2549,8 @@ async def test_observe_usbsink_when_inactive_is_ignored(tmp_path):
     coord._level = 70
     persistence.save_listening_level(70)
 
-    await coord.observe_source_volume(Source.USBSINK, 20)
+    accepted = await coord.observe_source_volume(Source.USBSINK, 20)
+    assert accepted is False
     assert coord.get_listening_level() == 70
 
 

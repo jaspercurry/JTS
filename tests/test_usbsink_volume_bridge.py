@@ -325,72 +325,52 @@ def test_read_switch_value_returns_muted_on_unparseable():
 
 
 # ----------------------------------------------------------------------
-# _raw_to_pct() — step-index -> physical dB -> amplitude-domain % (#1698)
+# _raw_to_pct() — step-index -> visible macOS slider percent (#1698)
 #
 # HARDWARE-REAL inputs: the kernel reports a 0-based STEP INDEX (0..50),
-# not dB. _raw_to_pct recovers physical dB from the index (linear across the
-# TLV/reconstructed dB endpoints) then amplitude-normalizes (10**(dB/20)),
-# because macOS maps its slider POSITION perceptually onto the dB range so a
-# linear inverse over-reads the low half of the slider.
+# not dB. On the live Mac/UAC2 path, the normalized step fraction is the
+# square root of the visible slider fraction, so _raw_to_pct squares it.
 # ----------------------------------------------------------------------
 
 
-def _old_linear_in_index_pct(index: int, idx_min: int, idx_max: int) -> int:
-    """The pre-#1698 mapping, recomputed here so the direction assertions
-    below are non-vacuous. The old code normalized the raw ALSA value
-    linearly across [min,max]; fed a 0-based step index that is exactly
-    linear-in-step (== linear-in-dB), which is what this replaces."""
-    span = idx_max - idx_min
-    return max(0, min(100, round((index - idx_min) / span * 100.0)))
-
-
-def test_raw_to_pct_amplitude_endpoints():
-    """(b) Endpoints are preserved: the min step index (0) maps to 0%, the
+def test_raw_to_pct_square_curve_endpoints():
+    """Endpoints are preserved: the min step index (0) maps to 0%, the
     max step index (50) maps to 100%."""
     bridge = VolumeBridge()
     _set_range(bridge)
-    assert bridge._raw_to_pct(IDX_MIN) == 0    # -50 dB -> amp_min -> 0%
-    assert bridge._raw_to_pct(IDX_MAX) == 100  # 0 dB -> amp_max -> 100%
+    assert bridge._raw_to_pct(IDX_MIN) == 0
+    assert bridge._raw_to_pct(IDX_MAX) == 100
 
 
-def test_raw_to_pct_mid_step_reads_lower_than_old_linear():
-    """(c) The dB midpoint step lands LOW in the amplitude domain, well below
-    the old linear result for the same step. Step 25 -> -25 dB -> ~5%
-    amplitude, where the old linear-in-step curve read 50%. dB is logarithmic,
-    so -25 dB is acoustically quiet and must map low. The range narrowing (to
-    -50..0) is what then lets a real mid-slider land near mid on-Mac."""
+@pytest.mark.parametrize(
+    ("step_index", "expected_pct"),
+    [
+        (18, 13),  # observed Mac 13%: (18/50)^2 = 12.96%
+        (25, 25),  # observed Mac 25%: (25/50)^2 = 25%
+        (35, 49),  # one quantized side of Mac 50%
+        (36, 52),  # the other quantized side of Mac 50%
+        (40, 64),  # observed screenshot: Mac 64%, formerly JTS 31%
+        (43, 74),  # expected quantized Mac 75%
+    ],
+)
+def test_raw_to_pct_inverts_observed_macos_step_transfer(
+    step_index: int,
+    expected_pct: int,
+):
+    """The square curve reproduces live Mac slider points and the expected
+    one-step quantization around 50% and 75%."""
     bridge = VolumeBridge()
     _set_range(bridge)
-    step = 25  # dB midpoint of the 0..50 step range -> -25 dB
-
-    new_pct = bridge._raw_to_pct(step)
-    old_pct = _old_linear_in_index_pct(step, IDX_MIN, IDX_MAX)
-
-    assert old_pct == 50  # pin the old behavior so this stays non-vacuous
-    assert new_pct < old_pct
-    assert new_pct <= 10  # amplitude domain: 10**(-25/20) ≈ 5.6%
+    assert bridge._raw_to_pct(step_index) == expected_pct
 
 
-def test_raw_to_pct_reads_step_index_as_db_not_centidb():
-    """Guard against the reverted-units bug (adversarial review B2). The ALSA
-    value is a 0-based STEP INDEX, not centi-dB; physical dB must be recovered
-    (index -> dB across the -50..0 endpoints) BEFORE the amplitude step. If a
-    step index were instead amplitude-normalized as if it were centi-dB
-    (dB = raw*0.01, over a ~0.5 dB span with min index 0), the curve would
-    collapse to ~linear and step 25 would read ~50%. Correct handling reads
-    step 25 as -25 dB -> ~5%."""
+def test_raw_to_pct_does_not_treat_physical_db_as_slider_percent():
+    """The DB_MINMAX TLV proves the advertised physical scale, but physical
+    amplitude is not the visible Mac slider. Step 40 is -10 dB: amplitude
+    normalization produced the broken 31%, while the step inverse is 64%."""
     bridge = VolumeBridge()
     _set_range(bridge)
-
-    # Reproduce the buggy centi-dB reading to prove the two differ sharply.
-    def _buggy_centidb_pct(index: int) -> int:
-        def amp(raw: int) -> float:
-            return 10.0 ** ((raw * 0.01) / 20.0)
-        lo, hi = amp(bridge._vol_min), amp(bridge._vol_max)
-        return max(0, min(100, round((amp(index) - lo) / (hi - lo) * 100.0)))
-
-    assert _buggy_centidb_pct(25) >= 40   # the bug reads a step index ~linear
-    assert bridge._raw_to_pct(25) <= 10   # correct dB recovery reads it low
+    assert bridge._raw_to_pct(40) == 64
 
 
 def test_raw_to_pct_clamps_out_of_range_values():
@@ -418,7 +398,7 @@ def test_raw_to_pct_degenerate_range_returns_50():
 #   - deploy/usbsink/jasper-usbgadget-up advertises the -50..0 dB range
 #     to the host (so macOS tapers its slider over it), in configfs 1/256-dB
 #     units;
-#   - volume_bridge recovers physical dB + amplitude-normalizes.
+#   - volume_bridge inverts macOS's observed square-root step transfer.
 # They can't share code, so this pins the advertised 1/256-dB literals the
 # way tests/test_wifi_profile_hardening_contract.py pins the NM hardening set.
 # The SINGLE source of truth is the USBSINK_VOLUME_DB_* Python constants; the
@@ -501,8 +481,9 @@ async def test_tick_mute_overrides_to_zero(monkeypatch):
 
     posted = []
 
-    async def _fake_post(pct: int) -> None:
+    async def _fake_post(pct: int) -> bool:
         posted.append(pct)
+        return True
 
     monkeypatch.setattr(bridge, "_post", _fake_post)
 
@@ -524,8 +505,9 @@ async def test_tick_deduplicates_identical_polls(monkeypatch):
     monkeypatch.setattr(bridge, "_read_int_value", lambda numid: IDX_MAX)
     posted = []
 
-    async def _fake_post(pct: int) -> None:
+    async def _fake_post(pct: int) -> bool:
         posted.append(pct)
+        return True
 
     monkeypatch.setattr(bridge, "_post", _fake_post)
 
@@ -533,6 +515,70 @@ async def test_tick_deduplicates_identical_polls(monkeypatch):
     await bridge._tick()
     await bridge._tick()
     assert posted == [100]  # only first tick posted; subsequent are dedup'd
+
+
+@pytest.mark.asyncio
+async def test_tick_retries_observation_declined_before_source_activation(
+    monkeypatch,
+):
+    """HTTP 200 is not delivery: jasper-control can decline the initial
+    observation while USB is idle. Retry at a bounded cadence, then cache only
+    after the source-active gate accepts it."""
+    bridge = VolumeBridge()
+    bridge._vol_numid = 1
+    bridge._switch_numid = None
+    _set_range(bridge)
+
+    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 40)
+    posted = []
+    outcomes = iter([False, True])
+
+    async def _fake_post(pct: int) -> bool:
+        posted.append(pct)
+        return next(outcomes)
+
+    monkeypatch.setattr(bridge, "_post", _fake_post)
+
+    await bridge._tick()  # declined while inactive
+    await bridge._tick()  # bounded retry delay suppresses this poll
+    bridge._retry_not_before = 0.0  # advance beyond the retry interval
+    await bridge._tick()  # accepted on the next eligible retry
+    await bridge._tick()  # accepted value is now deduplicated
+
+    assert posted == [64, 64]
+    assert bridge._last_published_pct == 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"percent": 31, "observation_applied": False}, False),
+        ({"percent": 64, "observation_applied": True}, True),
+        ({"percent": 64}, True),  # rolling upgrade: old control response
+    ],
+)
+async def test_post_requires_application_acknowledgement(payload, expected):
+    """A 2xx response only counts as delivered when jasper-control confirms
+    that the source-active gate accepted the observation."""
+
+    class _Response:
+        ok = True
+        status = 200
+
+        def json(self):
+            return payload
+
+    class _Control:
+        async def set_volume(self, pct, *, source):
+            assert pct == 64
+            assert source == "usbsink"
+            return _Response()
+
+    bridge = VolumeBridge()
+    bridge._control = _Control()
+
+    assert await bridge._post(64) is expected
 
 
 @pytest.mark.asyncio
@@ -548,8 +594,9 @@ async def test_tick_skips_when_raw_read_fails(monkeypatch):
     monkeypatch.setattr(bridge, "_read_int_value", lambda numid: None)
     posted = []
 
-    async def _fake_post(pct: int) -> None:
+    async def _fake_post(pct: int) -> bool:
         posted.append(pct)
+        return True
 
     monkeypatch.setattr(bridge, "_post", _fake_post)
     await bridge._tick()
