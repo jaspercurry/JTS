@@ -1171,7 +1171,7 @@ clock-sync state.
 [`deploy/shairport-sync.conf.template`](../deploy/shairport-sync.conf.template).
 Level 2 emits enough post-SETUP detail to name the failing
 component. Cost is roughly 2× shairport's baseline log volume —
-well within the 200 MB persistent-journal cap from PR #160. Next
+well within the 500 MB persistent-journal cap from PR #160. Next
 recurrence should be diagnosable from the journal alone.
 
 **On the table if Layer 1 isn't enough**:

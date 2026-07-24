@@ -134,20 +134,20 @@ fi
 # lines per unit, and (c) repeated-message fingerprints. Streaming keeps memory
 # bounded to the small aggregate maps; combining the three avoids re-decompressing
 # the window three times. The fingerprint() function is kept byte-for-byte in
-# sync with fetch-pi-logs.sh's write_log_noise_summary().
+# sync with fetch-pi-logs.sh's write_log_noise_summary() — pinned by
+# tests/test_journal_review_fingerprint_contract.py.
 # ---------------------------------------------------------------------------
 journalctl --since "$SINCE" --no-pager -o short-iso 2>/dev/null \
   | awk -v EVENTS="$SCRATCH/cur_events" \
         -v RESTARTS="$SCRATCH/cur_restarts" \
         -v FPS="$SCRATCH/cur_fps" '
-    function fingerprint(line,   l) {
-      l = line
-      sub(/^[0-9-]+T[0-9:.+-]+[[:space:]]+[^[:space:]]+[[:space:]]+/, "", l)
-      gsub(/\[[0-9]+\]/, "[#]", l)
-      gsub(/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.+-]+/, "<ts>", l)
-      gsub(/[0-9]+/, "#", l)
-      gsub(/[[:space:]]+/, " ", l)
-      return l
+    function fingerprint(line) {
+      sub(/^[0-9-]+T[0-9:.+-]+[[:space:]]+[^[:space:]]+[[:space:]]+/, "", line)
+      gsub(/\[[0-9]+\]/, "[#]", line)
+      gsub(/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.+-]+/, "<ts>", line)
+      gsub(/[0-9]+/, "#", line)
+      gsub(/[[:space:]]+/, " ", line)
+      return line
     }
     # Skip journalctl meta/hint lines ("-- No entries --", "-- Boot … --",
     # blanks): every real short-iso entry begins with its ISO timestamp digit.
