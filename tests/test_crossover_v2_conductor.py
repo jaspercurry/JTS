@@ -50,6 +50,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
+    _SIGMA_TOLERABLE_DB,
     CrossoverV2Conductor,
     CrossoverV2FlowError,
     V2FlowSeams,
@@ -2227,6 +2228,19 @@ def test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit():
     np.testing.assert_allclose(limit_floored, limit_raw)  # ...but not the envelope term they feed
 
 
+def test_sigma_tolerable_db_matches_linearization_envelopes_own_table():
+    """SF1 (adversarial review, 2026-07-24): lockstep requirement. This
+    module's own comment on ``_SIGMA_TOLERABLE_DB`` explains why it is a
+    local mirror rather than an import — production code deliberately does
+    not cross that "no cross-module private imports" boundary
+    (linearization_envelope's module docstring). Tests are allowed to reach
+    across it anyway, specifically to pin the two tables in lockstep, so a
+    future edit to one can never silently drift from the other."""
+    from jasper.active_speaker import linearization_envelope
+
+    assert _SIGMA_TOLERABLE_DB == linearization_envelope._SIGMA_TOLERABLE_DB
+
+
 # --- conductor integration reorder ------------------------------------------
 
 
@@ -2420,3 +2434,137 @@ def test_wild_trim_boundary_exact_passes_just_above_falls_back():
     _run_phase(c3, 1, 1)
     _run_phase(c3, 2, 2)
     assert c3.candidate.role_attenuations_db == past_margin_raw
+
+
+# --------------------------------------------------------------------------- #
+# SF2 / SF3 (adversarial review, 2026-07-24 — #1668 PR-C review)
+# --------------------------------------------------------------------------- #
+#
+# SF2: an eligible speaker whose fit engine raises must degrade EXACTLY to
+# the ineligible path (raw trim, empty linearization) -- never fail the
+# whole MEASURE accept. SF3: crossover_v2_measure_diag's new
+# `linearization=` field names which of the five outcomes this attempt's
+# candidate build took, for corpus-review greppability.
+
+
+def test_fit_engine_bug_falls_back_to_raw_trim_with_warning(caplog, monkeypatch):
+    """SF2: an eligible pair (reference tier, both paired N>=3) whose fit
+    call raises must behave EXACTLY like an ineligible one -- raw trim,
+    empty linearization dict, MEASURE still accepted -- never propagate and
+    fail the whole accept over a bug in the fit engine."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    def _boom(analysis, cand):
+        raise ValueError("simulated fit engine bug")
+
+    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    verdict = _run_phase(c, 2, 2)
+
+    assert verdict["accepted"] is True
+    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.linearization == {}
+    assert "event=correction.crossover_v2_linearization_fit_failed" in caplog.text
+    assert "reason=ValueError" in caplog.text
+    assert "linearization=fit_failed" in caplog.text
+
+
+def test_cut_only_invariant_violation_falls_back_instead_of_crashing(caplog, monkeypatch):
+    """N1 x SF2 interaction: linearization_fit.fit_driver_linearization's own
+    cut-only invariant (N1, this same review) raises RuntimeError, not
+    ValueError. SF2's catch must include RuntimeError specifically so THAT
+    safety net degrades to the raw-trim fallback like any other fit bug,
+    instead of escaping and crashing the whole MEASURE accept -- the two
+    review fixes must compose, not merely coexist."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+
+    def _boom(analysis, cand):
+        raise RuntimeError("linearization fit emitted a boost")
+
+    monkeypatch.setattr(c, "_fit_linearization", _boom)
+    verdict = _run_phase(c, 2, 2)
+
+    assert verdict["accepted"] is True
+    assert c.candidate.role_attenuations_db == {"woofer": 0.0, "tweeter": -2.211}
+    assert c.candidate.linearization == {}
+    assert "reason=RuntimeError" in caplog.text
+    assert "linearization=fit_failed" in caplog.text
+
+
+def test_measure_diag_linearization_field_fitted(caplog):
+    """SF3: the fitted outcome."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "event=correction.crossover_v2_measure_diag" in caplog.text
+    assert "linearization=fitted" in caplog.text
+
+
+def test_measure_diag_linearization_field_ineligible_mic_tier(caplog):
+    """SF3: the ineligible_mic_tier outcome."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program, mic_tier="consumer")
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "linearization=ineligible_mic_tier" in caplog.text
+
+
+def test_measure_diag_linearization_field_ineligible_repeats(caplog):
+    """SF3: the ineligible_repeats outcome."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(
+        program, mic_tier="reference", tweeter_repeats=0,
+    )
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "linearization=ineligible_repeats" in caplog.text
+
+
+def test_measure_diag_linearization_field_trim_rejected(caplog):
+    """SF3: the trim_rejected outcome (fit succeeded, but the resolved trim
+    was implausible and fell back to raw -- distinct from "fitted" even
+    though linearization is populated in both)."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    wild_raw_trim = {"woofer": 0.0, "tweeter": -20.0}
+    fakes.measure = lambda program: _eligible_measure_analysis(program, trim_db=wild_raw_trim)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is True
+    assert "linearization=trim_rejected" in caplog.text
+
+
+def test_measure_diag_linearization_field_empty_when_verdict_rejected_before_candidate(
+    caplog,
+):
+    """SF3: a MEASURE verdict rejected before _build_candidate ever runs
+    (here, the pre-existing glitch check) must log linearization="" -- never
+    a stale value from a prior attempt, and never a guess about a path that
+    was never taken. Mirrors the `guard` field's own empty-on-reject
+    convention."""
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _measure_analysis(program, glitch=True)
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    verdict = _run_phase(c, 2, 2)
+    assert verdict["accepted"] is False
+    assert 'linearization=""' in caplog.text

@@ -216,6 +216,27 @@ def test_cut_only_invariant_holds_across_peaks_and_dips():
     assert not any(abs(f.freq - 2000.0) < 200.0 for f in fit.filters)
 
 
+def test_cut_only_invariant_violation_raises_not_silently_returns(monkeypatch):
+    """N1 (adversarial review, 2026-07-24): the cut-only invariant is
+    enforced with an explicit raise, not a bare `assert` that `python -O`
+    would strip. Force design_peq to hand back a boosting PEQ (the
+    realistic failure mode -- a bug in the peaking loop, not the shelf
+    stage) and confirm fit_driver_linearization refuses it with a
+    RuntimeError, never silently returning hardware-bound boost."""
+    import jasper.active_speaker.linearization_fit as linearization_fit_module
+    from jasper.correction.peq import PEQ
+
+    monkeypatch.setattr(
+        linearization_fit_module, "design_peq",
+        lambda *args, **kwargs: [PEQ(freq=1000.0, q=1.0, gain=3.0)],
+    )
+    db = _bell(_NATIVE_FREQS_HZ, 800.0, 8.0, 0.15) + _bell(_NATIVE_FREQS_HZ, 2000.0, -8.0, 0.15)
+    resp = _driver_response("woofer", db)
+    envelope = _envelope("woofer", resp, excited_band_hz=(150.0, 4000.0))
+    with pytest.raises(RuntimeError, match="boost"):
+        fit_driver_linearization(resp, envelope)
+
+
 def test_adaptive_band_trim_pulls_edge_in_from_a_steep_rolloff():
     """Mirrors the real N=3 woofer's own behavior (PR-C offline sanity):
     flat, then a steep natural rolloff approaching the driver's own

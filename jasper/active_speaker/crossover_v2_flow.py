@@ -864,6 +864,13 @@ def _compose_sigma_db(
     (e.g. a stricter product-taste floor independent of the envelope
     module's own per-tier table). Do not assume this floor currently does
     more than the paired-N gate above.
+
+    N2 (2026-07-24 adversarial review): flagged this same inertness;
+    coordinator ruling was to KEEP it as-is — it is the σ-seeding report's
+    own recommended composition, already honestly documented here and
+    pinned by ``test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit``,
+    and cutting it now only to re-add it for the same future seam later
+    would cost more than carrying it.
     """
     own_n = 1 + len(own.repeat_responses)
     sibling_n = 1 + len(sibling.repeat_responses)
@@ -1114,6 +1121,20 @@ class CrossoverV2Conductor:
         # channel can. Read by ``_log_measure_diag``; never consulted by
         # ``_measure_verdict`` itself, so a bug here cannot change a verdict.
         self._last_measure_guard: str = ""
+        # SF3 (2026-07-24 adversarial review): which linearization path this
+        # attempt's candidate build took — set by ``_linearization_eligible``
+        # (the ineligible branches) and ``_fit_linearization`` (fitted vs the
+        # wild-trim sanity fallback) or ``_build_candidate`` (a raised fit
+        # bug). Mirrors ``_last_measure_guard`` exactly: reset at the top of
+        # every ``_measure_verdict`` call so a stale value from a PRIOR
+        # attempt — or from a verdict that never reached ``_build_candidate``
+        # — can never leak into this attempt's diagnostic. One of "",
+        # "ineligible_mic_tier", "ineligible_repeats", "fitted",
+        # "trim_rejected", or "fit_failed"; empty means "not evaluated this
+        # attempt." Read by ``_log_measure_diag``'s ``linearization=`` field;
+        # never consulted by ``_measure_verdict`` itself, so a bug here
+        # cannot change a verdict.
+        self._last_linearization_outcome: str = ""
 
     # --- program composition -------------------------------------------------
 
@@ -1532,6 +1553,7 @@ class CrossoverV2Conductor:
         # Reset every call — a stale value from a PRIOR attempt must never
         # leak into THIS attempt's diagnostic (see __init__'s comment).
         self._last_measure_guard = ""
+        self._last_linearization_outcome = ""
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.glitch_detected:
@@ -1859,6 +1881,11 @@ class CrossoverV2Conductor:
             # shares its reused reason code (see __init__'s comment on
             # ``_last_measure_guard``).
             guard=self._last_measure_guard,
+            # SF3 (adversarial review): which linearization path this
+            # attempt's candidate build took — "" when the verdict was
+            # rejected before ``_build_candidate`` ever ran (see __init__'s
+            # comment on ``_last_linearization_outcome``).
+            linearization=self._last_linearization_outcome,
         )
 
     def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
@@ -1943,7 +1970,39 @@ class CrossoverV2Conductor:
         role_attenuations_db: Mapping[str, float] = dict(cand.trim_db)
         linearization: Mapping[str, Any] = {}
         if self._linearization_eligible(analysis):
-            role_attenuations_db, linearization = self._fit_linearization(analysis, cand)
+            try:
+                role_attenuations_db, linearization = self._fit_linearization(
+                    analysis, cand
+                )
+            except (
+                ArithmeticError, AttributeError, RuntimeError, TypeError, ValueError,
+                KeyError, IndexError,
+            ) as exc:
+                # SF2 (adversarial review, 2026-07-24): the fit path is
+                # strictly additive — an eligible speaker with a bug in the
+                # (still-young) fit engine must degrade EXACTLY to the
+                # ineligible path, never fail the whole MEASURE accept.
+                # Mirrors _safe_log_diag's "never let enrichment logic break
+                # the primary path" posture, one layer earlier (this guards
+                # the candidate build itself, not just its diagnostic log
+                # line). The caught set matches _safe_log_diag's own
+                # (attribute/key/index/type/value access on structured
+                # data), extended with ArithmeticError since this call site
+                # does floating-point curve fitting (division, log,
+                # exponentiation), not plain field extraction, and with
+                # RuntimeError because linearization_fit.fit_driver_linearization
+                # (N1, this same review) raises exactly that on its own
+                # cut-only invariant violation — without it here, N1's safety
+                # net would escape SF2's and crash this accept instead of
+                # degrading to it.
+                log_event(
+                    logger, "correction.crossover_v2_linearization_fit_failed",
+                    level=logging.WARNING, session_id=self.session_id,
+                    reason=type(exc).__name__, exc_info=True,
+                )
+                role_attenuations_db = dict(cand.trim_db)
+                linearization = {}
+                self._last_linearization_outcome = "fit_failed"
 
         return MeasuredCrossoverCandidate(
             program_id=analysis.program_id,
@@ -1958,19 +2017,28 @@ class CrossoverV2Conductor:
         """HARD GATE for the Layer-1a fit path: reference-tier mic AND both
         drivers paired N>=3 in-capture occurrences. Anything else falls back
         to the plain trims-only candidate, byte-identical to before this PR.
+
+        Side effect: stamps ``self._last_linearization_outcome`` with WHY on
+        every ineligible return (SF3) — mirrors ``_last_measure_guard``'s own
+        set-during-the-walk convention; read by ``_log_measure_diag``.
         """
         if analysis.mic_tier != "reference":
+            self._last_linearization_outcome = "ineligible_mic_tier"
             return False
         woofer_resp = _driver_response_by_role(analysis, self._woofer.role)
         tweeter_resp = _driver_response_by_role(analysis, self._tweeter.role)
         if woofer_resp is None or tweeter_resp is None:
+            self._last_linearization_outcome = "ineligible_repeats"
             return False
         woofer_n = 1 + len(woofer_resp.repeat_responses)
         tweeter_n = 1 + len(tweeter_resp.repeat_responses)
-        return (
+        if (
             woofer_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
             and tweeter_n >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
-        )
+        ):
+            return True
+        self._last_linearization_outcome = "ineligible_repeats"
+        return False
 
     def _fit_linearization(
         self, analysis: ProgramAnalysis, cand: Any,
@@ -1984,7 +2052,13 @@ class CrossoverV2Conductor:
 
         Only called after :meth:`_linearization_eligible` — this method
         assumes both driver responses exist and are adequately repeated;
-        it does not re-check.
+        it does not re-check. May raise on a fit-engine bug; the caller
+        (``_build_candidate``) is responsible for catching that (SF2).
+
+        Side effect: stamps ``self._last_linearization_outcome`` with
+        ``"fitted"`` or ``"trim_rejected"`` (SF3) — mirrors
+        ``_linearization_eligible``'s own convention; read by
+        ``_log_measure_diag``.
         """
         woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
         woofer_resp = _driver_response_by_role(analysis, woofer_role)
@@ -2065,8 +2139,10 @@ class CrossoverV2Conductor:
                 margin_db=LINEARIZATION_TRIM_SANITY_MARGIN_DB,
             )
             role_attenuations_db = raw_trim
+            self._last_linearization_outcome = "trim_rejected"  # SF3
         else:
             role_attenuations_db = resolved
+            self._last_linearization_outcome = "fitted"  # SF3
 
         linearization = {role: fit.to_dict() for role, fit in fits.items()}
         return role_attenuations_db, linearization

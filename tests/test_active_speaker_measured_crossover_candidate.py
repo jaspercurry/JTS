@@ -20,6 +20,8 @@ import yaml as yaml_lib
 
 from jasper.active_speaker.crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.measured_crossover_candidate import (
+    CANDIDATE_KIND,
+    SCHEMA_VERSION,
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
@@ -365,16 +367,105 @@ def test_linearization_must_be_exact_json_data():
     assert excinfo.value.code == "linearization_invalid"
 
 
-def test_from_mapping_requires_the_linearization_key():
-    """Strict schema, matching every sibling field (alignment,
-    role_attenuations_db, ...) — a payload missing "linearization"
-    entirely is malformed, not silently defaulted to {}."""
+# --- linearization era tolerance (adversarial review P1 blocker, 2026-07-24) -
+#
+# Every candidate persisted before #1668 PR-C landed lacks the
+# "linearization" key entirely — the field, and even the possibility of a
+# non-empty value, did not exist yet. jasper.web.correction_crossover_v2's
+# _reopen_candidate_artifact reads candidate.json straight off disk, so a
+# candidate published moments before a deploy can be reopened moments after
+# it by code that now expects the newer shape. from_mapping must treat
+# "linearization" as OPTIONAL on read (absent -> {}), and the fingerprint of
+# an empty-linearization candidate must be identical whether or not the key
+# was ever present — otherwise every pre-PR-C candidate in flight at a
+# deploy trips a false candidate_tampered refusal the moment this PR ships.
+# (Non-empty linearization round-tripping AND staying tamper-protected is
+# already pinned above by test_linearization_populated_round_trips and
+# test_linearization_tampering_trips_the_tamper_check — unaffected by any
+# of this, since a non-empty value is never era-tolerant-omitted.)
+
+
+def test_empty_linearization_is_omitted_from_the_fingerprinted_core():
+    """The independent proof, not a self-referential round trip: hand-build
+    the EXACT pre-#1668-PR-C ``_core()`` shape (this module's own history
+    shows that shape never had a "linearization" key at all — PR-C added
+    it) and confirm ``json_fingerprint`` of THAT dict equals the current
+    code's fingerprint for an empty-linearization candidate. This never
+    calls ``_core()`` or any of this module's own linearization code, so it
+    cannot be fooled by a bug in how ``_core()`` itself decides to omit the
+    key — it is the byte-for-byte compatibility guarantee, verified from
+    first principles."""
+    from jasper.audio_measurement.evidence_identity import json_fingerprint
+
+    candidate = _candidate()  # linearization defaults to {}
+    pre_prc_core = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": CANDIDATE_KIND,
+        "program_id": candidate.program_id,
+        "analysis": candidate.analysis,
+        "source_preset": candidate.source_preset.to_dict(),
+        "role_attenuations_db": dict(candidate.role_attenuations_db),
+        "alignment": candidate.alignment.to_dict(),
+        # Deliberately no "linearization" key — every candidate persisted
+        # before #1668 PR-C looked exactly like this.
+    }
+    assert json_fingerprint(pre_prc_core) == candidate.fingerprint
+
+
+def test_from_mapping_accepts_pre_prc_shape_missing_linearization_key():
+    """Era tolerance (the P1 blocker): _reopen_candidate_artifact
+    (jasper/web/correction_crossover_v2.py) can hand from_mapping a
+    candidate.json published by a build that predates the "linearization"
+    field. That payload must load cleanly — not refuse candidate_malformed
+    — default to linearization=={}, and its RECOMPUTED fingerprint must
+    equal the ORIGINAL persisted one (independently proven identical to the
+    pre-PR-C shape by the previous test), or the reviewed-fingerprint check
+    in jasper.web.correction_crossover_v2 trips a false candidate_tampered
+    / fingerprint-mismatch refusal on every pre-PR-C candidate straddling a
+    deploy."""
     candidate = _candidate()
     raw = candidate.to_dict()
-    del raw["linearization"]
+    original_fingerprint = raw["fingerprint"]
+    assert "linearization" in raw  # to_dict is always the current, full shape
+    del raw["linearization"]  # simulate the pre-PR-C persisted shape
+
+    reopened = MeasuredCrossoverCandidate.from_mapping(raw)
+
+    assert reopened.linearization == {}
+    assert reopened.fingerprint == original_fingerprint
+
+
+def test_from_mapping_still_rejects_other_missing_fields():
+    """"linearization" is the ONE optional field — every sibling
+    (alignment, role_attenuations_db, ...) stays strictly required, exactly
+    as before this PR."""
+    candidate = _candidate()
+    raw = candidate.to_dict()
+    del raw["role_attenuations_db"]
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(raw)
     assert excinfo.value.code == "candidate_malformed"
+
+
+def test_to_dict_canonical_shape_always_includes_linearization_key():
+    """Canonical to_dict shape (forward-shape consistency, chosen over
+    omitting the key when empty): every NEWLY-serialized candidate always
+    carries "linearization", populated or not — only an OLD,
+    already-persisted pre-PR-C payload is ever missing the key. This is
+    what lets from_mapping's tamper check compare raw's fields byte-for-
+    byte without a special case for a fresh empty-linearization write:
+    to_dict() and a freshly-built raw dict always agree. ``_core()`` (the
+    fingerprint input) intentionally does NOT follow this rule — see
+    test_empty_linearization_is_omitted_from_the_fingerprinted_core for why
+    the two disagree."""
+    candidate = _candidate()
+    assert candidate.linearization == {}
+    raw = candidate.to_dict()
+    assert raw["linearization"] == {}
+    assert set(raw) == {
+        "schema_version", "kind", "program_id", "analysis", "source_preset",
+        "role_attenuations_db", "alignment", "linearization", "fingerprint",
+    }
 
 
 def test_from_mapping_rejects_non_mapping_linearization():

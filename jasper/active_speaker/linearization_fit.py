@@ -25,8 +25,9 @@ target level, cut-preferred/normalize-downward policy, per-bin caps).
 
 **Cut-only invariant.** Every filter this module emits carries ``gain <= 0``
 — the whole correction posture is "spend sensitivity headroom downward,"
-never boost. This is asserted before returning (see
-:func:`fit_driver_linearization`) and pinned by a test.
+never boost. This is enforced with an explicit ``raise`` before returning
+(not a bare ``assert`` — a hardware-bound safety invariant must survive
+``python -O``; see :func:`fit_driver_linearization`) and pinned by a test.
 
 **The fit domain is whatever grid the caller's ``EnvelopeCurve`` was
 composed on** — :data:`~jasper.active_speaker.linearization_envelope.
@@ -414,6 +415,19 @@ def _adaptive_band_trim(
     return fit_lo_idx, fit_hi_idx
 
 
+# DEFERRED (P2, 2026-07-24 adversarial review adjudication): a falling-slope
+# Lowshelf counterpart to the rising-slope Highshelf below. Not built — the
+# ruling was that a flat SUMMED response is the actual design goal, and the
+# crossover's own low-pass already owns a woofer's rolloff region
+# approaching Fc, so a driver's honest falling response there is not itself
+# a defect worth correcting. Revisit only with listening evidence that the
+# summed response actually suffers from it. If it is ever built, the
+# reviewed minimal shape is: trigger on a slope more negative than
+# ``-SHELF_SLOPE_THRESHOLD_DB_PER_OCT`` (the mirror of ``_shelf_stage``'s
+# own rising-slope trigger below), corner the shelf at ``fit_lo_hz``, and
+# extend ``MAX_NORMALIZATION_SPEND_DB``'s budget accounting to also cover
+# spend BELOW ``target_level_db`` (today's accounting only covers spend
+# above it — see that constant's own comment).
 def _shelf_stage(
     grid_hz: np.ndarray,
     smoothed_db: np.ndarray,
@@ -427,6 +441,10 @@ def _shelf_stage(
     faster than :data:`SHELF_SLOPE_THRESHOLD_DB_PER_OCT`. Returns ``None``
     when no shelf is warranted (falling/shallow slope, too few points to
     regress, or the normalization budget leaves nothing to spend).
+
+    Dormant for falling-slope drivers by design — a cut-only shelf cannot
+    correct a naturally falling response; the deferred Lowshelf counterpart
+    for that case is documented in the comment block above this function.
     """
     if int(band_mask.sum()) < 2:
         return None
@@ -547,7 +565,14 @@ def fit_driver_linearization(
                 for p in peqs
             )
 
-    assert all(f.gain <= 0.0 for f in filters), "linearization fit emitted a boost"
+    # N1 (adversarial review, 2026-07-24): an explicit raise, not a bare
+    # `assert` -- this is a safety invariant on HARDWARE-BOUND output (a
+    # filter here eventually reaches a real driver's EQ), and `assert` is
+    # stripped entirely under `python -O`. A future bug in the shelf/PEQ
+    # stages above must still be caught in every runtime mode, not just an
+    # unoptimized one.
+    if any(f.gain > 0.0 for f in filters):
+        raise RuntimeError("linearization fit emitted a boost")
 
     residual = (working_db - target_level_db)[band_mask]
     residual_rms_db = float(np.sqrt(np.mean(residual ** 2))) if residual.size else 0.0

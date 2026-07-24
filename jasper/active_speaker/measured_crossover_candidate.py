@@ -214,15 +214,19 @@ class MeasuredCrossoverCandidate:
     ``jasper.active_speaker.linearization_fit.LinearizationFit.to_dict``:
     filters, fit_band_hz, target_level_db, residuals, an octave-band reason
     summary, mic_tier, driver_class, n_repeats), keyed by driver role. Like
-    ``analysis``, it is frozen through the SAME exact-JSON-data walk and
-    participates in the fingerprint — tampering with a persisted
-    linearization result trips the same ``candidate_tampered`` refusal as
-    tampering with anything else in this candidate. The empty dict (the
-    default, and what every non-reference-tier or under-repeated MEASURE
-    produces — see the v2 conductor's linearization gate) is a fully valid
-    shape: "no linearization was fit," identical to every candidate this
-    module produced before this field existed. This module does NOT persist
-    the underlying ``EnvelopeCurve`` — only the compact fit result.
+    ``analysis``, it is frozen through the SAME exact-JSON-data walk. A
+    NON-empty value participates in the fingerprint — tampering with a
+    persisted linearization result trips the same ``candidate_tampered``
+    refusal as tampering with anything else in this candidate. The empty
+    dict (the default, and what every non-reference-tier or under-repeated
+    MEASURE produces — see the v2 conductor's linearization gate) is
+    deliberately OMITTED from the fingerprinted core instead of
+    participating as ``{}`` — see ``_core()``'s own docstring — so it is a
+    fully valid, era-tolerant shape: "no linearization was fit," identical
+    to every candidate this module produced before this field existed,
+    fingerprint included. ``from_mapping`` accepts the key's outright
+    absence the same way (see its own docstring). This module does NOT
+    persist the underlying ``EnvelopeCurve`` — only the compact fit result.
     """
 
     program_id: str
@@ -308,7 +312,22 @@ class MeasuredCrossoverCandidate:
         object.__setattr__(self, "fingerprint", fingerprint)
 
     def _core(self) -> dict[str, Any]:
-        return {
+        """The exact fingerprinted payload (see ``__post_init__``).
+
+        ``linearization`` is deliberately OMITTED here when empty (the
+        default, and what every non-eligible MEASURE produces) rather than
+        included as ``{}`` — an empty-linearization candidate's ``_core()``
+        is then byte-for-byte the shape this module produced before
+        ``linearization`` existed (#1668 PR-C), so its fingerprint matches
+        what pre-PR-C code already computed and persisted for the identical
+        other fields. A NON-empty linearization stays in ``_core()`` and is
+        therefore tamper-protected exactly like every other field —
+        stripping or mutating real fit data changes the recomputed
+        fingerprint, tripping ``from_mapping``'s ``candidate_tampered``
+        refusal. ``to_dict()`` does NOT mirror this omission (see its own
+        docstring) — the two intentionally disagree.
+        """
+        core: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "kind": CANDIDATE_KIND,
             "program_id": self.program_id,
@@ -316,11 +335,27 @@ class MeasuredCrossoverCandidate:
             "source_preset": self.source_preset.to_dict(),
             "role_attenuations_db": dict(self.role_attenuations_db),
             "alignment": self.alignment.to_dict(),
-            "linearization": dict(self.linearization),
         }
+        if self.linearization:
+            core["linearization"] = dict(self.linearization)
+        return core
 
     def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
+        """The full persisted shape — ALWAYS carries ``linearization``.
+
+        Unlike ``_core()`` (the fingerprint input), this never omits the
+        key, even when empty — every freshly-serialized candidate has the
+        current, full field set, so a fresh write and a freshly-built
+        ``raw`` dict always agree byte-for-byte (what ``from_mapping``'s
+        tamper check relies on). Only an ALREADY-PERSISTED, pre-PR-C
+        payload is missing the key — that era-tolerance lives in
+        ``from_mapping`` on the READ side, not here on the write side.
+        """
+        return {
+            **self._core(),
+            "linearization": dict(self.linearization),
+            "fingerprint": self.fingerprint,
+        }
 
     def driver_corrections(self) -> dict[str, dict[str, float | bool]]:
         """The compiler-ready ``{role: {gain_db, delay_ms, inverted}}`` mapping.
@@ -335,9 +370,20 @@ class MeasuredCrossoverCandidate:
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "MeasuredCrossoverCandidate":
-        """Strictly reopen one persisted candidate without re-deriving evidence."""
+        """Strictly reopen one persisted candidate without re-deriving evidence.
 
-        expected = {
+        ``linearization`` (#1668 PR-C) is the one OPTIONAL field: every
+        candidate persisted before that PR lacks the key entirely, and
+        ``jasper.web.correction_crossover_v2._reopen_candidate_artifact``
+        can hand this method exactly that pre-PR-C ``candidate.json`` shape
+        across a deploy straddle — a candidate published moments before an
+        install, reopened moments after it by code that now expects the
+        newer shape. Absent means the same thing an explicit ``{}`` means:
+        "no linearization was fit." Every other field stays strictly
+        required, matching every prior era of this schema.
+        """
+
+        required = {
             "schema_version",
             "kind",
             "program_id",
@@ -345,10 +391,9 @@ class MeasuredCrossoverCandidate:
             "source_preset",
             "role_attenuations_db",
             "alignment",
-            "linearization",
             "fingerprint",
         }
-        if not isinstance(raw, Mapping) or set(raw) != expected:
+        if not isinstance(raw, Mapping) or set(raw) - {"linearization"} != required:
             _refuse(
                 "candidate_malformed",
                 "measured crossover candidate has unknown or missing fields",
@@ -373,7 +418,9 @@ class MeasuredCrossoverCandidate:
             _refuse(
                 "role_attenuations_malformed", "candidate attenuations are malformed"
             )
-        linearization_raw = raw["linearization"]
+        # Absent -> {} (era tolerance, see the docstring above); present ->
+        # validated exactly like before.
+        linearization_raw = raw.get("linearization", {})
         if not isinstance(linearization_raw, Mapping):
             _refuse(
                 "linearization_malformed", "candidate linearization is malformed"
@@ -395,7 +442,15 @@ class MeasuredCrossoverCandidate:
             raise MeasuredCrossoverCandidateError(
                 "candidate_malformed", str(exc)
             ) from exc
-        if candidate.to_dict() != dict(raw):
+        # candidate.to_dict() always carries "linearization" (forward-shape
+        # consistency — see its own docstring); a pre-PR-C `raw` implicitly
+        # claimed {} by never mentioning the field at all, so compare
+        # against that same claim made explicit — otherwise a payload that
+        # predates this field would spuriously fail its own honest round
+        # trip and refuse as tampered.
+        raw_for_comparison = dict(raw)
+        raw_for_comparison.setdefault("linearization", {})
+        if candidate.to_dict() != raw_for_comparison:
             _refuse(
                 "candidate_tampered",
                 "persisted measured crossover candidate does not match its "
