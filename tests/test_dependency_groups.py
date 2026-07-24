@@ -161,6 +161,32 @@ def test_openwakeword_onnx_group_covers_ci_helper_deps() -> None:
     ]
 
 
+def test_hang_backstop_is_configured_and_uses_the_signal_method() -> None:
+    """The suite must fail a hang, never block on one.
+
+    An unbounded await whose producer dies never returns; one such test
+    blocked the entire local suite with no failing test to point at. The
+    backstop turns that into a reported failure, so removing it is a
+    deliberate act, not a silent config drift.
+
+    `signal` is load-bearing and not interchangeable with `thread`:
+    measured, `thread` kills the whole pytest process (every result after
+    the stuck test is lost), while `signal` fails only that test and lets
+    the run continue. The floor on the value keeps someone from "fixing" a
+    slow test by tightening the backstop — it is a hang-breaker, not a
+    timing assertion, and the slowest healthy test measures ~15s.
+    """
+
+    ini = _pyproject()["tool"]["pytest"]["ini_options"]
+
+    assert any(
+        _requirement_name(requirement) == "pytest-timeout"
+        for requirement in _pyproject()["dependency-groups"]["dev"]
+    ), "pytest-timeout must stay a dev dependency for the backstop to load"
+    assert ini["timeout_method"] == "signal"
+    assert ini["timeout"] >= 60
+
+
 def test_fast_landing_dependency_group_is_minimal_and_locked() -> None:
     """The narrow landing lane needs YAML, not the full audio/voice extras."""
 
