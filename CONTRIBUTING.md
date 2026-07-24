@@ -108,14 +108,38 @@ Two operational notes:
 
 - **The required check is named `ci`.** It is an always-reported,
   fail-closed aggregate over the lane selected by
-  `scripts/ci-classify.py`. The only narrow lane is `fast-landing`:
-  `deploy/index.html` must be present and every companion path must be
-  one of the registered tests that directly reads it. It runs the complete
-  landing contract bundle. Everything else — including renames, deletions,
-  mixed/unknown files, dependencies, CI infrastructure, comparison
-  failures, and every `main` push — selects the full existing farm. The
-  visible `pytest` and `rust` jobs remain useful internal checks but are not
+  `scripts/ci-classify.py`. There are two narrow lanes, and each needs a
+  *subject* file present so a companion-test-only diff can never select one:
+
+  - `fast-landing` — `deploy/index.html` must be present and every companion
+    path must be one of the registered tests that directly reads it. Runs the
+    complete landing contract bundle.
+  - `docs` — at least one prose document (`docs/**.md`, a root operational
+    doc, `.github/PULL_REQUEST_TEMPLATE.md`, or `docs/doc-map.toml`) must be
+    present and every companion path must be another such document or one of
+    the registered tests that read documentation. Runs the documentation
+    contract bundle plus `docs-impact --validate-only`, the changed-Markdown
+    link check, and `ruff`. Note this is a *stricter* gate than the full farm
+    for a prose change: `docs-links.yml` already fails on a broken internal
+    link, but it is not a required check (branch protection requires only
+    `ci`), so before this lane a docs PR could merge over a red link check.
+    Excluded from this lane: `docs/calibration-agent/**`, which install
+    rsyncs to `/opt/jasper` and the product reads at runtime — that is
+    product data, not prose, so it takes the full farm.
+
+  Everything else — including renames, deletions, mixed/unknown files,
+  dependencies, CI infrastructure, comparison failures, and every `main`
+  push — selects the full existing farm. A diff carrying both the landing
+  page and a document is mixed, and selects the full farm. The visible
+  `pytest` and `rust` jobs remain useful internal checks but are not
   separately required by branch protection.
+
+- **Adding a test that reads a doc?** `tests/test_ci_classifier.py`'s docs
+  guard auto-discovers any test whose source names or globs a `*.md` path and
+  fails until it is registered in `DOCS_TEST_FILES`. The guard is a subset
+  assertion, so over-registering is safe. A reader that reaches a document
+  through a non-literal pattern (for example `path.rglob("*")`) is invisible
+  to it and must be added by hand with a note saying why.
 - **Emergency override.** If CI is wedged or GitHub Actions is down and a
   fix genuinely cannot wait, do not leave `main` unprotected. If the
   aggregate itself is broken, first restore the prior `pytest` and `rust`

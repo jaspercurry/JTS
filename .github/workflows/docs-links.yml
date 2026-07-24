@@ -9,6 +9,12 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+# Cancel superseded PR runs; see doc-freshness.yml for the rationale.
+# Keep `main` pushes uncancellable so post-merge coverage completes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
