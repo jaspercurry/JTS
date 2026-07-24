@@ -31,6 +31,18 @@ def _load_classifier():
 
 
 ci_classifier = _load_classifier()
+_PATH_CALLS = {
+    "Path",
+    "PurePath",
+    "PurePosixPath",
+    "absolute",
+    "join",
+    "joinpath",
+    "open",
+    "read_bytes",
+    "read_text",
+    "resolve",
+}
 
 
 def _changes(*paths: str, status: str = "M"):
@@ -138,9 +150,24 @@ def test_lane_decision_table(
             ),
             id="rename",
         ),
+        pytest.param(
+            ci_classifier.Change(
+                "C100",
+                ("deploy/source.html", "deploy/index.html"),
+            ),
+            id="copy",
+        ),
+        pytest.param(
+            ci_classifier.Change("T", ("deploy/index.html",)),
+            id="type-change",
+        ),
+        pytest.param(
+            ci_classifier.Change("U", ("deploy/index.html",)),
+            id="unmerged",
+        ),
     ],
 )
-def test_rename_and_deletion_force_full(change) -> None:
+def test_non_add_or_modify_statuses_force_full(change) -> None:
     assert ci_classifier.classify("pull_request", (change,)).lane == "full"
 
 
@@ -187,24 +214,68 @@ def test_name_status_parser_preserves_rename_and_delete_metadata() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"M\0/absolute/path\0",
+        b"M\0deploy/index.html\nforged-summary\0",
+        b"M\0deploy/index.html\x1b[31m\0",
+        b"M\x1b\0deploy/index.html\0",
+        b"M\0\xff\0",
+        b"R100\0only-one-path\0",
+    ],
+)
+def test_name_status_parser_rejects_unsafe_or_malformed_records(
+    payload: bytes,
+) -> None:
+    with pytest.raises(ci_classifier.ChangedFileError):
+        ci_classifier.parse_name_status_z(payload)
+
+
 def _path_parts(node: ast.AST) -> tuple[str, ...]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         return (*_path_parts(node.left), *_path_parts(node.right))
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return tuple(part for part in node.value.split("/") if part)
+    if isinstance(node, ast.Call):
+        call_name = (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else ""
+        )
+        if call_name not in _PATH_CALLS:
+            return ()
+        receiver = (
+            _path_parts(node.func.value)
+            if isinstance(node.func, ast.Attribute)
+            else ()
+        )
+        return (
+            *receiver,
+            *(
+                part
+                for argument in node.args
+                for part in _path_parts(argument)
+            ),
+        )
     return ()
 
 
-def _direct_landing_test_files() -> tuple[str, ...]:
+def _direct_landing_test_files(
+    tests_root: Path = ROOT / "tests",
+) -> tuple[str, ...]:
     direct: list[str] = []
-    for path in sorted((ROOT / "tests").glob("test_*.py")):
+    repo_root = tests_root.parent
+    for path in sorted(tests_root.rglob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         if any(
-            isinstance(node, ast.BinOp)
+            isinstance(node, (ast.BinOp, ast.Call))
             and _path_parts(node)[-2:] == ("deploy", "index.html")
             for node in ast.walk(tree)
         ):
-            direct.append(str(path.relative_to(ROOT)))
+            direct.append(str(path.relative_to(repo_root)))
     return tuple(direct)
 
 
@@ -217,6 +288,51 @@ def test_fast_bundle_covers_every_direct_landing_page_test() -> None:
         "tests/test_install_helpers.py"
         "::test_landing_page_app_css_version_uses_resolved_build_sha",
     )
+
+
+@pytest.mark.parametrize(
+    "read_expression",
+    [
+        '(ROOT / "deploy" / "index.html").read_text()',
+        '(ROOT / "deploy/index.html").read_bytes()',
+        'ROOT.joinpath("deploy", "index.html").open()',
+        'Path(ROOT, "deploy", "index.html").read_text()',
+        'open(ROOT / Path("deploy/index.html"))',
+    ],
+)
+def test_landing_guard_finds_common_path_forms_in_nested_tests(
+    tmp_path: Path,
+    read_expression: str,
+) -> None:
+    tests_root = tmp_path / "tests"
+    nested = tests_root / "web"
+    nested.mkdir(parents=True)
+    source = "\n".join(
+        [
+            "from pathlib import Path",
+            'ROOT = Path("/repo")',
+            "",
+            "def test_direct_read():",
+            f"    {read_expression}",
+            "",
+        ]
+    )
+    (nested / "test_nested_landing.py").write_text(source, encoding="utf-8")
+
+    assert _direct_landing_test_files(tests_root) == (
+        "tests/web/test_nested_landing.py",
+    )
+
+
+def test_landing_guard_ignores_a_non_reading_path_mention(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    (tests_root / "test_unrelated.py").write_text(
+        'NOTE = "deploy/index.html"\n',
+        encoding="utf-8",
+    )
+
+    assert _direct_landing_test_files(tests_root) == ()
 
 
 def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
@@ -319,6 +435,60 @@ def test_ci_aggregate_fails_closed(overrides: dict[str, str]) -> None:
     assert _run_aggregate(**overrides).returncode != 0
 
 
+@pytest.mark.parametrize(
+    ("lane", "expected_results"),
+    [
+        (
+            "full",
+            {
+                "CLASSIFY_RESULT": "success",
+                "FAST_LANDING_RESULT": "skipped",
+                "SHELL_RESULT": "success",
+                "PYTEST_MATRIX_RESULT": "success",
+                "PYTEST_RESULT": "success",
+                "JS_RESULT": "success",
+                "RUST_RESULT": "success",
+            },
+        ),
+        (
+            "fast-landing",
+            {
+                "CLASSIFY_RESULT": "success",
+                "FAST_LANDING_RESULT": "success",
+                "SHELL_RESULT": "skipped",
+                "PYTEST_MATRIX_RESULT": "skipped",
+                "PYTEST_RESULT": "skipped",
+                "JS_RESULT": "skipped",
+                "RUST_RESULT": "skipped",
+            },
+        ),
+    ],
+)
+def test_ci_aggregate_rejects_every_mutated_job_result(
+    lane: str,
+    expected_results: dict[str, str],
+) -> None:
+    """No selected failure or unexpected skip/start can become green."""
+
+    possible_results = {
+        "",
+        "action_required",
+        "cancelled",
+        "failure",
+        "neutral",
+        "skipped",
+        "success",
+        "timed_out",
+    }
+    base = {"LANE": lane, **expected_results}
+    for name, expected in expected_results.items():
+        for unexpected in possible_results - {expected}:
+            result = _run_aggregate(**{**base, name: unexpected})
+            assert result.returncode != 0, (
+                f"{lane} accepted {name}={unexpected!r}; expected {expected!r}"
+            )
+
+
 def test_classifier_renders_lane_reason_and_changed_paths() -> None:
     decision = ci_classifier.classify(
         "pull_request",
@@ -331,6 +501,20 @@ def test_classifier_renders_lane_reason_and_changed_paths() -> None:
     assert decision.reason in summary
     assert "<code>deploy/index.html</code>" in summary
     assert "<code>tests/test_landing_page_html.py</code>" in summary
+
+
+def test_classifier_summary_does_not_render_changed_path_markdown() -> None:
+    decision = ci_classifier.classify(
+        "pull_request",
+        _changes("deploy/index.html", "docs/[forged](https://example.invalid)"),
+    )
+
+    summary = ci_classifier.render_summary(decision)
+
+    assert decision.lane == "full"
+    assert "<code>path outside the landing-page allowlist:" in summary
+    assert "[forged](https://example.invalid)</code>" in summary
+    assert "<code>docs/[forged](https://example.invalid)</code>" in summary
 
 
 def test_policy_docs_and_pr_template_name_the_actual_review_contract() -> None:
