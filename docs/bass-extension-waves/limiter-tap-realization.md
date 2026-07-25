@@ -1,7 +1,7 @@
 # Bass Extension limiter taps — offline-render realization (reviewed amendment)
 
-> Reviewed amendment — **accepted by the maintainer 2026-07-24**, after five
-> revisions and four independent adversarial rounds reaching zero Blockers /
+> Reviewed amendment — **accepted by the maintainer 2026-07-24**, after six
+> revisions and five independent adversarial rounds reaching zero Blockers /
 > zero Should-fixes (per [`adversarial-review.md`](adversarial-review.md)).
 > It sits beside
 > [`limiter-bench-runner-protocol.md`](limiter-bench-runner-protocol.md) and
@@ -347,54 +347,72 @@ mid-activation. The campaign records a per-render byte estimate before the
 first render; before each render it refuses if the bundle directory's free
 space is below (estimate × renders still outstanding for the campaign).
 
-**R10 — Live cross-check (fail-closed).** (a) `get_playback_peak` is the
-playback-device peak — after the whole pipeline and, on the pinned build,
-after the main fader — and returns only channels 0 and 1 (`_level_pair`,
-`jasper/camilla.py`). Whether that peak meters before or after the main
-fader is itself a RECORDED OBLIGATION on the R4(b) pattern: file, symbol,
-and the resulting sign of R10(b)'s offset, all recorded in the derivation
-receipt. R10(b)'s `−recorded_main_volume_db` term below is written for the
-post-fader case and is VOID until that citation is recorded. The
-cross-check is available only when the owner channel index is 0 or 1;
-otherwise the runner records `cross_check: unavailable` with the owner index
-and REFUSES the pass — a render is never admitted uncross-checked. Because
-`_level_pair` truncates to channels 0/1 and `jasper/camilla.py` may not be
-modified, the admissible topology is defined by exactly two conditions on
-the recorded `owner_channels`, and by nothing else: (1) `owner_channels` has
-exactly one entry, and (2) that entry is 0 or 1. The campaign manifest must
-refuse any other bass owner at authoring time, naming which condition failed —
-not at bench time. Owner KIND is not the criterion, in either direction. A
-`woofer_way` owner is admissible only when its `_channels_for_role` index
-satisfies (2) — a mono 3-way whose woofer sits at index 2 is refused, since the
-channel map's role-to-index assignment is author-chosen. A `local_sub` owner is
-admissible when it satisfies (2), which a mono 1-way + local sub does:
-`SUPPORTED_LAYOUTS` includes `mono` and `DRIVER_ROLES_BY_WAY[1]` mandates a
-local sub, so `main_output_count == 1` and
-`local_subwoofer.physical_output_index == 1`
-(`jasper/active_speaker/profile.py`). Stereo layouts fail condition (1)
-(`owner_channels` `[0,2]` per `_channels_for_role`); a local sub behind two or
-more mains fails condition (2). When the owner index is 1, the derivation
-receipt's recorded `devices.playback.channels` must additionally be ≥ 2, so
-`_level_pair`'s single-entry fallback — which mirrors channel 0 into the second
-slot — can never silently supply channel 0's peak as channel 1's. R3's
-per-owner-channel rule (multi-entry `owner_channels`) is consequently
-UNREACHABLE under condition (1); like R4(c)'s pre-limiter fader branch it is
-retained as a forward-compatible invariant and exercised only as a pure unit
-test against the analysis function. Extending the cross-check to a
-multi-channel owner or an index ≥2 needs a full-channel meter accessor — a
-separate reviewed change, stop-and-report for the executor PR.
+**R10 — Live cross-check (fail-closed).** (a) The cross-check reads
+`jasper.camilla.CamillaController.get_playback_peak_all()` (#1735) — every
+playback channel's peak, in channel order, with no truncation and no
+mirroring; a per-element `None` reads as `-inf`, and an empty or no-data
+reading returns `[]`, distinguishable from any real reading. Whether the
+reported peaks meter before or after the main fader is itself a RECORDED
+OBLIGATION on the R4(b) pattern: file, symbol, and the resulting sign of
+R10(b)'s offset, all recorded in the derivation receipt. R10(b)'s
+`−recorded_main_volume_db` term below is written for the post-fader case
+and is VOID until that citation is recorded. `get_playback_peak_all()`
+returning `[]`, or a list shorter than `max(owner_channels)+1`, makes the
+cross-check unavailable: the runner records `cross_check: unavailable`,
+naming the owner channels involved, and REFUSES the pass — a render is
+never admitted uncross-checked. Admissibility is now a per-entry index
+check, not a topology restriction: every entry of the recorded
+`owner_channels` must be a valid playback channel index — `0 ≤ index <
+devices.playback.channels` as recorded in the derivation receipt (R3 keeps
+that count equal to the live pipeline width). Multi-entry `owner_channels`
+are ADMISSIBLE. Owner KIND remains a non-criterion, in either direction.
+The campaign manifest still refuses any bass owner carrying an invalid
+index at authoring time, naming the offending index — not at bench time.
+The comparison itself is per-channel: for EACH owner channel `ch`, the
+rendered post-limiter peak of that channel's extracted artifact is compared
+against `live_peak_all[ch] − recorded_main_volume_db`, under the same
+one-sided, bounded, recorded tolerance (R10(c)) applied independently per
+channel, the same R4(b) fader-metering-point citation obligation, and the
+same pre-fader branch (offset zero) when that citation establishes it.
+EVERY owner channel must pass; one failing channel refuses the whole pass.
+The prior `devices.playback.channels ≥ 2` mirror-guard retires with the
+mechanism that needed it: `_level_pair`'s single-entry fallback mirrored
+channel 0's peak into slot 1 whenever CamillaDSP reported only one channel,
+and `get_playback_peak_all` has no such fallback — it reports exactly the
+channels CamillaDSP returns, so that silent-wrong-channel class is gone
+structurally, not by a recorded guard. R3's per-owner-channel rule
+(multi-entry `owner_channels`) is consequently REACHABLE rather than
+dormant: each owner channel yields its own source observation and its own
+candidate, feeding the runner's existing distinct-peak inventory unchanged
+— equal peaks across owner channels still collapse to one candidate per
+the frozen distinct-measured-candidates and strictly-increasing rule. R3's
+minimum-across-owner-channels rule, for any future single-number collapse,
+stays in force, unchanged and still conditional: this campaign never
+collapses owner channels, so the rule continues to bind only a future
+single-number revision — what became live is the per-channel machinery
+around it. The full-channel meter accessor this cross-check needed now exists
+(#1735); what remains out of scope is only an owner channel index at or
+beyond the live pipeline width recorded in `devices.playback.channels` — a
+config error the admissibility rule above catches, not a topology class the
+cross-check cannot reach.
 
-(b) **Comparison basis:** the rendered post-limiter owner-channel peak vs.
-`(live_peak_dbfs − recorded_main_volume_db)`, using R4's recorded fader value,
-because R4(c)'s post-limiter application point means the render carries no
-fader gain. If the recorded citation establishes that the meter reads BEFORE
-the main fader, the offset is zero and the basis is the rendered peak vs.
-`live_peak_dbfs` unchanged — R4(c)'s two-branch shape, not a refusal. Both
-peaks, the fader read, and the offset are recorded verbatim.
+(b) **Comparison basis:** per owner channel `ch`, the rendered post-limiter
+peak of that channel's extracted artifact vs.
+`(live_peak_all[ch] − recorded_main_volume_db)`, using R4's recorded fader
+value, because R4(c)'s post-limiter application point means the render carries
+no fader gain. There is no unindexed live scalar in this rule: every live
+value is an element of the `get_playback_peak_all()` reading named in (a). If
+the recorded citation establishes that the meter reads BEFORE the main fader,
+the offset is zero and the basis is the rendered peak vs. `live_peak_all[ch]`
+unchanged — R4(c)'s two-branch shape, not a refusal. Both peaks, the fader
+read, and the offset are recorded verbatim, per channel.
 
-(c) `get_playback_peak` reports the last processed chunk, so the live value
-used is the max over reads polled at a recorded interval across the role's
-playback — a LOWER BOUND on the true peak. The tolerance is therefore
+(c) `get_playback_peak_all()` reports the last processed chunk — it reuses
+the exact same `c.levels.playback_peak()` websocket call as the
+stereo-truncating `get_playback_peak`, so the last-processed-chunk property is
+identical — and the live value used for each owner channel is that channel's
+max over readings polled at a recorded interval across the role's playback, a
+LOWER BOUND on that channel's true peak. The tolerance is therefore
 ONE-SIDED: the rendered peak may exceed the offset-corrected live max by up to
 the recorded tolerance, and fall below it by no more than the recorded
 tolerance. The permissive (exceeds) side is BOUNDED, not merely recorded. What
@@ -555,24 +573,26 @@ supervised bench session remains the only path to an accepted bundle.
   compare), including the per-candidate pre-limiter shape rule (a distinct
   shape per candidate because `clip_limit` rides the retained `filters`
   block verbatim; receipted per candidate; never reused across candidates).
-- R10 cross-check logic: owner-channel index outside {0, 1} → `cross_check:
-  unavailable` and refuses; the manifest tolerance's computed bound (the
-  rendered post-limiter owner-channel artifact's maximum per-poll-interval
-  level RISE over the R3 analysis window) — a manifest tolerance exceeding it
+- R10 cross-check logic: `get_playback_peak_all()` returning `[]`, or a
+  list shorter than `max(owner_channels)+1`, → `cross_check: unavailable`
+  and refuses; the manifest tolerance's computed bound (the rendered
+  post-limiter owner-channel artifact's maximum per-poll-interval level
+  RISE over the R3 analysis window) — a manifest tolerance exceeding it
   refuses the campaign; plus a synthetic compressed-render case where a
   stimulus-derived bound would have admitted a rendered peak that the
   render-derived bound refuses, and a case proving the lead-in silence does not
   enter the bound; one-sided tolerance (over-by-more-than-tolerance refuses,
   under-by-more-than-tolerance refuses, agreement within tolerance passes); a
   `get_clipped_samples` increase refuses; disagreement or an absent tolerance
-  refuses (mocked live peak, mocked fader read); campaign-manifest authoring
-  refusals, before any bench pass runs, one per condition: `owner_channels`
-  with more than one entry (the stereo `[0,2]` case), and a single owner
-  channel at index ≥2 (both a `local_sub` behind two mains and a `woofer_way`
-  owner at index 2); plus the complementary ADMISSION case — a single-entry
-  owner at index 1, the mono 1-way + local-sub shape, is NOT refused — and the
-  accompanying `devices.playback.channels >= 2` requirement when the owner
-  index is 1.
+  refuses (mocked live peak, mocked fader read); a per-channel comparison case
+  on a 4-channel map with `owner_channels` `[0, 2]` where one channel's
+  comparison passes and the other's fails — the single failing channel refuses
+  the whole pass; campaign-manifest authoring refusal, before any bench pass
+  runs, on any owner index ≥ `devices.playback.channels` (an invalid index,
+  named); the R3 minimum-across-owner-channels invariant for any future
+  single-number collapse remains a pure unit test of the collapse helper,
+  now exercisable with the realistic multi-channel peaks the 4-channel case
+  above produces.
 - Post-hoc tap-discontinuity: frame-count mismatch → `refused` with partials.
 - R3 analysis window: lead-in/lead-out frames excluded from the peak
   search; a multi-entry `owner_channels` yields one observation and one
@@ -610,6 +630,47 @@ the plan table becomes the sole status surface.
 
 ## Changelog
 
+- **Rev 6 (2026-07-24):** addresses maintainer direction to dissolve the
+  mono-only scope, step 2 of
+  [#1723](https://github.com/jaspercurry/JTS/issues/1723), effective now
+  that the full-channel meter accessor it depended on has merged:
+  `CamillaController.get_playback_peak_all`
+  ([#1735](https://github.com/jaspercurry/JTS/issues/1735)) returns every
+  playback channel's peak in channel order, with no truncation and no
+  mirroring. R10(a) is rewritten: the cross-check reads
+  `get_playback_peak_all()` instead of the stereo-truncating
+  `get_playback_peak`/`_level_pair`; admissibility becomes a per-entry
+  index check — every entry of `owner_channels` must satisfy `0 ≤ index <
+  devices.playback.channels` — replacing the old two-condition
+  exactly-one-entry-at-0-or-1 topology restriction, so multi-entry
+  `owner_channels` are now ADMISSIBLE and owner KIND remains a
+  non-criterion. The comparison itself is per-channel, with unchanged
+  per-channel rigor: EVERY owner channel gets its own
+  `live_peak_all[ch] − recorded_main_volume_db` comparison under the SAME
+  one-sided, bounded, recorded tolerance, the same R4(b)
+  fader-metering-point citation obligation, and the same pre-fader branch,
+  and any single failing channel refuses the whole pass — this dissolves
+  scope, it does not loosen the check. `get_playback_peak_all()` returning
+  `[]`, or a list shorter than `max(owner_channels)+1`, is `cross_check:
+  unavailable` and refuses, replacing the old owner-index-outside-{0,1}
+  trigger. The `devices.playback.channels ≥ 2` mirror-guard retires along
+  with the mechanism it existed to guard — `_level_pair`'s single-entry
+  fallback, which mirrored channel 0's peak into slot 1; `get_playback_peak_all`
+  has no such fallback, so that silent-wrong-channel class is gone
+  structurally. R3's per-owner-channel rule (multi-entry `owner_channels`),
+  UNREACHABLE and forward-compatible-only since Rev 5, is now REACHABLE
+  and live; its minimum-across-owner-channels rule for a future
+  single-number collapse stays in force, unchanged and still conditional —
+  what became live is the per-channel machinery around it. The Tests section's R10 bullet is updated to
+  match: refusal on any owner index ≥ `devices.playback.channels`, refusal
+  on an unavailable/short accessor reading, and a new per-channel
+  comparison case on a 4-channel map with `owner_channels` `[0, 2]` where
+  one channel passes and the other fails. The plan's `4-taps` wave-status
+  row Scope sentence is updated to match; its acceptance date and
+  revision-count claims are updated in this same change to reflect this
+  revision's own independent adversarial review — the same gate every
+  prior revision passed through. This entry uses "addresses," never "incorporates" or
+  "resolves," matching Rev 3 through Rev 5's own convention.
 - **Rev 5 (2026-07-24):** addresses the fourth 2026-07-24 adversarial review of
   Rev 4 (2 Blockers, 8 Nits) — the independent review that follows this
   revision decides whether each is actually resolved. R10(a)'s scope is
