@@ -69,7 +69,7 @@ Hold every design against the product vision:
 ## Architecture — how the honest instrument composes
 
 ```
-phone taps + prompted mic moves          (PR-3: conductor choreography)
+phone taps + prompted mic moves        (PR-3a/3b: capacity + choreography)
         │
         ▼
 per-position gated summed sweeps ──► per-capture QC (existing diagnostics)
@@ -116,18 +116,24 @@ Mechanism: a new `ReasonCode` term in
 zeroes `allowed_depth_db` on honesty-masked bins (exclusion), plus a
 position-stability term that shrinks allowed correction depth where
 cross-position spread is high (from `CombinedResponse`'s `BandSpread`).
-Rationale: position-stable features are identical at the design-axis
-anchor position and in the cloud *by definition*; position-varying
-features are exactly what must not be corrected, and the stability term
-suppresses them — so the per-driver fit corrects only features that
-survive spatial averaging, which is the fundamental's intent. This
+Rationale: features that survive spatial averaging are, by
+construction, present at every position — including the anchor — so
+suppressing everything else (the stability term) leaves the fit
+correcting only surviving features, which is the fundamental's intent.
+The anchor's *rendition* of a surviving feature may still differ in
+magnitude from the cloud's: the parent plan is explicit that the cloud
+grades the crossover region "the way CTA-2034's listening window does
+(slightly gentler than a single on-axis point — by design)," so an
+anchor-vs-cloud offset on surviving features is expected, bounded by
+the cloud's own `BandSpread` diagnostics, and not a defect. This call
 preserves the per-driver safety machinery (repeat sigma, mic-tier
 eligibility, cut-only invariant, anchored give-back) untouched. The
 literal alternative — role-sliced combined-summed-curve as fit input —
-is recorded as a deeper follow-up only if S3 closed-loop data shows the
-anchor-position detail diverging from cloud detail on surviving
-features (which would contradict "surviving" — treat as a red flag,
-not a tuning knob).
+is recorded as a deeper follow-up with a **measured** revisit trigger:
+S3 closed-loop residuals (graded on the cloud) stalling above the
+convergence threshold with residual concentrated on surviving
+(non-excluded, position-stable) features beyond what `BandSpread`
+predicts. An expected listening-window offset is not the trigger.
 
 **(B) The S2 "one shared curve construction" is scoped to the
 spec-facing curves.** `combine_positions`' output (power-mean curve,
@@ -151,13 +157,22 @@ grid — out of scope, already pinned by a lockstep test.
   + "The six fundamentals" + "Adjudicated" + "Non-goals"; memory
   `MEMORY.md` (esp. `reference_adversarial_review_prompt`,
   `project_flat_linearization_program`); the file map in
-  `HANDOFF-crossover-measurement-v2.md` before any W2+ PR.
+  `HANDOFF-crossover-measurement-v2.md` before any W2/W3/W4 PR.
 - **Per PR:** branch from freshly-fetched `origin/main`
   (`git merge-base --is-ancestor origin/main HEAD` must pass before
   first edit); implement; `scripts/test-fast` locally; corpus tests
-  run with
+  run with the corpus env vars — the existing suites use
   `JTS_FLAT_LIN_CORPUS=/Users/jaspercurry/Code/JTS/captures/flat-linearization-20260725/cdhorn-live-session`
-  (they skip cleanly in CI); commit; **independent Opus 5 adversarial
+  (the **pre-S0** seven-run corpus), and the NEW acceptance fixtures
+  in PR-1/PR-2 gate on a second root,
+  `JTS_FLAT_LIN_S0=/Users/jaspercurry/Code/JTS/captures/flat-linearization-20260725`
+  (with `s0-session-main/`, `s0-session-groundplane/`, and
+  `s0-analysis/loopback/` resolved beneath it). Both gates skip
+  cleanly in CI — which is exactly why a corpus-acceptance PR is not
+  done until the implementer has run the suite locally and
+  **confirmed the corpus tests report PASSED, not SKIPPED**
+  (`pytest -rs`): a wrong-but-existing path skips silently; commit;
+  **independent Opus 5 adversarial
   review** with the canonical prompt (memory
   `reference_adversarial_review_prompt`, verbatim, scope line adapted
   to the branch), rerun to 0 blockers / 0 should-fixes; run the docs
@@ -172,8 +187,10 @@ grid — out of scope, already pinned by a lockstep test.
 - **Do not touch the bass lane** (`jasper/bass_extension/*`,
   `correction_bass_flow`, bench executor).
 - **No paid voice-eval, no audible playback in W1–W5.** Everything
-  through PR-8 is hardware-free (pytest + corpus replay). Audible
-  playback happens only in the HW session, owner pinged first.
+  through PR-8 is hardware-free (pytest + corpus replay), with one
+  out-of-repo action: PR-3a's relay-Worker + capture-page deploy
+  (release ordering in that PR). Audible playback happens only in
+  the HW session, owner pinged first.
 - **The re-litigation firewall:** pulse/TDS time-selection, two-path
   inversion, cepstral echo *removal*, max-hold estimator, the
   tweeter's `inverted: true`, and prediction-5's original consequent
@@ -186,16 +203,25 @@ grid — out of scope, already pinned by a lockstep test.
 
 ## The PR ladder
 
-Dependencies: PR-1 ∥ PR-2 ∥ PR-3 (independent); PR-4 needs 1+2+3;
-PR-5 needs 4; PR-6 needs 5; PR-7 needs 6 (skeleton may start after 4);
-PR-8 rolls up at the end. Sequential within `jasper/web/correction_*`
-(PR-4/5/6/7 touch big fast-moving files — rebase before push, never
-stack long-lived branches).
+Workstream → PR map (the W vocabulary used throughout this doc):
+**W1** = PR-2 + PR-1 (pure cores), **W2** = PR-3a + PR-3b + PR-4
+(instrument into the live flow), **W3** = PR-5 + PR-6 (correction
+doctrine), **W4** = PR-7 (visualization), **W5** = PR-8 + the
+laptop-side kit parity. **HW** = the runbooks + product smoke.
+
+Dependencies: **PR-2 → PR-1** (both edit `spatial_combine.py` and
+PR-1 builds on PR-2's results — sequential, PR-2 first, never
+parallel). PR-3a is independent of both; PR-3b needs PR-3a (deployed);
+PR-4 needs PR-1 + PR-3b; PR-5 needs 4; PR-6 needs 5; PR-7 needs 6
+(skeleton may start after 4); PR-8 rolls up at the end. Sequential
+within `jasper/web/correction_*` (PR-4/5/6/7 touch big fast-moving
+files — rebase before push, never stack long-lived branches).
 
 ---
 
 ### PR-1 — `identify_interference_nulls`: the orthogonal null-ID gate
-**Tier: Opus. Size: ~500–800 module lines + ~700 test lines.**
+**Tier: Opus. Size: ~500–800 module lines + ~700 test lines. Lands
+after PR-2 (see dependencies).**
 
 New pure module `jasper/audio_measurement/interference_nulls.py`
 (name avoids collision with `null_walk.py`, which is the
@@ -214,18 +240,30 @@ null-consistency analysis, and plan doc "S0 executed" § b/§ e.1):**
    reported `insufficient_evidence`, never identified.
 2. **Ladder prediction:** null frequencies `f_n = (n + ½)/τ` for n
    covering the analysis band.
-3. **Null matching:** locate measured local minima of the combined
-   1/6-oct diagnostic curve (depth measured against the local
-   envelope, not absolute level); match ladder rungs within a
-   frequency tolerance scaled by the smoothing bandwidth. Require ≥2
-   matched rungs (one dip is not a ladder).
-4. **Implied-r agreement:** from matched-null depths, solve the
-   frequency-domain r (max null depth for reflection ratio r is
-   `20·log10((1+r)/(1−r))`); compare against the time-domain r from
-   the arrival envelope (`EchoDiagnostic.strength`-derived). S0
-   measured agreement 0.031 (0.373 vs 0.342); the shipped agreement
-   gate must be calibrated on the corpus, stated with the regime it
-   was measured in.
+3. **Null matching — designed around a known measured discrepancy.**
+   Locate measured local minima of the combined 1/6-oct diagnostic
+   curve (depth measured against the local envelope, not absolute
+   level). On the S0 corpus, the ladder τ implied by the measured
+   null frequencies (293–308 µs across groups) sits **4–9 % below**
+   the directly measured arrival τ (median 321.5 µs) — the REPORT's
+   own hedge is "consistent … at this resolution," and a real rim
+   wave is not an ideal single-delay reflector. Therefore the
+   matcher fits the **best single-τ ladder to the minima with τ as a
+   free parameter** (require ≥2 matched rungs — one dip is not a
+   ladder); the rung-match tolerance is calibrated on the corpus and
+   stated with its regime. A smoothing-bandwidth window alone
+   (±~6 % at 1/6-oct) does **not** admit the measured gap and would
+   fail the very corpus this gate is pre-registered against.
+4. **Arrival corroboration + implied-r agreement:** corroborate the
+   fitted ladder against the cloud's arrival estimates — τ_ladder
+   within a corpus-calibrated band of the arrival τ that admits the
+   measured 4–9 % gap (stated with its regime) — then, from
+   matched-null depths, solve the frequency-domain r (max null depth
+   for reflection ratio r is `20·log10((1+r)/(1−r))`) and compare
+   against the time-domain r from the arrival envelope
+   (`EchoDiagnostic.strength_db`-derived). S0 measured r agreement
+   0.031 (0.373 time-domain vs 0.342 frequency-domain); the shipped
+   agreement gate is likewise corpus-calibrated and regime-stated.
 5. **Depth-ceiling acquittal:** a dip **deeper** than the candidate
    arrival's physical ceiling (+ stated margin) **cannot** be that
    echo and is refused attribution — this is exactly how the 10.71 dB
@@ -251,16 +289,21 @@ null-consistency analysis, and plan doc "S0 executed" § b/§ e.1):**
    *reason of record* consumed by PR-6.
 
 **Input contract:** `CombinedResponse` + the per-position smoothed
-curves (either extend `CombinedResponse` to retain per-position
-1/6-oct curves — preferred, one construction — or accept the stacked
-array; implementer decides with the reviewer, SSOT lens). Band to
-search derives from the **caller-supplied** analysis band, not a horn
-constant.
+curves. PR-1 **owns** extending `CombinedResponse` to retain
+per-position 1/6-oct curves (one smoothing owner — note
+`CombinedResponse.stacked` is deliberately *unsmoothed* per-position
+magnitude, so "just use stacked" would force the new module to
+re-smooth, duplicating the construction: the SSOT failure mode).
+PR-2 does not touch this extension. Band to search derives from the
+**caller-supplied** analysis band, not a horn constant.
 
 **Acceptance (corpus + synthetic, all hardware-free):**
 - Corpus (env-gated): on the S0 main-leg cloud, identifies the
   8–16 kHz nulls (8.4/11.5/15 kHz family) as `position_invariant`
-  with τ within ±2 % of 321 µs and r agreement ≤ 0.05; **refuses**
+  with a single fitted τ_ladder whose arrival corroboration passes
+  the calibrated band of method step 4 (the measured 4–9 %
+  ladder-vs-arrival gap admitted; calibration committed with its
+  regime stated) and r agreement ≤ 0.05; **refuses**
   attribution of the 1.8 kHz dip by depth ceiling; on the
   ground-plane set, does not fabricate an identification from the
   125–146 µs proud-capsule arrival without its own ladder support.
@@ -279,7 +322,8 @@ and its tests)."
 ---
 
 ### PR-2 — `detect_echo` hardening + geometry policy (issue #1742 items 2–3 + S0 findings)
-**Tier: Opus. Size: ~250–450 diff lines in `spatial_combine.py` + tests.**
+**Tier: Opus. Size: ~250–450 diff lines in `spatial_combine.py` +
+tests. Lands before PR-1 (same file, sequential).**
 
 Four changes, all inside the shipped detector/geometry layer:
 
@@ -297,8 +341,11 @@ Four changes, all inside the shipped detector/geometry layer:
 2. **The new-earlier-arrival corroboration fix.** S0's ground-plane
    captures: a *new dominant earlier* arrival (125–146 µs) pulled the
    envelope corroboration candidate away and the detector collapsed
-   to a confidence-0 non-answer via a corroboration technicality
-   (`corroboration = 1.0` refusal path). The detector must consider
+   to an uninformative confidence-0 result via a corroboration
+   technicality (`corroboration = 1.0` with `refusal=""` — the module
+   deliberately keeps "ran, found nothing credible" distinct from a
+   refusal; this fix must preserve that distinction). The detector
+   must consider
    in-window arrival candidates for corroboration rather than only
    the global envelope peak — or refuse with an explicit
    `earlier_dominant_arrival` reason naming the interloper's τ.
@@ -313,8 +360,12 @@ Four changes, all inside the shipped detector/geometry layer:
    softer when thin. Estimates were honest in the observed case —
    the fix is disclosure, not rejection.
 4. **Default-window effective floor (#1742 item 3).** Do **not**
-   raise the default lower edge (a raised floor would have hidden
-   the gp 125 µs discovery). Instead surface the window's effective
+   raise the default lower edge — disclosure over restriction. (The
+   gp 125–146 µs arrivals were caught by the S0 report's offline
+   envelope scan, not by `detect_echo`, whose default-window
+   reporting floor is already ~191–210 µs — which is exactly why the
+   floor must be *surfaced*, not pushed higher.) Instead surface the
+   window's effective
    reporting floor (`effective_floor_us`) on `EchoDiagnostic` so
    consumers/UI can say "arrivals below ~X µs are invisible to this
    window" honestly. Documented at point of use.
@@ -328,16 +379,55 @@ branch (spatial_combine.py diff and its tests)."
 
 ---
 
-### PR-3 — Conductor position-group choreography (S1b, the instrument's front half)
-**Tier: Opus. Size: ~800–1200 diff lines across conductor/relay/web/phone copy + tests.**
+### PR-3a — Relay capture-plan capacity (the protocol prerequisite)
+**Tier: Opus. Size: ~200–400 diff lines across Pi + Worker + tests,
+plus a Worker/page deploy.**
+
+The relay protocol hard-caps a capture plan at **8 entries** — and
+the choreography needs 15–21. `MAX_CAPTURE_PLAN_ATTEMPTS = 8` in
+`jasper/capture_relay/spec.py` bounds `capture_target ≤ max_attempts
+≤ 8` with entry indexes exactly `0..capture_target-1`, kept in
+lockstep with `relay/src/worker.js`'s own
+`MAX_CAPTURE_PLAN_ATTEMPTS = 8`, which governs the **deployed
+Worker's blob-index space** (`bad_capture_index` beyond it). And
+`max_attempts` doubles as the **retry** budget, so capacity must
+cover entries *plus* retakes (target ~32). Without this PR, plan
+fundamental 1 (N≈8–12 positions) is structurally unreachable through
+the relay — the cap, not the phone UI, is the real constraint (the
+per-entry prompt mechanism itself needs nothing new; see PR-3b).
+Splitting the cloud across relay sessions is not an escape: one plan
+per session, and PR-3b's resume rule keeps cloud evidence
+session-bound.
+
+**Design contract:** raise the cap in lockstep on both sides. The Pi
+gates emitted plan size on the session's **negotiated protocol
+version**, so an un-updated Worker/page never receives a >8-entry
+plan — version skew fails closed (plan refused with a clear error),
+never mid-session. Deploy order per the capture-page README's
+release-ordering rule: Worker + page first (accepting larger plans is
+backwards-compatible), Pi second (emitting them).
+
+**Acceptance:** spec-layer tests for >8-entry plans and the skew
+refusal; Worker-side test for the widened index space; the existing
+3-entry and 1-entry (re-verify) flows byte-identical.
+
+**Review scope line:** "the relay capture-plan capacity change on
+this branch (capture_relay/spec.py, relay/src/worker.js, version
+gating, and tests)."
+
+---
+
+### PR-3b — Conductor position-group choreography (S1b, the instrument's front half)
+**Tier: Opus. Size: ~800–1200 diff lines across conductor/relay/web/phone copy + tests. Needs PR-3a merged AND its Worker/page deployed.**
 
 The v2 conductor
 (`jasper/active_speaker/crossover_v2_flow.py::CrossoverV2Conductor`)
 gains prompted multi-position capture groups. **No new phone-side
-mechanism exists or is needed:** position prompts ride
-`CapturePlanEntry.screen` with `auto_advance: AUTO_ADVANCE_TAP` —
-the phone already renders per-entry screens and gates on the
-operator's tap (`capture-page/js/main.js`). The plan builders
+*prompt* mechanism is needed** (capacity is PR-3a's job): position
+prompts ride `CapturePlanEntry.screen` with
+`auto_advance: AUTO_ADVANCE_TAP` — the phone already renders
+per-entry screens and gates on the operator's tap
+(`capture-page/js/main.js`). The plan builders
 (`build_v2_capture_plan` / `build_v2_verify_capture_plan`) and the
 parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
 `{1: PHASE_VERIFY}`) are the seams.
@@ -374,10 +464,12 @@ parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
   contract (`combine_positions` is a pure function of the retained
   per-position results).
 - **Session budget:** the `SessionVolumePlan` walked-away ceiling
-  (~1800 s) scales with plan length (bounded per-entry increment,
-  hard max stated in code; abort target and restore-once latch
-  semantics unchanged). A user who walks away mid-cloud still can
-  never leave the speaker pinned at measurement volume.
+  (`DEFAULT_WALL_CLOCK_CEILING_S = 1800`) scales with plan length
+  (bounded per-entry increment, hard max stated in code); the
+  restore ladder ("exact" then "emergency" −60 dBFS) and the
+  restore-once latch semantics are unchanged. A user who walks away
+  mid-cloud still can never leave the speaker pinned at measurement
+  volume.
 - **Artifacts:** one evidence bundle per session (existing model);
   position captures land under the existing
   `capture_artifact_relpath(kind, group, role)` scheme with `group`
@@ -398,10 +490,10 @@ parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
 lifecycle incl. early-end, geometry-retry, budget scaling, resume/
 invalidate; relay plan tests for N-entry tap plans
 (`tests/test_capture_relay_plan.py` harness); endpoint tests through
-the real `run_capture_plan` with a scripted phone driver; a
-plan-length cap check in `capture_relay/spec.py` (verify none binds
-below ~20 entries, or lift it deliberately). No behavior change to
-CHECK/MEASURE/apply/restore paths (pinned by existing suites).
+the real `run_capture_plan` with a scripted phone driver — including
+one full 15+-entry plan with a mid-cloud retake, exercising PR-3a's
+capacity end-to-end. No behavior change to CHECK/MEASURE/apply/
+restore paths (pinned by existing suites).
 
 **Review scope line:** "the position-group choreography on this
 branch (crossover_v2_flow.py, capture_relay, plan builders, phone
@@ -424,8 +516,16 @@ and persists/serves its results:
   `usable_frequency_range_hz` / `measurement_band_hz` for the upper
   echo band — replacing `DEFAULT_ECHO_BAND_HZ`'s flat constant with a
   contract-derived value at the call site (the pure module keeps its
-  parameter). No driver-class taxonomy branches: `driver_class` /
-  `horn_coverage_deg` are **display metadata only**, never dispatch.
+  parameter). The honesty instruments (detector, combiner, null gate,
+  this wiring) add **no** class- or device-keyed branches; within this
+  program's new surfaces, `driver_class` / `horn_coverage_deg` inform
+  display copy only. Be aware the *existing* fit stack already
+  dispatches on **declared** `driver_class` — `class_prior_limit`'s
+  `_CLASS_PRIOR_FULL_TO_HZ` table inside `compose_envelope`, and
+  `HF_CONTINUATION_POLICY` in `linearization_fit` — which is
+  declared-contract behavior (the owner declared the class), not
+  forbidden device taxonomy, and it stays. PR-6 must design with it
+  explicitly (see PR-6).
 - **The wiring contract (issue #1742 item 4), enforced in one place:**
   a single result-assembly function consumes exclusion mask AND
   `geometry.locked` AND the null registry together; no consumer reads
@@ -439,8 +539,8 @@ and persists/serves its results:
   intervals count, geometry verdict) and a `jasper-doctor` check
   (flat, one `CheckResult`: last session's spec verdict + registry
   size + "not yet run" state).
-- Close issue #1742 with this PR (all four items landed across
-  PR-2/PR-4).
+- Close issue #1742 with this PR (item 1 landed pre-program in
+  #1746; items 2–3 land in PR-2; item 4 lands here).
 
 **Acceptance:** endpoint-level test walking a scripted N-position
 session to a persisted cloud.json + status payload; corpus-replay
@@ -475,10 +575,18 @@ single spec-facing curve construction. Re-base onto it:
   as fit diagnostics, relabeled so no surface presents it as "the
   measurement").
 - **VERIFY tracking stays distinct** (measured-vs-predicted on the
-  capture grid) with a comment stating why, per call (B). VERIFY's
-  *spec-facing* verdict (full-band flatness vs the spec) widens from
-  the ~2·Fc integration band to the full spec band via the shared
-  construction — the S2 promise.
+  capture grid) with a comment stating why, per call (B). Baseline
+  honesty, so nobody "fixes" the wrong thing: `_flatness_tracking`
+  is *already* full-band (`validity_floor_hz →
+  FLATNESS_VERIFY_HI_HZ = 16 kHz`) and **report-only**; the ~2·Fc
+  band belongs to the integration *tracking* verdict
+  (`overlap_band_hz`), which is what gates. PR-5's flatness change
+  is therefore the framing swap above (capture-grid/band-mean → the
+  shared exclusion-aware spec construction) plus first-class
+  reporting of the spec verdict. The integration tracking verdict
+  keeps gating apply/verify acceptance **unchanged**; the spec
+  verdict becomes the instrument S3's loop will consume — S2's
+  promise delivered without silently changing what gates today.
 
 **Acceptance:** a frame-consistency contract test — the value shown
 by the gauge, the ledger, the spec report, and VERIFY's flatness
@@ -506,7 +614,15 @@ Per interpretation call (A):
   regime). The fit thereby corrects the **envelope around identified
   nulls and never fills them** — the cut-only, non-positive-gain
   invariants are untouched and re-validated downstream as today
-  (emission re-proof stays).
+  (emission re-proof stays). **Design WITH the existing class
+  prior:** `compose_envelope` takes `np.min` across terms, and
+  `class_prior_limit` (keyed by declared `driver_class`) already
+  bounds HF allowed depth — for an **undeclared** class (`unknown`,
+  `full_to` 6 kHz) allowed depth reaches 0 dB by ~12 kHz *before*
+  any new term exists. The new terms compose through the same
+  `np.min` (they can only narrow allowed depth, never widen it), so
+  every 8–16 kHz behavior statement in this PR is
+  **class-regime-dependent** and must be stated as such.
 - **The null registry is the exclusion reason of record.** Persist
   `InterferenceNullReport` with the candidate
   (`candidate.json` + bundle), thread τ/r/classification through to
@@ -517,17 +633,23 @@ Per interpretation call (A):
   report's per-band verdict discloses carved-out intervals with
   plain-language reason + τ/r in the expert layer. The 8–16 kHz
   table number stays ±2.5. Update the plan doc's spec-table
-  annotation (the "in progress, not resolved" note) to record the
-  decision, S0 data attached — in this PR, same-change docs rule.
+  annotation (the "in progress, not resolved" note) **and** its open
+  question 8 — both record this decision; leave neither dangling —
+  in this PR, same-change docs rule.
 - **Convergence guard for S3:** the residual metric the closed loop
   will use (RMS over non-excluded spec-band bins of the combined
   curve) lands here as a pure function next to `evaluate_flat_spec`,
   so S3's loop policy has its instrument ready.
 
-**Acceptance:** corpus-replay: with S0 cloud + registry, the fit's
+**Acceptance:** corpus-replay: with S0 cloud + registry **and the
+JTS3 declared classes** (tweeter `compression_horn`), the fit's
 proposed correction spends **zero** gain inside identified-null
-intervals, corrects the surrounding envelope, and the predicted-sum
-ripple does not regress vs the no-mask fit outside excluded bands;
+intervals and corrects the surrounding envelope where the class
+prior allows; a second case with `driver_class` unset pins the
+`unknown`-class regime (correction above the class-prior taper stays
+refused by the *existing* prior, the new terms only narrowing);
+predicted-sum ripple does not regress vs the no-mask fit outside
+excluded bands;
 cut-only invariant suites unchanged; spec-report carve-out disclosure
 contract test; plan-doc annotation updated in the same PR.
 
@@ -540,8 +662,9 @@ registry persistence, and spec carve-out on this branch."
 **Tier: Sonnet. Size: ~600–900 lines (ES module + payload + tests).**
 
 The crossover wizard currently renders **no charts** (text
-measurement-rows only; the only canvas in the correction surface is
-the legacy room page). Add:
+measurement-rows only — its lone runtime canvas is the QR code via
+`/assets/shared/js/qr.js`; the only *chart* canvas in the correction
+surface is the legacy room page). Add:
 
 - **Before/after overlay:** the combined cloud spec curve pre-apply
   (CLOUD-MEASURE) vs post-apply (CLOUD-VERIFY), 1/3-oct, with
@@ -673,10 +796,11 @@ bounded 2–8 dB; "tonight produced no comb-free top-octave
 measurement").
 
 **Protocol fix over S0 leg B:** the capsule must be **at** the
-boundary, not proud of it — S0's "mic lying on the floor" left the
-capsule 4–5 cm high and manufactured its own 125–146 µs arrival
-(r up to 0.93), making the floor the *worst* HF reference of the
-night. Mount so the capsule center is ≤~8 mm off the hard surface
+boundary, not proud of it — S0's "mic lying on the floor"
+manufactured its own dominant 125–146 µs arrival, **4.3–5.0 cm of
+path** (consistent with the capsule sitting centimeters proud of the
+boundary; r up to 0.93), making the floor the *worst* HF reference
+of the night. Mount so the capsule center is ≤~8 mm off the hard surface
 (flush board/plate extending the floor plane; no soft materials —
 the no-props UX ruling applies to product UX, and this is a lab
 protocol, but keep it to rigid surfaces anyway). Speaker on the hard
@@ -697,18 +821,18 @@ positions**, N=2 sweeps each.
   one-time top-octave reference protocol** (the cloud remains the
   product flow; nothing in W1–W5 gates on this).
 
-### Product smoke (same visit, after W2+W4 merge + deploy)
+### Product smoke (same visit, after PR-3b + PR-4 + PR-7 merge + deploy)
 
 One full cloud session on JTS3 driven from a phone: choreography
 prompts read naturally, budget holds, cloud.json lands, the
 before/after chart renders with the comb called out in plain
 language, doctor check green. This is the hardware validation for
-PR-3/4/7 that CI structurally cannot provide.
+PR-3b/PR-4/PR-7 that CI structurally cannot provide.
 
 ## Risks and named corner-cuts
 
 - **Session length vs the walked-away guarantee** is a real tension;
-  PR-3's budget scaling is the mitigation, and N defaults (8/6) are
+  PR-3b's budget scaling is the mitigation, and N defaults (8/6) are
   chosen for wall-clock, not statistical perfection — S0's stability
   data (6-of-10 subsets) says more positions is better; the
   geometry-retry loop is the honest escape hatch, and N is a
@@ -721,8 +845,14 @@ PR-3/4/7 that CI structurally cannot provide.
 - **VERIFY tracking not unified** (interpretation call B) — scoped on
   purpose; the frame-discrepancy class dies at the spec-facing SSOT.
 - **Big-file churn:** `correction_setup.py` (7.4 k lines) and
-  `correction_crossover_v2.py` (3 k) move fast on `main`; W2+ PRs are
-  sequential, rebased before push, never long-lived.
+  `correction_crossover_v2.py` (3 k) move fast on `main`; PR-3b
+  through PR-7 are sequential, rebased before push, never long-lived.
+- **PR-3a is a cross-deployment protocol change** (Pi + the deployed
+  relay Worker + capture page) — the one place this program touches
+  infrastructure outside the Pi deploy path. Capacity lands
+  Worker/page-first, Pi second, gated on the negotiated protocol
+  version; the un-updated-Worker skew case fails closed (plan
+  refused with a clear error), never mid-session.
 - **`driver_spacing_m` is inert (0.0) today** — vertical-lobing
   *prediction* from declared geometry is possible future work and
   deliberately **not** in this program (80/20; RB-1 measures instead
@@ -738,8 +868,13 @@ and anything on the adjudicated do-not-relitigate list.
 
 ---
 
-*Status: authored 2026-07-25 (Fable architect session); PR ladder not
-yet started. The executing session updates per-PR status here as
-merges land.*
+*Status: authored 2026-07-25 (Fable architect session); one
+independent Opus adversarial review round applied — 3 blockers,
+5 should-fixes, 8 nits, all fixed (notably: the PR-3a relay-capacity
+split — the protocol caps plans at 8 entries; the existing
+`driver_class` envelope-prior interaction PR-6 must design with; and
+the τ-ladder-vs-arrival 4–9 % gap PR-1's matcher must admit). PR
+ladder not yet started. The executing session updates per-PR status
+here as merges land.*
 
 *Last verified: 2026-07-25*
