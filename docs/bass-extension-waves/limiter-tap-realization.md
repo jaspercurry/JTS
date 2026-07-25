@@ -222,7 +222,7 @@ process-wide main fader always runs before every pipeline step, so it
 always precedes the owner limiter regardless of graph shape; the "follows
 the limiter" branch is dead code for this CamillaDSP version, not merely
 unreachable on JTS-emitted graphs today. Every render therefore reproduces
-the recorded fader gain via `--gain <fader_db>` (`src/bin.rs`:
+the recorded fader gain via `--gain=<fader_db>` (`src/bin.rs`:
 `Arg::new("gain")` sets `initial_volumes[0]` — the same index
 `Pipeline::from_config` reads for `self.volume` — and
 `filters/basicfilters.rs`'s `Volume::new` starts with `ramp_step: 0`, so the
@@ -712,7 +712,7 @@ the plan table becomes the sole status surface.
     path; it is not this always-present process-wide fader). R4(c)'s
     now-false "currently unreachable… exists so a future graph change fails
     loudly" sentence is deleted. Every render reproduces the fader gain via
-    `--gain <fader_db>` (`src/bin.rs`: `Arg::new("gain")` sets
+    `--gain=<fader_db>` (`src/bin.rs`: `Arg::new("gain")` sets
     `initial_volumes[0]` — the same index `Pipeline::from_config` reads for
     `self.volume` — and `filters/basicfilters.rs`'s `Volume::new` starts
     with `ramp_step: 0`, so the first processed chunk already applies it,
