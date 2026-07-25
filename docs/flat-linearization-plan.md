@@ -316,16 +316,38 @@ lulls so the echo lands in silence, excise, stitch"). Verdict, adopted:
   agree above ~3.2 kHz within tolerance it becomes a standing
   consistency gauge at wiring time, never a calibrated measurement below
   3.2 kHz.
-- **The one live single-point bet: cepstrum-seeded regularized two-path
-  inversion** — fit H_meas(f) = H_d(f)·[1 + r(f)·e^(−j2πfτ)] with τ fixed
-  by the shipped echo detector and smoothness priors on H_d and r(f).
-  No exact prior art (nearest: Bolton & Gold cepstral r(f); Mommertz /
-  Robinson & Xiang subtraction methods); plain K-Dirac subspace fits are
-  expected to be biased by the directivity-weighted r(f). Experimental
-  lane, offline-first, go/no-go: recover H_d below 3.2 kHz within
-  ~1–1.5 dB at ≥40 dB SNR on synthetic two-path data with realistic
-  r(f), else shelve. Scheduled AFTER S0 so the cloud average provides
-  its real-data benchmark.
+- **The single-point bet — cepstrum-seeded regularized two-path
+  inversion: gate run 2026-07-25, verdict NO-GO, lane SHELVED.** The
+  prototype (fit H_meas(f) = H_d(f)·[1 + r(f)·e^(−j2πfτ)] + geometric
+  2τ/3τ repeats, P-spline smoothness priors, variable projection;
+  artifacts + GATE-REPORT.md at
+  `captures/flat-linearization-20260725/inversion-prototype/`) failed
+  the pinned gate decisively: worst-case recovery 4.84 dB vs the
+  1.0/1.5 dB threshold (6/24 gate cases pass). Two independent fatal
+  mechanisms, either sufficient: (1) the fit needs a τ seed good to
+  ~±1 %, while the shipped detector honestly delivers ~3–4 % at our
+  ~310 µs (bottom of the default window) — a 3–4× precision gap; (2)
+  below 1/τ the comb completes less than one cycle, so r(f) there is
+  extrapolated by its smoothness prior, and a non-monotone
+  (field-shaped) r(f) is unrecoverable even with oracle tuning
+  (3.2 dB). The method is bias-limited, not noise-limited — SNR was
+  never the binding axis. Revisit only with a fundamentally better τ
+  seed AND real-data evidence of monotone r(f); the τ gap alone is
+  independently fatal.
+- **Material side-finding for the primary method (disclosed, encoded):**
+  on the same synthetic truths, the spatial cloud average retains
+  **2.1–3.8 dB of common-mode bounce lift below ~1/τ and does not
+  converge with N** at realistic spreads — at 250 Hz a 180–480 µs
+  bounce-delay spread is only 0.28–0.75 rad, so every position sees
+  nearly the same coherent lift and averaging has nothing to cancel;
+  only wide spread helps (~120–700 µs → ~2 dB residual). Consequences:
+  the fundamentals' ≥30 cm LF-spread guidance is load-bearing, S0
+  leg A should include at least two wide-offset positions, leg B
+  (ground-plane — no bounce at all) is the strongest LF-truth
+  instrument, and prediction 8's leg-A-vs-leg-B comparison over
+  500–1500 Hz doubles as the direct measurement of leg A's residual
+  common-mode lift (a systematic leg-A-high reading there IS that
+  bias, not a failed prediction).
 - **Slower sweeps do not help separation** (stationary interference;
   LTI excitation-invariance; verified empirically — the N=3 in-place
   repeats change the comb by <0.1 dB) and SNR is already ~124 dB. Sweep
