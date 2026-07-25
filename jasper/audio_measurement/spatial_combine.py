@@ -261,11 +261,40 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # whether a stronger peak exists at *any* lower quefrency, and for this case
 # finds it at 214.2 us, 0.12 quefrency steps from the truth.
 #
+# **A raised window pays for the screen, in the fail-safe direction.** The
+# screen asks only "is something much stronger below?", and an honest
+# in-window echo sitting under a stronger *earlier* reflection answers yes
+# just as a rahmonic does. Swept on two-echo IRs — an earlier 250-400 us
+# reflection at r 0.4-0.6 below the window, a genuine 850-1000 us echo at
+# r 0.15-0.25 inside it, five windows from (700, 1100) to (800, 1200) — 482
+# of 720 cases are refused, at lower/candidate ratios 2.005-4.513, even though
+# the envelope had located the real late echo to within 0.9% and the two
+# estimators agreed well enough to score every time (corroboration at most
+# 0.27, always below ``CORROBORATION_LOOSE``). Three things bound the hazard,
+# all measured on 2026-07-25:
+#
+# * It needs the stronger-earlier-echo geometry, not merely a raised window:
+#   single-echo raised-window cases refuse 0 of 370, at ratios 0.217-0.942.
+# * It does not arise at the default window, which contains the earlier
+#   reflection instead of excluding it: the same 144 two-echo geometries
+#   (432 readings over three noise seeds) refuse 0 at (120, 800), at ratios
+#   0.166-0.945, and read the earlier echo to within 2.4%.
+# * The failure is a refusal, never a wrong number.
+#
+# So the remedy is the default window rather than a screen exemption, and
+# "prefer the default" is the rule this hazard argues for a second time.
+# Pinned by
+# test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one.
+#
 # **What is still only as good as the sweep behind it.** The screen is
 # calibrated on a measured gap (see ``RAHMONIC_MARGIN``), not proved; the
 # default window remains the one with the longest false-lock record, and a
-# raised window is now *screened* rather than *validated*. Prefer the
-# default.
+# raised window is now *screened* rather than *validated*. Every window
+# figure above — the false locks, the screen closing them, and the
+# raised-window cost — comes from synthetic one- and two-echo IRs plus a
+# three-frame single-position corpus. Real multi-bounce behaviour through a
+# raised window has never been measured, and waits on the plan's S0 capture
+# session. Prefer the default.
 DEFAULT_ECHO_SEARCH_US = (120.0, 800.0)
 
 # Order of the polynomial detrend removed from the band's log-magnitude
@@ -370,8 +399,20 @@ WINDOW_EDGE_MARGIN_STEPS = 1.0
 # to (but not including) the candidate's own bin — exceeds the candidate by
 # more than ``RAHMONIC_MARGIN``. A rahmonic is by construction weaker than the
 # fundamental that produced it, so "a much stronger peak sits at a lower
-# quefrency" is exactly the signature, and it needs no assumption about the
-# ratio being an integer.
+# quefrency" is *necessary* for the candidate to be one — it is not
+# sufficient, and the screen is that necessary condition tested directly. It
+# needs no assumption about the ratio being an integer.
+#
+# **What the signature does not distinguish.** An honest in-window echo
+# sitting under a stronger, unrelated *earlier* reflection presents exactly
+# the same picture: something much stronger below, at a quefrency the
+# window excluded. From one record the two are not separable — measured, the
+# ratios interleave rather than sitting in different bands (see
+# ``DEFAULT_ECHO_SEARCH_US`` for the sweep and the remedy, and
+# test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one
+# for the pinned case). The screen resolves the ambiguity toward refusing,
+# which is the fail-safe direction: the caller loses a measurement it could
+# have had, rather than being handed a delay that is roughly 3x wrong.
 #
 # **Why not a tau/2, tau/3 submultiple re-test** (which an earlier revision of
 # this file prescribed): the module's own worst measured case defeats it. On
@@ -387,32 +428,52 @@ WINDOW_EDGE_MARGIN_STEPS = 1.0
 # by test_rahmonic_screen_catches_the_non_integer_ratio_the_submultiple_test_missed.
 #
 # **RAHMONIC_MARGIN = 2.0, calibrated to sit in a measured gap** — the same
-# posture as ECHO_CONFIDENCE_FLOOR. Two populations were swept, each on its own
+# posture as ECHO_CONFIDENCE_FLOOR. Two populations are swept, each on its own
 # grid (they are looking for opposite things, so one grid could not have
-# produced both), and each classified by what the *pre-screen* detector did:
+# produced both), and each classified by what the *pre-screen* detector did
+# (the sweep disables the screen and reads ``lower_peak_ratio`` off the
+# record, so it measures the shipped code rather than a re-implementation).
 #
-# * **True positives — 2925 readings**, from bare impulse+echo IRs over tau
-#   200-770 us x r 0.10-0.75, shaped-response IRs over the same range, and the
-#   three corpus IRs, each crossed with 13 search windows from (120, 800) to
-#   (800, 1200); admitted when the pre-screen detector was unrefused, at or
-#   above ECHO_CONFIDENCE_FLOOR, and within 15% of truth. Their lower/candidate
-#   ratio peaks at **0.9955**. That ceiling is not low-quefrency leakage but
-#   the candidate's own main-lobe shoulder: the worst case (tau 740 us,
-#   r 0.75, searched in (200, 900)) has its true quefrency between two cepstral
-#   bins — 0.36 of a step above the lower one — so the peak's energy straddles
-#   both and the bin below the argmax reaches 0.9955 of it.
-# * **Wrong readings — 528 readings**, from the same IR families but with tau
-#   100-455 us, crossed with 11 windows from (400, 900) to (1000, 1600) — i.e.
-#   windows that exclude the true delay, which is what makes a rahmonic
+# **The sweep is committed, not quoted.**
+# test_rahmonic_margin_calibration_populations_bracket_the_constant in
+# tests/test_spatial_combine.py regenerates both populations from the grids
+# below and re-derives the gap. It is skipped unless
+# ``JTS_RAHMONIC_CALIBRATION=1`` (~30 s). Every figure here is that test's own
+# output, measured 2026-07-25:
+#
+# * **True positives — 2908 readings**, from bare impulse+echo IRs and
+#   shaped-response IRs over tau 200-770 us x r 0.10-0.75, each crossed with
+#   13 search windows from (120, 800) to (800, 1200); admitted when the
+#   pre-screen detector was unrefused, at or above ECHO_CONFIDENCE_FLOOR, and
+#   within 15% of truth. Their lower/candidate ratio peaks at **0.9955**. That
+#   ceiling is not low-quefrency leakage but the candidate's own main-lobe
+#   shoulder: the worst case (tau 740 us, r 0.75, searched in (200, 900)) has
+#   its true quefrency between two cepstral bins — 0.36 of a step above the
+#   lower one — so the peak's energy straddles both and the bin below the
+#   argmax reaches 0.9955 of it.
+# * **Wrong readings — 409 readings**, from the same two IR families but with
+#   tau 100-455 us, crossed with 11 windows from (400, 900) to (1000, 1600) —
+#   i.e. windows that exclude the true delay, which is what makes a rahmonic
 #   reachable; admitted when the pre-screen detector was confident and more
-#   than 15% off truth. Their ratio bottoms out at **3.531**.
+#   than 15% off truth. Their ratio bottoms out at **4.9192**.
 #
-# 2.0 is 2.01x above the true-positive ceiling and 1.77x below the wrong-
-# reading floor, near the geometric centre of that gap. It rejects 528/528 of
-# the wrong readings and 0/2925 of the right ones. A margin of exactly 1.0
-# ("any stronger peak") would also separate the two populations, but with only
-# 0.5% of headroom over the shoulder case above — the sub-bin geometry that
-# produces it is ordinary, so that headroom is not a margin.
+# 2.0 is 2.01x above the true-positive ceiling and 2.46x below the wrong-
+# reading floor. It rejects 409/409 of the wrong readings and 0/2908 of the
+# right ones. A margin of exactly 1.0 ("any stronger peak") would also
+# separate the two populations, but with only 0.5% of headroom over the
+# shoulder case above — the sub-bin geometry that produces it is ordinary, so
+# that headroom is not a margin.
+#
+# The regenerated populations are synthetic only; the three corpus IRs the
+# original sweep folded into its true positives are absent in CI, and their
+# headroom is pinned separately (0.329-0.387, by
+# test_detect_echo_finds_the_corpus_bounce). An earlier revision of this
+# comment quoted 2925 / 528 readings and a floor of 3.531 from a sweep whose
+# grid steps were never recorded. The **ceiling reproduces exactly**; the two
+# population sizes and the floor do not, and with the original grid unrecorded
+# the difference is not diagnosable — which is precisely why the sweep is now
+# a test. The regenerated floor is *higher* than the one it replaces, so the
+# gap is wider than previously claimed, not narrower.
 #
 # **RAHMONIC_FLOOR_STEPS = 1** — whole quefrency steps, because the cepstrum
 # is only defined on them. It excludes exactly one bin, the zero-lag bin,
@@ -422,7 +483,9 @@ WINDOW_EDGE_MARGIN_STEPS = 1.0
 # choice about meaning, not a rescue from leakage, and the measurement says
 # so — a floor of 0 produces the same 0.9955 ceiling on the true-positive
 # population and the same verdict on all 460 detector calls this module's test
-# suite makes, because the cubic detrend does its job. Measured on the real
+# suite made at commit 6888ac15e (a count that moves with the suite, so it is
+# stamped rather than maintained), because the cubic detrend does its job.
+# Measured on the real
 # corpus, the zero-lag bin is 0.120-0.154 of the candidate peak and the two
 # bins above it 0.234-0.340, so the low-quefrency region is nowhere near able
 # to auto-refuse an honest reading. That headroom is pinned on real data by
@@ -621,22 +684,29 @@ class EchoDiagnostic:
         comparison produced (the **measured** value when both candidates
         were in-window, the 1.0 marker when only one was).
 
-        **Do not infer the refusal's character from that value — an edge
-        refusal may carry any corroboration at all.** Across this module's
-        test suite the edge path produces 168 refusals, 145 of which carry
-        a measured value (the other 23 had only *one* candidate in-window,
-        so nothing was compared and the 1.0 marker is correct there). Those
-        145 span **0.0005 to 3.26, median 0.161, with 47 of them — about a
-        third — above ``CORROBORATION_LOOSE``**. A narrower 0.005-0.28 was
-        quoted here previously; that was the (300, 800) cloud alone, not the
-        population.
+        **Do not infer the refusal's character from that value — a late
+        refusal may carry any corroboration at all.** Two scopes, kept
+        separate on purpose. Narrowly: the ten-position 150-400 us cloud
+        searched at (300, 800) — a fixed, seeded test — produces edge
+        refusals whose measured corroboration spans 0.005-0.28, i.e. tight
+        agreement is the common case there. Broadly: across the late
+        refusals this module's tests produce, the measured value spans
+        several orders of magnitude, from below 0.001 to above 3, and values
+        above ``CORROBORATION_LOOSE`` are ordinary rather than exceptional.
+        So the field is **record-specific and never population-typical** —
+        read it off the record in front of you, and do not carry a range
+        quoted here into a judgement about a different record. (No census
+        count is quoted for the broad population deliberately: it is a
+        property of whatever tests happen to exist, so it would be stale
+        the next time one is added.)
 
         So both directions occur and both are refusals. A *small* value
         means the two estimates were comparable and agreed, and the pair was
-        refused for edge proximity rather than for disagreeing. A *large*
-        value means they were compared and disagreed. Neither is evidence
-        for or against the refusal — the refusal turns on distance to the
-        window edge, not on this field. What the field guarantees is only
+        refused for some other reason than disagreeing. A *large* value
+        means they were compared and disagreed. Neither is evidence for or
+        against the refusal — an edge refusal turns on distance to the
+        window edge and a rahmonic refusal on ``lower_peak_ratio``, and
+        neither rule reads this field. What the field guarantees is only
         that it preserves what was measured instead of substituting a
         fabricated marker.
       arrival_crest_db: direct arrival level above the IR's median
@@ -645,18 +715,29 @@ class EchoDiagnostic:
         *below* the cepstral candidate, over the rahmonic screen's analyzable
         region (see ``RAHMONIC_MARGIN``). 0.0 when there was no such region —
         the candidate sat at or below ``RAHMONIC_FLOOR_STEPS``, or the
-        detector refused before a cepstrum existed.
+        detector returned before the region was measured (the crest,
+        window-length and band-width gates, and
+        ``search_window_outside_cepstrum``, which fires after a cepstrum
+        exists but before this region is scanned).
       lower_peak_ratio: that peak's magnitude divided by the candidate's, so
         the screen's verdict is recomputable from the record rather than
         asserted by it: a ``rahmonic_of_lower_delay`` refusal is exactly
         ``lower_peak_ratio > RAHMONIC_MARGIN``. It is reported on *every*
-        record that got as far as a cepstrum, not only refused ones, because
-        the interesting reading is often the one that did **not** refuse —
-        the measured ceiling across honest detections is 0.9955, and a
-        consumer watching that number creep is watching the screen's margin
-        erode. 0.0 alongside a 0.0 ``lower_peak_us`` means "not measured",
-        which is distinguishable from a measured zero only in the degenerate
-        case of an all-zero cepstrum below the candidate.
+        record that got as far as that scan, not only refused ones, because
+        the interesting reading is often the one that did **not** refuse — a
+        consumer watching this number creep toward the margin on honest
+        detections is watching the screen's headroom erode. The corpus
+        detections sit at 0.329-0.387 against a margin of 2.0 (pinned by
+        test_detect_echo_finds_the_corpus_bounce); the widest reading in the
+        calibration sweep's true-positive population is 0.9955 (see
+        ``RAHMONIC_MARGIN``).
+
+        **0.0 in both fields means "not measured", unambiguously.** A
+        measured region starts at bin ``RAHMONIC_FLOOR_STEPS`` (>= 1), whose
+        quefrency is strictly positive, so a measured record always reports a
+        positive ``lower_peak_us`` — including the degenerate case where the
+        cepstrum below the candidate is all zeros and the *ratio* is a
+        genuine 0.0.
     """
 
     tau_us: float
@@ -1053,15 +1134,16 @@ def _refused(
     :attr:`EchoDiagnostic.corroboration`). The two late refusals —
     **edge-proximity** and **rahmonic** — are where that default would lie:
     both fire *after* the candidates have been compared, so both pass the
-    measured value through instead. Reporting 1.0 there claimed "incomparable" about
-    a pair that had in fact been compared — across this module's test suite,
-    145 such refusals carry a real reading spanning 0.0005 to 3.26 (median
-    0.161), so the fabricated marker overwrote everything from near-perfect
-    agreement to gross disagreement with the same wrong number. The value is
+    measured value through instead. Reporting 1.0 on either claimed
+    "incomparable" about a pair that had in fact been compared, and the
+    readings it overwrote run the full width of the scale — this module's
+    tests produce late refusals carrying everything from near-perfect
+    agreement (below 0.001) to gross disagreement (above 3). The value is
     passed through to preserve the measurement, **not** because a small
-    value argues for the refusal: the refusal turns on distance to the
-    window edge, and about a third of that population sits above
-    ``CORROBORATION_LOOSE`` anyway.
+    value argues for the refusal: an edge refusal turns on distance to the
+    window edge and a rahmonic refusal on ``lower_peak_ratio``, neither rule
+    reads this field, and among edge refusals readings above
+    ``CORROBORATION_LOOSE`` are ordinary rather than exceptional.
 
     The raw estimator fields are carried through when they exist, because a
     railed or edge-hugging cepstral estimate is exactly the evidence a
@@ -1211,7 +1293,19 @@ def detect_echo(
     What the screen is **not** is a licence to raise the window freely: it
     is calibrated to sit in a measured gap (``RAHMONIC_MARGIN``), the
     default window still has by far the longest false-lock record, and a
-    raised window is now screened rather than validated.
+    raised window is now screened rather than validated. Screening also has
+    a cost only a raised window can pay. "Something much stronger sits
+    below" is *necessary* for a candidate to be a rahmonic, not sufficient:
+    an honest in-window echo under a stronger unrelated *earlier*
+    reflection presents the same evidence and is refused as well. Measured
+    on two-echo IRs, 482 of 720 raised-window cases refuse that way, none of
+    the same geometries do at the default window, and the remedy is
+    therefore to measure with the default window — which contains the
+    earlier reflection rather than excluding it (see
+    ``DEFAULT_ECHO_SEARCH_US``). It is a refusal, never a wrong number.
+    Every one of these window claims rests on synthetic IRs plus a
+    single-position three-frame corpus; real multi-bounce behaviour through
+    a raised window awaits the plan's S0 capture session.
 
     The IR is windowed internally to the early-arrival region (see
     ``ECHO_WINDOW_SPAN_FACTOR``), so a full deconvolved IR may be passed;
@@ -1231,9 +1325,10 @@ def detect_echo(
         record.** Raising the lower edge to 650 us or above used to enter
         the rahmonic regime described above, where a below-window echo was
         reported confidently at ~3x its true delay; the rahmonic screen
-        refuses those now, by a 21.5-78.8x margin on the measured cases.
-        That makes a raised window *screened*, not *validated* — prefer the
-        default.
+        refuses those now, by a 21.5-78.8x margin on the estimates that
+        used to be admitted. That makes a raised window *screened*, not
+        *validated*, and screening it costs honest late echoes whenever a
+        stronger reflection sits below the window — prefer the default.
 
         **Resolution floor — the bottom of the window does not measure.**
         Both estimators degrade as tau approaches ``1 / bandwidth``
@@ -1448,10 +1543,10 @@ def detect_echo(
     #
     # Corroboration is computed *above* this check rather than below it so
     # the refusal can carry what was actually measured. When both candidates
-    # were in-window they really were compared; across this suite's edge
-    # refusals the measured corroboration spans 0.0005-3.26 (median 0.161),
-    # so agreement is common but never characterizes the refusal — the
-    # refusal turns on distance to the window edge alone. Reporting the
+    # were in-window they really were compared, and the readings this path
+    # produces run from near-perfect agreement to gross disagreement — so
+    # agreement is common here but never characterizes the refusal, which
+    # turns on distance to the window edge alone. Reporting the
     # incomparable-marker 1.0 here would have contradicted the record the
     # refusal exists to preserve.
     edge_margin_s = WINDOW_EDGE_MARGIN_STEPS * resolution_us * 1e-6
@@ -1476,13 +1571,23 @@ def detect_echo(
     # 2*tau, 3*tau, ..., so the excluded fundamental puts a copy of itself at
     # an arbitrary place inside a raised window, where no edge rule can reach
     # it. A rahmonic is always weaker than its own fundamental, so the
-    # signature is a much stronger peak at a lower quefrency — measured on the
-    # documented false-lock windows at 21.5-78.8x the candidate, with that
-    # stronger peak landing within half a quefrency step of the position's
-    # true delay. See ``RAHMONIC_MARGIN`` for the calibration and for why an
-    # exact tau/2, tau/3 submultiple re-test would have missed the worst
-    # measured case. The refusal carries the evidence rather than asserting
-    # it: ``lower_peak_us`` says where the stronger peak is,
+    # signature is a much stronger peak at a lower quefrency — on the
+    # documented false-lock windows the *previously-admitted* estimates are
+    # refused at 21.5-78.8x the candidate, with that stronger peak landing
+    # within half a quefrency step of the position's true delay. (The full
+    # rahmonic-refusal population on those same three windows spans
+    # 5.14-624.29; the narrower range is the subset that used to be admitted,
+    # which is the set the fix is measured against.) See ``RAHMONIC_MARGIN``
+    # for the calibration and for why an exact tau/2, tau/3 submultiple
+    # re-test would have missed the worst measured case.
+    #
+    # The signature is necessary but not sufficient, and this is where the
+    # detector accepts a known cost: an honest in-window echo under a
+    # stronger unrelated *earlier* reflection looks identical from one
+    # record and is refused too. That is bounded to raised windows and fails
+    # safe — see ``DEFAULT_ECHO_SEARCH_US`` for the sweep, the remedy, and
+    # the pinning test. The refusal carries the evidence rather than
+    # asserting it: ``lower_peak_us`` says where the stronger peak is,
     # ``lower_peak_ratio`` says by how much it wins.
     if lower_peak_ratio > RAHMONIC_MARGIN:
         return _refused(
