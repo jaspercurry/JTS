@@ -4,36 +4,54 @@
 
 """Contract tests for the spatial combiner + interference honesty screen.
 
-Four layers, per the plan's fundamentals 1-2
+Five layers, per the plan's fundamentals 1-2
 (docs/flat-linearization-plan.md):
 
 A. **Synthetic ground truth** — the primary, hardware-free validation. A
    known smooth "true" response is contaminated with a comb from a discrete
-   echo at a per-position delay, then recovered through the combiner.
+   echo at a per-position delay, then recovered through the combiner. This
+   layer also carries the *estimator-discrimination* assertions: an RMS
+   recovery metric with the common offset removed cannot tell the plan's
+   chosen power mean from the plan-rejected max-hold, so absolute level is
+   asserted separately.
 B. **Power-domain arithmetic**, pinned to hand-computed literals. The
    power-vs-dB mean confusion has produced three separate wrong architect
    claims in this repo; this is the forever-pin.
-C. **Echo detector** on synthetic impulse responses and negative controls.
-D. **Real-data smoke** against the 2026-07-24/25 JTS3 corpus. Skipped when
+C. **Echo detector** on synthetic impulse responses and negative controls,
+   including the search window's *rejection* contract: a delay outside the
+   caller's window is refused, never clamped onto the edge.
+D. **Analysis-grid bounding** — the block-average decimation that keeps the
+   combiner's cost bounded must not change the curves it produces.
+E. **Real-data smoke** against the 2026-07-24/25 JTS3 corpus. Skipped when
    the (gitignored, laptop-durable) capture directory is absent, which is
-   always the case in CI.
+   always the case in CI. The corpus lives beside the *main* checkout, so a
+   worktree checkout must point at it with ``JTS_FLAT_LIN_CORPUS=<dir>``.
 """
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import jasper.audio_measurement.spatial_combine as spatial_combine
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.spatial_combine import (
+    DEFAULT_ECHO_BAND_HZ,
+    DEFAULT_ECHO_SEARCH_US,
     ECHO_CONFIDENCE_FLOOR,
     GEOMETRY_DISPERSED,
     GEOMETRY_LOCKED,
+    GEOMETRY_MIN_RESOLUTION_STEPS,
     GEOMETRY_UNKNOWN,
+    MAX_ANALYSIS_BINS,
+    REFUSAL_ALL_ZERO_IR,
+    REFUSAL_NO_IN_WINDOW_ECHO,
     STRENGTH_FLOOR_DB,
     CombinedResponse,
+    EchoInputError,
     PositionCapture,
     assess_geometry,
     combine_positions,
@@ -122,6 +140,20 @@ def _dispersed_taus(n: int = 10, seed: int = 20_260_725) -> np.ndarray:
     """
     rng = np.random.default_rng(seed)
     return np.linspace(150e-6, 490e-6, n) + rng.uniform(-15e-6, 15e-6, n)
+
+
+def _level_offset_db(
+    estimate: np.ndarray, truth: np.ndarray, keep: np.ndarray
+) -> float:
+    """The mean (estimate - truth) over ``keep`` — precisely the common
+    offset that :func:`_relative_rms_error` removes.
+
+    This is the discriminating statistic the RMS metric deliberately throws
+    away, and the one the plan's estimator choice actually turns on: every
+    candidate estimator can track the *shape* of a decorrelated cloud, but
+    they land at very different absolute levels.
+    """
+    return float((estimate - truth)[keep].mean())
 
 
 def _relative_rms_error(
@@ -257,14 +289,83 @@ def test_power_mean_recovers_truth_from_a_dispersed_cloud():
                                top) < 1.0
 
 
+def test_absolute_level_discriminates_the_power_mean_from_max_hold():
+    """A1b — the assertion the RMS metric structurally cannot make.
+
+    ``_relative_rms_error`` removes the common offset, so it scores *shape*
+    only. On a decorrelated cloud every plausible estimator tracks the shape
+    well — max-hold, the estimator the plan explicitly rejects ("No max-hold
+    estimator", non-goals), actually scores *better* on offset-removed RMS
+    than the power mean does, because taking the per-bin maximum suppresses
+    the seeded noise. Reading that as "max-hold is fine" is exactly the
+    mistake, and it is invisible to a shape-only metric.
+
+    The criterion the plan cares about is **level**: research artifact 01
+    Question 2 rejects max-hold as *positively biased*. So this test asserts
+    absolute level directly.
+
+    Two numbers, on one shared cloud:
+
+    * The power mean carries a known, derivable systematic — the echo's own
+      energy, ``+10*log10(1 + r**2)`` = +0.529 dB at r=0.36. Measured here:
+      +0.437 dB. The ~0.09 dB gap below the analytic value is expected and
+      benign: the prediction assumes comb phase is uniformly distributed
+      across positions, and ten stratified delays only approximate that
+      (partial coherence pulls the realised offset toward the coherent-sum
+      case), while the flagged-bin exclusion removes exactly the bins where
+      the positions disagree most. The band is therefore asserted, not the
+      point value — the claim is "small, positive, and near the analytic
+      prediction", which is what makes the offset *normalisable* by the
+      plan's band-relative reference.
+    * Max-hold's offset is +2.55 dB on the same cloud — an order of
+      magnitude larger, unrelated to r, and not removable by any band
+      reference because it varies with N and with the local comb depth.
+      That is the failure the plan's non-goal is about.
+    """
+    freqs, true_db, captures = _cloud(_dispersed_taus())
+    result = combine_positions(captures)
+
+    keep = (freqs >= 300.0) & (freqs <= 16_000.0) & ~result.excluded
+    predicted_db = 10.0 * math.log10(1.0 + ECHO_R**2)
+    assert predicted_db == pytest.approx(0.529, abs=0.001)
+
+    power_mean_offset = _level_offset_db(result.power_mean_db, true_db, keep)
+    assert 0.2 <= power_mean_offset <= 0.75, (
+        f"power-mean level offset {power_mean_offset:.3f} dB left the band "
+        f"consistent with the predicted +{predicted_db:.3f} dB echo energy"
+    )
+
+    max_hold_db = np.max(
+        np.vstack([c.magnitude_db for c in captures]), axis=0
+    )
+    max_hold_offset = _level_offset_db(max_hold_db, true_db, keep)
+    assert max_hold_offset > 2.0, (
+        f"max-hold level offset {max_hold_offset:.3f} dB — the plan-rejected "
+        "estimator must visibly fail the level criterion"
+    )
+    assert max_hold_offset > 4.0 * power_mean_offset
+
+    # ...and the shape-only metric really does fail to separate them, which
+    # is why the level assertions above have to exist at all.
+    assert _relative_rms_error(max_hold_db, true_db, keep) < _relative_rms_error(
+        result.power_mean_db, true_db, keep
+    )
+
+
 def test_geometry_lock_is_false_when_delays_are_dispersed():
     """A2a — dispersed delays mean moving nulls, which averaging can fill."""
     _freqs, _true_db, captures = _cloud(_dispersed_taus())
     result = combine_positions(captures)
 
-    assert result.geometry_locked is False
+    assert result.geometry.locked is False
     assert result.geometry.reason == GEOMETRY_DISPERSED
-    assert result.geometry.n_confident == 10, "every synthetic echo is credible"
+    # 8 of the 10 stratified delays clear the resolution floor
+    # (3 * ~71.4 us = ~214 us); the 150 us and 185 us members sit inside it
+    # and are not admitted as evidence — see assess_geometry's "what counts
+    # as usable evidence". They are excluded because they are *unresolvable*,
+    # not because they were absent: both were detected with confidence > 0.8.
+    assert result.geometry.n_confident == 8
+    assert result.geometry.n_positions == 10
     assert result.geometry.clustered_fraction < 0.7
 
 
@@ -275,7 +376,7 @@ def test_geometry_lock_is_true_when_every_delay_is_identical():
     _freqs, _true_db, captures = _cloud(np.full(10, 300e-6))
     result = combine_positions(captures)
 
-    assert result.geometry_locked is True
+    assert result.geometry.locked is True
     assert result.geometry.reason == GEOMETRY_LOCKED
     assert result.geometry.clustered_fraction == pytest.approx(1.0)
     assert result.geometry.median_tau_us == pytest.approx(300.0, rel=0.1)
@@ -290,7 +391,7 @@ def test_aligned_nulls_survive_the_average_which_is_why_the_flag_exists():
     positions agree so mean and median agree too.
 
     This is not a defect to fix. It is the physics of a position-stable
-    interference pattern, and it is exactly why ``geometry_locked`` is a
+    interference pattern, and it is exactly why ``geometry.locked`` is a
     separate signal from the exclusion mask. A consumer must treat the flag
     as actionable ("spread the mic further"), because neither the estimator
     nor the screen will save it.
@@ -313,7 +414,7 @@ def test_aligned_nulls_survive_the_average_which_is_why_the_flag_exists():
         assert not bool(result.excluded[index]), (
             "the mean-vs-median screen is blind to fully-aligned nulls — if "
             "this ever starts flagging them, the screen's semantics changed "
-            "and geometry_locked's role must be revisited"
+            "and geometry.locked's role must be revisited"
         )
 
     # And the recovery metric that the dispersed cloud passes, this fails.
@@ -322,7 +423,7 @@ def test_aligned_nulls_survive_the_average_which_is_why_the_flag_exists():
     assert _relative_rms_error(result.power_mean_db, true_db, keep) > 1.5
 
     # The flag is the only warning the consumer gets.
-    assert result.geometry_locked is True
+    assert result.geometry.locked is True
 
 
 def test_exclusion_mask_and_merged_intervals_agree():
@@ -350,26 +451,105 @@ def test_exclusion_mask_and_merged_intervals_agree():
 
 
 def test_band_spread_separates_a_tight_cloud_from_a_dispersed_one():
-    """Cross-position sigma is the observable behind the 1/sqrt(N) accuracy
-    story: a cloud whose captures disagree has a large sigma, one whose
-    captures are near-identical has a small one.
+    """The two spread numbers answer two questions, and only one of them
+    separates a moved cloud from a stationary one.
+
+    ``max_sigma_db`` (worst single bin, unsmoothed) is the *structure*
+    diagnostic and is what discriminates: a cloud whose comb moves has
+    positions that disagree violently bin-by-bin, a stationary one does not.
+
+    ``sigma_db`` (per-position band-power level) is the *level* diagnostic
+    and deliberately does not discriminate in the top octaves — an octave
+    band up there spans many comb periods, so every position's band energy
+    lands near ``1 + r**2`` whatever its delay. Its collapse toward zero
+    while ``max_sigma_db`` stays large is precisely the "null-dominated, not
+    broadly noisy" signature :class:`BandSpread` documents, and it is the
+    1/sqrt(N) accuracy story working rather than a dead statistic.
+
+    It does *not* collapse at 1-2 kHz, and that is physics rather than
+    noise: with tau in 150-490 us the comb period is 2-6.7 kHz, wider than
+    the whole octave band there, so band-power averaging has less than one
+    period to work with and the per-position level genuinely moves.
     """
     _f1, _t1, dispersed = _cloud(_dispersed_taus())
     _f2, _t2, tight = _cloud(np.full(10, 300e-6))
 
-    spread_dispersed = {b.center_hz: b.sigma_db for b in combine_positions(dispersed).band_spread}
-    spread_tight = {b.center_hz: b.sigma_db for b in combine_positions(tight).band_spread}
+    bands_dispersed = {b.center_hz: b for b in combine_positions(dispersed).band_spread}
+    bands_tight = {b.center_hz: b for b in combine_positions(tight).band_spread}
+    assert bands_dispersed and bands_tight
 
-    assert spread_dispersed and spread_tight
+    # A cloud that never moved disagrees with itself only by seeded noise,
+    # in both statistics, at every band it reports.
+    for band in bands_tight.values():
+        assert band.sigma_db < 0.1, band
+        assert band.max_sigma_db < 0.5, band
+
+    # Structure: the moved cloud's worst bin is an order of magnitude worse.
     for center in (2000.0, 4000.0, 8000.0):
-        assert spread_dispersed[center] > 1.0, center
-        assert spread_tight[center] < 0.2, center
-        assert spread_dispersed[center] > 5 * spread_tight[center], center
+        assert bands_dispersed[center].max_sigma_db > 2.0, center
+        assert (
+            bands_dispersed[center].max_sigma_db
+            > 5 * bands_tight[center].max_sigma_db
+        ), center
 
-    band = next(b for b in combine_positions(dispersed).band_spread if b.center_hz == 4000.0)
+    # Level: near-total collapse where the octave spans many comb periods...
+    for center in (8000.0, 16_000.0):
+        band = bands_dispersed[center]
+        assert band.sigma_db < 0.5, band
+        assert band.max_sigma_db > 5 * band.sigma_db, band
+
+    # ...but not at 1-2 kHz, where one octave is narrower than one period.
+    for center in (1000.0, 2000.0):
+        assert bands_dispersed[center].sigma_db > 1.0, center
+
+    band = bands_dispersed[4000.0]
     assert band.max_sigma_db >= band.sigma_db
     assert band.n_bins > 0
     assert band.f_lo < 4000.0 < band.f_hi
+
+
+def test_band_spread_numerics_are_pinned_on_a_hand_checkable_case():
+    """Two positions, seven band bins, one -10 dB notch — both statistics
+    computable on paper.
+
+    Grid 700-1400 Hz in 100 Hz steps. Only the 1 kHz octave band
+    (707.1-1414.2 Hz, clipped to the grid) has the ``MIN_BAND_BINS`` = 4
+    bins it needs, so exactly one :class:`BandSpread` is reported and its
+    membership is unambiguous: 800...1400 Hz, seven bins.
+
+    ``max_sigma_db`` is the per-bin cross-position sigma at the notch:
+    ``ddof=1`` std of {0, -10} dB = ``10 / sqrt(2)`` = 7.0710678... dB,
+    pinned as an exact literal below.
+
+    ``sigma_db`` is the spread of the two per-position *band levels*, each
+    the linear-power mean over the seven band bins:
+    p0 = 10*log10(7/7) = 0 dB, p1 = 10*log10((6 + 0.1)/7) = -0.5977... dB,
+    so sigma = 0.5977.../sqrt(2). Re-derived from scratch below rather than
+    typed as a literal, so the assertion checks the module's formula rather
+    than agreeing with a number copied out of its own output.
+    """
+    freqs = np.arange(700.0, 1401.0, 100.0)
+    quiet = np.zeros(freqs.size)
+    quiet[3] = -10.0  # 1000 Hz
+
+    result = combine_positions(
+        [
+            PositionCapture("p0", freqs, np.zeros(freqs.size), SAMPLE_RATE),
+            PositionCapture("p1", freqs, quiet, SAMPLE_RATE),
+        ]
+    )
+
+    assert len(result.band_spread) == 1
+    band = result.band_spread[0]
+    assert band.center_hz == 1000.0
+    assert (band.n_bins, band.f_lo, band.f_hi) == (7, 800.0, 1400.0)
+
+    # Independent re-derivation, in plain Python.
+    p1_band_level_db = 10.0 * math.log10((6.0 * 1.0 + 10.0 ** (-10.0 / 10.0)) / 7.0)
+    expected_sigma_db = abs(0.0 - p1_band_level_db) / math.sqrt(2.0)
+    assert band.sigma_db == pytest.approx(expected_sigma_db, abs=1e-12)
+    assert band.sigma_db == pytest.approx(0.42262503, abs=1e-8)
+    assert band.max_sigma_db == pytest.approx(10.0 / math.sqrt(2.0), abs=1e-12)
 
 
 def test_single_capture_combines_to_itself_and_reports_no_spread():
@@ -387,7 +567,7 @@ def test_single_capture_combines_to_itself_and_reports_no_spread():
     assert result.band_spread == ()
     assert not result.excluded.any(), "one capture cannot disagree with itself"
     assert result.geometry.reason == GEOMETRY_UNKNOWN
-    assert result.geometry_locked is False
+    assert result.geometry.locked is False
 
 
 # --------------------------------------------------------------------------- #
@@ -576,18 +756,199 @@ def test_detect_echo_resolution_floor_is_where_the_docstring_says_it_is():
     )
 
 
-def test_detect_echo_never_reports_a_delay_outside_the_search_window():
-    """Parabolic refinement runs against the full cepstrum so an edge peak
-    keeps its neighbours, but the refined value is clamped: a caller that
-    asked for a window must never be handed a delay outside it.
+@pytest.mark.parametrize(
+    "search_us",
+    [(120.0, 800.0), (250.0, 400.0), (400.0, 800.0), (150.0, 300.0), (300.0, 600.0)],
+)
+@pytest.mark.parametrize("true_tau_us", [180.0, 260.0, 350.0, 500.0, 700.0, 830.0])
+def test_detect_echo_never_reports_a_delay_outside_the_search_window(
+    search_us, true_tau_us
+):
+    """The window is a **rejection** contract, and this sweep is built so it
+    can actually fail.
+
+    Thirty combinations: six true delays crossed with five windows, so every
+    window sees delays below it, inside it, and above it. The earlier
+    single-delay version could only ever exercise the in-window case, which
+    is precisely the case that cannot detect a clamp.
+
+    Three properties:
+
+    1. ``tau_us`` is either 0.0 (nothing reported) or inside the requested
+       window, and a reported value is never a refusal.
+    2. A reported value is never pinned *exactly* to a window edge. On its
+       own, property 1 cannot catch a clamp — a clamped value satisfies it
+       by construction — so this is the assertion that fails against the
+       clamp the fix removed.
+    3. When the true delay is **above** the window, ``tau_us`` is 0.0 across
+       all ten such combinations here. This is the direct anti-clamp
+       assertion: a clamped detector reports the upper edge instead.
+
+    Property 3 is deliberately *not* claimed for delays below the window,
+    and that is an honest limitation rather than an oversight. The cepstrum
+    of a comb has rahmonics at 2*tau, 3*tau..., so a window that excludes
+    tau but contains 2*tau can find the rahmonic (measured here: a 260 us
+    echo read as ~424 us at confidence 0.63 in a 400-800 us window). That is
+    a property of the cepstral estimator, unaffected by the window contract,
+    and would need a rahmonic screen to address — out of scope here, and
+    recorded so it is not mistaken for a regression.
     """
-    for lo, hi in ((120.0, 800.0), (250.0, 400.0), (400.0, 800.0)):
-        found = detect_echo(
-            _impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE, search_us=(lo, hi)
+    lo, hi = search_us
+    found = detect_echo(
+        _impulse_with_echo(true_tau_us * 1e-6, ECHO_R), SAMPLE_RATE, search_us=search_us
+    )
+
+    if found.tau_us != 0.0:
+        assert lo <= found.tau_us <= hi, (search_us, true_tau_us, found)
+        assert found.refusal == "", found
+        assert abs(found.tau_us - lo) > 1e-9 and abs(found.tau_us - hi) > 1e-9, (
+            f"tau railed onto a window edge exactly — {found}"
         )
-        assert lo <= found.tau_cepstral_us <= hi, (lo, hi, found)
-        if found.confidence > 0.0:
-            assert lo <= found.tau_us <= hi, (lo, hi, found)
+
+    if true_tau_us > hi:
+        assert found.tau_us == 0.0, (
+            f"true tau {true_tau_us} us is above the requested window "
+            f"{search_us}, so no delay may be reported — got {found}"
+        )
+        assert found.strength_db == STRENGTH_FLOOR_DB
+
+
+def test_detect_echo_refuses_rather_than_railing_on_an_echo_past_the_window():
+    """B1(a) — the reviewer's exact reproduction.
+
+    A true 830 us echo, searched in windows whose upper edge is 800 us. The
+    cepstral peak refines to ~821 us and the envelope to ~802 us: *both* land
+    outside, so both candidates are rejected and the diagnostic is a refusal,
+    not a number. The raw per-estimator fields stay unclamped on the record —
+    that is the evidence a reader needs to understand the refusal, and it is
+    also what a clamp would have destroyed by rewriting them as exactly
+    800.0 us.
+    """
+    for search_us in ((120.0, 800.0), (400.0, 800.0)):
+        found = detect_echo(
+            _impulse_with_echo(830e-6, ECHO_R), SAMPLE_RATE, search_us=search_us
+        )
+        assert found.refusal == REFUSAL_NO_IN_WINDOW_ECHO, (search_us, found)
+        assert found.tau_us == 0.0
+        assert found.confidence == 0.0
+        assert found.strength_db == STRENGTH_FLOOR_DB
+        # Both raw estimates are outside the window, and neither was pulled
+        # back to the 800.0 us edge.
+        assert found.tau_cepstral_us > search_us[1]
+        assert found.tau_envelope_us > search_us[1]
+        assert found.tau_cepstral_us != pytest.approx(search_us[1], abs=1.0)
+
+
+def test_detect_echo_does_not_dress_up_a_sub_window_echo_as_an_in_window_one():
+    """B1(b) — a true delay *below* the window's lower edge.
+
+    An echo at 95-110 us cannot be resolved by a detector whose quefrency
+    step is ~71 us, and it sits under the 120 us default search floor. What
+    the detector actually does is report ~135 us with high confidence — an
+    in-window number that is simply wrong.
+
+    That is not fixable inside the estimator (the information is not in the
+    band), so it is caught downstream instead: the reported delay is below
+    ``GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us``, so
+    :func:`assess_geometry` will not admit it as evidence. This test pins
+    that the *honesty* holds even though the number does not.
+    """
+    for true_tau_us in (95.0, 100.0, 104.0, 110.0):
+        found = detect_echo(_impulse_with_echo(true_tau_us * 1e-6, ECHO_R), SAMPLE_RATE)
+        assert found.resolution_us == pytest.approx(1e6 / 14_000.0, rel=1e-9)
+        usable = (
+            found.refusal == ""
+            and found.confidence >= ECHO_CONFIDENCE_FLOOR
+            and found.tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * found.resolution_us
+        )
+        assert not usable, (
+            f"a {true_tau_us} us echo read as usable evidence at "
+            f"{found.tau_us:.1f} us — the resolution floor stopped working"
+        )
+        # And it is unusable for the honest reason: unresolvable, not absent.
+        assert found.tau_us < GEOMETRY_MIN_RESOLUTION_STEPS * found.resolution_us
+
+
+def test_a_cloud_of_unresolvable_delays_does_not_read_as_geometry_locked():
+    """B1(c) — the blocker's user-visible consequence.
+
+    Ten positions whose true delays span 60-150 us: genuinely dispersed
+    (2.5x spread), and every one of them below the detector's resolution
+    floor. The reported delays collapse onto ~135-152 us, six of them with
+    confidence >= 0.5, and — before the fix — clustered within +-15% of
+    their median at a fraction of **1.0**, i.e. a confident
+    ``geometry_locked``: "your mic cloud never moved, go spread it further",
+    said about a cloud that moved plenty.
+
+    The evidence rule refuses to cluster unresolvable delays, so the verdict
+    is now the honest one: not locked, insufficient evidence.
+    """
+    freqs = _grid()
+    true_db = _true_response_db(freqs)
+    rng = np.random.default_rng(20_260_725)
+    captures = [
+        _position(f"p{i}", freqs, true_db, float(tau), rng)
+        for i, tau in enumerate(np.linspace(60e-6, 150e-6, 10))
+    ]
+    result = combine_positions(captures)
+
+    assert result.geometry.locked is False
+    assert result.geometry.reason == GEOMETRY_UNKNOWN
+    assert result.geometry.n_confident == 0
+    assert result.geometry.n_positions == 10
+
+    # The old confidence-only rule really would have locked here — this is
+    # the pathology, reconstructed from the same diagnostics.
+    railed = np.array(
+        [
+            e.tau_us
+            for e in result.per_position_echo
+            if e is not None and e.confidence >= ECHO_CONFIDENCE_FLOOR
+        ]
+    )
+    assert railed.size >= 2, "the detector does still report these, confidently"
+    median = float(np.median(railed))
+    clustered = float(np.mean(np.abs(railed - median) <= 0.15 * median))
+    assert clustered == pytest.approx(1.0), (
+        "the confidence-only rule would have called this locked; if this "
+        "stops being true the regression this test guards has moved"
+    )
+
+
+def test_echo_confidence_floor_sits_in_the_measured_gap():
+    """N3 — re-measure both populations the ``ECHO_CONFIDENCE_FLOOR``
+    comment cites, so the gap it claims cannot rot silently.
+
+    Negative controls are the two impulse-with-no-echo families: they clear
+    the arrival-crest gate, so they exercise the concentration x
+    corroboration score rather than short-circuiting on the early return
+    (white noise scores an uninformative 0.000 for the latter reason, and is
+    covered separately).
+    """
+    negatives = []
+    for noise_sigma in (0.02, 0.001):
+        for seed in range(30):
+            rng = np.random.default_rng(seed)
+            ir = np.zeros(65_536)
+            ir[1000] = 1.0
+            ir += rng.normal(0.0, noise_sigma, ir.size)
+            negatives.append(detect_echo(ir, SAMPLE_RATE).confidence)
+    assert len(negatives) == 60
+    assert min(negatives) >= 0.0
+    assert max(negatives) < 0.15, (
+        f"negative-control confidence reached {max(negatives):.3f}; the "
+        "ECHO_CONFIDENCE_FLOOR comment's measured 0.000-0.098 range is stale"
+    )
+    assert sum(c >= ECHO_CONFIDENCE_FLOOR for c in negatives) == 0
+
+    positives = [
+        detect_echo(_impulse_with_echo(tau_us * 1e-6, reflection), SAMPLE_RATE).confidence
+        for tau_us in (200.0, 300.0, 450.0, 700.0)
+        for reflection in (0.15, 0.36, 0.6)
+    ]
+    assert min(positives) > 0.8, f"true-positive confidence fell to {min(positives):.3f}"
+    # The gap the floor sits in is real, and the floor is inside it.
+    assert max(negatives) < ECHO_CONFIDENCE_FLOOR < min(positives)
 
 
 def test_detect_echo_validates_its_inputs():
@@ -602,6 +963,16 @@ def test_detect_echo_validates_its_inputs():
         detect_echo(ir, SAMPLE_RATE, search_us=(800.0, 120.0))
     with pytest.raises(ValueError, match="all zeros"):
         detect_echo(np.zeros(4096), SAMPLE_RATE)
+
+
+def test_detect_echo_input_errors_carry_a_machine_readable_slug():
+    """``combine_positions`` turns a detector rejection into a refused
+    diagnostic, and it must not do that by matching on message text.
+    """
+    with pytest.raises(EchoInputError) as excinfo:
+        detect_echo(np.zeros(4096), SAMPLE_RATE)
+    assert excinfo.value.slug == REFUSAL_ALL_ZERO_IR
+    assert isinstance(excinfo.value, ValueError)
 
 
 def test_geometry_verdict_needs_at_least_two_confident_estimates():
@@ -632,16 +1003,223 @@ def test_captures_without_an_ir_report_no_echo_diagnostic():
     assert result.position_ids == ("with", "without")
 
 
+def test_one_malformed_ir_refuses_that_position_and_nothing_else():
+    """S2 — a bad IR at one position is one position's problem.
+
+    Ten good captures plus one whose IR is all zeros. Before this guard the
+    detector's ``ValueError`` propagated out of ``combine_positions`` and
+    threw away the entire combine: eleven captures' worth of work lost to
+    one bad deconvolution, with no curve, no screen, and no diagnosis of
+    *which* position was bad.
+
+    The bad position now reports a refusal naming the cause; the curves,
+    the screen, and the geometry verdict are computed from the rest exactly
+    as if it had never been offered, and ``None`` keeps meaning strictly
+    "no IR was supplied".
+    """
+    freqs, _true_db, captures = _cloud(_dispersed_taus())
+    good = combine_positions(captures)
+
+    broken = PositionCapture(
+        position_id="broken",
+        freqs_hz=freqs,
+        magnitude_db=captures[0].magnitude_db,
+        sample_rate=SAMPLE_RATE,
+        ir=np.zeros(65_536),
+    )
+    result = combine_positions([*captures, broken])
+
+    assert result.n_positions == 11
+    assert result.position_ids[-1] == "broken"
+
+    refused = result.per_position_echo[-1]
+    assert refused is not None, "'no IR supplied' is the only meaning of None"
+    assert refused.refusal == REFUSAL_ALL_ZERO_IR
+    assert refused.confidence == 0.0
+    assert refused.tau_us == 0.0
+    assert all(e is not None and e.refusal == "" for e in result.per_position_echo[:-1])
+
+    # The refusal contributes nothing to the verdict — same numbers as the
+    # ten-position combine, not a diluted or shifted version of them.
+    assert result.geometry.n_confident == good.geometry.n_confident
+    assert result.geometry.reason == good.geometry.reason
+    assert result.geometry.median_tau_us == pytest.approx(good.geometry.median_tau_us)
+    assert result.geometry.n_positions == 11
+
+
+def test_echo_detector_settings_are_plumbed_and_recorded():
+    """N6 — a per-position tau is only interpretable against the window it
+    was searched in, so the window travels with the result.
+    """
+    freqs, _true_db, captures = _cloud(_dispersed_taus(4))
+
+    default = combine_positions(captures)
+    assert default.echo_band_hz == DEFAULT_ECHO_BAND_HZ
+    assert default.echo_search_us == DEFAULT_ECHO_SEARCH_US
+
+    narrow = combine_positions(captures, echo_search_us=(400.0, 800.0))
+    assert narrow.echo_search_us == (400.0, 800.0)
+    assert narrow.echo_band_hz == DEFAULT_ECHO_BAND_HZ
+
+    # Plumbed, not merely recorded: the delays in this cloud sit at
+    # ~150-500 us, so a 400-800 us window changes what the detector reports.
+    assert [e.tau_us for e in narrow.per_position_echo] != [
+        e.tau_us for e in default.per_position_echo
+    ]
+
+    wide_band = combine_positions(captures, echo_band_hz=(2000.0, 19_000.0))
+    assert wide_band.echo_band_hz == (2000.0, 19_000.0)
+    # A wider band is a finer quefrency step — the whole point of widening.
+    assert all(
+        e is not None and e.resolution_us < 1e6 / 14_000.0
+        for e in wide_band.per_position_echo
+    )
+
+
 # --------------------------------------------------------------------------- #
-# D. Real-data smoke — 2026-07-24/25 JTS3 corpus
+# D. Analysis-grid bounding
 # --------------------------------------------------------------------------- #
 
-CORPUS = Path(
-    "/Users/jaspercurry/Code/JTS/captures/flat-linearization-20260725/cdhorn-live-session"
+
+def _large_grid_cloud() -> list[PositionCapture]:
+    """Three combed captures on a 2**18-point rFFT grid — 131073 bins, 8x
+    over ``MAX_ANALYSIS_BINS``.
+    """
+    freqs = np.fft.rfftfreq(2**18, 1.0 / SAMPLE_RATE)
+    true_db = _true_response_db(freqs)
+    rng = np.random.default_rng(11)
+    captures = []
+    for i, tau_s in enumerate((180e-6, 310e-6, 470e-6)):
+        level = true_db + rng.normal(0.0, 0.15, freqs.size)
+        comb = 1.0 + ECHO_R * np.exp(-2j * np.pi * freqs * tau_s)
+        captures.append(
+            PositionCapture(
+                position_id=f"p{i}",
+                freqs_hz=freqs,
+                magnitude_db=20.0 * np.log10(np.abs(10.0 ** (level / 20.0) * comb)),
+                sample_rate=SAMPLE_RATE,
+            )
+        )
+    return captures
+
+
+def test_decimated_and_undecimated_curves_agree(monkeypatch):
+    """The cost bound must not change the answer.
+
+    ``smooth_fractional_octave`` is an O(bins * window) Python loop whose
+    window also grows with the grid, so a 131k-bin combine costs seconds —
+    on a Pi 5, worse. Bounding the grid is only legitimate if the curves
+    consumers actually read come out the same, so the same cloud is combined
+    twice: once through the real cap, once with the cap lifted, and the
+    results compared on the decimated grid.
+
+    The three *smoothed* curves agree to well under 0.1 dB (measured: 0.074,
+    0.075 and 0.085 dB worst-bin, the worst of it in the bottom few hertz
+    where the 1/N-octave window is a couple of bins wide). The raw per-bin
+    ``power_mean_db`` deliberately is **not** held to that: at 8x coarser
+    spacing it genuinely cannot reproduce fine comb structure bin-for-bin,
+    which is the resolution being traded away on purpose. Every downstream
+    consumer — the exclusion screen and the spec curve — reads a smoothed
+    curve.
+    """
+    captures = _large_grid_cloud()
+    assert captures[0].freqs_hz.size > 8 * MAX_ANALYSIS_BINS / 2
+
+    decimated = combine_positions(captures)
+    assert decimated.freqs_hz.size <= MAX_ANALYSIS_BINS
+    assert decimated.freqs_hz.size == 16_384
+
+    monkeypatch.setattr(spatial_combine, "MAX_ANALYSIS_BINS", 10**9)
+    undecimated = combine_positions(captures)
+    assert undecimated.freqs_hz.size == captures[0].freqs_hz.size
+
+    for name in ("power_mean_spec_db", "power_mean_diag_db", "median_diag_db"):
+        reference = np.interp(
+            decimated.freqs_hz, undecimated.freqs_hz, getattr(undecimated, name)
+        )
+        worst = float(np.max(np.abs(np.asarray(getattr(decimated, name)) - reference)))
+        assert worst < 0.1, f"{name} moved by {worst:.4f} dB under decimation"
+
+
+def test_decimation_preserves_the_linear_grid_contract_and_band_energy():
+    """Block averaging, not subsampling — and the result is still a legal
+    linear grid.
+
+    Subsampling a combed curve would keep whichever bins happened to land on
+    peaks or nulls and silently shift the level; averaging in linear power
+    keeps the band energy the plan's estimator is built on. Both properties
+    are checked here on a flat-plus-notch construction where the answer is
+    computable: a single -20 dB bin among 2**17 otherwise-0 dB bins carries
+    a known energy deficit, and it must survive decimation as a shallow dip
+    rather than either vanishing or staying full-depth.
+    """
+    captures = _large_grid_cloud()
+    result = combine_positions(captures)
+
+    fine = captures[0].freqs_hz
+    fine_step = float(fine[1] - fine[0])
+    block = 8  # ceil(131073 / 16385)
+
+    grid = result.freqs_hz
+    steps = np.diff(grid)
+    assert np.allclose(steps, steps[0], rtol=1e-9), "decimated grid must stay linear"
+    assert float(steps[0]) == pytest.approx(block * fine_step)
+    # Each decimated bin sits at its block's CENTRE, which is what the
+    # block's averaged power is the level of — not at the block's first bin,
+    # which is what a subsample would have kept.
+    assert grid[0] == pytest.approx(fine_step * (block - 1) / 2.0)
+    assert grid[0] != pytest.approx(float(fine[0]), abs=1e-6)
+    # A trailing partial block is dropped, so the top edge slips by at most
+    # one decimated step.
+    assert grid[-1] < fine[-1]
+    assert float(fine[-1] - grid[-1]) < 2.0 * float(steps[0])
+
+    # Energy, not samples: one deep notch on an otherwise flat curve.
+    fine = np.linspace(0.0, 24_000.0, 4 * MAX_ANALYSIS_BINS)
+    flat = np.zeros(fine.size)
+    flat[1234] = -20.0
+    decimated = combine_positions(
+        [PositionCapture("notched", fine, flat, SAMPLE_RATE)]
+    )
+    block = 4
+    assert decimated.freqs_hz.size == fine.size // block
+    dip_index = 1234 // block
+    expected_db = 10.0 * math.log10(((block - 1) * 1.0 + 10.0 ** (-20.0 / 10.0)) / block)
+    assert decimated.power_mean_db[dip_index] == pytest.approx(expected_db, abs=1e-9)
+    assert decimated.power_mean_db[dip_index] == pytest.approx(-1.2, abs=0.05)
+    # Neither lost (a subsample could have skipped it) nor still -20 dB.
+    assert -2.0 < decimated.power_mean_db[dip_index] < -0.5
+    neighbours = np.delete(np.asarray(decimated.power_mean_db), dip_index)
+    assert np.allclose(neighbours, 0.0, atol=1e-9)
+
+
+# --------------------------------------------------------------------------- #
+# E. Real-data smoke — 2026-07-24/25 JTS3 corpus
+# --------------------------------------------------------------------------- #
+
+# The corpus is gitignored and laptop-durable: it lives under the checkout
+# it was captured beside, and is simply absent in CI (where these three
+# tests skip). Resolution is repo-root-relative by default so it works in a
+# normal clone with no setup; a *worktree* checkout has no captures/ of its
+# own and points at the main checkout's copy with
+#   JTS_FLAT_LIN_CORPUS=/path/to/JTS/captures/.../cdhorn-live-session
+# No absolute path is committed — one machine's home directory is not a
+# contract, and a stale one silently skips instead of failing.
+_CORPUS_ENV = os.environ.get("JTS_FLAT_LIN_CORPUS", "").strip()
+CORPUS = (
+    Path(_CORPUS_ENV)
+    if _CORPUS_ENV
+    else Path(__file__).resolve().parents[1]
+    / "captures"
+    / "flat-linearization-20260725"
+    / "cdhorn-live-session"
 )
 requires_corpus = pytest.mark.skipif(
     not CORPUS.is_dir(),
-    reason=f"laptop-durable capture corpus absent: {CORPUS}",
+    reason=(
+        f"laptop-durable capture corpus absent: {CORPUS} "
+        "(set JTS_FLAT_LIN_CORPUS to point at it)"
+    ),
 )
 
 
@@ -750,7 +1328,7 @@ def test_corpus_frames_read_as_geometry_locked(corpus_irs):
     """D — every existing corpus capture was taken from essentially one
     place, so the delays do not move between frames.
 
-    ``geometry_locked`` firing here is the detector *working*, not failing:
+    ``geometry.locked`` firing here is the detector *working*, not failing:
     it is precisely the signal that this corpus cannot be spatially averaged
     into a bounce-free answer, which is why the plan's S0 session is
     mic-move-only.
@@ -786,6 +1364,6 @@ def test_combining_the_corpus_frames_flags_the_locked_geometry(corpus_irs):
 
     result = combine_positions(captures)
     assert isinstance(result, CombinedResponse)
-    assert result.geometry_locked is True
+    assert result.geometry.locked is True
     assert result.n_positions == 3
     assert all(e is not None for e in result.per_position_echo)

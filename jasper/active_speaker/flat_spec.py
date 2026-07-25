@@ -4,12 +4,15 @@
 
 """The flat-linearization spec evaluator (flat-linearization plan, stage S2).
 
-Pure computation only: numpy plus stdlib `math`. No I/O, no logging, no
-product policy, no CamillaDSP/emission imports. This module answers exactly
-one question -- "does this spatially-combined, 1/3-oct-smoothed magnitude
-curve meet the flat-linearization spec?" -- and nothing more. Wiring this
-into `/state`, a wizard, or the conductor is later work; this module ships
-as a pure, uncalled evaluator, mirroring
+Pure computation only: numpy, plus one shared helper
+(:func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`)
+imported so the exclusion-interval merge rule has exactly one owner rather
+than a near-copy on each side of the seam. No I/O, no logging, no product
+policy, no CamillaDSP/emission imports. This module answers exactly one
+question -- "does this spatially-combined, 1/3-oct-smoothed magnitude curve
+meet the flat-linearization spec?" -- and nothing more. Wiring this into
+`/state`, a wizard, or the conductor is later work; this module ships as a
+pure, uncalled evaluator, mirroring
 :mod:`jasper.active_speaker.linearization_envelope`'s shape (a pure module
 with zero production callers at the time it shipped -- see that module's
 docstring for the same pattern).
@@ -49,6 +52,8 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.spatial_combine import merged_true_intervals
+
 # The adopted spec table -- docs/flat-linearization-plan.md, "The spec --
 # what 'flat' means here." Each entry is (f_lo_hz, f_hi_hz, tolerance_db);
 # band membership is f_lo <= f < f_hi (inclusive-lower, exclusive-upper --
@@ -83,19 +88,53 @@ class BandResult:
 
     ``n_bins`` is the total number of ``freqs_hz`` bins landing in
     ``[f_lo_hz, f_hi_hz)``, regardless of exclusion; ``n_excluded`` is how
-    many of those were interference-flagged and therefore excluded from
-    ``max_deviation_db`` / ``rms_db``. ``n_bins - n_excluded`` is the
-    number of bins the deviation metrics were actually computed from.
+    many of those were interference-flagged and therefore excluded from the
+    deviation metrics. ``n_bins - n_excluded`` is the number of bins those
+    metrics were actually computed from.
+
+    **Unevaluable is a first-class outcome, not a failure and not a pass.**
+    When a band is left with zero non-excluded bins -- because the frequency
+    axis never reached it, or because the interference screen flagged every
+    bin in it -- there is no evidence, so ``evaluable`` is ``False``, every
+    metric below is ``None``, and ``passed`` is ``None`` rather than a
+    fabricated verdict. It is the honesty screen's job to remove
+    interference-dominated bins; it must not be able to remove a whole band
+    from scrutiny by *silently passing* it, nor to destroy the entire report
+    by raising. :attr:`FlatSpecReport.overall_passed` treats an unevaluable
+    band as not-passed, so an unevaluable band can never be mistaken for a
+    clean one.
+
+    Args:
+      f_lo_hz: band lower edge (inclusive).
+      f_hi_hz: band upper edge (exclusive).
+      tolerance_db: the band's +/- tolerance from :data:`SPEC_BANDS`.
+      max_deviation_db: the **signed** deviation at the worst non-excluded
+        bin -- the bin with the largest *absolute* deviation, reported with
+        its sign kept, because "2.4 dB too loud" and "2.4 dB too quiet" call
+        for opposite corrections and a bare magnitude hides which one it is.
+        ``None`` when the band is unevaluable.
+      max_deviation_hz: the frequency of that worst bin, so the number can
+        be located on a chart without re-deriving it. ``None`` when the band
+        is unevaluable.
+      rms_deviation_db: RMS deviation over the band's non-excluded bins.
+        ``None`` when the band is unevaluable.
+      n_bins: total bins in the band, excluded or not.
+      n_excluded: how many of those were interference-flagged.
+      evaluable: whether any non-excluded bin survived to be measured.
+      passed: ``abs(max_deviation_db) <= tolerance_db``, or ``None`` when
+        the band is unevaluable.
     """
 
     f_lo_hz: float
     f_hi_hz: float
     tolerance_db: float
-    max_deviation_db: float
-    rms_db: float
+    max_deviation_db: float | None
+    max_deviation_hz: float | None
+    rms_deviation_db: float | None
     n_bins: int
     n_excluded: int
-    passed: bool
+    evaluable: bool
+    passed: bool | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,9 +142,11 @@ class BandResult:
             "f_hi_hz": self.f_hi_hz,
             "tolerance_db": self.tolerance_db,
             "max_deviation_db": self.max_deviation_db,
-            "rms_db": self.rms_db,
+            "max_deviation_hz": self.max_deviation_hz,
+            "rms_deviation_db": self.rms_deviation_db,
             "n_bins": self.n_bins,
             "n_excluded": self.n_excluded,
+            "evaluable": self.evaluable,
             "passed": self.passed,
         }
 
@@ -114,15 +155,26 @@ class BandResult:
 class FlatSpecReport:
     """The full flat-spec evaluation for one combined+smoothed curve.
 
-    ``excluded_intervals`` collapses contiguous (by array index -- see
-    :func:`evaluate_flat_spec`'s docstring for the ascending-``freqs_hz``
-    assumption this relies on) runs of the exclusion mask into merged
-    ``(f_lo_hz, f_hi_hz)`` tuples spanning each run's first and last
-    excluded bin. Diagnostic disclosure only -- pass/fail itself reads the
-    exclusion mask directly, not this derived field. ``best_effort_above_hz``
-    echoes :data:`BEST_EFFORT_ABOVE_HZ` so a consumer rendering this report
-    doesn't need a second import to know where the disclosed-only region
-    begins.
+    ``excluded_intervals`` collapses contiguous (by array index, on the
+    strictly-ascending ``freqs_hz`` :func:`evaluate_flat_spec` requires)
+    runs of the exclusion mask into merged ``(f_lo_hz, f_hi_hz)`` tuples
+    spanning each run's first and last excluded bin, via the shared
+    :func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`.
+    Diagnostic disclosure only -- pass/fail itself reads the exclusion mask
+    directly, not this derived field. ``best_effort_above_hz`` echoes
+    :data:`BEST_EFFORT_ABOVE_HZ` so a consumer rendering this report doesn't
+    need a second import to know where the disclosed-only region begins.
+
+    ``overall_passed`` is ``True`` only when **every** band is both
+    evaluable and passing. An unevaluable band (see :class:`BandResult`)
+    therefore drags the overall verdict to ``False``: the evaluator will not
+    report a clean bill of health for a spectrum it could not fully measure.
+
+    ``smoothing_fraction`` is **caller attestation**, not a measurement. The
+    plan evaluates pass/fail at 1/3-octave, but a bare magnitude array
+    carries no evidence of how it was smoothed, and this module deliberately
+    does not smooth. The field records what the caller says it handed over,
+    so a stored report can be audited later; nothing here validates it.
     """
 
     reference_db: float
@@ -130,6 +182,7 @@ class FlatSpecReport:
     overall_passed: bool
     excluded_intervals: tuple[tuple[float, float], ...]
     best_effort_above_hz: float
+    smoothing_fraction: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -138,6 +191,7 @@ class FlatSpecReport:
             "overall_passed": self.overall_passed,
             "excluded_intervals": [list(interval) for interval in self.excluded_intervals],
             "best_effort_above_hz": self.best_effort_above_hz,
+            "smoothing_fraction": self.smoothing_fraction,
         }
 
 
@@ -153,39 +207,25 @@ def _power_mean_db(values_db: np.ndarray) -> float:
     return float(10.0 * np.log10(np.mean(linear)))
 
 
-def _merged_excluded_intervals(
-    freqs_hz: np.ndarray, exclusion_mask: np.ndarray
-) -> tuple[tuple[float, float], ...]:
-    """Collapse contiguous (by array index) runs of ``True`` in
-    ``exclusion_mask`` into merged ``(f_lo_hz, f_hi_hz)`` tuples spanning
-    each run's first and last excluded bin's frequency.
-
-    Assumes ``freqs_hz`` is ascending: index-adjacency is used as a proxy
-    for frequency-adjacency, which only merges genuinely adjacent
-    frequency bins when the axis is sorted. Every caller in this codebase
-    passes an ascending frequency axis (the upstream combiner/smoother
-    produces one), so this is a documented assumption, not a validated
-    one -- see :func:`evaluate_flat_spec`'s docstring.
-    """
-    if not exclusion_mask.any():
-        return ()
-    excluded_idx = np.flatnonzero(exclusion_mask)
-    run_breaks = np.flatnonzero(np.diff(excluded_idx) > 1) + 1
-    runs = np.split(excluded_idx, run_breaks)
-    return tuple((float(freqs_hz[run[0]]), float(freqs_hz[run[-1]])) for run in runs)
-
-
 def evaluate_flat_spec(
     freqs_hz: np.ndarray,
     spec_smoothed_db: np.ndarray,
     exclusion_mask: np.ndarray | None = None,
+    *,
+    smoothing_fraction: int = 3,
 ) -> FlatSpecReport:
     """Evaluate the flat-linearization spec against one combined, 1/3-oct-
     smoothed magnitude curve (docs/flat-linearization-plan.md, "The spec --
     what 'flat' means here").
 
     Args:
-        freqs_hz: 1-D ascending frequency axis, Hz.
+        freqs_hz: 1-D **strictly ascending** frequency axis, Hz. Required,
+            not assumed: band membership is masked by value (so a shuffled
+            axis would still "work"), but the merged exclusion intervals
+            use index adjacency as a proxy for frequency adjacency, which
+            is only true on a sorted axis -- and a caller handing over a
+            descending or duplicated axis has a bug worth hearing about
+            rather than a plausible-looking report.
         spec_smoothed_db: 1-D magnitude curve, dB, same length as
             ``freqs_hz`` -- the spatially-combined, 1/3-oct-smoothed curve
             the plan's Instrument stage (S1) produces. This module does
@@ -196,6 +236,11 @@ def evaluate_flat_spec(
             excluded from the reference-level computation AND from every
             band's deviation metrics. ``None`` (the default) excludes
             nothing.
+        smoothing_fraction: the 1/N-octave fraction the caller attests
+            ``spec_smoothed_db`` was smoothed at, recorded verbatim on the
+            report. Provenance only: an array cannot prove how it was
+            smoothed, this module does not smooth, and nothing here
+            validates or uses the value.
 
     Reference level: the power mean (:func:`_power_mean_db`) over
     non-excluded bins inside :data:`REFERENCE_BAND_HZ`. Deliberately spans
@@ -204,10 +249,20 @@ def evaluate_flat_spec(
 
     Deviation: ``spec_smoothed_db - reference_db``, evaluated per
     :data:`SPEC_BANDS` entry over that band's non-excluded bins:
-    ``max_deviation_db`` is the max absolute deviation, ``rms_db`` is the
-    RMS deviation, and ``passed`` is ``max_deviation_db <= tolerance_db``.
-    :attr:`FlatSpecReport.overall_passed` is the AND of every band's
-    ``passed``.
+    ``max_deviation_db`` is the signed deviation at the largest-absolute
+    bin (with ``max_deviation_hz`` naming that bin), ``rms_deviation_db`` is
+    the RMS deviation, and ``passed`` is
+    ``abs(max_deviation_db) <= tolerance_db``.
+
+    A band with **zero non-excluded bins** -- no coverage on the axis, or
+    every bin interference-flagged -- is reported as ``evaluable=False``
+    with ``passed=None`` and ``None`` metrics, not raised on: one band
+    losing its evidence must not destroy the report for the other two.
+    :attr:`FlatSpecReport.overall_passed` is ``True`` only when every band
+    is evaluable *and* passed, so an unevaluable band cannot be mistaken for
+    a clean one. The **reference band** is different and still raises: with
+    no reference level there is nothing to compute a deviation against
+    anywhere, so no band could be evaluated at all.
 
     Band membership is ``f_lo <= f < f_hi`` -- inclusive-lower,
     exclusive-upper -- for both :data:`SPEC_BANDS` entries and
@@ -229,9 +284,9 @@ def evaluate_flat_spec(
 
     Raises:
         ValueError: for any degenerate input -- empty or non-1-D arrays,
-            mismatched array lengths, a :data:`SPEC_BANDS` band or
-            :data:`REFERENCE_BAND_HZ` left with zero non-excluded bins (no
-            evidence to evaluate, never silently skipped), or any
+            mismatched array lengths, a ``freqs_hz`` that is not strictly
+            ascending, :data:`REFERENCE_BAND_HZ` left with zero
+            non-excluded bins (no reference level is computable), or any
             non-finite (NaN/Inf) value in ``freqs_hz`` or
             ``spec_smoothed_db``.
     """
@@ -267,6 +322,15 @@ def evaluate_flat_spec(
             "(found NaN or Inf)"
         )
 
+    # Checked after finiteness, so a NaN axis is reported as non-finite
+    # rather than as a spurious ordering failure (NaN comparisons are all
+    # False, so np.diff would not catch it).
+    if np.any(np.diff(freqs_hz) <= 0.0):
+        raise ValueError(
+            "freqs_hz must be strictly increasing (the merged exclusion "
+            "intervals treat index adjacency as frequency adjacency)"
+        )
+
     included_mask = ~resolved_exclusion_mask
 
     ref_lo_hz, ref_hi_hz = REFERENCE_BAND_HZ
@@ -284,29 +348,46 @@ def evaluate_flat_spec(
     for f_lo_hz, f_hi_hz, tolerance_db in SPEC_BANDS:
         band_mask = (freqs_hz >= f_lo_hz) & (freqs_hz < f_hi_hz)
         included_band_mask = band_mask & included_mask
+        n_bins = int(band_mask.sum())
+        n_excluded = int((band_mask & resolved_exclusion_mask).sum())
         if not included_band_mask.any():
-            raise ValueError(
-                f"band {f_lo_hz}-{f_hi_hz} Hz has zero non-excluded bins; "
-                "cannot evaluate flat spec"
+            band_results.append(
+                BandResult(
+                    f_lo_hz=float(f_lo_hz),
+                    f_hi_hz=float(f_hi_hz),
+                    tolerance_db=float(tolerance_db),
+                    max_deviation_db=None,
+                    max_deviation_hz=None,
+                    rms_deviation_db=None,
+                    n_bins=n_bins,
+                    n_excluded=n_excluded,
+                    evaluable=False,
+                    passed=None,
+                )
             )
-        band_deviation_db = deviation_db[included_band_mask]
-        max_deviation_db = float(np.max(np.abs(band_deviation_db)))
-        rms_db = float(np.sqrt(np.mean(np.square(band_deviation_db))))
+            continue
+        band_indices = np.flatnonzero(included_band_mask)
+        band_deviation_db = deviation_db[band_indices]
+        worst = int(band_indices[np.argmax(np.abs(band_deviation_db))])
+        max_deviation_db = float(deviation_db[worst])
+        rms_deviation_db = float(np.sqrt(np.mean(np.square(band_deviation_db))))
         band_results.append(
             BandResult(
                 f_lo_hz=float(f_lo_hz),
                 f_hi_hz=float(f_hi_hz),
                 tolerance_db=float(tolerance_db),
                 max_deviation_db=max_deviation_db,
-                rms_db=rms_db,
-                n_bins=int(band_mask.sum()),
-                n_excluded=int((band_mask & resolved_exclusion_mask).sum()),
-                passed=bool(max_deviation_db <= tolerance_db),
+                max_deviation_hz=float(freqs_hz[worst]),
+                rms_deviation_db=rms_deviation_db,
+                n_bins=n_bins,
+                n_excluded=n_excluded,
+                evaluable=True,
+                passed=bool(abs(max_deviation_db) <= tolerance_db),
             )
         )
 
-    overall_passed = all(band.passed for band in band_results)
-    excluded_intervals = _merged_excluded_intervals(freqs_hz, resolved_exclusion_mask)
+    overall_passed = all(band.evaluable and band.passed for band in band_results)
+    excluded_intervals = merged_true_intervals(freqs_hz, resolved_exclusion_mask)
 
     return FlatSpecReport(
         reference_db=reference_db,
@@ -314,4 +395,5 @@ def evaluate_flat_spec(
         overall_passed=overall_passed,
         excluded_intervals=excluded_intervals,
         best_effort_above_hz=float(BEST_EFFORT_ABOVE_HZ),
+        smoothing_fraction=int(smoothing_fraction),
     )

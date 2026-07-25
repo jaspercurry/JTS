@@ -30,7 +30,10 @@ Pipeline (:func:`combine_positions`):
    silently mis-window a log grid. Coarsest-spacing because interpolating
    onto a *finer* grid than the source manufactures resolution the
    measurement never had. In the ordinary case (all captures from one
-   program, so one ``rfftfreq`` grid) this is the identity.
+   program, so one ``rfftfreq`` grid) this is the identity. A grid finer
+   than ``MAX_ANALYSIS_BINS`` is then block-averaged in linear power onto a
+   coarser linear grid (see that constant for why, and why *averaging*
+   rather than subsampling).
 2. **Estimators** — per-bin ``power_mean_db`` (10·log10 of the mean of
    linear power) is the primary direct-sound estimator; per-bin
    ``median_db`` (median in the dB domain) is the robustness cross-check.
@@ -46,13 +49,17 @@ Pipeline (:func:`combine_positions`):
    excluded from correction *and* pass/fail by downstream consumers, and
    reported. Exposed both per-bin and as merged ``(f_lo, f_hi)`` intervals.
 5. **Echo diagnostics** — :func:`detect_echo` per capture that supplied an
-   impulse response, plus the derived :attr:`CombinedResponse.geometry_locked`
-   flag.
-6. **Spread diagnostics** — cross-position sigma in octave bands, the
-   observable behind the research's 1/sqrt(N) accuracy story.
+   impulse response, plus the derived :attr:`CombinedResponse.geometry`
+   verdict (``geometry.locked`` is the single owner of that bit). The
+   detector's search window is a **rejection** contract rather than a clamp,
+   and a malformed IR refuses one position rather than failing the combine —
+   both so that a number this module reports is one it actually measured.
+6. **Spread diagnostics** — cross-position level spread and worst-bin sigma
+   in octave bands, the observable behind the research's 1/sqrt(N) accuracy
+   story.
 
 **Two blind spots, two instruments — read this before trusting either.**
-The mean-vs-median screen and ``geometry_locked`` are complementary, and
+The mean-vs-median screen and ``geometry.locked`` are complementary, and
 neither alone is sufficient:
 
 * The screen fires on *partially* aligned interference, where some
@@ -62,8 +69,8 @@ neither alone is sufficient:
   the same null, mean and median agree perfectly and the null passes the
   screen untouched — while surviving the average at full depth. This is
   not a defect of the screen; it is the physics of a position-stable
-  interference pattern, and it is exactly what ``geometry_locked``
-  reports. A consumer seeing ``geometry_locked`` must tell the user to
+  interference pattern, and it is exactly what ``geometry.locked``
+  reports. A consumer seeing ``geometry.locked`` must tell the user to
   spread the mic further, because no amount of averaging over *these*
   positions can fill those nulls.
 * Symmetrically, the screen is silent when decorrelation *succeeded* —
@@ -141,6 +148,29 @@ MIN_BAND_BINS = 4
 # is a hard contract, checked rather than trusted.
 GRID_UNIFORMITY_RTOL = 1e-3
 
+# Upper bound on the analysis grid. A canonical grid finer than this is
+# block-averaged in linear power onto a coarser linear grid before anything
+# is combined or smoothed.
+#
+# Why bound it at all: smooth_fractional_octave is an O(bins * window)
+# Python loop, and the window itself grows with the grid, so its cost is
+# effectively quadratic in bin count — 0.12 s at 16k bins, 0.88 s at 65k,
+# 2.3 s at 131k on a laptop, and this module must eventually run on a Pi 5.
+#
+# Why this is not a loss of information: 16385 bins over a 24 kHz span is
+# ~1.46 Hz spacing, and the narrowest smoothing window this module applies
+# (1/6-octave at the 250 Hz spec edge) is ~29 Hz wide — ~20 bins, so even
+# the *coarsest* retained resolution still oversamples the narrowest
+# analysis window by an order of magnitude. The plan evaluates pass/fail at
+# 1/3-octave, wider still.
+#
+# Why block *averaging* and never subsampling: subsampling a combed
+# magnitude curve aliases — it would keep whichever bins happen to land on
+# comb peaks or nulls and silently change the level. Averaging in linear
+# power is the same estimator this module already uses everywhere else, so
+# decimation composes with the power mean instead of biasing it.
+MAX_ANALYSIS_BINS = 16385
+
 # --------------------------------------------------------------------------- #
 # Echo-detector tuning
 #
@@ -202,10 +232,29 @@ CONCENTRATION_HI = 0.70
 CORROBORATION_TIGHT = 0.05
 CORROBORATION_LOOSE = 0.30
 
-# Reported strength when no secondary arrival was found. Mirrors
-# program_analysis.DBFS_FLOOR's role: a finite floor, not -inf, so the
-# field stays arithmetic-safe. Meaningless unless confidence > 0.
+# Reported strength when no credible secondary arrival was reported.
+# Mirrors program_analysis.DBFS_FLOOR's role: a finite floor, not -inf, so
+# the field stays arithmetic-safe. Meaningless unless confidence > 0.
 STRENGTH_FLOOR_DB = -120.0
+
+# Refusal vocabulary for EchoDiagnostic.refusal. Snake_case, self-
+# identifying, and stable: an empty string means "the detector ran to
+# completion and is reporting a measurement" (which may still be a
+# zero-confidence "found nothing credible"); any non-empty value means the
+# detector declined to measure and every estimate on the record is
+# uninformative. Consumers gate on `refusal == ""`, never on the specific
+# slug, so this vocabulary can grow without breaking them.
+REFUSAL_LOW_ARRIVAL_CREST = "low_arrival_crest"
+REFUSAL_WINDOW_TOO_SHORT = "analysis_window_too_short"
+REFUSAL_BAND_TOO_NARROW = "analysis_band_too_narrow"
+REFUSAL_SEARCH_OUTSIDE_CEPSTRUM = "search_window_outside_cepstrum"
+REFUSAL_NO_IN_WINDOW_ECHO = "no_in_window_echo"
+REFUSAL_ALL_ZERO_IR = "all_zero_ir"
+REFUSAL_MALFORMED_IR = "malformed_ir"
+REFUSAL_BAD_SAMPLE_RATE = "bad_sample_rate"
+REFUSAL_BAD_BAND_HZ = "bad_band_hz"
+REFUSAL_BAD_SEARCH_US = "bad_search_us"
+REFUSAL_DETECTOR_ERROR = "detector_error"
 
 # --------------------------------------------------------------------------- #
 # Geometry-lock tuning
@@ -213,8 +262,24 @@ STRENGTH_FLOOR_DB = -120.0
 
 # An echo diagnostic counts toward the geometry verdict only at or above
 # this confidence. Calibrated to sit in the empty gap between the measured
-# populations: true positives scored >= 0.83, every negative control 0.00.
+# populations: true positives (synthetic impulse+echo, tau 200-700 us,
+# r 0.15-0.6) scored 0.835-1.000, while a 60-seed negative-control sweep --
+# impulse-with-no-echo IRs, 30 seeds at noise sigma 0.02 and 30 at 0.001,
+# the two families that clear the crest gate and therefore actually stress
+# the score -- spanned 0.000-0.098, with 0/60 crossing this floor. Both
+# populations are re-measured by
+# test_echo_confidence_floor_sits_in_the_measured_gap in
+# tests/test_spatial_combine.py, so the gap cannot rot silently.
 ECHO_CONFIDENCE_FLOOR = 0.5
+
+# An echo diagnostic also counts only when its tau is at least this many
+# quefrency steps (EchoDiagnostic.resolution_us) above zero. Below ~3 steps
+# both estimators are inside the direct pulse's own skirt, so a "delay" is
+# whatever the noise floor put there — see detect_echo's search_us
+# resolution-floor paragraph. Feeding those numbers to the clustering test
+# is how a dispersed cloud can read as falsely locked: unresolvable
+# estimates pile up near the bottom of the window and look like agreement.
+GEOMETRY_MIN_RESOLUTION_STEPS = 3.0
 
 # The speaker's interference pattern is "geometry locked" when at least
 # this fraction of confident per-position tau estimates fall within
@@ -226,9 +291,11 @@ GEOMETRY_CLUSTER_FRACTION = 0.70
 GEOMETRY_CLUSTER_TOLERANCE = 0.15
 
 # A "cluster" needs at least two members to mean anything: with a single
-# confident estimate, 100% of estimates trivially sit within any tolerance
-# of their own median. Below this the verdict is "unknown", reported as not
-# locked with an explicit reason.
+# usable estimate, 100% of estimates trivially sit within any tolerance of
+# their own median. Below this the verdict is "unknown", reported as not
+# locked with an explicit reason — never as a lock, because locking on no
+# evidence is the one failure mode that actively misleads a household
+# ("spread the mic further" when nothing was actually measured).
 GEOMETRY_MIN_CONFIDENT = 2
 
 # Geometry verdict reason vocabulary. Snake_case, self-identifying values,
@@ -279,29 +346,55 @@ class EchoDiagnostic:
     """Discrete-echo detection for one capture. Detection only — nothing in
     this module removes an echo (plan guardrail).
 
-    ``tau_us`` and ``strength_db`` are meaningless when ``confidence`` is
-    0.0; check confidence first. The supporting fields exist so a verdict is
-    auditable rather than a magic number.
+    Read ``refusal`` first, then ``confidence``. A non-empty ``refusal``
+    means the detector declined to measure and *every* estimate below is
+    uninformative; an empty ``refusal`` with ``confidence == 0.0`` means the
+    detector ran and found nothing credible. ``tau_us`` and ``strength_db``
+    carry information only when ``refusal == ""`` and ``confidence > 0``.
+    The supporting fields exist so a verdict is auditable rather than a
+    magic number.
 
     Args:
-      tau_us: delay of the secondary arrival, microseconds. The
-        analytic-envelope estimate when one was found (sample resolution
-        plus parabolic refinement, ~1-3% accurate on the calibration set),
-        else the cepstral peak (quantised to the band-width-determined
-        quefrency step, ~71 us for the default band).
+      tau_us: delay of the secondary arrival, microseconds — the reported
+        answer, and the only tau field with a window guarantee: it is
+        either 0.0 (nothing reported) or inside the caller's ``search_us``
+        window. It is the analytic-envelope estimate (sample resolution
+        plus parabolic refinement, ~1-3% accurate on the calibration set)
+        when that estimate landed in-window, else the cepstral peak
+        (quantised to ``resolution_us``).
       strength_db: secondary-arrival level relative to the direct arrival,
-        from the band-limited analytic envelope. ``STRENGTH_FLOOR_DB`` when
-        no secondary arrival was found.
-      confidence: 0.0-1.0 credibility, the product of three independent
-        factors — an arrival-crest gate, cepstral concentration, and
-        agreement between the two tau estimators. 0.0 means no credible
-        peak.
-      tau_cepstral_us: the cepstral estimator's answer, in isolation.
-      tau_envelope_us: the envelope estimator's answer, in isolation (0.0
-        when no secondary arrival was found in the search window).
+        from the band-limited analytic envelope. ``STRENGTH_FLOOR_DB``
+        whenever no delay is reported.
+      confidence: 0.0-1.0 credibility. Two multiplied factors — cepstral
+        concentration and agreement between the two tau estimators —
+        behind an arrival-crest gate that is an early return rather than a
+        third factor (a signal with no identifiable direct arrival is
+        refused outright, not scored down). 0.0 means no credible peak.
+      refusal: ``""`` when the detector produced a measurement; otherwise
+        one of the ``REFUSAL_*`` slugs saying why it declined.
+      resolution_us: the cepstral quefrency step, ``1 / band_width``, in
+        microseconds — ~71 us for the 5-19 kHz default band. Both
+        estimators degrade toward this floor, so a ``tau_us`` below roughly
+        **3 * resolution_us** should be read as "an early echo is present"
+        and never as a trustworthy delay; :func:`assess_geometry` enforces
+        exactly that floor before clustering.
+      tau_cepstral_us: the cepstral estimator's answer, in isolation. This
+        field is *raw*: it may fall outside ``search_us``, which is
+        precisely the condition that rejects the candidate and can produce
+        the ``no_in_window_echo`` refusal. Kept unclamped on purpose — a
+        railed value hidden by a clamp is what made a dispersed cloud read
+        as geometry-locked.
+      tau_envelope_us: the envelope estimator's answer, in isolation, also
+        raw and also not window-guaranteed. 0.0 when the search window was
+        too narrow to hold a peak at all. The envelope always returns the
+        largest value in its window — it does not decide whether that is a
+        real arrival, which is what corroboration and the window check are
+        for.
       concentration: bounded [0, 1] cepstral peak concentration.
       corroboration: relative disagreement between the two tau estimators
-        (0.0 = identical). 1.0 when the envelope found nothing.
+        (0.0 = identical). 1.0 whenever the two cannot be compared — the
+        envelope found nothing, or either estimate fell outside the search
+        window, since a rejected candidate corroborates nothing.
       arrival_crest_db: direct arrival level above the IR's median
         ``|sample|`` level — the "is there an arrival at all" gate.
     """
@@ -309,6 +402,8 @@ class EchoDiagnostic:
     tau_us: float
     strength_db: float
     confidence: float
+    refusal: str
+    resolution_us: float
     tau_cepstral_us: float
     tau_envelope_us: float
     concentration: float
@@ -326,15 +421,18 @@ class GeometryLock:
     captured repeatedly from one place it is the detector working.
 
     Args:
-      locked: the verdict.
+      locked: the verdict. Never True on insufficient evidence.
       reason: one of ``GEOMETRY_LOCKED`` / ``GEOMETRY_DISPERSED`` /
         ``GEOMETRY_UNKNOWN``.
-      n_confident: how many positions produced an echo diagnostic at or
-        above ``confidence_floor``.
+      n_confident: how many positions produced a *usable* echo diagnostic —
+        no refusal, confidence at or above ``confidence_floor``, and a tau
+        at least ``GEOMETRY_MIN_RESOLUTION_STEPS`` quefrency steps above
+        zero. This is the set the clustering test actually ran on, not the
+        raw count of non-``None`` diagnostics.
       n_positions: how many captures were combined.
-      median_tau_us: median tau over the confident set (0.0 when none).
-      clustered_fraction: fraction of the confident set within
-        ``tolerance`` of ``median_tau_us``.
+      median_tau_us: median tau over the usable set (0.0 when none).
+      clustered_fraction: fraction of the usable set within ``tolerance``
+        of ``median_tau_us``.
       tolerance: relative clustering tolerance actually applied.
       confidence_floor: echo confidence required to count.
     """
@@ -351,24 +449,36 @@ class GeometryLock:
 
 @dataclass(frozen=True)
 class BandSpread:
-    """Cross-position magnitude spread in one octave band.
+    """Cross-position magnitude spread in one octave band — two numbers
+    answering two different questions.
 
-    Computed on the *1/6-octave-smoothed* per-position curves, so it
-    measures genuine position-to-position level disagreement rather than
-    per-bin measurement noise or individual comb nulls — the quantity the
-    research's ``1/sqrt(N)`` accuracy law is about. ``sigma`` is the sample
-    standard deviation (``ddof=1``), the unbiased estimator of the
-    underlying population spread from N positions.
+    ``sigma_db`` is the *level* spread: each position is first collapsed to
+    one band level by averaging its bins in **linear power**, then the
+    sample standard deviation (``ddof=1``, the unbiased estimator of the
+    population spread from N positions) is taken across those N levels.
+    That is the quantity the research's ``1/sqrt(N)`` accuracy law is
+    about, and it is deliberately insensitive to comb structure: a band
+    holds many comb periods, so power-averaging over it lands near
+    ``1 + r**2`` whatever the per-position delay is. A healthy dispersed
+    cloud therefore has a *small* ``sigma_db``; a large one means the
+    positions genuinely disagree about how loud this part of the spectrum
+    is (mic distance, gain, or directivity), which averaging will not fix.
+
+    ``max_sigma_db`` is the *structure* spread: the worst single bin's
+    cross-position sigma, computed per-bin without any smoothing. It rides
+    comb nulls on purpose — that is its diagnostic point. A band whose
+    ``max_sigma_db`` dwarfs its ``sigma_db`` is null-dominated at a few
+    frequencies (positions disagree bin-by-bin but agree on the band's
+    energy: decorrelation working), whereas a band where the two are
+    comparable is broadly noisy.
 
     Args:
       center_hz: nominal ISO octave-band centre.
       f_lo: band lower edge, clipped to the shared grid's support.
       f_hi: band upper edge, clipped to the shared grid's support.
-      sigma_db: mean over the band's bins of the per-bin cross-position
-        sigma, in dB.
-      max_sigma_db: worst single bin's cross-position sigma, in dB. A band
-        whose max greatly exceeds its mean is null-dominated at a few
-        frequencies rather than broadly noisy.
+      sigma_db: cross-position sigma of the per-position band-power level,
+        in dB.
+      max_sigma_db: worst single bin's cross-position sigma, in dB.
       n_bins: grid bins the band actually covers.
     """
 
@@ -385,7 +495,9 @@ class CombinedResponse:
     """The spatially-averaged direct-sound estimate and its honesty screen.
 
     Args:
-      freqs_hz: the shared canonical linear grid every curve below lives on.
+      freqs_hz: the shared canonical linear grid every curve below lives on
+        — after any ``MAX_ANALYSIS_BINS`` block-average decimation, so this
+        is the grid the curves were actually computed on, not the captures'.
       power_mean_db: per-bin power (energy) mean across positions — the
         primary direct-sound estimator.
       median_db: per-bin median in the dB domain — the robustness
@@ -403,17 +515,23 @@ class CombinedResponse:
         wanting coarser reporting should post-process.
       n_positions: number of captures combined.
       position_ids: their ids, in input order.
-      per_position_echo: index-aligned with ``position_ids``. ``None`` for a
-        capture that supplied no IR — deliberately distinct from a
-        zero-confidence :class:`EchoDiagnostic`, which means "measured, and
-        found nothing credible".
-      geometry_locked: convenience mirror of ``geometry.locked``.
-      geometry: the full geometry verdict with its supporting numbers.
+      per_position_echo: index-aligned with ``position_ids``. ``None``
+        means *strictly* "no IR was supplied for this position" — the only
+        thing it ever means. A capture that supplied an IR always gets an
+        :class:`EchoDiagnostic`, including when the detector rejected the
+        input outright (a non-empty ``refusal``) or ran and found nothing
+        credible (empty ``refusal``, zero confidence). Those three states
+        are deliberately distinguishable.
+      geometry: the geometry verdict with its supporting numbers.
+        ``geometry.locked`` is the single owner of that bit — there is no
+        mirror field, so the two can never drift.
       band_spread: per-octave-band cross-position spread. Empty when fewer
         than two positions were supplied (spread is undefined for one).
       flag_threshold_db: the screen threshold actually applied.
       diag_fraction: the diagnostic smoothing fraction actually applied.
       spec_fraction: the spec smoothing fraction actually applied.
+      echo_band_hz: the echo-detector analysis band actually applied.
+      echo_search_us: the echo-detector search window actually applied.
     """
 
     freqs_hz: np.ndarray
@@ -427,16 +545,20 @@ class CombinedResponse:
     n_positions: int
     position_ids: tuple[str, ...]
     per_position_echo: tuple[EchoDiagnostic | None, ...]
-    geometry_locked: bool
     geometry: GeometryLock
     band_spread: tuple[BandSpread, ...]
     flag_threshold_db: float
     diag_fraction: int
     spec_fraction: int
+    echo_band_hz: tuple[float, float]
+    echo_search_us: tuple[float, float]
 
 
 # --------------------------------------------------------------------------- #
-# Private helpers
+# Grid / array helpers
+#
+# All private except :func:`merged_true_intervals`, which is shared with
+# jasper.active_speaker.flat_spec so the interval-merge rule has one owner.
 # --------------------------------------------------------------------------- #
 
 
@@ -509,8 +631,61 @@ def _canonical_grid(grids: Sequence[np.ndarray]) -> np.ndarray:
     return grid
 
 
-def _merge_mask(freqs: np.ndarray, mask: np.ndarray) -> tuple[tuple[float, float], ...]:
-    """Contiguous True runs of ``mask`` as ``(f_lo, f_hi)`` intervals."""
+def _decimate_to_analysis_grid(
+    grid: np.ndarray, stacked: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Block-average a too-fine analysis grid down to ``MAX_ANALYSIS_BINS``.
+
+    Averaging is done in **linear power**, the same estimator the rest of
+    this module uses, so decimation composes with the power mean instead of
+    biasing it; subsampling would alias a combed curve onto whichever bins
+    happened to land on peaks or nulls. See ``MAX_ANALYSIS_BINS`` for the
+    cost/resolution argument.
+
+    Blocks are a fixed width, so the decimated grid stays exactly linear
+    (block centres are spaced by ``block * step``) and remains a legal input
+    to :func:`~jasper.audio_measurement.analysis.smooth_fractional_octave`.
+    A trailing partial block is dropped rather than averaged, because a
+    short final block would sit at a different centre and break that
+    uniformity; at most ``block - 1`` bins — under one part in ten thousand
+    of the span — are lost off the top.
+
+    Identity (same objects) when the grid is already within the bound.
+    """
+    n_bins = int(grid.size)
+    if n_bins <= MAX_ANALYSIS_BINS:
+        return grid, stacked
+    block = -(-n_bins // MAX_ANALYSIS_BINS)  # ceil division
+    n_blocks = n_bins // block
+    kept = n_blocks * block
+    coarse_grid = grid[:kept].reshape(n_blocks, block).mean(axis=1)
+    power = 10.0 ** (stacked[:, :kept] / 10.0)
+    coarse_stacked = 10.0 * np.log10(
+        power.reshape(stacked.shape[0], n_blocks, block).mean(axis=2)
+    )
+    coarse_grid.flags.writeable = False
+    return coarse_grid, coarse_stacked
+
+
+def merged_true_intervals(
+    freqs_hz: np.ndarray, mask: np.ndarray
+) -> tuple[tuple[float, float], ...]:
+    """Contiguous ``True`` runs of ``mask`` as merged ``(f_lo, f_hi)``
+    intervals spanning each run's first and last flagged bin.
+
+    The single owner of this rule. :mod:`jasper.active_speaker.flat_spec`
+    imports it rather than keeping its own copy, so the exclusion intervals
+    a spec report discloses and the ones the combiner reports are the same
+    fact computed the same way — a second implementation is a second thing
+    to drift.
+
+    Adjacency is by **array index**, which is a proxy for frequency
+    adjacency only when ``freqs_hz`` is ascending. Both callers validate
+    that (``_validate_capture`` here, ``evaluate_flat_spec`` there), so the
+    assumption is enforced upstream rather than re-checked per call. No
+    gap-bridging: two runs separated by a single unflagged bin stay two
+    intervals.
+    """
     flagged = np.flatnonzero(mask)
     if flagged.size == 0:
         return ()
@@ -518,7 +693,8 @@ def _merge_mask(freqs: np.ndarray, mask: np.ndarray) -> tuple[tuple[float, float
     starts = np.concatenate(([flagged[0]], flagged[breaks + 1]))
     ends = np.concatenate((flagged[breaks], [flagged[-1]]))
     return tuple(
-        (float(freqs[s]), float(freqs[e])) for s, e in zip(starts, ends, strict=True)
+        (float(freqs_hz[s]), float(freqs_hz[e]))
+        for s, e in zip(starts, ends, strict=True)
     )
 
 
@@ -573,15 +749,47 @@ def _parabolic_offset(values: np.ndarray, index: int) -> float:
     return float(np.clip(0.5 * (left - right) / denom, -0.5, 0.5))
 
 
-def _no_echo(arrival_crest_db: float = 0.0) -> EchoDiagnostic:
-    """The "nothing credible here" diagnostic."""
+class EchoInputError(ValueError):
+    """A malformed :func:`detect_echo` input, carrying a stable slug.
+
+    A ``ValueError`` subclass so every existing caller (and test) that
+    expects ``ValueError`` keeps working, with a machine-readable ``slug``
+    attached **at the raise site** — so :func:`combine_positions` can turn
+    the failure into a self-describing refused diagnostic without matching
+    on message text, which would rot the first time a message is reworded.
+    """
+
+    def __init__(self, slug: str, message: str) -> None:
+        super().__init__(message)
+        self.slug = slug
+
+
+def _refused(
+    refusal: str,
+    *,
+    resolution_us: float = 0.0,
+    arrival_crest_db: float = 0.0,
+    tau_cepstral_us: float = 0.0,
+    tau_envelope_us: float = 0.0,
+    concentration: float = 0.0,
+) -> EchoDiagnostic:
+    """A diagnostic that reports no delay, and says why.
+
+    Used both for "the detector declined" (non-empty ``refusal``) and, with
+    ``refusal=""``, for "the detector ran and found nothing credible". The
+    raw estimator fields are carried through when they exist, because a
+    railed cepstral estimate is exactly the evidence a reader needs to
+    understand a ``no_in_window_echo`` refusal.
+    """
     return EchoDiagnostic(
         tau_us=0.0,
         strength_db=STRENGTH_FLOOR_DB,
         confidence=0.0,
-        tau_cepstral_us=0.0,
-        tau_envelope_us=0.0,
-        concentration=0.0,
+        refusal=refusal,
+        resolution_us=resolution_us,
+        tau_cepstral_us=tau_cepstral_us,
+        tau_envelope_us=tau_envelope_us,
+        concentration=concentration,
         corroboration=1.0,
         arrival_crest_db=arrival_crest_db,
     )
@@ -620,13 +828,27 @@ def detect_echo(
       refinement — it localises well but, alone, will happily find a peak in
       noise.
 
-    ``tau_us`` therefore reports the envelope estimate when one exists, and
-    ``confidence`` is what makes it trustworthy: the product of an
-    arrival-crest gate (is there a direct arrival at all), cepstral
-    concentration (is the ripple energy at one quefrency), and corroboration
-    (do the two estimators agree). Requiring all three to line up is what
-    separates the real corpus from every negative control — see the
-    calibration figures on the module's threshold constants.
+    ``tau_us`` therefore reports the envelope estimate when one survives,
+    and ``confidence`` is what makes it trustworthy: cepstral concentration
+    (is the ripple energy at one quefrency) times corroboration (do the two
+    estimators agree), behind an arrival-crest gate (is there a direct
+    arrival at all) that refuses outright rather than scoring down.
+    Requiring both factors to line up behind that gate is what separates the
+    real corpus from every negative control — see the calibration figures on
+    the module's threshold constants.
+
+    **``search_us`` is a rejection contract, not a clamp.** A candidate
+    whose *refined* delay lands outside the window is rejected, never pulled
+    back to the edge. Clamping fabricates data: an echo just past the window
+    edge would be reported as sitting exactly on the edge, and — because
+    every position's railed estimate rails to the *same* edge — a cloud with
+    genuinely dispersed delays would then cluster tightly enough to read as
+    falsely ``geometry_locked``. So a rejected candidate cannot corroborate
+    anything (``corroboration`` is forced to 1.0), which in practice means a
+    non-zero ``confidence`` requires **both** estimators in-window; and if
+    *neither* survives, the result is a ``no_in_window_echo`` refusal rather
+    than a number. A caller who suspects the echo lies outside the window
+    should widen the window, not trust an edge value.
 
     The IR is windowed internally to the early-arrival region (see
     ``ECHO_WINDOW_SPAN_FACTOR``), so a full deconvolved IR may be passed;
@@ -643,39 +865,56 @@ def detect_echo(
         up to ~800 us (≈ 27 cm), below the room's first wall reflection.
 
         **Resolution floor — the lower edge is optimistic.** Both estimators
-        degrade as tau approaches ``1 / bandwidth`` (~71 us for the 5-19 kHz
+        degrade as tau approaches ``1 / bandwidth``
+        (:attr:`EchoDiagnostic.resolution_us`, ~71 us for the 5-19 kHz
         default): the cepstral quefrency step *is* ``1 / bandwidth``, and the
         band-limited envelope cannot separate an arrival from the direct
         pulse's own skirt inside roughly one envelope width. Measured on the
         synthetic set, tau is recovered to ~1-3% above ~240 us but can read
-        ~9-14% low near 150-185 us. Delays in the bottom ~2-3 quefrency
-        steps of the window should be treated as "an early echo is present"
-        rather than as a trustworthy delay. The plan's target bounce
-        (~300 us) and the corpus's measured 313-323 us sit comfortably above
-        this floor; widening ``band_hz`` is what buys resolution below it.
+        ~9-14% low near 150-185 us. Delays in the bottom ~3 quefrency steps
+        of the window are "an early echo is present", never a trustworthy
+        delay — :func:`assess_geometry` refuses to cluster them for exactly
+        that reason. The plan's target bounce (~300 us) and the corpus's
+        measured 313-323 us sit comfortably above this floor; widening
+        ``band_hz`` is what buys resolution below it.
 
     Returns:
-      An :class:`EchoDiagnostic`. ``confidence == 0.0`` means no credible
-      echo was found, and the other estimates carry no information.
+      An :class:`EchoDiagnostic`. A non-empty ``refusal`` means the detector
+      declined; ``confidence == 0.0`` with an empty ``refusal`` means it ran
+      and found nothing credible. Either way the estimates carry no
+      information, and ``tau_us`` is 0.0.
 
     Raises:
-      ValueError: on an empty / non-finite IR, a non-positive sample rate,
-        or a degenerate band / search window.
+      EchoInputError: (a ``ValueError``) on an empty / non-finite IR, a
+        non-positive sample rate, or a degenerate band / search window.
     """
-    samples = _as_float_array(ir, "ir")
+    try:
+        samples = _as_float_array(ir, "ir")
+    except ValueError as exc:
+        raise EchoInputError(REFUSAL_MALFORMED_IR, str(exc)) from exc
     if sample_rate <= 0:
-        raise ValueError(f"sample_rate must be positive, got {sample_rate}")
+        raise EchoInputError(
+            REFUSAL_BAD_SAMPLE_RATE, f"sample_rate must be positive, got {sample_rate}"
+        )
 
     lo_hz, hi_hz = float(band_hz[0]), min(float(band_hz[1]), sample_rate / 2.0)
     if not 0.0 < lo_hz < hi_hz:
-        raise ValueError(
+        raise EchoInputError(
+            REFUSAL_BAD_BAND_HZ,
             f"band_hz must satisfy 0 < lo < hi <= Nyquist, got {band_hz} at "
-            f"sample_rate={sample_rate}"
+            f"sample_rate={sample_rate}",
         )
     search_lo_s = float(search_us[0]) * 1e-6
     search_hi_s = float(search_us[1]) * 1e-6
     if not 0.0 < search_lo_s < search_hi_s:
-        raise ValueError(f"search_us must satisfy 0 < lo < hi, got {search_us}")
+        raise EchoInputError(
+            REFUSAL_BAD_SEARCH_US, f"search_us must satisfy 0 < lo < hi, got {search_us}"
+        )
+
+    # The quefrency step of the band actually used (after Nyquist clipping)
+    # — reported on every diagnostic, including refusals, so a consumer can
+    # judge whether a delay is resolvable without re-deriving the band.
+    resolution_us = 1e6 / (hi_hz - lo_hz)
 
     # --- 1. Locate the direct arrival, and gate on it existing at all. ---
     # The coarse locate is argmax|ir|, which agrees with the band-limited
@@ -686,14 +925,20 @@ def detect_echo(
     median_level = float(np.median(np.abs(samples)))
     peak_level = float(np.abs(samples[peak_index]))
     if peak_level <= 0.0:
-        raise ValueError("ir is all zeros — no impulse response to analyse")
+        raise EchoInputError(
+            REFUSAL_ALL_ZERO_IR, "ir is all zeros — no impulse response to analyse"
+        )
     crest_db = (
         20.0 * float(np.log10(peak_level / median_level))
         if median_level > 0.0
         else float("inf")
     )
     if crest_db < ARRIVAL_CREST_FLOOR_DB:
-        return _no_echo(crest_db)
+        return _refused(
+            REFUSAL_LOW_ARRIVAL_CREST,
+            resolution_us=resolution_us,
+            arrival_crest_db=crest_db,
+        )
 
     # --- 2. Window to the early-arrival region. ---
     pre = int(round(ECHO_WINDOW_PRE_S * sample_rate))
@@ -702,7 +947,11 @@ def detect_echo(
     stop = min(samples.size, peak_index + span)
     segment = samples[start:stop]
     if segment.size < 8:
-        return _no_echo(crest_db)
+        return _refused(
+            REFUSAL_WINDOW_TOO_SHORT,
+            resolution_us=resolution_us,
+            arrival_crest_db=crest_db,
+        )
 
     # --- 3. Cepstral estimator. ---
     n_fft = _n_fft_for(segment.size)
@@ -711,7 +960,11 @@ def detect_echo(
     band = (freqs >= lo_hz) & (freqs <= hi_hz)
     n_band = int(np.count_nonzero(band))
     if n_band < MIN_ECHO_BAND_BINS:
-        return _no_echo(crest_db)
+        return _refused(
+            REFUSAL_BAND_TOO_NARROW,
+            resolution_us=resolution_us,
+            arrival_crest_db=crest_db,
+        )
 
     log_mag = 20.0 * np.log10(spectrum[band])
     # Fit the slow trend against a conditioned [-1, 1] abscissa so the
@@ -725,25 +978,26 @@ def detect_echo(
     above_floor = quefrency >= search_lo_s
     in_search = above_floor & (quefrency <= search_hi_s)
     if not np.any(in_search):
-        return _no_echo(crest_db)
+        return _refused(
+            REFUSAL_SEARCH_OUTSIDE_CEPSTRUM,
+            resolution_us=resolution_us,
+            arrival_crest_db=crest_db,
+        )
 
     # Peak within the search window, but refined against the FULL cepstrum:
     # a peak sitting on the first or last search bin still has real
     # neighbours just outside the slice, and refining on the slice alone
     # would discard them and rail the estimate onto the boundary bin. The
-    # refined value is then clamped back into the caller's window, so
-    # refinement can sharpen an edge peak but never report outside the
-    # window that was asked for.
+    # refined value is NOT clamped back into the window — if refinement
+    # walks it out, that is the honest answer ("the ripple's quefrency is
+    # outside what you asked for") and the candidate is rejected below.
     search_indices = np.flatnonzero(in_search)
     peak = int(search_indices[np.argmax(cepstrum[in_search])])
     quefrency_step = float(quefrency[1] - quefrency[0])
     tau_cepstral = float(
-        np.clip(
-            quefrency[peak] + _parabolic_offset(cepstrum, peak) * quefrency_step,
-            search_lo_s,
-            search_hi_s,
-        )
+        quefrency[peak] + _parabolic_offset(cepstrum, peak) * quefrency_step
     )
+    cepstral_in_window = search_lo_s <= tau_cepstral <= search_hi_s
     baseline = float(np.linalg.norm(cepstrum[above_floor]))
     concentration = float(cepstrum[peak] / baseline) if baseline > 0.0 else 0.0
 
@@ -753,21 +1007,38 @@ def detect_echo(
     first = main + int(round(search_lo_s * sample_rate))
     last = min(envelope.size - 2, main + int(round(search_hi_s * sample_rate)))
     tau_envelope = 0.0
-    strength_db = STRENGTH_FLOOR_DB
+    envelope_strength_db = STRENGTH_FLOOR_DB
     if last > first + 1:
         local = first + int(np.argmax(envelope[first : last + 1]))
         tau_envelope = (local + _parabolic_offset(envelope, local) - main) / sample_rate
-        strength_db = 20.0 * float(
+        envelope_strength_db = 20.0 * float(
             np.log10(max(float(envelope[local]), 1e-15) / max(float(envelope[main]), 1e-15))
         )
+    # Sub-sample refinement can push an edge peak a fraction of a sample
+    # past the boundary, so the envelope needs the same window check.
+    envelope_in_window = search_lo_s <= tau_envelope <= search_hi_s
 
     # --- 5. Fuse. ---
-    if tau_envelope > 0.0:
+    if not cepstral_in_window and not envelope_in_window:
+        return _refused(
+            REFUSAL_NO_IN_WINDOW_ECHO,
+            resolution_us=resolution_us,
+            arrival_crest_db=crest_db,
+            tau_cepstral_us=tau_cepstral * 1e6,
+            tau_envelope_us=tau_envelope * 1e6,
+            concentration=concentration,
+        )
+
+    if cepstral_in_window and envelope_in_window:
         corroboration = abs(tau_envelope - tau_cepstral) / max(tau_cepstral, 1e-12)
-        tau = tau_envelope
     else:
+        # A rejected candidate corroborates nothing. Comparing against it
+        # anyway is how a railed estimate manufactures agreement.
         corroboration = 1.0
-        tau = tau_cepstral
+    if envelope_in_window:
+        tau, strength_db = tau_envelope, envelope_strength_db
+    else:
+        tau, strength_db = tau_cepstral, envelope_strength_db
 
     concentration_score = float(
         np.clip(
@@ -790,6 +1061,8 @@ def detect_echo(
             tau_us=0.0,
             strength_db=STRENGTH_FLOOR_DB,
             confidence=0.0,
+            refusal="",
+            resolution_us=resolution_us,
             tau_cepstral_us=tau_cepstral * 1e6,
             tau_envelope_us=tau_envelope * 1e6,
             concentration=concentration,
@@ -801,6 +1074,8 @@ def detect_echo(
         tau_us=tau * 1e6,
         strength_db=strength_db,
         confidence=confidence,
+        refusal="",
+        resolution_us=resolution_us,
         tau_cepstral_us=tau_cepstral * 1e6,
         tau_envelope_us=tau_envelope * 1e6,
         concentration=concentration,
@@ -823,8 +1098,9 @@ def assess_geometry(
 ) -> GeometryLock:
     """Are the cloud's interference nulls position-stable?
 
-    ``locked`` when at least ``min_fraction`` of the *confident* per-position
-    tau estimates fall within ``tolerance`` (relative) of their median. A
+    ``locked`` when at least ``min_fraction`` of the *usable* per-position
+    tau estimates (defined below; ``n_confident`` counts them) fall within
+    ``tolerance`` (relative) of their median. A
     stable tau means a stable null ladder at ``(n+0.5)/tau``, which spatial
     averaging cannot fill however many positions are added — the honest
     consumer response is to ask the user to spread the mic further, or (the
@@ -832,24 +1108,46 @@ def assess_geometry(
     diffraction rather than a boundary, in which case the exclusion screen
     carries the weight instead.
 
-    Fewer than ``GEOMETRY_MIN_CONFIDENT`` confident estimates is reported as
-    not-locked with reason ``GEOMETRY_UNKNOWN``: a single estimate sits
-    within any tolerance of its own median, so "100% clustered" would be a
-    vacuous lock.
+    **What counts as usable evidence** — a diagnostic is admitted only when
+    all three hold, because each excluded class produces a *false* lock in a
+    different way:
+
+    1. ``refusal == ""`` — the detector actually measured. A refusal's
+       ``tau_us`` is 0.0, and a pile of zeros clusters perfectly.
+    2. ``confidence >= confidence_floor`` — the long-standing gate.
+    3. ``tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us`` — the
+       delay is resolvable at all. Below ~3 quefrency steps both estimators
+       sit inside the direct pulse's own skirt and read low, so a cloud
+       whose true delays are all near the resolution floor collapses toward
+       one unresolvable value and looks locked when it is merely
+       unmeasurable.
+
+    Fewer than ``GEOMETRY_MIN_CONFIDENT`` usable estimates is reported as
+    not-locked with reason ``GEOMETRY_UNKNOWN`` — never as a lock. A single
+    estimate sits within any tolerance of its own median, so "100%
+    clustered" would be a vacuous lock, and locking on no evidence tells a
+    household to go move the mic for nothing.
 
     Args:
       echoes: per-position diagnostics, ``None`` where no IR was supplied.
       confidence_floor: minimum :attr:`EchoDiagnostic.confidence` to count.
       tolerance: relative clustering tolerance about the median tau.
-      min_fraction: fraction of the confident set that must cluster.
+      min_fraction: fraction of the usable set that must cluster.
 
     Returns:
       A :class:`GeometryLock` carrying the verdict and its supporting
-      numbers.
+      numbers. ``n_confident`` is the size of the usable set defined above.
     """
     n_positions = len(echoes)
     taus = np.array(
-        [e.tau_us for e in echoes if e is not None and e.confidence >= confidence_floor],
+        [
+            e.tau_us
+            for e in echoes
+            if e is not None
+            and e.refusal == ""
+            and e.confidence >= confidence_floor
+            and e.tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * e.resolution_us
+        ],
         dtype=float,
     )
     n_confident = int(taus.size)
@@ -885,13 +1183,21 @@ def assess_geometry(
 # --------------------------------------------------------------------------- #
 
 
-def _band_spread(
-    freqs: np.ndarray, smoothed: np.ndarray
-) -> tuple[BandSpread, ...]:
-    """Octave-band cross-position sigma from stacked per-position curves."""
-    if smoothed.shape[0] < 2:
+def _band_spread(freqs: np.ndarray, stacked: np.ndarray) -> tuple[BandSpread, ...]:
+    """Octave-band cross-position spread from raw per-position curves.
+
+    Deliberately **unsmoothed**. An earlier version 1/6-octave-smoothed
+    every position first, which cost one ``smooth_fractional_octave`` pass
+    per position — the dominant term in the combiner's runtime — to compute
+    a band statistic that a band-power average already gives directly and
+    exactly. Both numbers here come straight from the stacked curves: see
+    :class:`BandSpread` for what each one means and why they answer
+    different questions.
+    """
+    if stacked.shape[0] < 2:
         return ()
-    sigma = np.std(smoothed, axis=0, ddof=1)
+    power = 10.0 ** (stacked / 10.0)
+    per_bin_sigma = np.std(stacked, axis=0, ddof=1)
     grid_lo, grid_hi = float(freqs[0]), float(freqs[-1])
     bands: list[BandSpread] = []
     for center in OCTAVE_BAND_CENTERS_HZ:
@@ -903,17 +1209,42 @@ def _band_spread(
         n_bins = int(np.count_nonzero(mask))
         if n_bins < MIN_BAND_BINS:
             continue
+        # One level per position: the band's energy, in power, then dB.
+        band_level_db = 10.0 * np.log10(np.mean(power[:, mask], axis=1))
         bands.append(
             BandSpread(
                 center_hz=float(center),
                 f_lo=float(freqs[mask][0]),
                 f_hi=float(freqs[mask][-1]),
-                sigma_db=float(np.mean(sigma[mask])),
-                max_sigma_db=float(np.max(sigma[mask])),
+                sigma_db=float(np.std(band_level_db, ddof=1)),
+                max_sigma_db=float(np.max(per_bin_sigma[mask])),
                 n_bins=n_bins,
             )
         )
     return tuple(bands)
+
+
+def _echo_for(
+    capture: PositionCapture,
+    band_hz: tuple[float, float],
+    search_us: tuple[float, float],
+) -> EchoDiagnostic | None:
+    """One position's echo diagnostic, or ``None`` when it supplied no IR.
+
+    A malformed IR is one position's problem, never the whole cloud's: the
+    detector's ``ValueError`` becomes a refused diagnostic carrying the
+    reason, so ten good captures plus one all-zero IR still combine. The
+    slug comes from :class:`EchoInputError` when the detector raised one,
+    so this never parses a message string.
+    """
+    if capture.ir is None:
+        return None
+    try:
+        return detect_echo(
+            capture.ir, capture.sample_rate, band_hz=band_hz, search_us=search_us
+        )
+    except ValueError as exc:
+        return _refused(getattr(exc, "slug", REFUSAL_DETECTOR_ERROR))
 
 
 def combine_positions(
@@ -922,6 +1253,8 @@ def combine_positions(
     flag_threshold_db: float = DEFAULT_FLAG_THRESHOLD_DB,
     diag_fraction: int = DEFAULT_DIAG_FRACTION,
     spec_fraction: int = DEFAULT_SPEC_FRACTION,
+    echo_band_hz: tuple[float, float] = DEFAULT_ECHO_BAND_HZ,
+    echo_search_us: tuple[float, float] = DEFAULT_ECHO_SEARCH_US,
 ) -> CombinedResponse:
     """Combine a cloud of position captures into one direct-sound estimate.
 
@@ -948,8 +1281,12 @@ def combine_positions(
       captures: one or more :class:`PositionCapture`. Order is preserved in
         ``position_ids`` and ``per_position_echo``.
       flag_threshold_db: mean-vs-median disagreement that flags a bin.
-      diag_fraction: diagnostic 1/N-octave fraction (screen + spread).
+      diag_fraction: diagnostic 1/N-octave fraction (screen).
       spec_fraction: spec 1/N-octave fraction (pass/fail curve).
+      echo_band_hz: analysis band handed to :func:`detect_echo`.
+      echo_search_us: search window handed to :func:`detect_echo`. Both are
+        echoed back on the result, because a per-position tau is only
+        interpretable against the window it was searched in.
 
     Returns:
       A :class:`CombinedResponse`.
@@ -957,7 +1294,9 @@ def combine_positions(
     Raises:
       ValueError: on no captures, a malformed capture (see
         :class:`PositionCapture`), captures sharing no frequency support, or
-        a non-positive smoothing fraction / threshold.
+        a non-positive smoothing fraction / threshold. Notably **not** for a
+        malformed IR: that is one position's refused diagnostic, not the
+        whole cloud's failure.
     """
     if not captures:
         raise ValueError("combine_positions needs at least one capture")
@@ -980,6 +1319,9 @@ def combine_positions(
         [np.interp(grid, freqs, mags) for freqs, mags in validated]
     )
 
+    # Bound the analysis cost before anything expensive touches the grid.
+    grid, stacked = _decimate_to_analysis_grid(grid, stacked)
+
     power_mean_db = 10.0 * np.log10(np.mean(10.0 ** (stacked / 10.0), axis=0))
     median_db = np.median(stacked, axis=0)
 
@@ -991,23 +1333,9 @@ def combine_positions(
     excluded.flags.writeable = False
 
     per_position_echo: tuple[EchoDiagnostic | None, ...] = tuple(
-        None
-        if capture.ir is None
-        else detect_echo(capture.ir, capture.sample_rate)
-        for capture in captures
+        _echo_for(capture, echo_band_hz, echo_search_us) for capture in captures
     )
     geometry = assess_geometry(per_position_echo)
-
-    # Spread is measured on smoothed per-position curves: the diagnostic is
-    # "how much do positions disagree about this band's level", not "how
-    # noisy is a single bin".
-    smoothed_positions = (
-        np.vstack(
-            [smooth_fractional_octave(grid, row, fraction=diag_fraction) for row in stacked]
-        )
-        if stacked.shape[0] >= 2
-        else stacked
-    )
 
     for array in (power_mean_db, median_db, power_mean_diag_db, power_mean_spec_db, median_diag_db):
         array.flags.writeable = False
@@ -1020,14 +1348,15 @@ def combine_positions(
         power_mean_spec_db=power_mean_spec_db,
         median_diag_db=median_diag_db,
         excluded=excluded,
-        excluded_bands_hz=_merge_mask(grid, excluded),
+        excluded_bands_hz=merged_true_intervals(grid, excluded),
         n_positions=len(captures),
         position_ids=tuple(c.position_id for c in captures),
         per_position_echo=per_position_echo,
-        geometry_locked=geometry.locked,
         geometry=geometry,
-        band_spread=_band_spread(grid, smoothed_positions),
+        band_spread=_band_spread(grid, stacked),
         flag_threshold_db=flag_threshold_db,
         diag_fraction=diag_fraction,
         spec_fraction=spec_fraction,
+        echo_band_hz=(float(echo_band_hz[0]), float(echo_band_hz[1])),
+        echo_search_us=(float(echo_search_us[0]), float(echo_search_us[1])),
     )
