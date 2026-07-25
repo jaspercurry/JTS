@@ -55,8 +55,15 @@ Pipeline (:func:`combine_positions`):
    — out-of-window candidates are refused, and so are candidates hugging its
    lower edge, where a below-window echo aliases up and is indistinguishable
    from a real one — and a malformed IR refuses one position rather than
-   failing the combine. All of it so that a number this module reports is
-   one it actually measured.
+   failing the combine, all of it so that a number this module reports is
+   one it actually measured. **One measured hole survives that ambition, and
+   it is not closed**: a cepstral *rahmonic* of a below-window echo can land
+   inside a search window whose lower edge is raised to 650 us or more, and
+   be reported confidently at roughly 3x the true delay — enough to lock a
+   genuinely dispersed cloud. The default window has no known false-lock
+   regime; a non-default window with ``search_us[0] >= 650`` carries the
+   hazard until a rahmonic screen exists. See ``DEFAULT_ECHO_SEARCH_US`` and
+   :func:`detect_echo` for the measured grid.
 6. **Spread diagnostics** — cross-position level spread and worst-bin sigma
    in octave bands, the observable behind the research's 1/sqrt(N) accuracy
    story.
@@ -192,6 +199,41 @@ MAX_ANALYSIS_BINS = 16385
 # --------------------------------------------------------------------------- #
 
 DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
+
+# The default search window — and the only window whose false-lock
+# behaviour has actually been swept.
+#
+# **The default has no known false-lock regime.** Eleven synthetic cloud
+# configurations were swept through it (the plan's dispersed 150-490 us
+# cloud at 3/4/10 positions, a below-window 150-400 us cloud, an
+# unresolvable 60-150 us cloud, wide 200-700 and 250-750 us clouds, a tight
+# 300-340 us cloud, a bimodal 200/600 us cloud, and clouds sitting entirely
+# at and above the window's top edge). They yielded 63 usable estimates,
+# and **every one landed within 0.996-1.008 of its position's true delay**
+# — not a single rahmonic among them. That is the measurement behind
+# "no known false-lock regime": not merely that no verdict looked wrong,
+# but that no reported delay was a multiple of the real one.
+#
+# **A window whose lower edge is 650 us or higher does NOT share that
+# record, and is not safe.** The cepstrum of a comb has rahmonics at
+# 2*tau, 3*tau, ..., so a window that excludes the true delay can still
+# contain a rahmonic of it. Below ~650 us the lower-edge margin
+# (WINDOW_EDGE_MARGIN_STEPS) happens to catch them; at and above it the
+# rahmonic clears the margin, the envelope estimator finds a matching peak
+# in the same raised window, the two corroborate, and the result is a
+# confident number at roughly 3x the true delay. Measured on the 150-400 us
+# cloud: (600, 1000) is clean, while (650, 1000), (700, 1000) and
+# (800, 1200) each read ``geometry_locked`` at median tau 814 / 857 / 897
+# us, on per-position estimates whose cepstral peaks sit at 2.99-3.01x the
+# true delay, at confidence up to 1.000.
+#
+# Closing it needs a **rahmonic screen** — re-testing a surviving candidate
+# against tau/2 and tau/3 before believing it — which does not exist yet.
+# It is recorded here and pinned by
+# test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation in
+# tests/test_spatial_combine.py rather than silently assumed away. Until
+# that screen lands: prefer the default window, and treat a lock reported
+# under a window with search_us[0] >= 650 as unproven.
 DEFAULT_ECHO_SEARCH_US = (120.0, 800.0)
 
 # Order of the polynomial detrend removed from the band's log-magnitude
@@ -267,15 +309,23 @@ STRENGTH_FLOOR_DB = -120.0
 # the largest that does not manufacture a dead zone the instrument could have
 # measured. A genuine echo at 1.5 steps above the edge is still reported.
 #
-# Why the lower edge only — the asymmetry is physical, not an oversight. A
+# Why the lower edge only — the *aliasing* asymmetry is physical. A
 # below-window echo aliases UP onto the lower edge because that is where both
-# searches begin. There is no mirror mechanism at the top: an above-window
-# echo is simply outside both searches, and what lands at the upper edge is
-# either a genuine in-window arrival or a cepstral rahmonic, neither of which
-# is an aliased copy of an out-of-window delay. The upper edge is already
-# covered by the window-rejection contract (an above-window candidate is
-# rejected outright), so an extra top-edge margin would refuse honest
-# measurements to guard against a failure mode that does not exist.
+# searches begin; nothing aliases DOWN onto the top, since an above-window
+# echo is simply outside both searches and is rejected outright by the window
+# contract. A top-edge margin would therefore refuse honest measurements to
+# guard against an aliasing path that genuinely does not exist there.
+#
+# **What that argument does NOT cover, and an earlier version of this comment
+# wrongly implied it did: a cepstral rahmonic.** The cepstrum of a comb
+# repeats at 2*tau, 3*tau, ..., so a below-window echo can put a peak
+# *anywhere* in a raised window, not only at its bottom — which is a
+# different mechanism from aliasing and is not addressed by any edge margin,
+# at either edge. This rule catches those rahmonics only incidentally, and
+# only while the window's lower edge stays under ~650 us. Above that they
+# clear the margin and are believed. See ``DEFAULT_ECHO_SEARCH_US`` for the
+# measured boundary and the screen that would actually close it; do not read
+# this margin as making a raised window safe.
 WINDOW_EDGE_MARGIN_STEPS = 1.0
 
 # Refusal vocabulary for EchoDiagnostic.refusal. Snake_case, self-
@@ -450,9 +500,24 @@ class EchoDiagnostic:
         for.
       concentration: bounded [0, 1] cepstral peak concentration.
       corroboration: relative disagreement between the two tau estimators
-        (0.0 = identical). 1.0 whenever the two cannot be compared — the
-        envelope found nothing, or either estimate fell outside the search
-        window, since a rejected candidate corroborates nothing.
+        (0.0 = identical). **1.0 means exactly one thing: the two could not
+        be compared** — the envelope found nothing, either estimate fell
+        outside the search window (a rejected candidate corroborates
+        nothing), or the detector refused before both estimates existed. It
+        is a marker, not a measurement, and must not be read as "measured,
+        and they disagreed completely".
+
+        On a *refused* record the distinction is load-bearing. Most
+        refusals carry the 1.0 marker because nothing was comparable. The
+        ``tau_at_window_lower_edge`` refusal is the exception: it fires only
+        after both candidates were found in-window and compared, so it
+        carries the **measured** value — 0.005-0.28 across the edge
+        refusals in this module's test suite, i.e. two estimates in real
+        agreement, which is precisely why that pair was convincing enough
+        to need refusing. So on an edge refusal a small corroboration is
+        evidence *for* the refusal, not against it. (An edge refusal can
+        still carry 1.0, when only *one* of the two candidates was
+        in-window; then nothing was compared and the marker is correct.)
       arrival_crest_db: direct arrival level above the IR's median
         ``|sample|`` level — the "is there an arrival at all" gate.
     """
@@ -830,16 +895,27 @@ def _refused(
     tau_cepstral_us: float = 0.0,
     tau_envelope_us: float = 0.0,
     concentration: float = 0.0,
+    corroboration: float = 1.0,
 ) -> EchoDiagnostic:
     """A refused diagnostic: no delay reported, and a slug saying why.
 
     Every call site passes a non-empty ``REFUSAL_*`` slug — this helper is
     the "the detector declined" constructor, and only that. The other
     zero-confidence outcome, "the detector ran to completion and found
-    nothing credible", carries ``refusal == ""`` **and** a real
-    ``corroboration`` reading, so it is built inline in :func:`detect_echo`
-    rather than here (this helper hard-codes ``corroboration=1.0``, which
-    on a non-refused diagnostic would misreport a measured value).
+    nothing credible", carries ``refusal == ""`` and is built inline in
+    :func:`detect_echo`.
+
+    ``corroboration`` defaults to 1.0 because on most refusal paths the two
+    estimators genuinely **could not be compared** — the detector gave up
+    before both existed, or one of them fell outside the search window — and
+    1.0 is this module's encoding of exactly that (see
+    :attr:`EchoDiagnostic.corroboration`). The **edge-proximity** refusal is
+    the one path where that default would lie: it fires *after* both
+    candidates were found in-window and compared, so it passes the measured
+    value through instead. Reporting 1.0 there claimed "incomparable" about
+    two estimates that had in fact agreed to within 0.005-0.28 (measured
+    across this module's edge-refusal cases, and as tight as 0.5% on the
+    clean ones) — the record said the opposite of what was measured.
 
     The raw estimator fields are carried through when they exist, because a
     railed or edge-hugging cepstral estimate is exactly the evidence a
@@ -855,7 +931,7 @@ def _refused(
         tau_cepstral_us=tau_cepstral_us,
         tau_envelope_us=tau_envelope_us,
         concentration=concentration,
-        corroboration=1.0,
+        corroboration=corroboration,
         arrival_crest_db=arrival_crest_db,
     )
 
@@ -931,10 +1007,29 @@ def detect_echo(
     so it cannot be trusted as either. The remedy is the same one the window
     contract always prescribes — widen ``search_us`` (or ``band_hz``, which
     shrinks the step) and measure again. **No equivalent margin exists at
-    the upper edge**, and that asymmetry is physical: nothing aliases *down*
-    onto the top of the window, so a candidate there is either a genuine
-    in-window arrival or a cepstral rahmonic, and the plain rejection
-    contract already handles what lies beyond it.
+    the upper edge**, and that *aliasing* asymmetry is physical: nothing
+    aliases *down* onto the top of the window, and what lies beyond it is
+    already refused by the plain rejection contract.
+
+    **Surviving limitation — cepstral rahmonics, and no screen for them
+    yet.** The edge rule closes aliasing; it does not close the other way a
+    below-window echo reaches an in-window verdict. A comb's cepstrum
+    repeats at 2*tau, 3*tau, ..., so a window that excludes the true delay
+    can still contain a *rahmonic* of it — anywhere in the window, not just
+    at an edge, which is why no edge margin can catch it. Up to
+    ``search_us[0] <= 600`` the margin happens to refuse them anyway; **from
+    ``search_us[0] >= 650`` it does not, and the detector will report a
+    confident, in-window, roughly-3x-wrong delay.** Measured on a 10-position
+    cloud of true delays spanning 150-400 us: (600, 1000) refuses everything,
+    while (650, 1000), (700, 1000) and (800, 1200) each admit 2-3 estimates
+    whose cepstral peaks sit at 2.99-3.01x the true delay, at confidence up
+    to 1.000 — enough for :func:`assess_geometry` to return
+    ``geometry_locked`` at a median tau of 814 / 857 / 897 us. The default
+    window has no such measured regime (see ``DEFAULT_ECHO_SEARCH_US``).
+    Closing this needs a dedicated rahmonic screen — re-testing a survivor
+    against tau/2 and tau/3 — which is tracked, not implemented. Until it
+    exists, a caller raising ``search_us[0]`` to 650 us or above is outside
+    what this detector can honestly measure.
 
     The IR is windowed internally to the early-arrival region (see
     ``ECHO_WINDOW_SPAN_FACTOR``), so a full deconvolved IR may be passed;
@@ -949,6 +1044,13 @@ def detect_echo(
       search_us: bounds on the echo delay searched, microseconds. The
         default spans an early boundary bounce (~120 us ≈ 4 cm path delta)
         up to ~800 us (≈ 27 cm), below the room's first wall reflection.
+
+        **Only the default window has been swept for false locks.** Raising
+        the lower edge to 650 us or above enters the rahmonic regime
+        described above, where a below-window echo is reported confidently
+        at ~3x its true delay. Prefer the default; if a raised window is
+        genuinely needed, treat its verdicts as unproven until the rahmonic
+        screen lands.
 
         **Resolution floor — the bottom of the window does not measure.**
         Both estimators degrade as tau approaches ``1 / bandwidth``
@@ -1130,12 +1232,26 @@ def detect_echo(
             concentration=concentration,
         )
 
+    if cepstral_in_window and envelope_in_window:
+        corroboration = abs(tau_envelope - tau_cepstral) / max(tau_cepstral, 1e-12)
+    else:
+        # A rejected candidate corroborates nothing. Comparing against it
+        # anyway is how a railed estimate manufactures agreement.
+        corroboration = 1.0
+
     # A candidate that survived the window but hugs its lower edge is an
     # aliased below-window echo as readily as an in-window one, and the two
     # cannot be told apart from inside this band — refuse rather than pick.
     # Both surviving candidates are checked, not just the reported one: an
     # edge-hugging cepstral peak corroborates an edge-hugging envelope peak
     # into high confidence, which is the exact mechanism being closed.
+    #
+    # Corroboration is computed *above* this check rather than below it so
+    # the refusal can carry what was actually measured. When both candidates
+    # were in-window they really were compared — typically agreeing to
+    # within a few percent, which is *why* the pair was convincing enough to
+    # need refusing — and reporting the incomparable-marker 1.0 here would
+    # have contradicted the record the refusal exists to preserve.
     edge_margin_s = WINDOW_EDGE_MARGIN_STEPS * resolution_us * 1e-6
     at_lower_edge = (
         cepstral_in_window and tau_cepstral - search_lo_s <= edge_margin_s
@@ -1148,14 +1264,8 @@ def detect_echo(
             tau_cepstral_us=tau_cepstral * 1e6,
             tau_envelope_us=tau_envelope * 1e6,
             concentration=concentration,
+            corroboration=float(corroboration),
         )
-
-    if cepstral_in_window and envelope_in_window:
-        corroboration = abs(tau_envelope - tau_cepstral) / max(tau_cepstral, 1e-12)
-    else:
-        # A rejected candidate corroborates nothing. Comparing against it
-        # anyway is how a railed estimate manufactures agreement.
-        corroboration = 1.0
 
     concentration_score = float(
         np.clip(
@@ -1256,6 +1366,17 @@ def assess_geometry(
     estimate sits within any tolerance of its own median, so "100%
     clustered" would be a vacuous lock, and locking on no evidence tells a
     household to go move the mic for nothing.
+
+    **This function is only as honest as the diagnostics it is handed.**
+    The three rules screen *unusable* evidence; they cannot screen evidence
+    that is usable-looking and wrong. One such class is known and open: when
+    the caller searched with ``search_us[0] >= 650``, :func:`detect_echo` can
+    report a cepstral rahmonic of a below-window echo at ~3x the true delay,
+    confidently and in-window. Those estimates pass all three rules here and
+    cluster with each other, so a genuinely dispersed cloud returns
+    ``GEOMETRY_LOCKED``. Nothing in this function can detect that — the fix
+    belongs in the detector (see ``DEFAULT_ECHO_SEARCH_US``). Under the
+    default window there is no measured case of it.
 
     Args:
       echoes: per-position diagnostics, ``None`` where no IR was supplied.
@@ -1432,7 +1553,12 @@ def combine_positions(
       ValueError: on no captures, a malformed capture (see
         :class:`PositionCapture`), captures sharing no frequency support, a
         non-positive smoothing fraction / threshold, or a malformed
-        ``echo_band_hz`` / ``echo_search_us``.
+        ``echo_band_hz`` / ``echo_search_us`` — malformed in **shape**
+        (anything that is not a pair of numbers: ``None``, a 1- or 3-tuple,
+        a scalar, a non-numeric entry) as well as in value. Shape is checked
+        by unpacking before any element is read, so a wrong-length or
+        non-iterable window raises this documented ``ValueError`` rather
+        than leaking an ``IndexError`` / ``TypeError``.
 
         **Malformed config raises; malformed data refuses.** Every argument
         above is the caller's own configuration, wrong for every position at
@@ -1459,15 +1585,33 @@ def combine_positions(
             f"smoothing fractions must be positive, got diag={diag_fraction} "
             f"spec={spec_fraction}"
         )
+    # Shape-check by *unpacking*, before any indexing. A 1-tuple used to
+    # raise IndexError and a None TypeError — neither is the ValueError this
+    # function documents — while a 3-tuple was accepted outright, silently
+    # dropping the third element. Unpacking a two-item generator turns all
+    # three into the documented ValueError at one coercion point, and the
+    # coerced pair is what the rest of the function uses, so a list or a
+    # numpy pair reaches :func:`detect_echo` and the result record as the
+    # same plain tuple.
+    checked: dict[str, tuple[float, float]] = {}
     for name, bounds in (
         ("echo_band_hz", echo_band_hz),
         ("echo_search_us", echo_search_us),
     ):
-        lo, hi = float(bounds[0]), float(bounds[1])
+        try:
+            lo, hi = (float(value) for value in bounds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{name} must be a pair of finite numbers with 0 < lo < hi, "
+                f"got {bounds!r}"
+            ) from exc
         if not (np.isfinite(lo) and np.isfinite(hi)) or not 0.0 < lo < hi:
             raise ValueError(
                 f"{name} must be finite and satisfy 0 < lo < hi, got {bounds}"
             )
+        checked[name] = (lo, hi)
+    echo_band = checked["echo_band_hz"]
+    echo_search = checked["echo_search_us"]
 
     validated = [_validate_capture(c) for c in captures]
     grid = _canonical_grid([freqs for freqs, _ in validated])
@@ -1494,7 +1638,7 @@ def combine_positions(
     excluded.flags.writeable = False
 
     per_position_echo: tuple[EchoDiagnostic | None, ...] = tuple(
-        _echo_for(capture, echo_band_hz, echo_search_us) for capture in captures
+        _echo_for(capture, echo_band, echo_search) for capture in captures
     )
     geometry = assess_geometry(per_position_echo)
 
@@ -1518,6 +1662,6 @@ def combine_positions(
         flag_threshold_db=flag_threshold_db,
         diag_fraction=diag_fraction,
         spec_fraction=spec_fraction,
-        echo_band_hz=(float(echo_band_hz[0]), float(echo_band_hz[1])),
-        echo_search_us=(float(echo_search_us[0]), float(echo_search_us[1])),
+        echo_band_hz=echo_band,
+        echo_search_us=echo_search,
     )

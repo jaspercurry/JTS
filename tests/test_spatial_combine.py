@@ -23,6 +23,12 @@ C. **Echo detector** on synthetic impulse responses and negative controls,
    clamped onto the edge, and a delay *hugging the window's lower edge* is
    refused rather than believed — that is where a below-window echo aliases
    to, and believing it is how a dispersed cloud read as geometry-locked.
+   This layer also pins a **known, unfixed limitation**: a cepstral
+   rahmonic of a below-window echo escapes both of those rules once the
+   window's lower edge reaches 650 us, and is reported confidently at ~3x
+   the true delay. That pathology has its own test, which asserts the
+   *wrong* behaviour on purpose so it fails loudly when a screen lands —
+   see ``test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation``.
 D. **Analysis-grid bounding** — the block-average decimation that keeps the
    combiner's cost bounded must not change the curves it produces.
 E. **Real-data smoke** against the 2026-07-24/25 JTS3 corpus. Skipped when
@@ -652,12 +658,24 @@ def test_malformed_captures_are_rejected(captures, match):
 @pytest.mark.parametrize(
     "kwargs, match",
     [
+        # Malformed by VALUE — the pair is well-shaped but wrong.
         ({"echo_band_hz": (19_000.0, 5000.0)}, "echo_band_hz"),
         ({"echo_band_hz": (0.0, 19_000.0)}, "echo_band_hz"),
         ({"echo_band_hz": (5000.0, float("inf"))}, "echo_band_hz"),
         ({"echo_search_us": (800.0, 120.0)}, "echo_search_us"),
         ({"echo_search_us": (-10.0, 800.0)}, "echo_search_us"),
         ({"echo_search_us": (120.0, float("nan"))}, "echo_search_us"),
+        # Malformed by SHAPE — not a pair at all. Each of these used to
+        # escape as something other than the documented ValueError.
+        ({"echo_search_us": (120.0,)}, "echo_search_us"),  # was IndexError
+        ({"echo_search_us": None}, "echo_search_us"),  # was TypeError
+        ({"echo_search_us": (120.0, 800.0, 900.0)}, "echo_search_us"),  # was ACCEPTED
+        ({"echo_band_hz": (5000.0,)}, "echo_band_hz"),
+        ({"echo_band_hz": None}, "echo_band_hz"),
+        ({"echo_band_hz": (5000.0, 19_000.0, 20_000.0)}, "echo_band_hz"),
+        # Not a sequence, and not numeric.
+        ({"echo_search_us": 120.0}, "echo_search_us"),
+        ({"echo_search_us": ("lo", "hi")}, "echo_search_us"),
     ],
 )
 def test_malformed_echo_config_raises_rather_than_refusing_every_position(
@@ -675,6 +693,17 @@ def test_malformed_echo_config_raises_rather_than_refusing_every_position(
     argument, wrong for every position simultaneously and un-diagnosable
     from the captures, so it fails the call the same way
     ``flag_threshold_db`` always has. An all-zero IR belongs to one capture.
+
+    **Shape is checked before value, and this test discriminates on the
+    exception type.** ``pytest.raises(ValueError)`` does not catch
+    ``IndexError`` or ``TypeError`` — neither is a ``ValueError`` subclass —
+    so the shape rows below fail against the previous implementation rather
+    than passing incidentally. Three of them are the ways the old code went
+    wrong: a 1-tuple raised ``IndexError`` off ``bounds[1]``, ``None``
+    raised ``TypeError`` on subscripting, and a 3-tuple was *accepted
+    outright*, silently discarding the third element and running a
+    measurement the caller did not ask for. That last one is the worst of
+    the three, because it returned a plausible :class:`CombinedResponse`.
     """
     _freqs, _true_db, captures = _cloud(_dispersed_taus(3))
     with pytest.raises(ValueError, match=match):
@@ -893,14 +922,25 @@ def test_detect_echo_never_reports_a_delay_outside_the_search_window(
 
     Property 4 is stated as "not usable" rather than "reports nothing"
     because the cepstrum of a comb has rahmonics at 2*tau, 3*tau..., so a
-    window that excludes tau but contains a rahmonic can still find one. It
-    is a real, surviving limitation — measured across a wider 50-combination
-    grid than this parametrisation, exactly one below-window case reported a
-    value at all (a 180 us echo read as ~815 us in a 600-1000 us window),
-    and it scored 0.39, below the floor. So it cannot enter a geometry
-    verdict, which is the property that matters downstream. Addressing the
-    rahmonic itself would need a dedicated screen — out of scope here, and
-    recorded so it is not mistaken for a regression.
+    window that excludes tau but contains a rahmonic can still find one.
+
+    **Scope — property 4 holds for the windows parametrised here, and NOT
+    in general.** Every window in this list has ``lo <= 400``, and that is
+    load-bearing rather than incidental. An earlier version of this
+    docstring claimed the rahmonic was harmless because, across a wider
+    grid, "exactly one below-window case reported a value at all ... and it
+    scored 0.39, below the floor, so it cannot enter a geometry verdict".
+    That conclusion was true of the grid it was measured on and **false
+    outside it**: that grid stopped at ``lo = 600``, one increment short of
+    the regime where the rahmonic becomes credible. At ``lo >= 650`` a
+    below-window echo is reported at up to confidence 1.000 and *does*
+    enter geometry verdicts — measured, and pinned as a deliberate
+    known-wrong assertion, by
+    :func:`test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation`.
+    Widening this parametrisation upward would therefore fail property 4 by
+    design; the limitation is pinned there instead of being smuggled in
+    here as a passing test. Closing it needs a dedicated rahmonic screen,
+    which does not exist yet.
     """
     lo, hi = search_us
     found = detect_echo(
@@ -1025,8 +1065,80 @@ def test_detect_echo_refuses_a_candidate_hugging_the_window_lower_edge(search_lo
     assert clear.tau_us - search_us[0] > margin_us
 
 
-def test_a_below_window_cloud_does_not_read_as_locked_under_a_raised_window():
-    """SF1 — the reviewer's three reproductions, which round 1 survived.
+_BELOW_WINDOW_CLOUD_US = (150.0, 400.0)
+
+# The measured verdict boundary for a 10-position cloud whose true delays
+# span _BELOW_WINDOW_CLOUD_US, searched in windows that all sit at or above
+# it. Rows are (search window, locked, reason, n_confident, median tau).
+#
+# The first three rows are the edge rule working: everything is refused or
+# too thin to cluster. The last two are the rahmonic hole — the same cloud,
+# two windows further up, reading as a confident lock at ~3x the truth.
+# **The last two rows encode a BUG, not a contract.** They are here so the
+# boundary is a measured fact instead of an assumption, and so the day a
+# rahmonic screen lands they fail and get inverted. See
+# test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation.
+_RAISED_WINDOW_SWEEP = [
+    ((300.0, 800.0), False, GEOMETRY_UNKNOWN, 1, None),
+    ((400.0, 900.0), False, GEOMETRY_UNKNOWN, 0, None),
+    ((600.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, None),
+    ((650.0, 1000.0), True, GEOMETRY_LOCKED, 3, 814.4),
+    ((700.0, 1000.0), True, GEOMETRY_LOCKED, 2, 856.5),
+]
+
+
+@pytest.mark.parametrize(
+    "search_us, expect_locked, expect_reason, expect_n_confident, expect_median_us",
+    _RAISED_WINDOW_SWEEP,
+)
+def test_below_window_cloud_verdict_by_raised_search_window(
+    search_us, expect_locked, expect_reason, expect_n_confident, expect_median_us
+):
+    """SF1 / round-3 blocker — where the edge rule stops working, measured.
+
+    One cloud (ten positions, true delays stratified 150-400 us) swept
+    across five windows that all sit at or above it. Round 2 ran this with
+    the first three rows only and concluded the below-window class was
+    closed; the grid simply stopped one increment short of the regime where
+    it re-opens.
+
+    Rows 1-3 are the edge rule doing its job. Rows 4-5 are the surviving
+    rahmonic hole, asserted **as the wrong behaviour it is**: the same
+    dispersed cloud reads ``geometry_locked`` at a median tau of ~814 and
+    ~857 us — roughly 3x delays that never exceeded 400 us. Asserting the
+    bug is what makes the boundary a fact rather than an assumption, and
+    what will fail loudly when a rahmonic screen moves it.
+    """
+    taus_s = np.linspace(
+        _BELOW_WINDOW_CLOUD_US[0] * 1e-6, _BELOW_WINDOW_CLOUD_US[1] * 1e-6, 10
+    )
+    _freqs, _true_db, captures = _cloud(taus_s)
+    result = combine_positions(captures, echo_search_us=search_us)
+
+    assert result.geometry.n_positions == 10
+    assert result.geometry.locked is expect_locked, (search_us, result.geometry)
+    assert result.geometry.reason == expect_reason, (search_us, result.geometry)
+    assert result.geometry.n_confident == expect_n_confident, (
+        search_us,
+        result.geometry,
+    )
+    if expect_median_us is None:
+        assert result.geometry.n_confident < 2, (search_us, result.geometry)
+    else:
+        assert result.geometry.median_tau_us == pytest.approx(
+            expect_median_us, rel=0.02
+        ), (search_us, result.geometry)
+        # The reported median is not merely "a number" — it is above
+        # everything the cloud actually contains, which is what makes the
+        # lock false rather than merely imprecise.
+        assert result.geometry.median_tau_us > 2.0 * _BELOW_WINDOW_CLOUD_US[1], (
+            search_us,
+            result.geometry,
+        )
+
+
+def test_a_below_window_cloud_is_edge_refused_rather_than_clustered():
+    """SF1 — the reviewer's reproduction at (300, 800), pinned in full.
 
     Round 1 fixed the *clamp*: an out-of-window candidate is rejected rather
     than pulled to the edge. That closed the mechanism at the top of the
@@ -1034,11 +1146,10 @@ def test_a_below_window_cloud_does_not_read_as_locked_under_a_raised_window():
     echo is not rejected — it is *aliased*, arriving as a plausible
     in-window estimate a few microseconds above ``search_us[0]``.
 
-    Ten positions, true delays stratified 150-400 us, searched in three
-    windows that all sit at or above that span. Before this fix every one of
-    them reported ``geometry_locked``: at (300, 800) six positions were
-    admitted, clustered at 0.83, with the two worst offenders — 150 us and
-    178 us echoes — reported as 318 us and 302 us at confidence 1.00 and
+    Ten positions, true delays stratified 150-400 us, searched in (300, 800).
+    Before the edge rule this reported ``geometry_locked``: six positions
+    were admitted, clustered at 0.83, with the two worst offenders — 150 us
+    and 178 us echoes — reported as 318 us and 302 us at confidence 1.00 and
     0.68. A household would have been told to spread a mic cloud that was
     already spread, on evidence that was entirely manufactured by the
     window it was searched in.
@@ -1046,18 +1157,13 @@ def test_a_below_window_cloud_does_not_read_as_locked_under_a_raised_window():
     The floor-based guard could not catch this: ``150 us`` misreported as
     ``318 us`` clears a resolution floor of 214 us comfortably. Only the
     distance to the *edge* distinguishes the two cases.
+
+    Scope note: this window is inside the regime where the edge rule holds.
+    :func:`test_below_window_cloud_verdict_by_raised_search_window` maps
+    where it stops.
     """
     taus_s = np.linspace(150e-6, 400e-6, 10)
-    for search_us in ((300.0, 800.0), (400.0, 900.0), (600.0, 1000.0)):
-        _freqs, _true_db, captures = _cloud(taus_s)
-        result = combine_positions(captures, echo_search_us=search_us)
-
-        assert result.geometry.locked is False, (search_us, result.geometry)
-        assert result.geometry.reason == GEOMETRY_UNKNOWN, (search_us, result.geometry)
-        assert result.geometry.n_positions == 10
-        assert result.geometry.n_confident < 2, (search_us, result.geometry)
-
-    # Pin one of them in full. At (300, 800) exactly one position survives —
+    # At (300, 800) exactly one position survives —
     # the 400 us member, the only one whose *both* estimates cleared the
     # margin (the 372 us member's true delay is 1.01 steps clear, but its
     # cepstral peak reads 369 us, 0.97 steps, so it is refused too) — and
@@ -1087,6 +1193,131 @@ def test_a_below_window_cloud_does_not_read_as_locked_under_a_raised_window():
     assert honest.geometry.locked is False
     assert honest.geometry.reason == GEOMETRY_DISPERSED
     assert honest.geometry.n_confident >= 7
+
+
+def test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation():
+    """A KNOWN BUG, asserted as-is. **Invert this test when it fails.**
+
+    This test exists to fail loudly the day a rahmonic screen lands. It
+    asserts the detector's *current, wrong* behaviour, so a future change
+    that fixes the bug will break it — and the correct response to that
+    break is to **invert the assertions** (locked is False, reason is
+    ``GEOMETRY_UNKNOWN``), not to relax them. Until then it keeps a
+    measured defect from quietly being believed as a contract.
+
+    **The defect.** A comb's cepstrum repeats at 2*tau, 3*tau, ..., so a
+    search window that excludes the true delay can still contain a
+    *rahmonic* of it. Unlike aliasing, a rahmonic can land anywhere in the
+    window rather than at its bottom edge, so ``WINDOW_EDGE_MARGIN_STEPS``
+    cannot catch it — it only does so incidentally, and only while the
+    lower edge stays under ~650 us. Here the same 150-400 us cloud that
+    :func:`test_a_below_window_cloud_is_edge_refused_rather_than_clustered`
+    correctly refuses at (300, 800) is searched at (700, 1000): two
+    positions survive with cepstral peaks at ~3x their true delays, the
+    envelope agrees with each, corroboration is tight, and the verdict is a
+    confident ``geometry_locked`` at a median tau of ~857 us — a delay more
+    than double anything present in the cloud.
+
+    Round 2 shipped the claim that this class was closed. It was closed
+    only up to ``search_us[0] <= 600``; the sweep that established it
+    stopped one increment short. The honest statement of the contract now
+    lives on ``DEFAULT_ECHO_SEARCH_US`` and :func:`detect_echo`: the
+    default window has no measured false-lock regime, and a window with a
+    lower edge at or above 650 us is not trustworthy.
+    """
+    true_taus_us = np.linspace(150.0, 400.0, 10)
+    _freqs, _true_db, captures = _cloud(true_taus_us * 1e-6)
+    result = combine_positions(captures, echo_search_us=(700.0, 1000.0))
+
+    # --- The wrong verdict, asserted. Invert this block when fixed. ---
+    assert result.geometry.locked is True, (
+        "the rahmonic false lock no longer reproduces — if a rahmonic screen "
+        "landed, INVERT this test (locked False, reason GEOMETRY_UNKNOWN) "
+        "rather than deleting or relaxing it"
+    )
+    assert result.geometry.reason == GEOMETRY_LOCKED
+    assert result.geometry.n_confident == 2
+    assert result.geometry.clustered_fraction == pytest.approx(1.0)
+    assert result.geometry.median_tau_us == pytest.approx(856.5, rel=0.02)
+    # The lock is reported at a delay the cloud does not contain at all.
+    assert result.geometry.median_tau_us > 2.0 * true_taus_us.max()
+
+    # --- The mechanism, so a future regression is diagnosable, not just red. ---
+    admitted = [
+        (true_us, echo)
+        for true_us, echo in zip(true_taus_us, result.per_position_echo, strict=True)
+        if echo is not None
+        and echo.refusal == ""
+        and echo.confidence >= ECHO_CONFIDENCE_FLOOR
+        and echo.tau_us > 0.0
+    ]
+    assert len(admitted) == 2
+    for true_us, echo in admitted:
+        # It really is the third rahmonic that the cepstrum locked onto.
+        assert echo.tau_cepstral_us / true_us == pytest.approx(3.0, abs=0.05), (
+            true_us,
+            echo,
+        )
+        # And the envelope corroborated it, which is what makes it credible.
+        assert echo.corroboration < CORROBORATION_LOOSE, echo
+    # Confidence reaches the top of the scale — this is not a marginal read.
+    assert max(echo.confidence for _true, echo in admitted) == pytest.approx(1.0)
+
+
+def test_an_edge_refusal_reports_the_corroboration_it_measured():
+    """A refused record must not claim a number it did not measure.
+
+    ``corroboration`` is 1.0 as a *marker* meaning "the two estimators could
+    not be compared". Most refusal paths earn it: the detector gave up
+    before both estimates existed, or one landed outside the window. The
+    ``tau_at_window_lower_edge`` refusal does not — it fires only after both
+    candidates were found in-window and compared, and the comparison is the
+    whole reason the pair looked convincing enough to need refusing.
+
+    Reporting 1.0 there inverted the record: two estimates that agreed to
+    within ~8% were written down as maximally disagreeing. Anyone reading a
+    refused diagnostic to understand *why* it was refused got the opposite
+    of the evidence. Now the edge path carries the measured value, and
+    ``1.0`` again means exactly one thing.
+    """
+    # A clean synthetic echo well below the default window's lower edge:
+    # both estimators alias up onto the edge, agree closely, and are refused.
+    refused = detect_echo(_impulse_with_echo(60e-6, ECHO_R), SAMPLE_RATE)
+    assert refused.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, refused
+    assert refused.corroboration < 0.1, refused
+
+    # Not merely "small" — it is exactly the value recomputable from the raw
+    # fields the same record carries. That is what makes it a measurement
+    # rather than a second magic constant.
+    both_in_window = [
+        tau
+        for tau in (refused.tau_cepstral_us, refused.tau_envelope_us)
+        if DEFAULT_ECHO_SEARCH_US[0] <= tau <= DEFAULT_ECHO_SEARCH_US[1]
+    ]
+    assert len(both_in_window) == 2, refused
+    assert refused.corroboration == pytest.approx(
+        abs(refused.tau_envelope_us - refused.tau_cepstral_us)
+        / refused.tau_cepstral_us,
+        rel=1e-9,
+    )
+
+    # The contrast: a refusal where the two genuinely could not be compared
+    # still reports the 1.0 marker. An 830 us echo puts BOTH estimates above
+    # an 800 us ceiling, so neither corroborates anything.
+    incomparable = detect_echo(
+        _impulse_with_echo(830e-6, ECHO_R), SAMPLE_RATE, search_us=(120.0, 800.0)
+    )
+    assert incomparable.refusal == REFUSAL_NO_IN_WINDOW_ECHO, incomparable
+    assert incomparable.corroboration == 1.0
+
+    # A refusal taken before either estimate exists is the same marker: the
+    # crest gate is an early return, so there is nothing to compare.
+    no_arrival = detect_echo(
+        np.random.default_rng(0).normal(0.0, 1.0, 65_536), SAMPLE_RATE
+    )
+    assert no_arrival.confidence == 0.0
+    assert no_arrival.corroboration == 1.0
+    assert no_arrival.tau_cepstral_us == 0.0
 
 
 def test_reported_tau_is_always_the_envelope_estimate():
@@ -1232,7 +1463,7 @@ def test_echo_confidence_floor_sits_in_the_measured_gap():
     assert min(negatives) >= 0.0
     assert max(negatives) < 0.15, (
         f"negative-control confidence reached {max(negatives):.3f}; the "
-        "ECHO_CONFIDENCE_FLOOR comment's measured 0.000-0.098 range is stale"
+        "ECHO_CONFIDENCE_FLOOR comment's measured 0.000-0.091 range is stale"
     )
     assert sum(c >= ECHO_CONFIDENCE_FLOOR for c in negatives) == 0
 
@@ -1268,6 +1499,23 @@ def test_detect_echo_input_errors_carry_a_machine_readable_slug():
         detect_echo(np.zeros(4096), SAMPLE_RATE)
     assert excinfo.value.slug == REFUSAL_ALL_ZERO_IR
     assert isinstance(excinfo.value, ValueError)
+
+
+def test_geometry_unknown_slug_is_pinned_to_its_literal_value():
+    """The reason slug is a wire value, so pin the *string*, not the symbol.
+
+    Every other assertion in this file compares against the imported
+    ``GEOMETRY_UNKNOWN``, which is exactly what a rename would carry along
+    silently — the suite stays green while a consumer matching on the old
+    text breaks. One assertion against the literal is the only thing that
+    can catch that, and it is deliberately spelled out rather than derived.
+
+    The value is also the record of a deliberate wording choice: "usable",
+    not "confident", because the count it describes survived all three
+    admission rules (measured, confident, *and* resolvable), not just the
+    confidence one.
+    """
+    assert GEOMETRY_UNKNOWN == "geometry_insufficient_usable_estimates"
 
 
 def test_geometry_verdict_needs_at_least_two_confident_estimates():
