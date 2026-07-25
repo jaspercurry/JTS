@@ -779,6 +779,7 @@ docs = [
   "docs/crossover-measurement-productization-design.md",
   "docs/active-speaker-tuning-layers-design.md",
   "docs/flat-linearization-plan.md",
+  "docs/flat-linearization-productization-plan.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",

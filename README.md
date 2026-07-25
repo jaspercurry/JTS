@@ -978,6 +978,15 @@ reference. Currently:
   closed measure→correct→re-measure loop, and the staged execution ladder
   (S0 validation session → instrument → gauges → loop → 1/2/3-way
   generalization).
+- [`flat-linearization-productization-plan.md`](docs/flat-linearization-productization-plan.md)
+  — **Execution work order (2026-07-25)** mapping the flat-linearization
+  program's S1b/S2 stages onto a concrete PR ladder (the null-identification
+  gate, detector hardening, conductor position-group choreography, live-flow
+  wiring, the spec-curve SSOT, exclusion-aware fit + null registry,
+  before/after visualization, docs parity) plus the pre-registered hardware
+  runbooks (per-driver lobing discriminator, flush-capsule ground plane).
+  Strategy and evidence stay in `flat-linearization-plan.md`; this doc is the
+  work order implementer sessions execute.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
