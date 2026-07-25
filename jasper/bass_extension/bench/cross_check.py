@@ -37,20 +37,24 @@ same R4(c) branch)? Verified against the pinned CamillaDSP v4.1.3 source:
 
 Given R4(c) therefore ALWAYS resolves to "precedes the limiter" for this
 build, the render ALWAYS reproduces the recorded fader gain (see
-``render.py``'s ``render_config``, which threads ``--gain <fader_db>`` into
-every render's argv — this is the mechanism, not merely a documented
-intent), so both the render and the live meter carry the SAME fader
-attenuation — :func:`comparison_offset_db` resolves to 0 dB (R10(b)'s
-explicit "meter reads before the main fader… offset is zero… R4(c)'s
-two-branch shape, not a refusal" branch), not the written
-``-recorded_main_volume_db`` term. This finding was independently confirmed
-by gate-2 review (including the ``--gain``/``initial_volumes[0]``/no-startup-
-ramp mechanism, ``src/bin.rs``), so the amendment's "VOID until this citation
-is recorded" marker is retired — see the revision-7 errata in
-``docs/bass-extension-waves/limiter-tap-realization.md``. This module still
-keeps BOTH branches as an explicit, general, parameterized function rather
-than hardcoding the conclusion, so a reviewer can audit the reasoning without
-trusting a hardcoded constant.
+``render.py``'s ``render_config``, which threads ``--gain=<fader_db>`` — ONE
+``=``-joined argv token, never two separate elements — into every render's
+argv; this is the mechanism, not merely a documented intent), and the live
+meter always reads AFTER the fader (the third citation above). Both sides
+therefore carry the SAME fader attenuation — :func:`comparison_offset_db`
+resolves to 0 dB, not the written ``-recorded_main_volume_db`` term. This
+finding was independently confirmed by gate-2 review (including the
+``--gain``/``initial_volumes[0]``/no-startup-ramp mechanism, ``src/bin.rs``),
+so the amendment's "VOID until this citation is recorded" marker is retired
+— see the revision-7 (errata) changelog entry and the corrected R4(b)/(c)
+and R10(a)/(b) rule text in
+``docs/bass-extension-waves/limiter-tap-realization.md``, not the prior
+"meter reads before the main fader" phrasing this module's own docstring
+used to quote (that phrasing was itself corrected to "after" in the same
+errata — quoting it verbatim here would now be a second, driftable copy of
+doc prose). This module still keeps BOTH branches as an explicit, general,
+parameterized function rather than hardcoding the conclusion, so a reviewer
+can audit the reasoning without trusting a hardcoded constant.
 """
 
 from __future__ import annotations

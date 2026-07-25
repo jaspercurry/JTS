@@ -585,15 +585,21 @@ supervised bench session remains the only path to an accepted bundle.
   `_prove_active_graph`'s post-limiter proof; the R7 owner-path computation
   (walking retained mixers backward from the owner channel); channel-width
   preservation + recorded owner index; `devices.capture` key handling
-  (`type`/`filename` swapped, `device`/`format` keys deleted, `channels`
-  unchanged) plus artifact-header-vs-`devices.samplerate`/
-  `devices.capture.channels` match; `devices.playback` key handling
+  (`type`/`filename` swapped, `device`/`format`/`channels` keys DELETED —
+  S-6: `CaptureDeviceWavFile` has no `channels` field at all, settled by
+  Revision 7's errata; the live `devices.capture.channels` value survives
+  only as a validation input) plus artifact-header-vs-`devices.samplerate`/
+  live-`devices.capture.channels` match; `devices.playback` key handling
   (`type`/`filename` swapped, `device` deleted, `format` set to the
   receipted precision, `channels` at live pipeline width); fader
   reproduction per the receipted application point, exercised as a pure
   unit test against the derivation function for BOTH receipt placements
-  (the receipt is a direct input — the pre-limiter placement is unreachable
-  from any real JTS-emitted graph per R4(c)/R7).
+  (the receipt is a direct input; S-7 — for the pinned v4.1.3 build, only
+  the "precedes the limiter" placement is reachable, settled by Revision
+  7's errata: the process-wide main fader always runs before every
+  pipeline step, so R4(c) resolves PERMANENTLY to that branch. The
+  "follows the limiter" placement is exercised as the general, DEAD CODE
+  branch for this CamillaDSP version — never the other way around).
 - Refusals: non-allowlisted stage on the owner path, a filter type outside
   the six-member allowlist, a step carrying `bypassed`, Async resampler
   block, fader drift between the bracketing reads (`refused` arm), mute,
@@ -749,8 +755,9 @@ the plan table becomes the sole status surface.
     identical) precisely because they are unchanged, not despite it.
 
   This entry uses "addresses," never "incorporates" or "resolves," matching
-  every prior revision's own convention. The plan's `4-taps` wave-status
-  row's accepted parenthetical is annotated "revision 7 (errata)" rather
+  prior revisions' own convention (Rev 2 is the one exception — it uses
+  "incorporated"). The plan's `4-taps` wave-status row's accepted
+  parenthetical is annotated "revision 7 (errata)" rather
   than rewritten — no rule text changes beyond recording these facts and
   citations.
 - **Rev 6 (2026-07-24):** addresses maintainer direction to dissolve the

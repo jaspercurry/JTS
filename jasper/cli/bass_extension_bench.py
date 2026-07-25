@@ -175,7 +175,13 @@ def _run_live(args: argparse.Namespace, manifest: CampaignManifest, target_ids: 
     (the phone capture-relay session composition) — assembling both
     correctly is an on-device integration exercise this hardware-free
     implementation session could not responsibly author untested. Both are
-    named, narrow next steps, not open questions.
+    named, narrow next steps, not open questions — tracked as
+    https://github.com/jaspercurry/JTS/issues/1738 ("Bass extension: final
+    bench-campaign binding"), N-7: the durable, in-repo reference for this
+    unbound scope, alongside TargetPlan construction, the live
+    get_playback_peak_all/get_clipped_samples/get_volume_and_mute polling
+    wiring, on-device verification of resolve_render_binary's systemd
+    parse, and the operator runbook deliverable.
     """
 
     try:
