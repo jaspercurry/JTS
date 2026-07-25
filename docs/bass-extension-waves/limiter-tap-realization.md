@@ -134,40 +134,53 @@ capture/playback device swap, derivation may change exactly these device
 keys, each recorded in the derivation receipt with its live value and its
 derived value: `enable_rate_adjust` → `false` (a file backend has no output
 clock to steer — the same pairing the in-tree file-sink emitter enforces in
-`jasper/active_speaker/camilla_yaml.py::emit_active_speaker_program_bake_config`),
-`queuelimit` / `target_level` → the values CamillaDSP requires for
-file↔file operation, and `devices.playback.format` → the derivation
-receipt's recorded processing precision. `samplerate`, `chunksize`, channel
+`jasper/active_speaker/camilla_yaml.py::emit_active_speaker_program_bake_config`)
+and `devices.playback.format` → the derivation receipt's recorded processing
+precision. `samplerate`, `chunksize`, `queuelimit`, `target_level`, channel
 counts, `volume_limit: 0.0`, and every filter/mixer/pipeline key are
-unchanged. Any other key difference refuses. Capture uses CamillaDSP's `Wav` device type so
-the stimulus artifact's header is never interpreted as audio; a headerless
-artifact is refused rather than fed to a raw `File` device. The capture swap
-sets `devices.capture.type` to `Wav` plus its `filename`, and DELETES the
-live `device` and `format` keys entirely — a `Wav` capture takes its
-geometry from the artifact's own header, not from config.
-`devices.capture.channels` is unchanged from the live value. The artifact
-header's rate and channel count must equal `devices.samplerate` and
-`devices.capture.channels`, and its sample format must be 16-bit PCM per
-R6a(iv) — the live `format: S32_LE` on `plug:jasper_capture` is an ALSA-plug
-widening of fan-in's S16 mix, not independent geometry, so a 16-bit
-artifact is the bit-exact equivalent. Any mismatch refuses before the render
-starts. The playback swap sets `type`/`filename` to the bundle sink and
-deletes the live `device` key; it sets `format` to the derivation receipt's
-recorded processing precision — **`devices.playback.format` is ADDED to
-R3's normalization allowlist**, recorded both live and derived. The
-playback file carries the full pipeline channel width, and the
-derivation receipt records the owner channel's index within the interleaved
-frame; the owner channel is extracted offline — no mixer or pipeline step is
-ever inserted. The existence and header semantics of the `Wav` capture
-type, and the `queuelimit` / `target_level` values a file↔file pass
-requires, are RECORDED OBLIGATIONS: the derivation receipt cites file and
-symbol in the pinned v4.1.3 CamillaDSP source for each, plus the concrete
-values used; an executor PR that cannot produce those citations is a
-stop-and-report. Rendered tap artifacts are written in the derivation receipt's
-recorded processing precision — the deployed build's actual CamillaDSP
-processing precision, not unconditionally FLOAT64LE — and the reference
-post-limiter implementation computes in that same precision; the frozen
-transfer verdict is a byte-exact compare and admits no tolerance.
+unchanged — `queuelimit`/`target_level` are recorded in the derivation
+receipt (live and derived, identical) even though unchanged, settled by
+Revision 7's errata below (`Devices.queuelimit`/`Devices.target_level`,
+`src/config/mod.rs`, both `Option`, defaults 4 and `chunksize`; no
+file-device-specific requirement is documented — the "only changed if the
+capture device can provide data faster than playback can consume it"
+guidance is about real-time device pacing, meaningless for a batch pass with
+no live clock to steer). Any other key difference refuses. Capture uses
+CamillaDSP's `WavFile` device type (`src/config/mod.rs`:
+`CaptureDevice::WavFile(CaptureDeviceWavFile)`) so the stimulus artifact's
+header is never interpreted as audio; a headerless artifact is refused
+rather than fed to a raw `File` device. The capture swap sets
+`devices.capture.type` to `WavFile` plus its `filename`, and DELETES the
+live `device`, `format`, AND `channels` keys entirely —
+`CaptureDeviceWavFile` (`#[serde(deny_unknown_fields)]`) declares no
+`channels` field at all, settled by Revision 7's errata below; a `WavFile`
+capture takes its geometry, including channel count, from the artifact's
+own header, not from config. The live `devices.capture.channels` value is
+retained only as a validation input (compared against the artifact header
+before any render starts) and recorded in the derivation receipt — never
+emitted as a derived config key. The artifact header's rate and channel
+count must equal `devices.samplerate` and the live `devices.capture.channels`
+value, and its sample format must be 16-bit PCM per R6a(iv) — the live
+`format: S32_LE` on `plug:jasper_capture` is an ALSA-plug widening of
+fan-in's S16 mix, not independent geometry, so a 16-bit artifact is the
+bit-exact equivalent. Any mismatch refuses before the render starts. The
+playback swap sets `type`/`filename` to the bundle sink and deletes the live
+`device` key; it sets `format` to the derivation receipt's recorded
+processing precision — **`devices.playback.format` is ADDED to R3's
+normalization allowlist**, recorded both live and derived — and KEEPS
+`devices.playback.channels` at the live pipeline width:
+`PlaybackDevice::File` (unlike `CaptureDeviceWavFile`) declares a required
+`channels` field. The playback file carries the full pipeline channel
+width, and the derivation receipt records the owner channel's index within
+the interleaved frame; the owner channel is extracted offline — no mixer or
+pipeline step is ever inserted. Rendered tap artifacts are written in the
+derivation receipt's recorded processing precision — the deployed build's
+actual CamillaDSP processing precision, settled by Revision 7's errata below
+as `F64_LE` for the pinned `deploy/install.sh` build (never the retired
+v1/v2 spelling `FLOAT64LE`, which this build's `#[serde(deny_unknown_fields)]`
+parser rejects outright) — and the reference post-limiter implementation
+computes in that same precision; the frozen transfer verdict is a byte-exact
+compare and admits no tolerance.
 
 **R3, continued — analysis window and owner-channel selection.**
 `pre_limiter_peak_dbfs` and
@@ -194,18 +207,29 @@ mismatch ends that target through the `refused` arm with its partial
 artifacts preserved; mute must be false. (b) The deployed build's main-fader
 application point is determined from the pinned CamillaDSP source for the
 recorded `--version` and is recorded verbatim in the derivation receipt
-(file, symbol, and whether it precedes or follows the owner limiter). (c)
-When the application point precedes the limiter, the derived configs
-reproduce the recorded fader gain there; when it follows the limiter, the
-derived configs apply no fader gain at all. The contractual obligation is a
-bit-identical gain path at the limiter input; the receipt is what makes it
-reviewable. The pre-limiter branch is currently unreachable on every
-JTS-emitted graph (no `Volume` filter is emitted; R7 refuses one on the
-owner path) and exists so a future graph change fails loudly rather than
-silently. (d) A recorded `--version` other than v4.1.3 — the version
-`deploy/install.sh` (`CAMILLA_VERSION`) installs, and the build whose
-`filters/limiter.rs` `limiter-evidence-protocol.md` cites for the `soft_clip`
-transfer — refuses.
+(file, symbol, and whether it precedes or follows the owner limiter) —
+settled by Revision 7's errata below: `src/pipeline.rs`
+`Pipeline::process_chunk` runs `self.volume.process_chunk(&mut chunk)`
+(built in `Pipeline::from_config` from `processing_params.current_volume(0)`)
+BEFORE the `for step in &mut self.steps` loop, unconditionally, for every
+configured pipeline step. (c) When the application point precedes the
+limiter, the derived configs reproduce the recorded fader gain there; when
+it follows the limiter, the derived configs apply no fader gain at all. The
+contractual obligation is a bit-identical gain path at the limiter input;
+the receipt is what makes it reviewable. For the pinned v4.1.3 build this
+resolves PERMANENTLY to the "precedes the limiter" branch — the
+process-wide main fader always runs before every pipeline step, so it
+always precedes the owner limiter regardless of graph shape; the "follows
+the limiter" branch is dead code for this CamillaDSP version, not merely
+unreachable on JTS-emitted graphs today. Every render therefore reproduces
+the recorded fader gain via `--gain <fader_db>` (`src/bin.rs`:
+`Arg::new("gain")` sets `initial_volumes[0]` — the same index
+`Pipeline::from_config` reads for `self.volume` — and
+`filters/basicfilters.rs`'s `Volume::new` starts with `ramp_step: 0`, so the
+first processed chunk already applies it, no startup ramp). (d) A recorded
+`--version` other than v4.1.3 — the version `deploy/install.sh`
+(`CAMILLA_VERSION`) installs, and the build whose `filters/limiter.rs`
+`limiter-evidence-protocol.md` cites for the `soft_clip` transfer — refuses.
 
 **R5 — Binary identity, resolved from the running unit.** The render binary is
 resolved from the running `jasper-camilla.service` `ExecStart` and must be the
@@ -354,9 +378,19 @@ mirroring; a per-element `None` reads as `-inf`, and an empty or no-data
 reading returns `[]`, distinguishable from any real reading. Whether the
 reported peaks meter before or after the main fader is itself a RECORDED
 OBLIGATION on the R4(b) pattern: file, symbol, and the resulting sign of
-R10(b)'s offset, all recorded in the derivation receipt. R10(b)'s
-`−recorded_main_volume_db` term below is written for the post-fader case
-and is VOID until that citation is recorded. `get_playback_peak_all()`
+R10(b)'s offset, all recorded in the derivation receipt — settled by
+Revision 7's errata below: `rust/…/alsa_backend/device.rs`'s playback loop
+runs `chunk.update_stats(&mut chunk_stats)` on the chunk received from the
+processing thread, i.e. AFTER the full `pipeline.process_chunk` (fader plus
+every step) already ran, so `get_playback_peak_all()` always reads
+downstream of the fader. Combined with R4(c)'s permanent "precedes the
+limiter" resolution — the render also always carries the fader gain — both
+sides of R10(b)'s comparison carry the SAME fader attenuation, so the
+offset is always 0 dB for this build; R10(b)'s `−recorded_main_volume_db`
+term below is retained as the general (never-taken, for this build) branch,
+not deleted, so a reviewer can audit the reasoning without trusting a
+hardcoded constant. This is the amendment's most safety-load-bearing
+citation; it is no longer VOID. `get_playback_peak_all()`
 returning `[]`, or a list shorter than `max(owner_channels)+1`, makes the
 cross-check unavailable: the runner records `cross_check: unavailable`,
 naming the owner channels involved, and REFUSES the pass — a render is
@@ -399,13 +433,18 @@ cross-check cannot reach.
 (b) **Comparison basis:** per owner channel `ch`, the rendered post-limiter
 peak of that channel's extracted artifact vs.
 `(live_peak_all[ch] − recorded_main_volume_db)`, using R4's recorded fader
-value, because R4(c)'s post-limiter application point means the render carries
-no fader gain. There is no unindexed live scalar in this rule: every live
-value is an element of the `get_playback_peak_all()` reading named in (a). If
-the recorded citation establishes that the meter reads BEFORE the main fader,
-the offset is zero and the basis is the rendered peak vs. `live_peak_all[ch]`
-unchanged — R4(c)'s two-branch shape, not a refusal. Both peaks, the fader
-read, and the offset are recorded verbatim, per channel.
+value, for the (never-taken, for this build) branch where the fader
+application point follows the limiter and the render therefore carries no
+fader gain. There is no unindexed live scalar in this rule: every live
+value is an element of the `get_playback_peak_all()` reading named in (a).
+For the pinned v4.1.3 build, R4(c) resolves PERMANENTLY to "precedes the
+limiter," so every render reproduces the recorded fader gain via `--gain`;
+combined with the meter always reading AFTER the fader (settled in (a)
+above), the offset is always zero and the basis is the rendered peak vs.
+`live_peak_all[ch]` unchanged — R4(c)'s two-branch shape, not a refusal, is
+retained here as general documented mechanism, not as an open question.
+Both peaks, the fader read, and the offset are recorded verbatim, per
+channel.
 
 (c) `get_playback_peak_all()` reports the last processed chunk — it reuses
 the exact same `c.levels.playback_peak()` websocket call as the
@@ -630,6 +669,90 @@ the plan table becomes the sole status surface.
 
 ## Changelog
 
+- **Rev 7 (errata) (2026-07-25):** addresses the executor-binding PR's
+  gate-2 review, which independently confirmed (including the
+  `--gain`/`initial_volumes[0]`/no-startup-ramp mechanism, `src/bin.rs`) the
+  citations this document had marked as RECORDED OBLIGATIONS pending
+  verification. No rule text changes beyond recording these now-settled
+  facts and their citations, and correcting spellings/behavior this
+  amendment stated incorrectly before the pinned v4.1.3 source was checked
+  line-for-line:
+  - **R3, `Wav` → `WavFile`, throughout.** The real config-schema capture
+    type name is `WavFile` (`src/config/mod.rs`: `enum CaptureDevice { …
+    WavFile(CaptureDeviceWavFile), … }`, no `#[serde(alias=...)]`) — "Wav"
+    was never a real type name. `CaptureDeviceWavFile { filename,
+    extra_samples?, labels? }` is `#[serde(deny_unknown_fields)]` and
+    declares **no `channels` field at all** — `devices.capture.channels` is
+    therefore DELETED from the derived capture block (like `device`/
+    `format`), not "unchanged" as this document previously stated; the live
+    value becomes a pure validation input compared against the artifact
+    header before any render starts, and is recorded in the derivation
+    receipt. `PlaybackDevice::File` (the playback side) *does* declare a
+    required `channels: usize` field, so `devices.playback.channels`
+    staying at the live pipeline width is unaffected.
+  - **R4(b)/(c), the fader application point — now a settled fact, not a
+    recorded obligation pending citation.** `src/pipeline.rs`
+    `Pipeline::process_chunk`: `self.volume.process_chunk(&mut chunk)` (the
+    process-wide main-fader stage, built in `Pipeline::from_config` from
+    `processing_params.current_volume(0)`) runs BEFORE the `for step in
+    &mut self.steps` loop — i.e. before every configured pipeline step,
+    unconditionally. The main fader therefore ALWAYS precedes the owner
+    limiter for this build: R4(c) resolves PERMANENTLY to "reproduce the
+    recorded fader gain" (the "follows the limiter, apply no fader gain"
+    branch is dead code for this CamillaDSP version, not merely
+    "currently unreachable on every JTS-emitted graph" as this document
+    previously stated — that prose described a different, PIPELINE-embedded
+    `Volume`-type FILTER step, which R7 separately refuses on the owner
+    path; it is not this always-present process-wide fader). R4(c)'s
+    now-false "currently unreachable… exists so a future graph change fails
+    loudly" sentence is deleted. Every render reproduces the fader gain via
+    `--gain <fader_db>` (`src/bin.rs`: `Arg::new("gain")` sets
+    `initial_volumes[0]` — the same index `Pipeline::from_config` reads for
+    `self.volume` — and `filters/basicfilters.rs`'s `Volume::new` starts
+    with `ramp_step: 0`, so the first processed chunk already applies it,
+    no startup ramp). `rust/…/alsa_backend/device.rs`'s playback loop runs
+    `chunk.update_stats(&mut chunk_stats)` on the chunk received from the
+    processing thread — i.e. AFTER the full `pipeline.process_chunk` (fader
+    plus every step) already ran — so `get_playback_peak_all()` always
+    reads downstream of the fader too. Combined, R10(b)'s offset is always
+    0 dB for this build (never the written `−recorded_main_volume_db`
+    term, which is retained as the general, never-taken-for-this-build
+    branch so a reviewer can audit the reasoning without trusting a
+    hardcoded constant). R10(a)'s "VOID until this citation is recorded"
+    marker is retired — this is the amendment's most safety-load-bearing
+    finding, and it is settled.
+  - **R3, processing precision — recorded as `F64_LE`.** The deployed
+    binary (`deploy/install.sh`'s `camilladsp-linux-aarch64.tar.gz` for
+    `CAMILLA_VERSION=v4.1.3`) is built by upstream's `linux_aarch64` /
+    "Build with Alsa only" release job as plain `cargo build --release` —
+    no `--features` flag, so no `32bit` Cargo feature. `src/lib.rs`
+    (`#[cfg(feature = "32bit")] pub type PrcFmt = f32; #[cfg(not(feature =
+    "32bit"))] pub type PrcFmt = f64;`) then pins `PrcFmt = f64` for this
+    exact build. The device-format spelling for that precision, in this
+    pinned build's `FileSampleFormat`/`BinarySampleFormat` enums
+    (`src/config/mod.rs`, both `{…, S24_4_RJ_LE, S24_4_LJ_LE, S24_3_LE,
+    S32_LE, F32_LE, F64_LE}`, `deny_unknown_fields`), is **`F64_LE`** —
+    "FLOAT64LE" is a retired v1/v2 spelling this build rejects outright.
+    Every "FLOAT64LE" reference in this document's live rule text (R3) is
+    corrected to `F64_LE`.
+  - **R3, `queuelimit`/`target_level` — recorded resolved-unchanged.** Both
+    are declared optional on `Devices` (`src/config/mod.rs`, defaults 4 and
+    `chunksize` respectively), and the README documents no file-device
+    -specific requirement — the guidance ("only changed if the capture
+    device can provide data faster than playback can consume it, like the
+    ALSA 'cdsp' plugin") is about real-time device pacing, meaningless for
+    a batch `WavFile`/`File` pass with no live clock to steer. Derivation
+    therefore leaves both keys untouched at their live values — corrected
+    from this document's previous "→ the values CamillaDSP requires for
+    file↔file operation," which asserted a transformation that does not
+    exist — and records them in the derivation receipt (live and derived,
+    identical) precisely because they are unchanged, not despite it.
+
+  This entry uses "addresses," never "incorporates" or "resolves," matching
+  every prior revision's own convention. The plan's `4-taps` wave-status
+  row's accepted parenthetical is annotated "revision 7 (errata)" rather
+  than rewritten — no rule text changes beyond recording these facts and
+  citations.
 - **Rev 6 (2026-07-24):** addresses maintainer direction to dissolve the
   mono-only scope, step 2 of
   [#1723](https://github.com/jaspercurry/JTS/issues/1723), effective now
