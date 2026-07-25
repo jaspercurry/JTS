@@ -1271,14 +1271,16 @@ def test_an_edge_refusal_reports_the_corroboration_it_measured():
     not be compared". Most refusal paths earn it: the detector gave up
     before both estimates existed, or one landed outside the window. The
     ``tau_at_window_lower_edge`` refusal does not — it fires only after both
-    candidates were found in-window and compared, and the comparison is the
-    whole reason the pair looked convincing enough to need refusing.
+    candidates were found in-window and compared, so a real reading exists.
 
-    Reporting 1.0 there inverted the record: two estimates that agreed to
-    within ~8% were written down as maximally disagreeing. Anyone reading a
-    refused diagnostic to understand *why* it was refused got the opposite
-    of the evidence. Now the edge path carries the measured value, and
-    ``1.0`` again means exactly one thing.
+    Reporting 1.0 there overwrote that reading with a fabricated one. This
+    test uses a case where the pair agreed to within ~8%, which the old code
+    recorded as maximal disagreement. **That agreement is not what makes it
+    a refusal**, and this test must not be read as claiming edge refusals
+    are always tight: across the suite the edge path yields 145 measured
+    readings spanning 0.0005-3.26 (median 0.161), about a third of them
+    above ``CORROBORATION_LOOSE``. The refusal turns on distance to the
+    window edge; the field's only job is to report what was measured.
     """
     # A clean synthetic echo well below the default window's lower edge:
     # both estimators alias up onto the edge, agree closely, and are refused.

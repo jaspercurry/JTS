@@ -203,16 +203,19 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # The default search window — and the only window whose false-lock
 # behaviour has actually been swept.
 #
-# **The default has no known false-lock regime.** Eleven synthetic cloud
-# configurations were swept through it (the plan's dispersed 150-490 us
-# cloud at 3/4/10 positions, a below-window 150-400 us cloud, an
-# unresolvable 60-150 us cloud, wide 200-700 and 250-750 us clouds, a tight
-# 300-340 us cloud, a bimodal 200/600 us cloud, and clouds sitting entirely
-# at and above the window's top edge). They yielded 63 usable estimates,
-# and **every one landed within 0.996-1.008 of its position's true delay**
-# — not a single rahmonic among them. That is the measurement behind
-# "no known false-lock regime": not merely that no verdict looked wrong,
-# but that no reported delay was a multiple of the real one.
+# **The default has no known false-lock regime.** No synthetic cloud in
+# this module's test suite produces a geometry verdict through it that the
+# captures did not earn, and no estimate it admits is a rahmonic. The
+# evidence for that is deliberately *executable* rather than a number
+# quoted here: the pinned per-window sweep rows in
+# test_below_window_cloud_verdict_by_raised_search_window and the corpus
+# tests in tests/test_spatial_combine.py. An earlier revision of this
+# comment cited an aggregate ("63 usable estimates, all within 0.996-1.008
+# of truth") from an ad-hoc sweep that was not reproducible from its own
+# description and whose stated floor was rounded the wrong way — the true
+# minimum was 0.99588, so the bound claimed was tighter than the one
+# measured. A figure nobody can re-derive is not evidence; the sweep rows
+# are, because they run.
 #
 # **A window whose lower edge is 650 us or higher does NOT share that
 # record, and is not safe.** The cepstrum of a comb has rahmonics at
@@ -224,12 +227,25 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # confident number at roughly 3x the true delay. Measured on the 150-400 us
 # cloud: (600, 1000) is clean, while (650, 1000), (700, 1000) and
 # (800, 1200) each read ``geometry_locked`` at median tau 814 / 857 / 897
-# us, on per-position estimates whose cepstral peaks sit at 2.99-3.01x the
-# true delay, at confidence up to 1.000.
+# us, at confidence up to 1.000. The admitted estimates' cepstral peaks sit
+# at these ratios to their position's true delay, **per window** — the
+# spread is not uniform, so it is not stated as one range:
+#   (650, 1000): 2.992, 3.001, 3.648
+#   (700, 1000): 2.992, 3.001
+#   (800, 1200): 2.985, 2.994
 #
-# Closing it needs a **rahmonic screen** — re-testing a surviving candidate
-# against tau/2 and tau/3 before believing it — which does not exist yet.
-# It is recorded here and pinned by
+# Closing it needs a **rahmonic screen**, and the 3.648 outlier above is
+# the reason that screen cannot simply re-test a survivor against tau/2 and
+# tau/3 (as an earlier revision of this comment prescribed). That outlier
+# — true delay 205.6 us, cepstral peak 749.8 us, reported envelope tau
+# 814.4 us — **is** the 814.4 median pinned for (650, 1000), i.e. the
+# module's own worst measured case. Its reported tau is 3.96x the truth and
+# its cepstral peak 3.65x, so neither tau/2 (407.2 us) nor tau/3 (271.5 us)
+# lands anywhere near 205.6 us: the prescribed screen would have missed the
+# very case it was written for. A workable screen must handle non-integer
+# ratios — e.g. rejecting a candidate whenever a stronger peak exists at
+# any lower quefrency — rather than testing exact submultiples. No such
+# screen exists yet. It is recorded here and pinned by
 # test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation in
 # tests/test_spatial_combine.py rather than silently assumed away. Until
 # that screen lands: prefer the default window, and treat a lock reported
@@ -511,13 +527,26 @@ class EchoDiagnostic:
         refusals carry the 1.0 marker because nothing was comparable. The
         ``tau_at_window_lower_edge`` refusal is the exception: it fires only
         after both candidates were found in-window and compared, so it
-        carries the **measured** value — 0.005-0.28 across the edge
-        refusals in this module's test suite, i.e. two estimates in real
-        agreement, which is precisely why that pair was convincing enough
-        to need refusing. So on an edge refusal a small corroboration is
-        evidence *for* the refusal, not against it. (An edge refusal can
-        still carry 1.0, when only *one* of the two candidates was
-        in-window; then nothing was compared and the marker is correct.)
+        carries the **measured** value.
+
+        **Do not infer the refusal's character from that value — an edge
+        refusal may carry any corroboration at all.** Across this module's
+        test suite the edge path produces 168 refusals, 145 of which carry
+        a measured value (the other 23 had only *one* candidate in-window,
+        so nothing was compared and the 1.0 marker is correct there). Those
+        145 span **0.0005 to 3.26, median 0.161, with 47 of them — about a
+        third — above ``CORROBORATION_LOOSE``**. A narrower 0.005-0.28 was
+        quoted here previously; that was the (300, 800) cloud alone, not the
+        population.
+
+        So both directions occur and both are refusals. A *small* value
+        means the two estimates were comparable and agreed, and the pair was
+        refused for edge proximity rather than for disagreeing. A *large*
+        value means they were compared and disagreed. Neither is evidence
+        for or against the refusal — the refusal turns on distance to the
+        window edge, not on this field. What the field guarantees is only
+        that it preserves what was measured instead of substituting a
+        fabricated marker.
       arrival_crest_db: direct arrival level above the IR's median
         ``|sample|`` level — the "is there an arrival at all" gate.
     """
@@ -913,9 +942,14 @@ def _refused(
     the one path where that default would lie: it fires *after* both
     candidates were found in-window and compared, so it passes the measured
     value through instead. Reporting 1.0 there claimed "incomparable" about
-    two estimates that had in fact agreed to within 0.005-0.28 (measured
-    across this module's edge-refusal cases, and as tight as 0.5% on the
-    clean ones) — the record said the opposite of what was measured.
+    a pair that had in fact been compared — across this module's test suite,
+    145 such refusals carry a real reading spanning 0.0005 to 3.26 (median
+    0.161), so the fabricated marker overwrote everything from near-perfect
+    agreement to gross disagreement with the same wrong number. The value is
+    passed through to preserve the measurement, **not** because a small
+    value argues for the refusal: the refusal turns on distance to the
+    window edge, and about a third of that population sits above
+    ``CORROBORATION_LOOSE`` anyway.
 
     The raw estimator fields are carried through when they exist, because a
     railed or edge-hugging cepstral estimate is exactly the evidence a
@@ -1022,14 +1056,31 @@ def detect_echo(
     confident, in-window, roughly-3x-wrong delay.** Measured on a 10-position
     cloud of true delays spanning 150-400 us: (600, 1000) refuses everything,
     while (650, 1000), (700, 1000) and (800, 1200) each admit 2-3 estimates
-    whose cepstral peaks sit at 2.99-3.01x the true delay, at confidence up
-    to 1.000 — enough for :func:`assess_geometry` to return
-    ``geometry_locked`` at a median tau of 814 / 857 / 897 us. The default
-    window has no such measured regime (see ``DEFAULT_ECHO_SEARCH_US``).
-    Closing this needs a dedicated rahmonic screen — re-testing a survivor
-    against tau/2 and tau/3 — which is tracked, not implemented. Until it
-    exists, a caller raising ``search_us[0]`` to 650 us or above is outside
-    what this detector can honestly measure.
+    at confidence up to 1.000 — enough for :func:`assess_geometry` to return
+    ``geometry_locked`` at a median tau of 814 / 857 / 897 us. The admitted
+    estimates' cepstral peaks sit at these ratios to their position's true
+    delay, **per window**; the spread is not uniform, so it is not one
+    range::
+
+        (650, 1000): 2.992, 3.001, 3.648
+        (700, 1000): 2.992, 3.001
+        (800, 1200): 2.985, 2.994
+
+    The default window has no such measured regime (see
+    ``DEFAULT_ECHO_SEARCH_US``).
+
+    Closing this needs a dedicated rahmonic screen, and the 3.648 outlier
+    shows why it cannot just re-test a survivor against tau/2 and tau/3 (as
+    an earlier revision of this docstring prescribed). That case — true
+    delay 205.6 us, cepstral peak 749.8 us, reported tau 814.4 us — **is**
+    the pinned 814.4 median for (650, 1000), the worst case measured here;
+    its reported tau is 3.96x truth and its cepstral peak 3.65x, so neither
+    tau/2 (407.2 us) nor tau/3 (271.5 us) comes near 205.6 us. The screen
+    must therefore handle non-integer ratios — rejecting a candidate when a
+    stronger peak exists at any lower quefrency, rather than probing exact
+    submultiples. It is tracked, not implemented. Until it exists, a caller
+    raising ``search_us[0]`` to 650 us or above is outside what this
+    detector can honestly measure.
 
     The IR is windowed internally to the early-arrival region (see
     ``ECHO_WINDOW_SPAN_FACTOR``), so a full deconvolved IR may be passed;
