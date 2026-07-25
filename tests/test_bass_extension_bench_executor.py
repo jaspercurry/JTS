@@ -163,6 +163,35 @@ def _artifact(label: str) -> ArtifactIdentity:
     )
 
 
+def _write_readback_receipt(
+    sink: BundleSink,
+    *,
+    relative_path: str = f"{TARGET_ID}/readback.json",
+    active_config_raw: str | None = None,
+    graph_fingerprint: str = "fp",
+    configured_clip_limit_dbfs: float = -1.0,
+) -> ArtifactIdentity:
+    """S-1/R1: a REAL activation read-back receipt on disk — mirrors
+    runner.py's _readback_receipt's exact JSON shape. run_discovery/
+    run_reference_sweep/run_candidate now read active_config_raw from
+    THIS kind of file (via executor._read_receipt), never a live
+    controller.get_active_config_raw() fetch, so any test driving those
+    methods needs a real file at the readback identity's path — a bare
+    _artifact(label) (no file written) would 404."""
+
+    return sink.write_json(
+        relative_path,
+        {
+            "role": "test-readback",
+            "target_id": TARGET_ID,
+            "active_graph_fingerprint": graph_fingerprint,
+            "configured_clip_limit_dbfs": configured_clip_limit_dbfs,
+            "active_config_raw": active_config_raw or _live_yaml(),
+        },
+        kind="jts_bass_extension_bench_receipt",
+    )
+
+
 def _mux_status(**overrides: object) -> dict:
     base = {
         "test_source": "correction",
@@ -373,7 +402,6 @@ class RecordingPlayAndCapture:
 def _executor(
     *,
     play_and_capture: Any,
-    controller: Any | None = None,
     margin_name: str = "conservative",
     renders_outstanding: int = 64,
 ) -> executor.BenchRoleExecutor:
@@ -385,9 +413,6 @@ def _executor(
             "sustain_stress": request,
             "digital_transfer_probe": request,
         },
-        controller=controller or FakeController(),
-        mux_status=None,  # type: ignore[arg-type]  # unused: live status rides PlayedStimulus
-        fanin_status=None,  # type: ignore[arg-type]
         play_and_capture=play_and_capture,
         binary=render.BinaryIdentity(
             path="/opt/camilladsp/camilladsp",
@@ -398,6 +423,117 @@ def _executor(
         margin=MARGINS[margin_name],
         renders_outstanding=renders_outstanding,
     )
+
+
+# --------------------------------------------------------------------------- #
+# B-B: sweep_transparency generates a REAL swept sine; sustain_stress and
+# digital_transfer_probe stay on band-limited noise
+# --------------------------------------------------------------------------- #
+
+
+def test_sweep_transparency_uses_the_real_sweep_generator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jasper.audio_measurement import sweep as sweep_mod
+
+    calls: list[str] = []
+    real_sine = sweep_mod.synchronized_swept_sine
+
+    def _spy_sine(**kwargs: Any):
+        calls.append("sweep")
+        return real_sine(**kwargs)
+
+    monkeypatch.setattr(sweep_mod, "synchronized_swept_sine", _spy_sine)
+
+    request = _request()
+    path = executor._generate_mono_stimulus_wav(
+        role="sweep_transparency", request=request, sample_rate_hz=48000, target_dir=tmp_path
+    )
+    assert calls == ["sweep"]
+    assert path.name.startswith("sweep-")
+    assert path.is_file()
+
+    # A genuine swept sine's instantaneous frequency changes over the file —
+    # its early-vs-late autocorrelation-peak lag differs, unlike stationary
+    # band-limited noise. Cheap, real signal check: the first and second
+    # halves are NOT a simple time-shifted copy of each other (a sine at a
+    # single fixed frequency would be near-periodic within each half).
+    with wave.open(str(path), "rb") as wav:
+        raw = wav.readframes(wav.getnframes())
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float64)
+    half = samples.size // 2
+    first_half_zero_crossings = int(np.sum(np.diff(np.sign(samples[:half])) != 0))
+    second_half_zero_crossings = int(np.sum(np.diff(np.sign(samples[half:])) != 0))
+    # An exponential sweep from f1 to f2 has monotonically increasing
+    # instantaneous frequency, so the second half (higher frequencies) has
+    # substantially more zero crossings than the first.
+    assert second_half_zero_crossings > first_half_zero_crossings * 1.5
+
+
+def test_sustain_and_transfer_probe_stay_on_band_limited_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jasper.audio_measurement import playback as playback_mod
+    from jasper.audio_measurement import sweep as sweep_mod
+
+    noise_calls: list[str] = []
+    sweep_calls: list[str] = []
+    real_noise = playback_mod.ensure_bandlimited_noise_wav
+    real_sine = sweep_mod.synchronized_swept_sine
+
+    def _spy_noise(**kwargs: Any):
+        noise_calls.append("noise")
+        return real_noise(**kwargs)
+
+    def _spy_sine(**kwargs: Any):
+        sweep_calls.append("sweep")
+        return real_sine(**kwargs)
+
+    monkeypatch.setattr(playback_mod, "ensure_bandlimited_noise_wav", _spy_noise)
+    monkeypatch.setattr(sweep_mod, "synchronized_swept_sine", _spy_sine)
+
+    request = _request()
+    for role in ("sustain_stress", "digital_transfer_probe"):
+        executor._generate_mono_stimulus_wav(
+            role=role, request=request, sample_rate_hz=48000, target_dir=tmp_path
+        )
+    assert noise_calls == ["noise", "noise"]
+    assert sweep_calls == []
+
+
+def test_generate_mono_stimulus_wav_caches_the_sweep_by_content(tmp_path: Path) -> None:
+    request = _request()
+    first = executor._generate_mono_stimulus_wav(
+        role="sweep_transparency", request=request, sample_rate_hz=48000, target_dir=tmp_path
+    )
+    second = executor._generate_mono_stimulus_wav(
+        role="sweep_transparency", request=request, sample_rate_hz=48000, target_dir=tmp_path
+    )
+    assert first == second
+
+
+# --------------------------------------------------------------------------- #
+# N-8: stereo duplication is width-checked, not dynamically dtype-derived
+# --------------------------------------------------------------------------- #
+
+
+def test_generate_stimulus_wav_refuses_a_non_16_bit_mono_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _fake_24bit_mono(*, role, request, sample_rate_hz, target_dir):  # type: ignore[no-untyped-def]
+        path = target_dir / "fake-24bit.wav"
+        with wave.open(str(path), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(3)  # 24-bit — R6a(iv) requires 16-bit
+            out.setframerate(sample_rate_hz)
+            out.writeframes(b"\x00\x00\x00" * 100)
+        return path
+
+    monkeypatch.setattr(executor, "_generate_mono_stimulus_wav", _fake_24bit_mono)
+    with pytest.raises(executor.ExecutorError, match="16-bit"):
+        executor._generate_stimulus_wav(
+            role="sustain_stress", request=_request(), sample_rate_hz=48000, target_dir=tmp_path
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -518,10 +654,11 @@ async def test_run_discovery_records_the_padded_identity_as_the_capture_stimulus
     play_and_capture = RecordingPlayAndCapture(responses)
     bench = _executor(play_and_capture=play_and_capture)
     sink = BundleSink(tmp_path / "bundle", bundle_id="disc")
+    readback = _write_readback_receipt(sink)
 
     captures = await bench.run_discovery(
         target=_target_plan(),
-        active_graph_readback=_artifact("readback"),
+        active_graph_readback=readback,
         sink=sink,
         stop=Stop(),
     )
@@ -530,6 +667,128 @@ async def test_run_discovery_records_the_padded_identity_as_the_capture_stimulus
     for capture, call in zip(captures, play_and_capture.calls):
         played_path_bytes = call["stimulus_path"].read_bytes()
         assert capture.stimulus.sha256 == hashlib.sha256(played_path_bytes).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# S-1/S-2 (M6): derivation consumes the PERSISTED activation read-back
+# receipt — never a live re-fetch, never a stale/mismatched source
+# --------------------------------------------------------------------------- #
+
+
+async def test_finish_discovery_derives_from_the_activation_receipt_not_a_stale_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S-2 (M6): derivation's source config must be the activation
+    read-back receipt the pass actually proved (runner.py's
+    discovery_activation), never anything else — a stale post-restore
+    config, or a live re-fetch that could disagree with what was proved.
+
+    Proof mechanism: the receipt carries a DISTINCTIVE, otherwise-harmless
+    marker (an unusual ``queuelimit`` value — R3 passes it through
+    unchanged and records it in device_diff) that exists ONLY in this
+    receipt, nowhere else reachable from this test. The derivation receipt
+    written to the bundle is read back and must carry the exact marker —
+    any code path that consulted a different source would fail this
+    assertion. See this test's own docstring end for how this was verified
+    to actually kill the two named mutations (revert-to-post-restore,
+    revert-to-live-refetch), since a test that can't be shown failing
+    against a real regression is not evidence of anything.
+    """
+
+    import json
+
+    monkeypatch.setattr(render, "render_config", _fake_transfer_render_config)
+
+    marker_queuelimit = 987654321  # distinctive: LIVE_CONFIG's own default is 4
+    marked_config = {
+        **LIVE_CONFIG,
+        "devices": {**LIVE_CONFIG["devices"], "queuelimit": marker_queuelimit},
+    }
+    marked_yaml = yaml.safe_dump(marked_config, sort_keys=False)
+
+    responses = [_played_stimulus(label="sweep"), _played_stimulus(label="sustain")]
+    play_and_capture = RecordingPlayAndCapture(responses)
+    bench = _executor(play_and_capture=play_and_capture)
+    sink = BundleSink(tmp_path / "bundle", bundle_id="m6")
+    readback = _write_readback_receipt(sink, active_config_raw=marked_yaml)
+
+    captures = await bench.run_discovery(
+        target=_target_plan(), active_graph_readback=readback, sink=sink, stop=Stop()
+    )
+    await bench.finish_discovery(
+        captures, target=_target_plan(), sink=sink, stop=Stop()
+    )
+
+    derivation_receipt = json.loads(
+        (
+            sink.bundle_dir
+            / f"{TARGET_ID}/discovery-sweep_transparency-pre_limiter-derivation.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert derivation_receipt["device_diff"]["queuelimit_live"] == marker_queuelimit
+
+
+def _fake_per_channel_discovery_render_config(
+    binary_path, config_path, *, output_path, bounds, fader_db
+):  # type: ignore[no-untyped-def]
+    """Owner channels 2 and 3 get DIFFERENT constant levels, so a test can
+    prove finish_discovery emits genuinely distinct per-channel probes
+    (S-3), never one collapsed value."""
+
+    n_frames = 250_000  # comfortably exceeds lead_in + body + lead_out
+    frame = np.zeros((n_frames, 4), dtype=np.float64)
+    frame[:, 2] = 10 ** (-30.0 / 20.0)  # channel 2: -30 dBFS
+    frame[:, 3] = 10 ** (-10.0 / 20.0)  # channel 3: -10 dBFS
+    data = frame.astype("<f8").tobytes()
+    output_path.write_bytes(data)
+    return render.RenderInvocation(
+        argv=(binary_path, f"--gain={fader_db}", str(config_path)),
+        returncode=0,
+        duration_s=0.001,
+        stdout_tail="",
+        stderr_tail="",
+        output_sha256=hashlib.sha256(data).hexdigest(),
+        output_byte_size=len(data),
+    )
+
+
+async def test_finish_discovery_emits_one_probe_per_owner_channel_not_collapsed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S-3: R3 forbids collapsing owner channels before the runner's
+    distinct-peak inventory. For a 2-channel owner and 2 discovery roles,
+    finish_discovery must return 4 probes (2 roles x 2 channels), not 2
+    (one min-collapsed probe per role) — and channel 2's and channel 3's
+    probes must carry their OWN distinct peaks, matching the deliberately
+    different levels this render mock writes to each channel."""
+
+    monkeypatch.setattr(render, "render_config", _fake_per_channel_discovery_render_config)
+
+    responses = [_played_stimulus(label="sweep"), _played_stimulus(label="sustain")]
+    play_and_capture = RecordingPlayAndCapture(responses)
+    bench = _executor(play_and_capture=play_and_capture)
+    sink = BundleSink(tmp_path / "bundle", bundle_id="s3")
+    readback = _write_readback_receipt(sink)
+
+    captures = await bench.run_discovery(
+        target=_target_plan(), active_graph_readback=readback, sink=sink, stop=Stop()
+    )
+    probes = await bench.finish_discovery(
+        captures, target=_target_plan(), sink=sink, stop=Stop()
+    )
+
+    # 2 roles x 2 owner channels (2, 3) = 4 probes, never collapsed to 2.
+    assert len(probes) == 4
+    peaks = sorted(p.pre_limiter_peak_dbfs for p in probes)
+    # Each role contributes one -30 dBFS (channel 2) and one -10 dBFS
+    # (channel 3) probe — never a single min_across_channels(-30) value
+    # standing in for both channels.
+    assert peaks == pytest.approx([-30.0, -30.0, -10.0, -10.0])
+    # Each probe's recorded PCM is that ONE channel's own extracted stream
+    # (S7) — the two distinct-peak probes within a role must not share a
+    # pre_limiter_pcm identity.
+    sweep_probes = probes[:2]
+    assert sweep_probes[0].pre_limiter_pcm.sha256 != sweep_probes[1].pre_limiter_pcm.sha256
 
 
 # --------------------------------------------------------------------------- #
@@ -551,7 +810,7 @@ async def test_finish_discovery_threads_the_played_faders_db_into_every_render(
         second_output_path.write_bytes(data)
         sha = hashlib.sha256(data).hexdigest()
         invocation = render.RenderInvocation(
-            argv=(binary_path, "--gain", str(fader_db), str(config_path)),
+            argv=(binary_path, f"--gain={fader_db}", str(config_path)),
             returncode=0,
             duration_s=0.001,
             stdout_tail="",
@@ -573,10 +832,11 @@ async def test_finish_discovery_threads_the_played_faders_db_into_every_render(
         play_and_capture = RecordingPlayAndCapture([played, played])
         bench = _executor(play_and_capture=play_and_capture)
         sink = BundleSink(tmp_path / "bundle", bundle_id="b1")
+        readback = _write_readback_receipt(sink)
 
         captures = await bench.run_discovery(
             target=_target_plan(),
-            active_graph_readback=_artifact("readback"),
+            active_graph_readback=readback,
             sink=sink,
             stop=Stop(),
         )
@@ -623,7 +883,7 @@ def _fake_transfer_render_config(binary_path, config_path, *, output_path, bound
     data = frame.tobytes()
     output_path.write_bytes(data)
     return render.RenderInvocation(
-        argv=(binary_path, "--gain", str(fader_db), str(config_path)),
+        argv=(binary_path, f"--gain={fader_db}", str(config_path)),
         returncode=0,
         duration_s=0.001,
         stdout_tail="",
@@ -707,7 +967,7 @@ async def test_digital_transfer_probe_checks_every_owner_channel_not_just_the_fi
         data = frame.astype("<f8").tobytes()
         output_path.write_bytes(data)
         return render.RenderInvocation(
-            argv=(binary_path, "--gain", str(fader_db), str(config_path)),
+            argv=(binary_path, f"--gain={fader_db}", str(config_path)),
             returncode=0,
             duration_s=0.001,
             stdout_tail="",
@@ -878,7 +1138,7 @@ def _round_trip_render_config(binary_path, config_path, *, output_path, bounds, 
     data = frame.tobytes()
     output_path.write_bytes(data)
     return render.RenderInvocation(
-        argv=(binary_path, "--gain", str(fader_db), str(config_path)),
+        argv=(binary_path, f"--gain={fader_db}", str(config_path)),
         returncode=0,
         duration_s=0.001,
         stdout_tail="",
@@ -942,9 +1202,6 @@ async def test_bench_role_executor_full_round_trip_through_produce_limiter_thres
     bench = executor.BenchRoleExecutor(
         target=_target_plan(),
         requests={role: _request() for role in STIMULUS_ROLES},
-        controller=controller,
-        mux_status=None,  # type: ignore[arg-type]
-        fanin_status=None,  # type: ignore[arg-type]
         play_and_capture=play_and_capture,
         binary=render.BinaryIdentity(
             path="/opt/camilladsp/camilladsp",

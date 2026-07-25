@@ -36,29 +36,26 @@ whatever :class:`Path` it is given. The R9 offline renders (including the
 fully hardware-free ``digital_transfer_probe``), the R10 cross-check, and
 the R6a / R4(a) live-proof predicates are likewise fully implemented here.
 
-**Stimulus-generator judgment call (flagged for review).** The frozen
-protocol deliberately pins no stimulus-generation algorithm ("The protocol
-contains no stimulus, level, frequency, duration, cooldown, repeat, or
-limiter number" — ``limiter-evidence-protocol.md``). Neither existing
-generator is literally a frequency sweep (``ensure_sine_wav`` is one fixed
-tone; ``ensure_bandlimited_noise_wav`` is static band-limited noise).
-``sustain_stress``'s "deterministic band-limited noise program" is an
-unambiguous match for ``ensure_bandlimited_noise_wav``;
-``sweep_transparency``'s "narrow bass sweep" does not cleanly match either
-helper. :func:`_generate_stimulus_wav` uses ``ensure_bandlimited_noise_wav``
-uniformly for both roles, banded by the request's own
-``requested_stimulus_band_hz`` — consistent with ``digital_transfer_probe``'s
-existing, already-accepted pattern for turning a
-:class:`~jasper.bass_extension.bench.manifest.StimulusRequest` into a
-stimulus, and because it needs no invented parameter (a literal frequency
-sweep would need an invented frequency trajectory the manifest does not
-carry). Revisit if a real hardware :class:`PlayAndCapture` binding needs a
-literal swept-frequency stimulus for ``sweep_transparency``.
+**Stimulus generator per role.** ``sweep_transparency`` is a genuine
+synchronized swept sine — the frozen protocol names it "the admitted narrow
+bass sweep" and forbids role substitution, and per-frequency
+tracking/THD evidence structurally requires a swept excitation, not a
+static-band noise burst. :func:`_generate_stimulus_wav` generates it via
+:func:`jasper.audio_measurement.sweep.synchronized_swept_sine` +
+:func:`jasper.audio_measurement.sweep.write_sweep_wav` (reused verbatim,
+never modified) over ``requested_stimulus_band_hz`` and
+``requested_hold_duration_s`` — the manifest's own operator-authorized
+inputs, nothing invented. ``sustain_stress``'s "deterministic band-limited
+noise program" and the isolated ``digital_transfer_probe`` both stay on
+``ensure_bandlimited_noise_wav``, banded by the same
+``requested_stimulus_band_hz`` — noise is the right excitation for a
+protection/stress hold, and the transfer probe only needs a signal whose
+level relative to ``clip_limit_dbfs`` is calculable, not a swept one.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -184,36 +181,65 @@ class PlayAndCapture(Protocol):
     ) -> PlayedStimulus: ...
 
 
-def _generate_stimulus_wav(
+def _generate_mono_stimulus_wav(
     *, role: str, request: StimulusRequest, sample_rate_hz: int, target_dir: Path
 ) -> Path:
-    """Synthesize ``role``'s unpadded stimulus from the operator-authorized
-    request. See the module docstring's "Stimulus-generator judgment call"
-    for why ``ensure_bandlimited_noise_wav`` is used uniformly across roles.
-
-    ``ensure_bandlimited_noise_wav`` writes MONO audio; R6a's fan-in mix
-    geometry is fixed at ``live_proof.FANIN_MIX_CHANNELS`` (2 —
-    ``rust/jasper-fanin/src/mixer.rs``'s ``pub const CHANNELS: u32 = 2``,
-    "the mix is always 2-channel … regardless of any one lane's own source
-    geometry") REGARDLESS of how many owner channels the downstream
-    limiter/pipeline touches, so the stimulus that is actually admitted and
-    played must be 2-channel too. The generated mono signal is duplicated to
-    both channels (L=R) rather than drawing two independent noise
-    realizations — an L=R signal keeps the owner path's split-mixer sum
-    (equal-gain from channels 0 and 1) a deterministic, calculable multiple
-    of the source rather than a stochastic function of two independent
-    draws' phase relationship.
+    """Synthesize ``role``'s unpadded, MONO stimulus from the
+    operator-authorized request. See the module docstring's "Stimulus
+    generator per role" for the sweep-vs-noise split.
     """
+
+    if role == "sweep_transparency":
+        from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
+
+        sweep, meta = synchronized_swept_sine(
+            f1=request.requested_stimulus_band_hz[0],
+            f2=request.requested_stimulus_band_hz[1],
+            duration_approx_s=request.requested_hold_duration_s,
+            sample_rate=sample_rate_hz,
+            amplitude_dbfs=request.requested_stimulus_effective_peak_dbfs,
+        )
+        sweep_path = (
+            target_dir
+            / f"sweep-{meta.f1:g}-{meta.f2:g}-{meta.duration_s:g}-{sample_rate_hz}.wav"
+        )
+        if not sweep_path.exists():
+            write_sweep_wav(sweep_path, sweep, sample_rate_hz)
+        return sweep_path
 
     from jasper.audio_measurement.playback import ensure_bandlimited_noise_wav
 
-    mono_path = ensure_bandlimited_noise_wav(
+    return ensure_bandlimited_noise_wav(
         f_lo_hz=request.requested_stimulus_band_hz[0],
         f_hi_hz=request.requested_stimulus_band_hz[1],
         duration_s=request.requested_hold_duration_s,
         dbfs=request.requested_stimulus_effective_peak_dbfs,
         sample_rate=sample_rate_hz,
         cache_dir=target_dir,
+    )
+
+
+def _generate_stimulus_wav(
+    *, role: str, request: StimulusRequest, sample_rate_hz: int, target_dir: Path
+) -> Path:
+    """Synthesize ``role``'s unpadded stimulus, then duplicate it to stereo.
+
+    Both mono generators (:func:`_generate_mono_stimulus_wav`) write 16-bit
+    PCM; R6a's fan-in mix geometry is fixed at ``live_proof.
+    FANIN_MIX_CHANNELS`` (2 — ``rust/jasper-fanin/src/mixer.rs``'s ``pub
+    const CHANNELS: u32 = 2``, "the mix is always 2-channel … regardless of
+    any one lane's own source geometry") REGARDLESS of how many owner
+    channels the downstream limiter/pipeline touches, so the stimulus that
+    is actually admitted and played must be 2-channel too. The generated
+    mono signal is duplicated to both channels (L=R) rather than drawing
+    two independent realizations — an L=R signal keeps the owner path's
+    split-mixer sum (equal-gain from channels 0 and 1) a deterministic,
+    calculable multiple of the source rather than a stochastic function of
+    two independent draws' phase relationship.
+    """
+
+    mono_path = _generate_mono_stimulus_wav(
+        role=role, request=request, sample_rate_hz=sample_rate_hz, target_dir=target_dir
     )
     stereo_path = target_dir / f"{mono_path.stem}-stereo{mono_path.suffix}"
     if not stereo_path.exists():
@@ -223,7 +249,18 @@ def _generate_stimulus_wav(
             sample_width = source.getsampwidth()
             frame_rate = source.getframerate()
             mono_frames = source.readframes(source.getnframes())
-        samples = np.frombuffer(mono_frames, dtype=f"<i{sample_width}")
+        # R6a(iv) requires the stimulus artifact to be 16-bit PCM
+        # (live_proof.FANIN_MIX_BITS_PER_SAMPLE) — both generators above
+        # commit to that width, so asserting it here (rather than deriving
+        # a dtype string from whatever sample_width happens to read back,
+        # which is not a valid numpy dtype for most non-2-byte widths) both
+        # documents and enforces the invariant this file already depends on.
+        if sample_width != 2:
+            raise ExecutorError(
+                f"generated mono stimulus {mono_path} is {sample_width * 8}-bit, "
+                "not the 16-bit PCM R6a(iv) requires"
+            )
+        samples = np.frombuffer(mono_frames, dtype="<i2")
         stereo = np.repeat(samples, 2)
         with wave.open(str(stereo_path), "wb") as out:
             out.setnchannels(2)
@@ -240,6 +277,34 @@ def _live_sample_rate_hz(live_active_config_raw: str) -> int:
     if not isinstance(live, dict) or type(live.get("devices", {}).get("samplerate")) is not int:
         raise ExecutorError("live config has no devices.samplerate")
     return int(live["devices"]["samplerate"])
+
+
+def _read_receipt(sink: BundleSink, readback: ArtifactIdentity) -> dict[str, Any]:
+    """S-1/R1: read back one of the runner's OWN activation-receipt JSON
+    files (``runner.py``'s ``_readback_receipt``, already written before
+    ``run_discovery``/``run_reference_sweep``/``run_candidate`` is invoked).
+
+    This is the ONLY correct source for ``active_config_raw`` inside those
+    three methods — a second live ``controller.get_active_config_raw()``
+    fetch is not merely redundant, it can be WRONG: ``run_discovery`` etc.
+    run while still inside ``temporary_bass_activation``'s window, so a
+    live fetch there happens to agree with the receipt, but the identical
+    call inside ``finish_discovery``/``finish_candidate`` (after the window
+    closes and the predecessor is restored) would silently read the
+    RESTORED config instead of the one the pass actually proved and played
+    against. Reading the persisted receipt is correct in both phases and
+    removes the redundant fetch entirely.
+    """
+
+    import json
+
+    receipt_path = sink.bundle_dir / readback.relative_path
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if not isinstance(receipt, dict) or type(receipt.get("active_config_raw")) is not str:
+        raise ExecutorError(
+            f"activation receipt {readback.relative_path} has no active_config_raw"
+        )
+    return receipt
 
 
 def estimate_campaign_render_count(manifest: CampaignManifest) -> int:
@@ -277,13 +342,21 @@ class BenchRoleExecutor:
     this module never derives it. ``renders_outstanding`` has no default
     (S4): the caller seeds it from :func:`estimate_campaign_render_count`,
     never an invented literal.
+
+    No ``controller``/``mux_status``/``fanin_status`` fields (S-1/S-5): this
+    class never fetches live status itself. The CamillaDSP config text
+    comes from the runner's OWN persisted activation-receipt JSON
+    (:func:`_read_receipt`), never a live re-fetch; mux/fan-in STATUS
+    arrive already-read on :class:`PlayedStimulus`
+    (``mux_status_start``/``mux_status_end``/``fanin_status_start``/
+    ``fanin_status_end``), supplied by :class:`PlayAndCapture`, the one
+    hardware-dependent seam. Carrying unused ``Callable``/``Any``-shaped
+    constructor params here would mislead a future real binding (#1738)
+    into thinking this executor calls them.
     """
 
     target: TargetPlan
     requests: Mapping[str, StimulusRequest]
-    controller: Any  # CamillaController-shaped
-    mux_status: Callable[[], Awaitable[Mapping[str, Any]]]
-    fanin_status: Callable[[], Awaitable[Mapping[str, Any]]]
     play_and_capture: PlayAndCapture
     binary: render.BinaryIdentity
     margin: MarginPolicy
@@ -822,7 +895,7 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> Sequence[DiscoveryCapture]:
-        raw = await self.controller.get_active_config_raw()
+        raw = _read_receipt(sink, active_graph_readback)["active_config_raw"]
         captures: list[DiscoveryCapture] = []
         for role in ("sweep_transparency", "sustain_stress"):
             stop.check()
@@ -899,13 +972,6 @@ class BenchRoleExecutor:
                     kind="jts_bass_extension_bench_pre_limiter_pcm",
                 )
             per_channel_peaks = [peaks_by_channel[c] for c in target.owner_channels]
-            pre_limiter_peak_dbfs = cross_check.min_across_channels(per_channel_peaks)
-            # Keep the recorded singular artifact evidentially consistent
-            # with the recorded (min) peak — persist whichever channel
-            # achieved it (S7, mirroring _finish_role).
-            min_channel = min(peaks_by_channel, key=lambda c: peaks_by_channel[c])
-            pcm_id = pcm_ids[min_channel]
-
             peak_analysis_id = sink.write_json(
                 f"{target.target_id}/discovery-{role}-peak-analysis.json",
                 {
@@ -914,16 +980,27 @@ class BenchRoleExecutor:
                 },
                 kind="jts_bass_extension_bench_peak_analysis",
             )
-            probes.append(
-                DiscoveryProbe(
-                    stimulus=padded_identity,
-                    admission=played.admission,
-                    active_graph_readback=active_graph_readback,
-                    pre_limiter_pcm=pcm_id,
-                    peak_analysis=peak_analysis_id,
-                    pre_limiter_peak_dbfs=pre_limiter_peak_dbfs,
+            # S-3/R3: EACH owner channel yields its own source observation
+            # and its own candidate — "the campaign never collapses owner
+            # channels into one number" before the runner's distinct-peak
+            # inventory. One DiscoveryProbe per channel, never collapsed via
+            # min_across_channels here; that collapse rule stays reserved
+            # for the SINGULAR sweep/sustain record fields _finish_role must
+            # fill later (a different, frozen-schema constraint). The
+            # runner's own dedup (`distinct.setdefault(probe.
+            # pre_limiter_peak_dbfs, probe)`) already treats equal peaks
+            # across channels as one candidate, unchanged by this PR.
+            for channel in target.owner_channels:
+                probes.append(
+                    DiscoveryProbe(
+                        stimulus=padded_identity,
+                        admission=played.admission,
+                        active_graph_readback=active_graph_readback,
+                        pre_limiter_pcm=pcm_ids[channel],
+                        peak_analysis=peak_analysis_id,
+                        pre_limiter_peak_dbfs=peaks_by_channel[channel],
+                    )
                 )
-            )
         return probes
 
     async def run_reference_sweep(
@@ -934,7 +1011,7 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> ReferenceSweepCapture:
-        raw = await self.controller.get_active_config_raw()
+        raw = _read_receipt(sink, reference_readback)["active_config_raw"]
         request = self.requests["sweep_transparency"]
         # Disambiguate by the reference activation receipt's own name (which
         # already encodes the candidate setting, e.g.
@@ -967,7 +1044,15 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> CandidateCapture:
-        raw = await self.controller.get_active_config_raw()
+        # `candidate_readback` names the runner's activation read-back receipt
+        # (jasper.bass_extension.bench.runner._readback_receipt's JSON, written
+        # BEFORE run_candidate is invoked). By the time this method runs, the
+        # runner's temporary_bass_activation has already proven the owner chain
+        # order via _prove_active_graph — read the receipt back for BOTH its
+        # active_config_raw (S-1/R1: the persisted proof, never a second live
+        # fetch) and its graph_fingerprint, in one read.
+        receipt = _read_receipt(sink, candidate_readback)
+        raw = receipt["active_config_raw"]
         transfer = await self._digital_transfer_probe(
             candidate_setting_dbfs=candidate_setting_dbfs,
             live_active_config_raw=raw,
@@ -995,16 +1080,6 @@ class BenchRoleExecutor:
             stop=stop,
             tag=f"candidate-{candidate_setting_dbfs:g}-sustain_stress",
         )
-        # `candidate_readback` names the runner's activation read-back receipt
-        # (jasper.bass_extension.bench.runner._readback_receipt's JSON, written
-        # BEFORE run_candidate is invoked). By the time this method runs, the
-        # runner's temporary_bass_activation has already proven the owner chain
-        # order via _prove_active_graph — read the receipt back for its
-        # graph_fingerprint rather than re-deriving it.
-        import json
-
-        receipt_path = sink.bundle_dir / candidate_readback.relative_path
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         if (
             sweep_played.transparency_analysis is None
             or sweep_played.transparency_verdict is None
