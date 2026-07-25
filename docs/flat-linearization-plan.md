@@ -62,7 +62,8 @@ lives). **Superseded (2026-07-25):** the ~320 µs arrival is only
 resolvable in the 5–19 kHz tweeter band ("S0 executed" § f); the sub-2 kHz
 hump's attribution to it has reverted to baffle-step/room pending the
 near-field instrument, so "that band is where the bounce lives" is the
-pre-S0 hypothesis, not current truth. Above 8 kHz, UMIK-2-class unit uncertainty is ~3 dB, so a tighter
+pre-S0 hypothesis, not current truth. Above 8 kHz, UMIK-2-class unit
+uncertainty is ~3 dB, so a tighter
 spec there would live inside the instrument's error bars. The ~250 Hz
 lower edge sits above the 7 ms gate's ~143 Hz validity floor and is
 provisional (250 vs 300 Hz is settled by the validation session's LF
@@ -209,7 +210,7 @@ comb the woofer's enclosure never sees:
     subsets breach the ±1 dB, 300 Hz–8 kHz bar
     (`worst_case_max_deviation_db` **2.634 dB** masked, **2.826 dB**
     unmasked); the worst-case subset is `cloud_01…06` — exactly the six
-    tweeter-height positions. Mechanism, from `findings.json`'s
+    tweeter-height positions. Most consistent explanation, from `findings.json`'s
     `group_stats`: the **position-dependent** 1.8 kHz lobing dip
     destabilizes the in-band (300 Hz–8 kHz) cloud — **10.71 dB
     [6.61–14.61]** on 01–06 vs. **4.08 dB [4.01–4.59]** on 07–10 — not
@@ -218,7 +219,11 @@ comb the woofer's enclosure never sees:
     genuinely differs from the full 10-position average — this is § b's
     real, position-dependent lobing feature doing what a real
     (correctly-excluded) mic-position-dependent defect does to a spatial
-    average, not the comb.
+    average, not the comb. (Corroborating asymmetry: the exclusion mask
+    covers 1729–1882 Hz — containing the tweeter-height group's dip
+    [1778–1864] entirely while excluding the low group's [1925–2021]
+    entirely — which is why the masked and unmasked worst cases nearly
+    coincide, 2.634 vs 2.826 dB.)
   - **4 FAIL:** `combine_positions` excluded 0 of 5462 bins in 8–16 kHz,
     only the 1.7 kHz region — the screen never got a chance to flag the
     comb because power-vs-median there measures only **+1.27 dB**, under
