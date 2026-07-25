@@ -143,9 +143,15 @@ def test_resolve_render_binary_refuses_when_resolved_path_missing(
 # --------------------------------------------------------------------------- #
 
 
-def test_render_config_argv_is_exactly_binary_and_config_path(
+def test_render_config_argv_carries_the_bracketed_fader_gain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """B1: the render argv MUST carry ``--gain <fader_db>`` — R4(c) always
+    resolves to "reproduce the recorded fader gain" for the pinned build, and
+    a render that omits it is systematically off by the fader's dB (silently
+    permissive on the Discovery path, since finish_discovery never
+    cross-checks against a live capture)."""
+
     output_path = tmp_path / "out.raw"
     seen_argv: list[Any] = []
 
@@ -161,10 +167,15 @@ def test_render_config_argv_is_exactly_binary_and_config_path(
     config_path = tmp_path / "cfg.yml"
     config_path.write_text("devices: {}\n")
     result = render.render_config(
-        "/opt/camilladsp/camilladsp", config_path, output_path=output_path, bounds=bounds
+        "/opt/camilladsp/camilladsp",
+        config_path,
+        output_path=output_path,
+        bounds=bounds,
+        fader_db=-6.5,
     )
-    assert result.argv == ("/opt/camilladsp/camilladsp", str(config_path))
-    assert seen_argv == [("/opt/camilladsp/camilladsp", str(config_path))]
+    expected = ("/opt/camilladsp/camilladsp", "--gain", "-6.5", str(config_path))
+    assert result.argv == expected
+    assert seen_argv == [expected]
 
 
 @pytest.mark.parametrize("forbidden", ["--statefile", "-p", "--port", "-a", "--address"])
@@ -185,7 +196,11 @@ def test_render_config_refuses_forbidden_argv_tokens_before_starting(
     # before any subprocess starts.
     with pytest.raises(render.RenderError, match="statefile or websocket"):
         render.render_config(
-            forbidden, tmp_path / "cfg.yml", output_path=tmp_path / "out.raw", bounds=bounds
+            forbidden,
+            tmp_path / "cfg.yml",
+            output_path=tmp_path / "out.raw",
+            bounds=bounds,
+            fader_db=0.0,
         )
     assert not called
 
@@ -204,6 +219,7 @@ def test_render_config_refuses_on_nonzero_exit(
             tmp_path / "cfg.yml",
             output_path=tmp_path / "out.raw",
             bounds=bounds,
+            fader_db=0.0,
         )
 
 
@@ -221,6 +237,7 @@ def test_render_config_refuses_on_timeout(
             tmp_path / "cfg.yml",
             output_path=tmp_path / "out.raw",
             bounds=bounds,
+            fader_db=0.0,
         )
 
 
@@ -238,6 +255,7 @@ def test_render_config_refuses_when_no_output_produced(
             tmp_path / "cfg.yml",
             output_path=tmp_path / "out.raw",
             bounds=bounds,
+            fader_db=0.0,
         )
 
 
@@ -279,6 +297,7 @@ def test_determinism_receipt_passes_on_identical_renders(
         first_output_path=tmp_path / "out.first",
         second_output_path=tmp_path / "out.second",
         bounds=bounds,
+        fader_db=0.0,
     )
     assert receipt.deterministic
     assert receipt.config_sha256 == render.config_shape_sha256("devices: {}\n")
@@ -305,6 +324,7 @@ def test_determinism_receipt_refuses_on_byte_mismatch(
             first_output_path=tmp_path / "out.first",
             second_output_path=tmp_path / "out.second",
             bounds=bounds,
+            fader_db=0.0,
         )
 
 

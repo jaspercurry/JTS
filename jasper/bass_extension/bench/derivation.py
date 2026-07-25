@@ -52,10 +52,25 @@ https://github.com/HEnquist/camilladsp/tree/v4.1.3):
   feature. ``src/lib.rs`` (`` #[cfg(feature = "32bit")] pub type PrcFmt = f32;
   #[cfg(not(feature = "32bit"))] pub type PrcFmt = f64;``) then pins
   ``PrcFmt = f64`` for this exact build — the deployed processing precision is
-  **FLOAT64LE**, not merely "whatever the build happens to use." Callers pass
-  this in (see ``render.py``, which owns the binary-identity verification);
-  this module does not hardcode it so the two concerns — binary identity and
-  config shape — stay decoupled.
+  64-bit float, spelled **``F64_LE``** in this pinned build's device-format
+  enum (``src/config/mod.rs`` ``FileSampleFormat``/``BinarySampleFormat``:
+  ``{..., S24_4_RJ_LE, S24_4_LJ_LE, S24_3_LE, S32_LE, F32_LE, F64_LE}``,
+  ``deny_unknown_fields``) — "FLOAT64LE" is a retired v1/v2 spelling this
+  build rejects outright. Callers pass this in (see ``render.py``, which owns
+  the binary-identity verification); this module does not hardcode it so the
+  two concerns — binary identity and config shape — stay decoupled.
+* **Main-fader application point (R4(b)/R4(c), now a settled fact, not a
+  recorded obligation pending citation).** ``src/pipeline.rs``
+  ``Pipeline::process_chunk``: ``self.volume.process_chunk(&mut chunk)`` runs
+  BEFORE the ``for step in &mut self.steps`` loop — i.e. before EVERY
+  configured pipeline step, unconditionally — and ``Pipeline::from_config``
+  builds that fader from ``processing_params.current_volume(0)``, the same
+  index ``src/socketserver.rs``'s ``WsCommand::SetVolume``/``GetVolume``
+  read/write. The main fader therefore ALWAYS precedes the owner limiter for
+  this build: R4(c) permanently resolves to "reproduce the recorded fader
+  gain" (never "apply no fader gain at all" — that branch is dead for this
+  CamillaDSP version, not merely "currently unreachable"). Every render
+  reproduces it via ``--gain`` (see ``render.py``).
 * **``queuelimit`` / ``target_level``.** Both are declared optional on
   ``Devices`` (``src/config/mod.rs``, defaults 4 and ``chunksize``
   respectively) and the README documents no file-device-specific requirement
@@ -97,6 +112,54 @@ from .activation import ActivationError, ActivationProof, _prove_active_graph
 ALLOWED_FILTER_TYPES: frozenset[str] = frozenset(
     {"Biquad", "BiquadCombo", "Conv", "Delay", "Gain", "Limiter"}
 )
+
+# S3: every derivation receipt carries these citations as DATA, not just
+# module-docstring prose — receipts are bundle evidence a reviewer or the
+# producer's own tests can inspect without reading source comments.
+RECORDED_OBLIGATIONS: dict[str, Any] = {
+    "wav_capture_semantics": {
+        "file": "src/config/mod.rs",
+        "symbol": "CaptureDevice::WavFile / CaptureDeviceWavFile",
+        "fact": (
+            "CaptureDeviceWavFile { filename, extra_samples?, labels? }, "
+            "#[serde(deny_unknown_fields)] — no channels field; capture "
+            "geometry comes from the WavFile's own header, not config"
+        ),
+    },
+    "processing_precision": {
+        "file": "src/lib.rs",
+        "symbol": "PrcFmt (cfg(feature = \"32bit\"))",
+        "fact": (
+            "no 32bit Cargo feature on the deployed linux_aarch64 release "
+            "build -> PrcFmt = f64 -> device format F64_LE "
+            "(src/config/mod.rs FileSampleFormat/BinarySampleFormat)"
+        ),
+    },
+    "fader_application_point": {
+        "file": "src/pipeline.rs",
+        "symbol": "Pipeline::process_chunk / Pipeline::from_config",
+        "fact": (
+            "self.volume.process_chunk(&mut chunk) runs before the pipeline "
+            "steps loop, unconditionally; built from "
+            "processing_params.current_volume(0) — the main fader ALWAYS "
+            "precedes the owner limiter for this build"
+        ),
+        "offset_sign": (
+            "R4(c) permanently resolves to 'reproduce the recorded fader "
+            "gain' (render carries it via --gain); R10(b) offset is 0 dB, "
+            "never -recorded_main_volume_db"
+        ),
+    },
+    "queuelimit_target_level": {
+        "file": "src/config/mod.rs",
+        "symbol": "Devices.queuelimit / Devices.target_level",
+        "fact": (
+            "both Option<usize>, defaults 4 and chunksize respectively; no "
+            "file-device-specific requirement documented — left unchanged "
+            "from the live value"
+        ),
+    },
+}
 
 Boundary = Literal["pre_limiter", "post_limiter"]
 
@@ -294,7 +357,7 @@ def _derive_devices_block(
         )
 
     # Capture swap: type -> WavFile (see module docstring for the "Wav" naming
-    # correction), filename set. `device` and `format` are deleted (Wav
+    # correction), filename set. `device` and `format` are deleted (WavFile
     # geometry comes from the artifact's own header); `channels` is ALSO
     # deleted — CaptureDeviceWavFile has no such field — the live value is
     # validated above and recorded, never emitted as a key here.
@@ -341,25 +404,39 @@ def _derive_devices_block(
         "playback_channels": live_playback_channels,
         "enable_rate_adjust_live": live_enable_rate_adjust,
         "enable_rate_adjust_derived": False,
+        # S3: queuelimit/target_level are recorded EVEN THOUGH unchanged — a
+        # deliberate, cited decision (see the module docstring), not an
+        # oversight.
+        "queuelimit_live": live_devices.get("queuelimit"),
+        "queuelimit_derived": live_devices.get("queuelimit"),
+        "target_level_live": live_devices.get("target_level"),
+        "target_level_derived": live_devices.get("target_level"),
     }
     return derived_devices, device_diff
 
 
 def _assert_filters_mixers_identical(
-    live: Mapping[str, Any], derived: Mapping[str, Any]
+    live_active_config_raw: str, derived: Mapping[str, Any]
 ) -> None:
     """R2(ii): filters/mixers identical after canonical re-serialization.
 
-    Both sides are already parsed Python values from the same YAML source
-    (derivation copies these blocks verbatim), so structural ``==`` over the
-    parsed mappings/lists/scalars *is* the canonical-re-serialization compare
-    — it is exactly where an altered or dropped mixer source (e.g. the
-    -6.02 dB split-mixer hazard) would be caught.
+    Takes the ORIGINAL SOURCE TEXT and re-parses it independently, rather
+    than comparing ``derived`` against the ``live`` mapping
+    ``derive_truncated_config`` already parsed: ``derived["filters"]`` /
+    ``derived["mixers"]`` are the SAME dict objects copied by reference from
+    that ``live`` mapping (derivation never edits them), so comparing against
+    ``live`` directly would compare each object to itself — an ``==`` that
+    can never be false, hence never catch anything. Re-parsing from the
+    immutable source text is genuinely independent: it protects against a
+    future in-place mutation of the shared objects (by this module or a
+    caller) going undetected — exactly where an altered or dropped mixer
+    source (e.g. the -6.02 dB split-mixer hazard) would be caught.
     """
 
-    if live.get("filters") != derived.get("filters"):
+    reparsed = _parse_active_config(live_active_config_raw)
+    if reparsed.get("filters") != derived.get("filters"):
         raise DerivationError("derived filters block differs from the live filters block")
-    if live.get("mixers") != derived.get("mixers"):
+    if reparsed.get("mixers") != derived.get("mixers"):
         raise DerivationError("derived mixers block differs from the live mixers block")
 
 
@@ -591,7 +668,7 @@ def derive_truncated_config(
             derived[key] = derived_pipeline
         else:
             derived[key] = value
-    _assert_filters_mixers_identical(live, derived)
+    _assert_filters_mixers_identical(live_active_config_raw, derived)
 
     if boundary == "post_limiter":
         proof = ActivationProof(
@@ -635,12 +712,14 @@ def derive_truncated_config(
         ],
         "device_diff": device_diff,
         "processing_precision": processing_precision,
+        "recorded_obligations": RECORDED_OBLIGATIONS,
     }
     return DerivedConfig(yaml_text=yaml_text, receipt=receipt)
 
 
 __all__ = [
     "ALLOWED_FILTER_TYPES",
+    "RECORDED_OBLIGATIONS",
     "ArtifactHeader",
     "Boundary",
     "DerivationError",

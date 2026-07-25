@@ -138,7 +138,7 @@ def _derive(boundary: derivation.Boundary, **overrides: object) -> derivation.De
         capture_header=_header(),
         capture_filename="/tmp/bundle/target/pre-input.wav",
         playback_filename="/tmp/bundle/target/pre-output.raw",
-        processing_precision="FLOAT64LE",
+        processing_precision="F64_LE",
     )
     kwargs.update(overrides)
     return derivation.derive_truncated_config(**kwargs)
@@ -274,8 +274,29 @@ def test_mismatched_split_mixer_gain_is_caught_by_filters_mixers_identity(
     tampered_mixers["split_2way"]["mapping"][2]["sources"][0]["gain"] = 0.0
     with pytest.raises(derivation.DerivationError):
         derivation._assert_filters_mixers_identical(
-            LIVE_CONFIG, {**LIVE_CONFIG, "mixers": tampered_mixers}
+            _live_yaml(), {**LIVE_CONFIG, "mixers": tampered_mixers}
         )
+
+
+def test_filters_mixers_identity_catches_in_place_mutation_of_a_shared_object() -> None:
+    """N1: ``derive_truncated_config``'s ``derived[key] = value`` loop copies
+    live's ``filters``/``mixers`` values by REFERENCE (never re-serializing
+    them), so ``derived["mixers"]`` and a same-session ``live["mixers"]`` can
+    be the literal SAME dict object. The OLD check compared ``derived``
+    against that ``live`` mapping directly — an in-place mutation of the
+    SHARED object is invisible to that comparison (both sides see the same
+    mutated data, so ``==`` stays true). Re-parsing the immutable SOURCE TEXT
+    independently, as this function now does, still catches it."""
+
+    live_dict = yaml.safe_load(_live_yaml())
+    shared_mixers = live_dict["mixers"]  # what `derived["mixers"] = value` would alias
+    derived = {**LIVE_CONFIG, "mixers": shared_mixers}
+    # In-place mutation of the SHARED object — live_dict and derived both see
+    # it, because it is literally the same object; only re-parsing the
+    # untouched source text catches this.
+    shared_mixers["split_2way"]["mapping"][2]["sources"][0]["gain"] = 0.0
+    with pytest.raises(derivation.DerivationError):
+        derivation._assert_filters_mixers_identical(_live_yaml(), derived)
 
 
 def test_derived_pipeline_equals_live_pipeline_truncated_at_owner_step() -> None:
@@ -295,7 +316,7 @@ def test_devices_diff_is_exactly_the_r3_allowlist() -> None:
     assert "channels" not in devices["capture"]  # R3's verified WavFile correction
     assert devices["playback"]["type"] == "File"
     assert devices["playback"]["channels"] == 4  # unchanged: live pipeline width
-    assert devices["playback"]["format"] == "FLOAT64LE"
+    assert devices["playback"]["format"] == "F64_LE"
     assert "device" not in devices["playback"]
     assert devices["enable_rate_adjust"] is False
     # Unchanged-by-R3 keys survive verbatim.
@@ -304,6 +325,40 @@ def test_devices_diff_is_exactly_the_r3_allowlist() -> None:
     assert devices["volume_limit"] == 0.0
     assert devices["queuelimit"] == 4
     assert devices["target_level"] == 1024
+
+
+def test_receipt_carries_citations_and_concrete_values_not_just_docstring_prose() -> None:
+    """S3: receipts are bundle evidence a reviewer or the producer's own
+    tests can inspect without reading source comments — every recorded
+    obligation carries a file+symbol citation, and device_diff records the
+    queuelimit/target_level values even though they are unchanged."""
+
+    derived = _derive("post_limiter")
+    receipt = derived.receipt
+    obligations = receipt["recorded_obligations"]
+    for key in (
+        "wav_capture_semantics",
+        "processing_precision",
+        "fader_application_point",
+        "queuelimit_target_level",
+    ):
+        entry = obligations[key]
+        assert entry["file"]
+        assert entry["symbol"]
+        assert entry["fact"]
+    # The fader obligation is the one R10(b) safety-load-bearing citation —
+    # its offset_sign field must say the render carries it (offset 0), never
+    # the old "-recorded_main_volume_db" branch.
+    assert "reproduce the recorded fader gain" in obligations["fader_application_point"][
+        "offset_sign"
+    ]
+    assert "0 dB" in obligations["fader_application_point"]["offset_sign"]
+
+    device_diff = receipt["device_diff"]
+    assert device_diff["queuelimit_live"] == 4
+    assert device_diff["queuelimit_derived"] == 4
+    assert device_diff["target_level_live"] == 1024
+    assert device_diff["target_level_derived"] == 1024
 
 
 def test_artifact_header_mismatch_refuses_before_any_render() -> None:

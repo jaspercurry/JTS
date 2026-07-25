@@ -32,6 +32,15 @@ Upstream citations verified against the pinned CamillaDSP v4.1.3 source
 * **``--version`` reports "4.1.3".** ``Cargo.toml`` pins ``version = "4.1.3"``
   with the ``cargo`` clap feature enabled, so clap's derived ``--version``
   output contains that exact string.
+* **``--gain`` reproduces the recorded fader gain, immediately, no ramp.**
+  ``src/bin.rs``: ``Arg::new("gain").short('g').long("gain")`` takes one
+  numeric value (``parse_gain_value``, range [-120, 20]) and sets
+  ``initial_volumes[0]`` — index 0, the exact index
+  ``Pipeline::from_config`` reads via ``processing_params.current_volume(0)``
+  for ``self.volume``. ``filters/basicfilters.rs``'s ``Volume::new`` sets
+  ``ramp_start: current_volume`` and starts with ``ramp_step: 0`` ("not in a
+  ramp") — the first processed chunk already applies the ``--gain`` value
+  directly, no startup fade.
 """
 
 from __future__ import annotations
@@ -56,9 +65,14 @@ _VERSION_SUBSTRING = "4.1.3"
 # tarball for CAMILLA_VERSION=v4.1.3) is built by upstream's `linux_aarch64`
 # release job as plain `cargo build --release` (no --features), so it carries
 # no `32bit` Cargo feature. `src/lib.rs` then pins `PrcFmt = f64` for that
-# build: the deployed processing precision is FLOAT64LE. See derivation.py's
-# module docstring for the full citation chain.
-DEPLOYED_PROCESSING_PRECISION = "FLOAT64LE"
+# build: the deployed processing precision is 64-bit float. "F64_LE" is the
+# CORRECT CamillaDSP v4.1.3 device-format spelling for that precision
+# (src/config/mod.rs `FileSampleFormat`/`BinarySampleFormat`, both
+# `{..., S24_4_RJ_LE, S24_4_LJ_LE, S24_3_LE, S32_LE, F32_LE, F64_LE}`) —
+# "FLOAT64LE" is a retired v1/v2 spelling and is REJECTED by this pinned
+# build (`deny_unknown_fields`). See derivation.py's module docstring for
+# the full citation chain.
+DEPLOYED_PROCESSING_PRECISION = "F64_LE"
 # `derive_truncated_config`'s algorithm identity — bump when its truncation,
 # device-swap, or allowlist LOGIC changes (not on comment-only edits), so a
 # `tap_implementation_id` recomputation is forced whenever the derivation
@@ -271,17 +285,24 @@ def render_config(
     *,
     output_path: Path,
     bounds: RenderBounds,
+    fader_db: float,
 ) -> RenderInvocation:
     """R9: invoke the pinned binary on ``config_path``, bounded, isolated.
 
-    argv is exactly ``[binary_path, str(config_path)]`` — no ``--statefile``,
-    no ``-p``/``-a``. Bounds are process-local (``RLIMIT_AS``, ``RLIMIT_CPU``,
-    ``os.nice``) applied in the child via ``preexec_fn``, on top of the same
-    bounded-subprocess shape ``jasper/dsp_apply.py`` uses for ``--check``
-    (explicit argv, timeout, captured stdout/stderr, typed result).
+    argv is exactly ``[binary_path, "--gain", str(fader_db), str(config_path)]``
+    — no ``--statefile``, no ``-p``/``-a``. ``fader_db`` is R4(a)'s bracketed
+    (before == after, proved stable) main-volume reading, reproduced here
+    because R4(c) always resolves to "precedes the limiter" for the pinned
+    build (see this module's docstring): every render's ``self.volume`` stage
+    must apply the identical gain the live pass's fader applied, or the
+    rendered peak is systematically off by the fader's dB. Bounds are
+    process-local (``RLIMIT_AS``, ``RLIMIT_CPU``, ``os.nice``) applied in the
+    child via ``preexec_fn``, on top of the same bounded-subprocess shape
+    ``jasper/dsp_apply.py`` uses for ``--check`` (explicit argv, timeout,
+    captured stdout/stderr, typed result).
     """
 
-    argv = (binary_path, str(config_path))
+    argv = (binary_path, "--gain", str(fader_db), str(config_path))
     if any(token in _FORBIDDEN_ARGV_TOKENS for token in argv):
         raise RenderError(
             "render argv carries a statefile or websocket-bind token — refusing "
@@ -359,20 +380,22 @@ def render_with_determinism_receipt(
     first_output_path: Path,
     second_output_path: Path,
     bounds: RenderBounds,
+    fader_db: float,
 ) -> DeterminismReceipt:
     """R8: render ``config_path`` twice; refuse on any byte mismatch.
 
-    Establishes determinism only for the shape rendered here — it makes no
-    claim about untested shapes. Callers key their receipt cache by
-    :func:`config_shape_sha256` so a shape already receipted this campaign is
-    never re-rendered twice more.
+    ``fader_db`` is threaded to both renders via ``--gain`` (R4(c)/R9) — see
+    :func:`render_config`. Establishes determinism only for the shape
+    rendered here — it makes no claim about untested shapes. Callers key
+    their receipt cache by :func:`config_shape_sha256` so a shape already
+    receipted this campaign is never re-rendered twice more.
     """
 
     first = render_config(
-        binary_path, config_path, output_path=first_output_path, bounds=bounds
+        binary_path, config_path, output_path=first_output_path, bounds=bounds, fader_db=fader_db
     )
     second = render_config(
-        binary_path, config_path, output_path=second_output_path, bounds=bounds
+        binary_path, config_path, output_path=second_output_path, bounds=bounds, fader_db=fader_db
     )
     receipt = DeterminismReceipt(
         config_sha256=config_shape_sha256(yaml_text), first=first, second=second
@@ -390,10 +413,10 @@ def render_with_determinism_receipt(
 def estimate_render_bytes(sample_rate_hz: int, channels: int, duration_s: float) -> int:
     """A conservative per-render byte estimate for the free-space guard.
 
-    FLOAT64LE (8 bytes/sample) at the full pipeline channel width — the
+    F64_LE (8 bytes/sample) at the full pipeline channel width — the
     playback file's actual precision (see
     :data:`DEPLOYED_PROCESSING_PRECISION`) — with a 2x safety margin for the
-    Wav capture artifact plus filesystem overhead.
+    WavFile capture artifact plus filesystem overhead.
     """
 
     bytes_per_frame = 8 * max(1, channels)

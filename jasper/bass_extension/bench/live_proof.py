@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.correction.coordinator import _measurement_gate_held
+from jasper.correction.coordinator import MEASUREMENT_FANIN_LABEL, _measurement_gate_held
 
 from .derivation import ArtifactHeader
 
@@ -35,10 +35,12 @@ from .derivation import ArtifactHeader
 FANIN_MIX_CHANNELS = 2
 FANIN_MIX_BITS_PER_SAMPLE = 16
 
-# jasper/correction/coordinator.py: the bench runner reuses measurement_window()
-# unchanged, so it reuses this exact fan-in label too — there is no
-# caller-specific owner/label parameter on measurement_window().
-MEASUREMENT_FANIN_LABEL = "correction"
+# MEASUREMENT_FANIN_LABEL is imported from jasper.correction.coordinator
+# (not re-declared): the bench runner reuses measurement_window() unchanged,
+# so it reuses that exact fan-in label too — there is no caller-specific
+# owner/label parameter on measurement_window(), and re-declaring the
+# literal here would be a second source of truth that could silently drift
+# from coordinator.py's.
 
 
 class IngressProofError(ValueError):
@@ -110,6 +112,14 @@ def prove_no_foreign_audio(
         tts = status.get("tts")
         if not isinstance(tts, Mapping):
             raise IngressProofError("fan-in STATUS has no 'tts' block")
+        # N6: a MISSING key is a different failure than an observed bad value —
+        # conflating them (treating an absent key as "not false"/"not zero")
+        # would misreport "we don't know" as "we observed foreign audio".
+        if "program_duck_active" not in tts or "pending_frames" not in tts:
+            raise IngressProofError(
+                "tts metrics absent (missing 'program_duck_active' and/or "
+                "'pending_frames' key) — cannot prove no foreign audio"
+            )
         if tts.get("program_duck_active") is not False:
             raise IngressProofError("tts.program_duck_active is not false")
         if tts.get("pending_frames") != 0:
@@ -155,15 +165,24 @@ class IngressProofInputs:
     """Everything R6a's four elements need, already fetched by the executor."""
 
     mux_status: Mapping[str, Any]
+    mux_status_end: Mapping[str, Any]
     fanin_status_start: Mapping[str, Any]
     fanin_status_end: Mapping[str, Any]
     artifact_header: ArtifactHeader
 
 
 def prove_ingress_transparency(inputs: IngressProofInputs) -> None:
-    """R6a: prove all four elements; raise :class:`IngressProofError` on the first miss."""
+    """R6a: prove all four elements; raise :class:`IngressProofError` on the first miss.
+
+    Element (i), isolation, is proved at BOTH ends of the pass —
+    ``mux_status`` (before playback) and ``mux_status_end`` (after) — not just
+    the start. A mux takeover mid-pass (another source preempting the
+    measurement lane) would otherwise go undetected as long as the isolated
+    state happened to hold at the moment of the first read.
+    """
 
     prove_isolation(inputs.mux_status)
+    prove_isolation(inputs.mux_status_end)
     prove_lane_state(inputs.fanin_status_start)
     prove_lane_state(inputs.fanin_status_end)
     prove_lane_counters_unchanged(inputs.fanin_status_start, inputs.fanin_status_end)
@@ -175,16 +194,24 @@ def prove_ingress_transparency(inputs: IngressProofInputs) -> None:
 
 @dataclass(frozen=True, slots=True)
 class FaderBracket:
-    """R4(a)'s pre/post-playback main-fader + mute reads."""
+    """R4(a)'s pre/post-playback main-fader + mute reads.
+
+    ``commanded_main_volume_db`` is the SAME value
+    :class:`~jasper.bass_extension.bench.executor.PlayedStimulus` records —
+    R4(a)'s "at the locked measurement level, not the safe floor" requirement
+    is checked against this, not merely that the bracket held steady.
+    """
 
     before_db: float
     before_muted: bool
     after_db: float
     after_muted: bool
+    commanded_main_volume_db: float
 
 
 def prove_fader_bracket(bracket: FaderBracket) -> None:
-    """R4(a): mute must be false; the fader must not drift during playback."""
+    """R4(a): mute must be false; the fader must not drift; and it must sit at
+    the locked measurement level, never the safe floor."""
 
     if bracket.before_muted or bracket.after_muted:
         raise FaderDriftError(
@@ -195,6 +222,13 @@ def prove_fader_bracket(bracket: FaderBracket) -> None:
         raise FaderDriftError(
             "main fader drifted during this stimulus role's playback "
             f"({bracket.before_db} dB -> {bracket.after_db} dB)"
+        )
+    if bracket.before_db != bracket.commanded_main_volume_db:
+        raise FaderDriftError(
+            "main fader was not at the locked measurement level during this "
+            f"stimulus role's playback ({bracket.before_db} dB, expected "
+            f"{bracket.commanded_main_volume_db} dB — R4(a) requires the "
+            "locked measurement level, not the safe floor)"
         )
 
 

@@ -37,17 +37,20 @@ same R4(c) branch)? Verified against the pinned CamillaDSP v4.1.3 source:
 
 Given R4(c) therefore ALWAYS resolves to "precedes the limiter" for this
 build, the render ALWAYS reproduces the recorded fader gain (see
-``render.py``'s ``--gain`` invocation), so both the render and the live meter
-carry the SAME fader attenuation — :func:`comparison_offset_db` resolves to
-0 dB (R10(b)'s explicit "meter reads before the main fader… offset is zero…
-R4(c)'s two-branch shape, not a refusal" branch), not the written
-``-recorded_main_volume_db`` term (which the amendment itself marks VOID
-until this citation is recorded — R10(a): "written for the post-fader case
-and is VOID until that citation is recorded"). This module keeps BOTH
-branches as an explicit, general, parameterized function rather than
-hardcoding the conclusion, precisely so a reviewer can audit this reasoning
-independently — this is the single citation in the whole implementation most
-worth an independent re-check before any hardware pass.
+``render.py``'s ``render_config``, which threads ``--gain <fader_db>`` into
+every render's argv — this is the mechanism, not merely a documented
+intent), so both the render and the live meter carry the SAME fader
+attenuation — :func:`comparison_offset_db` resolves to 0 dB (R10(b)'s
+explicit "meter reads before the main fader… offset is zero… R4(c)'s
+two-branch shape, not a refusal" branch), not the written
+``-recorded_main_volume_db`` term. This finding was independently confirmed
+by gate-2 review (including the ``--gain``/``initial_volumes[0]``/no-startup-
+ramp mechanism, ``src/bin.rs``), so the amendment's "VOID until this citation
+is recorded" marker is retired — see the revision-7 errata in
+``docs/bass-extension-waves/limiter-tap-realization.md``. This module still
+keeps BOTH branches as an explicit, general, parameterized function rather
+than hardcoding the conclusion, so a reviewer can audit the reasoning without
+trusting a hardcoded constant.
 """
 
 from __future__ import annotations
@@ -262,11 +265,17 @@ def cross_check_owner_channels(
     recorded_main_volume_db: float,
     render_carries_fader_gain: bool,
     tolerance_db: float,
-    computed_bound_db: float,
+    computed_bounds_db: dict[int, float],
     clipped_samples_before: int,
     clipped_samples_after: int,
 ) -> list[ChannelCrossCheckResult]:
     """R10 end to end for one stimulus role's playback, EVERY owner channel.
+
+    ``computed_bounds_db`` is PER CHANNEL — R10(c)'s bound is computed from
+    each channel's OWN rendered artifact (its own envelope-rise rate), never
+    max-collapsed across channels: two owner channels can legitimately have
+    different envelopes (different acoustic paths) and therefore different
+    permissive bounds.
 
     A render is never admitted uncross-checked: an unavailable observation, a
     clipped-samples increase, or any single channel failing refuses the
@@ -291,6 +300,8 @@ def cross_check_owner_channels(
     for channel in owner_channels:
         if channel not in rendered_peaks_dbfs:
             raise CrossCheckError(f"no rendered peak recorded for owner channel {channel}")
+        if channel not in computed_bounds_db:
+            raise CrossCheckError(f"no computed tolerance bound for owner channel {channel}")
         result = cross_check_channel(
             channel=channel,
             rendered_peak_dbfs=rendered_peaks_dbfs[channel],
@@ -298,7 +309,7 @@ def cross_check_owner_channels(
             recorded_main_volume_db=recorded_main_volume_db,
             render_carries_fader_gain=render_carries_fader_gain,
             tolerance_db=tolerance_db,
-            computed_bound_db=computed_bound_db,
+            computed_bound_db=computed_bounds_db[channel],
         )
         results.append(result)
     if any(result.verdict == "fail" for result in results):

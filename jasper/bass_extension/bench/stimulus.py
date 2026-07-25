@@ -118,9 +118,17 @@ def _conv_impulse_length_samples(
             ) from exc
         if fmt == "TEXT":
             return len([line for line in data.decode("utf-8", errors="strict").splitlines() if line.strip()])
+        # CamillaDSP v4.1.3's real FileSampleFormat spellings
+        # (src/config/mod.rs) — "S16LE"/"FLOAT64LE" etc. are retired v1/v2
+        # names this pinned build's deny_unknown_fields parser rejects.
         bytes_per_sample = {
-            "S16LE": 2, "S24LE": 3, "S24LE3": 3, "S32LE": 4,
-            "FLOAT32LE": 4, "FLOAT64LE": 8,
+            "S16_LE": 2,
+            "S24_3_LE": 3,
+            "S24_4_RJ_LE": 4,
+            "S24_4_LJ_LE": 4,
+            "S32_LE": 4,
+            "F32_LE": 4,
+            "F64_LE": 8,
         }.get(fmt)
         if bytes_per_sample is None:
             raise StimulusAssemblyError(f"unrecognized Conv Raw format {fmt!r}")

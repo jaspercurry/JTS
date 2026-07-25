@@ -9,25 +9,55 @@ modules (this PR's new tap-realization logic) with the injected
 :class:`PlayAndCapture` collaborator to implement the two-phase
 :class:`~jasper.bass_extension.bench.runner.RoleExecutor` protocol.
 
-**Scope boundary — the one injected seam.** Admitting and PLAYING a stimulus
-through hardware while near-field-capturing the acoustic response over the
-phone capture-relay session is the piece the CLI's original stub named as
-"the one piece with no in-tree helper to compose": no existing function in
-this tree opens a capture-relay session, waits for a phone to connect and
-upload, and returns the result end to end, and doing so correctly is
-fundamentally an on-device, hardware-verified exercise. This module takes
-that ONE step as an injected collaborator (:class:`PlayAndCapture`) —
-mirroring the SAME dependency-injection shape the runner already uses for
-``BenchDeps`` (``controller`` / ``floor`` / ``executor``), applied one level
-further down at the point that is genuinely hardware/phone-dependent. Every
-other piece — the R6 padding, the R9 offline renders (including the fully
-hardware-free ``digital_transfer_probe``), the R10 cross-check, and the R6a /
-R4(a) live-proof predicates — is fully implemented here.
+**Scope boundary — the one injected seam.** Admitting and PLAYING an
+ALREADY-PREPARED stimulus through hardware while near-field-capturing the
+acoustic response over the phone capture-relay session is the piece the
+CLI's original stub named as "the one piece with no in-tree helper to
+compose": no existing function in this tree opens a capture-relay session,
+waits for a phone to connect and upload, and returns the result end to end,
+and doing so correctly is fundamentally an on-device, hardware-verified
+exercise. This module takes that ONE step as an injected collaborator
+(:class:`PlayAndCapture`) — mirroring the SAME dependency-injection shape
+the runner already uses for ``BenchDeps`` (``controller`` / ``floor`` /
+``executor``), applied one level further down at the point that is
+genuinely hardware/phone-dependent.
+
+Every other piece is fully implemented here, including stimulus GENERATION
+and R6 padding: this module generates every role's unpadded stimulus from
+the operator-authorized
+:class:`~jasper.bass_extension.bench.manifest.StimulusRequest` (the same
+hardware-free ``ensure_bandlimited_noise_wav`` toolkit
+``digital_transfer_probe`` always used), pads it, and only THEN hands the
+one content-addressed padded artifact to :meth:`PlayAndCapture.play` —
+never the other way around. This is R6's own requirement: live playback and
+the offline pre/post-limiter renders must consume the EXACT SAME bytes, so
+:class:`PlayAndCapture` never generates or pads anything itself; it plays
+whatever :class:`Path` it is given. The R9 offline renders (including the
+fully hardware-free ``digital_transfer_probe``), the R10 cross-check, and
+the R6a / R4(a) live-proof predicates are likewise fully implemented here.
+
+**Stimulus-generator judgment call (flagged for review).** The frozen
+protocol deliberately pins no stimulus-generation algorithm ("The protocol
+contains no stimulus, level, frequency, duration, cooldown, repeat, or
+limiter number" — ``limiter-evidence-protocol.md``). Neither existing
+generator is literally a frequency sweep (``ensure_sine_wav`` is one fixed
+tone; ``ensure_bandlimited_noise_wav`` is static band-limited noise).
+``sustain_stress``'s "deterministic band-limited noise program" is an
+unambiguous match for ``ensure_bandlimited_noise_wav``;
+``sweep_transparency``'s "narrow bass sweep" does not cleanly match either
+helper. :func:`_generate_stimulus_wav` uses ``ensure_bandlimited_noise_wav``
+uniformly for both roles, banded by the request's own
+``requested_stimulus_band_hz`` — consistent with ``digital_transfer_probe``'s
+existing, already-accepted pattern for turning a
+:class:`~jasper.bass_extension.bench.manifest.StimulusRequest` into a
+stimulus, and because it needs no invented parameter (a literal frequency
+sweep would need an invented frequency trajectory the manifest does not
+carry). Revisit if a real hardware :class:`PlayAndCapture` binding needs a
+literal swept-frequency stimulus for ``sweep_transparency``.
 """
 
 from __future__ import annotations
 
-import wave
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +74,8 @@ from jasper.bass_extension.targets import MarginPolicy
 
 from . import cross_check, derivation, live_proof, render, stimulus
 from .analysis import digital_clamp_passed, sample_peak_dbfs, transfer_match
-from .manifest import StimulusRequest
+from .bundle import build_sustain_record, build_transfer_record
+from .manifest import CampaignManifest, StimulusRequest
 from .runner import (
     CandidateCapture,
     CandidateMeasurements,
@@ -67,12 +98,13 @@ class ExecutorError(RuntimeError):
 class PlayedStimulus:
     """One admitted stimulus role's complete on-device playback evidence.
 
-    ``stimulus_wav_path`` is the UNPADDED file the existing generators wrote
-    (``ensure_sine_wav`` / ``ensure_bandlimited_noise_wav``) — R6 padding is
-    applied afterward, by this module, never by :class:`PlayAndCapture`.
-    ``live_peak_all_samples`` is every ``get_playback_peak_all()`` reading
-    polled at the manifest's recorded interval across the playback (R10(c));
-    each entry is one snapshot, in channel order.
+    There is deliberately no stimulus path here: the EXECUTOR generates and
+    pads the stimulus and hands the resulting file to
+    :meth:`PlayAndCapture.play` (``stimulus_path``) — by the time ``play()``
+    returns, the caller already knows exactly what was played (it built the
+    file). ``live_peak_all_samples`` is every ``get_playback_peak_all()``
+    reading polled at the manifest's recorded interval across the playback
+    (R10(c)); each entry is one snapshot, in channel order.
 
     ``quality_verdict`` / ``protection_verdict`` / ``transparency_verdict``
     are ALREADY-COMPUTED verdicts, not raw signals: the frequency-response
@@ -89,7 +121,6 @@ class PlayedStimulus:
     it.
     """
 
-    stimulus_wav_path: Path
     admission: ArtifactIdentity
     acoustic_capture: ArtifactIdentity
     signal_analysis: ArtifactIdentity
@@ -120,10 +151,13 @@ class PlayedStimulus:
 class PlayAndCapture(Protocol):
     """The one on-device seam (see module docstring): admit, play, capture.
 
-    ``reference`` is ``None`` for every call except the candidate phase's
-    ``sweep_transparency`` play, where it is the phase-1
-    :class:`~jasper.bass_extension.bench.runner.ReferenceSweepCapture` to
-    compare against — the implementation needs it to compute
+    ``stimulus_path`` is the ALREADY-GENERATED, ALREADY-PADDED artifact
+    (built and content-addressed by the executor, per R6) — a correct
+    implementation admits and plays exactly this file; it never generates or
+    modifies stimulus bytes itself. ``reference`` is ``None`` for every call
+    except the candidate phase's ``sweep_transparency`` play, where it is the
+    phase-1 :class:`~jasper.bass_extension.bench.runner.ReferenceSweepCapture`
+    to compare against — the implementation needs it to compute
     ``PlayedStimulus.transparency_verdict``/``transparency_analysis``.
     """
 
@@ -134,17 +168,91 @@ class PlayAndCapture(Protocol):
         role: SweepOrSustain,
         request: StimulusRequest,
         stop: Stop,
+        stimulus_path: Path,
         reference: ReferenceSweepCapture | None = None,
     ) -> PlayedStimulus: ...
 
 
-def _wav_header(path: Path) -> derivation.ArtifactHeader:
-    with wave.open(str(path), "rb") as source:
-        return derivation.ArtifactHeader(
-            sample_rate_hz=source.getframerate(),
-            channels=source.getnchannels(),
-            bits_per_sample=source.getsampwidth() * 8,
-        )
+def _generate_stimulus_wav(
+    *, role: str, request: StimulusRequest, sample_rate_hz: int, target_dir: Path
+) -> Path:
+    """Synthesize ``role``'s unpadded stimulus from the operator-authorized
+    request. See the module docstring's "Stimulus-generator judgment call"
+    for why ``ensure_bandlimited_noise_wav`` is used uniformly across roles.
+
+    ``ensure_bandlimited_noise_wav`` writes MONO audio; R6a's fan-in mix
+    geometry is fixed at ``live_proof.FANIN_MIX_CHANNELS`` (2 —
+    ``rust/jasper-fanin/src/mixer.rs``'s ``pub const CHANNELS: u32 = 2``,
+    "the mix is always 2-channel … regardless of any one lane's own source
+    geometry") REGARDLESS of how many owner channels the downstream
+    limiter/pipeline touches, so the stimulus that is actually admitted and
+    played must be 2-channel too. The generated mono signal is duplicated to
+    both channels (L=R) rather than drawing two independent noise
+    realizations — an L=R signal keeps the owner path's split-mixer sum
+    (equal-gain from channels 0 and 1) a deterministic, calculable multiple
+    of the source rather than a stochastic function of two independent
+    draws' phase relationship.
+    """
+
+    from jasper.audio_measurement.playback import ensure_bandlimited_noise_wav
+
+    mono_path = ensure_bandlimited_noise_wav(
+        f_lo_hz=request.requested_stimulus_band_hz[0],
+        f_hi_hz=request.requested_stimulus_band_hz[1],
+        duration_s=request.requested_hold_duration_s,
+        dbfs=request.requested_stimulus_effective_peak_dbfs,
+        sample_rate=sample_rate_hz,
+        cache_dir=target_dir,
+    )
+    stereo_path = target_dir / f"{mono_path.stem}-stereo{mono_path.suffix}"
+    if not stereo_path.exists():
+        import wave
+
+        with wave.open(str(mono_path), "rb") as source:
+            sample_width = source.getsampwidth()
+            frame_rate = source.getframerate()
+            mono_frames = source.readframes(source.getnframes())
+        samples = np.frombuffer(mono_frames, dtype=f"<i{sample_width}")
+        stereo = np.repeat(samples, 2)
+        with wave.open(str(stereo_path), "wb") as out:
+            out.setnchannels(2)
+            out.setsampwidth(sample_width)
+            out.setframerate(frame_rate)
+            out.writeframes(stereo.tobytes())
+    return stereo_path
+
+
+def _live_sample_rate_hz(live_active_config_raw: str) -> int:
+    import yaml
+
+    live = yaml.safe_load(live_active_config_raw)
+    if not isinstance(live, dict) or type(live.get("devices", {}).get("samplerate")) is not int:
+        raise ExecutorError("live config has no devices.samplerate")
+    return int(live["devices"]["samplerate"])
+
+
+def estimate_campaign_render_count(manifest: CampaignManifest) -> int:
+    """S4: a threaded, campaign-derived ``renders_outstanding`` seed — never
+    an invented per-target literal.
+
+    Counts ``targets * (2 discovery pre_limiter renders [sweep_transparency,
+    sustain_stress] + 6 one-candidate renders [digital_transfer_probe,
+    sweep_transparency, sustain_stress, each pre+post]) = targets * 8``.
+
+    JUDGMENT CALL (flagged for review): the true candidate count per target
+    is data-dependent (the discovery pass's DISTINCT measured pre-limiter
+    peaks, unknown until discovery runs) and cannot be derived from the
+    static manifest alone. This estimates exactly ONE evaluated candidate
+    per target — the smallest possible campaign shape — so a target whose
+    discovery surfaces multiple distinct candidates under-estimates that
+    target's true render count. This is an acceptable direction to be wrong
+    in: :func:`~jasper.bass_extension.bench.render.check_free_space` is an
+    early-warning disk-space sanity check re-run before EVERY render (not a
+    one-time gate), so under-estimating narrows the warning margin rather
+    than silently permitting an actual out-of-space failure.
+    """
+
+    return len(manifest.requests) * 8
 
 
 @dataclass(slots=True)
@@ -155,7 +263,9 @@ class BenchRoleExecutor:
     caller (the CLI) selects the target's slice of the campaign manifest.
     ``margin`` is the campaign's selected :class:`MarginPolicy` (from
     ``campaign_manifest.margin_policy_name``), supplied once by the caller —
-    this module never derives it.
+    this module never derives it. ``renders_outstanding`` has no default
+    (S4): the caller seeds it from :func:`estimate_campaign_render_count`,
+    never an invented literal.
     """
 
     target: TargetPlan
@@ -166,7 +276,7 @@ class BenchRoleExecutor:
     play_and_capture: PlayAndCapture
     binary: render.BinaryIdentity
     margin: MarginPolicy
-    renders_outstanding: int = 8
+    renders_outstanding: int
 
     def _bounds_for(self, role: str) -> render.RenderBounds:
         request = self.requests[role]
@@ -221,6 +331,53 @@ class BenchRoleExecutor:
             filter_defs, sample_rate_hz=int(devices["samplerate"])
         )
 
+    async def _prepare_and_play(
+        self,
+        *,
+        target: TargetPlan,
+        role: SweepOrSustain,
+        request: StimulusRequest,
+        live_active_config_raw: str,
+        sink: BundleSink,
+        stop: Stop,
+        tag: str,
+        reference: ReferenceSweepCapture | None = None,
+    ) -> tuple[PlayedStimulus, stimulus.PaddedStimulus, ArtifactIdentity]:
+        """R6: generate + pad this role's stimulus BEFORE playback, then hand
+        the one content-addressed padded artifact to
+        :class:`PlayAndCapture` — so live playback and the offline
+        pre/post-limiter renders always consume the exact same bytes. Never
+        re-derived afterward from a possibly-stale (post-restore) config.
+        """
+
+        target_dir = self._target_dir(sink)
+        sample_rate_hz = _live_sample_rate_hz(live_active_config_raw)
+        raw_path = _generate_stimulus_wav(
+            role=role, request=request, sample_rate_hz=sample_rate_hz, target_dir=target_dir
+        )
+        minima = self._padding_minima(live_active_config_raw)
+        padded = stimulus.pad_stimulus_wav(raw_path, minima=minima)
+        padded_identity = sink.write_bytes(
+            f"{self.target.target_id}/{tag}-padded.wav",
+            padded.wav_bytes,
+            kind="jts_bass_extension_bench_padded_stimulus",
+        )
+        sink.write_json(
+            f"{self.target.target_id}/{tag}-padding-minima.json",
+            minima.to_receipt(),
+            kind="jts_bass_extension_bench_padding_receipt",
+        )
+        padded_path = sink.bundle_dir / padded_identity.relative_path
+        played = await self.play_and_capture.play(
+            target=target,
+            role=role,
+            request=request,
+            stop=stop,
+            stimulus_path=padded_path,
+            reference=reference,
+        )
+        return played, padded, padded_identity
+
     def _derive_and_render(
         self,
         *,
@@ -231,10 +388,18 @@ class BenchRoleExecutor:
         padded: stimulus.PaddedStimulus,
         sink: BundleSink,
         bounds: render.RenderBounds,
+        fader_db: float,
     ) -> tuple[derivation.DerivedConfig, Path, int]:
         """Write the padded WAV + derived config, render TWICE (R8's per-shape
         determinism receipt), and return the derived config, the first
         render's output path, and the live pipeline's playback channel count.
+
+        ``fader_db`` (R4(a)'s bracketed, locked-measurement-level main-volume
+        reading — or ``0.0`` for the fully-synthetic, no-live-playback
+        ``digital_transfer_probe``) is threaded into ``--gain`` (R4(c)/R9):
+        every render must reproduce the same fader attenuation the live pass
+        (if any) carried, or the rendered peak is systematically off by the
+        fader's dB. See ``render.py``'s ``render_config`` docstring.
         """
 
         target_dir = self._target_dir(sink)
@@ -287,6 +452,7 @@ class BenchRoleExecutor:
             first_output_path=first_output,
             second_output_path=second_output,
             bounds=bounds,
+            fader_db=fader_db,
         )
         sink.write_json(
             f"{self.target.target_id}/{role_tag}-{boundary}-determinism.json",
@@ -295,6 +461,7 @@ class BenchRoleExecutor:
                 "deterministic": determinism.deterministic,
                 "first_sha256": determinism.first.output_sha256,
                 "second_sha256": determinism.second.output_sha256,
+                "fader_db": fader_db,
             },
             kind="jts_bass_extension_bench_determinism_receipt",
         )
@@ -315,29 +482,23 @@ class BenchRoleExecutor:
         *,
         role: SweepOrSustain,
         live_active_config_raw: str,
+        padded: stimulus.PaddedStimulus,
+        padded_identity: ArtifactIdentity,
         expected_clip_limit_dbfs: float,
         setting_tag: str,
         sink: BundleSink,
     ) -> dict[str, Any]:
-        """R6 padding + R9 pre/post renders + R6a/R4(a)/R10 proofs for one
-        role's playback; return the completed measurement-core kwargs bag
+        """R9 pre/post renders + R6a/R4(a)/R10 proofs for one role's
+        playback; return the completed measurement-core kwargs bag
         :mod:`bundle` expects (``build_sweep_record`` / ``build_sustain_record``).
+
+        ``padded``/``padded_identity`` are the SAME padded stimulus that was
+        actually played (computed and recorded by the caller BEFORE
+        playback, per R6) — this method renders from and records evidence
+        about that one artifact; it never re-pads.
         """
 
         request = self.requests[role]
-        minima = self._padding_minima(live_active_config_raw)
-        padded = stimulus.pad_stimulus_wav(played.stimulus_wav_path, minima=minima)
-        padded_identity = sink.write_bytes(
-            f"{self.target.target_id}/{role}-{setting_tag}-padded.wav",
-            padded.wav_bytes,
-            kind="jts_bass_extension_bench_padded_stimulus",
-        )
-        sink.write_json(
-            f"{self.target.target_id}/{role}-{setting_tag}-padding-minima.json",
-            minima.to_receipt(),
-            kind="jts_bass_extension_bench_padding_receipt",
-        )
-
         bounds = self._bounds_for(role)
         pre_derived, pre_output, playback_channels = self._derive_and_render(
             role_tag=f"{role}-{setting_tag}",
@@ -347,6 +508,7 @@ class BenchRoleExecutor:
             padded=padded,
             sink=sink,
             bounds=bounds,
+            fader_db=played.commanded_main_volume_db,
         )
         post_derived, post_output, _ = self._derive_and_render(
             role_tag=f"{role}-{setting_tag}",
@@ -356,15 +518,21 @@ class BenchRoleExecutor:
             padded=padded,
             sink=sink,
             bounds=bounds,
+            fader_db=played.commanded_main_volume_db,
         )
         del pre_derived, post_derived  # receipts already written by _derive_and_render
 
         live_proof.prove_ingress_transparency(
             live_proof.IngressProofInputs(
                 mux_status=played.mux_status_start,
+                mux_status_end=played.mux_status_end,
                 fanin_status_start=played.fanin_status_start,
                 fanin_status_end=played.fanin_status_end,
-                artifact_header=_wav_header(played.stimulus_wav_path),
+                artifact_header=derivation.ArtifactHeader(
+                    sample_rate_hz=padded.sample_rate_hz,
+                    channels=padded.channels,
+                    bits_per_sample=padded.sample_width_bytes * 8,
+                ),
             )
         )
         live_proof.prove_fader_bracket(
@@ -373,6 +541,7 @@ class BenchRoleExecutor:
                 before_muted=played.fader_before_muted,
                 after_db=played.fader_after_db,
                 after_muted=played.fader_after_muted,
+                commanded_main_volume_db=played.commanded_main_volume_db,
             )
         )
 
@@ -399,14 +568,18 @@ class BenchRoleExecutor:
                     live_peak_all_max.append(float("-inf"))
                 live_peak_all_max[index] = max(live_peak_all_max[index], value)
 
-        bound_db = max(
-            cross_check.compute_permissive_tolerance_bound_db(
+        # S5: the permissive tolerance bound is per-channel — each channel's
+        # own rendered envelope, never max-collapsed across channels (two
+        # owner channels can legitimately have different envelopes and
+        # therefore different permissive bounds).
+        computed_bounds_db: dict[int, float] = {
+            channel: cross_check.compute_permissive_tolerance_bound_db(
                 post_body_by_channel[channel],
                 sample_rate_hz=padded.sample_rate_hz,
                 poll_interval_s=request.cross_check_poll_interval_s,
             )
             for channel in self.target.owner_channels
-        )
+        }
         cross_check.cross_check_owner_channels(
             owner_channels=self.target.owner_channels,
             rendered_peaks_dbfs=post_peaks,
@@ -419,36 +592,45 @@ class BenchRoleExecutor:
             # the render always carries it.
             render_carries_fader_gain=True,
             tolerance_db=request.cross_check_tolerance_db,
-            computed_bound_db=bound_db,
+            computed_bounds_db=computed_bounds_db,
             clipped_samples_before=played.clipped_samples_before,
             clipped_samples_after=played.clipped_samples_after,
         )
 
-        pre_pcm_id = sink.record_existing(
-            pre_output,
-            relative_path=f"{self.target.target_id}/{role}-{setting_tag}-pre.raw",
-            kind="jts_bass_extension_bench_pre_limiter_pcm",
-        )
-        post_pcm_id = sink.record_existing(
-            post_output,
-            relative_path=f"{self.target.target_id}/{role}-{setting_tag}-post.raw",
-            kind="jts_bass_extension_bench_post_limiter_pcm",
-        )
+        # S7: recorded pre/post PCM artifacts are each owner channel's
+        # EXTRACTED stream (R3), never the full interleaved render.
+        pre_pcm_ids: dict[int, ArtifactIdentity] = {}
+        post_pcm_ids: dict[int, ArtifactIdentity] = {}
+        for channel in self.target.owner_channels:
+            pre_pcm_ids[channel] = sink.write_bytes(
+                f"{self.target.target_id}/{role}-{setting_tag}-{channel}-pre.raw",
+                pre_body_by_channel[channel].astype("<f8").tobytes(),
+                kind="jts_bass_extension_bench_pre_limiter_pcm",
+            )
+            post_pcm_ids[channel] = sink.write_bytes(
+                f"{self.target.target_id}/{role}-{setting_tag}-{channel}-post.raw",
+                post_body_by_channel[channel].astype("<f8").tobytes(),
+                kind="jts_bass_extension_bench_post_limiter_pcm",
+            )
 
         # R3: multi-entry owner_channels never collapse before the runner's
         # distinct-peak inventory — but this bag's `pre_limiter_peak_dbfs` /
         # `post_limiter_peak_dbfs` are single numbers by the frozen schema.
         # The MINIMUM across owner channels is R3's pinned conservative
-        # collapse rule for exactly this situation.
+        # collapse rule for exactly this situation; the recorded singular PCM
+        # artifact stays evidentially consistent by picking the SAME channel
+        # that produced the recorded peak (S7).
         pre_limiter_peak_dbfs = cross_check.min_across_channels(list(pre_peaks.values()))
         post_limiter_peak_dbfs = cross_check.min_across_channels(list(post_peaks.values()))
+        min_pre_channel = min(pre_peaks, key=lambda c: pre_peaks[c])
+        min_post_channel = min(post_peaks, key=lambda c: post_peaks[c])
         clamp_passed = digital_clamp_passed(pre_limiter_peak_dbfs, self.margin)
 
         return {
             "stimulus": padded_identity,
             "admission": played.admission,
-            "pre_limiter_pcm": pre_pcm_id,
-            "post_limiter_pcm": post_pcm_id,
+            "pre_limiter_pcm": pre_pcm_ids[min_pre_channel],
+            "post_limiter_pcm": post_pcm_ids[min_post_channel],
             "acoustic_capture": played.acoustic_capture,
             "signal_analysis": played.signal_analysis,
             "protection_analysis": played.protection_analysis,
@@ -470,116 +652,156 @@ class BenchRoleExecutor:
         self,
         *,
         candidate_setting_dbfs: float,
+        live_active_config_raw: str,
         sink: BundleSink,
     ) -> dict[str, Any]:
         """R9's frozen step 4: fully hardware-free — a deterministic,
         content-addressed sample program rendered through an isolated
         CamillaDSP file sink, never reaching hardware. Runs synchronously,
-        inside the window, at the safe floor."""
+        inside the window, at the safe floor (``fader_db=0.0`` — there is no
+        live playback in this step, so there is no commanded main-volume
+        level to reproduce; every render still threads an explicit
+        ``--gain``, see ``render.py``'s ``render_config`` docstring).
 
-        raw = await self.controller.get_active_config_raw()
+        S8: every owner channel is checked — the verdict never collapses to
+        ``owner_channels[0]``. B4: the "deployed" post-limiter artifact
+        compared against the reference is the EXTRACTED single-channel body
+        (matching the reference transform's channel/length exactly), never
+        the whole interleaved render.
+        """
+
         request = self.requests["digital_transfer_probe"]
         target_dir = self._target_dir(sink)
-        stimulus_path = target_dir / "transfer-probe-stimulus.wav"
-        from jasper.audio_measurement.playback import ensure_bandlimited_noise_wav
-
-        import yaml
-
-        live = yaml.safe_load(raw)
-        if not isinstance(live, dict) or type(live.get("devices", {}).get("samplerate")) is not int:
-            raise ExecutorError("live config has no devices.samplerate")
-        sample_rate_hz = int(live["devices"]["samplerate"])
-        generator_wav = ensure_bandlimited_noise_wav(
-            f_lo_hz=request.requested_stimulus_band_hz[0],
-            f_hi_hz=request.requested_stimulus_band_hz[1],
-            duration_s=request.requested_hold_duration_s,
-            dbfs=request.requested_stimulus_effective_peak_dbfs,
-            sample_rate=sample_rate_hz,
-            cache_dir=target_dir,
+        sample_rate_hz = _live_sample_rate_hz(live_active_config_raw)
+        generator_wav = _generate_stimulus_wav(
+            role="digital_transfer_probe",
+            request=request,
+            sample_rate_hz=sample_rate_hz,
+            target_dir=target_dir,
         )
-        stimulus_path.write_bytes(generator_wav.read_bytes())
-        minima = self._padding_minima(raw)
-        padded = stimulus.pad_stimulus_wav(stimulus_path, minima=minima)
+        minima = self._padding_minima(live_active_config_raw)
+        padded = stimulus.pad_stimulus_wav(generator_wav, minima=minima)
+        setting_tag = f"transfer-{candidate_setting_dbfs:g}"
         stimulus_identity = sink.write_bytes(
-            f"{self.target.target_id}/transfer-probe-{candidate_setting_dbfs:g}-padded.wav",
+            f"{self.target.target_id}/{setting_tag}-padded.wav",
             padded.wav_bytes,
             kind="jts_bass_extension_bench_padded_stimulus",
         )
 
         bounds = self._bounds_for("digital_transfer_probe")
-        setting_tag = f"transfer-{candidate_setting_dbfs:g}"
         pre_derived, pre_output, playback_channels = self._derive_and_render(
             role_tag=setting_tag,
             boundary="pre_limiter",
-            live_active_config_raw=raw,
+            live_active_config_raw=live_active_config_raw,
             expected_clip_limit_dbfs=candidate_setting_dbfs,
             padded=padded,
             sink=sink,
             bounds=bounds,
+            fader_db=0.0,
         )
         _, post_output, _ = self._derive_and_render(
             role_tag=setting_tag,
             boundary="post_limiter",
-            live_active_config_raw=raw,
+            live_active_config_raw=live_active_config_raw,
             expected_clip_limit_dbfs=candidate_setting_dbfs,
             padded=padded,
             sink=sink,
             bounds=bounds,
+            fader_db=0.0,
         )
         del pre_derived
 
-        channel = self.target.owner_channels[0]
-        pre_body = self._extract_body(
-            pre_output, channel=channel, channels=playback_channels, padded=padded
-        )
-        post_body = self._extract_body(
-            post_output, channel=channel, channels=playback_channels, padded=padded
-        )
-        reference_body = render.reference_soft_clip(
-            pre_body, clip_limit_dbfs=candidate_setting_dbfs
-        )
-        reference_bytes = reference_body.astype("<f8").tobytes()
+        per_channel: dict[int, dict[str, Any]] = {}
+        for channel in self.target.owner_channels:
+            pre_body = self._extract_body(
+                pre_output, channel=channel, channels=playback_channels, padded=padded
+            )
+            post_body = self._extract_body(
+                post_output, channel=channel, channels=playback_channels, padded=padded
+            )
+            reference_body = render.reference_soft_clip(
+                pre_body, clip_limit_dbfs=candidate_setting_dbfs
+            )
+            pre_bytes = pre_body.astype("<f8").tobytes()
+            post_bytes = post_body.astype("<f8").tobytes()
+            reference_bytes = reference_body.astype("<f8").tobytes()
 
-        pre_pcm_id = sink.record_existing(
-            pre_output,
-            relative_path=f"{self.target.target_id}/{setting_tag}-pre.raw",
-            kind="jts_bass_extension_bench_pre_limiter_pcm",
-        )
-        post_pcm_id = sink.record_existing(
-            post_output,
-            relative_path=f"{self.target.target_id}/{setting_tag}-post.raw",
-            kind="jts_bass_extension_bench_post_limiter_pcm",
-        )
-        reference_id = sink.write_bytes(
-            f"{self.target.target_id}/{setting_tag}-reference-post.raw",
-            reference_bytes,
-            kind="jts_bass_extension_bench_reference_post_limiter_pcm",
-        )
-        post_bytes = post_body.astype("<f8").tobytes()
-        analysis_id = sink.write_json(
-            f"{self.target.target_id}/{setting_tag}-transfer-analysis.json",
-            {
+            pre_pcm_id = sink.write_bytes(
+                f"{self.target.target_id}/{setting_tag}-{channel}-pre.raw",
+                pre_bytes,
+                kind="jts_bass_extension_bench_pre_limiter_pcm",
+            )
+            post_pcm_id = sink.write_bytes(
+                f"{self.target.target_id}/{setting_tag}-{channel}-post.raw",
+                post_bytes,
+                kind="jts_bass_extension_bench_post_limiter_pcm",
+            )
+            reference_id = sink.write_bytes(
+                f"{self.target.target_id}/{setting_tag}-{channel}-reference-post.raw",
+                reference_bytes,
+                kind="jts_bass_extension_bench_reference_post_limiter_pcm",
+            )
+            channel_verdict = transfer_match(
+                deployed_sha256=post_pcm_id.sha256,
+                deployed_byte_size=len(post_bytes),
+                reference_sha256=reference_id.sha256,
+                reference_byte_size=len(reference_bytes),
+            )
+            per_channel[channel] = {
+                "pre_limiter_pcm": pre_pcm_id,
+                "post_limiter_pcm": post_pcm_id,
+                "reference_post_limiter_pcm": reference_id,
                 "deployed_sha256": post_pcm_id.sha256,
                 "reference_sha256": reference_id.sha256,
                 "deployed_byte_size": len(post_bytes),
                 "reference_byte_size": len(reference_bytes),
+                "verdict": channel_verdict,
+            }
+
+        verdict = (
+            "pass" if all(entry["verdict"] == "pass" for entry in per_channel.values())
+            else "fail"
+        )
+        analysis_id = sink.write_json(
+            f"{self.target.target_id}/{setting_tag}-transfer-analysis.json",
+            {
+                "owner_channels": list(self.target.owner_channels),
+                "per_channel": {
+                    str(channel): {
+                        "deployed_sha256": entry["deployed_sha256"],
+                        "reference_sha256": entry["reference_sha256"],
+                        "deployed_byte_size": entry["deployed_byte_size"],
+                        "reference_byte_size": entry["reference_byte_size"],
+                        "verdict": entry["verdict"],
+                    }
+                    for channel, entry in per_channel.items()
+                },
+                "verdict": verdict,
             },
             kind="jts_bass_extension_bench_transfer_analysis",
         )
-        verdict = transfer_match(
-            deployed_sha256=post_pcm_id.sha256,
-            deployed_byte_size=len(post_bytes),
-            reference_sha256=reference_id.sha256,
-            reference_byte_size=len(reference_bytes),
+        # The recorded singular PCM artifacts (the frozen schema's
+        # digital_transfer_probe fields are singular, not per-channel) pick
+        # the FIRST owner channel deterministically — there is no
+        # "worst-case" channel to prefer for a fully-synthetic isolated
+        # probe the way there is a MIN peak to prefer in _finish_role; the
+        # overall verdict above already requires EVERY channel to pass, so
+        # it never collapses to just this one channel's result.
+        first_channel = self.target.owner_channels[0]
+        # build_transfer_record converts every ArtifactIdentity to its bundle
+        # dict shape — build_candidate (and ultimately build_bundle's
+        # evidence_fingerprint) expects an already-converted Mapping here,
+        # never a raw dataclass instance.
+        return build_transfer_record(
+            stimulus=stimulus_identity,
+            pre_limiter_pcm=per_channel[first_channel]["pre_limiter_pcm"],
+            post_limiter_pcm=per_channel[first_channel]["post_limiter_pcm"],
+            reference_post_limiter_pcm=per_channel[first_channel][
+                "reference_post_limiter_pcm"
+            ],
+            transfer_analysis=analysis_id,
+            verdict=verdict,
         )
-        return {
-            "stimulus": stimulus_identity,
-            "pre_limiter_pcm": pre_pcm_id,
-            "post_limiter_pcm": post_pcm_id,
-            "reference_post_limiter_pcm": reference_id,
-            "transfer_analysis": analysis_id,
-            "verdict": verdict,
-        }
 
     async def run_discovery(
         self,
@@ -589,21 +811,31 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> Sequence[DiscoveryCapture]:
+        raw = await self.controller.get_active_config_raw()
         captures: list[DiscoveryCapture] = []
         for role in ("sweep_transparency", "sustain_stress"):
             stop.check()
             request = self.requests[role]
-            played = await self.play_and_capture.play(
-                target=target, role=role, request=request, stop=stop
+            played, padded, padded_identity = await self._prepare_and_play(
+                target=target,
+                role=role,
+                request=request,
+                live_active_config_raw=raw,
+                sink=sink,
+                stop=stop,
+                tag=f"discovery-{role}",
             )
             captures.append(
                 DiscoveryCapture(
-                    stimulus=played.admission,
+                    stimulus=padded_identity,
                     admission=played.admission,
                     render_inputs={
                         "played": played,
                         "role": role,
                         "active_graph_readback": active_graph_readback,
+                        "live_active_config_raw": raw,
+                        "padded": padded,
+                        "padded_identity": padded_identity,
                     },
                 )
             )
@@ -617,7 +849,6 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> Sequence[DiscoveryProbe]:
-        raw = await self.controller.get_active_config_raw()
         probes: list[DiscoveryProbe] = []
         for capture in captures:
             stop.check()
@@ -626,13 +857,10 @@ class BenchRoleExecutor:
             active_graph_readback = cast(
                 ArtifactIdentity, capture.render_inputs["active_graph_readback"]
             )
-            minima = self._padding_minima(raw)
-            padded = stimulus.pad_stimulus_wav(played.stimulus_wav_path, minima=minima)
-            padded_identity = sink.write_bytes(
-                f"{target.target_id}/discovery-{role}-padded.wav",
-                padded.wav_bytes,
-                kind="jts_bass_extension_bench_padded_stimulus",
-            )
+            raw = cast(str, capture.render_inputs["live_active_config_raw"])
+            padded = cast(stimulus.PaddedStimulus, capture.render_inputs["padded"])
+            padded_identity = cast(ArtifactIdentity, capture.render_inputs["padded_identity"])
+
             derived, output_path, playback_channels = self._derive_and_render(
                 role_tag=f"discovery-{role}",
                 boundary="pre_limiter",
@@ -641,22 +869,32 @@ class BenchRoleExecutor:
                 padded=padded,
                 sink=sink,
                 bounds=self._bounds_for(role),
+                fader_db=played.commanded_main_volume_db,
             )
             del derived  # receipt already written
 
-            per_channel_peaks: list[float] = []
-            pcm_id: ArtifactIdentity | None = None
+            # S7: each owner channel's EXTRACTED stream is its own distinct
+            # artifact — never N identical copies of the whole render.
+            peaks_by_channel: dict[int, float] = {}
+            pcm_ids: dict[int, ArtifactIdentity] = {}
             for channel in target.owner_channels:
                 body = self._extract_body(
                     output_path, channel=channel, channels=playback_channels, padded=padded
                 )
-                per_channel_peaks.append(sample_peak_dbfs(body))
-                pcm_id = sink.record_existing(
-                    output_path,
-                    relative_path=f"{target.target_id}/discovery-{role}-{channel}-pre.raw",
+                peaks_by_channel[channel] = sample_peak_dbfs(body)
+                pcm_ids[channel] = sink.write_bytes(
+                    f"{target.target_id}/discovery-{role}-{channel}-pre.raw",
+                    body.astype("<f8").tobytes(),
                     kind="jts_bass_extension_bench_pre_limiter_pcm",
                 )
-            assert pcm_id is not None
+            per_channel_peaks = [peaks_by_channel[c] for c in target.owner_channels]
+            pre_limiter_peak_dbfs = cross_check.min_across_channels(per_channel_peaks)
+            # Keep the recorded singular artifact evidentially consistent
+            # with the recorded (min) peak — persist whichever channel
+            # achieved it (S7, mirroring _finish_role).
+            min_channel = min(peaks_by_channel, key=lambda c: peaks_by_channel[c])
+            pcm_id = pcm_ids[min_channel]
+
             peak_analysis_id = sink.write_json(
                 f"{target.target_id}/discovery-{role}-peak-analysis.json",
                 {
@@ -672,7 +910,7 @@ class BenchRoleExecutor:
                     active_graph_readback=active_graph_readback,
                     pre_limiter_pcm=pcm_id,
                     peak_analysis=peak_analysis_id,
-                    pre_limiter_peak_dbfs=cross_check.min_across_channels(per_channel_peaks),
+                    pre_limiter_peak_dbfs=pre_limiter_peak_dbfs,
                 )
             )
         return probes
@@ -685,17 +923,25 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> ReferenceSweepCapture:
+        raw = await self.controller.get_active_config_raw()
         request = self.requests["sweep_transparency"]
-        played = await self.play_and_capture.play(
-            target=target, role="sweep_transparency", request=request, stop=stop
-        )
-        stimulus_identity = sink.record_existing(
-            played.stimulus_wav_path,
-            relative_path=f"{target.target_id}/reference-sweep-stimulus.wav",
-            kind="jts_bass_extension_bench_stimulus",
+        # Disambiguate by the reference activation receipt's own name (which
+        # already encodes the candidate setting, e.g.
+        # "reference_activation_-3.5") — run_reference_sweep runs once per
+        # candidate, so a fixed tag would let a later candidate's reference
+        # stimulus silently overwrite an earlier candidate's bundle path.
+        readback_tag = Path(reference_readback.relative_path).stem
+        played, _padded, padded_identity = await self._prepare_and_play(
+            target=target,
+            role="sweep_transparency",
+            request=request,
+            live_active_config_raw=raw,
+            sink=sink,
+            stop=stop,
+            tag=f"reference-sweep-{readback_tag}",
         )
         return ReferenceSweepCapture(
-            reference_stimulus=stimulus_identity,
+            reference_stimulus=padded_identity,
             reference_admission=played.admission,
             reference_acoustic_capture=played.acoustic_capture,
         )
@@ -710,21 +956,33 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> CandidateCapture:
+        raw = await self.controller.get_active_config_raw()
         transfer = await self._digital_transfer_probe(
-            candidate_setting_dbfs=candidate_setting_dbfs, sink=sink
+            candidate_setting_dbfs=candidate_setting_dbfs,
+            live_active_config_raw=raw,
+            sink=sink,
         )
         stop.check()
         sweep_request = self.requests["sweep_transparency"]
         sustain_request = self.requests["sustain_stress"]
-        sweep_played = await self.play_and_capture.play(
+        sweep_played, sweep_padded, sweep_padded_identity = await self._prepare_and_play(
             target=target,
             role="sweep_transparency",
             request=sweep_request,
+            live_active_config_raw=raw,
+            sink=sink,
             stop=stop,
+            tag=f"candidate-{candidate_setting_dbfs:g}-sweep_transparency",
             reference=reference,
         )
-        sustain_played = await self.play_and_capture.play(
-            target=target, role="sustain_stress", request=sustain_request, stop=stop
+        sustain_played, sustain_padded, sustain_padded_identity = await self._prepare_and_play(
+            target=target,
+            role="sustain_stress",
+            request=sustain_request,
+            live_active_config_raw=raw,
+            sink=sink,
+            stop=stop,
+            tag=f"candidate-{candidate_setting_dbfs:g}-sustain_stress",
         )
         # `candidate_readback` names the runner's activation read-back receipt
         # (jasper.bass_extension.bench.runner._readback_receipt's JSON, written
@@ -749,9 +1007,21 @@ class BenchRoleExecutor:
         return CandidateCapture(
             digital_transfer_probe=transfer,
             sweep_live={},
-            sweep_render_inputs={"played": sweep_played, "setting": candidate_setting_dbfs},
+            sweep_render_inputs={
+                "played": sweep_played,
+                "setting": candidate_setting_dbfs,
+                "live_active_config_raw": raw,
+                "padded": sweep_padded,
+                "padded_identity": sweep_padded_identity,
+            },
             sustain_live={},
-            sustain_render_inputs={"played": sustain_played, "setting": candidate_setting_dbfs},
+            sustain_render_inputs={
+                "played": sustain_played,
+                "setting": candidate_setting_dbfs,
+                "live_active_config_raw": raw,
+                "padded": sustain_padded,
+                "padded_identity": sustain_padded_identity,
+            },
             transparency_analysis=sweep_played.transparency_analysis,
             transparency_verdict=sweep_played.transparency_verdict,
             active_graph_fingerprint=str(receipt["active_graph_fingerprint"]),
@@ -772,14 +1042,27 @@ class BenchRoleExecutor:
         sink: BundleSink,
         stop: Stop,
     ) -> CandidateMeasurements:
-        raw = await self.controller.get_active_config_raw()
         setting_tag = f"{candidate_setting_dbfs:g}"
         sweep_played = cast(PlayedStimulus, capture.sweep_render_inputs["played"])
         sustain_played = cast(PlayedStimulus, capture.sustain_render_inputs["played"])
+        sweep_raw = cast(str, capture.sweep_render_inputs["live_active_config_raw"])
+        sustain_raw = cast(str, capture.sustain_render_inputs["live_active_config_raw"])
+        sweep_padded = cast(stimulus.PaddedStimulus, capture.sweep_render_inputs["padded"])
+        sustain_padded = cast(
+            stimulus.PaddedStimulus, capture.sustain_render_inputs["padded"]
+        )
+        sweep_padded_identity = cast(
+            ArtifactIdentity, capture.sweep_render_inputs["padded_identity"]
+        )
+        sustain_padded_identity = cast(
+            ArtifactIdentity, capture.sustain_render_inputs["padded_identity"]
+        )
         sweep_core = await self._finish_role(
             sweep_played,
             role="sweep_transparency",
-            live_active_config_raw=raw,
+            live_active_config_raw=sweep_raw,
+            padded=sweep_padded,
+            padded_identity=sweep_padded_identity,
             expected_clip_limit_dbfs=candidate_setting_dbfs,
             setting_tag=setting_tag,
             sink=sink,
@@ -788,15 +1071,24 @@ class BenchRoleExecutor:
         sustain_core = await self._finish_role(
             sustain_played,
             role="sustain_stress",
-            live_active_config_raw=raw,
+            live_active_config_raw=sustain_raw,
+            padded=sustain_padded,
+            padded_identity=sustain_padded_identity,
             expected_clip_limit_dbfs=candidate_setting_dbfs,
             setting_tag=setting_tag,
             sink=sink,
         )
         return CandidateMeasurements(
             digital_transfer_probe=capture.digital_transfer_probe,
+            # sweep_core stays RAW: the runner merges it with the
+            # reference-activation fields it owns via its own
+            # bundle.build_sweep_record(**measured.sweep_core, ...) call.
+            # sustain_stress has no such runner-side merge step — it goes
+            # straight into bundle.build_candidate(sustain_stress=...), so
+            # THIS is the only place it can be converted to the bundle
+            # dict shape (mirrors digital_transfer_probe above).
             sweep_core=sweep_core,
-            sustain_stress=sustain_core,
+            sustain_stress=build_sustain_record(**sustain_core),
             transparency_analysis=capture.transparency_analysis,
             transparency_verdict=capture.transparency_verdict,
             active_graph_fingerprint=capture.active_graph_fingerprint,
@@ -810,4 +1102,5 @@ __all__ = [
     "ExecutorError",
     "PlayAndCapture",
     "PlayedStimulus",
+    "estimate_campaign_render_count",
 ]

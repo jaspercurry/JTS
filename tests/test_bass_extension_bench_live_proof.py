@@ -159,8 +159,20 @@ def test_no_foreign_audio_unproved_when_counters_change(field: str) -> None:
 
 
 def test_no_foreign_audio_unproved_when_tts_block_absent() -> None:
-    with pytest.raises(live_proof.IngressProofError):
+    with pytest.raises(live_proof.IngressProofError, match="no 'tts' block"):
         live_proof.prove_no_foreign_audio({"inputs": []}, {"inputs": []})
+
+
+def test_no_foreign_audio_message_is_honest_when_metrics_keys_are_absent() -> None:
+    """N6: a 'tts' block present but missing the program_duck_active/
+    pending_frames KEYS is a different failure than an observed bad VALUE —
+    the message must say the metrics are absent, not claim
+    "program_duck_active is not false" (which asserts we observed a value we
+    never actually read)."""
+
+    status = {"tts": {"flushed_frames": 0, "dropped_audio_frames": 0}}
+    with pytest.raises(live_proof.IngressProofError, match="tts metrics absent"):
+        live_proof.prove_no_foreign_audio(status, status)
 
 
 def test_standalone_cue_duck_without_program_duck_flag_still_unproved() -> None:
@@ -227,6 +239,7 @@ def test_bit_width_geometry_unproved_when_output_block_absent() -> None:
 def test_prove_ingress_transparency_passes_when_every_element_holds() -> None:
     inputs = live_proof.IngressProofInputs(
         mux_status=_mux_status(),
+        mux_status_end=_mux_status(),
         fanin_status_start=_fanin_status(),
         fanin_status_end=_fanin_status(),
         artifact_header=_header(),
@@ -237,6 +250,24 @@ def test_prove_ingress_transparency_passes_when_every_element_holds() -> None:
 def test_prove_ingress_transparency_fails_on_any_single_unproved_element() -> None:
     inputs = live_proof.IngressProofInputs(
         mux_status=_mux_status(test_owner="someone-else"),
+        mux_status_end=_mux_status(),
+        fanin_status_start=_fanin_status(),
+        fanin_status_end=_fanin_status(),
+        artifact_header=_header(),
+    )
+    with pytest.raises(live_proof.IngressProofError):
+        live_proof.prove_ingress_transparency(inputs)
+
+
+def test_prove_ingress_transparency_fails_on_a_mid_pass_mux_takeover() -> None:
+    """S6: isolation is proved at BOTH ends of the pass. A mux takeover that
+    happens AFTER the first (start) read but before the end of playback must
+    not go undetected just because the isolated state held at the moment of
+    the first read."""
+
+    inputs = live_proof.IngressProofInputs(
+        mux_status=_mux_status(),  # isolated at the start
+        mux_status_end=_mux_status(active_source="airplay"),  # preempted by the end
         fanin_status_start=_fanin_status(),
         fanin_status_end=_fanin_status(),
         artifact_header=_header(),
@@ -252,26 +283,68 @@ def test_prove_ingress_transparency_fails_on_any_single_unproved_element() -> No
 
 def test_fader_bracket_proved_when_stable_and_unmuted() -> None:
     live_proof.prove_fader_bracket(
-        live_proof.FaderBracket(before_db=-35.0, before_muted=False, after_db=-35.0, after_muted=False)
+        live_proof.FaderBracket(
+            before_db=-35.0,
+            before_muted=False,
+            after_db=-35.0,
+            after_muted=False,
+            commanded_main_volume_db=-35.0,
+        )
     )
 
 
 def test_fader_bracket_unproved_when_muted_before() -> None:
     with pytest.raises(live_proof.FaderDriftError):
         live_proof.prove_fader_bracket(
-            live_proof.FaderBracket(before_db=-35.0, before_muted=True, after_db=-35.0, after_muted=False)
+            live_proof.FaderBracket(
+                before_db=-35.0,
+                before_muted=True,
+                after_db=-35.0,
+                after_muted=False,
+                commanded_main_volume_db=-35.0,
+            )
         )
 
 
 def test_fader_bracket_unproved_when_muted_after() -> None:
     with pytest.raises(live_proof.FaderDriftError):
         live_proof.prove_fader_bracket(
-            live_proof.FaderBracket(before_db=-35.0, before_muted=False, after_db=-35.0, after_muted=True)
+            live_proof.FaderBracket(
+                before_db=-35.0,
+                before_muted=False,
+                after_db=-35.0,
+                after_muted=True,
+                commanded_main_volume_db=-35.0,
+            )
         )
 
 
 def test_fader_bracket_unproved_when_drifted() -> None:
     with pytest.raises(live_proof.FaderDriftError):
         live_proof.prove_fader_bracket(
-            live_proof.FaderBracket(before_db=-35.0, before_muted=False, after_db=-34.0, after_muted=False)
+            live_proof.FaderBracket(
+                before_db=-35.0,
+                before_muted=False,
+                after_db=-34.0,
+                after_muted=False,
+                commanded_main_volume_db=-35.0,
+            )
+        )
+
+
+def test_fader_bracket_unproved_when_stable_but_at_the_safe_floor_not_the_locked_level() -> None:
+    """S1: R4(a) requires the locked measurement level, not merely a stable
+    bracket. A fader that held steady at -60 dB (the safe floor) while the
+    request commanded -35 dB must still refuse — stability alone is not
+    enough evidence the stimulus played at the level the render reproduces."""
+
+    with pytest.raises(live_proof.FaderDriftError, match="locked measurement level"):
+        live_proof.prove_fader_bracket(
+            live_proof.FaderBracket(
+                before_db=-60.0,
+                before_muted=False,
+                after_db=-60.0,
+                after_muted=False,
+                commanded_main_volume_db=-35.0,
+            )
         )

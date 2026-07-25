@@ -52,7 +52,7 @@ def test_cross_check_owner_channels_refuses_when_unavailable() -> None:
             recorded_main_volume_db=-35.0,
             render_carries_fader_gain=True,
             tolerance_db=1.0,
-            computed_bound_db=2.0,
+            computed_bounds_db={0: 2.0, 2: 2.0},
             clipped_samples_before=0,
             clipped_samples_after=0,
         )
@@ -315,7 +315,7 @@ def test_four_channel_map_owner_0_2_one_channel_fails_refuses_the_whole_pass() -
             recorded_main_volume_db=-35.0,
             render_carries_fader_gain=True,
             tolerance_db=1.0,
-            computed_bound_db=2.0,
+            computed_bounds_db={0: 2.0, 2: 2.0},
             clipped_samples_before=0,
             clipped_samples_after=0,
         )
@@ -330,12 +330,33 @@ def test_four_channel_map_owner_0_2_both_pass() -> None:
         recorded_main_volume_db=-35.0,
         render_carries_fader_gain=True,
         tolerance_db=1.0,
-        computed_bound_db=2.0,
+        computed_bounds_db={0: 2.0, 2: 2.0},
         clipped_samples_before=0,
         clipped_samples_after=0,
     )
     assert {r.channel for r in results} == {0, 2}
     assert all(r.verdict == "pass" for r in results)
+
+
+def test_cross_check_owner_channels_uses_each_channels_own_bound() -> None:
+    """S5: the permissive bound is per-channel, never max-collapsed. Channel 0
+    is 4 dB over live with only a 2 dB bound available for it (would refuse
+    the campaign if collapsed against a shared/looser bound), while channel
+    2's own generous bound comfortably covers its smaller excess."""
+
+    live_peak_all = [-10.0, -99.0, -10.0, -99.0]
+    with pytest.raises(cross_check.CrossCheckError, match="exceeds the computed"):
+        cross_check.cross_check_owner_channels(
+            owner_channels=[0, 2],
+            rendered_peaks_dbfs={0: -6.0, 2: -9.0},  # ch0 +4dB, ch2 +1dB vs live
+            live_peak_all=live_peak_all,
+            recorded_main_volume_db=-35.0,
+            render_carries_fader_gain=True,
+            tolerance_db=3.0,
+            computed_bounds_db={0: 2.0, 2: 5.0},  # ch0's own bound is tight
+            clipped_samples_before=0,
+            clipped_samples_after=0,
+        )
 
 
 def test_missing_rendered_peak_for_an_owner_channel_refuses() -> None:
@@ -347,7 +368,22 @@ def test_missing_rendered_peak_for_an_owner_channel_refuses() -> None:
             recorded_main_volume_db=-35.0,
             render_carries_fader_gain=True,
             tolerance_db=1.0,
-            computed_bound_db=2.0,
+            computed_bounds_db={0: 2.0, 2: 2.0},
+            clipped_samples_before=0,
+            clipped_samples_after=0,
+        )
+
+
+def test_missing_computed_bound_for_an_owner_channel_refuses() -> None:
+    with pytest.raises(cross_check.CrossCheckError, match="no computed tolerance bound"):
+        cross_check.cross_check_owner_channels(
+            owner_channels=[0, 2],
+            rendered_peaks_dbfs={0: -10.0, 2: -10.0},
+            live_peak_all=[-10.0, -99.0, -10.0],
+            recorded_main_volume_db=-35.0,
+            render_carries_fader_gain=True,
+            tolerance_db=1.0,
+            computed_bounds_db={0: 2.0},  # channel 2's bound missing
             clipped_samples_before=0,
             clipped_samples_after=0,
         )
@@ -375,7 +411,7 @@ def test_clipped_samples_increase_refuses_the_whole_pass() -> None:
             recorded_main_volume_db=-35.0,
             render_carries_fader_gain=True,
             tolerance_db=1.0,
-            computed_bound_db=2.0,
+            computed_bounds_db={0: 2.0},
             clipped_samples_before=5,
             clipped_samples_after=6,
         )
