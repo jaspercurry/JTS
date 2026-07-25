@@ -262,6 +262,45 @@ plumbing/tests/wizard copy. The bass session's lane
   topology roles); 3-way lands with #1703's conductor; passive/1-way =
   one full-range role through the same loop.
 
+## Adjudicated: single-point time-selection methods (2026-07-25)
+
+A second research pass
+([research/2026-07-25-flat-linearization/02](research/2026-07-25-flat-linearization/02-time-selective-excitation-viability.md))
+evaluated the owner's pulsed-sweep / fast-sawtooth proposal ("time the
+lulls so the echo lands in silence, excise, stitch"). Verdict, adopted:
+
+- **Pulsed lull-excision and fast tracking sweeps are killed as
+  measurement methods — by theorem, not experiment.** For an LTI system
+  both are mathematically a ~0.31 ms time gate (the fast-sweep variant is
+  Heyser's TDS; TDS ≡ windowing per Vanderkooy 1986 and Müller &
+  Massarani 2001). Separating arrivals τ apart forfeits resolution below
+  ~1/τ ≈ 3.2 kHz, and the DUT's own LR4+horn response rings past τ, so no
+  echo-free lull exists under any excitation. Do not revisit; there is no
+  threshold that reopens a theorem.
+- **The surviving core ships as QA: the ultra-short-gate HF cross-check.**
+  A ~0.3 ms gate on sweeps we already capture yields a comb-free (but
+  truncation-biased, >3.2 kHz-only) view of the direct sound. S0's
+  offline analysis computes it alongside the cloud average; if the two
+  agree above ~3.2 kHz within tolerance it becomes a standing
+  consistency gauge at wiring time, never a calibrated measurement below
+  3.2 kHz.
+- **The one live single-point bet: cepstrum-seeded regularized two-path
+  inversion** — fit H_meas(f) = H_d(f)·[1 + r(f)·e^(−j2πfτ)] with τ fixed
+  by the shipped echo detector and smoothness priors on H_d and r(f).
+  No exact prior art (nearest: Bolton & Gold cepstral r(f); Mommertz /
+  Robinson & Xiang subtraction methods); plain K-Dirac subspace fits are
+  expected to be biased by the directivity-weighted r(f). Experimental
+  lane, offline-first, go/no-go: recover H_d below 3.2 kHz within
+  ~1–1.5 dB at ≥40 dB SNR on synthetic two-path data with realistic
+  r(f), else shelve. Scheduled AFTER S0 so the cloud average provides
+  its real-data benchmark.
+- **Slower sweeps do not help separation** (stationary interference;
+  LTI excitation-invariance; verified empirically — the N=3 in-place
+  repeats change the comb by <0.1 dB) and SNR is already ~124 dB. Sweep
+  length remains an SNR knob only. Compact mic arrays and moving-mic
+  capture are spatial-channel methods, not single-point escapes; not
+  pursued.
+
 ## Non-goals / guardrails
 
 - No cepstral or parametric echo *removal* in production (detection only).
