@@ -56,14 +56,18 @@ Pipeline (:func:`combine_positions`):
    lower edge, where a below-window echo aliases up and is indistinguishable
    from a real one — and a malformed IR refuses one position rather than
    failing the combine, all of it so that a number this module reports is
-   one it actually measured. **One measured hole survives that ambition, and
-   it is not closed**: a cepstral *rahmonic* of a below-window echo can land
-   inside a search window whose lower edge is raised to 650 us or more, and
-   be reported confidently at roughly 3x the true delay — enough to lock a
-   genuinely dispersed cloud. The default window has no known false-lock
-   regime; a non-default window with ``search_us[0] >= 650`` carries the
-   hazard until a rahmonic screen exists. See ``DEFAULT_ECHO_SEARCH_US`` and
-   :func:`detect_echo` for the measured grid.
+   one it actually measured. A third rule, the **rahmonic screen**, closes
+   the one path the first two could not reach: a comb's cepstrum repeats at
+   2*tau, 3*tau, ..., so a below-window echo can put a peak *anywhere* in a
+   raised window rather than at an edge, and until this screen landed such a
+   peak was reported confidently at roughly 3x the true delay — enough to
+   lock a genuinely dispersed cloud whenever ``search_us[0] >= 650``. The
+   screen refuses a candidate that a stronger cepstral peak at lower
+   quefrency dominates; on the three windows that used to false-lock it
+   rejects every admitted estimate by 21.5-78.8x, with the stronger peak
+   landing within half a quefrency step of the true delay. See
+   ``RAHMONIC_MARGIN`` for the calibration and ``DEFAULT_ECHO_SEARCH_US``
+   for the swept grid.
 6. **Spread diagnostics** — cross-position level spread and worst-bin sigma
    in octave bands, the observable behind the research's 1/sqrt(N) accuracy
    story.
@@ -217,39 +221,51 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # measured. A figure nobody can re-derive is not evidence; the sweep rows
 # are, because they run.
 #
-# **A window whose lower edge is 650 us or higher does NOT share that
-# record, and is not safe.** The cepstrum of a comb has rahmonics at
-# 2*tau, 3*tau, ..., so a window that excludes the true delay can still
-# contain a rahmonic of it. Below ~650 us the lower-edge margin
-# (WINDOW_EDGE_MARGIN_STEPS) happens to catch them; at and above it the
-# rahmonic clears the margin, the envelope estimator finds a matching peak
-# in the same raised window, the two corroborate, and the result is a
+# **A window whose lower edge is 650 us or higher used to be actively
+# unsafe; the rahmonic screen is what closed that.** The cepstrum of a comb
+# has rahmonics at 2*tau, 3*tau, ..., so a window that excludes the true
+# delay can still contain a rahmonic of it. Below ~650 us the lower-edge
+# margin (WINDOW_EDGE_MARGIN_STEPS) happened to catch them; at and above it
+# the rahmonic cleared the margin, the envelope estimator found a matching
+# peak in the same raised window, the two corroborated, and the result was a
 # confident number at roughly 3x the true delay. Measured on the 150-400 us
-# cloud: (600, 1000) is clean, while (650, 1000), (700, 1000) and
+# cloud: (600, 1000) was already clean, while (650, 1000), (700, 1000) and
 # (800, 1200) each read ``geometry_locked`` at median tau 814 / 857 / 897
-# us, at confidence up to 1.000. The admitted estimates' cepstral peaks sit
+# us, at confidence up to 1.000. The admitted estimates' cepstral peaks sat
 # at these ratios to their position's true delay, **per window** — the
 # spread is not uniform, so it is not stated as one range:
 #   (650, 1000): 2.992, 3.001, 3.648
 #   (700, 1000): 2.992, 3.001
 #   (800, 1200): 2.985, 2.994
 #
-# Closing it needs a **rahmonic screen**, and the 3.648 outlier above is
-# the reason that screen cannot simply re-test a survivor against tau/2 and
-# tau/3 (as an earlier revision of this comment prescribed). That outlier
-# — true delay 205.6 us, cepstral peak 749.8 us, reported envelope tau
-# 814.4 us — **is** the 814.4 median pinned for (650, 1000), i.e. the
-# module's own worst measured case. Its reported tau is 3.96x the truth and
-# its cepstral peak 3.65x, so neither tau/2 (407.2 us) nor tau/3 (271.5 us)
-# lands anywhere near 205.6 us: the prescribed screen would have missed the
-# very case it was written for. A workable screen must handle non-integer
-# ratios — e.g. rejecting a candidate whenever a stronger peak exists at
-# any lower quefrency — rather than testing exact submultiples. No such
-# screen exists yet. It is recorded here and pinned by
-# test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation in
-# tests/test_spatial_combine.py rather than silently assumed away. Until
-# that screen lands: prefer the default window, and treat a lock reported
-# under a window with search_us[0] >= 650 as unproven.
+# All three now refuse. ``RAHMONIC_MARGIN``'s screen rejects every one of
+# those admitted estimates by 21.5-78.8x (weakest per window: 22.0, 22.0,
+# 21.5 — i.e. at least 10.7x the margin itself), and each window's verdict
+# becomes not-locked with no usable estimates at all. The inverted
+# assertions live in
+# test_rahmonic_false_lock_under_a_raised_window_is_screened (renamed from
+# ..._is_a_known_limitation, which is what it was while it asserted the bug)
+# and in the per-window sweep rows of
+# test_below_window_cloud_verdict_by_raised_search_window.
+#
+# **Why the screen is a "stronger peak below", not a tau/2, tau/3
+# submultiple re-test** — the 3.648 outlier above is the reason, and an
+# earlier revision of this comment prescribed the submultiple test anyway.
+# That outlier — true delay 205.6 us, cepstral peak 749.8 us, reported
+# envelope tau 814.4 us — **is** the 814.4 median that used to be pinned for
+# (650, 1000), i.e. the module's own worst measured case. Its reported tau is
+# 3.96x the truth and its cepstral peak 3.65x, so neither tau/2 (407.2 us)
+# nor tau/3 (271.5 us) lands anywhere near 205.6 us: the prescribed screen
+# would have missed the very case it was written for. The rule that shipped
+# handles non-integer ratios because it never assumes one — it asks only
+# whether a stronger peak exists at *any* lower quefrency, and for this case
+# finds it at 214.2 us, 0.12 quefrency steps from the truth.
+#
+# **What is still only as good as the sweep behind it.** The screen is
+# calibrated on a measured gap (see ``RAHMONIC_MARGIN``), not proved; the
+# default window remains the one with the longest false-lock record, and a
+# raised window is now *screened* rather than *validated*. Prefer the
+# default.
 DEFAULT_ECHO_SEARCH_US = (120.0, 800.0)
 
 # Order of the polynomial detrend removed from the band's log-magnitude
@@ -339,10 +355,80 @@ STRENGTH_FLOOR_DB = -120.0
 # different mechanism from aliasing and is not addressed by any edge margin,
 # at either edge. This rule catches those rahmonics only incidentally, and
 # only while the window's lower edge stays under ~650 us. Above that they
-# clear the margin and are believed. See ``DEFAULT_ECHO_SEARCH_US`` for the
-# measured boundary and the screen that would actually close it; do not read
-# this margin as making a raised window safe.
+# clear the margin, which is why the separate rahmonic screen below exists;
+# do not read this margin as making a raised window safe on its own.
 WINDOW_EDGE_MARGIN_STEPS = 1.0
+
+# Rahmonic screen — the rule that closes the mechanism the edge margin above
+# cannot reach. A comb's cepstrum repeats at 2*tau, 3*tau, ..., so a window
+# that excludes the true delay can still contain a *rahmonic* of it, at an
+# arbitrary place in the window rather than at an edge.
+#
+# **The rule.** A candidate that has survived the window and edge checks is
+# refused when the strongest detrended-cepstrum peak *below* it — over the
+# analyzable region running from ``RAHMONIC_FLOOR_STEPS`` quefrency steps up
+# to (but not including) the candidate's own bin — exceeds the candidate by
+# more than ``RAHMONIC_MARGIN``. A rahmonic is by construction weaker than the
+# fundamental that produced it, so "a much stronger peak sits at a lower
+# quefrency" is exactly the signature, and it needs no assumption about the
+# ratio being an integer.
+#
+# **Why not a tau/2, tau/3 submultiple re-test** (which an earlier revision of
+# this file prescribed): the module's own worst measured case defeats it. On
+# the 150-400 us cloud searched in (650, 1000), the position with a true delay
+# of 205.6 us was reported at 814.4 us with a cepstral peak at 749.8 us —
+# 3.96x and 3.65x the truth, i.e. not a submultiple relationship at all. The
+# nearest the prescribed test could get is tau/3 of the reported value, 271.5
+# us, which is 32% and 0.92 quefrency steps away from 205.6 us: it could only
+# have caught this by accepting a whole step of slop, and a test with that
+# much slop accepts nearly anything inside its own resolution. The rule above
+# does not have to guess a ratio — it finds the fundamental directly, at 214.2
+# us, 4.2% and 0.12 quefrency steps from the truth, winning by 78.8x. Pinned
+# by test_rahmonic_screen_catches_the_non_integer_ratio_the_submultiple_test_missed.
+#
+# **RAHMONIC_MARGIN = 2.0, calibrated to sit in a measured gap** — the same
+# posture as ECHO_CONFIDENCE_FLOOR. Two populations were swept, each on its own
+# grid (they are looking for opposite things, so one grid could not have
+# produced both), and each classified by what the *pre-screen* detector did:
+#
+# * **True positives — 2925 readings**, from bare impulse+echo IRs over tau
+#   200-770 us x r 0.10-0.75, shaped-response IRs over the same range, and the
+#   three corpus IRs, each crossed with 13 search windows from (120, 800) to
+#   (800, 1200); admitted when the pre-screen detector was unrefused, at or
+#   above ECHO_CONFIDENCE_FLOOR, and within 15% of truth. Their lower/candidate
+#   ratio peaks at **0.9955**. That ceiling is not low-quefrency leakage but
+#   the candidate's own main-lobe shoulder: the worst case (tau 740 us,
+#   r 0.75, searched in (200, 900)) has its true quefrency between two cepstral
+#   bins — 0.36 of a step above the lower one — so the peak's energy straddles
+#   both and the bin below the argmax reaches 0.9955 of it.
+# * **Wrong readings — 528 readings**, from the same IR families but with tau
+#   100-455 us, crossed with 11 windows from (400, 900) to (1000, 1600) — i.e.
+#   windows that exclude the true delay, which is what makes a rahmonic
+#   reachable; admitted when the pre-screen detector was confident and more
+#   than 15% off truth. Their ratio bottoms out at **3.531**.
+#
+# 2.0 is 2.01x above the true-positive ceiling and 1.77x below the wrong-
+# reading floor, near the geometric centre of that gap. It rejects 528/528 of
+# the wrong readings and 0/2925 of the right ones. A margin of exactly 1.0
+# ("any stronger peak") would also separate the two populations, but with only
+# 0.5% of headroom over the shoulder case above — the sub-bin geometry that
+# produces it is ordinary, so that headroom is not a margin.
+#
+# **RAHMONIC_FLOOR_STEPS = 1** — whole quefrency steps, because the cepstrum
+# is only defined on them. It excludes exactly one bin, the zero-lag bin,
+# whose magnitude is the residual DC of the detrended, Hanning-windowed
+# log-magnitude rather than a ripple period: a "peak" at zero quefrency is not
+# a delay hypothesis, so a candidate must not be judged against it. That is a
+# choice about meaning, not a rescue from leakage, and the measurement says
+# so — a floor of 0 produces the same 0.9955 ceiling on the true-positive
+# population and the same verdict on all 460 detector calls this module's test
+# suite makes, because the cubic detrend does its job. Measured on the real
+# corpus, the zero-lag bin is 0.120-0.154 of the candidate peak and the two
+# bins above it 0.234-0.340, so the low-quefrency region is nowhere near able
+# to auto-refuse an honest reading. That headroom is pinned on real data by
+# test_detect_echo_finds_the_corpus_bounce.
+RAHMONIC_FLOOR_STEPS = 1
+RAHMONIC_MARGIN = 2.0
 
 # Refusal vocabulary for EchoDiagnostic.refusal. Snake_case, self-
 # identifying, and stable: an empty string means "the detector ran to
@@ -357,6 +443,7 @@ REFUSAL_BAND_TOO_NARROW = "analysis_band_too_narrow"
 REFUSAL_SEARCH_OUTSIDE_CEPSTRUM = "search_window_outside_cepstrum"
 REFUSAL_NO_IN_WINDOW_ECHO = "no_in_window_echo"
 REFUSAL_TAU_AT_WINDOW_LOWER_EDGE = "tau_at_window_lower_edge"
+REFUSAL_RAHMONIC_OF_LOWER_DELAY = "rahmonic_of_lower_delay"
 REFUSAL_ALL_ZERO_IR = "all_zero_ir"
 REFUSAL_MALFORMED_IR = "malformed_ir"
 REFUSAL_BAD_SAMPLE_RATE = "bad_sample_rate"
@@ -495,12 +582,15 @@ class EchoDiagnostic:
         sample-rate plus parabolic, and far finer); it is this module's
         *trust floor*, because the envelope estimate only counts once the
         cepstrum has corroborated it and the cepstrum cannot resolve
-        better than one step. Two rules are written in these units: a
+        better than one step. Three rules are written in these units: a
         candidate within ``WINDOW_EDGE_MARGIN_STEPS`` of the search
-        window's lower edge is refused by :func:`detect_echo`, and a
-        ``tau_us`` below roughly **3 * resolution_us** is "an early echo is
-        present" rather than a trustworthy delay, which
-        :func:`assess_geometry` enforces before clustering.
+        window's lower edge is refused by :func:`detect_echo`; the rahmonic
+        screen's analyzable region starts ``RAHMONIC_FLOOR_STEPS`` steps
+        above zero (counted in cepstral bins, so exactly rather than via
+        this rounded figure); and a ``tau_us`` below roughly
+        **3 * resolution_us** is "an early echo is present" rather than a
+        trustworthy delay, which :func:`assess_geometry` enforces before
+        clustering.
       tau_cepstral_us: the cepstral estimator's answer, in isolation. This
         field is *raw*: it may fall outside ``search_us``, which is
         precisely the condition that rejects the candidate and can produce
@@ -525,9 +615,11 @@ class EchoDiagnostic:
 
         On a *refused* record the distinction is load-bearing. Most
         refusals carry the 1.0 marker because nothing was comparable. The
-        ``tau_at_window_lower_edge`` refusal is the exception: it fires only
-        after both candidates were found in-window and compared, so it
-        carries the **measured** value.
+        two late refusals — ``tau_at_window_lower_edge`` and
+        ``rahmonic_of_lower_delay`` — are the exceptions: both fire after
+        the estimators have been compared, so both carry whatever that
+        comparison produced (the **measured** value when both candidates
+        were in-window, the 1.0 marker when only one was).
 
         **Do not infer the refusal's character from that value — an edge
         refusal may carry any corroboration at all.** Across this module's
@@ -549,6 +641,22 @@ class EchoDiagnostic:
         fabricated marker.
       arrival_crest_db: direct arrival level above the IR's median
         ``|sample|`` level — the "is there an arrival at all" gate.
+      lower_peak_us: quefrency of the strongest detrended-cepstrum peak
+        *below* the cepstral candidate, over the rahmonic screen's analyzable
+        region (see ``RAHMONIC_MARGIN``). 0.0 when there was no such region —
+        the candidate sat at or below ``RAHMONIC_FLOOR_STEPS``, or the
+        detector refused before a cepstrum existed.
+      lower_peak_ratio: that peak's magnitude divided by the candidate's, so
+        the screen's verdict is recomputable from the record rather than
+        asserted by it: a ``rahmonic_of_lower_delay`` refusal is exactly
+        ``lower_peak_ratio > RAHMONIC_MARGIN``. It is reported on *every*
+        record that got as far as a cepstrum, not only refused ones, because
+        the interesting reading is often the one that did **not** refuse —
+        the measured ceiling across honest detections is 0.9955, and a
+        consumer watching that number creep is watching the screen's margin
+        erode. 0.0 alongside a 0.0 ``lower_peak_us`` means "not measured",
+        which is distinguishable from a measured zero only in the degenerate
+        case of an all-zero cepstrum below the candidate.
     """
 
     tau_us: float
@@ -561,6 +669,8 @@ class EchoDiagnostic:
     concentration: float
     corroboration: float
     arrival_crest_db: float
+    lower_peak_us: float = 0.0
+    lower_peak_ratio: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -925,6 +1035,8 @@ def _refused(
     tau_envelope_us: float = 0.0,
     concentration: float = 0.0,
     corroboration: float = 1.0,
+    lower_peak_us: float = 0.0,
+    lower_peak_ratio: float = 0.0,
 ) -> EchoDiagnostic:
     """A refused diagnostic: no delay reported, and a slug saying why.
 
@@ -938,10 +1050,10 @@ def _refused(
     estimators genuinely **could not be compared** — the detector gave up
     before both existed, or one of them fell outside the search window — and
     1.0 is this module's encoding of exactly that (see
-    :attr:`EchoDiagnostic.corroboration`). The **edge-proximity** refusal is
-    the one path where that default would lie: it fires *after* both
-    candidates were found in-window and compared, so it passes the measured
-    value through instead. Reporting 1.0 there claimed "incomparable" about
+    :attr:`EchoDiagnostic.corroboration`). The two late refusals —
+    **edge-proximity** and **rahmonic** — are where that default would lie:
+    both fire *after* the candidates have been compared, so both pass the
+    measured value through instead. Reporting 1.0 there claimed "incomparable" about
     a pair that had in fact been compared — across this module's test suite,
     145 such refusals carry a real reading spanning 0.0005 to 3.26 (median
     0.161), so the fabricated marker overwrote everything from near-perfect
@@ -954,7 +1066,10 @@ def _refused(
     The raw estimator fields are carried through when they exist, because a
     railed or edge-hugging cepstral estimate is exactly the evidence a
     reader needs to understand a ``no_in_window_echo`` or
-    ``tau_at_window_lower_edge`` refusal.
+    ``tau_at_window_lower_edge`` refusal. ``lower_peak_*`` is the same idea
+    for ``rahmonic_of_lower_delay``, and is the *only* evidence that refusal
+    has: the slug says a stronger peak sits below the candidate, and these
+    two fields say where it sits and by how much it wins.
     """
     return EchoDiagnostic(
         tau_us=0.0,
@@ -967,6 +1082,8 @@ def _refused(
         concentration=concentration,
         corroboration=corroboration,
         arrival_crest_db=arrival_crest_db,
+        lower_peak_us=lower_peak_us,
+        lower_peak_ratio=lower_peak_ratio,
     )
 
 
@@ -1045,42 +1162,56 @@ def detect_echo(
     aliases *down* onto the top of the window, and what lies beyond it is
     already refused by the plain rejection contract.
 
-    **Surviving limitation — cepstral rahmonics, and no screen for them
-    yet.** The edge rule closes aliasing; it does not close the other way a
-    below-window echo reaches an in-window verdict. A comb's cepstrum
-    repeats at 2*tau, 3*tau, ..., so a window that excludes the true delay
-    can still contain a *rahmonic* of it — anywhere in the window, not just
-    at an edge, which is why no edge margin can catch it. Up to
-    ``search_us[0] <= 600`` the margin happens to refuse them anyway; **from
-    ``search_us[0] >= 650`` it does not, and the detector will report a
-    confident, in-window, roughly-3x-wrong delay.** Measured on a 10-position
-    cloud of true delays spanning 150-400 us: (600, 1000) refuses everything,
-    while (650, 1000), (700, 1000) and (800, 1200) each admit 2-3 estimates
-    at confidence up to 1.000 — enough for :func:`assess_geometry` to return
-    ``geometry_locked`` at a median tau of 814 / 857 / 897 us. The admitted
-    estimates' cepstral peaks sit at these ratios to their position's true
-    delay, **per window**; the spread is not uniform, so it is not one
-    range::
+    **The rahmonic screen — the third rule, and the one that reaches where
+    the edge margin cannot.** The edge rule closes aliasing; it does not
+    close the other way a below-window echo reaches an in-window verdict. A
+    comb's cepstrum repeats at 2*tau, 3*tau, ..., so a window that excludes
+    the true delay can still contain a *rahmonic* of it — anywhere in the
+    window, not just at an edge, which is why no edge margin can catch it.
+    Up to ``search_us[0] <= 600`` the margin happened to refuse them anyway;
+    from ``search_us[0] >= 650`` it did not, and the detector reported a
+    confident, in-window, roughly-3x-wrong delay. Measured on a 10-position
+    cloud of true delays spanning 150-400 us: (600, 1000) refused
+    everything, while (650, 1000), (700, 1000) and (800, 1200) each admitted
+    2-3 estimates at confidence up to 1.000 — enough for
+    :func:`assess_geometry` to return ``geometry_locked`` at a median tau of
+    814 / 857 / 897 us. The admitted estimates' cepstral peaks sat at these
+    ratios to their position's true delay, **per window**; the spread is not
+    uniform, so it is not one range::
 
         (650, 1000): 2.992, 3.001, 3.648
         (700, 1000): 2.992, 3.001
         (800, 1200): 2.985, 2.994
 
-    The default window has no such measured regime (see
-    ``DEFAULT_ECHO_SEARCH_US``).
+    A surviving candidate is now refused with ``rahmonic_of_lower_delay``
+    when the strongest detrended-cepstrum peak below it — over the region
+    from ``RAHMONIC_FLOOR_STEPS`` quefrency steps up to the candidate's own
+    bin, deliberately including quefrencies the caller's window excluded —
+    beats it by more than ``RAHMONIC_MARGIN``. A rahmonic is always weaker
+    than the fundamental that produced it, so that is the signature, and it
+    assumes nothing about the ratio being an integer. On the three windows
+    above it rejects every previously-admitted estimate by 21.5-78.8x, and
+    all three now return not-locked with no usable estimates. The refusal
+    carries its own evidence: :attr:`EchoDiagnostic.lower_peak_us` is where
+    the stronger peak sits — within half a quefrency step of the position's
+    true delay in every one of those cases — and
+    :attr:`EchoDiagnostic.lower_peak_ratio` is by how much it wins.
 
-    Closing this needs a dedicated rahmonic screen, and the 3.648 outlier
-    shows why it cannot just re-test a survivor against tau/2 and tau/3 (as
-    an earlier revision of this docstring prescribed). That case — true
-    delay 205.6 us, cepstral peak 749.8 us, reported tau 814.4 us — **is**
-    the pinned 814.4 median for (650, 1000), the worst case measured here;
-    its reported tau is 3.96x truth and its cepstral peak 3.65x, so neither
-    tau/2 (407.2 us) nor tau/3 (271.5 us) comes near 205.6 us. The screen
-    must therefore handle non-integer ratios — rejecting a candidate when a
-    stronger peak exists at any lower quefrency, rather than probing exact
-    submultiples. It is tracked, not implemented. Until it exists, a caller
-    raising ``search_us[0]`` to 650 us or above is outside what this
-    detector can honestly measure.
+    The 3.648 outlier is why the screen asks "is anything below stronger?"
+    rather than re-testing a survivor against tau/2 and tau/3 (as an earlier
+    revision of this docstring prescribed). That case — true delay 205.6 us,
+    cepstral peak 749.8 us, reported tau 814.4 us — was the module's worst
+    measured case; its reported tau is 3.96x truth and its cepstral peak
+    3.65x, so there is no submultiple to find. The closest the prescribed
+    test could come is tau/3 of the reported value, 271.5 us, 32% and 0.92
+    quefrency steps off the truth — catchable only by a tolerance so wide it
+    stops discriminating. The rule that shipped locates the fundamental
+    itself, at 214.2 us (4.2%, 0.12 steps), and refuses at 78.8x.
+
+    What the screen is **not** is a licence to raise the window freely: it
+    is calibrated to sit in a measured gap (``RAHMONIC_MARGIN``), the
+    default window still has by far the longest false-lock record, and a
+    raised window is now screened rather than validated.
 
     The IR is windowed internally to the early-arrival region (see
     ``ECHO_WINDOW_SPAN_FACTOR``), so a full deconvolved IR may be passed;
@@ -1096,12 +1227,13 @@ def detect_echo(
         default spans an early boundary bounce (~120 us ≈ 4 cm path delta)
         up to ~800 us (≈ 27 cm), below the room's first wall reflection.
 
-        **Only the default window has been swept for false locks.** Raising
-        the lower edge to 650 us or above enters the rahmonic regime
-        described above, where a below-window echo is reported confidently
-        at ~3x its true delay. Prefer the default; if a raised window is
-        genuinely needed, treat its verdicts as unproven until the rahmonic
-        screen lands.
+        **The default window is still the one with a swept false-lock
+        record.** Raising the lower edge to 650 us or above used to enter
+        the rahmonic regime described above, where a below-window echo was
+        reported confidently at ~3x its true delay; the rahmonic screen
+        refuses those now, by a 21.5-78.8x margin on the measured cases.
+        That makes a raised window *screened*, not *validated* — prefer the
+        default.
 
         **Resolution floor — the bottom of the window does not measure.**
         Both estimators degrade as tau approaches ``1 / bandwidth``
@@ -1255,6 +1387,21 @@ def detect_echo(
     baseline = float(np.linalg.norm(cepstrum[above_floor]))
     concentration = float(cepstrum[peak] / baseline) if baseline > 0.0 else 0.0
 
+    # The rahmonic screen's evidence, measured here rather than at the screen
+    # itself so that *every* record downstream of this point carries it —
+    # including the refusals taken before the screen runs, whose readers are
+    # asking the same question ("is this candidate the real fundamental?").
+    # The region deliberately extends below ``search_lo_s``: the whole point
+    # is to see the echo the caller's window excluded.
+    lower_peak_us = 0.0
+    lower_peak_ratio = 0.0
+    if peak > RAHMONIC_FLOOR_STEPS and cepstrum[peak] > 0.0:
+        lower_index = RAHMONIC_FLOOR_STEPS + int(
+            np.argmax(cepstrum[RAHMONIC_FLOOR_STEPS:peak])
+        )
+        lower_peak_us = float(quefrency[lower_index]) * 1e6
+        lower_peak_ratio = float(cepstrum[lower_index] / cepstrum[peak])
+
     # --- 4. Envelope estimator. ---
     envelope = _analytic_envelope(_bandpass(segment, lo_hz, hi_hz, sample_rate))
     main = int(np.argmax(envelope))
@@ -1281,6 +1428,8 @@ def detect_echo(
             tau_cepstral_us=tau_cepstral * 1e6,
             tau_envelope_us=tau_envelope * 1e6,
             concentration=concentration,
+            lower_peak_us=lower_peak_us,
+            lower_peak_ratio=lower_peak_ratio,
         )
 
     if cepstral_in_window and envelope_in_window:
@@ -1318,6 +1467,34 @@ def detect_echo(
             tau_envelope_us=tau_envelope * 1e6,
             concentration=concentration,
             corroboration=float(corroboration),
+            lower_peak_us=lower_peak_us,
+            lower_peak_ratio=lower_peak_ratio,
+        )
+
+    # A candidate that survived the window *and* the edge margin can still be
+    # a cepstral rahmonic of an echo below the window: a comb repeats at
+    # 2*tau, 3*tau, ..., so the excluded fundamental puts a copy of itself at
+    # an arbitrary place inside a raised window, where no edge rule can reach
+    # it. A rahmonic is always weaker than its own fundamental, so the
+    # signature is a much stronger peak at a lower quefrency — measured on the
+    # documented false-lock windows at 21.5-78.8x the candidate, with that
+    # stronger peak landing within half a quefrency step of the position's
+    # true delay. See ``RAHMONIC_MARGIN`` for the calibration and for why an
+    # exact tau/2, tau/3 submultiple re-test would have missed the worst
+    # measured case. The refusal carries the evidence rather than asserting
+    # it: ``lower_peak_us`` says where the stronger peak is,
+    # ``lower_peak_ratio`` says by how much it wins.
+    if lower_peak_ratio > RAHMONIC_MARGIN:
+        return _refused(
+            REFUSAL_RAHMONIC_OF_LOWER_DELAY,
+            resolution_us=resolution_us,
+            arrival_crest_db=crest_db,
+            tau_cepstral_us=tau_cepstral * 1e6,
+            tau_envelope_us=tau_envelope * 1e6,
+            concentration=concentration,
+            corroboration=float(corroboration),
+            lower_peak_us=lower_peak_us,
+            lower_peak_ratio=lower_peak_ratio,
         )
 
     concentration_score = float(
@@ -1348,6 +1525,8 @@ def detect_echo(
             concentration=concentration,
             corroboration=float(corroboration),
             arrival_crest_db=crest_db,
+            lower_peak_us=lower_peak_us,
+            lower_peak_ratio=lower_peak_ratio,
         )
 
     # The envelope estimate is the answer, unconditionally. Getting here
@@ -1368,6 +1547,8 @@ def detect_echo(
         concentration=concentration,
         corroboration=float(corroboration),
         arrival_crest_db=crest_db,
+        lower_peak_us=lower_peak_us,
+        lower_peak_ratio=lower_peak_ratio,
     )
 
 
@@ -1422,14 +1603,17 @@ def assess_geometry(
 
     **This function is only as honest as the diagnostics it is handed.**
     The three rules screen *unusable* evidence; they cannot screen evidence
-    that is usable-looking and wrong. One such class is known and open: when
-    the caller searched with ``search_us[0] >= 650``, :func:`detect_echo` can
-    report a cepstral rahmonic of a below-window echo at ~3x the true delay,
-    confidently and in-window. Those estimates pass all three rules here and
-    cluster with each other, so a genuinely dispersed cloud returns
-    ``GEOMETRY_LOCKED``. Nothing in this function can detect that — the fix
-    belongs in the detector (see ``DEFAULT_ECHO_SEARCH_US``). Under the
-    default window there is no measured case of it.
+    that is usable-looking and wrong, and nothing here can be made to. The
+    worked example is the rahmonic class: when the caller searched with
+    ``search_us[0] >= 650``, :func:`detect_echo` used to report a cepstral
+    rahmonic of a below-window echo at ~3x the true delay, confidently and
+    in-window. Those estimates passed all three rules here and clustered
+    with each other, so a genuinely dispersed cloud returned
+    ``GEOMETRY_LOCKED``. The fix had to live in the detector, and does —
+    ``RAHMONIC_MARGIN``'s screen refuses them at the source. Read that as
+    the shape of the risk rather than as a closed file: any *future* way the
+    detector produces a confident wrong number will reach this function the
+    same way, and this function will cluster it the same way.
 
     Args:
       echoes: per-position diagnostics, ``None`` where no IR was supplied.
