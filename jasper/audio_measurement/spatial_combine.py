@@ -213,7 +213,7 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # comment cited an aggregate ("63 usable estimates, all within 0.996-1.008
 # of truth") from an ad-hoc sweep that was not reproducible from its own
 # description and whose stated floor was rounded the wrong way — the true
-# minimum was 0.99588, so the bound claimed was tighter than the one
+# minimum was below 0.996, so the bound claimed was tighter than the one
 # measured. A figure nobody can re-derive is not evidence; the sweep rows
 # are, because they run.
 #
@@ -1299,10 +1299,12 @@ def detect_echo(
     #
     # Corroboration is computed *above* this check rather than below it so
     # the refusal can carry what was actually measured. When both candidates
-    # were in-window they really were compared — typically agreeing to
-    # within a few percent, which is *why* the pair was convincing enough to
-    # need refusing — and reporting the incomparable-marker 1.0 here would
-    # have contradicted the record the refusal exists to preserve.
+    # were in-window they really were compared; across this suite's edge
+    # refusals the measured corroboration spans 0.0005-3.26 (median 0.161),
+    # so agreement is common but never characterizes the refusal — the
+    # refusal turns on distance to the window edge alone. Reporting the
+    # incomparable-marker 1.0 here would have contradicted the record the
+    # refusal exists to preserve.
     edge_margin_s = WINDOW_EDGE_MARGIN_STEPS * resolution_us * 1e-6
     at_lower_edge = (
         cepstral_in_window and tau_cepstral - search_lo_s <= edge_margin_s
