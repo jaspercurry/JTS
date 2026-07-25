@@ -9,6 +9,10 @@
 > [active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-design.md)
 > (unchanged, still canonical). Shipped-flow operational truth stays in
 > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> **Amended 2026-07-25** after the executed S0 studio session: the "S0
+> executed — results and the attribution correction" section below
+> supersedes the original comb-attribution evidence in "Evidence — why the
+> instrument must change" § 1.
 
 ## Mission
 
@@ -55,9 +59,226 @@ tighten to ±2.0 after the loop demonstrates margin, never tighter than
 mic uncertainty. If S0 contradicts a tolerance, the table is revised with
 the S0 data attached — the spec serves the measurement, not the reverse.
 
+## S0 executed — results and the attribution correction (2026-07-25)
+
+> **This section supersedes the comb-attribution conclusion in "Evidence —
+> why the instrument must change" § 1 below.** That section is kept in
+> place per this repo's documentation paradigm (superseded claims are
+> annotated, not silently deleted) — read this section first for current
+> truth, then Evidence § 1 for how the original (wrong) attribution was
+> reasoned, with inline corrections.
+
+S0 ran all three legs 2026-07-25 evening on JTS3: main (10-position desk
+cloud), desk edge (3 positions, speaker moved to the desk front edge), and
+ground plane (3 positions, speaker on the hard floor). Every number below is
+quoted from the three primary forensics documents — the only sources used
+for this section — preserved at
+`captures/flat-linearization-20260725/s0-analysis/REPORT.md`,
+`.../horn-cad/GEOMETRY.md`, and `.../loopback/LOOPBACK-REPORT.md` (full
+corpus in § g below).
+
+### a. The attribution correction
+
+**The ~320 µs echo is the speaker's own — the horn's mouth-rim wave — not a
+mic-side boundary bounce.** Evidence § 1 below got the *mechanism and
+numbers* right (a discrete ~0.31 ms arrival, r ≈ 0.36–0.4, that combs the
+8–16 kHz band) but the *attribution* wrong. Three independent lines
+converge on the correction:
+
+1. **Acoustics — source-fixed across every geometry tried.** The arrival is
+   present at −7.05…−10.43 dB re direct on all 16 positions across all
+   three sessions. It barely moves across the 10-position mic cloud
+   (median pairwise τ shift **1.6 %**, the kit's own `geometry_locked`
+   classification), survives moving the *speaker* to the desk front edge
+   (τ 319.2–321.4 µs, level unchanged), and survives removing the desk
+   entirely onto a hard floor (present on all 3 floor positions). A
+   mic-side or desk-side boundary reflection cannot do any of that — it
+   travels with the speaker, not the mic or the furniture.
+2. **Geometry — the CAD ties the delay to the horn mouth, not the desk.**
+   The horn's B-Rep mouth radius (outermost lip, confirmed by a real
+   tight-bbox B-Rep evaluation, not raw STEP points or a naive bounding
+   box) is exactly **110.000 mm**, giving a one-way transit r/c =
+   **320.70 µs** — within 1.3 µs (0.4 %) of the measured median
+   **321.0 µs**. **Caveat, not yet closed:** the most generous axial-depth
+   definition (register-back to the curled lip's deepest point) is
+   **109.2 mm** — numerically close enough to the mouth radius that this
+   horn alone cannot cleanly separate "radius" from "depth" as the driving
+   dimension, and a geometrically-similar rescale (the planned
+   200/180/160 mm mouth experiments) can't disambiguate it either, since
+   similarity preserves the ratio. Disambiguation needs a **non-similar**
+   horn variant — same mouth, different depth, or vice versa.
+3. **Electrical exclusion — the live DSP graph is not the source.** A
+   file-in/file-out loopback of the exact live CamillaDSP graph (confirmed
+   live by a **read-only websocket `GetConfigJson` query**, not just the
+   statefile pointer) contributes an echo of **r ≈ 0.021** at the same
+   ~300 µs mark, against the acoustic **r ≈ 0.34–0.40** on the same graph
+   and program — about **0.3 %** of the echo's energy
+   ((0.02/0.37)² ≈ 0.003). Three independent stimuli (impulse, the exact
+   verify sweep, MLS) agree to 0.04 dB; no audio was played, every run was
+   file-in/file-out with no ALSA device opened. The electrical hypothesis
+   is dead.
+
+### b. The two-mechanism verdict (the owner's driver-isolation razor, vindicated)
+
+The 1.8 kHz woofer-band dip and the 8–16 kHz comb are **not the same
+mechanism** — confirming the reasoning that an isolated horn can carry a
+comb the woofer's enclosure never sees:
+
+- **The 1.8 kHz dip is position-*dependent*:** depth goes **10.7 dB**
+  (desk, tweeter height, n=6) → **4.1 dB** (same desk, mic a hand-width
+  low, n=4) → **1.7 dB** (ground plane, n=3). It is uncorrelated with the
+  HF null depth (Pearson **r = −0.05**, leg A, n=13). It is also
+  **physically impossible** for the measured ~320 µs arrival to be causing
+  it: that arrival's r ≈ 0.37 caps any null it can cut at **6.81 dB**; the
+  measured 1.8 kHz dip is **10.71 dB** (up to 14.6). A desk-surface bounce
+  for this dip is separately, quantitatively refuted (its implied delay
+  shifts the wrong way with mic height). Discriminator that would settle
+  it outright: a per-driver `MEASURE` sweep (`sweep_w` / `sweep_t`) at the
+  same positions — a crossover summation null cannot exist in either
+  driver alone; tonight's three sessions are VERIFY (summed) only.
+- **The 8–16 kHz comb IS the rim wave**, confirmed by two independent
+  instruments agreeing to within **0.03** in implied r: time-domain
+  r = **0.373** (desk, n=6) vs. frequency-domain r = **0.342** from the
+  measured 6.19 dB HF null depth.
+
+### c. Prediction scorecard
+
+- **Predictions 1, 2, and 4 (main leg)** were built on the assumption that
+  the ~320 µs arrival was a mic/boundary-side effect that spatial
+  diversity would shift or reveal. The **geometry-locked** result —
+  prediction 5's own pre-registered contingency ("if nulls do *not* move,
+  the bounce is speaker-fixed diffraction") — is what actually happened:
+  prediction 1's required ≥8 % null-frequency shift did not appear (median
+  pairwise τ shift **1.6 %**); prediction 4's expectation that the
+  power-vs-median screen would flag the 8–16 kHz region alongside the
+  1.7 kHz dip failed outright (`combine_positions` excluded **0 of 5462
+  bins** in 8–16 kHz, only the 1.7 kHz region); prediction 2's literal
+  curve stability held, but for prediction 5's reason, not prediction 2's
+  — the comb is identical in every subset because it is fixed to the
+  speaker, not because averaging removed a boundary artifact.
+- **Prediction 6 (leg B, "no detectable echo") "PASSed" as a grader false
+  negative**, not a real result. `grade_prediction_6` checks `credible`,
+  then `clean_no_echo`, then the energy rule, in that order; all three
+  floor positions had `refusal == ""` and `confidence = 0.000`, so they
+  took the `clean_no_echo` branch — but `detect_echo`'s own cepstrum still
+  landed on **327.2 / 270.2 / 342.8 µs**, and replaying the energy rule
+  with a real leg-A reference gives deltas of **+5.46 / +5.04 / +4.28 dB**
+  (thresholds: ≤ median−10 PASS, ≥ median−6 FAIL), all `energy_comparable`
+  → **FAIL**, the opposite verdict. A leg-B-only session directory also
+  makes the energy discriminator structurally unreachable
+  (`leg_a_median_energy_db` is `None`) — a second, independent way the
+  same PASS was wrong. Kit fix queued (§ f).
+- **Prediction 9 (leg B, floor position agreement) FAILed** — the kit's
+  own grading (300 Hz–8 kHz) reports worst_case **10.52 dB** — **localized
+  to one setup outlier.** Widening to 250 Hz–20 kHz: gp_01 vs gp_02 agree
+  within **1.73 dB** everywhere (0.80 dB below 1 kHz); both disagree with
+  gp_03 by up to **11.21 dB at 10.1 kHz**. Position 03's own fingerprint
+  (strongest 125 µs floor arrival at −0.64 dB / r = 0.93, deepest HF nulls
+  at 17.7/15.4 dB, an 8–16 kHz mean of −26.3 dB vs. −19.3/−20.2 dB for the
+  other two) points to a different cabinet tilt or mic seating on that one
+  position, not proof ground-plane captures are inherently irreproducible.
+- **The ground-plane protocol itself failed**, independent of the
+  predictions above — see "S0 leg B" in Implementation stages below.
+
+### d. The honest top-octave statement
+
+Through the shipped `evaluate_flat_spec`, the top-octave residual
+attributable to the speaker's own on-axis response is **bounded above by
+~8 dB and below by ~2–3 dB** (the tweeter-height desk read of −8.00 dB,
+minus the 5.4–7.0 dB of comb-null depth it contains). That is a wide
+range, and **tonight produced no comb-free top-octave measurement** — the
+ground plane, which might have supplied one, was instead the *worst*
+top-octave reference of the night (see "S0 leg B" below). **The −8.94 dB
+all-positions number must not be quoted as "the speaker's top octave."**
+It reproduces the kit's own prediction-3 number to the digit (validating
+this analysis pipeline against it), but it is a comb-contaminated read,
+not a clean one.
+
+### e. Doctrine consequences
+
+1. **The position-invariance exclusion screen is necessary but not
+   sufficient.** It correctly excludes the 1.7 kHz dip (real
+   mic-position disagreement), but by the same logic it structurally
+   cannot flag a position-invariant defect — it excluded the
+   (irrelevant-to-correction) lobing dip and passed the (uncorrectable)
+   source comb straight through (0 of 5462 8–16 kHz bins excluded). **The
+   plan adopts a second, orthogonal gate: interference-null
+   identification** — a null ladder `(n+½)/τ` consistent with a single τ,
+   corroborated by a matching time-domain arrival at the r the ladder
+   implies. Tonight's data is the demonstration that this gate works (§ b's
+   0.03 r agreement). A bin identified this way is **excluded from
+   correction and from pass/fail**, with the τ/r recorded as the reason;
+   the **envelope around it is still corrected**.
+2. **The 8–16 kHz ±2.5 dB tolerance is not achievable by EQ** against a
+   5.4–7.0 dB source-fixed comb sitting inside that band. The spec needs a
+   documented carve-out for identified interference nulls, **pending the
+   owner's decision on a source fix** (horn redesign). Scaling note for
+   that conversation: shrinking the mouth 220 mm → 160 mm moves the whole
+   null ladder up ~37 % (null-0 ~1.56 → 2.14 kHz) — it relocates the comb,
+   it does not remove it. Per standard diffraction reasoning, more lip
+   roll-back (this horn's is already ≈36 % of the mouth radius) should
+   reduce the echo's amplitude r **without** materially shifting τ, because
+   delay tracks mouth radius while amplitude tracks how abruptly the rim's
+   curvature changes — design guidance only, not yet confirmed
+   acoustically.
+
+### f. Queued follow-ups
+
+- **Kit fixes (plan-consistent, small).** `grade_prediction_6` — move the
+  energy discriminator before the `clean_no_echo` branch (or make
+  `clean_no_echo` also require collapsed energy), and let a leg-B-only
+  session directory load a leg-A reference from a sibling session instead
+  of silently returning `None`. `detect_echo` — add an in-band-SNR
+  refusal (`band_below_passband`): the loopback run found it return a
+  confident-looking result (confidence 0.275, empty refusal) on a
+  woofer-branch signal that was **49.7 dB below its own passband** — pure
+  stopband residue and quantisation noise.
+- **Per-driver `MEASURE` session** — the discriminator for the
+  crossover-lobing-vs-intrinsic-woofer-feature question (§ b).
+- **Flush-capsule ground-plane redo** — see "S0 leg B" below.
+- **Near-field workstream for the 400–1500 Hz hump.** Its earlier partial
+  attribution to the bounce (Evidence § 1 below) is *also* superseded: the
+  rim wave is only resolvable in the tweeter's 5–19 kHz band (cepstrally
+  unanswerable in the woofer band — the search rails to the window edge on
+  15 of 16 positions), so there is no acoustic evidence it reaches down to
+  400–1500 Hz. The hump's attribution reverts to baffle-step/room, pending
+  the near-field instrument.
+- **A non-similar horn variant** (different depth-to-mouth-radius ratio)
+  to resolve the radius-vs-depth ambiguity in § a.2.
+- **Pre-closed, do not re-open:** the tweeter branch's `inverted: true` is
+  **correct**. The live DSP graph's electrical sum shows a −25.8 dB notch
+  at 3.34 kHz from the polarity inversion against the LR4 crossover; it is
+  **absent acoustically** (−3.3/−3.5 dB, a local peak, in
+  cloud_01/cloud_03) — the physical driver's own polarity/phase
+  compensates the DSP inversion. Recorded so the electrical notch isn't
+  mistaken for a defect later.
+
+### g. Artifacts
+
+Laptop-durable, gitignored, under `captures/flat-linearization-20260725/`:
+
+- `s0-session-main/` — 10-position desk cloud + `OPERATOR-NOTES.md`
+- `s0-session-deskedge/` — 3-position desk-front-edge leg
+- `s0-session-groundplane/` — 3-position floor leg
+- `s0-analysis/` — `REPORT.md` (this section's primary source), five
+  charts (`chart1-three-way-overlay.png` through
+  `chart5-echo-vs-null-consistency.png`), `findings.json`, `horn-cad/`
+  (`GEOMETRY.md` + `geometry.json` + `profile_chart.png`), `loopback/`
+  (`LOOPBACK-REPORT.md` + configs/WAVs/findings JSON)
+
 ## Evidence — why the instrument must change
 
 ### 1. Offline comb forensics (2026-07-25, no new captures)
+
+> **Superseded by the executed S0 session (2026-07-25) — see "S0 executed —
+> results and the attribution correction" above.** The mechanism and
+> numbers below hold up; the *attribution* does not. This section calls
+> the ~320 µs arrival a mic-side/desk-side boundary bounce. S0 found it is
+> the speaker's own horn mouth-rim wave: it survived a 10-position mic
+> cloud, a speaker move to the desk front edge, and removal of the desk
+> entirely, and a CamillaDSP electrical loopback ruled out the DSP graph
+> (r ≈ 0.021 electrical vs. r ≈ 0.34–0.40 acoustic). Kept in place, not
+> deleted, per this repo's documentation paradigm.
 
 Reanalysis of the 2026-07-24/25 session WAVs (runs 5 and 7, MEASURE and
 VERIFY frames), preserved with scripts and charts under
@@ -83,6 +304,19 @@ VERIFY frames), preserved with scripts and charts under
   0.2–0.7 dB within-placement, from the 2026-07-24 Phase-0 87-capture
   replay, preserved under
   `captures/flat-linearization-20260725/phase0-forensics/`).
+
+  > **Superseded by S0 (2026-07-25):** this bullet's "same bounce's null 0"
+  > claim conflated two mechanisms. S0's per-position tracking shows the
+  > 1.7–1.8 kHz dip and the 8–16 kHz comb behave oppositely (10.7 → 4.1 →
+  > 1.7 dB filling across desk/low-mic/floor vs. 5.9–7.0 dB holding then
+  > *deepening* to 10.4–12.7 dB on the floor; Pearson r = −0.05 between
+  > them, leg A), and the measured echo's r ≈ 0.37 physically cannot cut a
+  > 10.71 dB dip (6.81 dB ceiling). The 1.8 kHz dip is very likely
+  > crossover-region vertical lobing, not this echo's null 0. Because the
+  > echo is only resolvable in the tweeter's 5–19 kHz band, there is also
+  > no acoustic evidence it reaches the 400–1500 Hz hump; that attribution
+  > reverts to baffle-step/room pending the near-field instrument. See
+  > "S0 executed" § b and § f above.
 - Therefore the MEASURE-vs-VERIFY "frame discrepancy" was reporting
   (band/point-probe averaging riding comb peaks), not physics; and **the
   true top-octave residual is unknowable from any existing capture** —
@@ -183,6 +417,18 @@ speaker layer, so speaker EQ was partly fitting the rig (the 1.7 kHz dip;
 the top-octave sizing). With the cloud + exclusion screen, the speaker
 layer can only correct speaker-intrinsic features.
 
+> **Note (2026-07-25):** S0 found the top-octave share of "measurement-
+> geometry content" above is not that at all — the 8–16 kHz comb is the
+> speaker's own horn rim wave, source-fixed across every mic position and
+> every geometry tried, including the ground plane (see "S0 executed" § a
+> above). "Spatial averaging removes early boundary interference" remains
+> true as a general principle, and still holds for the 1.7 kHz dip (which
+> genuinely is mic-position-dependent) — but it does not apply to this
+> specific arrival: no amount of spatial diversity averages away a defect
+> that is fixed to the source. It is still correctly excluded from
+> correction, but as an *identified interference null* (§ e above), not as
+> content that belongs to the rig.
+
 Seams, precisely:
 
 - **Observable seam:** speaker layer = gated cloud at ~1 m on the design
@@ -268,6 +514,33 @@ plumbing/tests/wizard copy. The bass session's lane
   half-space loading colors the baffle-step region relative to
   free-field; imperfect tilt shows as a crossover-region lobing
   deviation (a protocol confound, not a failed prediction).
+
+  > **S0 result (2026-07-25): the core assumption above is falsified, and
+  > the protocol itself needs a fix.** The image-source argument predicts
+  > the ~320 µs arrival should coherently sum away at the boundary; instead
+  > it **survives the ground plane** — present on all 3 floor positions at
+  > −7.05, −9.96, −10.43 dB re direct, the same order of magnitude as every
+  > tabletop position (curve construction itself reports
+  > `geometry_locked = False` / `geometry_insufficient_usable_estimates`,
+  > 0 of 3 positions credible under the leg-A default echo window). That
+  > is expected once the arrival is understood as speaker-fixed (see "S0
+  > executed" § a above): there is no image source for a horn-internal
+  > reflection to cancel against. Separately, the protocol's own "~8 mm of
+  > capsule height" assumption did not hold in execution: the ground-plane
+  > captures carry their own dominant early arrival at **125–146 µs**
+  > (4.3–5.0 cm of path, −0.64…−2.57 dB re direct, r = 0.74–0.93) —
+  > consistent with the capsule sitting several centimeters proud of the
+  > actual boundary ("a mic lying on the floor is not at the floor"). That
+  > extra arrival made the ground plane the **worst** top-octave reference
+  > of the night (−24.43 dB vs. the desk edge's −6.94 dB — see § d above),
+  > and it is also why prediction 7's "≥4 dB fill" claim is itself mixed:
+  > the 1.7 kHz dip fills sharply (10.7 → 1.7 dB) but the 8.4/11.5 kHz
+  > nulls *deepen* instead (7.0 → 10.7 dB; 6.7 → 15.7 dB) — consistent with
+  > the added near-field arrival, not boundary cancellation. Predictions
+  > 6 and 9 above are covered in detail in "S0 executed" § c. A valid
+  > ground-plane redo needs a **flush-capsule protocol** — the capsule
+  > genuinely at the boundary, not resting a few centimeters above it —
+  > before this leg can be trusted as a comb-free top-octave reference.
 - **S1 — Instrument.** Conductor position-group choreography (prompted
   moves between capture groups; position metadata; per-position quality
   gates) + the combiner/screen estimator module (power mean, median
@@ -365,18 +638,47 @@ lulls so the echo lands in silence, excise, stitch"). Verdict, adopted:
   positive-gain clamps) or driver-protection floors.
 - Room correction's scope is untouched; no layer eats another's job.
 
-## Open questions (tracked, none blocking S0)
+## Open questions (tracked; S0-resolved items marked below)
 
 1. N and spread achievable on the lab rig; empirical estimator bias near
-   nulls (S0 decides).
-2. Spec lower edge 250 vs 300 Hz (S0 LF spread data decides).
+   nulls (S0 decides). **Resolved by S0 (2026-07-25):** N = 10 (desk
+   cloud) / 3 (desk edge) / 3 (ground plane) achieved in one evening
+   session. The deeper framing — "estimator bias near nulls" — is
+   superseded by a more consequential, structural finding: the
+   position-disagreement exclusion screen cannot flag a position-invariant
+   defect at all (`combine_positions` excluded 0 of 5462 bins in
+   8–16 kHz). See "S0 executed" § e for the new orthogonal gate this
+   motivates.
+2. Spec lower edge 250 vs 300 Hz (S0 LF spread data decides). Still open —
+   S0's three sessions did not produce LF-spread data addressing this
+   specific edge.
 3. Phone moving-capture UX (Trueplay-style) — later layer on the S1
    combiner seam; browser-capture constraints already cataloged in the
    measurement-v2 research.
 4. Thermal-compression attribution for the realization shortfall —
    candidate mechanism; the loop handles it agnostically either way.
 5. Whether 8–16 kHz can tighten to ±2.0 after realization headroom is
-   measured bounce-free.
+   measured bounce-free. **Resolved-superseded by S0 (2026-07-25):**
+   "bounce-free" measurement is not the blocker — the comb is source-fixed
+   (§ a of "S0 executed"), not a measurement-geometry artifact a better
+   protocol removes. Tightening now depends on question 8 below, not on
+   refining the measurement.
+6. **New (S0, 2026-07-25).** Radius-vs-depth ambiguity: the CAD
+   transit-time match ties τ to the horn's mouth radius (110.000 mm →
+   320.70 µs), but the most generous axial-depth definition (109.2 mm) is
+   numerically close enough that this horn cannot rule out depth as the
+   true driver, and a geometrically-similar rescale (the planned
+   200/180/160 mm experiments) can't disambiguate either. Needs a
+   non-similar horn variant (different depth-to-mouth-radius ratio).
+7. **New (S0, 2026-07-25).** Whether the 1.8 kHz dip is crossover-region
+   vertical lobing or an intrinsic woofer-response feature that merely
+   shifts with angle — the evidence favors lobing ("S0 executed" § b), but
+   the discriminating measurement (a per-driver `MEASURE` sweep) has not
+   been run.
+8. **New (S0, 2026-07-25) — OWNER-PENDING.** Adopt a documented spec
+   carve-out for identified interference nulls in the 8–16 kHz band now,
+   or hold the spec open until the horn's source fix (redesign) lands?
+   See "S0 executed" § e.2.
 
 ## References
 
