@@ -30,6 +30,13 @@ def _request() -> dict[str, Any]:
         "requested_cooldown_s": 4.0,
         "requested_repeat_count": 2,
         "stimulus_generator_identity": "gen-v1",
+        "render_timeout_s": 30.0,
+        "render_rlimit_as_bytes": 536_870_912,
+        "render_rlimit_cpu_s": 60,
+        "render_nice": 10,
+        "cross_check_poll_interval_s": 0.25,
+        "cross_check_read_count": 40,
+        "cross_check_tolerance_db": 1.5,
     }
 
 
@@ -78,8 +85,60 @@ def test_unknown_margin_is_rejected(tmp_path: Path) -> None:
         bass_extension_bench.main([str(path), "--dry-run"])
 
 
-def test_live_run_fails_closed_without_the_on_device_executor(tmp_path: Path) -> None:
+def test_no_flags_defaults_to_the_safe_dry_run_posture(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Dry-run is the DEFAULT posture: omitting both --dry-run and --live
+    must never attempt live execution."""
+
+    path = _write(tmp_path, _inputs("deep"))
+    rc = bass_extension_bench.main([str(path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dry run: no device opened" in out
+
+
+def test_dry_run_wins_even_when_live_is_also_passed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _write(tmp_path, _inputs("deep"))
+    rc = bass_extension_bench.main([str(path), "--dry-run", "--live"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dry run: no device opened" in out
+
+
+def test_live_run_fails_closed_without_the_on_device_bindings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jasper.bass_extension.bench.render import BinaryIdentity
+
+    fake_binary = BinaryIdentity(
+        path="/opt/camilladsp/camilladsp",
+        version_output="CamillaDSP 4.1.3",
+        sha256="0" * 64,
+        camilladsp_build_id="camilladsp-v4.1.3-000000000000",
+    )
+    monkeypatch.setattr(
+        bass_extension_bench, "resolve_render_binary", lambda: fake_binary
+    )
     path = _write(tmp_path, _inputs("deep"))
     with pytest.raises(SystemExit) as excinfo:
-        bass_extension_bench.main([str(path)])
+        bass_extension_bench.main([str(path), "--live"])
     assert "on-device" in str(excinfo.value)
+    assert "TargetPlan" in str(excinfo.value)
+    assert "PlayAndCapture" in str(excinfo.value)
+
+
+def test_live_run_refuses_when_the_render_binary_cannot_be_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jasper.bass_extension.bench.render import RenderError
+
+    def _raise() -> None:
+        raise RenderError("no jasper-camilla.service on this host")
+
+    monkeypatch.setattr(bass_extension_bench, "resolve_render_binary", _raise)
+    path = _write(tmp_path, _inputs("deep"))
+    rc = bass_extension_bench.main([str(path), "--live"])
+    assert rc == 2

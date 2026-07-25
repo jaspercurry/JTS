@@ -107,6 +107,24 @@ class DiscoveryProbe:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoveryCapture:
+    """One discovery source's LIVE-captured data (inside the activation window).
+
+    Under R9, the pre-limiter tap is an offline render that runs AFTER the
+    window closes, so ``run_discovery`` can no longer return a complete
+    :class:`DiscoveryProbe` synchronously. ``render_inputs`` carries whatever
+    the executor's own render pipeline needs to complete this into a
+    :class:`DiscoveryProbe` in :meth:`RoleExecutor.finish_discovery` — the
+    runner passes it through unopened, exactly as it already treats
+    :attr:`CandidateMeasurements.sweep_core` as an opaque kwargs bag.
+    """
+
+    stimulus: ArtifactIdentity
+    admission: ArtifactIdentity
+    render_inputs: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceSweepCapture:
     """The paired reference sweep captured at the BASELINE limiter (phase 1).
 
@@ -142,6 +160,35 @@ class CandidateMeasurements:
     configured_clip_limit_dbfs: float
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateCapture:
+    """The candidate pass's LIVE-captured data (inside the activation window).
+
+    Under R9, ``digital_transfer_probe`` stays synchronous and complete — the
+    frozen protocol's step 4, at the safe floor, touching no audio device, the
+    single deliberate exception to the outside-the-window rule. Only the
+    sweep/sustain PCM+peak fields move to after the window closes:
+    ``sweep_live``/``sustain_live`` carry every OTHER measurement-core field
+    (already complete — the acoustic capture, quality/protection verdicts,
+    band/level/duration/repeat bookkeeping); ``sweep_render_inputs``/
+    ``sustain_render_inputs`` carry what
+    :meth:`RoleExecutor.finish_candidate` needs to render and cross-check the
+    pre/post-limiter taps and complete each into the full measurement-core
+    shape :mod:`jasper.bass_extension.bench.bundle` consumes.
+    """
+
+    digital_transfer_probe: Mapping[str, object]
+    sweep_live: Mapping[str, object]
+    sweep_render_inputs: Mapping[str, object]
+    sustain_live: Mapping[str, object]
+    sustain_render_inputs: Mapping[str, object]
+    transparency_analysis: ArtifactIdentity
+    transparency_verdict: str
+    active_graph_fingerprint: str
+    ordered_owner_chain: Sequence[str]
+    configured_clip_limit_dbfs: float
+
+
 class RoleExecutor(Protocol):
     """Plays admitted stimuli, captures near-field, and analyzes to records.
 
@@ -150,6 +197,13 @@ class RoleExecutor(Protocol):
     tests mock it. It records its artifacts through ``sink``. It owns the
     acoustic capture + analysis; the runner owns every live-graph activation
     (including the paired reference activation) and the disposition decision.
+
+    Split into a live-window phase (``run_discovery`` / ``run_candidate``,
+    called INSIDE the activation window) and a post-window phase
+    (``finish_discovery`` / ``finish_candidate``, called AFTER the window
+    closes) per R9: sweep/sustain tap renders do not exist until the window
+    exits, so they can no longer be produced synchronously with the live
+    pass.
     """
 
     async def run_discovery(
@@ -157,6 +211,15 @@ class RoleExecutor(Protocol):
         *,
         target: TargetPlan,
         active_graph_readback: ArtifactIdentity,
+        sink: BundleSink,
+        stop: Stop,
+    ) -> Sequence[DiscoveryCapture]: ...
+
+    async def finish_discovery(
+        self,
+        captures: Sequence[DiscoveryCapture],
+        *,
+        target: TargetPlan,
         sink: BundleSink,
         stop: Stop,
     ) -> Sequence[DiscoveryProbe]: ...
@@ -177,6 +240,16 @@ class RoleExecutor(Protocol):
         candidate_setting_dbfs: float,
         candidate_readback: ArtifactIdentity,
         reference: ReferenceSweepCapture,
+        sink: BundleSink,
+        stop: Stop,
+    ) -> CandidateCapture: ...
+
+    async def finish_candidate(
+        self,
+        capture: CandidateCapture,
+        *,
+        target: TargetPlan,
+        candidate_setting_dbfs: float,
         sink: BundleSink,
         stop: Stop,
     ) -> CandidateMeasurements: ...
@@ -282,7 +355,7 @@ async def _run_target(
         # --- Discovery pass -------------------------------------------------
         async with deps.open_window():
             predecessor = await snapshot_predecessor(deps.controller)
-            probes: list[DiscoveryProbe] = []
+            captures: list[DiscoveryCapture] = []
             discovery_activation: ArtifactIdentity | None = None
             async with temporary_bass_activation(
                 deps.controller,
@@ -302,7 +375,7 @@ async def _run_target(
                     configured_clip_limit_dbfs=readback.configured_clip_limit_dbfs,
                 )
                 partials.append(discovery_activation)
-                probes = list(
+                captures = list(
                     await deps.executor.run_discovery(
                         target=target,
                         active_graph_readback=discovery_activation,
@@ -320,6 +393,15 @@ async def _run_target(
                 configured_clip_limit_dbfs=target.baseline_clip_limit_dbfs,
             )
             partials.append(discovery_restoration)
+
+        # Window closed — R9's pre-limiter tap render runs here, outside the
+        # live activation.
+        probes: list[DiscoveryProbe] = list(
+            await deps.executor.finish_discovery(
+                captures, target=target, sink=sink, stop=deps.stop
+            )
+        )
+        deps.stop.check()
 
         if not probes:
             return _stop_result("discovery produced no candidate inventory", "refused")
@@ -414,7 +496,7 @@ async def _run_target(
                         configured_clip_limit_dbfs=cand_readback.configured_clip_limit_dbfs,
                     )
                     partials.append(candidate_activation)
-                    measured = await deps.executor.run_candidate(
+                    candidate_capture = await deps.executor.run_candidate(
                         target=target,
                         candidate_setting_dbfs=setting,
                         candidate_readback=candidate_activation,
@@ -433,6 +515,17 @@ async def _run_target(
                     configured_clip_limit_dbfs=target.baseline_clip_limit_dbfs,
                 )
                 partials.append(restoration_receipt)
+
+            # Window closed — R9's sweep/sustain tap renders run here, outside
+            # the live activation.
+            measured = await deps.executor.finish_candidate(
+                candidate_capture,
+                target=target,
+                candidate_setting_dbfs=setting,
+                sink=sink,
+                stop=deps.stop,
+            )
+            deps.stop.check()
 
             # Assemble the full paired sweep record: candidate core + the
             # runner-owned reference activation + the phase-1 reference capture.
