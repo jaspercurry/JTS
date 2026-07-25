@@ -25,8 +25,12 @@ sweeps captured at mic positions spread over a small cloud around the
 listening axis at ~1 m, each reflection-gated as today (~7 ms in the JTS3
 room), combined as a **power average** (CTA-2034 Listening-Window-inspired;
 honestly named a capture cloud, not certified LW angles). Pass/fail is
-evaluated at 1/3-oct smoothing (1/6-oct retained for diagnostics), relative
-to the spec-band power mean, excluding interference-flagged bins (below):
+evaluated at 1/3-oct smoothing (1/6-oct retained for diagnostics),
+**relative to the power mean over 250 Hz–8 kHz** computed at the same
+smoothing over non-excluded bins — the reference deliberately comes from
+the tight-tolerance bands so a top-octave deficit cannot re-center the
+target — excluding interference-flagged bins (below) from both the
+reference and the deviation metric:
 
 | Band | Tolerance |
 |---|---|
@@ -35,15 +39,21 @@ to the spec-band power mean, excluding interference-flagged bins (below):
 | 8 – 16 kHz | ±2.5 dB |
 | > 16 kHz | best-effort, disclosed, never specced |
 
-Rationale, briefly: ±1.5 dB mid-band is demonstrated-feasible (run 7 held
-±1.5 over 2–7 kHz single-point); above 8 kHz, UMIK-2-class unit uncertainty
-is ~3 dB, so a tighter spec there would live inside the instrument's error
-bars; the ~250 Hz lower edge sits above the 7 ms gate's ~143 Hz validity
-floor and is provisional (250 vs 300 Hz is settled by the validation
-session's LF spread data). Below the lower edge is Layers 2–3 territory
-(bass program + room correction, in-room instruments). The 8–16 kHz
-tolerance may tighten to ±2.0 after the loop demonstrates margin, never
-tighter than mic uncertainty.
+Rationale, briefly: run 7's single-point 2–7 kHz spread at 1/3-oct was
+2.6 dB total (fits ±1.5 only about a band-local center; 3.3 dB at 1/6-oct)
+— close enough that ±1.5 mid-band is plausible once the cloud removes
+bounce ripple, but it is **S0-contingent, not demonstrated**, and below
+2 kHz it is purely the cloud-removes-the-bounce hypothesis (run 7 read
+−3.1/+5.7 dB there against this reference — that band is where the bounce
+lives). Above 8 kHz, UMIK-2-class unit uncertainty is ~3 dB, so a tighter
+spec there would live inside the instrument's error bars. The ~250 Hz
+lower edge sits above the 7 ms gate's ~143 Hz validity floor and is
+provisional (250 vs 300 Hz is settled by the validation session's LF
+spread data). Below the lower edge is Layers 2–3 territory (bass program
++ room correction, in-room instruments). The 8–16 kHz tolerance may
+tighten to ±2.0 after the loop demonstrates margin, never tighter than
+mic uncertainty. If S0 contradicts a tolerance, the table is revised with
+the S0 data attached — the spec serves the measurement, not the reverse.
 
 ## Evidence — why the instrument must change
 
@@ -56,16 +66,23 @@ VERIFY frames), preserved with scripts and charts under
 - The band-limited (6–19 kHz) IR envelope shows a **discrete echo train at
   +0.31 ms (−8.8 dB, r≈0.36) with 2τ/3τ repeats** — byte-similar in the
   summed VERIFY frame and the tweeter-alone MEASURE frame, and unchanged
-  between run 5 and run 7 (2.5 h apart, entirely different DSP).
-- Interference-null ladder `(n+½)/τ` for τ≈298 µs (~10 cm path delta)
-  lands at 1.7 / 5.1 / 8.6 / 12 / 15.5 kHz — matching the measured dip set
-  (1707, 8396, 8924, 11507, 15559 Hz, identical bins run 5 vs run 7). The
-  cepstrum shows a 286+357 µs doublet in every frame.
+  between run 5 and run 7 (~1.6 h apart, entirely different DSP).
+- Interference-null ladder `(n+½)/τ` for τ≈298 µs (~10 cm path delta) puts
+  rungs at 1.68 / 5.04 / 8.40 / 11.75 / 15.11 kHz; the measured dip set
+  (1707, 8396, 8924, 11507, 15559 Hz, identical bins run 5 vs run 7)
+  tracks it, with the split pairs explained by the cepstrum's 286+357 µs
+  delay doublet (present in every HF frame; the woofer-alone band is too
+  narrow to resolve it). Rung 1 (~5 kHz) appears only as a shallow ~−1.5 dB
+  dip — directivity-weakened, below the >2 dB screen threshold — which is
+  why S0 expects no 2–7 kHz flags.
 - **The 1.7 kHz "crossover dip" is in the woofer-ALONE capture** (−9 dB at
   1712 Hz): it is the same bounce's null 0, not a crossover integration
   failure. The bounce also predicts ~+2.7 dB coherent lift below the first
-  null — a large share of the 400–1500 Hz hump, consistent with its known
-  cross-placement scatter.
+  null — a large share of the 400–1500 Hz hump, consistent with the hump's
+  measured cross-placement scatter (±1–2.6 dB across placements vs
+  0.2–0.7 dB within-placement, from the 2026-07-24 Phase-0 87-capture
+  replay, preserved under
+  `captures/flat-linearization-20260725/phase0-forensics/`).
 - Therefore the MEASURE-vs-VERIFY "frame discrepancy" was reporting
   (band/point-probe averaging riding comb peaks), not physics; and **the
   true top-octave residual is unknowable from any existing capture** —
@@ -83,16 +100,19 @@ spatial diversity handles early boundary interference.
 
 ### 2. Industry research (owner deep-research pass, 2026-07-25)
 
-Full report in the owner's research thread; design-relevant conclusions:
+Verbatim report preserved at
+[research/2026-07-25-flat-linearization/](research/2026-07-25-flat-linearization/01-robust-measurement-and-flat-spec.md)
+(house pattern: this plan wins where they disagree); design-relevant
+conclusions:
 
 - **No shipped consumer product removes an early bounce from a single
   capture.** Every mass-market system averages it away spatially: Sonos
   Trueplay moving-mic PSD (power) averaging over >150 positions (Sonos
   engineering blog; US 10,045,138), Dirac Live 9–17 positions, Audyssey 8
-  positions with fuzzy c-means weighting (US 8,005,228), Harman's "four
-  farfield locations are ideal" (US 8,130,966). All correct
-  **minimum-phase only** and decline to fill non-minimum-phase
-  interference nulls (Toole doctrine).
+  positions with fuzzy c-means weighting (US 8,005,228), and "four
+  farfield locations are ideal" (US 8,130,966, Performance Media
+  Industries). All correct **minimum-phase only** and decline to fill
+  non-minimum-phase interference nulls (Toole doctrine).
 - **Estimator:** power (energy) mean of magnitude spectra across
   decorrelated positions is the proven combiner; median is a robustness
   cross-check; max-hold is positively biased (rejected); complex averaging
@@ -177,12 +197,15 @@ Seams, precisely:
   remains the future instrument for sub-edge *speaker* truth (baffle
   step), distinct from room modes.
 - **Alignment nuance:** 1b's delay/polarity solve keeps its single-position
-  reference program — relative inter-driver timing within one capture is
-  position-robust, and the anchor+snap selector's 2.77 µs repeatability is
-  already proven. The cloud is the instrument for magnitude spec,
-  linearization, and VERIFY. The cloud average grades the crossover region
-  the way CTA-2034's listening window does (slightly gentler than a
-  single on-axis point — by design).
+  design-axis reference program — **because** inter-driver timing is
+  position-*dependent* across a cloud (with ~25 cm driver separation at
+  ~1 m, an off-axis mic move shifts the inter-driver path delta by tens of
+  µs — lobing physics), alignment must never be cloud-averaged; it is
+  solved at the design axis, where same-position repeatability is proven
+  at 2.77 µs. The cloud is the instrument for magnitude spec,
+  linearization, and VERIFY only. The cloud average grades the crossover
+  region the way CTA-2034's listening window does (slightly gentler than
+  a single on-axis point — by design).
 - **Non-min-phase doctrine is now uniform across layers:** narrow
   interference dips are excluded from correction and metrics in the
   speaker layer (this plan) and remain uncorrected in room correction
@@ -220,7 +243,7 @@ plumbing/tests/wizard copy. The bass session's lane
   against S0's corpus before it touches the live flow.
 - **S2 — Spec + gauges.** Spec bands/tolerances/1-3-oct evaluation;
   exclusion-aware flatness gauges; VERIFY widened from the ~2·Fc
-  integration band to the full spec band; wizard//state surfacing. The
+  integration band to the full spec band; wizard + `/state` surfacing. The
   observe ledger, fit working curve, gauges, and VERIFY all consume one
   shared curve construction (kills the frame-discrepancy class for good).
 - **S3 — Closed loop.** measure → fit (existing cut-domain engine +
@@ -229,7 +252,12 @@ plumbing/tests/wizard copy. The bass session's lane
   apply/undo rails; charts each iteration. Then spend what the honest
   measurement says is real: top-octave realization beyond the single-shelf
   cap (stacked shelf / literal boost per the standing adjudication) only
-  if S0/S3 data demands it.
+  if S0/S3 data demands it. Note: the literal-boost branch would amend
+  the layer doc's decision 4 (emitted per-driver correction gains stay
+  non-positive — a do-not-re-litigate safety posture) and is **not
+  authorized by this plan**; taking it requires an explicit owner
+  amendment plus its own headroom/safety design. The stacked-shelf
+  branch stays inside the cut-domain contract.
 - **S4 — Generalization.** Loop core stays role-count-blind (consumes
   topology roles); 3-way lands with #1703's conductor; passive/1-way =
   one full-range role through the same loop.
@@ -271,7 +299,8 @@ Repo: [active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-desi
 `comb-verdict.png`).
 
 External (from the owner's research pass): Sonos Trueplay engineering blog
-+ US 10,045,138; Audyssey US 8,005,228; Harman US 8,130,966; Cook et al.,
++ US 10,045,138; Audyssey US 8,005,228; US 8,130,966 (Performance Media
+Industries); Cook et al.,
 JASA 1955 (sinc(kr) correlation); Müller & Massarani, JAES 2001;
 ANSI/CTA-2034; Devantier AES 5638; Olive AES 6113/6190 + US 8,311,232;
 Toole, *Sound Reproduction* 3rd ed.
