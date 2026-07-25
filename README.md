@@ -969,6 +969,15 @@ reference. Currently:
   (integration vs flatness), speaker-class applicability (active
   2-way/3-way/passive), mic-tier doctrine, and the phased execution plan
   (#1666–#1672). The handoff doc for the implementing session.
+- [`flat-linearization-plan.md`](docs/flat-linearization-plan.md)
+  — **Adopted plan (2026-07-25): the flat-linearization program** — why the
+  speaker layer's measurement instrument moves from a single-point gated
+  sweep to a spatially-averaged gated capture cloud (the ~0.3 ms
+  boundary-bounce forensics + industry research), the "flat" spec
+  (bands/tolerances/exclusions), the interference honesty screen, the
+  closed measure→correct→re-measure loop, and the staged execution ladder
+  (S0 validation session → instrument → gauges → loop → 1/2/3-way
+  generalization).
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
