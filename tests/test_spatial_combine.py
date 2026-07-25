@@ -18,17 +18,19 @@ B. **Power-domain arithmetic**, pinned to hand-computed literals. The
    power-vs-dB mean confusion has produced three separate wrong architect
    claims in this repo; this is the forever-pin.
 C. **Echo detector** on synthetic impulse responses and negative controls,
-   including the search window's *rejection* contract in both of its
-   directions: a delay outside the caller's window is refused rather than
-   clamped onto the edge, and a delay *hugging the window's lower edge* is
-   refused rather than believed — that is where a below-window echo aliases
-   to, and believing it is how a dispersed cloud read as geometry-locked.
-   This layer also pins a **known, unfixed limitation**: a cepstral
-   rahmonic of a below-window echo escapes both of those rules once the
-   window's lower edge reaches 650 us, and is reported confidently at ~3x
-   the true delay. That pathology has its own test, which asserts the
-   *wrong* behaviour on purpose so it fails loudly when a screen lands —
-   see ``test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation``.
+   covering all three of its refusal rules: a delay outside the caller's
+   window is refused rather than clamped onto the edge; a delay *hugging
+   the window's lower edge* is refused rather than believed — that is where
+   a below-window echo aliases to, and believing it is how a dispersed
+   cloud read as geometry-locked; and a candidate dominated by a stronger
+   cepstral peak at lower quefrency is refused as a **rahmonic** of an echo
+   the window excluded, which is the mechanism neither of the first two
+   could reach. That third rule shipped after this file spent a revision
+   pinning its absence as a deliberate known-wrong assertion; the inverted
+   assertions now live in
+   ``test_rahmonic_false_lock_under_a_raised_window_is_screened``, and the
+   margin it turns on is bracketed from both sides by
+   ``test_rahmonic_margin_is_load_bearing_in_both_directions``.
 D. **Analysis-grid bounding** — the block-average decimation that keeps the
    combiner's cost bounded must not change the curves it produces.
 E. **Real-data smoke** against the 2026-07-24/25 JTS3 corpus. Skipped when
@@ -40,7 +42,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -55,12 +57,15 @@ from jasper.audio_measurement.spatial_combine import (
     ECHO_CONFIDENCE_FLOOR,
     GEOMETRY_DISPERSED,
     GEOMETRY_LOCKED,
+    GEOMETRY_MIN_CONFIDENT,
     GEOMETRY_MIN_RESOLUTION_STEPS,
     GEOMETRY_UNKNOWN,
     MAX_ANALYSIS_BINS,
+    RAHMONIC_MARGIN,
     REFUSAL_ALL_ZERO_IR,
     REFUSAL_BAD_BAND_HZ,
     REFUSAL_NO_IN_WINDOW_ECHO,
+    REFUSAL_RAHMONIC_OF_LOWER_DELAY,
     REFUSAL_TAU_AT_WINDOW_LOWER_EDGE,
     STRENGTH_FLOOR_DB,
     WINDOW_EDGE_MARGIN_STEPS,
@@ -763,6 +768,27 @@ def _impulse_with_echo(tau_s: float, reflection: float, seed: int = 0) -> np.nda
     return ir + rng.normal(0.0, 1e-4, ir.size)
 
 
+def _impulse_with_two_echoes(
+    early_s: float,
+    early_r: float,
+    late_s: float,
+    late_r: float,
+    seed: int = 0,
+) -> np.ndarray:
+    """``_impulse_with_echo`` with a second, later reflection.
+
+    Two independent bounces off different boundaries — *not* a comb and its
+    rahmonic. The distinction is the whole subject of
+    :func:`test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one`.
+    """
+    rng = np.random.default_rng(seed)
+    ir = np.zeros(65_536)
+    ir[1000] = 1.0
+    ir[1000 + int(round(early_s * SAMPLE_RATE))] += early_r
+    ir[1000 + int(round(late_s * SAMPLE_RATE))] += late_r
+    return ir + rng.normal(0.0, 1e-4, ir.size)
+
+
 @pytest.mark.parametrize("tau_us", [240.0, 300.0, 450.0, 700.0])
 @pytest.mark.parametrize("reflection", [0.15, 0.36, 0.6])
 def test_detect_echo_recovers_synthetic_delay_and_strength(tau_us, reflection):
@@ -885,7 +911,16 @@ def test_detect_echo_resolution_floor_is_where_the_docstring_says_it_is():
 
 @pytest.mark.parametrize(
     "search_us",
-    [(120.0, 800.0), (250.0, 400.0), (400.0, 800.0), (150.0, 300.0), (300.0, 600.0)],
+    [
+        (120.0, 800.0),
+        (250.0, 400.0),
+        (400.0, 800.0),
+        (150.0, 300.0),
+        (300.0, 600.0),
+        (650.0, 1000.0),
+        (700.0, 1000.0),
+        (800.0, 1200.0),
+    ],
 )
 @pytest.mark.parametrize(
     "true_tau_us", [95.0, 150.0, 180.0, 260.0, 350.0, 500.0, 700.0, 830.0]
@@ -896,7 +931,7 @@ def test_detect_echo_never_reports_a_delay_outside_the_search_window(
     """The window is a **rejection** contract, and this sweep is built so it
     can actually fail.
 
-    Forty combinations: eight true delays crossed with five windows, so
+    Sixty-four combinations: eight true delays crossed with eight windows, so
     every window sees delays below it, inside it, and above it. The earlier
     single-delay version could only ever exercise the in-window case, which
     is precisely the case that cannot detect a clamp.
@@ -924,23 +959,25 @@ def test_detect_echo_never_reports_a_delay_outside_the_search_window(
     because the cepstrum of a comb has rahmonics at 2*tau, 3*tau..., so a
     window that excludes tau but contains a rahmonic can still find one.
 
-    **Scope — property 4 holds for the windows parametrised here, and NOT
-    in general.** Every window in this list has ``lo <= 400``, and that is
-    load-bearing rather than incidental. An earlier version of this
-    docstring claimed the rahmonic was harmless because, across a wider
+    **Scope — the top three windows are the ones that used to fail.** For
+    two revisions this parametrisation stopped at ``lo <= 400``, and that
+    ceiling was load-bearing rather than incidental. An earlier version of
+    this docstring claimed the rahmonic was harmless because, across a wider
     grid, "exactly one below-window case reported a value at all ... and it
     scored 0.39, below the floor, so it cannot enter a geometry verdict".
     That conclusion was true of the grid it was measured on and **false
     outside it**: that grid stopped at ``lo = 600``, one increment short of
     the regime where the rahmonic becomes credible. At ``lo >= 650`` a
-    below-window echo is reported at up to confidence 1.000 and *does*
-    enter geometry verdicts — measured, and pinned as a deliberate
-    known-wrong assertion, by
-    :func:`test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation`.
-    Widening this parametrisation upward would therefore fail property 4 by
-    design; the limitation is pinned there instead of being smuggled in
-    here as a passing test. Closing it needs a dedicated rahmonic screen,
-    which does not exist yet.
+    below-window echo was reported at up to confidence 1.000 and *did*
+    enter geometry verdicts, so widening this list upward would have failed
+    property 4 by design — the defect was pinned in its own test instead of
+    being smuggled in here as a passing case.
+
+    The rahmonic screen (``RAHMONIC_MARGIN``) closed that, so the three
+    windows are now *in* this list rather than excluded from it, and
+    property 4 is asserted across the regime that used to break it. That is
+    the point of putting them here: the scope note was prose, and this is
+    the same claim as an executable one.
     """
     lo, hi = search_us
     found = detect_echo(
@@ -1067,47 +1104,66 @@ def test_detect_echo_refuses_a_candidate_hugging_the_window_lower_edge(search_lo
 
 _BELOW_WINDOW_CLOUD_US = (150.0, 400.0)
 
-# The measured verdict boundary for a 10-position cloud whose true delays
-# span _BELOW_WINDOW_CLOUD_US, searched in windows that all sit at or above
-# it. Rows are (search window, locked, reason, n_confident, median tau).
+# The measured verdict for a 10-position cloud whose true delays span
+# _BELOW_WINDOW_CLOUD_US, searched in windows that all sit at or above it.
+# Rows are (search window, locked, reason, n_confident, rahmonic refusals).
 #
 # The first three rows are the edge rule working: everything is refused or
-# too thin to cluster. The last two are the rahmonic hole — the same cloud,
-# two windows further up, reading as a confident lock at ~3x the truth.
-# **The last two rows encode a BUG, not a contract.** They are here so the
-# boundary is a measured fact instead of an assumption, and so the day a
-# rahmonic screen lands they fail and get inverted. See
-# test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation.
+# too thin to cluster. The last three are the regime the edge rule could not
+# reach — a cepstral rahmonic of the excluded echo, landing mid-window. Until
+# the rahmonic screen landed those three rows read ``geometry_locked`` at
+# median tau 814.4 / 856.5 / 896.8 us (n_confident 3 / 2 / 2), and were
+# pinned that way **as a bug, not a contract**, so the boundary was a
+# measured fact instead of an assumption. The screen inverted them: no cloud
+# member survives, so there is no cluster to lock. (800, 1200) was documented
+# on ``DEFAULT_ECHO_SEARCH_US`` but never swept here; it is a row now, so all
+# three false-lock windows are held by the same table that used to record
+# their failure.
+#
+# The last column is the count of ``rahmonic_of_lower_delay`` refusals. It is
+# there because "no usable estimates" is an outcome several different bugs
+# could also produce; pinning *which* rule declined keeps each row an
+# assertion about the screen rather than about emptiness.
 _RAISED_WINDOW_SWEEP = [
-    ((300.0, 800.0), False, GEOMETRY_UNKNOWN, 1, None),
-    ((400.0, 900.0), False, GEOMETRY_UNKNOWN, 0, None),
-    ((600.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, None),
-    ((650.0, 1000.0), True, GEOMETRY_LOCKED, 3, 814.4),
-    ((700.0, 1000.0), True, GEOMETRY_LOCKED, 2, 856.5),
+    ((300.0, 800.0), False, GEOMETRY_UNKNOWN, 1, 2),
+    ((400.0, 900.0), False, GEOMETRY_UNKNOWN, 0, 0),
+    ((600.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, 2),
+    ((650.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, 5),
+    ((700.0, 1000.0), False, GEOMETRY_UNKNOWN, 0, 3),
+    ((800.0, 1200.0), False, GEOMETRY_UNKNOWN, 0, 4),
 ]
 
 
 @pytest.mark.parametrize(
-    "search_us, expect_locked, expect_reason, expect_n_confident, expect_median_us",
+    "search_us, expect_locked, expect_reason, expect_n_confident, expect_rahmonic",
     _RAISED_WINDOW_SWEEP,
 )
 def test_below_window_cloud_verdict_by_raised_search_window(
-    search_us, expect_locked, expect_reason, expect_n_confident, expect_median_us
+    search_us, expect_locked, expect_reason, expect_n_confident, expect_rahmonic
 ):
-    """SF1 / round-3 blocker — where the edge rule stops working, measured.
+    """SF1 / round-3 blocker — the whole raised-window regime, measured.
 
     One cloud (ten positions, true delays stratified 150-400 us) swept
-    across five windows that all sit at or above it. Round 2 ran this with
+    across six windows that all sit at or above it. Round 2 ran this with
     the first three rows only and concluded the below-window class was
     closed; the grid simply stopped one increment short of the regime where
-    it re-opens.
+    it re-opened.
 
-    Rows 1-3 are the edge rule doing its job. Rows 4-5 are the surviving
-    rahmonic hole, asserted **as the wrong behaviour it is**: the same
-    dispersed cloud reads ``geometry_locked`` at a median tau of ~814 and
-    ~857 us — roughly 3x delays that never exceeded 400 us. Asserting the
-    bug is what makes the boundary a fact rather than an assumption, and
-    what will fail loudly when a rahmonic screen moves it.
+    Rows 1-3 are the edge rule doing its job. Rows 4-6 are the rahmonic
+    regime it could not reach, and for one revision they were asserted **as
+    the wrong behaviour they were** — the same dispersed cloud reading
+    ``geometry_locked`` at a median tau of ~814 / ~857 / ~897 us, roughly 3x
+    delays that never exceeded 400 us. Asserting the bug is what made the
+    boundary a fact rather than an assumption, and it is what failed loudly
+    when the rahmonic screen landed. All six rows now agree on the honest
+    verdict: nothing in this cloud is measurable from a window above it.
+
+    Rows 1 and 3 also carry rahmonic refusals, at windows that never
+    false-locked. Nothing regressed there — the screen gives a more specific
+    reason than "ran and found nothing credible" to records that were
+    already not counting toward the verdict. Row 1's ``n_confident`` of 1 is
+    unchanged: that position is the cloud's 400 us member, honestly measured
+    inside a window it genuinely falls in.
     """
     taus_s = np.linspace(
         _BELOW_WINDOW_CLOUD_US[0] * 1e-6, _BELOW_WINDOW_CLOUD_US[1] * 1e-6, 10
@@ -1122,19 +1178,28 @@ def test_below_window_cloud_verdict_by_raised_search_window(
         search_us,
         result.geometry,
     )
-    if expect_median_us is None:
-        assert result.geometry.n_confident < 2, (search_us, result.geometry)
-    else:
-        assert result.geometry.median_tau_us == pytest.approx(
-            expect_median_us, rel=0.02
-        ), (search_us, result.geometry)
-        # The reported median is not merely "a number" — it is above
-        # everything the cloud actually contains, which is what makes the
-        # lock false rather than merely imprecise.
-        assert result.geometry.median_tau_us > 2.0 * _BELOW_WINDOW_CLOUD_US[1], (
-            search_us,
-            result.geometry,
-        )
+    # No row may reach a cluster: GEOMETRY_UNKNOWN is only honest while the
+    # usable set is too small to cluster at all.
+    assert result.geometry.n_confident < GEOMETRY_MIN_CONFIDENT, (
+        search_us,
+        result.geometry,
+    )
+
+    rahmonic = [
+        e
+        for e in result.per_position_echo
+        if e is not None and e.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY
+    ]
+    assert len(rahmonic) == expect_rahmonic, (
+        search_us,
+        [e.refusal for e in result.per_position_echo if e is not None],
+    )
+    # Each one is evidenced by the record itself — the screen's verdict is
+    # recomputable from the two fields the refusal carries, rather than
+    # being a slug the reader has to take on faith.
+    for echo in rahmonic:
+        assert echo.lower_peak_ratio > RAHMONIC_MARGIN, echo
+        assert 0.0 < echo.lower_peak_us < echo.tau_cepstral_us, echo
 
 
 def test_a_below_window_cloud_is_edge_refused_rather_than_clustered():
@@ -1195,73 +1260,730 @@ def test_a_below_window_cloud_is_edge_refused_rather_than_clustered():
     assert honest.geometry.n_confident >= 7
 
 
-def test_rahmonic_false_lock_under_a_raised_window_is_a_known_limitation():
-    """A KNOWN BUG, asserted as-is. **Invert this test when it fails.**
+def test_rahmonic_false_lock_under_a_raised_window_is_screened():
+    """The inverted tripwire. This test used to assert the bug on purpose.
 
-    This test exists to fail loudly the day a rahmonic screen lands. It
-    asserts the detector's *current, wrong* behaviour, so a future change
-    that fixes the bug will break it — and the correct response to that
-    break is to **invert the assertions** (locked is False, reason is
-    ``GEOMETRY_UNKNOWN``), not to relax them. Until then it keeps a
-    measured defect from quietly being believed as a contract.
+    Its previous revision was named ``..._is_a_known_limitation`` and
+    asserted the detector's *wrong* behaviour, with instructions to invert
+    rather than relax it the day a rahmonic screen landed. The screen
+    landed; these are the inverted assertions, and the history is kept
+    because a test that once asserted the opposite is the strongest
+    available evidence that the fix is real rather than definitional.
 
-    **The defect.** A comb's cepstrum repeats at 2*tau, 3*tau, ..., so a
-    search window that excludes the true delay can still contain a
-    *rahmonic* of it. Unlike aliasing, a rahmonic can land anywhere in the
+    **The defect it pinned.** A comb's cepstrum repeats at 2*tau, 3*tau,
+    ..., so a search window that excludes the true delay can still contain
+    a *rahmonic* of it. Unlike aliasing, a rahmonic lands anywhere in the
     window rather than at its bottom edge, so ``WINDOW_EDGE_MARGIN_STEPS``
-    cannot catch it — it only does so incidentally, and only while the
-    lower edge stays under ~650 us. Here the same 150-400 us cloud that
+    cannot catch it — it only did so incidentally, and only while the lower
+    edge stayed under ~650 us. The same 150-400 us cloud that
     :func:`test_a_below_window_cloud_is_edge_refused_rather_than_clustered`
-    correctly refuses at (300, 800) is searched at (700, 1000): two
-    positions survive with cepstral peaks at ~3x their true delays, the
-    envelope agrees with each, corroboration is tight, and the verdict is a
-    confident ``geometry_locked`` at a median tau of ~857 us — a delay more
-    than double anything present in the cloud.
+    correctly refuses at (300, 800), searched at (700, 1000), used to
+    surface two positions with cepstral peaks at ~3x their true delays: the
+    envelope agreed with each, corroboration was tight, and the verdict was
+    a confident ``geometry_locked`` at a median tau of ~857 us — a delay
+    more than double anything present in the cloud.
+
+    **What is asserted now.** The verdict is not-locked with no usable
+    estimates, *and* the mechanism is still visible in the record: those
+    same two positions are refused as rahmonics, their would-have-been
+    cepstral candidates still sit at ~3x their true delays, and the
+    stronger peak that refused each one sits within half a quefrency step
+    of the true delay. Keeping the mechanism assertions is deliberate — a
+    verdict-only test would also pass if the detector had simply stopped
+    working, which is a different thing from the screen working.
 
     Round 2 shipped the claim that this class was closed. It was closed
     only up to ``search_us[0] <= 600``; the sweep that established it
-    stopped one increment short. The honest statement of the contract now
-    lives on ``DEFAULT_ECHO_SEARCH_US`` and :func:`detect_echo`: the
-    default window has no measured false-lock regime, and a window with a
-    lower edge at or above 650 us is not trustworthy.
+    stopped one increment short. That is why the screen is calibrated
+    against a swept gap (``RAHMONIC_MARGIN``) rather than a single window.
     """
     true_taus_us = np.linspace(150.0, 400.0, 10)
     _freqs, _true_db, captures = _cloud(true_taus_us * 1e-6)
     result = combine_positions(captures, echo_search_us=(700.0, 1000.0))
 
-    # --- The wrong verdict, asserted. Invert this block when fixed. ---
-    assert result.geometry.locked is True, (
-        "the rahmonic false lock no longer reproduces — if a rahmonic screen "
-        "landed, INVERT this test (locked False, reason GEOMETRY_UNKNOWN) "
-        "rather than deleting or relaxing it"
-    )
-    assert result.geometry.reason == GEOMETRY_LOCKED
-    assert result.geometry.n_confident == 2
-    assert result.geometry.clustered_fraction == pytest.approx(1.0)
-    assert result.geometry.median_tau_us == pytest.approx(856.5, rel=0.02)
-    # The lock is reported at a delay the cloud does not contain at all.
-    assert result.geometry.median_tau_us > 2.0 * true_taus_us.max()
+    # --- The honest verdict. (This block is the inversion.) ---
+    assert result.geometry.locked is False, result.geometry
+    assert result.geometry.reason == GEOMETRY_UNKNOWN
+    assert result.geometry.n_confident == 0
+    assert result.geometry.median_tau_us == 0.0
+    assert not any(
+        echo is not None and echo.refusal == "" and echo.confidence > 0.0
+        for echo in result.per_position_echo
+    ), [e.refusal for e in result.per_position_echo if e is not None]
 
     # --- The mechanism, so a future regression is diagnosable, not just red. ---
-    admitted = [
+    rahmonic = [
         (true_us, echo)
         for true_us, echo in zip(true_taus_us, result.per_position_echo, strict=True)
-        if echo is not None
-        and echo.refusal == ""
-        and echo.confidence >= ECHO_CONFIDENCE_FLOOR
-        and echo.tau_us > 0.0
+        if echo is not None and echo.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY
     ]
-    assert len(admitted) == 2
-    for true_us, echo in admitted:
-        # It really is the third rahmonic that the cepstrum locked onto.
-        assert echo.tau_cepstral_us / true_us == pytest.approx(3.0, abs=0.05), (
+    # The two positions that used to be admitted are the two whose cepstral
+    # candidate is the *third* rahmonic; a third position is refused here on
+    # its second rahmonic, and was never admitted.
+    third = [
+        (true_us, echo)
+        for true_us, echo in rahmonic
+        if echo.tau_cepstral_us / true_us == pytest.approx(3.0, abs=0.05)
+    ]
+    assert len(third) == 2, [(t, e.tau_cepstral_us / t) for t, e in rahmonic]
+    for true_us, echo in third:
+        # The envelope still corroborates the rahmonic — that agreement is
+        # what used to make it credible, and it is untouched. The screen
+        # does not work by breaking corroboration; it works by noticing the
+        # fundamental.
+        assert echo.corroboration < CORROBORATION_LOOSE, echo
+        # The peak that refused it is the echo the window excluded, not an
+        # arbitrary lower bin: it lands within half a quefrency step of the
+        # position's own true delay.
+        assert abs(echo.lower_peak_us - true_us) < 0.5 * echo.resolution_us, (
             true_us,
             echo,
         )
-        # And the envelope corroborated it, which is what makes it credible.
-        assert echo.corroboration < CORROBORATION_LOOSE, echo
-    # Confidence reaches the top of the scale — this is not a marginal read.
-    assert max(echo.confidence for _true, echo in admitted) == pytest.approx(1.0)
+        # And it wins by a margin the screen never had to strain for.
+        assert echo.lower_peak_ratio > 20.0, echo
+        assert echo.tau_us == 0.0
+        assert echo.confidence == 0.0
+
+
+def test_rahmonic_screen_refuses_a_below_window_echo_and_names_its_fundamental():
+    """The screen in isolation, on one IR — both directions of the rule.
+
+    The cloud tests show the screen changing a *verdict*; this one shows the
+    rule itself, on a single clean impulse+echo pair, which is where a
+    regression is diagnosable.
+
+    * **Fires.** A 300 us echo searched in (700, 1000) is exactly the
+      pathology: the true delay is below the window, its third rahmonic is
+      not, and before the screen the detector reported **876.1 us at
+      confidence 1.000** — a 2.9x-wrong answer at the top of the scale, from
+      an IR with no noise problem at all. It is now refused, and the refusal
+      names the fundamental: the peak that beat the candidate sits at 285.6
+      us, 0.20 quefrency steps from the true 300 us.
+    * **Does not fire.** The same echo in the default window is measured
+      normally, and a *lone* 850 us echo inside a raised (750, 1100) window
+      is measured normally too. The second case shows the screen keys on "is
+      something below stronger", not on "is the window high".
+
+    **Read the second case no wider than that.** It says a raised window
+    whose excluded region is *quiet* still measures, not that a caller with
+    a genuinely late bounce is never locked out. Put a stronger 300 us
+    reflection into that same IR and the screen does refuse the honest 850
+    us echo, because "something much stronger sits below" is necessary for a
+    candidate to be a rahmonic but not sufficient — an unrelated earlier
+    reflection presents the identical evidence. That limitation is measured
+    and pinned by
+    :func:`test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one`.
+    """
+    fired = detect_echo(
+        _impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE, search_us=(700.0, 1000.0)
+    )
+    assert fired.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY, fired
+    assert fired.tau_us == 0.0
+    assert fired.confidence == 0.0
+    assert fired.strength_db == STRENGTH_FLOOR_DB
+
+    # The candidate really was the third rahmonic, and really was credible:
+    # the two estimators agreed, which is what made the old answer confident.
+    assert fired.tau_cepstral_us / 300.0 == pytest.approx(3.0, abs=0.15), fired
+    assert fired.corroboration < CORROBORATION_LOOSE, fired
+    # The evidence the refusal carries: where the fundamental is, and by how
+    # much it wins. Both are on the record, so the verdict is recomputable.
+    assert abs(fired.lower_peak_us - 300.0) < 0.5 * fired.resolution_us, fired
+    assert fired.lower_peak_ratio > RAHMONIC_MARGIN, fired
+    assert fired.lower_peak_ratio > 20.0, fired
+
+    # Same echo, honest window: measured, and nowhere near the screen.
+    honest = detect_echo(_impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE)
+    assert honest.refusal == "", honest
+    assert honest.tau_us == pytest.approx(300.0, rel=0.05)
+    assert honest.lower_peak_ratio < RAHMONIC_MARGIN, honest
+    # ...and the screen was *awake* while not firing. A default-window
+    # candidate sits only a few quefrency bins up, so if
+    # ``RAHMONIC_FLOOR_STEPS`` were raised there would be no analyzable
+    # region below it and the rule would silently degrade to "no region, no
+    # opinion" for the most common window this detector is used with.
+    assert honest.lower_peak_us > 0.0, honest
+    assert honest.lower_peak_ratio > 0.0, honest
+
+    # A genuinely late echo, measured *inside* a raised window. The screen
+    # must not turn "the window is high" into "refuse".
+    late = detect_echo(
+        _impulse_with_echo(850e-6, ECHO_R), SAMPLE_RATE, search_us=(750.0, 1100.0)
+    )
+    assert late.refusal == "", late
+    assert late.confidence > ECHO_CONFIDENCE_FLOOR, late
+    assert late.tau_us == pytest.approx(850.0, rel=0.05)
+    assert late.lower_peak_ratio < RAHMONIC_MARGIN, late
+
+
+def test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one():
+    """KNOWN LIMITATION — documented here, not endorsed.
+
+    **The case.** An IR with two independent bounces: a strong 300 us
+    reflection (r=0.5) and a genuine 850 us one (r=0.2). Searched in a
+    raised (750, 1100) window, the detector locates the *real* 850 us echo
+    with both estimators — 855.5 us cepstral, 854.1 us envelope, agreeing to
+    0.16% — and then refuses it, because the 300 us reflection it excluded
+    from the window puts a cepstral peak 2.45x stronger below the candidate.
+    There is nothing wrong with that measurement; the screen simply cannot
+    tell this apart from the false-lock case it exists to catch.
+
+    **Why it is not fixable from one record.** "A much stronger peak sits
+    below" is *necessary* for a candidate to be a rahmonic and not
+    sufficient, and the two populations' ratios interleave rather than
+    occupying separate bands: this honest case is refused at 2.448, while a
+    true rahmonic — a lone 400 us echo seen through (650, 1000), whose
+    cepstral candidate is its second rahmonic at 1.98x the truth — is
+    refused at 2.337, *below* it. Both are asserted below, so the
+    interleaving is executable rather than claimed. No threshold on
+    ``lower_peak_ratio`` separates them, and the other single-record
+    evidence does not either: both classes can show two estimators agreeing
+    tightly on the in-window candidate. The plausible discriminator is
+    multi-position context — a rahmonic is locked to its fundamental, so the
+    pair moves together as the mic moves, while two independent bounces do
+    not — but that is a hypothesis about a future capability, not something
+    this module measures today.
+
+    **Why the shipped behaviour is still right.** The failure direction is a
+    refusal, never a wrong number, which is the module's standing trade, and
+    it is reachable only from a raised window with something stronger below
+    it. The shape of that boundary is not this test's job: it belongs to
+    :func:`test_raised_window_two_echo_hazard_is_bounded_by_the_default_window`,
+    which sweeps the same geometry family from committed grid literals (482
+    of 720 raised-window cases refuse; the same geometries refuse 0 of 432 at
+    the default window and single-echo raised-window cases 0 of 370). The
+    remedy is in the last assertion here: the default window contains the
+    earlier reflection instead of excluding it, so the same IR measures
+    cleanly there. See ``DEFAULT_ECHO_SEARCH_US``.
+
+    This test documents the limitation so a future reader meets it as a
+    known cost rather than a surprise; if the screen is ever taught
+    multi-position context, this test should be *inverted* (like
+    :func:`test_rahmonic_false_lock_under_a_raised_window_is_screened` was),
+    not deleted.
+    """
+    ir = _impulse_with_two_echoes(300e-6, 0.5, 850e-6, 0.2)
+    refused = detect_echo(ir, SAMPLE_RATE, search_us=(750.0, 1100.0))
+
+    assert refused.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY, refused
+    assert refused.tau_us == 0.0
+    assert refused.confidence == 0.0
+    assert refused.strength_db == STRENGTH_FLOOR_DB
+
+    # The refused measurement was honest: both estimators found the real
+    # 850 us echo and agreed on it. That is what makes this a cost rather
+    # than the screen catching a bad reading.
+    assert refused.tau_cepstral_us == pytest.approx(850.0, rel=0.02), refused
+    assert refused.tau_envelope_us == pytest.approx(850.0, rel=0.02), refused
+    assert refused.corroboration < 0.01, refused
+
+    # And the peak that refused it is the *earlier real reflection*, not a
+    # rahmonic of anything: it sits within half a quefrency step of 300 us.
+    assert abs(refused.lower_peak_us - 300.0) < 0.5 * refused.resolution_us, refused
+    assert refused.lower_peak_ratio > RAHMONIC_MARGIN, refused
+
+    # The interleaving that makes this unfixable per-record: a genuine
+    # rahmonic refusal lands *below* this honest one on the very statistic
+    # the screen uses, so no threshold on it could separate the two.
+    genuine = detect_echo(
+        _impulse_with_echo(400e-6, 0.75), SAMPLE_RATE, search_us=(650.0, 1000.0)
+    )
+    assert genuine.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY, genuine
+    assert genuine.tau_cepstral_us / 400.0 == pytest.approx(2.0, abs=0.05), genuine
+    assert genuine.lower_peak_ratio > RAHMONIC_MARGIN, genuine
+    assert genuine.lower_peak_ratio < refused.lower_peak_ratio, (
+        "the honest-late-echo refusal and a true rahmonic refusal no longer "
+        "interleave on lower_peak_ratio; if they have separated, the "
+        "'not separable from one record' claim in this docstring and in "
+        "RAHMONIC_MARGIN needs re-deriving, not relaxing",
+        genuine.lower_peak_ratio,
+        refused.lower_peak_ratio,
+    )
+
+    # The remedy, on the same IR: the default window contains the earlier
+    # reflection rather than excluding it, so there is no stronger peak
+    # below the candidate and the detector measures normally.
+    measured = detect_echo(ir, SAMPLE_RATE)
+    assert measured.refusal == "", measured
+    assert measured.confidence > ECHO_CONFIDENCE_FLOOR, measured
+    assert measured.tau_us == pytest.approx(300.0, rel=0.05), measured
+    assert measured.lower_peak_ratio < RAHMONIC_MARGIN, measured
+
+
+def test_rahmonic_screen_catches_the_non_integer_ratio_the_submultiple_test_missed():
+    """Why the rule is "anything stronger below" and not "tau/2 or tau/3".
+
+    An earlier revision of ``DEFAULT_ECHO_SEARCH_US`` prescribed re-testing a
+    survivor against exact submultiples. The module's own worst measured case
+    is the counterexample, and it is pinned here so the design rationale is
+    executable rather than a claim in a comment.
+
+    That case is the 205.6 us member of the 150-400 us cloud, searched in
+    (650, 1000). Its cepstral candidate lands at 749.8 us — **3.648x** the
+    true delay, not 3x — and the detector used to report 814.4 us for it,
+    3.96x the truth and the median that this file used to pin as a false
+    lock. A submultiple test would have had to swallow that non-integer
+    slop: dividing the reported 814.4 us by 3 gives 271.5 us against a true
+    205.6 us, 32% high and 0.92 quefrency steps away, so the test could only
+    have caught it by accepting a whole step of error — at which point it
+    accepts nearly anything within its own resolution. The screen instead
+    locates the fundamental directly, at 214.2 us: 4.2% high, **0.12
+    quefrency steps**, nearly eight times closer.
+    """
+    true_taus_us = np.linspace(150.0, 400.0, 10)
+    _freqs, _true_db, captures = _cloud(true_taus_us * 1e-6)
+    result = combine_positions(captures, echo_search_us=(650.0, 1000.0))
+
+    true_us = float(true_taus_us[2])
+    assert true_us == pytest.approx(205.6, abs=0.1), "the cloud member moved"
+    outlier = result.per_position_echo[2]
+    assert outlier is not None
+    assert outlier.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY, outlier
+
+    # The ratio is genuinely off-integer — that is the whole point.
+    ratio = outlier.tau_cepstral_us / true_us
+    assert ratio == pytest.approx(3.648, abs=0.02), outlier
+    assert min(abs(ratio - 3.0), abs(ratio - 4.0)) > 0.3, (
+        f"ratio {ratio:.3f} is close enough to an integer that a submultiple "
+        "test would have worked, and this case no longer demonstrates why the "
+        "screen is shaped the way it is"
+    )
+
+    # The screen localises the fundamental far better than either submultiple
+    # of the cepstral candidate would have.
+    screen_err = abs(outlier.lower_peak_us - true_us)
+    assert screen_err < 0.2 * outlier.resolution_us, outlier
+    for divisor in (2.0, 3.0):
+        assert abs(outlier.tau_cepstral_us / divisor - true_us) > 4.0 * screen_err, (
+            divisor,
+            outlier,
+        )
+    # And it is the module's widest measured rejection margin.
+    assert outlier.lower_peak_ratio > 70.0, outlier
+
+
+def test_rahmonic_margin_is_load_bearing_in_both_directions():
+    """``RAHMONIC_MARGIN`` sits in a gap, and both walls of it are real.
+
+    A threshold nobody can move is a threshold nobody has checked. This
+    mutates the constant and asserts that each direction breaks something
+    specific:
+
+    * **Too low (0.0)** — the screen swallows honest measurements. A clean
+      300 us echo in the default window, the most ordinary reading this
+      detector takes, is refused as a rahmonic of its own cepstral shoulder.
+      That is the wall the calibration's *upper* headroom protects: across
+      the sweep behind ``RAHMONIC_MARGIN``, true positives reach a
+      lower/candidate ratio of 0.9955, so anything at or below 1.0 is
+      shaving a real population.
+    * **Too high (1e9)** — the screen stops screening, and the 150-400 us
+      cloud goes back to reading ``geometry_locked`` at ~857 us through a
+      (700, 1000) window. That is the *lower* wall: wrong readings bottom
+      out at 4.9192, so a margin above that starts letting them through.
+
+    The shipped value does neither, and the same two cases show it sitting
+    between the populations rather than merely between the failures. Both
+    population figures come from
+    :func:`test_rahmonic_margin_calibration_populations_bracket_the_constant`,
+    which regenerates them on demand (``JTS_RAHMONIC_CALIBRATION=1``) — this
+    test asserts the constant is load-bearing, that one asserts it is in the
+    right place.
+    """
+    clean_ir = _impulse_with_echo(300e-6, ECHO_R)
+    taus_s = np.linspace(150e-6, 400e-6, 10)
+
+    def raised_window_verdict():
+        _freqs, _true_db, captures = _cloud(taus_s)
+        return combine_positions(captures, echo_search_us=(700.0, 1000.0)).geometry
+
+    # --- The shipped value: honest read measured, false lock refused. ---
+    honest = detect_echo(clean_ir, SAMPLE_RATE)
+    assert honest.refusal == ""
+    assert honest.lower_peak_ratio < RAHMONIC_MARGIN, honest
+    assert raised_window_verdict().locked is False
+
+    # --- Mutated too low: the honest read is eaten. ---
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(spatial_combine, "RAHMONIC_MARGIN", 0.0)
+        eaten = detect_echo(clean_ir, SAMPLE_RATE)
+    assert eaten.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY, (
+        "a margin of 0 must refuse an ordinary in-window echo — if it no "
+        "longer does, the screen has stopped being sensitive to the "
+        "constant and this bracket is vacuous"
+    )
+    assert eaten.tau_us == 0.0
+
+    # --- Mutated too high: the false lock comes back. ---
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(spatial_combine, "RAHMONIC_MARGIN", 1e9)
+        unscreened = raised_window_verdict()
+    assert unscreened.locked is True, (
+        "with the screen effectively disabled the raised-window false lock "
+        "must reproduce — if it does not, this test is no longer proving "
+        "that the screen is what closed it"
+    )
+    assert unscreened.reason == GEOMETRY_LOCKED
+    assert unscreened.median_tau_us == pytest.approx(856.5, rel=0.02)
+    assert unscreened.median_tau_us > 2.0 * 400.0
+
+
+# The two grids ``RAHMONIC_MARGIN``'s calibration comment describes, as
+# literals, so the comment and the executable sweep cannot drift apart. The
+# true-positive grid is windows that *contain* the echo; the wrong-reading
+# grid is windows that exclude it, which is what makes a rahmonic reachable.
+_CALIBRATION_REFLECTIONS = (
+    0.10, 0.15, 0.20, 0.25, 0.30, 0.36, 0.42, 0.50, 0.60, 0.68, 0.75,
+)
+_CALIBRATION_TRUE_POSITIVE_TAUS_US = np.arange(200.0, 771.0, 30.0)
+_CALIBRATION_TRUE_POSITIVE_WINDOWS = (
+    (120.0, 800.0), (150.0, 850.0), (200.0, 900.0), (250.0, 950.0),
+    (300.0, 800.0), (300.0, 1000.0), (400.0, 900.0), (400.0, 1000.0),
+    (500.0, 1000.0), (600.0, 1000.0), (650.0, 1000.0), (700.0, 1100.0),
+    (800.0, 1200.0),
+)
+_CALIBRATION_WRONG_READING_TAUS_US = np.arange(100.0, 456.0, 25.0)
+_CALIBRATION_WRONG_READING_WINDOWS = (
+    (400.0, 900.0), (500.0, 1000.0), (600.0, 1100.0), (650.0, 1000.0),
+    (700.0, 1100.0), (750.0, 1200.0), (800.0, 1200.0), (850.0, 1400.0),
+    (900.0, 1400.0), (950.0, 1500.0), (1000.0, 1600.0),
+)
+
+# Guards both reproducible sweeps below — the RAHMONIC_MARGIN calibration
+# (~9 400 detector calls) and the raised-window two-echo hazard (~1 500).
+requires_calibration_sweep = pytest.mark.skipif(
+    os.environ.get("JTS_RAHMONIC_CALIBRATION", "").strip() != "1",
+    reason=(
+        "the reproducible rahmonic sweeps are ~11 000 detector calls (~38 s "
+        "for both), too slow for the default lane: set "
+        "JTS_RAHMONIC_CALIBRATION=1 to run them"
+    ),
+)
+
+
+@requires_calibration_sweep
+def test_rahmonic_margin_calibration_populations_bracket_the_constant():
+    """The sweep behind ``RAHMONIC_MARGIN``, committed rather than quoted.
+
+    :func:`test_rahmonic_margin_is_load_bearing_in_both_directions` shows the
+    constant matters by mutating it; this shows *why it is 2.0*, by
+    regenerating the two populations the calibration comment describes and
+    re-deriving the gap between them. Before this test existed the comment
+    cited 2925 true-positive readings with a ceiling of 0.9955 and 528 wrong
+    readings with a floor of 3.531 — figures nobody could re-derive, because
+    the grid steps behind them were never written down. A calibration nobody
+    can reproduce is a claim, not a measurement.
+
+    **Method.** Each IR is measured by the *shipped* detector with the screen
+    disabled (``RAHMONIC_MARGIN`` patched to infinity), so this sweep reads
+    ``lower_peak_ratio`` off real records rather than re-implementing the
+    statistic, and classifies each by what the pre-screen detector did:
+
+    * **True positives** — unrefused, at or above ``ECHO_CONFIDENCE_FLOOR``,
+      within 15% of truth. These are readings the screen must never take
+      away; their ratio *ceiling* is the wall below the margin.
+    * **Wrong readings** — unrefused and confident, but more than 15% off
+      truth. These are the false locks the screen exists to reject; their
+      ratio *floor* is the wall above the margin.
+
+    **Measured 2026-07-25** (24-28 s of sweep): 2908 true positives, ceiling
+    **0.9955**; 409 wrong readings, floor **4.9192**. So 2.0 sits 2.01x above
+    the ceiling and 2.46x below the floor. Against the pre-existing comment,
+    the ceiling reproduces exactly while the population sizes and the floor
+    do not — expected, since the original grid steps are unknown, and safe,
+    since the regenerated floor is *higher*. The three corpus IRs the
+    original sweep folded into its true positives are deliberately not here:
+    this test must run in CI, where the corpus is absent. Their headroom is
+    pinned separately by :func:`test_detect_echo_finds_the_corpus_bounce`.
+
+    The assertions are the bracket and its width, not the four figures. A
+    grid this large is a *sample* of the two populations — pinning its exact
+    output would make an honest re-sample look like a regression — but a
+    bracket that closes, or a population that silently empties, is a real
+    one.
+    """
+    freqs = _grid()
+    true_db = _true_response_db(freqs)
+
+    def irs_for(tau_us: float, reflection: float) -> list[np.ndarray]:
+        """One bare impulse+echo IR and one shaped-response IR, same echo."""
+        shaped = _position(
+            "calibration",
+            freqs,
+            true_db,
+            tau_us * 1e-6,
+            np.random.default_rng(int(tau_us * 100) + int(reflection * 1000)),
+            reflection=reflection,
+        ).ir
+        assert shaped is not None
+        return [_impulse_with_echo(tau_us * 1e-6, reflection), shaped]
+
+    def sweep(taus_us, windows, *, wrong: bool) -> list[float]:
+        ratios: list[float] = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(spatial_combine, "RAHMONIC_MARGIN", math.inf)
+            for raw_tau_us in taus_us:
+                tau_us = float(raw_tau_us)
+                for reflection in _CALIBRATION_REFLECTIONS:
+                    for ir in irs_for(tau_us, reflection):
+                        for window in windows:
+                            echo = detect_echo(ir, SAMPLE_RATE, search_us=window)
+                            if echo.refusal or echo.confidence < ECHO_CONFIDENCE_FLOOR:
+                                continue
+                            off_by = abs(echo.tau_us - tau_us) / tau_us
+                            if (off_by > 0.15) == wrong:
+                                ratios.append(echo.lower_peak_ratio)
+        return ratios
+
+    true_positive = sweep(
+        _CALIBRATION_TRUE_POSITIVE_TAUS_US,
+        _CALIBRATION_TRUE_POSITIVE_WINDOWS,
+        wrong=False,
+    )
+    wrong_reading = sweep(
+        _CALIBRATION_WRONG_READING_TAUS_US,
+        _CALIBRATION_WRONG_READING_WINDOWS,
+        wrong=True,
+    )
+
+    # Non-vacuity first: a sweep that stopped producing readings would pass
+    # every bracket assertion below by having nothing to contradict it.
+    assert len(true_positive) > 2000, len(true_positive)
+    assert len(wrong_reading) > 250, len(wrong_reading)
+
+    ceiling = max(true_positive)
+    floor = min(wrong_reading)
+    measured = (
+        f"true positives n={len(true_positive)} ceiling={ceiling:.4f}; "
+        f"wrong readings n={len(wrong_reading)} floor={floor:.4f}"
+    )
+
+    # The gap exists, and the constant is inside it...
+    assert ceiling < RAHMONIC_MARGIN < floor, measured
+    # ...with room on both walls rather than grazing either. 1.5x is the
+    # weakest bracket the measured gap comfortably supports (2.01x / 2.46x),
+    # so failing this means the populations have genuinely closed in.
+    assert ceiling * 1.5 <= RAHMONIC_MARGIN, measured
+    assert floor >= 1.5 * RAHMONIC_MARGIN, measured
+
+
+# The two-echo hazard grid behind ``DEFAULT_ECHO_SEARCH_US``'s raised-window
+# cost, as literals. Every figure that comment quotes is an attribute of
+# :func:`_two_echo_hazard_sweep`'s return value, so a reader re-derives them by
+# running this file rather than by reconstructing a grid from prose — a prose
+# description of a grid is not a grid, and reconstructing one from an earlier
+# revision of that comment landed three cases away from the real answer.
+_HAZARD_EARLY_ECHOES = tuple(
+    (tau_us, reflection)
+    for tau_us in (250.0, 300.0, 350.0, 400.0)
+    for reflection in (0.4, 0.5, 0.6)
+)
+_HAZARD_LATE_ECHOES = tuple(
+    (tau_us, reflection)
+    for tau_us in (850.0, 900.0, 950.0, 1000.0)
+    for reflection in (0.15, 0.2, 0.25)
+)
+_HAZARD_RAISED_WINDOWS = (
+    (700.0, 1100.0), (700.0, 1200.0), (750.0, 1100.0), (750.0, 1200.0),
+    (800.0, 1200.0),
+)
+# Three noise seeds for the default-window leg: the hazard is a property of
+# the geometry, so the leg that must show *nothing* is the one worth
+# re-running against different noise.
+_HAZARD_DEFAULT_WINDOW_SEEDS = (0, 1, 2)
+_HAZARD_SINGLE_ECHO_REFLECTIONS = (0.15, 0.25, 0.36, 0.5, 0.6)
+
+
+@dataclass(frozen=True)
+class _HazardLeg:
+    """One leg of the two-echo hazard sweep, in aggregate.
+
+    ``ratio_lo``/``ratio_hi`` span *every* record in the leg;
+    ``refused_ratio_lo``/``refused_ratio_hi`` span only the
+    ``rahmonic_of_lower_delay`` refusals (0.0 when there are none). The two
+    spans are separate because the interesting range differs by leg: for a
+    leg that refuses nothing, "how far the whole leg stayed from the margin"
+    is the point; for the raised-window leg it is "how hard the refusals
+    fired".
+    """
+
+    total: int
+    rahmonic_refusals: int
+    measured_confident: int
+    ratio_lo: float
+    ratio_hi: float
+    refused_ratio_lo: float
+    refused_ratio_hi: float
+
+
+@dataclass(frozen=True)
+class _HazardSweep:
+    """The three legs, plus the accuracy figures the prose quotes."""
+
+    raised: _HazardLeg
+    default_window: _HazardLeg
+    single_echo: _HazardLeg
+    # Worst |tau_envelope - true late echo| over the raised leg's refusals,
+    # as a percent: how good the measurements the screen threw away were.
+    raised_refused_envelope_error_pct: float
+    # Worst corroboration over those same refusals: they were not refused for
+    # disagreeing.
+    raised_refused_corroboration_max: float
+    # Worst |tau - true early echo| over the default-window leg, as a percent:
+    # what the caller gets instead by not raising the window.
+    default_window_early_echo_error_pct: float
+
+
+def _summarise_leg(records: list[tuple[float, EchoDiagnostic]]) -> _HazardLeg:
+    ratios = [echo.lower_peak_ratio for _target, echo in records]
+    refused = [
+        echo.lower_peak_ratio
+        for _target, echo in records
+        if echo.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY
+    ]
+    return _HazardLeg(
+        total=len(records),
+        rahmonic_refusals=len(refused),
+        measured_confident=sum(
+            1
+            for _target, echo in records
+            if echo.refusal == "" and echo.confidence >= ECHO_CONFIDENCE_FLOOR
+        ),
+        ratio_lo=min(ratios),
+        ratio_hi=max(ratios),
+        refused_ratio_lo=min(refused) if refused else 0.0,
+        refused_ratio_hi=max(refused) if refused else 0.0,
+    )
+
+
+def _two_echo_hazard_sweep() -> _HazardSweep:
+    """Sweep the raised-window two-echo hazard and its two boundaries.
+
+    Three legs off one grid of geometries — an earlier, stronger reflection
+    plus a later, weaker one:
+
+    * **raised** — searched in windows that exclude the earlier reflection and
+      contain the later one. This is where an honest late echo is refused as
+      if it were a rahmonic.
+    * **default_window** — the same geometries through ``(120, 800)``, which
+      contains the earlier reflection, over three noise seeds. This is the
+      remedy, and it must refuse nothing.
+    * **single_echo** — one echo, genuinely inside each raised window, with
+      nothing below it. This isolates the raised window itself as *not* the
+      cause, and must refuse nothing either.
+    """
+    raised: list[tuple[float, EchoDiagnostic]] = []
+    for window in _HAZARD_RAISED_WINDOWS:
+        for early_us, early_r in _HAZARD_EARLY_ECHOES:
+            for late_us, late_r in _HAZARD_LATE_ECHOES:
+                if not window[0] < late_us < window[1] or late_r >= early_r:
+                    continue
+                ir = _impulse_with_two_echoes(
+                    early_us * 1e-6, early_r, late_us * 1e-6, late_r
+                )
+                raised.append(
+                    (late_us, detect_echo(ir, SAMPLE_RATE, search_us=window))
+                )
+
+    default_window: list[tuple[float, EchoDiagnostic]] = []
+    for early_us, early_r in _HAZARD_EARLY_ECHOES:
+        for late_us, late_r in _HAZARD_LATE_ECHOES:
+            if late_r >= early_r:
+                continue
+            for seed in _HAZARD_DEFAULT_WINDOW_SEEDS:
+                ir = _impulse_with_two_echoes(
+                    early_us * 1e-6, early_r, late_us * 1e-6, late_r, seed=seed
+                )
+                default_window.append((early_us, detect_echo(ir, SAMPLE_RATE)))
+
+    single_echo: list[tuple[float, EchoDiagnostic]] = []
+    for window in _HAZARD_RAISED_WINDOWS:
+        for tau_us in np.arange(window[0] + 90.0, window[1] - 40.0, 20.0):
+            for reflection in _HAZARD_SINGLE_ECHO_REFLECTIONS:
+                ir = _impulse_with_echo(float(tau_us) * 1e-6, reflection)
+                single_echo.append(
+                    (float(tau_us), detect_echo(ir, SAMPLE_RATE, search_us=window))
+                )
+
+    refusals = [
+        (target, echo)
+        for target, echo in raised
+        if echo.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY
+    ]
+    return _HazardSweep(
+        raised=_summarise_leg(raised),
+        default_window=_summarise_leg(default_window),
+        single_echo=_summarise_leg(single_echo),
+        raised_refused_envelope_error_pct=max(
+            100.0 * abs(echo.tau_envelope_us - target) / target
+            for target, echo in refusals
+        ),
+        raised_refused_corroboration_max=max(
+            echo.corroboration for _target, echo in refusals
+        ),
+        default_window_early_echo_error_pct=max(
+            100.0 * abs(echo.tau_us - target) / target
+            for target, echo in default_window
+        ),
+    )
+
+
+@requires_calibration_sweep
+def test_raised_window_two_echo_hazard_is_bounded_by_the_default_window():
+    """The sweep behind the raised-window cost, committed rather than quoted.
+
+    :func:`test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one`
+    pins the hazard on one hand-picked IR; this establishes its *shape* — that
+    it needs the stronger-earlier-echo geometry, that the default window does
+    not have it, and that the measurements it throws away were good ones.
+    ``DEFAULT_ECHO_SEARCH_US`` quotes these figures, and an earlier revision
+    quoted them from an uncommitted script: a reader reconstructing that grid
+    from its prose description landed on 479 refusals where the script had
+    found 482. The grid is literals now
+    (``_HAZARD_*``) and every quoted figure is an attribute of
+    :func:`_two_echo_hazard_sweep`, so the comment and the code cannot drift.
+
+    **Measured 2026-07-25** (~9 s): the raised leg refuses **482 of 720** at
+    lower/candidate ratios **2.005-4.513**, with the discarded envelope
+    estimates within **0.894%** of the true late echo and corroboration never
+    worse than **0.266**; the default-window leg refuses **0 of 432** (ratios
+    **0.166-0.945**) and reads the earlier echo to within **2.398%**; the
+    single-echo leg refuses **0 of 370** (ratios **0.217-0.942**).
+
+    The assertions are the walls, not those figures: exact grid sizes (so a
+    changed literal fails loudly rather than silently re-scoping the prose),
+    zero refusals on both boundary legs, refusals present on the raised leg,
+    and the discarded envelope estimates staying within 1% of truth — which is
+    what makes this a *cost* rather than the screen catching bad readings.
+    """
+    sweep = _two_echo_hazard_sweep()
+
+    # Grid sizes, so "of 720 / of 432 / of 370" in the prose is executable.
+    assert sweep.raised.total == 720, sweep.raised
+    assert sweep.default_window.total == 432, sweep.default_window
+    assert sweep.single_echo.total == 370, sweep.single_echo
+
+    # Wall 1 — the remedy holds: the window that contains the earlier
+    # reflection refuses none of these geometries, and measures all of them.
+    assert sweep.default_window.rahmonic_refusals == 0, sweep.default_window
+    assert sweep.default_window.measured_confident == 432, sweep.default_window
+    assert sweep.default_window.ratio_hi < RAHMONIC_MARGIN, sweep.default_window
+
+    # Wall 2 — a raised window alone is not the cause: with nothing below the
+    # candidate, the same windows refuse nothing.
+    assert sweep.single_echo.rahmonic_refusals == 0, sweep.single_echo
+    assert sweep.single_echo.measured_confident == 370, sweep.single_echo
+    assert sweep.single_echo.ratio_hi < RAHMONIC_MARGIN, sweep.single_echo
+
+    # Wall 3 — the hazard is real and reachable, not a one-IR curiosity.
+    assert sweep.raised.rahmonic_refusals > 0, sweep.raised
+    assert sweep.raised.refused_ratio_lo > RAHMONIC_MARGIN, sweep.raised
+
+    # Wall 4 — what was refused were good measurements. If this ever fails,
+    # the refusals have started landing on records that were wrong anyway,
+    # and the "known cost" framing in DEFAULT_ECHO_SEARCH_US is too harsh on
+    # the screen rather than too kind.
+    assert sweep.raised_refused_envelope_error_pct < 1.0, sweep
+    assert sweep.raised_refused_corroboration_max < CORROBORATION_LOOSE, sweep
 
 
 def test_an_edge_refusal_reports_the_corroboration_it_measured():
@@ -1277,10 +1999,13 @@ def test_an_edge_refusal_reports_the_corroboration_it_measured():
     test uses a case where the pair agreed to within ~8%, which the old code
     recorded as maximal disagreement. **That agreement is not what makes it
     a refusal**, and this test must not be read as claiming edge refusals
-    are always tight: across the suite the edge path yields 145 measured
-    readings spanning 0.0005-3.26 (median 0.161), about a third of them
-    above ``CORROBORATION_LOOSE``. The refusal turns on distance to the
-    window edge; the field's only job is to report what was measured.
+    are always tight: the measured readings this path produces run from
+    near-perfect agreement to gross disagreement, and readings above
+    ``CORROBORATION_LOOSE`` are ordinary rather than exceptional. The
+    refusal turns on distance to the window edge; the field's only job is to
+    report what was measured. (No count is quoted for that population on
+    purpose — it is a property of whichever tests happen to exist, so a
+    census here would be stale the next time one is added.)
     """
     # A clean synthetic echo well below the default window's lower edge:
     # both estimators alias up onto the edge, agree closely, and are refused.
@@ -1950,6 +2675,17 @@ def test_detect_echo_finds_the_corpus_bounce(corpus_irs):
         assert result.confidence > ECHO_CONFIDENCE_FLOOR, f"{name}: {result}"
         # The plan records -8.8 dB / r ~= 0.36 for this bounce.
         assert result.strength_db == pytest.approx(-8.8, abs=1.5), name
+        # The rahmonic screen's headroom on *real* data, which is the only
+        # place the "low-quefrency leakage cannot auto-refuse an honest
+        # reading" claim can actually be tested: a real IR carries a real
+        # driver response, and the cubic detrend is what keeps it out of the
+        # low quefrencies. Measured 0.329-0.387 against a margin of 2.0. A
+        # future change to DETREND_ORDER or the analysis band would show up
+        # here first. The bound is 0.45 rather than 0.5 so it is a genuine
+        # tripwire on that 0.387 worst case (~16% of headroom) rather than a
+        # number with room for real drift to hide in.
+        assert result.lower_peak_ratio < 0.45, f"{name}: {result}"
+        assert result.lower_peak_ratio < RAHMONIC_MARGIN, name
 
 
 @requires_corpus
