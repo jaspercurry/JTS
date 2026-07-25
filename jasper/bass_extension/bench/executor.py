@@ -159,6 +159,17 @@ class PlayAndCapture(Protocol):
     phase-1 :class:`~jasper.bass_extension.bench.runner.ReferenceSweepCapture`
     to compare against — the implementation needs it to compute
     ``PlayedStimulus.transparency_verdict``/``transparency_analysis``.
+
+    ``request.cross_check_read_count`` (R10(c)'s recorded, never-defaulted
+    poll-count input) is consumed HERE, not in this module: a correct
+    implementation's own live-polling loop — the one that builds
+    ``PlayedStimulus.live_peak_all_samples`` by calling
+    ``CamillaController.get_playback_peak_all()`` at ``request.
+    cross_check_poll_interval_s`` intervals — reads exactly this many
+    samples. Nothing in this module polls live hardware, so it never calls
+    this field itself; it is not a dead value, only a field whose consumer
+    (the hardware seam this Protocol stands in for) does not exist in-tree
+    yet.
     """
 
     async def play(
