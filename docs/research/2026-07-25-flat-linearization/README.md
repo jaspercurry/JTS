@@ -21,6 +21,19 @@ echo contaminating every existing capture (evidence corpus:
    practice (re-measure at target SPL; thermal power compression as a
    candidate mechanism for realized-lift shortfall).
 
+2. [`02-time-selective-excitation-viability.md`](02-time-selective-excitation-viability.md)
+   — the owner's pulsed-sweep / fast-sawtooth ("lull-excision") proposal
+   adjudicated against first principles and prior art, with four
+   pre-registered predictions all CONFIRMED: pulsed excitation and
+   fast-tracking sweeps are mathematically time-gating (variant B is
+   Heyser's TDS; TDS = windowing per Vanderkooy 1986 / Müller & Massarani
+   2001), the DUT's own LR4+horn ring means no echo-free lull exists, no
+   shipped product uses lull-excision, and the only single-point escape is
+   model-based super-resolution (unproven at consumer SNR with
+   frequency-dependent r(f)). Deliverables adopted into the plan: the
+   ultra-short-gate HF cross-check (zero-cost QA) and the cepstrum-seeded
+   regularized two-path inversion as a bounded experimental lane.
+
 Known errata (caught in the plan's adversarial review, corrected in the
 plan, left verbatim here): US 8,130,966 is assigned to Performance Media
 Industries, Ltd., not Harman.
