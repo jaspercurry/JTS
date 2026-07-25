@@ -8,6 +8,12 @@
 > implementation within these boundaries. Companion operational truth for
 > today's shipped flow stays in
 > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> **Instrument update (2026-07-25):** the speaker layer's measurement
+> instrument and the "top of the table" tolerances are concretized by
+> [flat-linearization-plan.md](flat-linearization-plan.md) (adopted): the
+> single-point gated sweep becomes a spatially-averaged gated capture
+> cloud with declared per-band tolerances; that plan wins on instrument
+> and spec details, this doc stays canonical for the layer architecture.
 
 ## Why this exists (one paragraph of history)
 
