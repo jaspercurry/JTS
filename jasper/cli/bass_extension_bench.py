@@ -13,7 +13,8 @@ graph, so it is run by hand at the bench with the Stop control (Ctrl-C) ready.
 
 ``--dry-run`` authors + validates the manifest and prints the plan without
 opening any device, socket, or CamillaDSP connection — the safe preflight the
-operator runs before the supervised session.
+operator runs before the supervised session, and the DEFAULT posture: live
+execution additionally requires the explicit ``--live`` flag.
 
 This CLI never wires the pure evidence producer into a runtime path, never
 persists a profile, and calls no ``apply_bass_extension`` writer.
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -34,9 +36,11 @@ from jasper.bass_extension.bench.context import (
 )
 from jasper.bass_extension.bench.manifest import (
     STIMULUS_ROLES,
+    CampaignManifest,
     ManifestRefusal,
     author_campaign_manifest,
 )
+from jasper.bass_extension.bench.render import RenderError, resolve_render_binary
 from jasper.bass_extension.targets import MARGINS
 
 
@@ -86,6 +90,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="author + validate the manifest and print the plan; open no device",
     )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "run the actual on-device campaign — plays real audio at stress "
+            "levels and temporarily mutates the live CamillaDSP graph. Requires "
+            "every on-device collaborator; --dry-run (or omitting --live) is the "
+            "safe preflight and remains the default posture."
+        ),
+    )
     args = parser.parse_args(argv)
 
     inputs = _load_inputs(args.manifest)
@@ -105,38 +119,99 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     _print_plan(inputs, manifest, target_ids)
 
-    if args.dry_run:
+    if args.dry_run or not args.live:
         print("dry run: no device opened, no graph mutated, no bundle written")
         return 0
 
     return _run_live(args, manifest, target_ids)
 
 
-def _run_live(args: argparse.Namespace, manifest, target_ids: Sequence[str]) -> int:
-    """Run the on-device campaign (fails closed until the executor is bound).
+class _CamillaFloor:
+    """The ``FloorControl`` the activation seam fades to before every mutation.
 
-    The campaign composition — the fail-closed activation seam
-    (:mod:`jasper.bass_extension.bench.activation`), the pure bundle emitter, the
-    analysis kernels, and :func:`jasper.bass_extension.bench.runner.run_campaign`
-    — is complete and tested. The live run additionally needs the *on-device*
-    collaborators the runner injects: the CamillaDSP controller + the
-    ``measurement_window`` (trivial constructors), the ramp/``safe_playback``
-    floor adapter, and the play/capture/analyze executor. That executor's
-    pre/post-limiter sample taps (content-addressed reads at the CamillaDSP
-    limiter input/output) are the one piece with no in-tree helper to compose —
-    they are wired and validated at the bench, on the Pi. Until that on-device
-    executor is bound here, ``--dry-run`` is the operator preflight and this path
-    fails closed rather than pretend to measure. The Ctrl-C Stop control
-    (:class:`~jasper.bass_extension.bench.runner.Stop`) is installed by the
-    on-device executor binding, not here — there is nothing to interrupt yet.
+    ``SAFE_FLOOR_DB`` reuses ``jasper.volume_curve.DEFAULT_VOLUME_FLOOR_DB`` —
+    the existing main-volume curve's own floor (also
+    ``jasper.audio_measurement.ramp.MeasurementRamp.start_db``'s coarse-ramp
+    starting point) — rather than inventing a new "safe" constant.
     """
 
+    def __init__(self, controller: object) -> None:
+        self._controller = controller
+
+    async def to_floor(self) -> None:
+        from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB
+
+        await self._controller.set_volume_db(DEFAULT_VOLUME_FLOOR_DB)  # type: ignore[attr-defined]
+
+    async def assert_at_floor(self) -> None:
+        from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB
+
+        reading = await self._controller.get_volume_and_mute()  # type: ignore[attr-defined]
+        if reading is None:
+            raise RuntimeError("could not confirm the safe floor: camilla unreachable")
+        volume_db, _muted = reading
+        if volume_db > DEFAULT_VOLUME_FLOOR_DB:
+            raise RuntimeError(
+                f"main volume {volume_db:.1f} dB is above the safe floor "
+                f"{DEFAULT_VOLUME_FLOOR_DB:.1f} dB — refusing to mutate"
+            )
+
+
+def _run_live(args: argparse.Namespace, manifest: CampaignManifest, target_ids: Sequence[str]) -> int:
+    """Run the on-device campaign under operator supervision, Stop-able by Ctrl-C.
+
+    Real: binary resolution (R5), the CamillaDSP controller, the safe-floor
+    adapter, and the Ctrl-C Stop control. The campaign orchestration
+    (:func:`~jasper.bass_extension.bench.runner.run_campaign`), the
+    activation seam, and the full derivation/render/cross-check pipeline
+    (:mod:`~jasper.bass_extension.bench.executor`) are complete and
+    hardware-free tested.
+
+    What remains NOT bound here: constructing each target's
+    :class:`~jasper.bass_extension.bench.runner.TargetPlan` (natural graph
+    text, LT/subsonic params, owner channels) from the household's confirmed
+    bass-extension profile, and the on-device
+    :class:`~jasper.bass_extension.bench.executor.PlayAndCapture` collaborator
+    (the phone capture-relay session composition) — assembling both
+    correctly is an on-device integration exercise this hardware-free
+    implementation session could not responsibly author untested. Both are
+    named, narrow next steps, not open questions.
+    """
+
+    try:
+        binary = resolve_render_binary()
+    except RenderError as exc:
+        print(f"REFUSED — render binary could not be resolved: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"resolved render binary: {binary.path} ({binary.version_output}, "
+        f"sha256={binary.sha256[:12]}…)"
+    )
+
+    from jasper.bass_extension.bench.runner import Stop
+
+    stop = Stop()
+
+    def _handle_sigint(signum: int, frame: object) -> None:
+        del signum, frame
+        print(
+            "\nStop requested — finishing the in-flight step, then restoring "
+            "the predecessor graph and exiting…",
+            file=sys.stderr,
+        )
+        stop.stop()
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
     raise SystemExit(
-        "live bench execution requires the on-device play/capture/tap executor "
-        "(run on the Pi, at the bench). The manifest validated and the plan is "
-        "shown above; re-run with --dry-run for the full preflight. The campaign "
-        "orchestration, activation seam, analysis, and bundle emitter are built "
-        "and tested — only the pre/post-limiter tap capture is wired on-device."
+        "live bench execution requires binding each target's TargetPlan from "
+        "the household's confirmed bass-extension profile and the on-device "
+        "PlayAndCapture collaborator (jasper.bass_extension.bench.executor) — "
+        "neither is wired here yet. The manifest validated, the render binary "
+        "resolved, and the plan is shown above; re-run with --dry-run for the "
+        "full preflight. The campaign orchestration, activation seam, "
+        "derivation/render/cross-check pipeline, and Ctrl-C Stop control are "
+        "built and hardware-free tested."
     )
 
 
