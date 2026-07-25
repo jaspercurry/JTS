@@ -41,6 +41,14 @@ Upstream citations verified against the pinned CamillaDSP v4.1.3 source
   ``ramp_start: current_volume`` and starts with ``ramp_step: 0`` ("not in a
   ramp") — the first processed chunk already applies the ``--gain`` value
   directly, no startup fade.
+* **``--gain`` and its value MUST be one ``=``-joined argv token.** The
+  ``gain`` ``Arg`` above has no ``.allow_hyphen_values(true)``, and clap is
+  pinned at ``4.5.4`` (``Cargo.toml``). The README's own "Initial volume"
+  section is explicit: ``--gain=-12.3`` and ``-g-12.3`` work; ``--gain
+  -12.3`` (a space, i.e. two argv elements) is listed under "have a space
+  before the minus sign and do **NOT** work." JTS fader values are always
+  ``<= 0`` dB, so :func:`render_config` always emits the single-token
+  ``--gain=<value>`` form — see its docstring.
 """
 
 from __future__ import annotations
@@ -289,21 +297,34 @@ def render_config(
 ) -> RenderInvocation:
     """R9: invoke the pinned binary on ``config_path``, bounded, isolated.
 
-    argv is exactly ``[binary_path, "--gain", str(fader_db), str(config_path)]``
-    — no ``--statefile``, no ``-p``/``-a``. ``fader_db`` is R4(a)'s bracketed
-    (before == after, proved stable) main-volume reading, reproduced here
-    because R4(c) always resolves to "precedes the limiter" for the pinned
-    build (see this module's docstring): every render's ``self.volume`` stage
-    must apply the identical gain the live pass's fader applied, or the
-    rendered peak is systematically off by the fader's dB. Bounds are
-    process-local (``RLIMIT_AS``, ``RLIMIT_CPU``, ``os.nice``) applied in the
-    child via ``preexec_fn``, on top of the same bounded-subprocess shape
-    ``jasper/dsp_apply.py`` uses for ``--check`` (explicit argv, timeout,
-    captured stdout/stderr, typed result).
+    argv is exactly ``[binary_path, f"--gain={fader_db}", str(config_path)]``
+    — no ``--statefile``, no ``-p``/``-a``. ``--gain`` and its value MUST be
+    ONE ``=``-joined token, never two separate argv elements: the pinned
+    v4.1.3 README's own "Initial volume" section documents that clap
+    (pinned ``4.5.4``, no ``allow_hyphen_values`` on this ``Arg``) parses
+    ``--gain -12.3`` (a space, i.e. two argv tokens) as broken — "These have
+    a space before the minus sign and do **NOT** work" — while
+    ``--gain=-12.3`` is one of the two forms that do. JTS fader values are
+    always ``<= 0`` dB, so the two-token form would refuse (well, SIGSEGV or
+    exit non-zero from clap) on every real render. ``fader_db`` is R4(a)'s
+    bracketed (before == after, proved stable) main-volume reading,
+    reproduced here because R4(c) always resolves to "precedes the limiter"
+    for the pinned build (see this module's docstring): every render's
+    ``self.volume`` stage must apply the identical gain the live pass's
+    fader applied, or the rendered peak is systematically off by the
+    fader's dB. Bounds are process-local (``RLIMIT_AS``, ``RLIMIT_CPU``,
+    ``os.nice``) applied in the child via ``preexec_fn``, on top of the
+    same bounded-subprocess shape ``jasper/dsp_apply.py`` uses for
+    ``--check`` (explicit argv, timeout, captured stdout/stderr, typed
+    result).
     """
 
-    argv = (binary_path, "--gain", str(fader_db), str(config_path))
-    if any(token in _FORBIDDEN_ARGV_TOKENS for token in argv):
+    argv = (binary_path, f"--gain={fader_db}", str(config_path))
+    # Split each token on its FIRST "=" before the membership check: an
+    # embedded forbidden flag (e.g. a hypothetical "--port=1234" token)
+    # would otherwise bypass an exact-string check that only ever sees
+    # "--gain=<value>"-shaped tokens as a single opaque string.
+    if any(token.split("=", 1)[0] in _FORBIDDEN_ARGV_TOKENS for token in argv):
         raise RenderError(
             "render argv carries a statefile or websocket-bind token — refusing "
             f"before start: {argv!r}"
@@ -415,8 +436,12 @@ def estimate_render_bytes(sample_rate_hz: int, channels: int, duration_s: float)
 
     F64_LE (8 bytes/sample) at the full pipeline channel width — the
     playback file's actual precision (see
-    :data:`DEPLOYED_PROCESSING_PRECISION`) — with a 2x safety margin for the
-    WavFile capture artifact plus filesystem overhead.
+    :data:`DEPLOYED_PROCESSING_PRECISION`). N-6: the 2x factor is for
+    :func:`render_with_determinism_receipt`'s R8 determinism check, which
+    keeps BOTH the first and second full-precision playback outputs on
+    disk at once — it is not a margin for the (much smaller, 16-bit,
+    typically narrower-channel) WavFile capture artifact or generic
+    filesystem overhead, despite what this docstring said before N-6.
     """
 
     bytes_per_frame = 8 * max(1, channels)
@@ -429,18 +454,25 @@ def check_free_space(
     """R9: refuse before a render if free space is below the campaign estimate.
 
     Checked before EACH render against renders still outstanding for the
-    WHOLE campaign, not just the current target.
+    WHOLE campaign, not just the current target — unconditionally: S-4's
+    ``renders_outstanding <= 0: return`` early-out is deleted. The seeded
+    estimate (:func:`~jasper.bass_extension.bench.executor.
+    estimate_campaign_render_count`'s ``targets * 8``) assumes exactly one
+    evaluated candidate per target, so it can genuinely run out before a
+    real multi-candidate campaign's renders do; once the caller's counter
+    reaches 0 that must NOT silently disable the guard for the rest of the
+    campaign — it floors at 1 render's worth instead, so a real
+    out-of-space condition still refuses with a clear ``RenderError``
+    rather than an opaque OS-level disk-full failure from the subprocess.
     """
 
-    if renders_outstanding <= 0:
-        return
-    required = per_render_estimate_bytes * renders_outstanding
+    required = per_render_estimate_bytes * max(1, renders_outstanding)
     usage = shutil.disk_usage(bundle_dir)
     if usage.free < required:
         raise RenderError(
             f"free space {usage.free} bytes is below the campaign estimate "
-            f"{required} bytes ({renders_outstanding} renders outstanding at "
-            f"~{per_render_estimate_bytes} bytes each)"
+            f"{required} bytes ({max(1, renders_outstanding)} renders outstanding "
+            f"at ~{per_render_estimate_bytes} bytes each)"
         )
 
 

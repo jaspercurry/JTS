@@ -146,11 +146,22 @@ def test_resolve_render_binary_refuses_when_resolved_path_missing(
 def test_render_config_argv_carries_the_bracketed_fader_gain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """B1: the render argv MUST carry ``--gain <fader_db>`` — R4(c) always
-    resolves to "reproduce the recorded fader gain" for the pinned build, and
-    a render that omits it is systematically off by the fader's dB (silently
-    permissive on the Discovery path, since finish_discovery never
-    cross-checks against a live capture)."""
+    """B1/B-A: the render argv MUST carry ``--gain=<fader_db>`` as ONE
+    ``=``-joined token — R4(c) always resolves to "reproduce the recorded
+    fader gain" for the pinned build, and a render that omits it is
+    systematically off by the fader's dB (silently permissive on the
+    Discovery path, since finish_discovery never cross-checks against a
+    live capture).
+
+    Uses a NEGATIVE ``fader_db`` deliberately: JTS fader values are always
+    ``<= 0`` dB, and the pinned v4.1.3 README's "Initial volume" section
+    documents that clap (no ``allow_hyphen_values`` on this ``Arg``) parses
+    a SPACE-separated ``--gain -6.5`` (two argv tokens) as broken —
+    "have a space before the minus sign and do **NOT** work" — while
+    ``--gain=-6.5`` (one token) works. A test asserting only the two-token
+    shape would pass regardless of which form the code actually emits
+    (this mock never invokes real clap), so the assertion below pins the
+    single-token ``=`` form specifically."""
 
     output_path = tmp_path / "out.raw"
     seen_argv: list[Any] = []
@@ -173,9 +184,11 @@ def test_render_config_argv_carries_the_bracketed_fader_gain(
         bounds=bounds,
         fader_db=-6.5,
     )
-    expected = ("/opt/camilladsp/camilladsp", "--gain", "-6.5", str(config_path))
+    expected = ("/opt/camilladsp/camilladsp", "--gain=-6.5", str(config_path))
     assert result.argv == expected
     assert seen_argv == [expected]
+    # Never two separate tokens ("--gain", "-6.5") — the documented-broken form.
+    assert "--gain" not in result.argv
 
 
 @pytest.mark.parametrize("forbidden", ["--statefile", "-p", "--port", "-a", "--address"])
@@ -197,6 +210,35 @@ def test_render_config_refuses_forbidden_argv_tokens_before_starting(
     with pytest.raises(render.RenderError, match="statefile or websocket"):
         render.render_config(
             forbidden,
+            tmp_path / "cfg.yml",
+            output_path=tmp_path / "out.raw",
+            bounds=bounds,
+            fader_db=0.0,
+        )
+    assert not called
+
+
+@pytest.mark.parametrize("forbidden", ["--statefile", "-p", "--port", "-a", "--address"])
+def test_render_config_refuses_forbidden_token_embedded_via_equals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forbidden: str
+) -> None:
+    """N-1: the forbidden-token check must split each argv token on "=" — an
+    exact-string membership check alone would miss a hypothetical
+    "--port=1234"-shaped single token, now that --gain=<value> establishes
+    "=" as a valid argv-token shape in this exact construction path."""
+
+    called = False
+
+    def _responder(argv, kwargs):  # type: ignore[no-untyped-def]
+        nonlocal called
+        called = True
+        return _FakeCompleted(returncode=0)
+
+    _stub_subprocess_run(monkeypatch, _responder)
+    bounds = render.RenderBounds(timeout_s=5.0, rlimit_as_bytes=1 << 28, rlimit_cpu_s=5, nice=10)
+    with pytest.raises(render.RenderError, match="statefile or websocket"):
+        render.render_config(
+            f"{forbidden}=evil",
             tmp_path / "cfg.yml",
             output_path=tmp_path / "out.raw",
             bounds=bounds,
@@ -364,8 +406,42 @@ def test_check_free_space_passes_when_sufficient(
     render.check_free_space(tmp_path, per_render_estimate_bytes=1000, renders_outstanding=5)
 
 
-def test_check_free_space_is_a_noop_with_nothing_outstanding(tmp_path: Path) -> None:
-    render.check_free_space(tmp_path, per_render_estimate_bytes=10**12, renders_outstanding=0)
+def test_check_free_space_floors_renders_outstanding_at_one_never_a_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S-4: ``renders_outstanding <= 0`` must NOT disable the guard — it
+    floors at 1 render's worth, so the guard stays active for the rest of a
+    campaign whose seeded estimate ran out early (e.g. a target with more
+    than the one-candidate-per-target assumption
+    ``estimate_campaign_render_count`` bakes in). A pre-S-4 early-out would
+    have made this a silent no-op regardless of free space."""
+
+    import shutil as shutil_module
+
+    monkeypatch.setattr(
+        render.shutil,
+        "disk_usage",
+        lambda path: shutil_module._ntuple_diskusage(total=1000, used=900, free=100),  # type: ignore[attr-defined]
+    )
+    with pytest.raises(render.RenderError, match="free space"):
+        render.check_free_space(
+            tmp_path, per_render_estimate_bytes=1000, renders_outstanding=0
+        )
+
+
+def test_check_free_space_passes_at_zero_outstanding_when_one_renders_worth_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil as shutil_module
+
+    monkeypatch.setattr(
+        render.shutil,
+        "disk_usage",
+        lambda path: shutil_module._ntuple_diskusage(
+            total=10**9, used=0, free=10**9
+        ),  # type: ignore[attr-defined]
+    )
+    render.check_free_space(tmp_path, per_render_estimate_bytes=1000, renders_outstanding=0)
 
 
 def test_estimate_render_bytes_scales_with_geometry() -> None:
