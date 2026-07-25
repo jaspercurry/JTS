@@ -17,6 +17,21 @@ The caller (the CLI / bench operator) composes the inputs — for example seedin
 the sustain hold from the selected ``MarginPolicy.sustain_duration_s`` is the
 operator's authored choice made *before* calling here, not a default applied
 inside this module.
+
+The tap-realization amendment's "Receipts are bundle files, not schema fields"
+section authorizes exactly one mechanism for R9's render bounds and R10's live
+cross-check parameters to ride the campaign manifest: extending this module's
+request-field set (never a new field on any closed evidence schema object).
+``render_timeout_s`` / ``render_rlimit_as_bytes`` / ``render_rlimit_cpu_s`` /
+``render_nice`` (R9's process-local bounds for every offline render this
+stimulus role's pass produces — including ``digital_transfer_probe``'s) and
+``cross_check_poll_interval_s`` / ``cross_check_read_count`` /
+``cross_check_tolerance_db`` (R10(c)'s poll interval, read count, and
+manifest tolerance — meaningful only for ``sweep_transparency`` and
+``sustain_stress``, since ``digital_transfer_probe`` never touches hardware
+and so has no live peak to cross-check) are therefore required on every
+request, uniformly across all three roles, exactly like every other request
+field — never invented from a default.
 """
 
 from __future__ import annotations
@@ -51,7 +66,12 @@ class ManifestRefusal(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class StimulusRequest:
-    """One target+role's operator-authorized stimulus request."""
+    """One target+role's operator-authorized stimulus request.
+
+    ``render_*`` and ``cross_check_*`` are the tap-realization amendment's
+    additive fields (see the module docstring) — R9's render bounds and
+    R10(c)'s live cross-check parameters, riding the manifest.
+    """
 
     requested_stimulus_band_hz: tuple[float, float]
     requested_stimulus_effective_peak_dbfs: float
@@ -60,6 +80,13 @@ class StimulusRequest:
     requested_cooldown_s: float
     requested_repeat_count: int
     stimulus_generator_identity: str
+    render_timeout_s: float
+    render_rlimit_as_bytes: int
+    render_rlimit_cpu_s: int
+    render_nice: int
+    cross_check_poll_interval_s: float
+    cross_check_read_count: int
+    cross_check_tolerance_db: float
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -77,6 +104,13 @@ class StimulusRequest:
             "requested_cooldown_s": self.requested_cooldown_s,
             "requested_repeat_count": self.requested_repeat_count,
             "stimulus_generator_identity": self.stimulus_generator_identity,
+            "render_timeout_s": self.render_timeout_s,
+            "render_rlimit_as_bytes": self.render_rlimit_as_bytes,
+            "render_rlimit_cpu_s": self.render_rlimit_cpu_s,
+            "render_nice": self.render_nice,
+            "cross_check_poll_interval_s": self.cross_check_poll_interval_s,
+            "cross_check_read_count": self.cross_check_read_count,
+            "cross_check_tolerance_db": self.cross_check_tolerance_db,
         }
 
 
@@ -117,6 +151,13 @@ _REQUEST_FIELDS: tuple[str, ...] = (
     "requested_cooldown_s",
     "requested_repeat_count",
     "stimulus_generator_identity",
+    "render_timeout_s",
+    "render_rlimit_as_bytes",
+    "render_rlimit_cpu_s",
+    "render_nice",
+    "cross_check_poll_interval_s",
+    "cross_check_read_count",
+    "cross_check_tolerance_db",
 )
 
 
@@ -160,6 +201,17 @@ def _read_request(
     repeats = raw.get("requested_repeat_count")
     generator = raw.get("stimulus_generator_identity")
 
+    # R9's render bounds and R10(c)'s cross-check parameters — see the module
+    # docstring. Required uniformly on every request, exactly like every
+    # other field above.
+    render_timeout = _finite_float(raw.get("render_timeout_s"))
+    render_rlimit_as = raw.get("render_rlimit_as_bytes")
+    render_rlimit_cpu = raw.get("render_rlimit_cpu_s")
+    render_nice = raw.get("render_nice")
+    poll_interval = _finite_float(raw.get("cross_check_poll_interval_s"))
+    read_count = raw.get("cross_check_read_count")
+    tolerance = _finite_float(raw.get("cross_check_tolerance_db"))
+
     valid_scalars = (
         peak is not None
         and commanded is not None
@@ -172,6 +224,20 @@ def _read_request(
         and type(generator) is str
         and bool(generator.strip())
         and generator == generator.strip()
+        and render_timeout is not None
+        and render_timeout > 0.0
+        and type(render_rlimit_as) is int
+        and render_rlimit_as > 0
+        and type(render_rlimit_cpu) is int
+        and render_rlimit_cpu > 0
+        and type(render_nice) is int
+        and 0 <= render_nice <= 19
+        and poll_interval is not None
+        and poll_interval > 0.0
+        and type(read_count) is int
+        and read_count > 0
+        and tolerance is not None
+        and tolerance > 0.0
     )
     for field, ok in (
         ("requested_stimulus_effective_peak_dbfs", peak is not None),
@@ -185,6 +251,22 @@ def _read_request(
             and bool(generator.strip())
             and generator == generator.strip(),
         ),
+        ("render_timeout_s", render_timeout is not None and render_timeout > 0.0),
+        (
+            "render_rlimit_as_bytes",
+            type(render_rlimit_as) is int and render_rlimit_as > 0,
+        ),
+        (
+            "render_rlimit_cpu_s",
+            type(render_rlimit_cpu) is int and render_rlimit_cpu > 0,
+        ),
+        ("render_nice", type(render_nice) is int and 0 <= render_nice <= 19),
+        (
+            "cross_check_poll_interval_s",
+            poll_interval is not None and poll_interval > 0.0,
+        ),
+        ("cross_check_read_count", type(read_count) is int and read_count > 0),
+        ("cross_check_tolerance_db", tolerance is not None and tolerance > 0.0),
     ):
         if not ok and raw.get(field) is not None:
             missing.append(f"{path}.{field}")
@@ -193,6 +275,8 @@ def _read_request(
         return None
     assert peak is not None and commanded is not None
     assert hold is not None and cooldown is not None
+    assert render_timeout is not None and poll_interval is not None
+    assert tolerance is not None
     return StimulusRequest(
         requested_stimulus_band_hz=band,
         requested_stimulus_effective_peak_dbfs=peak,
@@ -201,6 +285,13 @@ def _read_request(
         requested_cooldown_s=cooldown,
         requested_repeat_count=repeats,  # type: ignore[arg-type]
         stimulus_generator_identity=generator,  # type: ignore[arg-type]
+        render_timeout_s=render_timeout,
+        render_rlimit_as_bytes=render_rlimit_as,  # type: ignore[arg-type]
+        render_rlimit_cpu_s=render_rlimit_cpu,  # type: ignore[arg-type]
+        render_nice=render_nice,  # type: ignore[arg-type]
+        cross_check_poll_interval_s=poll_interval,
+        cross_check_read_count=read_count,  # type: ignore[arg-type]
+        cross_check_tolerance_db=tolerance,
     )
 
 

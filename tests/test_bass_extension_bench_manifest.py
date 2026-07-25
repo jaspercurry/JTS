@@ -33,6 +33,13 @@ def _request() -> dict[str, Any]:
         "requested_cooldown_s": 4.0,
         "requested_repeat_count": 2,
         "stimulus_generator_identity": "bench-generator-v1",
+        "render_timeout_s": 30.0,
+        "render_rlimit_as_bytes": 536_870_912,
+        "render_rlimit_cpu_s": 60,
+        "render_nice": 10,
+        "cross_check_poll_interval_s": 0.25,
+        "cross_check_read_count": 40,
+        "cross_check_tolerance_db": 1.5,
     }
 
 
@@ -57,9 +64,20 @@ def test_complete_operator_inputs_author_a_manifest() -> None:
     request = manifest.requests["deep"]["sweep_transparency"]
     assert request.requested_stimulus_band_hz == (30.0, 200.0)
     assert request.requested_repeat_count == 2
+    assert request.render_timeout_s == 30.0
+    assert request.render_rlimit_as_bytes == 536_870_912
+    assert request.render_rlimit_cpu_s == 60
+    assert request.render_nice == 10
+    assert request.cross_check_poll_interval_s == 0.25
+    assert request.cross_check_read_count == 40
+    assert request.cross_check_tolerance_db == 1.5
     payload = manifest.to_dict()
     assert payload["kind"] == "jts_bass_extension_bench_campaign_manifest"
     assert payload["requests"]["deep"]["sweep_transparency"]["requested_repeat_count"] == 2
+    assert payload["requests"]["deep"]["sweep_transparency"]["render_timeout_s"] == 30.0
+    assert (
+        payload["requests"]["deep"]["sweep_transparency"]["cross_check_tolerance_db"] == 1.5
+    )
 
 
 def test_missing_scalar_input_refuses_and_names_the_path() -> None:
@@ -117,3 +135,45 @@ def test_refusal_paths_are_sorted_and_unique() -> None:
         author_campaign_manifest(inputs, target_ids=("deep",))
     paths = excinfo.value.missing_paths
     assert list(paths) == sorted(set(paths))
+
+
+@pytest.mark.parametrize(
+    "field,bad_value",
+    [
+        ("render_timeout_s", 0.0),
+        ("render_timeout_s", -1.0),
+        ("render_rlimit_as_bytes", 0),
+        ("render_rlimit_as_bytes", 1.5),
+        ("render_rlimit_cpu_s", 0),
+        ("render_nice", -1),
+        ("render_nice", 20),
+        ("cross_check_poll_interval_s", 0.0),
+        ("cross_check_read_count", 0),
+        ("cross_check_tolerance_db", 0.0),
+        ("cross_check_tolerance_db", -0.5),
+    ],
+)
+def test_r9_r10_manifest_fields_refuse_when_missing_or_invalid(
+    field: str, bad_value: object
+) -> None:
+    inputs = _inputs("deep")
+    inputs["requests"]["deep"]["sweep_transparency"][field] = bad_value
+    with pytest.raises(ManifestRefusal) as excinfo:
+        author_campaign_manifest(inputs, target_ids=("deep",))
+    assert f"requests.deep.sweep_transparency.{field}" in excinfo.value.missing_paths
+
+
+def test_r9_r10_manifest_fields_required_even_for_digital_transfer_probe() -> None:
+    """digital_transfer_probe never touches hardware and never uses the
+    cross-check fields, but every role's request still carries them
+    uniformly (manifest.py's module docstring) — never invented from a
+    default for any one role."""
+
+    inputs = _inputs("deep")
+    del inputs["requests"]["deep"]["digital_transfer_probe"]["cross_check_tolerance_db"]
+    with pytest.raises(ManifestRefusal) as excinfo:
+        author_campaign_manifest(inputs, target_ids=("deep",))
+    assert (
+        "requests.deep.digital_transfer_probe.cross_check_tolerance_db"
+        in excinfo.value.missing_paths
+    )
