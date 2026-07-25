@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -1445,15 +1445,16 @@ def test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_on
     this module measures today.
 
     **Why the shipped behaviour is still right.** The failure direction is a
-    refusal, never a wrong number, which is the module's standing trade. It
-    is reachable only from a raised window: swept on 2026-07-25 over
-    two-echo IRs (earlier 250-400 us at r 0.4-0.6, later 850-1000 us at
-    r 0.15-0.25, five windows from (700, 1100) to (800, 1200)), 482 of 720
-    cases refuse this way, while the same 144 geometries at the default
-    window refuse 0 of 432 readings and single-echo raised-window cases
-    refuse 0 of 370. The remedy is in the last assertion: the default window
-    contains the earlier reflection instead of excluding it, so the same IR
-    measures cleanly there. See ``DEFAULT_ECHO_SEARCH_US``.
+    refusal, never a wrong number, which is the module's standing trade, and
+    it is reachable only from a raised window with something stronger below
+    it. The shape of that boundary is not this test's job: it belongs to
+    :func:`test_raised_window_two_echo_hazard_is_bounded_by_the_default_window`,
+    which sweeps the same geometry family from committed grid literals (482
+    of 720 raised-window cases refuse; the same geometries refuse 0 of 432 at
+    the default window and single-echo raised-window cases 0 of 370). The
+    remedy is in the last assertion here: the default window contains the
+    earlier reflection instead of excluding it, so the same IR measures
+    cleanly there. See ``DEFAULT_ECHO_SEARCH_US``.
 
     This test documents the limitation so a future reader meets it as a
     known cost rather than a surprise; if the screen is ever taught
@@ -1647,12 +1648,14 @@ _CALIBRATION_WRONG_READING_WINDOWS = (
     (900.0, 1400.0), (950.0, 1500.0), (1000.0, 1600.0),
 )
 
+# Guards both reproducible sweeps below — the RAHMONIC_MARGIN calibration
+# (~9 400 detector calls) and the raised-window two-echo hazard (~1 500).
 requires_calibration_sweep = pytest.mark.skipif(
     os.environ.get("JTS_RAHMONIC_CALIBRATION", "").strip() != "1",
     reason=(
-        "the RAHMONIC_MARGIN calibration sweep is ~9 400 detector calls "
-        "(~30 s), too slow for the default lane: set "
-        "JTS_RAHMONIC_CALIBRATION=1 to run it"
+        "the reproducible rahmonic sweeps are ~11 000 detector calls (~38 s "
+        "for both), too slow for the default lane: set "
+        "JTS_RAHMONIC_CALIBRATION=1 to run them"
     ),
 )
 
@@ -1682,7 +1685,7 @@ def test_rahmonic_margin_calibration_populations_bracket_the_constant():
       truth. These are the false locks the screen exists to reject; their
       ratio *floor* is the wall above the margin.
 
-    **Measured 2026-07-25** (~27 s of sweep): 2908 true positives, ceiling
+    **Measured 2026-07-25** (24-28 s of sweep): 2908 true positives, ceiling
     **0.9955**; 409 wrong readings, floor **4.9192**. So 2.0 sits 2.01x above
     the ceiling and 2.46x below the floor. Against the pre-existing comment,
     the ceiling reproduces exactly while the population sizes and the floor
@@ -1761,6 +1764,226 @@ def test_rahmonic_margin_calibration_populations_bracket_the_constant():
     # so failing this means the populations have genuinely closed in.
     assert ceiling * 1.5 <= RAHMONIC_MARGIN, measured
     assert floor >= 1.5 * RAHMONIC_MARGIN, measured
+
+
+# The two-echo hazard grid behind ``DEFAULT_ECHO_SEARCH_US``'s raised-window
+# cost, as literals. Every figure that comment quotes is an attribute of
+# :func:`_two_echo_hazard_sweep`'s return value, so a reader re-derives them by
+# running this file rather than by reconstructing a grid from prose — a prose
+# description of a grid is not a grid, and reconstructing one from an earlier
+# revision of that comment landed three cases away from the real answer.
+_HAZARD_EARLY_ECHOES = tuple(
+    (tau_us, reflection)
+    for tau_us in (250.0, 300.0, 350.0, 400.0)
+    for reflection in (0.4, 0.5, 0.6)
+)
+_HAZARD_LATE_ECHOES = tuple(
+    (tau_us, reflection)
+    for tau_us in (850.0, 900.0, 950.0, 1000.0)
+    for reflection in (0.15, 0.2, 0.25)
+)
+_HAZARD_RAISED_WINDOWS = (
+    (700.0, 1100.0), (700.0, 1200.0), (750.0, 1100.0), (750.0, 1200.0),
+    (800.0, 1200.0),
+)
+# Three noise seeds for the default-window leg: the hazard is a property of
+# the geometry, so the leg that must show *nothing* is the one worth
+# re-running against different noise.
+_HAZARD_DEFAULT_WINDOW_SEEDS = (0, 1, 2)
+_HAZARD_SINGLE_ECHO_REFLECTIONS = (0.15, 0.25, 0.36, 0.5, 0.6)
+
+
+@dataclass(frozen=True)
+class _HazardLeg:
+    """One leg of the two-echo hazard sweep, in aggregate.
+
+    ``ratio_lo``/``ratio_hi`` span *every* record in the leg;
+    ``refused_ratio_lo``/``refused_ratio_hi`` span only the
+    ``rahmonic_of_lower_delay`` refusals (0.0 when there are none). The two
+    spans are separate because the interesting range differs by leg: for a
+    leg that refuses nothing, "how far the whole leg stayed from the margin"
+    is the point; for the raised-window leg it is "how hard the refusals
+    fired".
+    """
+
+    total: int
+    rahmonic_refusals: int
+    measured_confident: int
+    ratio_lo: float
+    ratio_hi: float
+    refused_ratio_lo: float
+    refused_ratio_hi: float
+
+
+@dataclass(frozen=True)
+class _HazardSweep:
+    """The three legs, plus the accuracy figures the prose quotes."""
+
+    raised: _HazardLeg
+    default_window: _HazardLeg
+    single_echo: _HazardLeg
+    # Worst |tau_envelope - true late echo| over the raised leg's refusals,
+    # as a percent: how good the measurements the screen threw away were.
+    raised_refused_envelope_error_pct: float
+    # Worst corroboration over those same refusals: they were not refused for
+    # disagreeing.
+    raised_refused_corroboration_max: float
+    # Worst |tau - true early echo| over the default-window leg, as a percent:
+    # what the caller gets instead by not raising the window.
+    default_window_early_echo_error_pct: float
+
+
+def _summarise_leg(records: list[tuple[float, EchoDiagnostic]]) -> _HazardLeg:
+    ratios = [echo.lower_peak_ratio for _target, echo in records]
+    refused = [
+        echo.lower_peak_ratio
+        for _target, echo in records
+        if echo.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY
+    ]
+    return _HazardLeg(
+        total=len(records),
+        rahmonic_refusals=len(refused),
+        measured_confident=sum(
+            1
+            for _target, echo in records
+            if echo.refusal == "" and echo.confidence >= ECHO_CONFIDENCE_FLOOR
+        ),
+        ratio_lo=min(ratios),
+        ratio_hi=max(ratios),
+        refused_ratio_lo=min(refused) if refused else 0.0,
+        refused_ratio_hi=max(refused) if refused else 0.0,
+    )
+
+
+def _two_echo_hazard_sweep() -> _HazardSweep:
+    """Sweep the raised-window two-echo hazard and its two boundaries.
+
+    Three legs off one grid of geometries — an earlier, stronger reflection
+    plus a later, weaker one:
+
+    * **raised** — searched in windows that exclude the earlier reflection and
+      contain the later one. This is where an honest late echo is refused as
+      if it were a rahmonic.
+    * **default_window** — the same geometries through ``(120, 800)``, which
+      contains the earlier reflection, over three noise seeds. This is the
+      remedy, and it must refuse nothing.
+    * **single_echo** — one echo, genuinely inside each raised window, with
+      nothing below it. This isolates the raised window itself as *not* the
+      cause, and must refuse nothing either.
+    """
+    raised: list[tuple[float, EchoDiagnostic]] = []
+    for window in _HAZARD_RAISED_WINDOWS:
+        for early_us, early_r in _HAZARD_EARLY_ECHOES:
+            for late_us, late_r in _HAZARD_LATE_ECHOES:
+                if not window[0] < late_us < window[1] or late_r >= early_r:
+                    continue
+                ir = _impulse_with_two_echoes(
+                    early_us * 1e-6, early_r, late_us * 1e-6, late_r
+                )
+                raised.append(
+                    (late_us, detect_echo(ir, SAMPLE_RATE, search_us=window))
+                )
+
+    default_window: list[tuple[float, EchoDiagnostic]] = []
+    for early_us, early_r in _HAZARD_EARLY_ECHOES:
+        for late_us, late_r in _HAZARD_LATE_ECHOES:
+            if late_r >= early_r:
+                continue
+            for seed in _HAZARD_DEFAULT_WINDOW_SEEDS:
+                ir = _impulse_with_two_echoes(
+                    early_us * 1e-6, early_r, late_us * 1e-6, late_r, seed=seed
+                )
+                default_window.append((early_us, detect_echo(ir, SAMPLE_RATE)))
+
+    single_echo: list[tuple[float, EchoDiagnostic]] = []
+    for window in _HAZARD_RAISED_WINDOWS:
+        for tau_us in np.arange(window[0] + 90.0, window[1] - 40.0, 20.0):
+            for reflection in _HAZARD_SINGLE_ECHO_REFLECTIONS:
+                ir = _impulse_with_echo(float(tau_us) * 1e-6, reflection)
+                single_echo.append(
+                    (float(tau_us), detect_echo(ir, SAMPLE_RATE, search_us=window))
+                )
+
+    refusals = [
+        (target, echo)
+        for target, echo in raised
+        if echo.refusal == REFUSAL_RAHMONIC_OF_LOWER_DELAY
+    ]
+    return _HazardSweep(
+        raised=_summarise_leg(raised),
+        default_window=_summarise_leg(default_window),
+        single_echo=_summarise_leg(single_echo),
+        raised_refused_envelope_error_pct=max(
+            100.0 * abs(echo.tau_envelope_us - target) / target
+            for target, echo in refusals
+        ),
+        raised_refused_corroboration_max=max(
+            echo.corroboration for _target, echo in refusals
+        ),
+        default_window_early_echo_error_pct=max(
+            100.0 * abs(echo.tau_us - target) / target
+            for target, echo in default_window
+        ),
+    )
+
+
+@requires_calibration_sweep
+def test_raised_window_two_echo_hazard_is_bounded_by_the_default_window():
+    """The sweep behind the raised-window cost, committed rather than quoted.
+
+    :func:`test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one`
+    pins the hazard on one hand-picked IR; this establishes its *shape* — that
+    it needs the stronger-earlier-echo geometry, that the default window does
+    not have it, and that the measurements it throws away were good ones.
+    ``DEFAULT_ECHO_SEARCH_US`` quotes these figures, and an earlier revision
+    quoted them from an uncommitted script: a reader reconstructing that grid
+    from its prose description landed on 479 refusals where the script had
+    found 482. The grid is literals now
+    (``_HAZARD_*``) and every quoted figure is an attribute of
+    :func:`_two_echo_hazard_sweep`, so the comment and the code cannot drift.
+
+    **Measured 2026-07-25** (~9 s): the raised leg refuses **482 of 720** at
+    lower/candidate ratios **2.005-4.513**, with the discarded envelope
+    estimates within **0.894%** of the true late echo and corroboration never
+    worse than **0.266**; the default-window leg refuses **0 of 432** (ratios
+    **0.166-0.945**) and reads the earlier echo to within **2.398%**; the
+    single-echo leg refuses **0 of 370** (ratios **0.217-0.942**).
+
+    The assertions are the walls, not those figures: exact grid sizes (so a
+    changed literal fails loudly rather than silently re-scoping the prose),
+    zero refusals on both boundary legs, refusals present on the raised leg,
+    and the discarded envelope estimates staying within 1% of truth — which is
+    what makes this a *cost* rather than the screen catching bad readings.
+    """
+    sweep = _two_echo_hazard_sweep()
+
+    # Grid sizes, so "of 720 / of 432 / of 370" in the prose is executable.
+    assert sweep.raised.total == 720, sweep.raised
+    assert sweep.default_window.total == 432, sweep.default_window
+    assert sweep.single_echo.total == 370, sweep.single_echo
+
+    # Wall 1 — the remedy holds: the window that contains the earlier
+    # reflection refuses none of these geometries, and measures all of them.
+    assert sweep.default_window.rahmonic_refusals == 0, sweep.default_window
+    assert sweep.default_window.measured_confident == 432, sweep.default_window
+    assert sweep.default_window.ratio_hi < RAHMONIC_MARGIN, sweep.default_window
+
+    # Wall 2 — a raised window alone is not the cause: with nothing below the
+    # candidate, the same windows refuse nothing.
+    assert sweep.single_echo.rahmonic_refusals == 0, sweep.single_echo
+    assert sweep.single_echo.measured_confident == 370, sweep.single_echo
+    assert sweep.single_echo.ratio_hi < RAHMONIC_MARGIN, sweep.single_echo
+
+    # Wall 3 — the hazard is real and reachable, not a one-IR curiosity.
+    assert sweep.raised.rahmonic_refusals > 0, sweep.raised
+    assert sweep.raised.refused_ratio_lo > RAHMONIC_MARGIN, sweep.raised
+
+    # Wall 4 — what was refused were good measurements. If this ever fails,
+    # the refusals have started landing on records that were wrong anyway,
+    # and the "known cost" framing in DEFAULT_ECHO_SEARCH_US is too harsh on
+    # the screen rather than too kind.
+    assert sweep.raised_refused_envelope_error_pct < 1.0, sweep
+    assert sweep.raised_refused_corroboration_max < CORROBORATION_LOOSE, sweep
 
 
 def test_an_edge_refusal_reports_the_corroboration_it_measured():

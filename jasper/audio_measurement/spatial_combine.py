@@ -268,22 +268,30 @@ DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
 # reflection at r 0.4-0.6 below the window, a genuine 850-1000 us echo at
 # r 0.15-0.25 inside it, five windows from (700, 1100) to (800, 1200) — 482
 # of 720 cases are refused, at lower/candidate ratios 2.005-4.513, even though
-# the envelope had located the real late echo to within 0.9% and the two
+# the envelope had located the real late echo to within 0.894% and the two
 # estimators agreed well enough to score every time (corroboration at most
-# 0.27, always below ``CORROBORATION_LOOSE``). Three things bound the hazard,
-# all measured on 2026-07-25:
+# 0.266, always below ``CORROBORATION_LOOSE``). Three things bound the hazard:
 #
 # * It needs the stronger-earlier-echo geometry, not merely a raised window:
 #   single-echo raised-window cases refuse 0 of 370, at ratios 0.217-0.942.
 # * It does not arise at the default window, which contains the earlier
 #   reflection instead of excluding it: the same 144 two-echo geometries
 #   (432 readings over three noise seeds) refuse 0 at (120, 800), at ratios
-#   0.166-0.945, and read the earlier echo to within 2.4%.
+#   0.166-0.945, and read the earlier echo to within 2.398%.
 # * The failure is a refusal, never a wrong number.
 #
 # So the remedy is the default window rather than a screen exemption, and
 # "prefer the default" is the rule this hazard argues for a second time.
-# Pinned by
+#
+# **That grid is committed, not described.** Every figure above is an
+# attribute of ``_two_echo_hazard_sweep`` in tests/test_spatial_combine.py,
+# whose grid literals are the ``_HAZARD_*`` constants beside it, re-derived by
+# test_raised_window_two_echo_hazard_is_bounded_by_the_default_window
+# (``JTS_RAHMONIC_CALIBRATION=1``, ~9 s, measured 2026-07-25). An earlier
+# revision quoted them from a scratch script instead, and a reader
+# reconstructing that grid from this prose got 479 refusals rather than 482 —
+# a described grid is not a grid. The single hand-picked case is pinned
+# separately by
 # test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one.
 #
 # **What is still only as good as the sweep behind it.** The screen is
@@ -691,8 +699,14 @@ class EchoDiagnostic:
         refusals whose measured corroboration spans 0.005-0.28, i.e. tight
         agreement is the common case there. Broadly: across the late
         refusals this module's tests produce, the measured value spans
-        several orders of magnitude, from below 0.001 to above 3, and values
-        above ``CORROBORATION_LOOSE`` are ordinary rather than exceptional.
+        several orders of magnitude, from below 0.001 to above 3. The two
+        late paths differ in that respect and the difference is worth
+        knowing — among **edge** refusals, values above
+        ``CORROBORATION_LOOSE`` are ordinary rather than exceptional, while
+        no **rahmonic** refusal in this suite has yet carried one (that
+        refusal usually fires on a candidate both estimators agreed about,
+        which is exactly what made the false lock credible). Treat the
+        second half as an observation to date, not a guarantee.
         So the field is **record-specific and never population-typical** —
         read it off the record in front of you, and do not carry a range
         quoted here into a judgement about a different record. (No census
@@ -1298,11 +1312,12 @@ def detect_echo(
     below" is *necessary* for a candidate to be a rahmonic, not sufficient:
     an honest in-window echo under a stronger unrelated *earlier*
     reflection presents the same evidence and is refused as well. Measured
-    on two-echo IRs, 482 of 720 raised-window cases refuse that way, none of
-    the same geometries do at the default window, and the remedy is
-    therefore to measure with the default window — which contains the
-    earlier reflection rather than excluding it (see
-    ``DEFAULT_ECHO_SEARCH_US``). It is a refusal, never a wrong number.
+    on a committed two-echo grid, 482 of 720 raised-window cases refuse that
+    way, none of the same geometries do at the default window, and the
+    remedy is therefore to measure with the default window — which contains
+    the earlier reflection rather than excluding it (see
+    ``DEFAULT_ECHO_SEARCH_US`` for the figures and the test that re-derives
+    them). It is a refusal, never a wrong number.
     Every one of these window claims rests on synthetic IRs plus a
     single-position three-frame corpus; real multi-bounce behaviour through
     a raised window awaits the plan's S0 capture session.
