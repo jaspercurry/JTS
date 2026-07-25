@@ -120,6 +120,43 @@ def test_no_default_is_ever_filled_for_a_malformed_value() -> None:
     )
 
 
+@pytest.mark.parametrize("out_of_range", [-120.1, 20.1, -1000.0, 1000.0])
+def test_commanded_main_volume_outside_the_gain_range_refuses(out_of_range: float) -> None:
+    """N-3: requested_commanded_main_volume_db feeds render.py's
+    --gain=<value> verbatim; CamillaDSP v4.1.3's clap parser bounds --gain
+    to [-120, 20] (src/bin.rs's parse_gain_value). Refuse at authoring
+    time, not with a late RenderError once a campaign is already running."""
+
+    inputs = _inputs("deep")
+    inputs["requests"]["deep"]["sweep_transparency"][
+        "requested_commanded_main_volume_db"
+    ] = out_of_range
+    with pytest.raises(ManifestRefusal) as excinfo:
+        author_campaign_manifest(inputs, target_ids=("deep",))
+    assert (
+        "requests.deep.sweep_transparency.requested_commanded_main_volume_db"
+        in excinfo.value.missing_paths
+    )
+
+
+@pytest.mark.parametrize("boundary", [-120.0, 20.0])
+def test_commanded_main_volume_at_the_gain_range_boundary_is_admitted(
+    boundary: float,
+) -> None:
+    """The clap range is inclusive ([-120, 20], `..=` in Rust) — the exact
+    boundary values must be ADMITTED, not refused."""
+
+    inputs = _inputs("deep")
+    inputs["requests"]["deep"]["sweep_transparency"][
+        "requested_commanded_main_volume_db"
+    ] = boundary
+    manifest = author_campaign_manifest(inputs, target_ids=("deep",))
+    assert (
+        manifest.requests["deep"]["sweep_transparency"].requested_commanded_main_volume_db
+        == boundary
+    )
+
+
 def test_absent_target_requests_refuse() -> None:
     inputs = _inputs("deep")
     with pytest.raises(ManifestRefusal) as excinfo:

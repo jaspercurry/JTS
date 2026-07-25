@@ -212,9 +212,18 @@ def _read_request(
     read_count = raw.get("cross_check_read_count")
     tolerance = _finite_float(raw.get("cross_check_tolerance_db"))
 
+    # N-3: requested_commanded_main_volume_db feeds render.py's --gain=<value>
+    # verbatim (R4(c) always reproduces the recorded fader gain for the
+    # pinned build). CamillaDSP v4.1.3's clap parser bounds --gain to
+    # [-120, 20] (src/bin.rs's parse_gain_value: `(-120.0..=20.0).contains
+    # (&gain)`) — refusing an out-of-range value here, at authoring time, is
+    # a named ManifestRefusal path instead of a late RenderError once a
+    # campaign is already mid-flight.
+    commanded_in_gain_range = commanded is not None and -120.0 <= commanded <= 20.0
+
     valid_scalars = (
         peak is not None
-        and commanded is not None
+        and commanded_in_gain_range
         and hold is not None
         and hold > 0.0
         and cooldown is not None
@@ -241,7 +250,7 @@ def _read_request(
     )
     for field, ok in (
         ("requested_stimulus_effective_peak_dbfs", peak is not None),
-        ("requested_commanded_main_volume_db", commanded is not None),
+        ("requested_commanded_main_volume_db", commanded_in_gain_range),
         ("requested_hold_duration_s", hold is not None and hold > 0.0),
         ("requested_cooldown_s", cooldown is not None and cooldown >= 0.0),
         ("requested_repeat_count", type(repeats) is int and repeats > 0),
