@@ -264,6 +264,28 @@ runs AFTER the flattening peaking loop:
   sensitivity is deferred until the closed-loop verify layer (PR-E) can bound an
   unverified boost claim. At this budget the practical binding constraint for
   realistic horn shapes is the realization fit-quality gate, not the budget.
+- **Single-shelf realization ceiling (measured).** The spend is bounded by three
+  independent ceilings: the measured deficit, the remaining ledger budget, and
+  `HF_SINGLE_SHELF_SPEND_CAP_DB` (11 dB) — what ONE Lowshelf plus bell residuals
+  can actually realize on a real curve. The third is the binding one today.
+  Measured live on JTS3 2026-07-24 by probing run-6's own capture offline
+  through the real fit at a spend ladder: the realization passes the quality
+  gate at spend 11.27 (4 filters) and fails from ~11.9 upward — the cliff sits
+  just *below* the per-filter clamp, so raising the ledger budget alone buys no
+  extra correction. Run 6 proved it the hard way: the raised budget sent spend to
+  14.33 and the whole stage suppressed with `fit_quality`, delivering nothing.
+  Capping at 11 yields a realized partial correction instead.
+
+  This caps what one shelf can deliver, not what the driver needs. The same
+  ladder: spend 11.27 → OBSERVE 12k −0.7 / 16k −2.7, versus spend 14.33 → 12k
+  +0.9 / 16k −0.0. **The last ~3 dB toward true tabletop needs a different
+  REALIZATION, not a bigger number** — either a stacked-shelf realization (two
+  cascaded shelves sharing the depth; a contract extension, future PR) or the
+  literal-boost realization once closed-loop verify (PR-E) can bound a boost
+  claim. The realization gate itself was also relaxed 1.5 → 2.0 dB: it guards
+  against mis-SHAPE, and real curves realize at ~1.3 dB even at moderate spend
+  (runs 4/5), so isolated 1.5–2.0 dB excursions at the smoothing scale are curve
+  raggedness rather than shape failure.
 - **Anchored give-back (the trim).** Each branch's linearized trim is its own
   COMMITTED raw trim plus `LinearizationFit.correction_giveback_db` — the fit
   engine's SSOT: the **measured before-vs-after level delta** of that branch's

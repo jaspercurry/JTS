@@ -225,12 +225,44 @@ HF_SUPPRESSION_REASONS: frozenset[str] = frozenset({
 # Max magnitude error (dB) tolerated between the realized cut-domain cascade
 # (lowshelf + peaking cuts) and the desired cut_target over [onset, ceiling].
 # Above this the whole stage is suppressed (reason="fit_quality") rather than
-# ship a mis-shaped correction — the realized shape, not just its peak, has
-# to track the measured inverse. 1.5 dB mirrors the crossover VERIFY
-# tolerance (owner ruling, 2026-07-24): a correction the fit engine cannot
-# realize to within the same tolerance the summed response is later verified
-# against is not worth emitting.
-HF_REALIZATION_TOLERANCE_DB: float = 1.5
+# ship a mis-shaped correction — the realized shape, not just its peak, has to
+# track the measured inverse. Suppression semantics are unchanged; only the
+# threshold moved.
+#
+# 1.5 → 2.0 (live JTS3 probe, 2026-07-24 night). The gate exists to catch a
+# mis-SHAPED correction, and on REAL (ragged) curves it was also catching
+# ordinary curve raggedness: runs 4/5 realized a 9.27 dB spend at ~1.3 dB max
+# error — passing, but only 0.2 dB from the gate — while an offline spend ladder
+# on run-6's own capture put the pass/fail cliff at ~11.9 dB spend. An isolated
+# 1.5-2.0 dB excursion at the smoothing scale is measurement texture, not a
+# shape failure; the worst mis-shape reachable in review probing measured
+# 2.23 dB — still caught, and the spend cap above makes that regime
+# unreachable in production anyway. (The original 1.5 mirrored the crossover VERIFY
+# tolerance, but that gate judges a SUMMED acoustic prediction against a
+# measurement — a different quantity from this one, which judges a modeled
+# biquad cascade against its own design target.)
+HF_REALIZATION_TOLERANCE_DB: float = 2.0
+
+# Ceiling on the CD-horn spend imposed by the SINGLE-Lowshelf realization, dB —
+# independent of, and binding below, the MAX_NORMALIZATION_SPEND_DB ledger
+# budget. Measured live on JTS3 2026-07-24 (run-6's capture, probed offline
+# through the real fit at a spend ladder): the realization passes the quality
+# gate at spend 11.27 (4 filters) and fails from ~11.9 upward. The cliff sits
+# just BELOW the per-filter clamp, so raising the ledger budget alone does not
+# buy more correction — past it the clamped shelf leaves a wide residual
+# plateau that design_peq cannot cover with bells on a real curve, and the whole
+# stage suppresses (exactly what run 6 did at spend 14.33). 11.0 leaves margin
+# under the measured cliff.
+#
+# This caps how much lift ONE shelf can deliver, not how much the driver needs:
+# the ladder showed spend 11.27 → OBSERVE 12k −0.7 / 16k −2.7, versus spend
+# 14.33 → 12k +0.9 / 16k −0.0. The last ~3 dB toward true tabletop requires a
+# different REALIZATION, not a bigger number here — either the stacked-shelf
+# realization (two cascaded shelves sharing the depth; a contract extension,
+# future PR) or the literal-boost realization (post-PR-E, once closed-loop
+# verify can bound a boost claim). Raising this constant without one of those
+# just re-enters the suppression regime.
+HF_SINGLE_SHELF_SPEND_CAP_DB: float = 11.0
 
 # Flatness target for the CD-horn stage's own residual peaking fit — TIGHTER
 # than the flattening loop's `_PEAKING_FLATNESS_TARGET_DB` (1.0) because this
@@ -1024,7 +1056,15 @@ def _hf_continuation_stage(
     remaining_budget_db = max(
         0.0, MAX_NORMALIZATION_SPEND_DB - (plateau_level_db - target_level_db)
     )
-    spend = min(measured_deficit_at_ceiling_db, remaining_budget_db)
+    # Three independent ceilings: the measured deficit (never correct more than
+    # was measured), the remaining ledger budget, and what a SINGLE Lowshelf can
+    # actually realize on a real curve (see HF_SINGLE_SHELF_SPEND_CAP_DB — the
+    # binding one in practice today).
+    spend = min(
+        measured_deficit_at_ceiling_db,
+        remaining_budget_db,
+        HF_SINGLE_SHELF_SPEND_CAP_DB,
+    )
     if spend < _MIN_FILTER_GAIN_DB:
         # Nothing meaningful to give back (the budget is exhausted or the
         # measured deficit is sub-threshold). Skip, no reason — this is an
