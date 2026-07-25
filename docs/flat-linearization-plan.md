@@ -574,6 +574,13 @@ Seams, precisely:
 
 ## Implementation stages
 
+> **Execution work order (2026-07-25):** the productization of S1b/S2 —
+> PR ladder, integration seams, acceptance gates, and the hardware
+> runbooks — lives in
+> [`flat-linearization-productization-plan.md`](flat-linearization-productization-plan.md).
+> This section stays the stage-level strategy; that doc is the work
+> order implementer sessions execute.
+
 Process for every stage: owner go at stage boundaries; branch + PR always;
 independent adversarial review (canonical prompt) to 0 blockers /
 0 should-fixes; hardware-affecting changes validated on JTS3 with charts
