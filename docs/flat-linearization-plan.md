@@ -236,6 +236,38 @@ plumbing/tests/wizard copy. The bass session's lane
   250-vs-300 Hz edge, and empirical estimator bias (power vs median) on
   this rig. Analysis is offline against these captures before any code
   ships.
+
+  **S0 leg B — ground-plane configuration (~10 min, owner-approved
+  2026-07-25).** The one-time-commissioning reframe revises research
+  brief 01's "no ground-plane" UX constraint: floor placement is an
+  instruction, not equipment. Protocol: speaker moved to the hard floor
+  and **tilted so the design axis aims at the mic**; UMIK-2 lying flat
+  on the floor (capsule on the surface, end-on toward the speaker — the
+  0° cal remains valid), ~1 m, 2–3 positions, N=2 sweeps each. Physics:
+  with the mic at the boundary, image-source geometry makes the bounce
+  path equal to the direct path at any speaker height — coherent +6 dB
+  (normalized out) instead of a comb; ~8 mm of capsule height keeps the
+  residual null above ~30 kHz. Pre-registered predictions: (6) no
+  detectable echo in the 0.15–1.0 ms window (the shipped detector
+  refuses / reports no credible peak), vs every tabletop capture firing
+  at ~0.31 ms; (7) no `(n+½)/τ` null ladder — the 1.7 k and
+  8.4/11.5/15.5 k dips fill by ≥4 dB relative to tabletop single-point;
+  (8) a ground-plane single position agrees with the mic-move cloud
+  power average within ±1.5 dB over 500 Hz–8 kHz (below 500 Hz,
+  half-space loading may differ; above 8 kHz, aim/incidence effects
+  apply); (9) floor position-to-position agreement within ±1 dB,
+  300 Hz–8 kHz — geometry restores single-point honesty. Decision rule,
+  pre-registered: (6)+(7)+(8) hold → ground-plane becomes the
+  **recommended one-time commissioning protocol**, with the cloud as
+  the carpet-home/immovable-speaker fallback and standing cross-check,
+  and the echo detector wired as the protocol's acceptance guard at
+  S1b (echo found ⇒ tell the user and fall back to the cloud — the
+  self-verification that makes the technique consumer-safe); (6) fails
+  ⇒ the residual echo is speaker-fixed (edge/horn), which is prediction
+  (5)'s branch by other means. Known biases to disclose, not spec:
+  half-space loading colors the baffle-step region relative to
+  free-field; imperfect tilt shows as a crossover-region lobing
+  deviation (a protocol confound, not a failed prediction).
 - **S1 — Instrument.** Conductor position-group choreography (prompted
   moves between capture groups; position metadata; per-position quality
   gates) + the combiner/screen estimator module (power mean, median
