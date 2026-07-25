@@ -18,8 +18,11 @@ B. **Power-domain arithmetic**, pinned to hand-computed literals. The
    power-vs-dB mean confusion has produced three separate wrong architect
    claims in this repo; this is the forever-pin.
 C. **Echo detector** on synthetic impulse responses and negative controls,
-   including the search window's *rejection* contract: a delay outside the
-   caller's window is refused, never clamped onto the edge.
+   including the search window's *rejection* contract in both of its
+   directions: a delay outside the caller's window is refused rather than
+   clamped onto the edge, and a delay *hugging the window's lower edge* is
+   refused rather than believed — that is where a below-window echo aliases
+   to, and believing it is how a dispersed cloud read as geometry-locked.
 D. **Analysis-grid bounding** — the block-average decimation that keeps the
    combiner's cost bounded must not change the curves it produces.
 E. **Real-data smoke** against the 2026-07-24/25 JTS3 corpus. Skipped when
@@ -31,6 +34,7 @@ from __future__ import annotations
 
 import math
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +43,7 @@ import pytest
 import jasper.audio_measurement.spatial_combine as spatial_combine
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.spatial_combine import (
+    CORROBORATION_LOOSE,
     DEFAULT_ECHO_BAND_HZ,
     DEFAULT_ECHO_SEARCH_US,
     ECHO_CONFIDENCE_FLOOR,
@@ -48,9 +53,13 @@ from jasper.audio_measurement.spatial_combine import (
     GEOMETRY_UNKNOWN,
     MAX_ANALYSIS_BINS,
     REFUSAL_ALL_ZERO_IR,
+    REFUSAL_BAD_BAND_HZ,
     REFUSAL_NO_IN_WINDOW_ECHO,
+    REFUSAL_TAU_AT_WINDOW_LOWER_EDGE,
     STRENGTH_FLOOR_DB,
+    WINDOW_EDGE_MARGIN_STEPS,
     CombinedResponse,
+    EchoDiagnostic,
     EchoInputError,
     PositionCapture,
     assess_geometry,
@@ -640,6 +649,68 @@ def test_malformed_captures_are_rejected(captures, match):
         combine_positions(captures)
 
 
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"echo_band_hz": (19_000.0, 5000.0)}, "echo_band_hz"),
+        ({"echo_band_hz": (0.0, 19_000.0)}, "echo_band_hz"),
+        ({"echo_band_hz": (5000.0, float("inf"))}, "echo_band_hz"),
+        ({"echo_search_us": (800.0, 120.0)}, "echo_search_us"),
+        ({"echo_search_us": (-10.0, 800.0)}, "echo_search_us"),
+        ({"echo_search_us": (120.0, float("nan"))}, "echo_search_us"),
+    ],
+)
+def test_malformed_echo_config_raises_rather_than_refusing_every_position(
+    kwargs, match
+):
+    """N6 — malformed *config* fails loudly; malformed *data* refuses one
+    position. The two must not be confused.
+
+    Before this guard, a mistyped search window was handed straight to the
+    detector, which raised, which ``_echo_for`` caught and turned into a
+    refused diagnostic — once per position. A caller who inverted a tuple
+    got back a clean :class:`CombinedResponse` reporting "no echo found at
+    any position", which reads as a measurement result and is not one. The
+    honest distinction is ownership: ``echo_search_us`` is the caller's own
+    argument, wrong for every position simultaneously and un-diagnosable
+    from the captures, so it fails the call the same way
+    ``flag_threshold_db`` always has. An all-zero IR belongs to one capture.
+    """
+    _freqs, _true_db, captures = _cloud(_dispersed_taus(3))
+    with pytest.raises(ValueError, match=match):
+        combine_positions(captures, **kwargs)
+
+
+def test_a_band_above_one_captures_nyquist_refuses_only_that_position():
+    """N6's deliberate exception — the one case that stays on the data side.
+
+    A well-formed band that exceeds *a particular capture's* Nyquist is not
+    a property of the config; it is an interaction between the config and
+    one capture's sample rate, and the other positions are unaffected. So it
+    refuses that position rather than failing the combine — the same
+    treatment a malformed IR gets, for the same reason.
+    """
+    freqs, _true_db, captures = _cloud(_dispersed_taus(3))
+    narrow_rate = PositionCapture(
+        position_id="lofi",
+        freqs_hz=freqs,
+        magnitude_db=captures[0].magnitude_db,
+        sample_rate=8000,  # Nyquist 4 kHz, below the 5 kHz band floor
+        ir=_impulse_with_echo(300e-6, ECHO_R),
+    )
+
+    result = combine_positions([*captures, narrow_rate])
+    assert result.n_positions == 4
+    refused = result.per_position_echo[-1]
+    assert refused is not None
+    assert refused.refusal == REFUSAL_BAD_BAND_HZ
+    assert refused.tau_us == 0.0
+    assert all(
+        e is not None and e.refusal != REFUSAL_BAD_BAND_HZ
+        for e in result.per_position_echo[:-1]
+    )
+
+
 def test_disjoint_frequency_support_is_rejected():
     with pytest.raises(ValueError, match="no frequency support"):
         combine_positions(
@@ -663,10 +734,21 @@ def _impulse_with_echo(tau_s: float, reflection: float, seed: int = 0) -> np.nda
     return ir + rng.normal(0.0, 1e-4, ir.size)
 
 
-@pytest.mark.parametrize("tau_us", [200.0, 300.0, 450.0, 700.0])
+@pytest.mark.parametrize("tau_us", [240.0, 300.0, 450.0, 700.0])
 @pytest.mark.parametrize("reflection", [0.15, 0.36, 0.6])
 def test_detect_echo_recovers_synthetic_delay_and_strength(tau_us, reflection):
-    """C — a known echo is found to within 10% in delay and 2 dB in level."""
+    """C — a known echo is found to within 10% in delay and 2 dB in level.
+
+    The low anchor is 240 us, not the 200 us it used to be, because the
+    default window's lower edge is now *refused* for one quefrency step
+    (``WINDOW_EDGE_MARGIN_STEPS``) and the estimators' own near-floor
+    under-read stretches that dead zone to ~1.3 steps for the weakest
+    echoes: a true 200 us delay at r=0.15 is read as 191 us, i.e. 0.99
+    steps above the 120 us edge, and refused. That boundary is not this
+    test's subject — it is pinned directly, from both sides, by
+    :func:`test_detect_echo_refuses_a_candidate_hugging_the_window_lower_edge`.
+    This test covers what the default window can actually measure.
+    """
     result = detect_echo(_impulse_with_echo(tau_us * 1e-6, reflection), SAMPLE_RATE)
 
     assert result.confidence > ECHO_CONFIDENCE_FLOOR, result
@@ -721,17 +803,20 @@ def test_detect_echo_rejects_an_impulse_with_no_echo(seed):
 def test_detect_echo_resolution_floor_is_where_the_docstring_says_it_is():
     """Pin the documented accuracy floor, in both directions.
 
-    ``detect_echo``'s ``search_us`` docstring claims tau is recovered to
-    ~1-3% above ~240 us but can read ~9-14% low near the bottom of the
-    default window, because both estimators degrade as tau approaches
-    ``1 / bandwidth`` (~71 us for the 5-19 kHz default). That is a real
-    property of the instrument, not a bug — but it is also the kind of claim
-    that silently rots, so it is asserted here.
+    ``detect_echo``'s ``search_us`` docstring claims two things about the
+    bottom of the window: that tau is recovered accurately once clear of it
+    (asserted here at 3% over 240-500 us), and that the bottom
+    ``WINDOW_EDGE_MARGIN_STEPS`` of whatever window is asked for does not
+    measure at all. Both are real properties of the instrument, and both are
+    the kind of claim that silently rots, so both are asserted here.
 
-    The upper assertion is the one that must never regress; the lower one
-    documents the floor and would fail loudly if a future change made the
-    bottom of the window *accurate*, at which point the docstring is what
-    needs updating.
+    The near-floor half used to assert an *under-read*: a 156.6 us echo was
+    reported at ~9-14% low, confidently, and the honesty burden was pushed
+    downstream onto :func:`assess_geometry`'s resolution rule. It is now
+    refused at the source instead, because an estimate that close to the
+    edge is indistinguishable from a below-window echo aliasing up — and the
+    refusal still carries the raw estimates, so the reason is auditable
+    rather than merely asserted.
     """
     freqs = _grid()
     true_db = _true_response_db(freqs)
@@ -749,10 +834,23 @@ def test_detect_echo_resolution_floor_is_where_the_docstring_says_it_is():
     near_floor = _position("floor", freqs, true_db, 156.6e-6, rng)
     assert near_floor.ir is not None
     floored = detect_echo(near_floor.ir, SAMPLE_RATE)
-    assert floored.confidence > ECHO_CONFIDENCE_FLOOR, "presence is still detected"
-    assert floored.tau_us < 156.6 * 0.95, (
-        "the documented near-floor under-read is gone — update the "
-        "search_us docstring's resolution-floor paragraph"
+    assert floored.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, floored
+    assert floored.tau_us == 0.0
+    assert floored.confidence == 0.0
+    assert floored.strength_db == STRENGTH_FLOOR_DB
+
+    # The refusal is evidenced, not bare: both raw estimates really did land
+    # inside one quefrency step of the 120 us edge (measured: cepstral
+    # 145.2 us = 0.35 steps, envelope 135.4 us = 0.22 steps), and the ripple
+    # was *concentrated* — this is a confident-looking wrong answer, which is
+    # exactly why confidence alone could not have caught it.
+    edge_margin_us = WINDOW_EDGE_MARGIN_STEPS * floored.resolution_us
+    lower_edge = DEFAULT_ECHO_SEARCH_US[0]
+    assert floored.tau_cepstral_us - lower_edge < edge_margin_us
+    assert floored.tau_envelope_us - lower_edge < edge_margin_us
+    assert floored.concentration > 0.5, (
+        "a low-concentration reading would mean the crest/concentration "
+        "factors caught this, and the edge rule is not what is being pinned"
     )
 
 
@@ -760,19 +858,21 @@ def test_detect_echo_resolution_floor_is_where_the_docstring_says_it_is():
     "search_us",
     [(120.0, 800.0), (250.0, 400.0), (400.0, 800.0), (150.0, 300.0), (300.0, 600.0)],
 )
-@pytest.mark.parametrize("true_tau_us", [180.0, 260.0, 350.0, 500.0, 700.0, 830.0])
+@pytest.mark.parametrize(
+    "true_tau_us", [95.0, 150.0, 180.0, 260.0, 350.0, 500.0, 700.0, 830.0]
+)
 def test_detect_echo_never_reports_a_delay_outside_the_search_window(
     search_us, true_tau_us
 ):
     """The window is a **rejection** contract, and this sweep is built so it
     can actually fail.
 
-    Thirty combinations: six true delays crossed with five windows, so every
-    window sees delays below it, inside it, and above it. The earlier
+    Forty combinations: eight true delays crossed with five windows, so
+    every window sees delays below it, inside it, and above it. The earlier
     single-delay version could only ever exercise the in-window case, which
     is precisely the case that cannot detect a clamp.
 
-    Three properties:
+    Four properties:
 
     1. ``tau_us`` is either 0.0 (nothing reported) or inside the requested
        window, and a reported value is never a refusal.
@@ -780,17 +880,26 @@ def test_detect_echo_never_reports_a_delay_outside_the_search_window(
        own, property 1 cannot catch a clamp — a clamped value satisfies it
        by construction — so this is the assertion that fails against the
        clamp the fix removed.
-    3. When the true delay is **above** the window, ``tau_us`` is 0.0 across
-       all ten such combinations here. This is the direct anti-clamp
-       assertion: a clamped detector reports the upper edge instead.
+    3. When the true delay is **above** the window, ``tau_us`` is 0.0. This
+       is the direct anti-clamp assertion: a clamped detector reports the
+       upper edge instead.
+    4. When the true delay is **below** the window, the diagnostic is never
+       *usable evidence* — never simultaneously unrefused, at or above
+       ``ECHO_CONFIDENCE_FLOOR``, and carrying a non-zero tau. This half of
+       the sweep is what round 1 was missing, and it is the half the
+       false-lock blocker lived in: a below-window echo does not vanish, it
+       aliases up onto the bottom of the window, so property 1 alone is
+       satisfied by a confidently wrong number.
 
-    Property 3 is deliberately *not* claimed for delays below the window,
-    and that is an honest limitation rather than an oversight. The cepstrum
-    of a comb has rahmonics at 2*tau, 3*tau..., so a window that excludes
-    tau but contains 2*tau can find the rahmonic (measured here: a 260 us
-    echo read as ~424 us at confidence 0.63 in a 400-800 us window). That is
-    a property of the cepstral estimator, unaffected by the window contract,
-    and would need a rahmonic screen to address — out of scope here, and
+    Property 4 is stated as "not usable" rather than "reports nothing"
+    because the cepstrum of a comb has rahmonics at 2*tau, 3*tau..., so a
+    window that excludes tau but contains a rahmonic can still find one. It
+    is a real, surviving limitation — measured across a wider 50-combination
+    grid than this parametrisation, exactly one below-window case reported a
+    value at all (a 180 us echo read as ~815 us in a 600-1000 us window),
+    and it scored 0.39, below the floor. So it cannot enter a geometry
+    verdict, which is the property that matters downstream. Addressing the
+    rahmonic itself would need a dedicated screen — out of scope here, and
     recorded so it is not mistaken for a regression.
     """
     lo, hi = search_us
@@ -811,6 +920,17 @@ def test_detect_echo_never_reports_a_delay_outside_the_search_window(
             f"{search_us}, so no delay may be reported — got {found}"
         )
         assert found.strength_db == STRENGTH_FLOOR_DB
+
+    if true_tau_us < lo:
+        usable = (
+            found.refusal == ""
+            and found.confidence >= ECHO_CONFIDENCE_FLOOR
+            and found.tau_us > 0.0
+        )
+        assert not usable, (
+            f"true tau {true_tau_us} us is below the requested window "
+            f"{search_us}, so nothing here may count as evidence — got {found}"
+        )
 
 
 def test_detect_echo_refuses_rather_than_railing_on_an_echo_past_the_window():
@@ -839,34 +959,202 @@ def test_detect_echo_refuses_rather_than_railing_on_an_echo_past_the_window():
         assert found.tau_cepstral_us != pytest.approx(search_us[1], abs=1.0)
 
 
+@pytest.mark.parametrize("search_lo_us", [120.0, 200.0, 300.0, 400.0])
+def test_detect_echo_refuses_a_candidate_hugging_the_window_lower_edge(search_lo_us):
+    """SF1 — the lower edge is refused, and the dead zone is one step wide.
+
+    Both halves matter, and they pull against each other:
+
+    * **Refused below the margin.** A true echo below the window aliases up
+      onto the bottom of it — the envelope's search *starts* at
+      ``search_us[0]``, so a below-window arrival's skirt puts the argmax a
+      few microseconds above that floor, and the cepstral peak lands on the
+      lowest search bin for the same reason. The two then agree, so
+      corroboration and confidence are both high and the number is still
+      wrong. Refusing is the only honest answer available: from inside the
+      band, an in-window echo at the edge and a below-window echo aliasing
+      to it are the same measurement.
+    * **Not refused above it.** A margin is only defensible if it is narrow
+      enough that the instrument still measures what it can. A genuine echo
+      1.5 steps above the edge is reported normally at every window tested
+      here, so this is a one-step rule and not a broad dead zone.
+
+    Parametrised over four lower edges so the rule is pinned as *relative to
+    the requested window*, not as a property of the 120 us default. That
+    generality is the whole point of the fix: the round-1 guard was anchored
+    at zero delay and therefore only ever screened a low window.
+    """
+    resolution_us = 1e6 / 14_000.0  # the 5-19 kHz default band's step
+    search_us = (search_lo_us, search_lo_us + 500.0)
+
+    # Below the window entirely — half its lower edge, far enough down that
+    # the aliasing is unambiguous — and refused for it. (A delay only just
+    # below the edge is a milder case: the aliased peak can itself land
+    # below ``search_us[0]`` and be rejected by the plain window contract,
+    # or corroborate poorly enough to score zero. Those are honest outcomes
+    # too, but they are not the mechanism this test is pinning.)
+    below = detect_echo(
+        _impulse_with_echo((search_lo_us / 2.0) * 1e-6, ECHO_R),
+        SAMPLE_RATE,
+        search_us=search_us,
+    )
+    assert below.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, below
+    assert below.tau_us == 0.0
+    assert below.confidence == 0.0
+    assert below.strength_db == STRENGTH_FLOOR_DB
+    # The refusal is evidenced: at least one surviving candidate really was
+    # inside the margin, which is the condition the rule fires on.
+    margin_us = WINDOW_EDGE_MARGIN_STEPS * below.resolution_us
+    assert margin_us == pytest.approx(resolution_us, rel=1e-9)
+    hugging = [
+        tau
+        for tau in (below.tau_cepstral_us, below.tau_envelope_us)
+        if search_us[0] <= tau <= search_us[1]
+    ]
+    assert hugging, below
+    assert min(tau - search_us[0] for tau in hugging) <= margin_us
+
+    # 1.5 steps above the edge: a real, resolvable delay, reported normally.
+    clear_us = search_lo_us + 1.5 * resolution_us
+    clear = detect_echo(
+        _impulse_with_echo(clear_us * 1e-6, ECHO_R), SAMPLE_RATE, search_us=search_us
+    )
+    assert clear.refusal == "", clear
+    assert clear.confidence > ECHO_CONFIDENCE_FLOOR, clear
+    assert clear.tau_us == pytest.approx(clear_us, rel=0.05)
+    assert clear.tau_us - search_us[0] > margin_us
+
+
+def test_a_below_window_cloud_does_not_read_as_locked_under_a_raised_window():
+    """SF1 — the reviewer's three reproductions, which round 1 survived.
+
+    Round 1 fixed the *clamp*: an out-of-window candidate is rejected rather
+    than pulled to the edge. That closed the mechanism at the top of the
+    window and left the one at the bottom wide open, because a below-window
+    echo is not rejected — it is *aliased*, arriving as a plausible
+    in-window estimate a few microseconds above ``search_us[0]``.
+
+    Ten positions, true delays stratified 150-400 us, searched in three
+    windows that all sit at or above that span. Before this fix every one of
+    them reported ``geometry_locked``: at (300, 800) six positions were
+    admitted, clustered at 0.83, with the two worst offenders — 150 us and
+    178 us echoes — reported as 318 us and 302 us at confidence 1.00 and
+    0.68. A household would have been told to spread a mic cloud that was
+    already spread, on evidence that was entirely manufactured by the
+    window it was searched in.
+
+    The floor-based guard could not catch this: ``150 us`` misreported as
+    ``318 us`` clears a resolution floor of 214 us comfortably. Only the
+    distance to the *edge* distinguishes the two cases.
+    """
+    taus_s = np.linspace(150e-6, 400e-6, 10)
+    for search_us in ((300.0, 800.0), (400.0, 900.0), (600.0, 1000.0)):
+        _freqs, _true_db, captures = _cloud(taus_s)
+        result = combine_positions(captures, echo_search_us=search_us)
+
+        assert result.geometry.locked is False, (search_us, result.geometry)
+        assert result.geometry.reason == GEOMETRY_UNKNOWN, (search_us, result.geometry)
+        assert result.geometry.n_positions == 10
+        assert result.geometry.n_confident < 2, (search_us, result.geometry)
+
+    # Pin one of them in full. At (300, 800) exactly one position survives —
+    # the 400 us member, the only one whose *both* estimates cleared the
+    # margin (the 372 us member's true delay is 1.01 steps clear, but its
+    # cepstral peak reads 369 us, 0.97 steps, so it is refused too) — and
+    # one estimate is not a cluster.
+    _freqs, _true_db, captures = _cloud(taus_s)
+    result = combine_positions(captures, echo_search_us=(300.0, 800.0))
+    assert result.geometry.n_confident == 1
+    assert result.geometry.clustered_fraction == 0.0
+
+    edge_refused = [
+        e
+        for e in result.per_position_echo
+        if e is not None and e.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE
+    ]
+    assert len(edge_refused) >= 6, [e.refusal for e in result.per_position_echo]
+    # Every one of those refusals is a rescued false positive: an in-window
+    # raw estimate that the old code would have reported and clustered.
+    for echo in edge_refused:
+        assert 300.0 <= echo.tau_envelope_us <= 800.0 or (
+            300.0 <= echo.tau_cepstral_us <= 800.0
+        ), echo
+
+    # The same cloud in the window it actually belongs in reads correctly —
+    # so the refusals above are the window being wrong, not the cloud.
+    _freqs, _true_db, captures = _cloud(taus_s)
+    honest = combine_positions(captures)
+    assert honest.geometry.locked is False
+    assert honest.geometry.reason == GEOMETRY_DISPERSED
+    assert honest.geometry.n_confident >= 7
+
+
+def test_reported_tau_is_always_the_envelope_estimate():
+    """SF2 — the cepstrum corroborates; it never supplies the answer.
+
+    :attr:`EchoDiagnostic.tau_us` used to be documented as "the envelope
+    estimate, else the cepstral peak (quantised to ``resolution_us``)", and
+    ``detect_echo`` carried the fallback branch to match. The branch could
+    not execute: reaching the reporting return needs ``confidence > 0``,
+    which needs ``corroboration < CORROBORATION_LOOSE``, which only the
+    both-estimators-in-window path can produce — and on that path the
+    envelope is in-window by construction.
+
+    So the documented "coarse, quantised tau" was a value the field could
+    never hold, and a reader budgeting for ~71 us of granularity was
+    budgeting for a case that does not exist. The branch is gone; this
+    pins the invariant that made it unreachable, so it cannot creep back.
+    """
+    seen = 0
+    for tau_us in (240.0, 300.0, 450.0, 700.0):
+        for search_us in ((120.0, 800.0), (200.0, 900.0), (150.0, 1000.0)):
+            found = detect_echo(
+                _impulse_with_echo(tau_us * 1e-6, ECHO_R),
+                SAMPLE_RATE,
+                search_us=search_us,
+            )
+            if found.confidence <= 0.0:
+                continue
+            seen += 1
+            assert found.tau_us == found.tau_envelope_us, found
+            assert found.corroboration < CORROBORATION_LOOSE, found
+            assert search_us[0] <= found.tau_envelope_us <= search_us[1], found
+    assert seen >= 8, "the invariant was never actually exercised"
+
+
 def test_detect_echo_does_not_dress_up_a_sub_window_echo_as_an_in_window_one():
     """B1(b) — a true delay *below* the window's lower edge.
 
     An echo at 95-110 us cannot be resolved by a detector whose quefrency
-    step is ~71 us, and it sits under the 120 us default search floor. What
-    the detector actually does is report ~135 us with high confidence — an
-    in-window number that is simply wrong.
+    step is ~71 us, and it sits under the 120 us default search floor. Round
+    1 shipped this as a *downstream* save: the detector reported ~135 us
+    with high confidence — an in-window number that is simply wrong — and
+    :func:`assess_geometry`'s resolution rule declined to cluster it.
 
-    That is not fixable inside the estimator (the information is not in the
-    band), so it is caught downstream instead: the reported delay is below
-    ``GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us``, so
-    :func:`assess_geometry` will not admit it as evidence. This test pins
-    that the *honesty* holds even though the number does not.
+    That was one guard too few. The resolution rule is anchored at zero
+    delay, so it only screens a *low* window; raise the window to 300 us and
+    the same aliased estimate lands at ~318 us, sails past a floor of 214
+    us, and locks a cloud that never moved together. The detector now
+    refuses at the source instead, on the property that actually
+    generalises: proximity to the edge the aliasing lands on.
     """
     for true_tau_us in (95.0, 100.0, 104.0, 110.0):
         found = detect_echo(_impulse_with_echo(true_tau_us * 1e-6, ECHO_R), SAMPLE_RATE)
         assert found.resolution_us == pytest.approx(1e6 / 14_000.0, rel=1e-9)
+        assert found.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, found
+        assert found.tau_us == 0.0
+        assert found.confidence == 0.0
+
+        # Belt and braces: even had it been reported, the downstream
+        # resolution floor still refuses to cluster it. Both guards are load
+        # bearing — this one binds on a low window, the edge rule on any.
         usable = (
             found.refusal == ""
             and found.confidence >= ECHO_CONFIDENCE_FLOOR
             and found.tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * found.resolution_us
         )
-        assert not usable, (
-            f"a {true_tau_us} us echo read as usable evidence at "
-            f"{found.tau_us:.1f} us — the resolution floor stopped working"
-        )
-        # And it is unusable for the honest reason: unresolvable, not absent.
-        assert found.tau_us < GEOMETRY_MIN_RESOLUTION_STEPS * found.resolution_us
+        assert not usable
+        assert found.tau_envelope_us < GEOMETRY_MIN_RESOLUTION_STEPS * found.resolution_us
 
 
 def test_a_cloud_of_unresolvable_delays_does_not_read_as_geometry_locked():
@@ -874,14 +1162,16 @@ def test_a_cloud_of_unresolvable_delays_does_not_read_as_geometry_locked():
 
     Ten positions whose true delays span 60-150 us: genuinely dispersed
     (2.5x spread), and every one of them below the detector's resolution
-    floor. The reported delays collapse onto ~135-152 us, six of them with
-    confidence >= 0.5, and — before the fix — clustered within +-15% of
-    their median at a fraction of **1.0**, i.e. a confident
-    ``geometry_locked``: "your mic cloud never moved, go spread it further",
-    said about a cloud that moved plenty.
+    floor. The estimates collapse onto ~115-152 us, and — before the fix —
+    were reported with confidence >= 0.5 and clustered within +-15% of their
+    median at a fraction of **1.0**, i.e. a confident ``geometry_locked``:
+    "your mic cloud never moved, go spread it further", said about a cloud
+    that moved plenty.
 
-    The evidence rule refuses to cluster unresolvable delays, so the verdict
-    is now the honest one: not locked, insufficient evidence.
+    Two independent guards now stop that, and the assertions below check
+    both: the detector refuses these at the window's lower edge, and the
+    evidence rule would refuse to cluster them even if it had not. The
+    verdict is the honest one: not locked, insufficient evidence.
     """
     freqs = _grid()
     true_db = _true_response_db(freqs)
@@ -896,22 +1186,27 @@ def test_a_cloud_of_unresolvable_delays_does_not_read_as_geometry_locked():
     assert result.geometry.reason == GEOMETRY_UNKNOWN
     assert result.geometry.n_confident == 0
     assert result.geometry.n_positions == 10
+    assert all(
+        e is not None and e.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE
+        for e in result.per_position_echo
+    ), [e.refusal for e in result.per_position_echo if e is not None]
 
-    # The old confidence-only rule really would have locked here — this is
-    # the pathology, reconstructed from the same diagnostics.
-    railed = np.array(
-        [
-            e.tau_us
-            for e in result.per_position_echo
-            if e is not None and e.confidence >= ECHO_CONFIDENCE_FLOOR
-        ]
-    )
-    assert railed.size >= 2, "the detector does still report these, confidently"
+    # The pathology itself, reconstructed from the refusals' own raw fields.
+    # This is why a refused diagnostic keeps carrying them: the estimates
+    # really do pile up (measured: 114-152 us, median 135.4), and really
+    # would have satisfied the +-15% clustering test at a fraction of 0.9.
+    # If this stops being true, the cloud this test is built on no longer
+    # reproduces the bug and the regression guard has silently moved.
+    railed = np.array([e.tau_envelope_us for e in result.per_position_echo])
     median = float(np.median(railed))
     clustered = float(np.mean(np.abs(railed - median) <= 0.15 * median))
-    assert clustered == pytest.approx(1.0), (
-        "the confidence-only rule would have called this locked; if this "
-        "stops being true the regression this test guards has moved"
+    assert clustered >= 0.7, (
+        f"the raw estimates no longer cluster ({clustered:.2f}) — this cloud "
+        "has stopped reproducing the false-lock pathology"
+    )
+    assert float(railed.max() - railed.min()) < 40.0, (
+        "genuinely dispersed 60-150 us delays must still collapse to one "
+        "unresolvable value; that collapse IS the pathology"
     )
 
 
@@ -943,7 +1238,7 @@ def test_echo_confidence_floor_sits_in_the_measured_gap():
 
     positives = [
         detect_echo(_impulse_with_echo(tau_us * 1e-6, reflection), SAMPLE_RATE).confidence
-        for tau_us in (200.0, 300.0, 450.0, 700.0)
+        for tau_us in (240.0, 300.0, 450.0, 700.0)
         for reflection in (0.15, 0.36, 0.6)
     ]
     assert min(positives) > 0.8, f"true-positive confidence fell to {min(positives):.3f}"
@@ -985,6 +1280,51 @@ def test_geometry_verdict_needs_at_least_two_confident_estimates():
     assert verdict.reason == GEOMETRY_UNKNOWN
     assert verdict.n_confident == 1
     assert verdict.n_positions == 3
+
+
+def test_geometry_admission_rejects_a_zero_resolution_diagnostic():
+    """N5 — the resolution rule must not be satisfiable by degeneracy.
+
+    Rule 3 admits a diagnostic when ``tau_us >=
+    GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us``. With ``resolution_us ==
+    0`` that threshold collapses to zero, and a ``tau_us`` of zero clears
+    it — so three maximally-confident records carrying no delay at all would
+    be admitted, agree perfectly with their own median, and lock. That is
+    the same false lock rule 1 exists to prevent, arriving through a
+    different door.
+
+    :func:`detect_echo` never emits ``resolution_us == 0`` (it is
+    ``1 / band_width`` on a validated band), so this is a contract about
+    what :func:`assess_geometry` accepts from *any* source — a hand-built
+    record, a deserialised one, or a future second detector. The explicit
+    ``tau_us > 0`` conjunct is what closes it.
+    """
+    degenerate = EchoDiagnostic(
+        tau_us=0.0,
+        strength_db=STRENGTH_FLOOR_DB,
+        confidence=1.0,
+        refusal="",
+        resolution_us=0.0,
+        tau_cepstral_us=0.0,
+        tau_envelope_us=0.0,
+        concentration=1.0,
+        corroboration=0.0,
+        arrival_crest_db=99.0,
+    )
+
+    verdict = assess_geometry([degenerate, degenerate, degenerate])
+    assert verdict.locked is False
+    assert verdict.reason == GEOMETRY_UNKNOWN
+    assert verdict.n_confident == 0
+    assert verdict.n_positions == 3
+    assert verdict.median_tau_us == 0.0
+
+    # Not a blanket ban on resolution_us == 0: a record carrying a real
+    # delay is still admitted. It is the zero *delay* that is inadmissible.
+    with_delay = replace(degenerate, tau_us=300.0, tau_envelope_us=300.0)
+    admitted = assess_geometry([with_delay, with_delay, with_delay])
+    assert admitted.n_confident == 3
+    assert admitted.locked is True
 
 
 def test_captures_without_an_ir_report_no_echo_diagnostic():
@@ -1037,7 +1377,18 @@ def test_one_malformed_ir_refuses_that_position_and_nothing_else():
     assert refused.refusal == REFUSAL_ALL_ZERO_IR
     assert refused.confidence == 0.0
     assert refused.tau_us == 0.0
-    assert all(e is not None and e.refusal == "" for e in result.per_position_echo[:-1])
+    # No other position acquires the broken one's problem. Two of them carry
+    # a refusal of their own — the 157 and 185 us members of this cloud sit
+    # inside the default window's lower-edge margin — which is a fact about
+    # those captures, present with or without the eleventh, and precisely
+    # what "one position's problem" means.
+    assert all(
+        e is not None and e.refusal != REFUSAL_ALL_ZERO_IR
+        for e in result.per_position_echo[:-1]
+    )
+    assert [e.refusal for e in result.per_position_echo[:-1]] == [
+        e.refusal for e in good.per_position_echo
+    ]
 
     # The refusal contributes nothing to the verdict — same numbers as the
     # ten-position combine, not a diluted or shifted version of them.
@@ -1115,12 +1466,25 @@ def test_decimated_and_undecimated_curves_agree(monkeypatch):
 
     The three *smoothed* curves agree to well under 0.1 dB (measured: 0.074,
     0.075 and 0.085 dB worst-bin, the worst of it in the bottom few hertz
-    where the 1/N-octave window is a couple of bins wide). The raw per-bin
-    ``power_mean_db`` deliberately is **not** held to that: at 8x coarser
-    spacing it genuinely cannot reproduce fine comb structure bin-for-bin,
-    which is the resolution being traded away on purpose. Every downstream
-    consumer — the exclusion screen and the spec curve — reads a smoothed
-    curve.
+    where the 1/N-octave window is a couple of bins wide).
+
+    **Both raw curves are outside that bound, and both are named here.**
+    Measured worst-bin: ``power_mean_db`` 0.224 dB and ``median_db`` 0.383
+    dB. Earlier wording disclosed only the power mean, which left the
+    median — the other half of the honesty screen's input pair, and the
+    worse of the two — looking as though it had been checked when it had
+    not. Neither is held to 0.1 dB on purpose: at 8x coarser spacing a raw
+    per-bin curve genuinely cannot reproduce fine comb structure
+    bin-for-bin, which is the resolution being traded away, and the median
+    moves more than the mean because a per-bin median of three positions is
+    an order statistic — decimation can change *which* position is the
+    middle one, where the power mean only re-averages.
+
+    That is safe because no consumer reads a raw curve: the exclusion screen
+    compares ``power_mean_diag_db`` against ``median_diag_db`` and the spec
+    is evaluated on ``power_mean_spec_db``, all three of which are bounded
+    above. The raw fields are exposed for inspection, and the loose bound
+    asserted below exists so their disclosed magnitudes cannot quietly grow.
     """
     captures = _large_grid_cloud()
     assert captures[0].freqs_hz.size > 8 * MAX_ANALYSIS_BINS / 2
@@ -1133,12 +1497,27 @@ def test_decimated_and_undecimated_curves_agree(monkeypatch):
     undecimated = combine_positions(captures)
     assert undecimated.freqs_hz.size == captures[0].freqs_hz.size
 
-    for name in ("power_mean_spec_db", "power_mean_diag_db", "median_diag_db"):
+    def worst_bin_db(name: str) -> float:
         reference = np.interp(
             decimated.freqs_hz, undecimated.freqs_hz, getattr(undecimated, name)
         )
-        worst = float(np.max(np.abs(np.asarray(getattr(decimated, name)) - reference)))
+        return float(np.max(np.abs(np.asarray(getattr(decimated, name)) - reference)))
+
+    for name in ("power_mean_spec_db", "power_mean_diag_db", "median_diag_db"):
+        worst = worst_bin_db(name)
         assert worst < 0.1, f"{name} moved by {worst:.4f} dB under decimation"
+
+    # The raw pair: disclosed, bounded loosely, and asserted to be the ones
+    # that exceed 0.1 dB — so the disclosure above cannot rot in either
+    # direction. If a future change brings them inside 0.1 dB, this fails
+    # and the docstring is what needs updating.
+    raw_worst = {name: worst_bin_db(name) for name in ("power_mean_db", "median_db")}
+    for name, worst in raw_worst.items():
+        assert 0.1 < worst < 0.6, f"{name} moved by {worst:.4f} dB under decimation"
+    assert raw_worst["median_db"] > raw_worst["power_mean_db"], (
+        "the median is documented as the worse of the two — an order "
+        f"statistic, not an average: {raw_worst}"
+    )
 
 
 def test_decimation_preserves_the_linear_grid_contract_and_band_energy():

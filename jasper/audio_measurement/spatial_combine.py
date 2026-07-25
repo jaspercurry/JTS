@@ -51,9 +51,12 @@ Pipeline (:func:`combine_positions`):
 5. **Echo diagnostics** — :func:`detect_echo` per capture that supplied an
    impulse response, plus the derived :attr:`CombinedResponse.geometry`
    verdict (``geometry.locked`` is the single owner of that bit). The
-   detector's search window is a **rejection** contract rather than a clamp,
-   and a malformed IR refuses one position rather than failing the combine —
-   both so that a number this module reports is one it actually measured.
+   detector's search window is a **rejection** contract rather than a clamp
+   — out-of-window candidates are refused, and so are candidates hugging its
+   lower edge, where a below-window echo aliases up and is indistinguishable
+   from a real one — and a malformed IR refuses one position rather than
+   failing the combine. All of it so that a number this module reports is
+   one it actually measured.
 6. **Spread diagnostics** — cross-position level spread and worst-bin sigma
    in octave bands, the observable behind the research's 1/sqrt(N) accuracy
    story.
@@ -177,9 +180,15 @@ MAX_ANALYSIS_BINS = 16385
 # Every threshold below was calibrated on three populations: the 2026-07-24/25
 # JTS3 corpus (captures/flat-linearization-20260725/cdhorn-live-session, runs 5
 # and 7 VERIFY + run 7 tweeter-alone), synthetic impulse+echo pairs across
-# tau in 200-700 us and r in 0.15-0.6, and negative controls (white noise,
+# tau in 240-700 us and r in 0.15-0.6, and negative controls (white noise,
 # impulse+noise with no echo, clean impulse with no echo). The measured
 # separation is reported in tests/test_spatial_combine.py.
+#
+# The synthetic population starts at 240 us rather than the 200 us it once
+# did because the default window's bottom quefrency step is now refused
+# outright (see WINDOW_EDGE_MARGIN_STEPS): a 200 us echo sits inside that
+# dead zone for the weakest reflections, so it is no longer a member of the
+# "detector reports a number" population these thresholds separate.
 # --------------------------------------------------------------------------- #
 
 DEFAULT_ECHO_BAND_HZ = (5000.0, 19000.0)
@@ -220,14 +229,14 @@ MIN_ECHO_BAND_BINS = 16
 # free (unlike a peak-to-median ratio, which is numerically unstable once
 # windowing drives the background toward zero). Maps linearly to a
 # confidence factor between these two knots. Measured: real corpus
-# 0.63-0.65, synthetic echoes 0.69-0.81, negative controls 0.23-0.50.
+# 0.63-0.65, synthetic echoes 0.67-0.81, negative controls 0.23-0.50.
 CONCENTRATION_LO = 0.30
 CONCENTRATION_HI = 0.70
 
 # Corroboration — relative disagreement between the two independent tau
 # estimators (cepstral peak and analytic-envelope secondary arrival). Full
 # credit at or below TIGHT, zero at or above LOOSE. Measured: real corpus
-# 1.7-3.1%, synthetic echoes 0.2-9.1%, negative controls 4.4-73% (a lone
+# 1.7-3.1%, synthetic echoes 0.1-1.9%, negative controls 4.4-73% (a lone
 # estimator can find a peak in noise; two independent ones rarely agree).
 CORROBORATION_TIGHT = 0.05
 CORROBORATION_LOOSE = 0.30
@@ -236,6 +245,38 @@ CORROBORATION_LOOSE = 0.30
 # Mirrors program_analysis.DBFS_FLOOR's role: a finite floor, not -inf, so
 # the field stays arithmetic-safe. Meaningless unless confidence > 0.
 STRENGTH_FLOOR_DB = -120.0
+
+# Edge-proximity rejection margin, in quefrency steps
+# (EchoDiagnostic.resolution_us), applied at the search window's **lower**
+# edge only. A surviving candidate sitting this close to search_us[0] is
+# refused rather than reported.
+#
+# Why: an echo *below* the window does not vanish from the estimators — it
+# aliases upward onto the bottom of the window. The envelope's search starts
+# at search_lo, so a below-window arrival's decaying skirt makes the argmax
+# land a few microseconds above that floor; the cepstral peak lands on the
+# lowest search bin for the same reason. Both then agree with each other, so
+# corroboration is high and confidence is high, and the number is still
+# wrong. Measured (10 positions, true delays 150-400 us): a 300-800 us window
+# produced estimates 2-18 us above its lower edge from 150 and 178 us echoes,
+# at confidence 0.68-1.00, and the cloud read as geometry_locked.
+#
+# Why 1.0 step and not more: one quefrency step is exactly the interval over
+# which the cepstral estimator cannot distinguish "at the edge" from "below
+# the edge", so it is the smallest margin that closes the aliasing path and
+# the largest that does not manufacture a dead zone the instrument could have
+# measured. A genuine echo at 1.5 steps above the edge is still reported.
+#
+# Why the lower edge only — the asymmetry is physical, not an oversight. A
+# below-window echo aliases UP onto the lower edge because that is where both
+# searches begin. There is no mirror mechanism at the top: an above-window
+# echo is simply outside both searches, and what lands at the upper edge is
+# either a genuine in-window arrival or a cepstral rahmonic, neither of which
+# is an aliased copy of an out-of-window delay. The upper edge is already
+# covered by the window-rejection contract (an above-window candidate is
+# rejected outright), so an extra top-edge margin would refuse honest
+# measurements to guard against a failure mode that does not exist.
+WINDOW_EDGE_MARGIN_STEPS = 1.0
 
 # Refusal vocabulary for EchoDiagnostic.refusal. Snake_case, self-
 # identifying, and stable: an empty string means "the detector ran to
@@ -249,6 +290,7 @@ REFUSAL_WINDOW_TOO_SHORT = "analysis_window_too_short"
 REFUSAL_BAND_TOO_NARROW = "analysis_band_too_narrow"
 REFUSAL_SEARCH_OUTSIDE_CEPSTRUM = "search_window_outside_cepstrum"
 REFUSAL_NO_IN_WINDOW_ECHO = "no_in_window_echo"
+REFUSAL_TAU_AT_WINDOW_LOWER_EDGE = "tau_at_window_lower_edge"
 REFUSAL_ALL_ZERO_IR = "all_zero_ir"
 REFUSAL_MALFORMED_IR = "malformed_ir"
 REFUSAL_BAD_SAMPLE_RATE = "bad_sample_rate"
@@ -262,11 +304,11 @@ REFUSAL_DETECTOR_ERROR = "detector_error"
 
 # An echo diagnostic counts toward the geometry verdict only at or above
 # this confidence. Calibrated to sit in the empty gap between the measured
-# populations: true positives (synthetic impulse+echo, tau 200-700 us,
-# r 0.15-0.6) scored 0.835-1.000, while a 60-seed negative-control sweep --
+# populations: true positives (synthetic impulse+echo, tau 240-700 us,
+# r 0.15-0.6) scored 0.916-1.000, while a 60-seed negative-control sweep --
 # impulse-with-no-echo IRs, 30 seeds at noise sigma 0.02 and 30 at 0.001,
 # the two families that clear the crest gate and therefore actually stress
-# the score -- spanned 0.000-0.098, with 0/60 crossing this floor. Both
+# the score -- spanned 0.000-0.091, with 0/60 crossing this floor. Both
 # populations are re-measured by
 # test_echo_confidence_floor_sits_in_the_measured_gap in
 # tests/test_spatial_combine.py, so the gap cannot rot silently.
@@ -302,7 +344,11 @@ GEOMETRY_MIN_CONFIDENT = 2
 # mirroring the house style of linearization_envelope.ReasonCode.
 GEOMETRY_LOCKED = "geometry_locked"
 GEOMETRY_DISPERSED = "geometry_dispersed"
-GEOMETRY_UNKNOWN = "geometry_insufficient_confident_estimates"
+# "usable", not "confident": n_confident counts the set that survived all
+# three admission rules (measured, confident, *and* resolvable), so a value
+# naming only confidence would describe a different set than the one the
+# verdict was computed from.
+GEOMETRY_UNKNOWN = "geometry_insufficient_usable_estimates"
 
 
 # --------------------------------------------------------------------------- #
@@ -358,10 +404,15 @@ class EchoDiagnostic:
       tau_us: delay of the secondary arrival, microseconds — the reported
         answer, and the only tau field with a window guarantee: it is
         either 0.0 (nothing reported) or inside the caller's ``search_us``
-        window. It is the analytic-envelope estimate (sample resolution
-        plus parabolic refinement, ~1-3% accurate on the calibration set)
-        when that estimate landed in-window, else the cepstral peak
-        (quantised to ``resolution_us``).
+        window, clear of its lower edge by ``WINDOW_EDGE_MARGIN_STEPS``.
+        It is **always** the analytic-envelope estimate: sample resolution
+        plus parabolic refinement, ~1-4% accurate on the calibration set
+        (worst at the bottom of the window, ~1% by 700 us).
+        It is never the cepstral peak and is therefore *not* quantised to
+        ``resolution_us`` — the cepstrum's job here is corroboration, and a
+        reported tau requires both estimators in-window (see
+        :func:`detect_echo`), so the envelope's estimate is the only one
+        that can survive to be reported.
       strength_db: secondary-arrival level relative to the direct arrival,
         from the band-limited analytic envelope. ``STRENGTH_FLOOR_DB``
         whenever no delay is reported.
@@ -372,18 +423,25 @@ class EchoDiagnostic:
         refused outright, not scored down). 0.0 means no credible peak.
       refusal: ``""`` when the detector produced a measurement; otherwise
         one of the ``REFUSAL_*`` slugs saying why it declined.
-      resolution_us: the cepstral quefrency step, ``1 / band_width``, in
-        microseconds — ~71 us for the 5-19 kHz default band. Both
-        estimators degrade toward this floor, so a ``tau_us`` below roughly
-        **3 * resolution_us** should be read as "an early echo is present"
-        and never as a trustworthy delay; :func:`assess_geometry` enforces
-        exactly that floor before clustering.
+      resolution_us: the **cepstral corroborator's** quefrency step,
+        ``1 / band_width``, in microseconds — ~71 us for the 5-19 kHz
+        default band. It is not the granularity of ``tau_us`` (which is
+        sample-rate plus parabolic, and far finer); it is this module's
+        *trust floor*, because the envelope estimate only counts once the
+        cepstrum has corroborated it and the cepstrum cannot resolve
+        better than one step. Two rules are written in these units: a
+        candidate within ``WINDOW_EDGE_MARGIN_STEPS`` of the search
+        window's lower edge is refused by :func:`detect_echo`, and a
+        ``tau_us`` below roughly **3 * resolution_us** is "an early echo is
+        present" rather than a trustworthy delay, which
+        :func:`assess_geometry` enforces before clustering.
       tau_cepstral_us: the cepstral estimator's answer, in isolation. This
         field is *raw*: it may fall outside ``search_us``, which is
         precisely the condition that rejects the candidate and can produce
-        the ``no_in_window_echo`` refusal. Kept unclamped on purpose — a
-        railed value hidden by a clamp is what made a dispersed cloud read
-        as geometry-locked.
+        the ``no_in_window_echo`` refusal — or it may sit just inside the
+        lower edge, which produces the ``tau_at_window_lower_edge``
+        refusal. Kept unclamped on purpose — a railed value hidden by a
+        clamp is what made a dispersed cloud read as geometry-locked.
       tau_envelope_us: the envelope estimator's answer, in isolation, also
         raw and also not window-guaranteed. 0.0 when the search window was
         too narrow to hold a peak at all. The envelope always returns the
@@ -773,13 +831,20 @@ def _refused(
     tau_envelope_us: float = 0.0,
     concentration: float = 0.0,
 ) -> EchoDiagnostic:
-    """A diagnostic that reports no delay, and says why.
+    """A refused diagnostic: no delay reported, and a slug saying why.
 
-    Used both for "the detector declined" (non-empty ``refusal``) and, with
-    ``refusal=""``, for "the detector ran and found nothing credible". The
-    raw estimator fields are carried through when they exist, because a
-    railed cepstral estimate is exactly the evidence a reader needs to
-    understand a ``no_in_window_echo`` refusal.
+    Every call site passes a non-empty ``REFUSAL_*`` slug — this helper is
+    the "the detector declined" constructor, and only that. The other
+    zero-confidence outcome, "the detector ran to completion and found
+    nothing credible", carries ``refusal == ""`` **and** a real
+    ``corroboration`` reading, so it is built inline in :func:`detect_echo`
+    rather than here (this helper hard-codes ``corroboration=1.0``, which
+    on a non-refused diagnostic would misreport a measured value).
+
+    The raw estimator fields are carried through when they exist, because a
+    railed or edge-hugging cepstral estimate is exactly the evidence a
+    reader needs to understand a ``no_in_window_echo`` or
+    ``tau_at_window_lower_edge`` refusal.
     """
     return EchoDiagnostic(
         tau_us=0.0,
@@ -828,14 +893,15 @@ def detect_echo(
       refinement — it localises well but, alone, will happily find a peak in
       noise.
 
-    ``tau_us`` therefore reports the envelope estimate when one survives,
-    and ``confidence`` is what makes it trustworthy: cepstral concentration
-    (is the ripple energy at one quefrency) times corroboration (do the two
-    estimators agree), behind an arrival-crest gate (is there a direct
-    arrival at all) that refuses outright rather than scoring down.
-    Requiring both factors to line up behind that gate is what separates the
-    real corpus from every negative control — see the calibration figures on
-    the module's threshold constants.
+    ``tau_us`` is therefore **always** the envelope estimate — a reported
+    delay requires both estimators in-window (below), so the cepstrum never
+    stands in for it — and ``confidence`` is what makes it trustworthy:
+    cepstral concentration (is the ripple energy at one quefrency) times
+    corroboration (do the two estimators agree), behind an arrival-crest
+    gate (is there a direct arrival at all) that refuses outright rather
+    than scoring down. Requiring both factors to line up behind that gate is
+    what separates the real corpus from every negative control — see the
+    calibration figures on the module's threshold constants.
 
     **``search_us`` is a rejection contract, not a clamp.** A candidate
     whose *refined* delay lands outside the window is rejected, never pulled
@@ -849,6 +915,26 @@ def detect_echo(
     *neither* survives, the result is a ``no_in_window_echo`` refusal rather
     than a number. A caller who suspects the echo lies outside the window
     should widen the window, not trust an edge value.
+
+    **The window's lower edge is refused, not merely bounded.** Rejecting
+    out-of-window candidates is not enough on its own, because an echo
+    *below* the window does not disappear from the estimators — it aliases
+    upward onto the bottom of the window, where both searches begin, and the
+    two aliased estimates then agree with each other. The result is a
+    confident, in-window, wrong number, and a cloud of them piles up just
+    above the same edge and reads as ``geometry_locked`` (measured: true
+    delays of 150-400 us searched in 300-800 us produced estimates 2-18 us
+    above the edge at confidence 0.68-1.00). So a surviving candidate within
+    ``WINDOW_EDGE_MARGIN_STEPS`` quefrency steps of ``search_us[0]`` is
+    refused with ``tau_at_window_lower_edge``: at that distance an in-window
+    measurement is indistinguishable from a below-window echo aliasing up,
+    so it cannot be trusted as either. The remedy is the same one the window
+    contract always prescribes — widen ``search_us`` (or ``band_hz``, which
+    shrinks the step) and measure again. **No equivalent margin exists at
+    the upper edge**, and that asymmetry is physical: nothing aliases *down*
+    onto the top of the window, so a candidate there is either a genuine
+    in-window arrival or a cepstral rahmonic, and the plain rejection
+    contract already handles what lies beyond it.
 
     The IR is windowed internally to the early-arrival region (see
     ``ECHO_WINDOW_SPAN_FACTOR``), so a full deconvolved IR may be passed;
@@ -864,19 +950,34 @@ def detect_echo(
         default spans an early boundary bounce (~120 us ≈ 4 cm path delta)
         up to ~800 us (≈ 27 cm), below the room's first wall reflection.
 
-        **Resolution floor — the lower edge is optimistic.** Both estimators
-        degrade as tau approaches ``1 / bandwidth``
+        **Resolution floor — the bottom of the window does not measure.**
+        Both estimators degrade as tau approaches ``1 / bandwidth``
         (:attr:`EchoDiagnostic.resolution_us`, ~71 us for the 5-19 kHz
         default): the cepstral quefrency step *is* ``1 / bandwidth``, and the
         band-limited envelope cannot separate an arrival from the direct
-        pulse's own skirt inside roughly one envelope width. Measured on the
-        synthetic set, tau is recovered to ~1-3% above ~240 us but can read
-        ~9-14% low near 150-185 us. Delays in the bottom ~3 quefrency steps
-        of the window are "an early echo is present", never a trustworthy
-        delay — :func:`assess_geometry` refuses to cluster them for exactly
-        that reason. The plan's target bounce (~300 us) and the corpus's
-        measured 313-323 us sit comfortably above this floor; widening
-        ``band_hz`` is what buys resolution below it.
+        pulse's own skirt inside roughly one envelope width. Two consequences
+        a caller has to plan the window around:
+
+        * The bottom ``WINDOW_EDGE_MARGIN_STEPS`` of *whatever* window is
+          asked for is refused outright (``tau_at_window_lower_edge``),
+          because inside it a real echo and an aliased below-window one look
+          identical. For the defaults that is roughly 120-191 us: the
+          effective floor of the default window is ~191 us, not its stated
+          120 us. The estimators' own near-floor bias stretches that a
+          little further for weak reflections, since an under-read lands
+          *inside* the margin — measured on the synthetic set, echoes at 150
+          and 178 us are always refused, and at r=0.15 the refusal reaches
+          ~210 us (1.26 steps) before clearing at ~220 us (1.40 steps).
+        * Independently of the window, :func:`assess_geometry` will not
+          cluster a ``tau_us`` below ``GEOMETRY_MIN_RESOLUTION_STEPS *
+          resolution_us`` (~214 us for the defaults) — that floor is
+          measured from zero delay, not from ``search_us[0]``, so it binds
+          on a low window and is already satisfied by a high one.
+
+        The plan's target bounce (~300 us) and the corpus's measured
+        313-323 us sit comfortably above both floors. Widening ``band_hz``
+        is what buys resolution below them: it shrinks ``resolution_us``,
+        which lowers the edge margin and the clustering floor together.
 
     Returns:
       An :class:`EchoDiagnostic`. A non-empty ``refusal`` means the detector
@@ -1029,16 +1130,32 @@ def detect_echo(
             concentration=concentration,
         )
 
+    # A candidate that survived the window but hugs its lower edge is an
+    # aliased below-window echo as readily as an in-window one, and the two
+    # cannot be told apart from inside this band — refuse rather than pick.
+    # Both surviving candidates are checked, not just the reported one: an
+    # edge-hugging cepstral peak corroborates an edge-hugging envelope peak
+    # into high confidence, which is the exact mechanism being closed.
+    edge_margin_s = WINDOW_EDGE_MARGIN_STEPS * resolution_us * 1e-6
+    at_lower_edge = (
+        cepstral_in_window and tau_cepstral - search_lo_s <= edge_margin_s
+    ) or (envelope_in_window and tau_envelope - search_lo_s <= edge_margin_s)
+    if at_lower_edge:
+        return _refused(
+            REFUSAL_TAU_AT_WINDOW_LOWER_EDGE,
+            resolution_us=resolution_us,
+            arrival_crest_db=crest_db,
+            tau_cepstral_us=tau_cepstral * 1e6,
+            tau_envelope_us=tau_envelope * 1e6,
+            concentration=concentration,
+        )
+
     if cepstral_in_window and envelope_in_window:
         corroboration = abs(tau_envelope - tau_cepstral) / max(tau_cepstral, 1e-12)
     else:
         # A rejected candidate corroborates nothing. Comparing against it
         # anyway is how a railed estimate manufactures agreement.
         corroboration = 1.0
-    if envelope_in_window:
-        tau, strength_db = tau_envelope, envelope_strength_db
-    else:
-        tau, strength_db = tau_cepstral, envelope_strength_db
 
     concentration_score = float(
         np.clip(
@@ -1070,9 +1187,16 @@ def detect_echo(
             arrival_crest_db=crest_db,
         )
 
+    # The envelope estimate is the answer, unconditionally. Getting here
+    # needs confidence > 0, which needs corroboration < CORROBORATION_LOOSE,
+    # which only the both-in-window branch above can produce — so the
+    # envelope is in-window by construction and the cepstrum never has to
+    # stand in for it. (An earlier version had a `tau_cepstral` fallback
+    # here; it was unreachable for exactly this reason, while documenting a
+    # coarser, quantised tau that the field could never actually hold.)
     return EchoDiagnostic(
-        tau_us=tau * 1e6,
-        strength_db=strength_db,
+        tau_us=tau_envelope * 1e6,
+        strength_db=envelope_strength_db,
         confidence=confidence,
         refusal="",
         resolution_us=resolution_us,
@@ -1115,12 +1239,17 @@ def assess_geometry(
     1. ``refusal == ""`` — the detector actually measured. A refusal's
        ``tau_us`` is 0.0, and a pile of zeros clusters perfectly.
     2. ``confidence >= confidence_floor`` — the long-standing gate.
-    3. ``tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us`` — the
-       delay is resolvable at all. Below ~3 quefrency steps both estimators
-       sit inside the direct pulse's own skirt and read low, so a cloud
-       whose true delays are all near the resolution floor collapses toward
-       one unresolvable value and looks locked when it is merely
-       unmeasurable.
+    3. ``tau_us > 0`` **and** ``tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS *
+       resolution_us`` — the delay is resolvable at all. Below ~3 quefrency
+       steps both estimators sit inside the direct pulse's own skirt and
+       read low, so a cloud whose true delays are all near the resolution
+       floor collapses toward one unresolvable value and looks locked when
+       it is merely unmeasurable. The explicit ``> 0`` is not redundant with
+       the product: a diagnostic carrying ``resolution_us == 0`` (which
+       :func:`detect_echo` never emits, but a hand-built or deserialised
+       record can) would otherwise clear a threshold of zero with a
+       ``tau_us`` of zero, and a pile of zeros clusters perfectly — the same
+       false lock rule 1 exists to prevent, arriving by a different door.
 
     Fewer than ``GEOMETRY_MIN_CONFIDENT`` usable estimates is reported as
     not-locked with reason ``GEOMETRY_UNKNOWN`` — never as a lock. A single
@@ -1146,6 +1275,7 @@ def assess_geometry(
             if e is not None
             and e.refusal == ""
             and e.confidence >= confidence_floor
+            and e.tau_us > 0.0
             and e.tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * e.resolution_us
         ],
         dtype=float,
@@ -1236,6 +1366,13 @@ def _echo_for(
     reason, so ten good captures plus one all-zero IR still combine. The
     slug comes from :class:`EchoInputError` when the detector raised one,
     so this never parses a message string.
+
+    What can still arrive here is per-*capture* trouble only —
+    ``malformed_ir``, ``all_zero_ir``, and ``bad_band_hz`` when the band
+    exceeds this capture's Nyquist. Config-shaped failures cannot: a
+    malformed band or search window is rejected up front by
+    :func:`combine_positions`, and a non-positive sample rate by
+    ``_validate_capture``, both before any detection runs.
     """
     if capture.ir is None:
         return None
@@ -1293,10 +1430,25 @@ def combine_positions(
 
     Raises:
       ValueError: on no captures, a malformed capture (see
-        :class:`PositionCapture`), captures sharing no frequency support, or
-        a non-positive smoothing fraction / threshold. Notably **not** for a
-        malformed IR: that is one position's refused diagnostic, not the
-        whole cloud's failure.
+        :class:`PositionCapture`), captures sharing no frequency support, a
+        non-positive smoothing fraction / threshold, or a malformed
+        ``echo_band_hz`` / ``echo_search_us``.
+
+        **Malformed config raises; malformed data refuses.** Every argument
+        above is the caller's own configuration, wrong for every position at
+        once and un-fixable by looking at the captures — so it fails loudly,
+        the same posture ``flag_threshold_db`` has always had. A malformed
+        *IR* is the opposite: one position's data problem, which becomes one
+        refused diagnostic while the other positions combine normally.
+        Silently turning a mistyped search window into N identical refusals
+        would have reported "no echo found anywhere" for what is really
+        "you asked the wrong question".
+
+        One case sits deliberately on the data side of that line: a band
+        that is well-formed but exceeds *a particular capture's* Nyquist.
+        That is an interaction between the config and one capture's sample
+        rate, not a property of the config, so it refuses that position
+        rather than failing the combine.
     """
     if not captures:
         raise ValueError("combine_positions needs at least one capture")
@@ -1307,6 +1459,15 @@ def combine_positions(
             f"smoothing fractions must be positive, got diag={diag_fraction} "
             f"spec={spec_fraction}"
         )
+    for name, bounds in (
+        ("echo_band_hz", echo_band_hz),
+        ("echo_search_us", echo_search_us),
+    ):
+        lo, hi = float(bounds[0]), float(bounds[1])
+        if not (np.isfinite(lo) and np.isfinite(hi)) or not 0.0 < lo < hi:
+            raise ValueError(
+                f"{name} must be finite and satisfy 0 < lo < hi, got {bounds}"
+            )
 
     validated = [_validate_capture(c) for c in captures]
     grid = _canonical_grid([freqs for freqs, _ in validated])
