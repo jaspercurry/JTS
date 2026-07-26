@@ -96,6 +96,7 @@ constant, not this paragraph, before trusting a number.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -140,6 +141,26 @@ from jasper.audio_measurement.spatial_combine import (
 # 1.02 dB *above* its own arrival's physical ceiling (impossible, so noise)
 # and its r agreement missed the 0.05 the plan's acceptance asks for; with the
 # flank smoothed it reads 0.27 dB above and 0.0187.
+#
+# **"Unsmoothed" means no fractional-octave smoothing — it does not mean the
+# raw capture grid.** ``combine_positions`` block-averages a too-fine grid in
+# linear power down to ``MAX_ANALYSIS_BINS`` before anything is combined, a
+# 32x reduction to ~1.465 Hz spacing on the S0 corpus, and this statistic
+# reads the result of that. The distinction is worth stating because a null is
+# exactly the shape a power average fills; the reason it is nonetheless
+# harmless here is that 1.465 Hz is three orders of magnitude under the
+# comb period being measured (3348 Hz at the S0 ladder's 298.8 us).
+#
+# Measured 2026-07-26, S0 main leg, by lifting ``MAX_ANALYSIS_BINS`` and
+# re-running the whole gate (524289 bins against the shipped 16384): the
+# identified rungs' depths move **-0.029 / +0.026 / -0.004 dB**, tau by
+# 0.074 us, ``r_freq`` by 0.0013, and the rung set is identical. On the
+# six-position tweeter-height cloud the depth-ceiling acquittal's margin
+# moves **2.231 -> 2.179 dB**, i.e. 0.052 dB against that rule's 0.98 dB of
+# one-sided headroom. Both regimes stated because the acquittal is the
+# tightest thing this statistic feeds. The decimation's own worst-bin
+# contract is asserted by
+# test_decimated_and_undecimated_curves_agree in tests/test_spatial_combine.py.
 #
 # **So the statistic is a lower bound on the true depth**, understated by at
 # most the peak-shave term. That direction composes correctly with everything
@@ -250,13 +271,42 @@ RUNG_MATCH_TOLERANCE_SPACINGS = 0.15
 # **Consecutive is the load-bearing word.** Two rungs n and n+1 pin tau from
 # their *spacing*, which is the ladder's actual signature. A non-adjacent pair
 # pins nothing: any tau dividing the gap explains it, so an arbitrary pair of
-# dips can always be called rungs of something. Measured — on the S0
-# ground-plane leg (5-19 kHz), a fit allowing gaps returned tau = 600 us
-# matching "n=3 and n=8" out of four candidate minima, skipping four rungs it
-# then had to claim were invisible. Requiring the matched set to be a
-# *contiguous run* refuses that outright, and the run is what the report
-# identifies: a rung that matches outside the longest run is recorded as
-# refused, not identified.
+# dips can always be called rungs of something.
+#
+# **The counterfactual, on the acceptance corpus, with one rule mutated and
+# nothing else.** Measured 2026-07-26 on the S0 **main leg** (ten positions)
+# over **1.2-19 kHz**, at the shipped candidate pool, shipped depth-weighted
+# score and shipped tolerance — only ``_longest_consecutive`` replaced by
+# ``sorted``:
+#
+#   shipped        tau 298.78 us, rungs [2, 3, 4] at 8659 / 11614 / 14977 Hz,
+#                  24.27 % of the band excluded; the 1864.0 Hz minimum refused
+#                  ``outside_contiguous_run`` at 5.19 dB
+#   gaps allowed   tau 298.56 us, rungs [0, 2, 3, 4] at **1864** / 8659 /
+#                  11614 / 14977 Hz, 27.21 % excluded — n=1 skipped entirely
+#
+# The extra rung is the **1.8 kHz lobing dip**, which the plan's two-mechanism
+# verdict establishes is a *different mechanism* from the comb — uncorrelated
+# with it across positions, and physically impossible for the ~320 us arrival
+# to have cut ("S0 executed" section b). Without this rule the gate excludes
+# it from correction as a comb rung, and passes both corroborations while
+# doing it (gap -7.26 %, agreement 0.0260 — the deepest rung sets r_freq, so
+# a wrong extra rung does not move it). Contiguity is the only thing standing
+# between the registry and that claim. Re-derived by
+# test_contiguity_is_what_keeps_the_1_8_khz_dip_out_of_the_registry.
+#
+# **Two regimes where this counterfactual does *not* appear, stated so the one
+# above is not over-read.** At 5-19 kHz the two agree exactly (rungs [2, 3, 4]
+# either way): the 1.8 kHz dip is out of band, so there is nothing to skip a
+# rung to reach. And on the S0 **ground-plane** leg the mutation changes
+# nothing at any band, because that cloud is refused at
+# ``no_corroborating_arrivals`` before the fit ever runs. An earlier revision
+# of this comment cited a ground-plane "tau = 600 us matching n=3 and n=8"
+# figure that reproduces from no single pool/score/band at all — it had mixed
+# the admitted pool's *size* with a located-pool, count-scored fit. That is
+# the "a described grid is not a grid" failure ``spatial_combine``'s
+# ``RAHMONIC_MARGIN`` and ``EARLIER_ARRIVAL_DOMINANCE_DB`` both document
+# fixing, and it happened here in the constant this module calls load-bearing.
 #
 # Two, not three, because two adjacent rungs is the minimum that carries the
 # spacing information, and requiring three would refuse a ladder whose band
@@ -500,12 +550,44 @@ CANDIDATE_NOT_MEASURABLE = "no_flanking_maxima"
 CANDIDATE_BELOW_MIN_DEPTH = "below_min_depth"
 CANDIDATE_DEPTH_EXCEEDS_CEILING = "depth_exceeds_arrival_ceiling"
 CANDIDATE_NO_MATCHING_RUNG = "no_matching_rung"
+# One shape carries this slug slightly loosely, and it is labelling only.
+# ``_assign_rungs`` keeps one candidate per rung: a second candidate inside
+# tolerance of an *in-run* rung loses that tie and is then reported here,
+# where "another candidate was closer to the same rung" would describe it
+# better. The refusal itself is right either way — the rung is already
+# identified, and reporting this one too would double-count a single null —
+# and the record still carries ``predicted_hz`` and ``rung_error_spacings``,
+# so the loss is legible. Reaching it needs two candidates inside one
+# rung-match window (0.3 spacings wide) that both survived the 1/6-octave
+# thinning — so the widest frequency ratio the window offers,
+# ``(n + 0.65) / (n + 0.35)``, must exceed ``2 ** (1/6)`` = 1.1225. That is
+# 1.857 / 1.222 / 1.128 at n = 0 / 1 / 2 and 1.090 at n = 3, i.e. **possible
+# only at n <= 2**, where a rung spacing is still a large fraction of its own
+# frequency. No corpus or synthetic case in this module's suite reaches it.
 CANDIDATE_OUTSIDE_CONTIGUOUS_RUN = "outside_contiguous_run"
 
 
 # --------------------------------------------------------------------------- #
 # Data model
 # --------------------------------------------------------------------------- #
+
+
+def _frozen_evidence(record: object, evidence: Mapping[str, float]) -> None:
+    """Replace ``record.evidence`` with an immutable copy, in ``__post_init__``.
+
+    A ``frozen=True`` dataclass stops the *field* being rebound; it says
+    nothing about the object the field points at, so a plain ``dict`` there
+    leaves the record mutable through its own attribute — and these records
+    are the audit trail, the one thing in this module that must read the same
+    later as it did when it was written. The arrays this stack returns are set
+    read-only for the same reason (``excluded`` here,
+    ``power_mean_db`` and friends in ``spatial_combine``); this is that rule
+    applied to the mappings.
+
+    The ``dict()`` copy is load-bearing: proxying the caller's mapping without
+    copying would leave it mutable through *their* reference.
+    """
+    object.__setattr__(record, "evidence", MappingProxyType(dict(evidence)))
 
 
 @dataclass(frozen=True)
@@ -545,8 +627,13 @@ class IdentifiedNull:
         ``CLASSIFICATION_POSITION_DEPENDENT``. Never
         ``CLASSIFICATION_INSUFFICIENT_EVIDENCE`` — that is a report-level
         verdict, and a report carrying it has no identified nulls at all.
-      evidence: the supporting arithmetic, as plain floats so a record
-        serialises without special-casing. Keys, all of them measurements:
+      evidence: the supporting arithmetic, as plain floats. Read-only: it is
+        wrapped in a ``MappingProxyType`` at construction, because a frozen
+        dataclass freezes the *field*, not the mapping behind it, and this is
+        the record a later reader audits the verdict from. A consumer that
+        needs to serialise it — the plan's PR-6 persists the registry —
+        wraps it in ``dict()`` first; the values are plain floats, so nothing
+        else about the encoding is special. Keys, all of them measurements:
         ``predicted_hz`` (the rung the fit put here), ``rung_error_spacings``
         (how far the measurement sits from it, in rung spacings),
         ``flank_lo_hz`` / ``flank_hi_hz`` (where the local envelope was read),
@@ -570,6 +657,9 @@ class IdentifiedNull:
     depth_db: float
     classification: str
     evidence: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _frozen_evidence(self, self.evidence)
 
 
 @dataclass(frozen=True)
@@ -598,6 +688,9 @@ class RefusedCandidate:
     depth_db: float
     reason: str
     evidence: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _frozen_evidence(self, self.evidence)
 
 
 @dataclass(frozen=True)
@@ -958,9 +1051,12 @@ def _fit_ladder(
     Scored by **total matched depth**, tie-broken by RMS rung error. Depth
     because a ladder that leaves the band's deepest null unexplained is a bad
     hypothesis however tidily it fits the shallow ones: on the S0 main leg's
-    six tweeter-height positions, a rung-count score chose a 168.9 us ladder
-    over the real 298.9 us one — both 3 rungs, the wrong one tidier — by
-    skipping the 6.36 dB null at 11.6 kHz entirely.
+    six tweeter-height positions **over 1.2-19 kHz**, a rung-count score
+    chose a 168.9 us ladder over the real 298.9 us one — both 3 rungs, the
+    wrong one tidier — by skipping the 6.36 dB null at 11.6 kHz entirely.
+    The band is part of the claim: over 5-19 kHz the two scores agree, because
+    the shallow low-frequency minima the count score preferred are out of
+    band and there is no tidier three-rung alternative to find.
 
     Returns ``(tau_s, {n: candidate index})`` for the longest consecutive run,
     or ``None`` when no hypothesis produced ``MIN_LADDER_RUNGS`` consecutive

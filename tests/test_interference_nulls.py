@@ -35,6 +35,8 @@ E. **Real-data acceptance** against the 2026-07-25 S0 session: the 8-16 kHz
 """
 from __future__ import annotations
 
+from types import MappingProxyType
+
 import numpy as np
 import pytest
 
@@ -64,6 +66,7 @@ from jasper.audio_measurement.interference_nulls import (
     REASON_NO_PER_POSITION_CURVES,
     REASON_R_DISAGREEMENT,
     RUNG_MATCH_TOLERANCE_SPACINGS,
+    RefusedCandidate,
     identify_interference_nulls,
     null_depth_ceiling_db,
     reflection_ratio_from_depth,
@@ -1024,6 +1027,39 @@ def test_every_refusal_slug_the_module_defines_is_exercised_here():
     assert untested == [], untested
 
 
+def test_the_audit_trail_cannot_be_edited_after_the_fact():
+    """D — ``evidence`` is read-only, on identifications and refusals alike.
+
+    ``frozen=True`` freezes the field, not the mapping behind it, and these
+    records are the whole point of the module: a verdict a later reader
+    re-derives. The arrays this stack returns are set non-writeable for the
+    same reason; this is that rule applied to the mappings.
+    """
+    report = _identify(_cloud([15] * 6, 0.37), band_hz=(2000.0, 19_000.0))
+    assert report.nulls and report.refusals
+
+    for record in (*report.nulls, *report.refusals):
+        assert isinstance(record.evidence, MappingProxyType), record
+        with pytest.raises(TypeError):
+            record.evidence["predicted_hz"] = 0.0  # type: ignore[index]
+
+    # The proxy is over a *copy*, so a caller who kept a reference to the
+    # mapping they passed in cannot reach through it either.
+    mutable = {"depth_ceiling_db": 1.0}
+    pinned = RefusedCandidate(
+        f_center_hz=100.0, depth_db=1.0, reason=CANDIDATE_BELOW_MIN_DEPTH,
+        evidence=mutable,
+    )
+    mutable["depth_ceiling_db"] = 99.0
+    assert pinned.evidence["depth_ceiling_db"] == 1.0
+
+    # Values stay plain floats, so a consumer that has to serialise the
+    # registry needs nothing but dict().
+    import json
+
+    assert json.loads(json.dumps(dict(report.nulls[0].evidence)))["positions_total"]
+
+
 def test_refusals_are_reported_in_ascending_frequency():
     """D — a stable order, so a reader scanning a chart and a reader scanning
     the registry see the same sequence regardless of which stage refused."""
@@ -1116,9 +1152,8 @@ def test_s0_main_leg_family_is_position_invariant(s0_main_leg):
     floor. 0.80 against a 0.70 threshold is the tightest reading
     ``POSITION_PRESENCE_FRACTION`` has.
     """
-    report = identify_interference_nulls(
-        combine_positions(s0_main_leg), band_hz=S0_BAND_HZ
-    )
+    combined = combine_positions(s0_main_leg)
+    report = identify_interference_nulls(combined, band_hz=S0_BAND_HZ)
     assert report.reason == ""
     presence = {
         null.n: (null.evidence["positions_present"], null.evidence["positions_total"])
@@ -1133,6 +1168,39 @@ def test_s0_main_leg_family_is_position_invariant(s0_main_leg):
     # The report-level roll-up requires *every* rung to have earned it, so
     # this is the case where the conservative rule and the headline agree.
     assert report.classification == CLASSIFICATION_POSITION_INVARIANT
+
+    # The two "missing" positions on the 15 kHz rung, pinned — because
+    # ``POSITION_PRESENCE_FRACTION`` quotes them to argue that 8/10 is a
+    # materiality miss rather than an absence. The rung IS located at both;
+    # its depth there just falls a shade under the 2.5 dB floor.
+    import jasper.audio_measurement.interference_nulls as module
+
+    freqs = np.asarray(combined.freqs_hz, dtype=float)
+    band_idx = np.flatnonzero(
+        (freqs >= S0_BAND_HZ[0]) & (freqs <= S0_BAND_HZ[1])
+    )
+    per_position = module._per_position_candidates(
+        combined, band_idx, 1.0 / combined.diag_fraction
+    )
+    top_rung = next(null for null in report.nulls if null.n == 4)
+    tau_s = report.tau_ladder_us * 1e-6
+    sub_floor = {}
+    for position_id, candidates in zip(
+        combined.position_ids, per_position, strict=True
+    ):
+        near = [
+            candidate
+            for candidate in candidates
+            if abs(candidate.f_hz - top_rung.f_center_hz) * tau_s
+            <= RUNG_MATCH_TOLERANCE_SPACINGS
+        ]
+        assert near, f"{position_id} located no minimum near the 15 kHz rung"
+        deepest = max(candidate.depth_db for candidate in near)
+        if deepest < DEFAULT_MIN_NULL_DEPTH_DB:
+            sub_floor[position_id] = deepest
+    assert sorted(sub_floor) == ["cloud_06", "cloud_09"], sub_floor
+    assert sub_floor["cloud_06"] == pytest.approx(2.49, abs=0.02)
+    assert sub_floor["cloud_09"] == pytest.approx(2.40, abs=0.02)
 
 
 @requires_s0_curves
@@ -1175,14 +1243,12 @@ def test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling():
     on the six-position cloud the same verdict comes out at 9.24 dB against a
     7.01 dB ceiling — +2.23 dB over, and acquitted.
 
-    **The subgroup is load-bearing and is the honest scope of this claim.**
-    On the full ten-position cloud the same dip reads only 5.19 dB, because
-    the power mean fills a feature whose frequency *moves* between the two
-    mic heights (1814 Hz at tweeter height, 1974 Hz a hand-width low — the S0
-    report's own numbers), and it is then refused for a different reason
-    (``outside_contiguous_run``). That is the cloud working as designed on a
-    position-dependent defect, not the acquittal failing; the acquittal is
-    reachable where the defect survives averaging.
+    **The subgroup is load-bearing and is the honest scope of this claim** —
+    the ten-position divergence is asserted by
+    test_the_all_ten_cloud_refuses_the_same_dip_by_a_different_rule, not left
+    to this prose. This is the one place shipped behaviour diverges from the
+    work order's acceptance phrasing, so it fails loudly if the mechanism
+    moves.
     """
     tweeter_height = s0_position_captures(S0_MAIN, only=S0_MAIN_TWEETER_HEIGHT)
     assert len(tweeter_height) == 6
@@ -1209,6 +1275,116 @@ def test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling():
     # ...and the real family is still identified on the same call.
     assert report.reason == ""
     assert [null.n for null in report.nulls] == [2, 3, 4]
+
+
+@requires_s0_curves
+def test_the_all_ten_cloud_refuses_the_same_dip_by_a_different_rule(s0_main_leg):
+    """E — where shipped behaviour diverges from the work order's phrasing.
+
+    The acceptance text asks the main-leg cloud to refuse the 1.8 kHz dip *by
+    depth ceiling*. On the six tweeter-height positions it does. On the full
+    ten-position cloud it does **not**, and the reason is the instrument
+    working correctly rather than failing: the dip's frequency *moves* with
+    mic height (1814 Hz at tweeter height, 1974 Hz a hand-width low — the S0
+    report's own numbers), so the power mean fills it from 9.24 dB to
+    **5.19 dB**, which is under the ceiling. It is still refused — as
+    ``outside_contiguous_run``, being the n=0 rung of a ladder whose n=1 rung
+    is absent — and still not excluded.
+
+    Asserted rather than described because it is the single place this module
+    departs from the pre-registered wording, and a silent change to which rule
+    catches that dip would be exactly the kind of drift the registry exists to
+    prevent.
+    """
+    report = identify_interference_nulls(
+        combine_positions(s0_main_leg), band_hz=S0_WIDE_BAND_HZ
+    )
+    assert report.reason == ""
+
+    dip = next(
+        refusal
+        for refusal in report.refusals
+        if abs(refusal.f_center_hz - 1864.0) < 20.0
+    )
+    # Smeared by the cloud, so the ceiling rule cannot reach it...
+    assert dip.depth_db == pytest.approx(5.19, abs=0.05)
+    assert dip.depth_db < null_depth_ceiling_db(report.arrival_r_max)
+    assert dip.reason == CANDIDATE_OUTSIDE_CONTIGUOUS_RUN
+    # ...and it is the n=0 rung it matched, with n=1 missing from the run.
+    assert dip.evidence["predicted_hz"] == pytest.approx(
+        0.5 / (report.tau_ladder_us * 1e-6), rel=0.05
+    )
+    assert dip.evidence["rung_error_spacings"] <= RUNG_MATCH_TOLERANCE_SPACINGS
+    # No acquittal fires anywhere on this cloud.
+    assert not any(
+        refusal.reason == CANDIDATE_DEPTH_EXCEEDS_CEILING
+        for refusal in report.refusals
+    )
+    # The registry is unchanged by it: same three rungs as the narrow band,
+    # and nothing near 1.8 kHz excluded.
+    assert [null.n for null in report.nulls] == [2, 3, 4]
+    assert all(not (lo <= dip.f_center_hz <= hi) for lo, hi in report.excluded_bands_hz)
+    assert all(lo > 5000.0 for lo, _hi in report.excluded_bands_hz)
+
+
+@requires_s0_curves
+def test_contiguity_is_what_keeps_the_1_8_khz_dip_out_of_the_registry(s0_main_leg):
+    """E — ``MIN_LADDER_RUNGS``'s counterfactual, with one rule mutated.
+
+    The shipped configuration in every respect — same pool, same
+    depth-weighted score, same tolerance, same band — except that
+    ``_longest_consecutive`` is replaced by ``sorted``, which is precisely
+    "allow gaps". Measured 2026-07-26 on the ten-position main leg over
+    1.2-19 kHz:
+
+      shipped        rungs [2, 3, 4], 24.27 % of the band excluded
+      gaps allowed   rungs [0, 2, 3, 4], 27.21 % excluded — n=1 skipped
+
+    The extra rung is the 1.8 kHz lobing dip, which the plan's two-mechanism
+    verdict says is not the comb at all. Note it passes **both**
+    corroborations while wrong, because the deepest rung sets ``r_freq`` and
+    a spurious shallow rung does not move it — so contiguity is the only rule
+    standing between the registry and that claim.
+    """
+    import jasper.audio_measurement.interference_nulls as module
+
+    combined = combine_positions(s0_main_leg)
+    shipped = identify_interference_nulls(combined, band_hz=S0_WIDE_BAND_HZ)
+    assert [null.n for null in shipped.nulls] == [2, 3, 4]
+    assert shipped.excluded_fraction == pytest.approx(0.2427, abs=0.001)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "_longest_consecutive", sorted)
+        gapped = identify_interference_nulls(combined, band_hz=S0_WIDE_BAND_HZ)
+
+    assert [null.n for null in gapped.nulls] == [0, 2, 3, 4]
+    assert gapped.nulls[0].f_center_hz == pytest.approx(1864.0, abs=2.0)
+    assert gapped.excluded_fraction == pytest.approx(0.2721, abs=0.001)
+    # It would have been excluded from correction as a comb rung...
+    assert any(
+        lo <= 1864.0 <= hi for lo, hi in gapped.excluded_bands_hz
+    ), gapped.excluded_bands_hz
+    # ...and neither corroboration would have caught it.
+    assert gapped.reason == ""
+    assert abs(gapped.ladder_arrival_gap) <= LADDER_ARRIVAL_TOLERANCE
+    assert gapped.agreement == pytest.approx(shipped.agreement, abs=1e-9)
+
+    # The two regimes where this counterfactual does NOT appear, so the one
+    # above is not over-read: the narrow band has nothing to skip a rung to
+    # reach, and the ground plane never reaches the fit at all.
+    for band in (S0_BAND_HZ,):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(module, "_longest_consecutive", sorted)
+            narrow = identify_interference_nulls(combined, band_hz=band)
+        assert [null.n for null in narrow.nulls] == [2, 3, 4], band
+
+    ground_plane = combine_positions(s0_position_captures(S0_GROUND_PLANE))
+    for band in (S0_BAND_HZ, S0_WIDE_BAND_HZ):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(module, "_longest_consecutive", sorted)
+            gp = identify_interference_nulls(ground_plane, band_hz=band)
+        assert gp.reason == REASON_NO_CORROBORATING_ARRIVALS, band
+        assert gp.nulls == ()
 
 
 @requires_s0_curves

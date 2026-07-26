@@ -678,6 +678,39 @@ def test_the_retained_curves_are_what_the_combined_ones_are_made_of():
         )
 
 
+@pytest.mark.parametrize("n_positions", [1, 2, 5])
+def test_the_combiner_makes_exactly_three_plus_n_smoothing_passes(
+    monkeypatch, n_positions
+):
+    """The structural half of the per-position curves' cost, guarded.
+
+    ``CombinedResponse.per_position_diag_db`` documents the cost it adds as a
+    pass count — three combined curves plus one per position — and quotes a
+    wall-clock share alongside it. The share is an observation about one
+    laptop on one day and is left as that; the *count* is a property of the
+    code, so it is asserted. A future change that smoothed per position twice,
+    or that reintroduced the per-position pass ``_band_spread`` was rewritten
+    to avoid, would multiply the dominant term in this function's runtime
+    without failing anything else in this file.
+    """
+    calls: list[int] = []
+    real = spatial_combine.smooth_fractional_octave
+
+    def counting(freqs, values, *, fraction):
+        calls.append(fraction)
+        return real(freqs, values, fraction=fraction)
+
+    monkeypatch.setattr(spatial_combine, "smooth_fractional_octave", counting)
+    _freqs, _true, captures = _cloud(_dispersed_taus(n_positions))
+    result = combine_positions(captures)
+
+    assert len(calls) == 3 + n_positions
+    # ...and they are the passes the docstrings name: the spec curve once, the
+    # diagnostic fraction for the power mean, the median, and each position.
+    assert calls.count(result.spec_fraction) == 1
+    assert calls.count(result.diag_fraction) == 2 + n_positions
+
+
 def test_the_retained_curves_follow_the_decimated_grid():
     """When the analysis grid is block-averaged down to ``MAX_ANALYSIS_BINS``,
     the retained per-position rows are decimated with it — they are the
@@ -3274,11 +3307,41 @@ def test_decimated_and_undecimated_curves_agree(monkeypatch):
     an order statistic — decimation can change *which* position is the
     middle one, where the power mean only re-averages.
 
-    That is safe because no consumer reads a raw curve: the exclusion screen
-    compares ``power_mean_diag_db`` against ``median_diag_db`` and the spec
-    is evaluated on ``power_mean_spec_db``, all three of which are bounded
-    above. The raw fields are exposed for inspection, and the loose bound
-    asserted below exists so their disclosed magnitudes cannot quietly grow.
+    **One consumer does read a raw curve, and it is why the loose bound is
+    asserted rather than merely disclosed.** The exclusion screen compares
+    ``power_mean_diag_db`` against ``median_diag_db`` and the spec is
+    evaluated on ``power_mean_spec_db``, all three bounded above — but
+    :mod:`jasper.audio_measurement.interference_nulls` reads
+    ``power_mean_db`` **unsmoothed** at each located minimum: that is the
+    ``null(unsmoothed)`` term of its depth statistic, and it is unsmoothed
+    precisely because a fractional-octave window fills the null being
+    measured. An earlier revision of this docstring said no consumer read a
+    raw curve; PR-1 falsified it.
+
+    That consumer is safe at this bound, but **not because the bound is
+    tight** — a worst-bin maximum over 16k bins is simply not what a
+    single-bin reading experiences, and the depth statistic's other end (the
+    flank baseline) is read off a *smoothed* curve held to 0.1 dB, so only
+    one of its two terms is exposed to this figure at all. The claim that
+    matters is measured end to end rather than inferred: with the cap lifted
+    on the S0 main-leg cloud, the identified rungs' depths move by at most
+    **0.029 dB** and the depth-ceiling acquittal's margin by **0.052 dB**,
+    against that rule's 0.98 dB of one-sided headroom (see
+    ``NULL_DEPTH_STATISTIC``, which carries that measurement). The bound
+    asserted below is therefore a rot-guard on a disclosed magnitude, not a
+    correctness threshold — but it now guards a magnitude something depends
+    on.
+
+    ``per_position_db`` is the same kind of array (PR-1 retains the stack the
+    combined curves are reduced from) and is held to the same loose bound,
+    for the same reason: the null gate reads it per position when classifying
+    a rung ``position_invariant`` or ``position_dependent``. Measured
+    worst-bin 0.404 / 0.381 / 0.429 dB — larger than the power mean's 0.224,
+    which is the expected direction, since averaging is what buys the mean
+    its stability. Its smoothed sibling ``per_position_diag_db`` measures
+    0.096 / 0.107 / 0.135 dB, above the combined smoothed curves' 0.074-0.085
+    and well below the raw stack; it is bounded separately at 0.2 dB rather
+    than folded into either group.
     """
     captures = _large_grid_cloud()
     assert captures[0].freqs_hz.size > 8 * MAX_ANALYSIS_BINS / 2
@@ -3312,6 +3375,53 @@ def test_decimated_and_undecimated_curves_agree(monkeypatch):
         "the median is documented as the worse of the two — an order "
         f"statistic, not an average: {raw_worst}"
     )
+
+    # The retained per-position stack is raw in exactly the same sense and is
+    # held to the same bound, row by row. Without this it would be the one
+    # array in the result with no decimation contract at all — and the null
+    # gate reads it per position to classify a rung.
+    per_position_worst = 0.0
+    for row, (decimated_row, undecimated_row) in enumerate(
+        zip(decimated.per_position_db, undecimated.per_position_db, strict=True)
+    ):
+        reference = np.interp(
+            decimated.freqs_hz, undecimated.freqs_hz, undecimated_row
+        )
+        worst = float(np.max(np.abs(decimated_row - reference)))
+        assert worst < 0.6, f"per_position_db[{row}] moved by {worst:.4f} dB"
+        per_position_worst = max(per_position_worst, worst)
+    # It is a per-position curve, so it cannot be quieter than the power mean
+    # of those same positions: averaging is what buys the mean its stability.
+    assert per_position_worst > raw_worst["power_mean_db"]
+    # The figure the docstring quotes, pinned so it cannot rot into prose.
+    assert per_position_worst == pytest.approx(0.429, abs=0.01)
+
+    # The smoothed per-position curves sit *between* the two bounds, and the
+    # ordering is the point: measured 0.096-0.135 dB worst-bin against
+    # 0.074-0.085 dB for the three combined smoothed curves. Smoothing one
+    # position is not smoothing an average of three — the combined curve has
+    # already lost the fine structure decimation would otherwise cost it — so
+    # holding these to the combined curves' 0.1 dB would be asserting
+    # something untrue rather than something strict.
+    diag_worst = 0.0
+    for row, (decimated_row, undecimated_row) in enumerate(
+        zip(decimated.per_position_diag_db, undecimated.per_position_diag_db, strict=True)
+    ):
+        reference = np.interp(
+            decimated.freqs_hz, undecimated.freqs_hz, undecimated_row
+        )
+        worst = float(np.max(np.abs(decimated_row - reference)))
+        assert worst < 0.2, f"per_position_diag_db[{row}] moved by {worst:.4f} dB"
+        diag_worst = max(diag_worst, worst)
+    assert diag_worst > 0.085, (
+        "the per-position smoothed curves are documented as moving more than "
+        f"the combined ones, which top out at 0.085 dB here: {diag_worst:.4f}"
+    )
+    assert diag_worst == pytest.approx(0.135, abs=0.01)
+    # ...and still far less than the raw stack they came from: smoothing is
+    # what buys a curve its decimation stability, per position as much as
+    # across the cloud.
+    assert diag_worst < per_position_worst / 2.0
 
 
 def test_decimation_preserves_the_linear_grid_contract_and_band_energy():
