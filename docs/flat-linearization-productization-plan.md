@@ -294,6 +294,12 @@ per-position 1/6-oct curves (one smoothing owner — note
 `CombinedResponse.stacked` is deliberately *unsmoothed* per-position
 magnitude, so "just use stacked" would force the new module to
 re-smooth, duplicating the construction: the SSOT failure mode).
+*(Pre-registered here as `stacked`; shipped as the field
+`per_position_db` — `stacked` was a local inside `combine_positions`,
+never a field, so PR-1 added both it and `per_position_diag_db`. The
+SSOT argument is unchanged and in fact stronger: with no field at all, a
+consumer would have had to rebuild the canonical-grid and decimation
+chain as well as the smoothing.)*
 PR-2 does not touch this extension. Band to search derives from the
 **caller-supplied** analysis band, not a horn constant.
 

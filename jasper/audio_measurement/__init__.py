@@ -63,6 +63,16 @@ Modules:
     zero-relative predecessor by only one bounded delay lane; each host supplies
     its exact topology channel set and emitter-owned lane identity, while
     orchestration separately owns read-back freshness and transaction authority.
+  - :mod:`~jasper.audio_measurement.spatial_combine` — the spatial
+    multi-capture combiner (power-mean cloud average), the
+    power-mean-vs-median interference honesty screen, the per-capture
+    cepstral echo detector, and the ``geometry.locked`` verdict.
+  - :mod:`~jasper.audio_measurement.interference_nulls` — the orthogonal
+    honesty gate the screen above is structurally blind to: identifying
+    position-invariant interference nulls by fitting a single-delay null
+    ladder and corroborating it against a measured arrival, so an
+    uncorrectable comb is excluded with its delay and reflection ratio
+    recorded as the reason.
 
 Layer-specific logic — PEQ design, targets, correction strategy, the
 active-speaker verdicts, the web flows — stays in its owning package and

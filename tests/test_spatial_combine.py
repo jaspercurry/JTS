@@ -53,7 +53,6 @@ F. **Real-data acceptance** against the 2026-07-25 S0 session — the
 """
 from __future__ import annotations
 
-import json
 import math
 import os
 from dataclasses import dataclass, replace
@@ -64,6 +63,17 @@ import pytest
 
 import jasper.audio_measurement.spatial_combine as spatial_combine
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from tests._flat_lin_corpus import (
+    LOOPBACK_TWEETER_PASSBAND_HZ,
+    LOOPBACK_WOOFER_PASSBAND_HZ,
+    S0_GROUND_PLANE,
+    S0_MAIN,
+    S0_PROTOCOL_SEARCH_US,
+    S0_SUMMED_PASSBAND_HZ,
+    requires_s0,
+    s0_position_irs,
+)
+from tests._flat_lin_corpus import loopback_irs as _loopback_irs
 from jasper.audio_measurement.spatial_combine import (
     BAND_BELOW_PASSBAND_MARGIN_DB,
     CORROBORATION_LOOSE,
@@ -98,6 +108,7 @@ from jasper.audio_measurement.spatial_combine import (
     assess_geometry,
     combine_positions,
     detect_echo,
+    usable_echo_estimates,
 )
 
 SAMPLE_RATE = 48_000
@@ -610,6 +621,179 @@ def test_single_capture_combines_to_itself_and_reports_no_spread():
     assert not result.excluded.any(), "one capture cannot disagree with itself"
     assert result.geometry.reason == GEOMETRY_UNKNOWN
     assert result.geometry.locked is False
+
+
+# --------------------------------------------------------------------------- #
+# A2. Retained per-position curves
+#
+# The combiner is the single owner of the canonical grid, the decimation and
+# the diagnostic smoothing, so a consumer that needs one position's curve
+# must be able to read it here rather than rebuild that chain (plan PR-1's
+# input contract). These pin that the retained arrays really are the ones the
+# combined curves were reduced from.
+# --------------------------------------------------------------------------- #
+
+
+def test_per_position_curves_are_retained_index_aligned_and_immutable():
+    """The two new arrays are row-for-row with ``position_ids``, live on the
+    result's own grid, and are read-only like every other array here."""
+    _freqs, _true, captures = _cloud(_dispersed_taus(4))
+    result = combine_positions(captures)
+
+    assert result.per_position_db.shape == (4, result.freqs_hz.size)
+    assert result.per_position_diag_db.shape == result.per_position_db.shape
+    assert result.position_ids == tuple(c.position_id for c in captures)
+    assert not result.per_position_db.flags.writeable
+    assert not result.per_position_diag_db.flags.writeable
+
+    # Row i is capture i, unsmoothed, on the shared grid. These captures all
+    # share one grid, so the resample is the identity and the comparison is
+    # against the input itself.
+    for row, capture in zip(result.per_position_db, captures, strict=True):
+        np.testing.assert_allclose(row, capture.magnitude_db, atol=1e-9)
+
+
+def test_the_retained_curves_are_what_the_combined_ones_are_made_of():
+    """No second construction: the power mean, the median and the diagnostic
+    smoothing are all recomputable from ``per_position_db``, and
+    ``per_position_diag_db`` is that array through the *same* smoothing call
+    the combined curves use."""
+    _freqs, _true, captures = _cloud(_dispersed_taus(5))
+    result = combine_positions(captures)
+    stacked = result.per_position_db
+
+    np.testing.assert_allclose(
+        result.power_mean_db,
+        10.0 * np.log10(np.mean(10.0 ** (stacked / 10.0), axis=0)),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(result.median_db, np.median(stacked, axis=0), atol=1e-12)
+    for row, diag in zip(stacked, result.per_position_diag_db, strict=True):
+        np.testing.assert_allclose(
+            diag,
+            smooth_fractional_octave(
+                result.freqs_hz, row, fraction=result.diag_fraction
+            ),
+            atol=1e-12,
+        )
+
+
+@pytest.mark.parametrize("n_positions", [1, 2, 5])
+def test_the_combiner_makes_exactly_three_plus_n_smoothing_passes(
+    monkeypatch, n_positions
+):
+    """The structural half of the per-position curves' cost, guarded.
+
+    ``CombinedResponse.per_position_diag_db`` documents the cost it adds as a
+    pass count — three combined curves plus one per position — and quotes a
+    wall-clock share alongside it. The share is an observation about one
+    laptop on one day and is left as that; the *count* is a property of the
+    code, so it is asserted. A future change that smoothed per position twice,
+    or that reintroduced the per-position pass ``_band_spread`` was rewritten
+    to avoid, would multiply the dominant term in this function's runtime
+    without failing anything else in this file.
+    """
+    calls: list[int] = []
+    real = spatial_combine.smooth_fractional_octave
+
+    def counting(freqs, values, *, fraction):
+        calls.append(fraction)
+        return real(freqs, values, fraction=fraction)
+
+    monkeypatch.setattr(spatial_combine, "smooth_fractional_octave", counting)
+    _freqs, _true, captures = _cloud(_dispersed_taus(n_positions))
+    result = combine_positions(captures)
+
+    assert len(calls) == 3 + n_positions
+    # ...and they are the passes the docstrings name: the spec curve once, the
+    # diagnostic fraction for the power mean, the median, and each position.
+    assert calls.count(result.spec_fraction) == 1
+    assert calls.count(result.diag_fraction) == 2 + n_positions
+
+
+def test_the_retained_curves_follow_the_decimated_grid():
+    """When the analysis grid is block-averaged down to ``MAX_ANALYSIS_BINS``,
+    the retained per-position rows are decimated with it — they are the
+    post-decimation array, not the captures' own."""
+    captures = _large_grid_cloud()
+    result = combine_positions(captures)
+
+    assert captures[0].freqs_hz.size > MAX_ANALYSIS_BINS
+    assert result.freqs_hz.size <= MAX_ANALYSIS_BINS
+    assert result.per_position_db.shape == (len(captures), result.freqs_hz.size)
+    assert result.per_position_diag_db.shape == result.per_position_db.shape
+
+
+def test_the_per_position_fields_are_additive():
+    """A :class:`CombinedResponse` built without them still constructs, which
+    is what makes the extension additive: every existing positional or
+    keyword construction keeps working, and the empty array is the honest
+    "these were never retained" value the null gate refuses on."""
+    from dataclasses import fields
+
+    names = [field.name for field in fields(CombinedResponse)]
+    assert names[-2:] == ["per_position_db", "per_position_diag_db"]
+
+    _freqs, _true, captures = _cloud(_dispersed_taus(3))
+    result = combine_positions(captures)
+    stripped = CombinedResponse(
+        freqs_hz=result.freqs_hz,
+        power_mean_db=result.power_mean_db,
+        median_db=result.median_db,
+        power_mean_diag_db=result.power_mean_diag_db,
+        power_mean_spec_db=result.power_mean_spec_db,
+        median_diag_db=result.median_diag_db,
+        excluded=result.excluded,
+        excluded_bands_hz=result.excluded_bands_hz,
+        n_positions=result.n_positions,
+        position_ids=result.position_ids,
+        per_position_echo=result.per_position_echo,
+        geometry=result.geometry,
+        band_spread=result.band_spread,
+        flag_threshold_db=result.flag_threshold_db,
+        diag_fraction=result.diag_fraction,
+        spec_fraction=result.spec_fraction,
+        echo_band_hz=result.echo_band_hz,
+        echo_search_us=result.echo_search_us,
+    )
+    assert stripped.per_position_db.size == 0
+    assert stripped.per_position_diag_db.size == 0
+
+
+def test_usable_echo_estimates_is_exactly_the_set_assess_geometry_clusters():
+    """The admission rules have one implementation, and this is the pin.
+
+    :func:`usable_echo_estimates` was extracted so the null gate and the
+    geometry verdict could not drift about what counts as evidence. The
+    contract is that its result size *is* ``GeometryLock.n_confident``, on
+    every population this suite can build — including the three that each
+    admission rule exists to exclude.
+    """
+    good = detect_echo(_impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE)
+    refused = detect_echo(_impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE, search_us=(650.0, 1000.0))
+    unconfident = replace(good, confidence=ECHO_CONFIDENCE_FLOOR - 0.01)
+    unresolvable = replace(good, tau_us=2.0 * good.resolution_us)
+    zero_resolution = replace(good, tau_us=0.0, resolution_us=0.0)
+
+    populations = [
+        [],
+        [None, None],
+        [good, good, good],
+        [good, refused, unconfident, unresolvable, zero_resolution, None],
+        [refused, unconfident, unresolvable],
+    ]
+    for echoes in populations:
+        assert len(usable_echo_estimates(echoes)) == assess_geometry(echoes).n_confident
+        # ...and the floor is honoured identically through both doors.
+        raised = 0.99
+        assert len(
+            usable_echo_estimates(echoes, confidence_floor=raised)
+        ) == assess_geometry(echoes, confidence_floor=raised).n_confident
+
+    # The one that matters most: a refused record is not evidence, however
+    # confident-looking its raw estimator fields are.
+    assert refused.refusal != ""
+    assert usable_echo_estimates([refused]) == ()
 
 
 # --------------------------------------------------------------------------- #
@@ -3123,11 +3307,41 @@ def test_decimated_and_undecimated_curves_agree(monkeypatch):
     an order statistic — decimation can change *which* position is the
     middle one, where the power mean only re-averages.
 
-    That is safe because no consumer reads a raw curve: the exclusion screen
-    compares ``power_mean_diag_db`` against ``median_diag_db`` and the spec
-    is evaluated on ``power_mean_spec_db``, all three of which are bounded
-    above. The raw fields are exposed for inspection, and the loose bound
-    asserted below exists so their disclosed magnitudes cannot quietly grow.
+    **One consumer does read a raw curve, and it is why the loose bound is
+    asserted rather than merely disclosed.** The exclusion screen compares
+    ``power_mean_diag_db`` against ``median_diag_db`` and the spec is
+    evaluated on ``power_mean_spec_db``, all three bounded above — but
+    :mod:`jasper.audio_measurement.interference_nulls` reads
+    ``power_mean_db`` **unsmoothed** at each located minimum: that is the
+    ``null(unsmoothed)`` term of its depth statistic, and it is unsmoothed
+    precisely because a fractional-octave window fills the null being
+    measured. An earlier revision of this docstring said no consumer read a
+    raw curve; PR-1 falsified it.
+
+    That consumer is safe at this bound, but **not because the bound is
+    tight** — a worst-bin maximum over 16k bins is simply not what a
+    single-bin reading experiences, and the depth statistic's other end (the
+    flank baseline) is read off a *smoothed* curve held to 0.1 dB, so only
+    one of its two terms is exposed to this figure at all. The claim that
+    matters is measured end to end rather than inferred: with the cap lifted
+    on the S0 main-leg cloud, the identified rungs' depths move by at most
+    **0.029 dB** and the depth-ceiling acquittal's margin by **0.052 dB**,
+    against that rule's 0.98 dB of one-sided headroom (see
+    ``NULL_DEPTH_STATISTIC``, which carries that measurement). The bound
+    asserted below is therefore a rot-guard on a disclosed magnitude, not a
+    correctness threshold — but it now guards a magnitude something depends
+    on.
+
+    ``per_position_db`` is the same kind of array (PR-1 retains the stack the
+    combined curves are reduced from) and is held to the same loose bound,
+    for the same reason: the null gate reads it per position when classifying
+    a rung ``position_invariant`` or ``position_dependent``. Measured
+    worst-bin 0.404 / 0.381 / 0.429 dB — larger than the power mean's 0.224,
+    which is the expected direction, since averaging is what buys the mean
+    its stability. Its smoothed sibling ``per_position_diag_db`` measures
+    0.096 / 0.107 / 0.135 dB, above the combined smoothed curves' 0.074-0.085
+    and well below the raw stack; it is bounded separately at 0.2 dB rather
+    than folded into either group.
     """
     captures = _large_grid_cloud()
     assert captures[0].freqs_hz.size > 8 * MAX_ANALYSIS_BINS / 2
@@ -3161,6 +3375,53 @@ def test_decimated_and_undecimated_curves_agree(monkeypatch):
         "the median is documented as the worse of the two — an order "
         f"statistic, not an average: {raw_worst}"
     )
+
+    # The retained per-position stack is raw in exactly the same sense and is
+    # held to the same bound, row by row. Without this it would be the one
+    # array in the result with no decimation contract at all — and the null
+    # gate reads it per position to classify a rung.
+    per_position_worst = 0.0
+    for row, (decimated_row, undecimated_row) in enumerate(
+        zip(decimated.per_position_db, undecimated.per_position_db, strict=True)
+    ):
+        reference = np.interp(
+            decimated.freqs_hz, undecimated.freqs_hz, undecimated_row
+        )
+        worst = float(np.max(np.abs(decimated_row - reference)))
+        assert worst < 0.6, f"per_position_db[{row}] moved by {worst:.4f} dB"
+        per_position_worst = max(per_position_worst, worst)
+    # It is a per-position curve, so it cannot be quieter than the power mean
+    # of those same positions: averaging is what buys the mean its stability.
+    assert per_position_worst > raw_worst["power_mean_db"]
+    # The figure the docstring quotes, pinned so it cannot rot into prose.
+    assert per_position_worst == pytest.approx(0.429, abs=0.01)
+
+    # The smoothed per-position curves sit *between* the two bounds, and the
+    # ordering is the point: measured 0.096-0.135 dB worst-bin against
+    # 0.074-0.085 dB for the three combined smoothed curves. Smoothing one
+    # position is not smoothing an average of three — the combined curve has
+    # already lost the fine structure decimation would otherwise cost it — so
+    # holding these to the combined curves' 0.1 dB would be asserting
+    # something untrue rather than something strict.
+    diag_worst = 0.0
+    for row, (decimated_row, undecimated_row) in enumerate(
+        zip(decimated.per_position_diag_db, undecimated.per_position_diag_db, strict=True)
+    ):
+        reference = np.interp(
+            decimated.freqs_hz, undecimated.freqs_hz, undecimated_row
+        )
+        worst = float(np.max(np.abs(decimated_row - reference)))
+        assert worst < 0.2, f"per_position_diag_db[{row}] moved by {worst:.4f} dB"
+        diag_worst = max(diag_worst, worst)
+    assert diag_worst > 0.085, (
+        "the per-position smoothed curves are documented as moving more than "
+        f"the combined ones, which top out at 0.085 dB here: {diag_worst:.4f}"
+    )
+    assert diag_worst == pytest.approx(0.135, abs=0.01)
+    # ...and still far less than the raw stack they came from: smoothing is
+    # what buys a curve its decimation stability, per position as much as
+    # across the cloud.
+    assert diag_worst < per_position_worst / 2.0
 
 
 def test_decimation_preserves_the_linear_grid_contract_and_band_energy():
@@ -3413,126 +3674,16 @@ def test_combining_the_corpus_frames_flags_the_locked_geometry(corpus_irs):
 # existing path skips silently.
 # --------------------------------------------------------------------------- #
 
-_S0_ENV = os.environ.get("JTS_FLAT_LIN_S0", "").strip()
-S0_ROOT = (
-    Path(_S0_ENV)
-    if _S0_ENV
-    else Path(__file__).resolve().parents[1] / "captures" / "flat-linearization-20260725"
-)
-S0_GROUND_PLANE = S0_ROOT / "s0-session-groundplane"
-S0_MAIN = S0_ROOT / "s0-session-main"
-S0_LOOPBACK = S0_ROOT / "s0-analysis" / "loopback"
-requires_s0 = pytest.mark.skipif(
-    not (S0_GROUND_PLANE.is_dir() and S0_MAIN.is_dir() and S0_LOOPBACK.is_dir()),
-    reason=(
-        f"laptop-durable S0 session absent under {S0_ROOT} "
-        "(set JTS_FLAT_LIN_S0 to point at it)"
-    ),
-)
-
-# The declared passbands the S0 legs would carry from a driver contract: a
-# summed VERIFY capture spans the whole swept system band, the electrical
-# loopback's two branches their own crossover halves. Supplied by the test
-# because the module is product-blind and never guesses one.
-S0_SUMMED_PASSBAND_HZ = (150.0, 20_000.0)
-LOOPBACK_WOOFER_PASSBAND_HZ = (200.0, 2000.0)
-LOOPBACK_TWEETER_PASSBAND_HZ = (2500.0, 20_000.0)
-# The leg-B protocol window S0 actually searched (analyze_s0.py's
-# LEG_B_ECHO_SEARCH_US), which is where the collapse happened. It is NOT the
-# module default, and the difference is the point of two of the tests below.
-S0_PROTOCOL_SEARCH_US = (150.0, 1000.0)
-
-
-def _s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
-    """Era-exact deconvolution of one S0 session directory's positions.
-
-    Mirrors ``captures/flat-linearization-20260725/s0-kit/analyze_s0.py`` —
-    the authority on what those WAVs were captured under — rather than
-    re-deriving the chain: reference program from ``build_verify_program``
-    with the pilot/prelude constants read **live** from
-    ``crossover_v2_flow`` (as the kit does, so this tracks the shipped
-    defaults instead of freezing a copy), ``fc_hz`` from the session's own
-    ``session.json``, cross-correlation offset, then
-    ``pa._deconvolve_window`` on the ``sweep_verify`` segment.
-
-    Capture selection is driven off the per-capture sidecar JSONs, which is
-    also how ``.retaken`` WAVs are skipped: a retaken attempt has no sidecar
-    pointing at it. A position's repeats are averaged in the time domain —
-    they share a deconvolution anchor, so the mean is valid and quieter,
-    which is what the kit does too.
-    """
-    import wave
-
-    from jasper.active_speaker.crossover_v2_flow import (
-        BASE_STIMULUS_PEAK_DBFS,
-        COURTESY_PRELUDE_ENABLED,
-        PILOT_LEVEL_DELTA_DB,
-    )
-    from jasper.audio_measurement import program_analysis as pa
-    from jasper.audio_measurement.program import build_verify_program, render_program_pcm
-
-    session = json.loads((session_dir / "session.json").read_text())
-    program = build_verify_program(
-        float(session["fc_hz"]),
-        leading_pilot_gains_db=(
-            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB,
-            BASE_STIMULUS_PEAK_DBFS,
-        ),
-        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
-    )
-    reference = np.asarray(render_program_pcm(program), dtype=np.float64)
-    if reference.ndim == 2:
-        if reference.shape[0] < reference.shape[1]:
-            reference = reference.T
-        reference = reference.sum(axis=1)
-    segment = program.segment("sweep_verify")
-
-    def load(path: Path) -> np.ndarray:
-        with wave.open(str(path)) as handle:
-            channels = handle.getnchannels()
-            raw = handle.readframes(handle.getnframes())
-        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
-        return samples[::channels] if channels > 1 else samples
-
-    def offset_of(captured: np.ndarray) -> int:
-        n_fft = 1 << (captured.size + reference.size - 1).bit_length()
-        cross = np.fft.rfft(captured, n_fft) * np.conj(np.fft.rfft(reference, n_fft))
-        window = max(1, captured.size - reference.size // 2)
-        return int(np.argmax(np.abs(np.fft.irfft(cross, n_fft)[:window])))
-
-    groups: dict[str, list[tuple[int, Path]]] = {}
-    for sidecar in sorted(session_dir.glob("*.json")):
-        if sidecar.name == "session.json":
-            continue
-        meta = json.loads(sidecar.read_text())
-        if not meta.get("wav_path"):
-            continue
-        wav = session_dir / Path(meta["wav_path"]).name
-        if wav.is_file():
-            groups.setdefault(str(meta["position_id"]), []).append(
-                (int(meta.get("capture_index", 1)), wav)
-            )
-
-    sample_rate = int(session["sample_rate_hz"])
-    irs: dict[str, np.ndarray] = {}
-    for position_id in sorted(groups):
-        per_repeat = [
-            pa._deconvolve_window(
-                captured, segment, offset_of(captured) + segment.start_sample, sample_rate
-            )[0]
-            for _index, wav in sorted(groups[position_id])
-            for captured in (load(wav),)
-        ]
-        shortest = min(ir.size for ir in per_repeat)
-        irs[position_id] = np.mean(
-            np.vstack([ir[:shortest] for ir in per_repeat]), axis=0
-        )
-    return irs
+# Roots, skip gates, declared passbands and the era-exact deconvolution now
+# live in tests/_flat_lin_corpus.py — promoted there when
+# tests/test_interference_nulls.py needed the same session directories, so
+# there is one loading chain rather than two to keep era-exact. Imported at
+# module scope (see the import block at the top of this file).
 
 
 @pytest.fixture(scope="module")
 def ground_plane_irs() -> dict[str, np.ndarray]:
-    return _s0_position_irs(S0_GROUND_PLANE)
+    return s0_position_irs(S0_GROUND_PLANE)
 
 
 @pytest.fixture(scope="module")
@@ -3541,7 +3692,7 @@ def main_leg_irs() -> dict[str, np.ndarray]:
     mounting. It is the control every leg-B claim below is a contrast
     against, so it is loaded rather than quoted (~5 s, module-scoped).
     """
-    return _s0_position_irs(S0_MAIN)
+    return s0_position_irs(S0_MAIN)
 
 
 @pytest.fixture(scope="module")
@@ -3550,11 +3701,7 @@ def loopback_irs() -> dict[str, np.ndarray]:
     them (``np.load``, no reconstruction — these are already impulse
     responses, one per stimulus x branch).
     """
-    return {
-        f"{stimulus}_{branch}": np.load(S0_LOOPBACK / f"ir_{stimulus}_{branch}.npy")
-        for stimulus in ("impulse", "sweep", "mls")
-        for branch in ("woofer", "tweeter")
-    }
+    return _loopback_irs()
 
 
 @requires_s0
