@@ -31,15 +31,29 @@ C. **Echo detector** on synthetic impulse responses and negative controls,
    ``test_rahmonic_false_lock_under_a_raised_window_is_screened``, and the
    margin it turns on is bracketed from both sides by
    ``test_rahmonic_margin_is_load_bearing_in_both_directions``.
+C2. **The three S0 hardenings on synthetic ground truth** — the
+   signal-presence screen (``band_below_passband``), the
+   earlier-dominant-arrival disclosure, the thin-evidence geometry
+   qualifier, and the per-record ``effective_floor_us``. Each rule's
+   *motivating* record is real and lives in layer F; these build the same
+   shape from known truth so the rules are exercised in CI too, and each
+   names the corpus record it stands in for.
 D. **Analysis-grid bounding** — the block-average decimation that keeps the
    combiner's cost bounded must not change the curves it produces.
 E. **Real-data smoke** against the 2026-07-24/25 JTS3 corpus. Skipped when
    the (gitignored, laptop-durable) capture directory is absent, which is
    always the case in CI. The corpus lives beside the *main* checkout, so a
    worktree checkout must point at it with ``JTS_FLAT_LIN_CORPUS=<dir>``.
+F. **Real-data acceptance** against the 2026-07-25 S0 session — the
+   electrical loopback that found a confident tau in filter stopband
+   residue, and the ground-plane leg whose proud-capsule arrivals collapsed
+   three records into an uninformative zero. Gated on a *second* root,
+   ``JTS_FLAT_LIN_S0=<dir>``, because the S0 session is a different capture
+   protocol from layer E's corpus and the two need not live together.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 from dataclasses import dataclass, replace
@@ -51,6 +65,7 @@ import pytest
 import jasper.audio_measurement.spatial_combine as spatial_combine
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.spatial_combine import (
+    BAND_BELOW_PASSBAND_MARGIN_DB,
     CORROBORATION_LOOSE,
     DEFAULT_ECHO_BAND_HZ,
     DEFAULT_ECHO_SEARCH_US,
@@ -64,9 +79,15 @@ from jasper.audio_measurement.spatial_combine import (
     RAHMONIC_MARGIN,
     REFUSAL_ALL_ZERO_IR,
     REFUSAL_BAD_BAND_HZ,
+    REFUSAL_BAND_TOO_NARROW,
+    REFUSAL_BAD_SIGNAL_BAND_HZ,
+    REFUSAL_BAND_BELOW_PASSBAND,
+    REFUSAL_EARLIER_DOMINANT_ARRIVAL,
+    REFUSAL_LOW_ARRIVAL_CREST,
     REFUSAL_NO_IN_WINDOW_ECHO,
     REFUSAL_RAHMONIC_OF_LOWER_DELAY,
     REFUSAL_TAU_AT_WINDOW_LOWER_EDGE,
+    REFUSAL_WINDOW_TOO_SHORT,
     STRENGTH_FLOOR_DB,
     WINDOW_EDGE_MARGIN_STEPS,
     CombinedResponse,
@@ -2403,6 +2424,401 @@ def test_echo_detector_settings_are_plumbed_and_recorded():
 
 
 # --------------------------------------------------------------------------- #
+# C2. The three S0 hardenings, on synthetic ground truth
+#
+# Each rule's *motivating* record is real and lives in section F, which is
+# env-gated and absent in CI. These are the CI-runnable half: they build the
+# same shape from known truth so the rule is exercised everywhere, and they
+# say which corpus record each one stands in for.
+# --------------------------------------------------------------------------- #
+
+
+def _lowpassed(ir: np.ndarray, fc_hz: float, order: int) -> np.ndarray:
+    """Magnitude-only Butterworth-shaped lowpass, steep enough to turn the
+    detector's 5-19 kHz default band into stopband.
+
+    A stand-in for the electrical loopback's woofer branch, whose 2 kHz LR4
+    lowpass is what put 40+ dB of rejection between its passband and the
+    band ``detect_echo`` was pointed at (see ``BAND_BELOW_PASSBAND_MARGIN_DB``).
+    Magnitude-only because the phase response is irrelevant here: the screen
+    is a level comparison, and leaving phase alone keeps the direct arrival
+    where the rest of the fixture put it.
+    """
+    n_fft = 1 << (ir.size - 1).bit_length()
+    spectrum = np.fft.rfft(ir, n_fft)
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / SAMPLE_RATE)
+    shape = 1.0 / np.sqrt(1.0 + (np.maximum(freqs, 1e-9) / fc_hz) ** (2 * order))
+    return np.fft.irfft(spectrum * shape, n_fft)[: ir.size]
+
+
+def test_band_below_passband_refuses_a_stopband_residue_signal():
+    """S0-1 — the signal-presence screen, on a constructed stopband.
+
+    An ordinary 320 us echo IR, lowpassed at 2 kHz hard enough that the
+    5-19 kHz default band holds only residue: the declared 200-2000 Hz
+    passband measures 48.6 dB above it, well past the 25.0 dB margin, and
+    the detector refuses before either estimator runs.
+
+    The *motivating* record is real and cannot be built here — the
+    loopback's woofer branch returned a confident-looking ``tau = 323.3 us``
+    from residue like this, and it is pinned by
+    :func:`test_loopback_woofer_branch_is_refused_as_stopband_residue`. What
+    this test owns is that the screen fires on the shape at all, in CI,
+    without the corpus.
+    """
+    residue = _lowpassed(_impulse_with_echo(320e-6, ECHO_R), 2000.0, 10)
+
+    screened = detect_echo(residue, SAMPLE_RATE, signal_band_hz=(200.0, 2000.0))
+    assert screened.refusal == REFUSAL_BAND_BELOW_PASSBAND, screened
+    assert screened.tau_us == 0.0
+    assert screened.confidence == 0.0
+    assert screened.strength_db == STRENGTH_FLOOR_DB
+    # The refusal carries the number it turned on, so it is recomputable
+    # from the record rather than asserted by the slug.
+    assert screened.band_deficit_db > BAND_BELOW_PASSBAND_MARGIN_DB, screened
+    assert screened.band_deficit_db == pytest.approx(48.6, abs=1.0), screened
+    # The estimators never ran: the screen returns before either exists.
+    assert screened.tau_cepstral_us == 0.0
+    assert screened.tau_envelope_us == 0.0
+
+    # Declaring no passband is the documented default and leaves the
+    # detector exactly as it was — the screen is opt-in, not a new floor.
+    unscreened = detect_echo(residue, SAMPLE_RATE)
+    assert unscreened.refusal != REFUSAL_BAND_BELOW_PASSBAND, unscreened
+    assert unscreened.band_deficit_db == STRENGTH_FLOOR_DB, (
+        "an undeclared passband must read as not-measured, not as 0 dB"
+    )
+
+
+def test_band_below_passband_stays_quiet_on_an_in_band_signal():
+    """S0-1 — the screen's other half: it must not eat honest captures.
+
+    The same 320 us echo, unfiltered, against two passbands a caller might
+    plausibly declare. Both read within a fraction of a dB of zero — three
+    orders of magnitude of margin below the 25.0 dB threshold — and the
+    detection is untouched.
+    """
+    clean = _impulse_with_echo(320e-6, ECHO_R)
+    reference = detect_echo(clean, SAMPLE_RATE)
+
+    for passband in ((150.0, 20_000.0), DEFAULT_ECHO_BAND_HZ):
+        measured = detect_echo(clean, SAMPLE_RATE, signal_band_hz=passband)
+        assert measured.refusal == "", (passband, measured)
+        assert abs(measured.band_deficit_db) < 1.0, (passband, measured)
+        assert measured.confidence == pytest.approx(reference.confidence), passband
+        assert measured.tau_us == pytest.approx(reference.tau_us), passband
+
+
+def test_signal_band_is_validated_like_the_analysis_band():
+    """S0-1 — malformed *config* raises, with a machine-readable slug.
+
+    ``signal_band_hz`` is caller configuration in the same sense
+    ``band_hz`` is: wrong for every capture at once and unfixable by looking
+    at one. So it fails the same way, loudly, rather than becoming N
+    identical refusals that would read as "no echo found anywhere".
+    """
+    ir = _impulse_with_echo(300e-6, ECHO_R)
+    for bad in ((0.0, 2000.0), (2000.0, 200.0), (2000.0, 2000.0)):
+        with pytest.raises(EchoInputError) as excinfo:
+            detect_echo(ir, SAMPLE_RATE, signal_band_hz=bad)
+        assert excinfo.value.slug == REFUSAL_BAD_SIGNAL_BAND_HZ, bad
+
+    # Nyquist clipping matches band_hz's: an upper edge above Nyquist is
+    # clipped rather than rejected, so a 20 kHz-declared passband works at
+    # any sample rate that can carry the analysis band at all.
+    clipped = detect_echo(ir, SAMPLE_RATE, signal_band_hz=(150.0, 96_000.0))
+    assert clipped.refusal == "", clipped
+
+
+def test_earlier_dominant_arrival_names_an_arrival_below_the_window():
+    """S0-2 — the uninformative collapse, given a name.
+
+    The S0 ground plane's geometry, reconstructed: a dominant arrival just
+    *below* the search window (145 us at r=0.8) plus the real echo inside it
+    (320 us at r=0.3). The envelope answers with the interloper, the window
+    contract rejects that answer, corroboration is forced to the
+    incomparable marker, and the score is zero **by construction** — the
+    cepstrum's reading was never compared to anything.
+
+    Before this rule the record said ``refusal == ""`` with
+    ``confidence == 0.0``: "ran, found nothing credible", which is a
+    different and much weaker statement than "the loudest thing here arrives
+    before your window starts". The refusal now names it, and the real
+    records it stands in for are pinned by
+    :func:`test_ground_plane_positions_report_the_proud_capsule_arrival`.
+    """
+    ir = _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3)
+    found = detect_echo(ir, SAMPLE_RATE, search_us=(150.0, 1000.0))
+
+    assert found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, found
+    assert found.tau_us == 0.0
+    assert found.confidence == 0.0
+    assert found.strength_db == STRENGTH_FLOOR_DB
+
+    # The mechanism, readable off the record: the envelope's own answer is
+    # below the window it was given, which is why nothing was comparable.
+    assert 0.0 < found.tau_envelope_us < 150.0, found
+    assert found.corroboration == 1.0, found
+
+    # And the refusal names the interloper — delay and level, in the same
+    # units strength_db uses.
+    assert found.earlier_arrival_us == pytest.approx(145.0, abs=2.0), found
+    assert found.earlier_arrival_db == pytest.approx(-1.9, abs=1.5), found
+
+    # The same IR through the default window, which *contains* the
+    # interloper: no below-window arrival, so nothing to name. This is the
+    # remedy the refusal implies, and it is the same remedy the rest of the
+    # module's window rules prescribe — widen the window.
+    contained = detect_echo(ir, SAMPLE_RATE)
+    assert contained.earlier_arrival_us == 0.0, contained
+    assert contained.earlier_arrival_db == STRENGTH_FLOOR_DB, contained
+    assert contained.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, contained
+
+
+def test_found_nothing_credible_survives_the_earlier_arrival_refusal():
+    """S0-2 — "refused" and "ran, found nothing" stay different outcomes.
+
+    The module keeps an empty ``refusal`` with zero confidence as a distinct
+    and deliberate state, and the new rule is gated narrowly enough not to
+    swallow it: it needs the envelope's own answer to have landed below the
+    window **and** a genuine arrival measured down there to name. An
+    impulse-with-no-echo control has neither, so it still reports the honest
+    nothing-found.
+
+    Swept over the whole 60-member negative-control family
+    ``ECHO_CONFIDENCE_FLOOR`` is calibrated against, because the claim the
+    module makes about them is a claim about all 60: **none** has a
+    below-window arrival at the default window, so none can reach the new
+    refusal, while the ground plane's three all do. Asserting one lucky seed
+    would not be that claim.
+    """
+    empty_refusals = 0
+    for noise_sigma in (0.02, 0.001):
+        for seed in range(30):
+            rng = np.random.default_rng(seed)
+            ir = np.zeros(65_536)
+            ir[1000] = 1.0
+            ir += rng.normal(0.0, noise_sigma, ir.size)
+            found = detect_echo(ir, SAMPLE_RATE)
+            assert found.earlier_arrival_us == 0.0, (noise_sigma, seed, found)
+            assert found.earlier_arrival_db == STRENGTH_FLOOR_DB, (noise_sigma, seed)
+            assert found.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, (noise_sigma, seed)
+            if found.refusal == "":
+                # Not asserted as exactly zero: this family's documented
+                # ceiling is 0.091 (see ``ECHO_CONFIDENCE_FLOOR``), and a
+                # low-but-nonzero score with an empty refusal is the same
+                # "ran, found nothing credible" outcome — it just found
+                # slightly less nothing.
+                assert found.confidence < ECHO_CONFIDENCE_FLOOR, (noise_sigma, seed, found)
+                empty_refusals += 1
+    # The state this test exists to protect is actually reached — otherwise
+    # the assertions above would be vacuously true of a family that only
+    # ever edge-refuses.
+    assert empty_refusals > 0
+
+
+def test_effective_floor_is_reported_on_every_record():
+    """S0-4 — the window's reporting floor, surfaced rather than raised.
+
+    ``search_us[0]`` understates what a window can see: the bottom
+    ``WINDOW_EDGE_MARGIN_STEPS`` of it is refused outright, so the default
+    window's real floor is ~191.4 us and not its stated 120 us. S0's ground
+    plane made that concrete — its 125-146 us arrivals are *structurally*
+    unreportable there — and the plan's answer is disclosure, not a higher
+    default (docs/flat-linearization-productization-plan.md PR-2 item 4).
+
+    Asserted on a measurement, on three different refusal paths, and on the
+    ``combine_positions`` raise path, because a consumer disclosing "arrivals
+    below ~X us are invisible" needs X most when the window found nothing.
+    """
+    def floor_for(search_us, band_hz=DEFAULT_ECHO_BAND_HZ):
+        return search_us[0] + WINDOW_EDGE_MARGIN_STEPS * (
+            1e6 / (band_hz[1] - band_hz[0])
+        )
+
+    measured = detect_echo(_impulse_with_echo(320e-6, ECHO_R), SAMPLE_RATE)
+    assert measured.refusal == ""
+    assert measured.effective_floor_us == pytest.approx(
+        floor_for(DEFAULT_ECHO_SEARCH_US)
+    )
+    assert measured.effective_floor_us == pytest.approx(191.43, abs=0.01)
+
+    # Every refusal ``detect_echo`` can be driven to from a constructed
+    # input, including the three taken *before* the estimators run. "Every
+    # record" is the promise; this is the check that it holds on the ones
+    # where the field matters most.
+    noise = np.random.default_rng(0)
+    zero_confidence = np.zeros(65_536)
+    zero_confidence[1000] = 1.0
+    zero_confidence += np.random.default_rng(0).normal(0.0, 0.02, 65_536)
+    cases = [
+        # (slug, ir, kwargs, expected search window for the floor)
+        (
+            REFUSAL_LOW_ARRIVAL_CREST,
+            noise.normal(0.0, 1.0, 8192),
+            {},
+            DEFAULT_ECHO_SEARCH_US,
+        ),
+        (REFUSAL_WINDOW_TOO_SHORT, np.array([0.0, 0.0, 0.0, 1.0]), {}, DEFAULT_ECHO_SEARCH_US),
+        (
+            REFUSAL_BAND_BELOW_PASSBAND,
+            _lowpassed(_impulse_with_echo(320e-6, ECHO_R), 2000.0, 10),
+            {"signal_band_hz": (200.0, 2000.0)},
+            DEFAULT_ECHO_SEARCH_US,
+        ),
+        (
+            REFUSAL_NO_IN_WINDOW_ECHO,
+            _impulse_with_echo(830e-6, ECHO_R),
+            {},
+            DEFAULT_ECHO_SEARCH_US,
+        ),
+        (
+            REFUSAL_TAU_AT_WINDOW_LOWER_EDGE,
+            _impulse_with_echo(100e-6, ECHO_R),
+            {},
+            DEFAULT_ECHO_SEARCH_US,
+        ),
+        (
+            REFUSAL_RAHMONIC_OF_LOWER_DELAY,
+            _impulse_with_echo(400e-6, 0.75),
+            {"search_us": (650.0, 1000.0)},
+            (650.0, 1000.0),
+        ),
+        (
+            REFUSAL_EARLIER_DOMINANT_ARRIVAL,
+            _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3),
+            {"search_us": (150.0, 1000.0)},
+            (150.0, 1000.0),
+        ),
+        # ...and the non-refusal zero: "ran, found nothing credible".
+        ("", zero_confidence, {}, DEFAULT_ECHO_SEARCH_US),
+    ]
+    for slug, ir, kwargs, search_us in cases:
+        echo = detect_echo(ir, SAMPLE_RATE, **kwargs)
+        assert echo.refusal == slug, echo
+        assert echo.effective_floor_us == pytest.approx(floor_for(search_us)), slug
+    # The band-too-narrow refusal has its own (much coarser) resolution, so
+    # its floor is asserted against the band it actually used rather than
+    # the default's — the field tracks the window *and* the band.
+    narrow = detect_echo(
+        _impulse_with_echo(320e-6, ECHO_R), SAMPLE_RATE, band_hz=(5000.0, 5100.0)
+    )
+    assert narrow.refusal == REFUSAL_BAND_TOO_NARROW, narrow
+    assert narrow.effective_floor_us == pytest.approx(
+        floor_for(DEFAULT_ECHO_SEARCH_US, (5000.0, 5100.0))
+    )
+
+    # A wider band buys a finer quefrency step, which lowers the floor —
+    # the same lever the docstring points at for measuring below it.
+    wide = detect_echo(
+        _impulse_with_echo(320e-6, ECHO_R), SAMPLE_RATE, band_hz=(2000.0, 19_000.0)
+    )
+    assert wide.effective_floor_us == pytest.approx(floor_for(DEFAULT_ECHO_SEARCH_US, (2000.0, 19_000.0)))
+    assert wide.effective_floor_us < measured.effective_floor_us
+
+    # The one path that cannot compute it: combine_positions turning a
+    # detector *raise* into a refused record. The band is unknown there, so
+    # resolution_us is 0.0 and the floor is 0.0 with it — the two agree
+    # about what was not measured.
+    grid = _grid()
+    capture = PositionCapture(
+        position_id="zero",
+        freqs_hz=grid,
+        magnitude_db=np.zeros_like(grid),
+        sample_rate=SAMPLE_RATE,
+        ir=np.zeros(4096),
+    )
+    raised = combine_positions([capture]).per_position_echo[0]
+    assert raised is not None
+    assert raised.refusal == REFUSAL_ALL_ZERO_IR
+    assert raised.resolution_us == 0.0
+    assert raised.effective_floor_us == 0.0
+
+
+def test_signal_band_is_plumbed_through_the_combiner_and_recorded():
+    """S0-1 — the combiner passes the declared passband down and echoes it
+    back, under the same "actually applied" convention as the echo band and
+    search window. PR-4's wiring is then value-supply only.
+    """
+    freqs, _true_db, captures = _cloud(_dispersed_taus())
+
+    default = combine_positions(captures)
+    assert default.signal_band_hz is None
+    assert all(
+        e is not None and e.band_deficit_db == STRENGTH_FLOOR_DB
+        for e in default.per_position_echo
+    )
+
+    declared = combine_positions(captures, signal_band_hz=[150.0, 20_000.0])
+    # Coerced to a plain tuple of floats, like echo_band_hz / echo_search_us.
+    assert declared.signal_band_hz == (150.0, 20_000.0)
+    assert all(
+        e is not None and e.band_deficit_db != STRENGTH_FLOOR_DB
+        for e in declared.per_position_echo
+    )
+    # A passband that contains the analysis band changes no verdict.
+    assert declared.geometry == default.geometry
+
+    # Malformed config raises rather than refusing every position — the same
+    # posture as the other two window arguments.
+    for bad in ((0.0, 2000.0), (2000.0, 200.0), (1000.0,), 500.0):
+        with pytest.raises(ValueError, match="signal_band_hz"):
+            combine_positions(captures, signal_band_hz=bad)
+
+
+def test_thin_evidence_qualifies_a_verdict_without_withholding_it():
+    """S0-3 / issue #1742 item 2 — a ten-position cloud whose verdict rests
+    on two usable estimates says so.
+
+    The rule is exactly ``n_confident == GEOMETRY_MIN_CONFIDENT and
+    n_positions >= 2 * GEOMETRY_MIN_CONFIDENT``, and it is *disclosure*: the
+    verdict, its reason, and every supporting number are unchanged. The
+    rejected alternative was scaling the clustering threshold with
+    ``n_positions``, which turns a measured verdict into no verdict — a
+    worse answer than a qualified one.
+    """
+    usable = EchoDiagnostic(
+        tau_us=320.0,
+        strength_db=-8.8,
+        confidence=0.9,
+        refusal="",
+        resolution_us=1e6 / 14_000.0,
+        tau_cepstral_us=318.0,
+        tau_envelope_us=320.0,
+        concentration=0.66,
+        corroboration=0.006,
+        arrival_crest_db=100.0,
+    )
+    unusable = replace(usable, refusal=REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, tau_us=0.0)
+
+    thin = assess_geometry([usable, usable] + [unusable] * 8)
+    assert thin.n_positions == 10
+    assert thin.n_confident == GEOMETRY_MIN_CONFIDENT
+    assert thin.thin_evidence is True
+    # Disclosure only: the verdict is the same one the two estimates earn.
+    assert thin.locked is True
+    assert thin.reason == GEOMETRY_LOCKED
+    assert thin.clustered_fraction == pytest.approx(1.0)
+
+    # One more usable estimate and it is no longer the bare minimum.
+    assert assess_geometry([usable] * 3 + [unusable] * 7).thin_evidence is False
+    # A three-position cloud giving two usable estimates is not thin: two of
+    # three is the evidence that cloud had, not a shortfall against it.
+    assert assess_geometry([usable, usable, unusable]).thin_evidence is False
+    # The flag is verdict-independent by construction, and structurally
+    # unreachable on GEOMETRY_UNKNOWN — that reason fires exactly when
+    # n_confident < GEOMETRY_MIN_CONFIDENT, which the equality excludes.
+    unknown = assess_geometry([usable] + [unusable] * 9)
+    assert unknown.reason == GEOMETRY_UNKNOWN
+    assert unknown.thin_evidence is False
+    # ...and it does qualify a dispersed verdict, not only a locked one.
+    far = replace(usable, tau_us=900.0, tau_envelope_us=900.0)
+    dispersed = assess_geometry([usable, far] + [unusable] * 8)
+    assert dispersed.reason == GEOMETRY_DISPERSED
+    assert dispersed.thin_evidence is True
+
+
+# --------------------------------------------------------------------------- #
 # D. Analysis-grid bounding
 # --------------------------------------------------------------------------- #
 
@@ -2732,3 +3148,446 @@ def test_combining_the_corpus_frames_flags_the_locked_geometry(corpus_irs):
     assert result.geometry.locked is True
     assert result.n_positions == 3
     assert all(e is not None for e in result.per_position_echo)
+
+
+# --------------------------------------------------------------------------- #
+# F. Real-data acceptance — the 2026-07-25 S0 session
+#
+# The records that motivated the three hardenings in section C2, gated on a
+# second laptop-durable root so the two corpora can live in different places
+# (the S0 session postdates the cdhorn one by a day and is a different
+# capture protocol). Absent in CI, where these skip; a corpus-acceptance PR
+# is not done until they have been seen to PASS, because a wrong-but-
+# existing path skips silently.
+# --------------------------------------------------------------------------- #
+
+_S0_ENV = os.environ.get("JTS_FLAT_LIN_S0", "").strip()
+S0_ROOT = (
+    Path(_S0_ENV)
+    if _S0_ENV
+    else Path(__file__).resolve().parents[1] / "captures" / "flat-linearization-20260725"
+)
+S0_GROUND_PLANE = S0_ROOT / "s0-session-groundplane"
+S0_MAIN = S0_ROOT / "s0-session-main"
+S0_LOOPBACK = S0_ROOT / "s0-analysis" / "loopback"
+requires_s0 = pytest.mark.skipif(
+    not (S0_GROUND_PLANE.is_dir() and S0_MAIN.is_dir() and S0_LOOPBACK.is_dir()),
+    reason=(
+        f"laptop-durable S0 session absent under {S0_ROOT} "
+        "(set JTS_FLAT_LIN_S0 to point at it)"
+    ),
+)
+
+# The declared passbands the S0 legs would carry from a driver contract: a
+# summed VERIFY capture spans the whole swept system band, the electrical
+# loopback's two branches their own crossover halves. Supplied by the test
+# because the module is product-blind and never guesses one.
+S0_SUMMED_PASSBAND_HZ = (150.0, 20_000.0)
+LOOPBACK_WOOFER_PASSBAND_HZ = (200.0, 2000.0)
+LOOPBACK_TWEETER_PASSBAND_HZ = (2500.0, 20_000.0)
+# The leg-B protocol window S0 actually searched (analyze_s0.py's
+# LEG_B_ECHO_SEARCH_US), which is where the collapse happened. It is NOT the
+# module default, and the difference is the point of two of the tests below.
+S0_PROTOCOL_SEARCH_US = (150.0, 1000.0)
+
+
+def _s0_position_irs(session_dir: Path) -> dict[str, np.ndarray]:
+    """Era-exact deconvolution of one S0 session directory's positions.
+
+    Mirrors ``captures/flat-linearization-20260725/s0-kit/analyze_s0.py`` —
+    the authority on what those WAVs were captured under — rather than
+    re-deriving the chain: reference program from ``build_verify_program``
+    with the pilot/prelude constants read **live** from
+    ``crossover_v2_flow`` (as the kit does, so this tracks the shipped
+    defaults instead of freezing a copy), ``fc_hz`` from the session's own
+    ``session.json``, cross-correlation offset, then
+    ``pa._deconvolve_window`` on the ``sweep_verify`` segment.
+
+    Capture selection is driven off the per-capture sidecar JSONs, which is
+    also how ``.retaken`` WAVs are skipped: a retaken attempt has no sidecar
+    pointing at it. A position's repeats are averaged in the time domain —
+    they share a deconvolution anchor, so the mean is valid and quieter,
+    which is what the kit does too.
+    """
+    import wave
+
+    from jasper.active_speaker.crossover_v2_flow import (
+        BASE_STIMULUS_PEAK_DBFS,
+        COURTESY_PRELUDE_ENABLED,
+        PILOT_LEVEL_DELTA_DB,
+    )
+    from jasper.audio_measurement import program_analysis as pa
+    from jasper.audio_measurement.program import build_verify_program, render_program_pcm
+
+    session = json.loads((session_dir / "session.json").read_text())
+    program = build_verify_program(
+        float(session["fc_hz"]),
+        leading_pilot_gains_db=(
+            BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB,
+            BASE_STIMULUS_PEAK_DBFS,
+        ),
+        courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+    )
+    reference = np.asarray(render_program_pcm(program), dtype=np.float64)
+    if reference.ndim == 2:
+        if reference.shape[0] < reference.shape[1]:
+            reference = reference.T
+        reference = reference.sum(axis=1)
+    segment = program.segment("sweep_verify")
+
+    def load(path: Path) -> np.ndarray:
+        with wave.open(str(path)) as handle:
+            channels = handle.getnchannels()
+            raw = handle.readframes(handle.getnframes())
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
+        return samples[::channels] if channels > 1 else samples
+
+    def offset_of(captured: np.ndarray) -> int:
+        n_fft = 1 << (captured.size + reference.size - 1).bit_length()
+        cross = np.fft.rfft(captured, n_fft) * np.conj(np.fft.rfft(reference, n_fft))
+        window = max(1, captured.size - reference.size // 2)
+        return int(np.argmax(np.abs(np.fft.irfft(cross, n_fft)[:window])))
+
+    groups: dict[str, list[tuple[int, Path]]] = {}
+    for sidecar in sorted(session_dir.glob("*.json")):
+        if sidecar.name == "session.json":
+            continue
+        meta = json.loads(sidecar.read_text())
+        if not meta.get("wav_path"):
+            continue
+        wav = session_dir / Path(meta["wav_path"]).name
+        if wav.is_file():
+            groups.setdefault(str(meta["position_id"]), []).append(
+                (int(meta.get("capture_index", 1)), wav)
+            )
+
+    sample_rate = int(session["sample_rate_hz"])
+    irs: dict[str, np.ndarray] = {}
+    for position_id in sorted(groups):
+        per_repeat = [
+            pa._deconvolve_window(
+                captured, segment, offset_of(captured) + segment.start_sample, sample_rate
+            )[0]
+            for _index, wav in sorted(groups[position_id])
+            for captured in (load(wav),)
+        ]
+        shortest = min(ir.size for ir in per_repeat)
+        irs[position_id] = np.mean(
+            np.vstack([ir[:shortest] for ir in per_repeat]), axis=0
+        )
+    return irs
+
+
+@pytest.fixture(scope="module")
+def ground_plane_irs() -> dict[str, np.ndarray]:
+    return _s0_position_irs(S0_GROUND_PLANE)
+
+
+@pytest.fixture(scope="module")
+def main_leg_irs() -> dict[str, np.ndarray]:
+    """The ten-position desk cloud — leg A, same protocol, one changed mic
+    mounting. It is the control every leg-B claim below is a contrast
+    against, so it is loaded rather than quoted (~5 s, module-scoped).
+    """
+    return _s0_position_irs(S0_MAIN)
+
+
+@pytest.fixture(scope="module")
+def loopback_irs() -> dict[str, np.ndarray]:
+    """The electrical loopback's per-branch IRs, as the loopback run left
+    them (``np.load``, no reconstruction — these are already impulse
+    responses, one per stimulus x branch).
+    """
+    return {
+        f"{stimulus}_{branch}": np.load(S0_LOOPBACK / f"ir_{stimulus}_{branch}.npy")
+        for stimulus in ("impulse", "sweep", "mls")
+        for branch in ("woofer", "tweeter")
+    }
+
+
+@requires_s0
+def test_loopback_woofer_branch_is_refused_as_stopband_residue(loopback_irs):
+    """S0-1 acceptance — the record the signal-presence screen exists for.
+
+    2026-07-25, a file-in/file-out loopback of the live JTS3 CamillaDSP
+    graph (s0-analysis/loopback/LOOPBACK-REPORT.md § 5a). Read in the
+    5-19 kHz default band, the **woofer** branch — behind a 2 kHz LR4
+    lowpass, so that band holds nothing but stopband residue and
+    quantisation noise — returned ``tau = 323.3 us`` at ``confidence =
+    0.275`` with an **empty refusal** on the sweep stimulus, and did not
+    reproduce it on the impulse or MLS stimuli of the same graph.
+
+    With its own passband declared, all three stimuli are refused, because
+    what is wrong is the question rather than the stimulus.
+    """
+    for stimulus in ("impulse", "sweep", "mls"):
+        ir = loopback_irs[f"{stimulus}_woofer"]
+        screened = detect_echo(ir, SAMPLE_RATE, signal_band_hz=LOOPBACK_WOOFER_PASSBAND_HZ)
+        assert screened.refusal == REFUSAL_BAND_BELOW_PASSBAND, (stimulus, screened)
+        assert screened.tau_us == 0.0
+        assert screened.band_deficit_db > BAND_BELOW_PASSBAND_MARGIN_DB, stimulus
+        assert screened.band_deficit_db == pytest.approx(41.0, abs=1.5), stimulus
+
+    # The defect itself, at the leg-B protocol window the loopback used:
+    # without a declared passband the sweep still reports its confident-
+    # looking number, so this is a gate the caller must supply, not a
+    # behaviour change that happened anyway.
+    unscreened = detect_echo(
+        loopback_irs["sweep_woofer"], SAMPLE_RATE, search_us=S0_PROTOCOL_SEARCH_US
+    )
+    assert unscreened.refusal == "", unscreened
+    assert unscreened.tau_us == pytest.approx(323.3, abs=1.0), unscreened
+    assert unscreened.confidence == pytest.approx(0.275, abs=0.01), unscreened
+
+
+@requires_s0
+def test_loopback_tweeter_branch_is_measured_in_its_own_passband(loopback_irs):
+    """S0-1 — the in-band control, from the same loopback run.
+
+    The *tweeter* branch's passband overlaps the analysis band, so the
+    deficit is within a fifth of a dB of zero on all three stimuli and the
+    screen stays out of the way. Without it, "an electrical IR is refused"
+    would be indistinguishable from "the screen fires on electrical IRs".
+    """
+    for stimulus in ("impulse", "sweep", "mls"):
+        ir = loopback_irs[f"{stimulus}_tweeter"]
+        screened = detect_echo(ir, SAMPLE_RATE, signal_band_hz=LOOPBACK_TWEETER_PASSBAND_HZ)
+        assert screened.refusal != REFUSAL_BAND_BELOW_PASSBAND, (stimulus, screened)
+        assert abs(screened.band_deficit_db) < 0.5, (stimulus, screened)
+        # Unchanged by declaring the passband — same verdict as without it.
+        assert screened.refusal == detect_echo(ir, SAMPLE_RATE).refusal, stimulus
+
+
+@requires_s0
+def test_main_leg_is_unchanged_and_is_the_ground_plane_s_control(main_leg_irs):
+    """S0-2 / S0-4 — nothing moved on the leg that was already working.
+
+    The ten-position desk cloud, searched in the same leg-B protocol window
+    that collapsed all three ground-plane records. Every position still
+    measures the source-fixed ~320 us rim wave at the confidence the S0
+    report tabulated, so the two new rules are additive rather than a
+    behaviour change wearing a disclosure's clothes.
+
+    It is also the contrast the ``earlier_arrival_*`` fields are documented
+    against: same speaker, same program, same window — four of these ten
+    carry a below-window arrival at 145.8 us, all of them 14.7-15.7 dB down,
+    against the ground plane's 125-146 us at 0.6-2.6 dB down. One changed
+    mic mounting is the whole difference, and it is the difference between a
+    reading and a refusal.
+    """
+    # Per-position (tau, confidence) exactly as s0-analysis/REPORT.md Q1.
+    expected = {
+        "cloud_01": (310.4, 0.919), "cloud_02": (327.1, 0.893),
+        "cloud_03": (328.6, 0.877), "cloud_04": (319.3, 0.294),
+        "cloud_05": (318.6, 0.956), "cloud_06": (321.9, 0.938),
+        "cloud_07": (323.5, 0.926), "cloud_08": (317.8, 0.899),
+        "cloud_09": (322.6, 0.851), "cloud_10": (321.0, 0.961),
+    }
+    assert set(main_leg_irs) == set(expected)
+
+    with_earlier = {}
+    for position, (tau_us, confidence) in expected.items():
+        found = detect_echo(
+            main_leg_irs[position], SAMPLE_RATE, search_us=S0_PROTOCOL_SEARCH_US
+        )
+        assert found.refusal == "", (position, found)
+        assert found.tau_us == pytest.approx(tau_us, abs=0.5), position
+        assert found.confidence == pytest.approx(confidence, abs=0.01), position
+        assert found.effective_floor_us == pytest.approx(221.43, abs=0.01), position
+        if found.earlier_arrival_us > 0.0:
+            with_earlier[position] = (found.earlier_arrival_us, found.earlier_arrival_db)
+
+    assert len(with_earlier) == 4, with_earlier
+    assert all(us == pytest.approx(145.8, abs=0.5) for us, _db in with_earlier.values())
+    levels = [db for _us, db in with_earlier.values()]
+    assert min(levels) == pytest.approx(-15.71, abs=0.3), with_earlier
+    assert max(levels) == pytest.approx(-14.66, abs=0.3), with_earlier
+    # The contrast that matters: a desk-cloud interloper is ~12 dB quieter
+    # than a proud-capsule one, and none of these ten is refused for it.
+    assert max(levels) < -10.0, with_earlier
+
+
+@requires_s0
+@requires_corpus
+def test_band_deficit_separates_honest_captures_from_stopband_residue(
+    ground_plane_irs, main_leg_irs, corpus_irs, loopback_irs
+):
+    """S0-1 — the gap ``BAND_BELOW_PASSBAND_MARGIN_DB`` claims, re-derived.
+
+    Three populations at the shipped defaults (5-19 kHz band, (120, 800) us
+    window), each against its own declared passband. The constant's comment
+    quotes this measurement; this test is where the quote comes from, so it
+    cannot rot into prose nobody re-ran.
+
+    The ground-plane leg is the honest ceiling on purpose: tipping the
+    cabinet at the floor cost top-octave level, so those are the honest
+    captures that come closest to looking like residue — and they are still
+    13 dB clear of the threshold.
+    """
+    honest = {
+        **{f"gp_{k}": (ir, S0_SUMMED_PASSBAND_HZ) for k, ir in ground_plane_irs.items()},
+        **{f"main_{k}": (ir, S0_SUMMED_PASSBAND_HZ) for k, ir in main_leg_irs.items()},
+        "corpus_run5_verify": (corpus_irs["run5_verify"], S0_SUMMED_PASSBAND_HZ),
+        "corpus_run7_verify": (corpus_irs["run7_verify"], S0_SUMMED_PASSBAND_HZ),
+        "corpus_run7_tweeter": (corpus_irs["run7_tweeter"], (2000.0, 20_000.0)),
+        **{
+            f"loopback_{s}_tweeter": (
+                loopback_irs[f"{s}_tweeter"],
+                LOOPBACK_TWEETER_PASSBAND_HZ,
+            )
+            for s in ("impulse", "sweep", "mls")
+        },
+    }
+    residue = {
+        f"loopback_{s}_woofer": (
+            loopback_irs[f"{s}_woofer"],
+            LOOPBACK_WOOFER_PASSBAND_HZ,
+        )
+        for s in ("impulse", "sweep", "mls")
+    }
+
+    def deficits(population):
+        return {
+            name: detect_echo(ir, SAMPLE_RATE, signal_band_hz=band).band_deficit_db
+            for name, (ir, band) in population.items()
+        }
+
+    honest_db = deficits(honest)
+    residue_db = deficits(residue)
+    ceiling, floor = max(honest_db.values()), min(residue_db.values())
+
+    assert ceiling < BAND_BELOW_PASSBAND_MARGIN_DB < floor, (honest_db, residue_db)
+    # The comment claims 12.07 dB and 40.43 dB, i.e. 12.9 dB of headroom
+    # above and 15.4 dB below. Asserting 10 dB of clearance on each side
+    # makes this a tripwire on the gap closing rather than a restatement.
+    assert BAND_BELOW_PASSBAND_MARGIN_DB - ceiling > 10.0, honest_db
+    assert floor - BAND_BELOW_PASSBAND_MARGIN_DB > 10.0, residue_db
+    assert ceiling == pytest.approx(12.07, abs=1.0), honest_db
+    assert floor == pytest.approx(40.43, abs=1.5), residue_db
+    # The ground-plane leg really is the honest worst case, which is why it
+    # is the population's ceiling rather than a bystander in it.
+    assert max(honest_db, key=honest_db.get).startswith("gp_"), honest_db
+    # The comment's per-population figures, so each is re-derived and not
+    # just the aggregate gap.
+    main_db = [v for k, v in honest_db.items() if k.startswith("main_")]
+    assert (min(main_db), max(main_db)) == pytest.approx((1.04, 6.56), abs=0.3), main_db
+    gp_db = [v for k, v in honest_db.items() if k.startswith("gp_")]
+    assert (min(gp_db), max(gp_db)) == pytest.approx((8.28, 12.07), abs=0.3), gp_db
+
+
+@requires_s0
+def test_ground_plane_positions_report_the_proud_capsule_arrival(ground_plane_irs):
+    """S0-2 acceptance — the three records that used to collapse silently.
+
+    S0's leg B put the speaker on a hard floor with the mic "lying on" it,
+    which left the capsule centimetres proud of the boundary and
+    manufactured a new dominant arrival at 125-146 us — 4.3-5.0 cm of path,
+    r = 0.74-0.93 (s0-analysis/REPORT.md, "Where the extra energy comes
+    from"). Searched in the leg-B protocol window (150, 1000) us, that
+    arrival became the envelope's answer, the window contract rejected it,
+    and all three positions reported ``confidence = 0.000`` with an **empty
+    refusal** while the cepstrum was reading the real ~320 us comb at
+    327.2 / 270.2 / 342.8 us.
+
+    All three now refuse by name and carry the interloper. Note what has
+    *not* changed: every estimator field below is exactly what the S0
+    report tabulated, because the fix names the outcome rather than
+    re-estimating anything.
+    """
+    expected = {
+        # position -> (cepstral tau, envelope tau, interloper tau, its level)
+        "ground_plane_01": (327.2, 137.5, 145.8, -2.57),
+        "ground_plane_02": (270.2, 139.4, 145.8, -2.01),
+        "ground_plane_03": (342.8, 135.4, 125.0, -0.64),
+    }
+    assert set(ground_plane_irs) == set(expected)
+
+    for position, (ceps, env, early_us, early_db) in expected.items():
+        found = detect_echo(
+            ground_plane_irs[position],
+            SAMPLE_RATE,
+            search_us=S0_PROTOCOL_SEARCH_US,
+        )
+        assert found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, (position, found)
+        assert found.tau_us == 0.0
+        assert found.confidence == 0.0
+
+        # The S0 report's own numbers, unchanged.
+        assert found.tau_cepstral_us == pytest.approx(ceps, abs=0.5), position
+        assert found.tau_envelope_us == pytest.approx(env, abs=0.5), position
+        assert found.corroboration == 1.0, position
+
+        # ...and the interloper the refusal is named for.
+        assert found.earlier_arrival_us == pytest.approx(early_us, abs=0.5), position
+        assert found.earlier_arrival_db == pytest.approx(early_db, abs=0.2), position
+        # It is the loudest thing any of these records saw: louder than
+        # anything the window contained, which is why it took the answer.
+        assert found.earlier_arrival_db > -3.0, position
+
+
+@requires_s0
+def test_ground_plane_arrivals_sit_under_the_default_window_floor(ground_plane_irs):
+    """S0-4 acceptance — why the floor is *surfaced* rather than raised.
+
+    Through the module's own default window the same three captures are
+    edge-refused, which is honest but silent about the reason: the
+    proud-capsule arrivals at 125-146 us sit under the default window's
+    ~191.4 us effective floor, so that window structurally cannot report
+    them. ``effective_floor_us`` is what lets a consumer say so.
+
+    This is also the direct evidence for the plan's PR-2 item 4 decision —
+    raising the default lower edge would have hidden these captures further,
+    not helped: the offline envelope scan in the S0 report is what found the
+    arrivals, and a higher floor moves *away* from that.
+    """
+    for position, ir in sorted(ground_plane_irs.items()):
+        found = detect_echo(ir, SAMPLE_RATE)
+        assert found.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, (position, found)
+        assert found.effective_floor_us == pytest.approx(191.43, abs=0.01), position
+        # The report's arrivals are below that floor — the claim this field
+        # exists to let a consumer make, checked against the real numbers.
+        assert 125.0 < found.effective_floor_us
+        assert 146.0 < found.effective_floor_us
+        # Inside the default window the interloper is not "below" anything,
+        # so there is nothing to name and the field says so.
+        assert found.earlier_arrival_us == 0.0, position
+
+
+@requires_s0
+def test_ground_plane_cloud_reads_as_thin_evidence_free(ground_plane_irs):
+    """S0-3 — the three-position leg is *not* thin evidence, and the rule
+    says why rather than the reader guessing.
+
+    ``thin_evidence`` asks whether a cloud that supplied plenty of positions
+    produced only the bare minimum of usable estimates. Leg B supplied
+    three, all refused, so the verdict is ``GEOMETRY_UNKNOWN`` on zero
+    usable estimates — a shortfall of evidence, but not the *disproportion*
+    this flag reports. Pinning it here keeps the flag from being read as a
+    general "not much evidence" indicator.
+    """
+    captures = []
+    freqs = np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE)
+    for position, ir in sorted(ground_plane_irs.items()):
+        spectrum = np.abs(np.fft.rfft(ir[:N_FFT], N_FFT)) + 1e-12
+        captures.append(
+            PositionCapture(
+                position_id=position,
+                freqs_hz=freqs,
+                magnitude_db=20.0 * np.log10(spectrum),
+                sample_rate=SAMPLE_RATE,
+                ir=ir,
+            )
+        )
+
+    combined = combine_positions(captures, echo_search_us=S0_PROTOCOL_SEARCH_US)
+    assert combined.n_positions == 3
+    assert combined.geometry.reason == GEOMETRY_UNKNOWN
+    assert combined.geometry.n_confident == 0
+    assert combined.geometry.locked is False
+    assert combined.geometry.thin_evidence is False
+    # Every position refused by name — the acceptance the plan asked for:
+    # informative on all three, never a silent confidence collapse.
+    assert all(
+        e is not None and e.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL
+        for e in combined.per_position_echo
+    ), [e.refusal for e in combined.per_position_echo if e is not None]
