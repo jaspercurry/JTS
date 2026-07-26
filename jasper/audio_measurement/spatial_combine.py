@@ -43,7 +43,13 @@ Pipeline (:func:`combine_positions`):
    cannot give.
 3. **Smoothing** — 1/6-octave diagnostic and 1/3-octave spec curves of the
    power mean (the plan evaluates pass/fail at 1/3-oct and retains 1/6-oct
-   for diagnostics), plus 1/6-octave of the median for the screen.
+   for diagnostics), plus 1/6-octave of the median for the screen, plus the
+   same 1/6-octave construction applied *per position*. This module is the
+   single owner of that construction: a consumer needing one position's
+   smoothed curve reads
+   :attr:`CombinedResponse.per_position_diag_db` rather than re-smoothing
+   :attr:`CombinedResponse.per_position_db`, which would be a second
+   construction to drift. See that attribute for the runtime cost it adds.
 4. **Exclusion mask** — bins where the two 1/6-oct curves disagree by more
    than ``flag_threshold_db`` are interference-dominated. Flagged bins are
    excluded from correction *and* pass/fail by downstream consumers, and
@@ -124,7 +130,7 @@ that consume the exclusion mask are stage S2.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
@@ -1205,6 +1211,44 @@ class CombinedResponse:
       power_mean_spec_db: ``power_mean_db`` at the spec fraction — the curve
         the plan's pass/fail tolerance table is evaluated against.
       median_diag_db: ``median_db`` at the diagnostic fraction.
+      per_position_db: ``(n_positions, len(freqs_hz))``, row *i* being
+        ``position_ids[i]``'s magnitude resampled onto the shared grid —
+        **unsmoothed**, and after any ``MAX_ANALYSIS_BINS`` decimation, so it
+        is exactly the array ``power_mean_db`` and ``median_db`` are reduced
+        from. Retained (rather than left as a local) so a consumer that needs
+        one position's curve reads the one this module built instead of
+        rebuilding the canonical-grid + decimation chain.
+      per_position_diag_db: ``per_position_db`` at the diagnostic fraction,
+        row-for-row. Retained so a per-position feature can be measured with
+        the *same* smoothing construction as the combined curves rather than
+        a second one — the SSOT rule this module already applies to
+        ``merged_true_intervals``. Its consumer today is
+        :mod:`jasper.audio_measurement.interference_nulls`, whose
+        ``position_invariant`` / ``position_dependent`` verdict is exactly
+        "is this null present at this position", answerable only per
+        position.
+
+        **It costs one ``smooth_fractional_octave`` pass per position**, and
+        that pass is the combiner's dominant term — the same cost
+        :func:`_band_spread` was rewritten to *avoid* (see its docstring),
+        which is why this is called out rather than left to be discovered.
+        The pass count is exact and is what to reason from: on an
+        N-position cloud this function makes ``3 + N`` smoothing passes where
+        it used to make 3, so at the plan's N of 8-12 the per-position work
+        is roughly three quarters of them. Measured 2026-07-25 on the S0
+        ten-position desk cloud at the full 16384-bin analysis grid: 13
+        passes, of which the 10 per-position ones took **40 %** of a 3.45 s
+        call. (The share is quoted rather than the seconds because wall-clock
+        on a shared laptop moved 2.9-3.5 s between runs of the same input;
+        the ratio is measured within one run and is the stable figure.)
+
+        Paid unconditionally because every shipped consumer of this module
+        needs it — the null gate runs at every cloud-group end (plan PR-4) —
+        so a default-off flag would be a footgun rather than a saving. The
+        regime the cost was judged against is the plan's choreography, which
+        runs this **once per position group** inside a multi-minute session
+        (PR-3b), not per capture. That judgement has **not** been re-measured
+        on a Pi 5.
       excluded: per-bin mask, True where the two diagnostic curves disagree
         by more than ``flag_threshold_db``. Downstream: excluded from
         correction *and* from pass/fail, and reported to the user.
@@ -1259,6 +1303,15 @@ class CombinedResponse:
     echo_band_hz: tuple[float, float]
     echo_search_us: tuple[float, float]
     signal_band_hz: tuple[float, float] | None = None
+    # Defaulted so the two new arrays are additive: every existing
+    # positional construction of this dataclass keeps working. An empty
+    # array is not a legal value from :func:`combine_positions`, which
+    # always populates both — it is the value a hand-built or deserialised
+    # record carries when the per-position curves were never retained.
+    per_position_db: np.ndarray = field(default_factory=lambda: np.empty((0, 0)))
+    per_position_diag_db: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 0))
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -2303,6 +2356,37 @@ def detect_echo(
 # --------------------------------------------------------------------------- #
 
 
+def usable_echo_estimates(
+    echoes: Sequence[EchoDiagnostic | None],
+    *,
+    confidence_floor: float = ECHO_CONFIDENCE_FLOOR,
+) -> tuple[EchoDiagnostic, ...]:
+    """The per-position diagnostics that count as evidence, in input order.
+
+    The three admission rules — measured, confident, resolvable — with the
+    reasoning for each in :func:`assess_geometry`'s docstring, which is the
+    one place they are explained. This function is where they are
+    *implemented*: :func:`assess_geometry` calls it for the set it clusters,
+    and :mod:`jasper.audio_measurement.interference_nulls` calls it for the
+    arrival candidates it corroborates a null ladder against. Two consumers
+    of one rule, so a second copy of the rule cannot drift from the first —
+    the same argument :func:`merged_true_intervals` is shared under.
+
+    Returns the diagnostics themselves rather than their taus, because the
+    null gate needs each estimate's ``strength_db`` (its time-domain
+    reflection ratio) as well as its delay.
+    """
+    return tuple(
+        e
+        for e in echoes
+        if e is not None
+        and e.refusal == ""
+        and e.confidence >= confidence_floor
+        and e.tau_us > 0.0
+        and e.tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * e.resolution_us
+    )
+
+
 def assess_geometry(
     echoes: Sequence[EchoDiagnostic | None],
     *,
@@ -2324,7 +2408,8 @@ def assess_geometry(
 
     **What counts as usable evidence** — a diagnostic is admitted only when
     all three hold, because each excluded class produces a *false* lock in a
-    different way:
+    different way. The rules are implemented once, in
+    :func:`usable_echo_estimates`, and explained once, here:
 
     1. ``refusal == ""`` — the detector actually measured. A refusal's
        ``tau_us`` is 0.0, and a pile of zeros clusters perfectly.
@@ -2375,15 +2460,7 @@ def assess_geometry(
     """
     n_positions = len(echoes)
     taus = np.array(
-        [
-            e.tau_us
-            for e in echoes
-            if e is not None
-            and e.refusal == ""
-            and e.confidence >= confidence_floor
-            and e.tau_us > 0.0
-            and e.tau_us >= GEOMETRY_MIN_RESOLUTION_STEPS * e.resolution_us
-        ],
+        [e.tau_us for e in usable_echo_estimates(echoes, confidence_floor=confidence_floor)],
         dtype=float,
     )
     n_confident = int(taus.size)
@@ -2656,6 +2733,16 @@ def combine_positions(
     power_mean_spec_db = smooth_fractional_octave(grid, power_mean_db, fraction=spec_fraction)
     median_diag_db = smooth_fractional_octave(grid, median_db, fraction=diag_fraction)
 
+    # One diagnostic-fraction pass per position. The dominant cost in this
+    # function — see CombinedResponse.per_position_diag_db for the measured
+    # figure and why it is paid unconditionally.
+    per_position_diag_db = np.vstack(
+        [
+            smooth_fractional_octave(grid, row, fraction=diag_fraction)
+            for row in stacked
+        ]
+    )
+
     excluded = np.abs(power_mean_diag_db - median_diag_db) > flag_threshold_db
     excluded.flags.writeable = False
 
@@ -2665,7 +2752,15 @@ def combine_positions(
     )
     geometry = assess_geometry(per_position_echo)
 
-    for array in (power_mean_db, median_db, power_mean_diag_db, power_mean_spec_db, median_diag_db):
+    for array in (
+        power_mean_db,
+        median_db,
+        power_mean_diag_db,
+        power_mean_spec_db,
+        median_diag_db,
+        stacked,
+        per_position_diag_db,
+    ):
         array.flags.writeable = False
 
     return CombinedResponse(
@@ -2688,4 +2783,6 @@ def combine_positions(
         echo_band_hz=echo_band,
         echo_search_us=echo_search,
         signal_band_hz=signal_band,
+        per_position_db=stacked,
+        per_position_diag_db=per_position_diag_db,
     )

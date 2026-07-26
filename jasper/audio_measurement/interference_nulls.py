@@ -1,0 +1,1460 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Interference-null identification — the orthogonal honesty gate.
+
+``identify_interference_nulls(combined, band_hz=...) -> InterferenceNullReport``
+answers one question about a spatial cloud: **which dips in this speaker's
+measured response are interference nulls from a delayed copy of its own
+sound, and therefore uncorrectable by EQ?**
+
+Why this module exists — the blind spot it was built for. The combiner's
+power-mean-vs-median screen
+(:mod:`jasper.audio_measurement.spatial_combine`) flags bins where positions
+*disagree*, so it is structurally blind to a null that every position sees.
+That is not a hypothetical: on the plan's S0 session (2026-07-25) the screen
+excluded **0 of 5462 bins** in 8-16 kHz — the power-vs-median gap there
+measured **+1.27 dB** against its own >2 dB trigger — while a source-fixed
+comb sat inside that band cutting 5-7 dB nulls (docs/flat-linearization-plan.md,
+"S0 executed" section e.1). Position-invariance says "this is real"; it does
+not say "this is correctable". This gate is the second, orthogonal
+instrument: it asks whether a dip is a *rung of a null ladder* attributable
+to a *measured arrival*, and it is deliberately independent of the screen —
+consumers run both, plus ``geometry.locked``, and take the union.
+
+The method, and the two independent instruments it insists agree:
+
+1. **Candidate arrival** — the cloud's per-position echo diagnostics,
+   admitted by :func:`~jasper.audio_measurement.spatial_combine.usable_echo_estimates`
+   and clustered by the same relative tolerance
+   :func:`~jasper.audio_measurement.spatial_combine.assess_geometry` uses. A
+   candidate needs at least ``MIN_CORROBORATING_POSITIONS`` positions; one
+   estimate is never enough to identify anything.
+2. **Candidate nulls** — local minima of the combined 1/6-octave diagnostic
+   curve inside the caller's band, each with a depth measured against its own
+   two flanking maxima (see ``NULL_DEPTH_STATISTIC`` for what exactly is read
+   off which curve, and why the two are not the same curve).
+3. **Depth-ceiling acquittal** — a two-path sum with reflection ratio ``r``
+   cannot cut a null deeper than ``20*log10((1+r)/(1-r))``. A dip deeper than
+   the candidate arrival's own ceiling (plus ``DEPTH_CEILING_MARGIN_DB``)
+   therefore **cannot** be that arrival, and is refused attribution *before*
+   the ladder is fitted, so it can never drag the fit. Acquitted is not
+   excluded: the dip is left alone, and the power-vs-median screen may still
+   catch it on its own.
+4. **Ladder fit** — the best single-tau ladder ``f_n = (n + 1/2) / tau`` with
+   **tau free**, requiring at least ``MIN_LADDER_RUNGS`` *consecutive* rungs.
+   Free rather than anchored on the arrival because the two disagree by a
+   measured 7.06-7.42 % on the S0 corpus (see ``LADDER_ARRIVAL_TOLERANCE``);
+   consecutive because a non-adjacent pair pins nothing (see
+   ``MIN_LADDER_RUNGS``).
+5. **Corroboration, both ways.** The fitted ``tau`` must land within
+   ``LADDER_ARRIVAL_TOLERANCE`` of the arrival's, and the ``r`` the null
+   depths imply must land within ``R_AGREEMENT_TOLERANCE`` of the ``r`` the
+   arrival's envelope measured. Frequency-domain and time-domain evidence,
+   from two estimators that never see each other's answer.
+6. **Classification** — per rung, ``position_invariant`` when that null is
+   individually present at **at least** ``POSITION_PRESENCE_FRACTION`` of the
+   cloud's positions, ``position_dependent`` otherwise; the report's own
+   roll-up is ``position_invariant`` only when every rung earned it. Anything
+   the steps above refuse is ``insufficient_evidence`` with a reason.
+
+**What ``position_invariant`` does and does not claim.** Two limits, and both
+matter to any copy built on it.
+
+*It is a threshold, not "every position".* The claim is that the null was
+individually measurable at at least ``POSITION_PRESENCE_FRACTION`` of the
+positions in this cloud — on the S0 main leg that is ten of ten for two rungs
+and **eight of ten** for the third. The exact counts are on every record
+(``positions_present`` / ``positions_total``); a sentence that says "at every
+position" should be reading those, not this word.
+
+*It cannot say where the null comes from.* Position-invariance within one
+session is consistent with an origin that travels with the speaker **or**
+with a path through the room that did not change while the session ran, and a
+single session cannot separate the two — S0 separated them only by physically
+moving the speaker. The vocabulary here is deliberately about the *evidence*,
+never about hardware. Nothing in this module knows what a horn is.
+
+Pure computation: numpy plus
+:mod:`jasper.audio_measurement.spatial_combine`. No I/O, no logging, no
+globals, no randomness, no product policy — and, like the module it builds
+on, **zero production callers by design** until the plan's PR-4 wires it into
+the conductor's cloud-group analysis.
+
+**Detection only.** Nothing here removes an echo or fills a null; the plan's
+guardrail ("No EQ of interference-flagged bins, ever; they are reported
+instead") is why the output is a registry of *reasons*, and why an
+identification's entire supporting arithmetic is carried on the record.
+
+**Every threshold below is calibrated on one speaker.** The JTS3 cdhorn, one
+evening, three geometries — the S0 corpus. Each constant states the
+population it was measured on and the headroom it has; several have a
+positive population and no measured negative one, and say so. Read the
+constant, not this paragraph, before trusting a number.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Mapping, Sequence
+
+import numpy as np
+
+from jasper.audio_measurement.spatial_combine import (
+    ECHO_CONFIDENCE_FLOOR,
+    GEOMETRY_CLUSTER_TOLERANCE,
+    CombinedResponse,
+    EchoDiagnostic,
+    merged_true_intervals,
+    usable_echo_estimates,
+)
+
+# --------------------------------------------------------------------------- #
+# Null-finding tuning
+# --------------------------------------------------------------------------- #
+
+# The depth statistic, and why it reads two different curves.
+#
+# For a candidate minimum located on the combined 1/6-octave diagnostic
+# curve, this module reports
+#
+#     depth_db = (power mean of the DIAGNOSTIC curve at the two flanking
+#                 maxima) - (the UNSMOOTHED power mean at the minimum's bin)
+#
+# **The null must be read unsmoothed.** A fractional-octave window whose
+# width is a real fraction of the comb period fills the null it is measuring.
+# Measured on synthetic two-path combs (tau 300 and 450 us x r 0.20/0.37/0.55
+# x rungs n=1..5, exact arithmetic, no noise —
+# test_smoothing_fills_a_null_far_more_than_it_shaves_a_peak): 1/6-octave
+# smoothing raises the null bottom by **0.13 to 5.98 dB**, i.e. by most of
+# the depth at the top of the band. A depth read off the smoothed curve at
+# both ends would report 3.5 dB where the truth is 10.7 dB.
+#
+# **The flank may be read smoothed, and should be.** The same sweep shows
+# smoothing lowers a comb *peak* by only **0.027 to 1.044 dB** — a null is a
+# narrow notch and a peak is a broad arch, so the same window costs them very
+# differently. Reading the two flanking maxima off the smoothed curve
+# therefore costs at most ~1 dB of depth while removing the variance of a
+# single unsmoothed bin, which on real captures is what made the difference:
+# with both ends unsmoothed, the S0 desk-edge leg's genuine 11.6 kHz rung read
+# 1.02 dB *above* its own arrival's physical ceiling (impossible, so noise)
+# and its r agreement missed the 0.05 the plan's acceptance asks for; with the
+# flank smoothed it reads 0.27 dB above and 0.0187.
+#
+# **So the statistic is a lower bound on the true depth**, understated by at
+# most the peak-shave term. That direction composes correctly with everything
+# it feeds: ``r_freq`` derived from it is a lower bound on r (so the agreement
+# gate can only refuse a true identification, never manufacture one), and the
+# ceiling test's margin below is calibrated with the bias in place.
+NULL_DEPTH_STATISTIC = "flank(diagnostic) - null(unsmoothed)"
+
+# How far a flanking-maximum search may run, in octaves either side of a
+# candidate minimum.
+#
+# The flanking maxima define the "local envelope" a depth is measured
+# against. The search is bounded so the envelope stays *local*: beyond about
+# half an octave the response's own shape — baffle step, driver rolloff, the
+# crossover region — dominates whatever comb structure is present, and a
+# "flank" found out there is not a comb peak. It is also bounded by the
+# neighbouring candidate minima, so a search can never step over one null to
+# use the far side of another as a flank.
+#
+# **Consequence, stated because it biases one of the tests below.** A dip
+# broader than about one octave has its flanks clipped by this bound, and its
+# depth is therefore understated. The S0 1.8 kHz lobing dip is exactly that
+# shape (its lower flank clips), reads 9.24 dB here against the 10.71 dB the
+# S0 report measured with hand-picked wider flanks, and is still acquitted by
+# the ceiling test — so the clip narrows that test's margin rather than
+# invalidating it. Understating depth is the safe direction for
+# identification (fewer, shallower nulls) and the unsafe direction for
+# acquittal, which is why ``DEPTH_CEILING_MARGIN_DB`` is calibrated on
+# readings taken *with* the clip in place rather than on the report's numbers.
+FLANK_SEARCH_MAX_OCT = 0.50
+
+# Minimum depth for a candidate minimum to enter the ladder fit at all, in dB.
+#
+# **This is a materiality cut, not a classifier, and the measurement is
+# emphatic about it.** Across the four S0 cloud groupings (re-derived by
+# test_s0_ladder_calibration_populations_bracket_the_constants):
+#
+#   identified rungs                    12 records, 2.72 - 6.84 dB
+#   material minima no ladder explains   3 records, 2.55 - 4.15 dB
+#   minima under this floor             36 records, -1.86 - 2.44 dB
+#
+# The first two populations **overlap almost completely**. No threshold on
+# depth alone tells a comb rung from an ordinary dip, and this constant does
+# not try: what identifies a null is the ladder fit plus the two
+# corroborations. The floor's job is narrower — keep numerically-trivial
+# minima (flat-bottom micro-extrema, curvature features on a sloping
+# response) out of the fit's candidate set, where a handful of them can be
+# assembled into a spurious ladder. Removing it entirely, on the S0 main
+# leg's four hand-width-low positions, produced a 3-rung "ladder" at tau
+# 290 us built on two 1.3-1.6 dB dips instead of the real 8-16 kHz family.
+#
+# **2.5 dB is the plan's own 8-16 kHz tolerance** (docs/flat-linearization-plan.md,
+# "The spec"), and that — not a measured gap, which does not exist here — is
+# where the default comes from. Excluding a band costs the correction real
+# bandwidth permanently, so the floor is set at the scale on which the spec
+# judges a deviation to matter at all. It is a judgement expressed in the
+# spec's own units: a 2.5 dB null is not harmless, it is the point below
+# which carving the band out of both correction *and* grading costs more than
+# it saves. The same posture ``DEFAULT_FLAG_THRESHOLD_DB`` takes in
+# spatial_combine — quote the plan, and say that it is the plan's number.
+#
+# It is a parameter (``min_depth_db``) precisely because that is a product
+# judgement, and this module holds no product policy. A caller with a
+# different tolerance should pass its own.
+DEFAULT_MIN_NULL_DEPTH_DB = 2.5
+
+# --------------------------------------------------------------------------- #
+# Ladder-fit tuning
+# --------------------------------------------------------------------------- #
+
+# How far a measured minimum may sit from a predicted rung and still match,
+# **in units of the ladder's own rung spacing** (1/tau), not in percent of
+# frequency.
+#
+# Rung spacing is the natural unit because a ladder's rungs are equally spaced
+# in Hz: a tolerance in percent-of-frequency is uniformly selective at no n at
+# all — it is tight at low n and, by n ~ 0.5/tol, wide enough that every
+# frequency matches some rung and the fit becomes vacuous. In spacing units
+# the window is the same fraction of the gap between rungs everywhere, so the
+# constant needs no companion bound on n.
+#
+# **0.15 spacings, against a measured worst case of 0.0933.** Measured
+# 2026-07-25 on the four S0 cloud groupings, each fitted independently
+# (re-derived by test_s0_main_leg_identifies_the_8_to_16_khz_family and
+# test_s0_ladder_calibration_populations_bracket_the_constants):
+#
+#   grouping                      rung errors (spacings)      worst
+#   main leg, all 10 positions    0.0872 / 0.0300 / 0.0251    0.0872
+#   main leg, tweeter height (6)  0.0818 / 0.0285 / 0.0232    0.0818
+#   main leg, a hand-width low(4) 0.0933 / 0.0281 / 0.0299    0.0933
+#   desk front edge (3)           0.0926 / 0.0350 / 0.0242    0.0926
+#
+# The worst reading is the **n=2 rung on every one of the four**, at
+# 0.0818-0.0933, against 0.0232-0.0350 for n=3 and n=4 — a systematic offset,
+# not scatter, and one this module does not model. (Two mechanisms are
+# available and neither is separated here: a 1/6-octave window biases a
+# located minimum toward the lower-level side of a sloping response, which is
+# steepest around 8-9 kHz on these captures; and the plan's own reading is
+# that "a real rim wave is not an ideal single-delay reflector".) 0.15 clears
+# it by 1.61x. It is not centred in a gap because there is no second
+# population to bound it from above — a looser tolerance does not admit a
+# *wrong* ladder so much as admit *more* ladders, which the consecutive-rung
+# requirement and the two corroborations are what actually screen.
+RUNG_MATCH_TOLERANCE_SPACINGS = 0.15
+
+# Consecutive matched rungs required before a set of minima is a ladder.
+#
+# **Consecutive is the load-bearing word.** Two rungs n and n+1 pin tau from
+# their *spacing*, which is the ladder's actual signature. A non-adjacent pair
+# pins nothing: any tau dividing the gap explains it, so an arbitrary pair of
+# dips can always be called rungs of something. Measured — on the S0
+# ground-plane leg (5-19 kHz), a fit allowing gaps returned tau = 600 us
+# matching "n=3 and n=8" out of four candidate minima, skipping four rungs it
+# then had to claim were invisible. Requiring the matched set to be a
+# *contiguous run* refuses that outright, and the run is what the report
+# identifies: a rung that matches outside the longest run is recorded as
+# refused, not identified.
+#
+# Two, not three, because two adjacent rungs is the minimum that carries the
+# spacing information, and requiring three would refuse a ladder whose band
+# only holds two. One dip is not a ladder under any reading.
+MIN_LADDER_RUNGS = 2
+
+# The fitted ladder's tau must land within this *relative* distance of the
+# corroborating arrival's tau.
+#
+# **It is spatial_combine's own clustering tolerance, reused rather than
+# reinvented** — two delays this close are already "the same delay" to
+# :func:`~jasper.audio_measurement.spatial_combine.assess_geometry`, and a
+# second number meaning the same thing is a second number to drift.
+#
+# **The band must admit a measured gap, and this is the constant the plan
+# warned about.** On the S0 corpus the ladder tau sits systematically *below*
+# the directly measured arrival tau: -7.193 % (main leg, all 10), -7.153 %
+# (tweeter height, 6), -7.424 % (a hand-width low, 4), -7.058 % (desk front
+# edge, 3) — fitted taus of 297.96-298.90 us against arrival medians of
+# 321.85-321.93 us. The plan's own framing is that the S0 report saw
+# 293-308 us implied by the null frequencies against a 321.5 us median
+# arrival, "consistent ... at this resolution", and that a real rim wave is
+# not an ideal single-delay reflector. A band of the 1/6-octave smoothing
+# bandwidth alone (about +-6 %) would refuse every one of the four.
+# 0.15 clears the worst by 2.02x.
+#
+# **Symmetric, though the measurement is not.** All four readings are
+# negative, and consistently so; that direction is recorded as an observation
+# about this speaker, not encoded as a rule. A one-sided band would bake one
+# rim wave's behaviour into a gate that has to work for waveguide edges, desk
+# bounces and enclosure diffraction it has never seen.
+LADDER_ARRIVAL_TOLERANCE = GEOMETRY_CLUSTER_TOLERANCE
+
+# Positions whose echo estimates must cluster before there is an arrival to
+# corroborate against. Below this the module reports
+# ``insufficient_evidence``: a lone estimate sits within any tolerance of its
+# own median, so "it clustered" would be vacuous — the same reasoning
+# ``GEOMETRY_MIN_CONFIDENT`` is set by, and the same value, for the same
+# reason. Stated separately because the two gates could legitimately diverge:
+# this one is about *attributing a null*, that one about telling a household
+# to move the mic.
+MIN_CORROBORATING_POSITIONS = 2
+
+# --------------------------------------------------------------------------- #
+# Corroboration tuning
+# --------------------------------------------------------------------------- #
+
+# Maximum disagreement between the two independent estimates of the
+# reflection ratio r before the identification is refused.
+#
+# The two instruments never see each other's answer. **Time domain:** the
+# arrival's level relative to the direct sound, from the analytic envelope
+# (``EchoDiagnostic.strength_db``), r = 10**(strength_db/20). **Frequency
+# domain:** the deepest matched rung's depth, inverted through the two-path
+# null-depth relation r = (x-1)/(x+1) with x = 10**(depth_db/20). The deepest
+# rung is used because the relation is a *ceiling* — every measurement
+# mechanism in the chain (spatial averaging over dispersed taus, the flank's
+# peak-shave, directivity-weighted r) can only make a null shallower — so the
+# deepest matched rung is the least-attenuated view and every other rung would
+# understate r further.
+#
+# **That bound is on the depth statistic against the *true* depth, not against
+# the time-domain number**, and the table below shows why the distinction
+# matters: the desk-edge row runs the other way, r_freq 0.3746 *above* r_time
+# 0.3559. ``strength_db`` is an estimate too, and on three positions it
+# carries enough error to flip the sign of the difference. So do not read this
+# gate as one-sided; it is an absolute disagreement for a reason.
+#
+# **0.10, calibrated one-sided against a measured positive population.**
+# 2026-07-25, the four S0 cloud groupings (re-derived by
+# test_s0_ladder_calibration_populations_bracket_the_constants):
+#
+#   grouping                      r_time    r_freq    agreement
+#   main leg, all 10 positions    0.3750    0.3490    0.0260
+#   main leg, tweeter height (6)  0.3747    0.3506    0.0240
+#   main leg, a hand-width low(4) 0.3785    0.3374    0.0410
+#   desk front edge (3)           0.3559    0.3746    0.0187
+#
+# Worst 0.0410; 0.10 clears it by 2.44x. **There is no measured negative
+# population** and this constant does not pretend to bisect a gap: the S0
+# session produced exactly one real arrival-and-ladder pair, read four ways.
+# What it does bound is real — an agreement of 0.10 around r = 0.37 is about
+# 2 dB of disagreement about how deep a null the arrival can cut — and the
+# hazard it guards (a ladder attributed to an arrival too weak to have made
+# it) is guarded from the other side, independently, by the depth ceiling.
+# The number to watch when this ships against other hardware is the positive
+# population's *worst* reading, not this threshold.
+R_AGREEMENT_TOLERANCE = 0.10
+
+# How far above the candidate arrival's physical null-depth ceiling a dip must
+# read before it is refused attribution, in dB.
+#
+# The physics is exact and one-directional: a direct sound summed with one
+# delayed copy at ratio r cannot cut a null deeper than
+# ``20*log10((1+r)/(1-r))`` anywhere. A dip deeper than that **cannot** be
+# that arrival — no averaging, no smoothing and no directivity makes a null
+# deeper than the arithmetic allows. The margin exists for estimation error in
+# r and for the depth statistic's own bias, not for the physics.
+#
+# The ceiling is computed from the **largest** r in the corroborating cluster,
+# not the median: the claim being made is "no position's arrival could have
+# cut this", so the loudest reflection the cloud actually measured is the
+# right bound, and it is the conservative one — a bigger r means a deeper
+# permitted null means fewer acquittals.
+#
+# **1.25 dB, centred in a measured 1.96 dB gap**, measured 2026-07-25 on the
+# S0 corpus at the shipped depth statistic (re-derived by
+# test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling and
+# test_s0_ladder_calibration_populations_bracket_the_constants):
+#
+# * **Must not acquit — 12 genuine rungs**, the 8-16 kHz family across the
+#   four cloud groupings, reading **-3.94 to +0.27 dB** relative to their own
+#   ceiling. The ceiling figure is the binding one: the desk-edge leg's
+#   11.6 kHz rung genuinely reads 0.27 dB *over* its ceiling, which is what a
+#   3-position cloud's noise looks like against a bound this tight, and is why
+#   the margin cannot be zero.
+# * **Must acquit — the S0 1.8 kHz lobing dip**, on the six tweeter-height
+#   positions where the S0 report measured it deepest: **+2.23 dB** over the
+#   ceiling (9.24 dB measured against a 7.01 dB ceiling for r = 0.3829). The
+#   plan's "S0 executed" section b calls this dip *physically impossible* for
+#   the ~320 us arrival to have caused, on exactly this arithmetic, and the
+#   two-mechanism verdict rests on it.
+#
+# 1.25 sits 0.98 dB above the genuine population's ceiling and 0.98 dB below
+# the acquittal case — centred to two decimal places, in the natural unit,
+# which is dB. **It is a 1.96 dB gap between 12 readings and 1**, from one
+# speaker and one session; that is thin, it is stated rather than smoothed
+# over, and the acquittal population is the one to widen first.
+#
+# An acquitted dip is **left alone**: it is refused attribution, recorded with
+# its reason, and *not* excluded by this gate. It may well be a real defect —
+# the S0 one is — but it is not this instrument's to name, and the
+# power-vs-median screen catches that particular one independently.
+DEPTH_CEILING_MARGIN_DB = 1.25
+
+# --------------------------------------------------------------------------- #
+# Classification tuning
+# --------------------------------------------------------------------------- #
+
+# Fraction of the cloud's positions at which an identified null must be
+# individually present before it is called ``position_invariant``.
+#
+# Presence is measured with the *same* statistic and the *same* floor as the
+# combined curve's, on that position's own diagnostic curve
+# (``CombinedResponse.per_position_diag_db``) and its own unsmoothed one — one
+# construction, so a per-position reading and a combined reading are
+# comparable numbers rather than two conventions.
+#
+# **0.70, measured against 1.00 / 1.00 / 0.80** — the three identified rungs
+# of the S0 main leg's ten-position cloud (8.6 / 11.6 / 15.0 kHz), re-derived
+# by test_s0_main_leg_family_is_position_invariant. The 0.80 is the 15 kHz
+# rung: it is *located* at all ten positions and misses at two of them only
+# because its depth there (2.40 and 2.49 dB) falls a shade under the 2.5 dB
+# materiality floor. 0.70 is 0.10 below that worst reading.
+#
+# **On a small cloud this fraction is coarsely quantised**, and a consumer
+# should know it: at three positions the only values are 0, 1/3, 2/3 and 1, so
+# 0.70 means "all three" there. The S0 desk-edge leg's 15 kHz rung reads 2/3
+# and is classified ``position_dependent`` for that reason — an honest verdict
+# on three positions, not a defect. The plan's own cloud is 8-12 positions
+# (fundamental 1), which is the regime this constant was chosen for.
+POSITION_PRESENCE_FRACTION = 0.70
+
+# --------------------------------------------------------------------------- #
+# Runaway-exclusion guard
+# --------------------------------------------------------------------------- #
+
+# The largest fraction of the analysis band's bins this gate may exclude
+# before it refuses to identify anything at all.
+#
+# **What it guards.** Every identification costs the correction real
+# bandwidth, permanently: PR-6 zeroes the fit's allowed depth on these bins
+# and the spec evaluator drops them from grading. A gate that carved most of
+# the band out of both would fail in a way that still *looks* like a clean
+# report, so the failure needs a bound rather than a reviewer.
+#
+# **0.65, set above what a single-tau ladder can legitimately reach — this is
+# a backstop, not a tuning knob, and the distinction is the whole design.**
+# Two populations, measured 2026-07-25:
+#
+# * **Real captures — 23.91 % to 30.85 %.** The S0 families across the four
+#   cloud groupings: 30.85 % on the main leg over 5-19 kHz (the widest,
+#   because that band is the narrowest the family is graded in) and
+#   23.91-25.35 % over 1.2-19 kHz. Re-derived by
+#   test_s0_exclusion_stays_far_below_the_runaway_cap.
+# * **Synthetic, deliberately pushed — ceiling 48.24 %**, over a committed
+#   grid of two-path clouds (delays 10-30 samples at 48 kHz, i.e. tau
+#   208-625 us, x r 0.15-0.80 x three analysis bands), re-derived by
+#   test_the_runaway_exclusion_cap_holds_over_the_committed_grid. The worst
+#   case is a dense ladder — six rungs of a 542 us comb inside a 10 kHz band.
+#
+# **That 48.24 % is not a runaway; it is the natural bound**, and the cap has
+# to sit above it or the guard would fire on correct behaviour. A null's
+# half-depth width grows as its depth shrinks, approaching half a rung spacing
+# either side as r falls, so a *complete* ladder's half-depth intervals
+# approach the whole band from below — near 50 %, which is what the sweep
+# tops out at. A guard set at 0.50 would therefore refuse a legitimate dense
+# comb, and refusing means refusing **every** identification in the report:
+# an expensive false positive. 0.65 clears the synthetic ceiling by 16.8
+# points and the real one by 34.2.
+#
+# **So this constant does not fire on any input either population contains**,
+# and that is stated rather than hidden: it is a bound on a failure class not
+# yet observed — a mis-fit, a widened interval, an overlap bug — chosen above
+# what the physics allows rather than inside it. A guard calibrated to bite
+# on correct data is a worse guard than one that never bites.
+#
+# **When it binds, nothing is identified.** The report comes back empty with
+# ``reason = REASON_EXCLUSION_CAP`` and the attempted fraction on
+# ``excluded_fraction``, because dropping "the shallowest until it fits" would
+# be an arbitrary ordering presented as a measurement. The other two honesty
+# instruments are unaffected — they are separate gates and the consumer runs
+# all three.
+EXCLUSION_CAP_FRACTION = 0.65
+
+# --------------------------------------------------------------------------- #
+# Vocabulary
+#
+# Snake_case, self-identifying, stable — mirroring spatial_combine's
+# ``REFUSAL_*`` and ``GEOMETRY_*`` slugs and linearization_envelope's
+# ``ReasonCode``. Consumers gate on ``reason == ""`` / the classification
+# constants, never on a specific refusal slug, so these can grow.
+# --------------------------------------------------------------------------- #
+
+CLASSIFICATION_POSITION_INVARIANT = "position_invariant"
+CLASSIFICATION_POSITION_DEPENDENT = "position_dependent"
+CLASSIFICATION_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+# Report-level reasons — why nothing was identified. Listed in the order
+# :func:`identify_interference_nulls` can emit them.
+REASON_NO_PER_POSITION_CURVES = "no_per_position_curves"
+REASON_NO_CORROBORATING_ARRIVALS = "no_corroborating_arrivals"
+REASON_NO_CANDIDATE_NULLS = "no_candidate_nulls"
+REASON_NO_LADDER = "no_ladder"
+REASON_LADDER_ARRIVAL_MISMATCH = "ladder_arrival_mismatch"
+REASON_R_DISAGREEMENT = "r_disagreement"
+REASON_EXCLUSION_CAP = "exclusion_cap_exceeded"
+
+# Per-candidate reasons — why one measured minimum is not an identified null.
+CANDIDATE_NOT_MEASURABLE = "no_flanking_maxima"
+CANDIDATE_BELOW_MIN_DEPTH = "below_min_depth"
+CANDIDATE_DEPTH_EXCEEDS_CEILING = "depth_exceeds_arrival_ceiling"
+CANDIDATE_NO_MATCHING_RUNG = "no_matching_rung"
+CANDIDATE_OUTSIDE_CONTIGUOUS_RUN = "outside_contiguous_run"
+
+
+# --------------------------------------------------------------------------- #
+# Data model
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class IdentifiedNull:
+    """One rung of an identified interference ladder.
+
+    Every field is either a measurement or recomputable from ``evidence``;
+    nothing here is asserted. The rule this module holds itself to is the one
+    :mod:`~jasper.audio_measurement.spatial_combine` holds for refusals — a
+    reader with the record in front of them can re-derive the verdict.
+
+    Args:
+      f_lo_hz: lower edge of the frequency interval this null excludes.
+      f_hi_hz: upper edge. The interval is the contiguous run around the
+        minimum where the diagnostic curve sits at or below half the null's
+        *diagnostic-curve* depth beneath its flank baseline — the dip's
+        half-depth width, bounded by its own two flanking maxima so it can
+        never run away down a rolloff. Half-depth rather than the whole
+        flank-to-flank span because the span includes the comb *peaks*, which
+        are ordinary response the fit should still correct.
+      f_center_hz: the located minimum, on the combined diagnostic curve.
+      n: the rung index, ``f ~= (n + 1/2) / tau``.
+      tau_us: the **fitted ladder** delay, in microseconds. The same value on
+        every rung of one report — it is a property of the ladder, carried on
+        each rung so a record stands alone.
+      r_time: reflection ratio from the time domain, ``10**(strength_db/20)``
+        of the corroborating cluster's median arrival strength.
+      r_freq: reflection ratio from the frequency domain, inverted from the
+        deepest matched rung's depth. Also a per-report value: it is the
+        ladder's r, not this rung's, because shallower rungs understate it
+        (see ``R_AGREEMENT_TOLERANCE``).
+      agreement: ``abs(r_time - r_freq)``. Below ``R_AGREEMENT_TOLERANCE`` by
+        construction — an identified null exists only if it was.
+      depth_db: **this** rung's depth, by ``NULL_DEPTH_STATISTIC``. A lower
+        bound on the true depth; see that constant.
+      classification: ``CLASSIFICATION_POSITION_INVARIANT`` or
+        ``CLASSIFICATION_POSITION_DEPENDENT``. Never
+        ``CLASSIFICATION_INSUFFICIENT_EVIDENCE`` — that is a report-level
+        verdict, and a report carrying it has no identified nulls at all.
+      evidence: the supporting arithmetic, as plain floats so a record
+        serialises without special-casing. Keys, all of them measurements:
+        ``predicted_hz`` (the rung the fit put here), ``rung_error_spacings``
+        (how far the measurement sits from it, in rung spacings),
+        ``flank_lo_hz`` / ``flank_hi_hz`` (where the local envelope was read),
+        ``flank_baseline_db`` and ``null_level_db`` (its two terms, so
+        ``depth_db`` is recomputable), ``diag_depth_db`` (the same depth read
+        entirely on the diagnostic curve — the smoothing-filled figure, kept
+        because it is what sets ``f_lo_hz``/``f_hi_hz``),
+        ``depth_ceiling_db`` (what the arrival's r permits, so the acquittal
+        that did *not* fire is auditable too), ``positions_present`` and
+        ``positions_total`` (the classification's own numbers).
+    """
+
+    f_lo_hz: float
+    f_hi_hz: float
+    f_center_hz: float
+    n: int
+    tau_us: float
+    r_time: float
+    r_freq: float
+    agreement: float
+    depth_db: float
+    classification: str
+    evidence: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RefusedCandidate:
+    """A measured minimum this gate declined to identify, and why.
+
+    Refusals are output, not silence. The registry is meant to answer "why is
+    this band excluded" *and* "why is that dip not", and the second question
+    is the one a household asks when a visible dip is left uncorrected — or
+    when a visible dip is corrected and they wondered whether it should have
+    been.
+
+    Args:
+      f_center_hz: the located minimum.
+      depth_db: its depth by ``NULL_DEPTH_STATISTIC``, or 0.0 when the
+        candidate was refused before a depth existed
+        (``CANDIDATE_NOT_MEASURABLE``).
+      reason: one of the ``CANDIDATE_*`` slugs.
+      evidence: whatever the refusal turns on, so it is recomputable —
+        ``depth_ceiling_db`` for an acquittal, ``min_depth_db`` for a
+        materiality refusal, ``predicted_hz`` and ``rung_error_spacings`` when
+        a rung was tried and missed.
+    """
+
+    f_center_hz: float
+    depth_db: float
+    reason: str
+    evidence: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class InterferenceNullReport:
+    """The null registry — this gate's whole output.
+
+    Read ``reason`` first. A non-empty ``reason`` means nothing was
+    identified and ``classification`` is
+    ``CLASSIFICATION_INSUFFICIENT_EVIDENCE``; ``nulls`` and
+    ``excluded_bands_hz`` are then empty and every other field is
+    diagnostic — populated as far as the method got, so a reader can see
+    *where* it stopped rather than only that it did.
+
+    Args:
+      nulls: the identified rungs, ascending in frequency. Empty when
+        ``reason`` is non-empty.
+      excluded: per-bin mask on ``combined.freqs_hz``, True inside an
+        identified null's interval. Full-length so it composes directly with
+        ``CombinedResponse.excluded`` — the plan's honesty mask is the union
+        of the two, consumed together with ``geometry.locked`` (the wiring
+        contract, plan PR-4).
+      excluded_bands_hz: ``excluded`` as merged ``(f_lo, f_hi)`` intervals,
+        via :func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`
+        — the same owner the combiner's own intervals come from, so two
+        exclusion lists a consumer unions are the same fact computed the same
+        way.
+      excluded_fraction: excluded bins as a fraction of the analysis band's
+        bins. Reported whether or not the cap bound, for the reason
+        ``lower_peak_ratio`` is reported on unrefused records in
+        spatial_combine: the interesting reading is usually the one that did
+        *not* trip.
+      refusals: every candidate minimum this gate did not identify, in
+        ascending frequency, each with its reason.
+      reason: ``""`` when at least one null was identified; otherwise one of
+        the ``REASON_*`` slugs.
+      classification: the report-level verdict —
+        ``CLASSIFICATION_INSUFFICIENT_EVIDENCE`` when ``reason`` is non-empty,
+        otherwise ``position_invariant`` only when **every** identified rung
+        earned it, and ``position_dependent`` as soon as one did not.
+
+        **The roll-up is the conservative direction on purpose.** It exists
+        for a consumer writing one headline without walking ``nulls``, and
+        the copy that headline licenses ("they stayed at the same frequency
+        at every mic position") would be false of a ladder with one rung that
+        moved. Over-claiming invariance is the defect class this whole
+        program is about; under-claiming only costs a softer sentence. A
+        consumer that wants per-rung nuance has it, on every rung.
+      band_hz: the analysis band actually applied — echoed back because a
+        rung index, an exclusion fraction and a "no candidates" refusal are
+        all only interpretable against the band they were computed in.
+      tau_ladder_us: the fitted ladder delay, 0.0 when no ladder was fitted.
+      arrival_tau_us: the corroborating cluster's median arrival delay, 0.0
+        when the cluster was empty. On a ``no_corroborating_arrivals``
+        refusal it still carries whatever the sub-minimum cluster held — a
+        reader asking why the gate refused wants to see *what* was too thin,
+        not only that something was.
+      arrival_r_time: that cluster's median ``r``, under the same rule.
+      arrival_r_max: its largest ``r`` — the one the depth ceiling is
+        computed from — under the same rule.
+      n_corroborating: how many positions were in the cluster.
+      r_freq: the ladder's frequency-domain ``r``, 0.0 when no ladder.
+      agreement: ``abs(arrival_r_time - r_freq)``, 0.0 when no ladder.
+        Reported even when it is what caused the refusal — especially then.
+      ladder_arrival_gap: ``tau_ladder / arrival_tau - 1``, signed. Negative
+        means the ladder sits below the arrival, which is what all four S0
+        groupings measured; see ``LADDER_ARRIVAL_TOLERANCE``. 0.0 when either
+        term is missing.
+      capped: True exactly when ``reason == REASON_EXCLUSION_CAP``. A
+        separate bit because a consumer disclosing "this gate refused to
+        report" wants to distinguish "found nothing" from "found too much",
+        and they are very different messages.
+      min_depth_db: the materiality floor actually applied.
+      n_candidates: how many minima were located in band before any screen —
+        the denominator for ``refusals``.
+    """
+
+    nulls: tuple[IdentifiedNull, ...]
+    excluded: np.ndarray
+    excluded_bands_hz: tuple[tuple[float, float], ...]
+    excluded_fraction: float
+    refusals: tuple[RefusedCandidate, ...]
+    reason: str
+    classification: str
+    band_hz: tuple[float, float]
+    tau_ladder_us: float
+    arrival_tau_us: float
+    arrival_r_time: float
+    arrival_r_max: float
+    n_corroborating: int
+    r_freq: float
+    agreement: float
+    ladder_arrival_gap: float
+    capped: bool
+    min_depth_db: float
+    n_candidates: int
+
+
+# --------------------------------------------------------------------------- #
+# Physics helpers
+# --------------------------------------------------------------------------- #
+
+
+def null_depth_ceiling_db(r: float) -> float:
+    """Deepest null a direct sound plus one delayed copy at ratio ``r`` can cut.
+
+    ``20*log10((1+r)/(1-r))`` — the peak-to-null range of ``|1 + r*e^(-jwt)|``.
+    Exact, not empirical. ``r`` at or above 1.0 returns ``inf`` (a perfect
+    cancellation has unbounded depth); ``r`` at or below 0 returns 0.0.
+
+    The single owner of this relation, which appears three times in this
+    module — the acquittal, the ``r_freq`` inversion below, and the
+    ``depth_ceiling_db`` carried on every record.
+    """
+    if r <= 0.0:
+        return 0.0
+    if r >= 1.0:
+        return float("inf")
+    return float(20.0 * np.log10((1.0 + r) / (1.0 - r)))
+
+
+def reflection_ratio_from_depth(depth_db: float) -> float:
+    """Invert :func:`null_depth_ceiling_db`: the ``r`` a null this deep implies.
+
+    ``r = (x - 1) / (x + 1)`` with ``x = 10**(depth_db/20)``. Because the
+    relation it inverts is a *ceiling*, the result is a **lower bound** on the
+    true ``r`` whenever the measured depth is attenuated — which, by
+    ``NULL_DEPTH_STATISTIC``, it always slightly is. A non-positive depth
+    returns 0.0 rather than a negative ratio.
+    """
+    if depth_db <= 0.0:
+        return 0.0
+    x = 10.0 ** (depth_db / 20.0)
+    return float((x - 1.0) / (x + 1.0))
+
+
+def _power_mean_db(values: Sequence[float]) -> float:
+    """dB level of the mean of the linear powers — this module's only
+    averaging rule for levels, matching spatial_combine's estimator so a
+    baseline computed here composes with a power mean computed there."""
+    return float(10.0 * np.log10(np.mean([10.0 ** (v / 10.0) for v in values])))
+
+
+# --------------------------------------------------------------------------- #
+# Candidate location and depth
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One located minimum with its depth and interval. Internal."""
+
+    f_hz: float
+    index: int
+    depth_db: float
+    diag_depth_db: float
+    baseline_db: float
+    null_level_db: float
+    flank_lo_hz: float
+    flank_hi_hz: float
+    lo_index: int
+    hi_index: int
+    f_lo_hz: float
+    f_hi_hz: float
+
+
+def _locate_minima(diag: np.ndarray, band_idx: np.ndarray, min_sep_oct: float,
+                   freqs: np.ndarray) -> list[int]:
+    """Local minima of ``diag`` inside the band, thinned to one per
+    ``min_sep_oct``, keeping the lowest.
+
+    Thinning is by *level*, deliberately not by depth: depth needs flanks,
+    flanks need the neighbouring minima, and choosing minima by depth would
+    close that loop. The separation is one smoothing window
+    (``1/diag_fraction`` octaves) because two minima closer than the window
+    that produced them are not independently resolved — the curve cannot tell
+    them apart, so neither should this.
+    """
+    y = diag[band_idx]
+    if y.size < 3:
+        return []
+    interior = np.flatnonzero((y[1:-1] <= y[:-2]) & (y[1:-1] < y[2:])) + 1
+    kept: list[int] = []
+    for p in sorted(interior, key=lambda q: (float(y[q]), int(q))):
+        f = freqs[band_idx[p]]
+        if any(abs(np.log2(f / freqs[band_idx[q]])) < min_sep_oct for q in kept):
+            continue
+        kept.append(int(p))
+    return sorted(kept)
+
+
+def _measure_candidates(
+    freqs: np.ndarray,
+    diag: np.ndarray,
+    raw: np.ndarray,
+    band_idx: np.ndarray,
+    min_sep_oct: float,
+) -> tuple[list[_Candidate], list[float]]:
+    """Locate the band's minima and measure each one's depth and interval.
+
+    Returns the measurable candidates plus the frequencies of the ones with
+    no flanking maximum available on one side, which the caller records as
+    ``CANDIDATE_NOT_MEASURABLE``.
+
+    **When that happens, precisely.** ``_locate_minima`` returns interior
+    indices only, so a neighbouring bin always exists; what can be missing is
+    a bin inside the ``FLANK_SEARCH_MAX_OCT`` window, on a grid coarse enough
+    that half an octave falls inside one bin. On the plan's own grids (~1.5 Hz
+    after the combiner's decimation) that never happens, and a top-octave
+    rolloff — the shape one might expect to land here — does not either: a
+    monotonic run has no local minimum, so it never becomes a candidate at
+    all. The branch is therefore for a degenerate *capture*, and it refuses
+    rather than reading a flank from whichever bin happened to be nearest.
+    Pinned by test_a_grid_too_coarse_for_a_local_envelope_refuses_rather_than_invents_one.
+    """
+    positions = _locate_minima(diag, band_idx, min_sep_oct, freqs)
+    y = diag[band_idx]
+    out: list[_Candidate] = []
+    unmeasurable: list[float] = []
+    for j, p in enumerate(positions):
+        f0 = float(freqs[band_idx[p]])
+        # Bound the flank search by the neighbouring minima (so a search
+        # cannot step over one null to reach past another) and by
+        # FLANK_SEARCH_MAX_OCT (so the envelope stays local).
+        lo_bound = positions[j - 1] if j > 0 else 0
+        hi_bound = positions[j + 1] if j + 1 < len(positions) else int(band_idx.size - 1)
+        lo_bound = max(
+            lo_bound,
+            int(np.searchsorted(freqs[band_idx], f0 * 2.0**-FLANK_SEARCH_MAX_OCT)),
+        )
+        hi_bound = min(
+            hi_bound,
+            int(np.searchsorted(freqs[band_idx], f0 * 2.0**FLANK_SEARCH_MAX_OCT)),
+        )
+        if lo_bound >= p or hi_bound <= p:
+            unmeasurable.append(f0)
+            continue
+        pl = lo_bound + int(np.argmax(y[lo_bound:p]))
+        pr = p + 1 + int(np.argmax(y[p + 1 : hi_bound + 1]))
+        i, il, ir = int(band_idx[p]), int(band_idx[pl]), int(band_idx[pr])
+        baseline = _power_mean_db((float(diag[il]), float(diag[ir])))
+        depth = baseline - float(raw[i])
+        diag_depth = baseline - float(diag[i])
+        # Half-depth width, walked on the diagnostic curve and bounded by the
+        # two flanking maxima. Always non-empty: the minimum itself is in it.
+        half = baseline - 0.5 * diag_depth
+        a = p
+        while a > pl and diag[band_idx[a - 1]] <= half:
+            a -= 1
+        b = p
+        while b < pr and diag[band_idx[b + 1]] <= half:
+            b += 1
+        out.append(
+            _Candidate(
+                f_hz=f0,
+                index=i,
+                depth_db=float(depth),
+                diag_depth_db=float(diag_depth),
+                baseline_db=float(baseline),
+                null_level_db=float(raw[i]),
+                flank_lo_hz=float(freqs[il]),
+                flank_hi_hz=float(freqs[ir]),
+                lo_index=int(band_idx[a]),
+                hi_index=int(band_idx[b]),
+                f_lo_hz=float(freqs[band_idx[a]]),
+                f_hi_hz=float(freqs[band_idx[b]]),
+            )
+        )
+    return out, unmeasurable
+
+
+# --------------------------------------------------------------------------- #
+# Ladder fit
+# --------------------------------------------------------------------------- #
+
+
+def _assign_rungs(freqs_hz: Sequence[float], tau_s: float, tolerance: float) -> dict[int, int]:
+    """Nearest-rung assignment: ``{n: candidate index}``, one candidate per
+    rung. Ties go to the candidate closest to the predicted frequency."""
+    assigned: dict[int, int] = {}
+    for k, f in enumerate(freqs_hz):
+        n = int(round(f * tau_s - 0.5))
+        if n < 0:
+            continue
+        predicted = (n + 0.5) / tau_s
+        if abs(f - predicted) * tau_s > tolerance:
+            continue
+        if n in assigned and abs(freqs_hz[assigned[n]] - predicted) <= abs(f - predicted):
+            continue
+        assigned[n] = k
+    return assigned
+
+
+def _longest_consecutive(rungs: Sequence[int]) -> list[int]:
+    """Longest run of consecutive integers, earliest on a tie."""
+    ordered = sorted(rungs)
+    best: list[int] = [ordered[0]]
+    current: list[int] = [ordered[0]]
+    for previous, this in zip(ordered, ordered[1:]):
+        current = current + [this] if this == previous + 1 else [this]
+        if len(current) > len(best):
+            best = list(current)
+    return best
+
+
+def _refine_tau(rungs: Sequence[int], freqs_hz: Sequence[float], assigned: Mapping[int, int]) -> float:
+    """Least-squares ``tau`` for a fixed rung assignment.
+
+    Minimising ``sum((f_k - (n_k+1/2)/tau)**2)`` over ``tau`` gives
+    ``tau = sum(m**2) / sum(f*m)`` with ``m = n + 1/2``. Closed form, so the
+    fit needs no optimiser and no starting-point policy.
+
+    **Unweighted, on purpose.** Every matched rung's *location* is equally
+    informative here — that is already what ``RUNG_MATCH_TOLERANCE_SPACINGS``
+    assumes, being stated in rung spacings rather than scaled by depth.
+    Weighting by depth would make ``tau`` a function of the depth statistic,
+    whose own bias is frequency-dependent (``NULL_DEPTH_STATISTIC``), so a
+    systematically shallower top rung would quietly pull the delay.
+    """
+    m = np.array([n + 0.5 for n in rungs], dtype=float)
+    f = np.array([freqs_hz[assigned[n]] for n in rungs], dtype=float)
+    return float(np.sum(m**2) / np.sum(f * m))
+
+
+def _smoothing_bandwidth_hz(f_hz: float, fraction: int) -> float:
+    """Width of the 1/``fraction``-octave window at ``f_hz``."""
+    return float(f_hz * (2.0 ** (0.5 / fraction) - 2.0 ** (-0.5 / fraction)))
+
+
+def _fit_ladder(
+    candidates: Sequence[_Candidate],
+    band_hz: tuple[float, float],
+    diag_fraction: int,
+    tolerance: float,
+) -> tuple[float, dict[int, int]] | None:
+    """Best single-tau ladder over ``candidates``, tau free.
+
+    Enumerates every (candidate pair, rung gap) hypothesis — a pair of minima
+    separated by ``dn`` rungs fixes ``tau = dn / (f_j - f_i)`` exactly, so the
+    search is over integers rather than a tau grid, and it is complete rather
+    than a sampling of one. ``dn`` is bounded by physics, not by a constant:
+    the rungs between two minima cannot be closer together than the smoothing
+    window that located them (below that the curve cannot show a comb at all),
+    so ``dn <= (f_j - f_i) / bandwidth``, evaluated at the band's top where
+    that window is widest.
+
+    **That bound cannot hide a reportable ladder, and the argument is short.**
+    A ladder is only ever *reported* when it has ``MIN_LADDER_RUNGS``
+    consecutive matched rungs, so some pair of candidates is adjacent on it —
+    and for an adjacent pair the true gap is ``dn = 1``, which is enumerated
+    for every pair regardless of the bound (the range starts at 1). A wider
+    pair's true ``dn`` may indeed be excluded, but only after the adjacent
+    pair has already produced the same ``tau`` exactly.
+
+    Each hypothesis is then assigned, refined and re-assigned to a fixed
+    point — the refined tau can change which minima match, so a single pass
+    would grade a fit against the assignment of a different one.
+
+    Scored by **total matched depth**, tie-broken by RMS rung error. Depth
+    because a ladder that leaves the band's deepest null unexplained is a bad
+    hypothesis however tidily it fits the shallow ones: on the S0 main leg's
+    six tweeter-height positions, a rung-count score chose a 168.9 us ladder
+    over the real 298.9 us one — both 3 rungs, the wrong one tidier — by
+    skipping the 6.36 dB null at 11.6 kHz entirely.
+
+    Returns ``(tau_s, {n: candidate index})`` for the longest consecutive run,
+    or ``None`` when no hypothesis produced ``MIN_LADDER_RUNGS`` consecutive
+    matched rungs.
+    """
+    if len(candidates) < MIN_LADDER_RUNGS:
+        return None
+    freqs_hz = [c.f_hz for c in candidates]
+    depths = [c.depth_db for c in candidates]
+    band_bandwidth = _smoothing_bandwidth_hz(band_hz[1], diag_fraction)
+    best_score: tuple[float, float] | None = None
+    best: tuple[float, dict[int, int]] | None = None
+    for ia in range(len(candidates)):
+        for ib in range(ia + 1, len(candidates)):
+            span = freqs_hz[ib] - freqs_hz[ia]
+            if span <= 0.0:
+                continue
+            for dn in range(1, max(1, int(np.floor(span / band_bandwidth))) + 1):
+                tau = dn / span
+                for _ in range(8):
+                    assigned = _assign_rungs(freqs_hz, tau, tolerance)
+                    if len(assigned) < MIN_LADDER_RUNGS:
+                        break
+                    run = _longest_consecutive(list(assigned))
+                    if len(run) < MIN_LADDER_RUNGS:
+                        break
+                    refined = _refine_tau(run, freqs_hz, assigned)
+                    if abs(refined - tau) <= 1e-12 * tau:
+                        tau = refined
+                        break
+                    tau = refined
+                assigned = _assign_rungs(freqs_hz, tau, tolerance)
+                if len(assigned) < MIN_LADDER_RUNGS:
+                    continue
+                run = _longest_consecutive(list(assigned))
+                if len(run) < MIN_LADDER_RUNGS:
+                    continue
+                matched = np.array([freqs_hz[assigned[n]] for n in run], dtype=float)
+                predicted = np.array([(n + 0.5) / tau for n in run], dtype=float)
+                errors = np.abs(matched - predicted) * tau
+                if float(errors.max()) > tolerance:
+                    continue
+                # Resolvability: a ladder whose rungs sit closer together than
+                # the window that located them was never visible on this
+                # curve, so a "fit" to it is an artefact of the tolerance.
+                # Checked at the highest matched rung, where the window is
+                # widest.
+                if 1.0 / tau <= _smoothing_bandwidth_hz(
+                    float(matched.max()), diag_fraction
+                ):
+                    continue
+                score = (
+                    float(sum(depths[assigned[n]] for n in run)),
+                    -float(np.sqrt(np.mean(errors**2))),
+                )
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best = (tau, {n: assigned[n] for n in run})
+    return best
+
+
+# --------------------------------------------------------------------------- #
+# Per-position presence
+# --------------------------------------------------------------------------- #
+
+
+def _per_position_candidates(
+    combined: CombinedResponse, band_idx: np.ndarray, min_sep_oct: float
+) -> list[list[_Candidate]]:
+    """Each position's own located-and-measured minima, in position order.
+
+    Runs the *same* location-and-depth pass the combined curve gets, on each
+    position's own pair of curves — so "present at this position" and
+    "identified in the combined curve" are the same measurement rather than
+    two conventions sharing one name.
+
+    Computed once for the whole cloud rather than once per (rung, position):
+    the pass is the expensive part and it does not depend on which rung is
+    being classified.
+    """
+    return [
+        _measure_candidates(combined.freqs_hz, row_diag, row_raw, band_idx, min_sep_oct)[0]
+        for row_diag, row_raw in zip(
+            combined.per_position_diag_db, combined.per_position_db, strict=True
+        )
+    ]
+
+
+def _present_at_positions(
+    per_position: Sequence[Sequence[_Candidate]],
+    f_hz: float,
+    tau_s: float,
+    tolerance: float,
+    min_depth_db: float,
+) -> int:
+    """How many positions individually show a null at ``f_hz``.
+
+    A position counts when it produced a candidate within the ladder's rung
+    tolerance of ``f_hz`` whose depth clears the same materiality floor the
+    combined curve's candidates were held to.
+    """
+    return sum(
+        any(
+            abs(c.f_hz - f_hz) * tau_s <= tolerance and c.depth_db >= min_depth_db
+            for c in candidates
+        )
+        for candidates in per_position
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The gate
+# --------------------------------------------------------------------------- #
+
+
+def _empty_report(
+    combined: CombinedResponse,
+    band_hz: tuple[float, float],
+    reason: str,
+    *,
+    refusals: Sequence[RefusedCandidate] = (),
+    n_candidates: int = 0,
+    tau_ladder_us: float = 0.0,
+    arrival_tau_us: float = 0.0,
+    arrival_r_time: float = 0.0,
+    arrival_r_max: float = 0.0,
+    n_corroborating: int = 0,
+    r_freq: float = 0.0,
+    agreement: float = 0.0,
+    ladder_arrival_gap: float = 0.0,
+    excluded_fraction: float = 0.0,
+    min_depth_db: float = DEFAULT_MIN_NULL_DEPTH_DB,
+) -> InterferenceNullReport:
+    """A report that identified nothing, carrying how far the method got."""
+    mask = np.zeros(combined.freqs_hz.size, dtype=bool)
+    mask.flags.writeable = False
+    return InterferenceNullReport(
+        nulls=(),
+        excluded=mask,
+        excluded_bands_hz=(),
+        excluded_fraction=excluded_fraction,
+        refusals=tuple(refusals),
+        reason=reason,
+        classification=CLASSIFICATION_INSUFFICIENT_EVIDENCE,
+        band_hz=band_hz,
+        tau_ladder_us=tau_ladder_us,
+        arrival_tau_us=arrival_tau_us,
+        arrival_r_time=arrival_r_time,
+        arrival_r_max=arrival_r_max,
+        n_corroborating=n_corroborating,
+        r_freq=r_freq,
+        agreement=agreement,
+        ladder_arrival_gap=ladder_arrival_gap,
+        capped=reason == REASON_EXCLUSION_CAP,
+        min_depth_db=min_depth_db,
+        n_candidates=n_candidates,
+    )
+
+
+def _arrival_cluster(
+    echoes: Sequence[EchoDiagnostic | None], confidence_floor: float
+) -> tuple[EchoDiagnostic, ...]:
+    """The usable estimates that agree with their own median, by
+    :func:`~jasper.audio_measurement.spatial_combine.assess_geometry`'s
+    tolerance.
+
+    Deliberately *not* the geometry verdict itself. ``geometry.locked`` asks
+    whether enough of the cloud clusters to tell a household to spread the mic
+    further; this asks which estimates describe one arrival well enough to
+    attribute a null ladder to it. A dispersed cloud can still contain a tight
+    sub-cluster, and that sub-cluster is a legitimate candidate — refusing it
+    because the *whole* cloud is dispersed would confuse two questions.
+    """
+    usable = usable_echo_estimates(echoes, confidence_floor=confidence_floor)
+    if not usable:
+        return ()
+    median_tau = float(np.median([e.tau_us for e in usable]))
+    return tuple(
+        e
+        for e in usable
+        if abs(e.tau_us - median_tau) <= GEOMETRY_CLUSTER_TOLERANCE * median_tau
+    )
+
+
+def identify_interference_nulls(
+    combined: CombinedResponse,
+    *,
+    band_hz: tuple[float, float],
+    min_depth_db: float = DEFAULT_MIN_NULL_DEPTH_DB,
+    confidence_floor: float = ECHO_CONFIDENCE_FLOOR,
+) -> InterferenceNullReport:
+    """Identify the interference nulls in a spatial cloud's combined response.
+
+    See the module docstring for the method and for what each verdict claims.
+    The short version: a dip is identified only when it is a rung of a
+    consecutive single-tau ladder **and** that ladder's delay and reflection
+    ratio both agree with an arrival the cloud independently measured. Every
+    other dip is refused, by name.
+
+    Args:
+      combined: the cloud, from
+        :func:`~jasper.audio_measurement.spatial_combine.combine_positions`.
+        Must carry per-position curves (it always does when it came from that
+        function); a record without them is refused with
+        ``REASON_NO_PER_POSITION_CURVES`` rather than silently skipping the
+        classification step.
+      band_hz: the analysis band, ``(lo, hi)``. **Caller-supplied and
+        required** — the band a speaker's nulls are searched in is a property
+        of its declared driver contract, which this module does not have and
+        must not guess. It is echoed back on the report.
+      min_depth_db: materiality floor, see ``DEFAULT_MIN_NULL_DEPTH_DB``.
+      confidence_floor: echo confidence required for a position to
+        corroborate, mirroring
+        :func:`~jasper.audio_measurement.spatial_combine.assess_geometry`.
+
+    Returns:
+      An :class:`InterferenceNullReport`. Never raises on *data* — a cloud
+      with nothing to find comes back with an empty registry and a reason.
+
+    Raises:
+      ValueError: on a malformed ``band_hz`` (not a pair of finite numbers
+        with ``0 < lo < hi``, or a band that does not overlap the combined
+        grid) or a non-positive ``min_depth_db``. Caller configuration, wrong
+        for the whole cloud at once and unfixable by looking at the data, so
+        it fails loudly — the same "malformed config raises, malformed data
+        refuses" line
+        :func:`~jasper.audio_measurement.spatial_combine.combine_positions`
+        draws.
+    """
+    try:
+        lo_hz, hi_hz = (float(value) for value in band_hz)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"band_hz must be a pair of finite numbers with 0 < lo < hi, got {band_hz!r}"
+        ) from exc
+    if not (np.isfinite(lo_hz) and np.isfinite(hi_hz)) or not 0.0 < lo_hz < hi_hz:
+        raise ValueError(
+            f"band_hz must be finite and satisfy 0 < lo < hi, got {band_hz}"
+        )
+    if min_depth_db <= 0.0:
+        raise ValueError(f"min_depth_db must be positive, got {min_depth_db}")
+    band = (lo_hz, hi_hz)
+
+    freqs = np.asarray(combined.freqs_hz, dtype=float)
+    band_idx = np.flatnonzero((freqs >= lo_hz) & (freqs <= hi_hz))
+    if band_idx.size < 3:
+        raise ValueError(
+            f"band_hz {band} covers {band_idx.size} bins of the combined grid "
+            f"({float(freqs[0])}-{float(freqs[-1])} Hz); need at least 3"
+        )
+
+    per_position_diag = np.asarray(combined.per_position_diag_db, dtype=float)
+    per_position_raw = np.asarray(combined.per_position_db, dtype=float)
+    if (
+        per_position_diag.ndim != 2
+        or per_position_diag.shape != (combined.n_positions, freqs.size)
+        or per_position_raw.shape != per_position_diag.shape
+    ):
+        return _empty_report(
+            combined, band, REASON_NO_PER_POSITION_CURVES, min_depth_db=min_depth_db
+        )
+
+    # --- 1. the arrival to corroborate against ---------------------------- #
+    cluster = _arrival_cluster(combined.per_position_echo, confidence_floor)
+    arrival_tau_us = float(np.median([e.tau_us for e in cluster])) if cluster else 0.0
+    ratios = [10.0 ** (e.strength_db / 20.0) for e in cluster]
+    arrival_r_time = float(np.median(ratios)) if ratios else 0.0
+    arrival_r_max = float(max(ratios)) if ratios else 0.0
+    if len(cluster) < MIN_CORROBORATING_POSITIONS:
+        # Reported anyway: a reader asking why the gate refused wants to see
+        # *what* was too thin, not only that something was.
+        return _empty_report(
+            combined,
+            band,
+            REASON_NO_CORROBORATING_ARRIVALS,
+            n_corroborating=len(cluster),
+            arrival_tau_us=arrival_tau_us,
+            arrival_r_time=arrival_r_time,
+            arrival_r_max=arrival_r_max,
+            min_depth_db=min_depth_db,
+        )
+    ceiling_db = null_depth_ceiling_db(arrival_r_max)
+
+    # --- 2. candidate minima ---------------------------------------------- #
+    min_sep_oct = 1.0 / float(combined.diag_fraction)
+    candidates, unmeasurable = _measure_candidates(
+        freqs, np.asarray(combined.power_mean_diag_db, dtype=float),
+        np.asarray(combined.power_mean_db, dtype=float), band_idx, min_sep_oct,
+    )
+    n_candidates = len(candidates) + len(unmeasurable)
+    refusals: list[RefusedCandidate] = [
+        RefusedCandidate(
+            f_center_hz=f, depth_db=0.0, reason=CANDIDATE_NOT_MEASURABLE, evidence={}
+        )
+        for f in unmeasurable
+    ]
+
+    # --- 3. depth-ceiling acquittal, before the fit ------------------------ #
+    admitted: list[_Candidate] = []
+    for candidate in candidates:
+        if candidate.depth_db > ceiling_db + DEPTH_CEILING_MARGIN_DB:
+            refusals.append(
+                RefusedCandidate(
+                    f_center_hz=candidate.f_hz,
+                    depth_db=candidate.depth_db,
+                    reason=CANDIDATE_DEPTH_EXCEEDS_CEILING,
+                    evidence={
+                        "depth_ceiling_db": ceiling_db,
+                        "ceiling_margin_db": DEPTH_CEILING_MARGIN_DB,
+                        "arrival_r_max": arrival_r_max,
+                    },
+                )
+            )
+        elif candidate.depth_db < min_depth_db:
+            refusals.append(
+                RefusedCandidate(
+                    f_center_hz=candidate.f_hz,
+                    depth_db=candidate.depth_db,
+                    reason=CANDIDATE_BELOW_MIN_DEPTH,
+                    evidence={"min_depth_db": min_depth_db},
+                )
+            )
+        else:
+            admitted.append(candidate)
+
+    def refuse(
+        reason: str,
+        *,
+        tau_ladder_us: float = 0.0,
+        r_freq: float = 0.0,
+        agreement: float = 0.0,
+        ladder_arrival_gap: float = 0.0,
+        excluded_fraction: float = 0.0,
+    ) -> InterferenceNullReport:
+        """A refusal carrying everything measured up to the stage that fired."""
+        return _empty_report(
+            combined,
+            band,
+            reason,
+            refusals=_sorted_refusals(refusals),
+            n_candidates=n_candidates,
+            arrival_tau_us=arrival_tau_us,
+            arrival_r_time=arrival_r_time,
+            arrival_r_max=arrival_r_max,
+            n_corroborating=len(cluster),
+            min_depth_db=min_depth_db,
+            tau_ladder_us=tau_ladder_us,
+            r_freq=r_freq,
+            agreement=agreement,
+            ladder_arrival_gap=ladder_arrival_gap,
+            excluded_fraction=excluded_fraction,
+        )
+
+    if not admitted:
+        return refuse(REASON_NO_CANDIDATE_NULLS)
+
+    # --- 4. the ladder ----------------------------------------------------- #
+    fitted = _fit_ladder(
+        admitted, band, combined.diag_fraction, RUNG_MATCH_TOLERANCE_SPACINGS
+    )
+    if fitted is None:
+        refusals.extend(
+            RefusedCandidate(
+                f_center_hz=c.f_hz, depth_db=c.depth_db,
+                reason=CANDIDATE_NO_MATCHING_RUNG, evidence={},
+            )
+            for c in admitted
+        )
+        return refuse(REASON_NO_LADDER)
+    tau_s, assigned = fitted
+    tau_ladder_us = tau_s * 1e6
+    gap = tau_ladder_us / arrival_tau_us - 1.0
+
+    matched_indexes = set(assigned.values())
+    for k, candidate in enumerate(admitted):
+        if k in matched_indexes:
+            continue
+        n = int(round(candidate.f_hz * tau_s - 0.5))
+        predicted = (n + 0.5) / tau_s if n >= 0 else 0.0
+        error = abs(candidate.f_hz - predicted) * tau_s if predicted > 0.0 else float("inf")
+        in_tolerance = error <= RUNG_MATCH_TOLERANCE_SPACINGS
+        refusals.append(
+            RefusedCandidate(
+                f_center_hz=candidate.f_hz,
+                depth_db=candidate.depth_db,
+                reason=(
+                    CANDIDATE_OUTSIDE_CONTIGUOUS_RUN
+                    if in_tolerance
+                    else CANDIDATE_NO_MATCHING_RUNG
+                ),
+                evidence={"predicted_hz": predicted, "rung_error_spacings": error},
+            )
+        )
+
+    # --- 5. corroboration, both ways -------------------------------------- #
+    r_freq = reflection_ratio_from_depth(
+        max(admitted[k].depth_db for k in assigned.values())
+    )
+    agreement = abs(arrival_r_time - r_freq)
+    fit_evidence = dict(
+        tau_ladder_us=tau_ladder_us,
+        r_freq=r_freq,
+        agreement=agreement,
+        ladder_arrival_gap=gap,
+    )
+    if abs(gap) > LADDER_ARRIVAL_TOLERANCE:
+        return refuse(REASON_LADDER_ARRIVAL_MISMATCH, **fit_evidence)
+    if agreement > R_AGREEMENT_TOLERANCE:
+        return refuse(REASON_R_DISAGREEMENT, **fit_evidence)
+
+    # --- 6. the runaway guard, before anything is claimed ------------------ #
+    mask = np.zeros(freqs.size, dtype=bool)
+    for k in assigned.values():
+        mask[admitted[k].lo_index : admitted[k].hi_index + 1] = True
+    excluded_fraction = float(np.count_nonzero(mask[band_idx]) / band_idx.size)
+    if excluded_fraction > EXCLUSION_CAP_FRACTION:
+        return refuse(
+            REASON_EXCLUSION_CAP, excluded_fraction=excluded_fraction, **fit_evidence
+        )
+
+    # --- 7. classification and output -------------------------------------- #
+    per_position = _per_position_candidates(combined, band_idx, min_sep_oct)
+    nulls: list[IdentifiedNull] = []
+    for n in sorted(assigned):
+        candidate = admitted[assigned[n]]
+        present = _present_at_positions(
+            per_position, candidate.f_hz, tau_s,
+            RUNG_MATCH_TOLERANCE_SPACINGS, min_depth_db,
+        )
+        fraction = present / combined.n_positions if combined.n_positions else 0.0
+        predicted = (n + 0.5) / tau_s
+        nulls.append(
+            IdentifiedNull(
+                f_lo_hz=candidate.f_lo_hz,
+                f_hi_hz=candidate.f_hi_hz,
+                f_center_hz=candidate.f_hz,
+                n=n,
+                tau_us=tau_ladder_us,
+                r_time=arrival_r_time,
+                r_freq=r_freq,
+                agreement=agreement,
+                depth_db=candidate.depth_db,
+                classification=(
+                    CLASSIFICATION_POSITION_INVARIANT
+                    if fraction >= POSITION_PRESENCE_FRACTION
+                    else CLASSIFICATION_POSITION_DEPENDENT
+                ),
+                evidence={
+                    "predicted_hz": predicted,
+                    "rung_error_spacings": abs(candidate.f_hz - predicted) * tau_s,
+                    "flank_lo_hz": candidate.flank_lo_hz,
+                    "flank_hi_hz": candidate.flank_hi_hz,
+                    "flank_baseline_db": candidate.baseline_db,
+                    "null_level_db": candidate.null_level_db,
+                    "diag_depth_db": candidate.diag_depth_db,
+                    "depth_ceiling_db": ceiling_db,
+                    "positions_present": float(present),
+                    "positions_total": float(combined.n_positions),
+                },
+            )
+        )
+
+    mask.flags.writeable = False
+    return InterferenceNullReport(
+        nulls=tuple(nulls),
+        excluded=mask,
+        excluded_bands_hz=merged_true_intervals(freqs, mask),
+        excluded_fraction=excluded_fraction,
+        refusals=_sorted_refusals(refusals),
+        reason="",
+        classification=(
+            CLASSIFICATION_POSITION_INVARIANT
+            if all(
+                null.classification == CLASSIFICATION_POSITION_INVARIANT
+                for null in nulls
+            )
+            else CLASSIFICATION_POSITION_DEPENDENT
+        ),
+        band_hz=band,
+        tau_ladder_us=tau_ladder_us,
+        arrival_tau_us=arrival_tau_us,
+        arrival_r_time=arrival_r_time,
+        arrival_r_max=arrival_r_max,
+        n_corroborating=len(cluster),
+        r_freq=r_freq,
+        agreement=agreement,
+        ladder_arrival_gap=gap,
+        capped=False,
+        min_depth_db=min_depth_db,
+        n_candidates=n_candidates,
+    )
+
+
+def _sorted_refusals(refusals: Sequence[RefusedCandidate]) -> tuple[RefusedCandidate, ...]:
+    """Refusals in ascending frequency — the order a reader scans a chart in,
+    and stable regardless of which stage produced each one."""
+    return tuple(sorted(refusals, key=lambda r: r.f_center_hz))
