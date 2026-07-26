@@ -2587,128 +2587,182 @@ def test_found_nothing_credible_survives_the_earlier_arrival_refusal():
     nothing-found.
 
     Swept over the whole 60-member negative-control family
-    ``ECHO_CONFIDENCE_FLOOR`` is calibrated against, **and over raised
-    windows as well as the default**, because that is where the danger is.
-    At the default window the family has no below-window local maximum at
-    all, so the refusal is unreachable by construction. Raise the window and
-    the band-limited envelope's own ringing *does* present one — 534 of 660
-    readings across the eleven windows swept in
-    ``EARLIER_ARRIVAL_DOMINANCE_DB`` — and before that constant existed, 22
-    of those flipped an honest zero into a refusal naming the detector's own
-    skirt as an arrival (up to 6 of 60 at (400, 900)).
+    ``ECHO_CONFIDENCE_FLOOR`` is calibrated against, at the default window,
+    where the claim is absolute: the family has **no** below-window local
+    maximum at all, so the refusal is unreachable by construction.
 
-    So this test asserts the dominance floor is what keeps the refusal off
-    this family, not the accident that nothing is found at the default
-    window: where ringing *is* found, its level must fail dominance.
+    Raised windows are where the danger is, and they are swept by
+    :func:`test_earlier_arrival_dominance_floor_sits_in_the_measured_gap`
+    against the committed ladder — including the mutation that proves the
+    dominance floor, and not the accident of finding nothing, is what keeps
+    the refusal off this family.
     """
     empty_refusals = 0
-    ringing_levels = []
-    for search_us in (
-        DEFAULT_ECHO_SEARCH_US,
-        (300.0, 1000.0),
-        (400.0, 900.0),
-        (650.0, 1000.0),
-        (800.0, 1200.0),
-    ):
-        for noise_sigma in (0.02, 0.001):
-            for seed in range(30):
-                rng = np.random.default_rng(seed)
-                ir = np.zeros(65_536)
-                ir[1000] = 1.0
-                ir += rng.normal(0.0, noise_sigma, ir.size)
-                found = detect_echo(ir, SAMPLE_RATE, search_us=search_us)
-                where = (search_us, noise_sigma, seed)
+    for noise_sigma in (0.02, 0.001):
+        for seed in range(30):
+            rng = np.random.default_rng(seed)
+            ir = np.zeros(65_536)
+            ir[1000] = 1.0
+            ir += rng.normal(0.0, noise_sigma, ir.size)
+            found = detect_echo(ir, SAMPLE_RATE)
+            where = (noise_sigma, seed)
 
-                # The rule under test: never on an echo-free signal.
-                assert found.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, (
-                    where,
-                    found,
-                )
-                if search_us == DEFAULT_ECHO_SEARCH_US:
-                    # Nothing below the default window at all, on all 60.
-                    assert found.earlier_arrival_us == 0.0, (where, found)
-                    assert found.earlier_arrival_db == STRENGTH_FLOOR_DB, where
-                if found.earlier_arrival_us > 0.0:
-                    # Ringing, found. It must fail dominance — this is the
-                    # assertion the constant is load-bearing for.
-                    assert found.earlier_arrival_db <= EARLIER_ARRIVAL_DOMINANCE_DB, (
-                        where,
-                        found,
-                    )
-                    ringing_levels.append(found.earlier_arrival_db)
-                if found.refusal == "":
-                    # Not asserted as exactly zero: this family's documented
-                    # ceiling is 0.091 (see ``ECHO_CONFIDENCE_FLOOR``), and a
-                    # low-but-nonzero score with an empty refusal is the same
-                    # "ran, found nothing credible" outcome — it just found
-                    # slightly less nothing.
-                    assert found.confidence < ECHO_CONFIDENCE_FLOOR, (where, found)
-                    empty_refusals += 1
+            assert found.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, (where, found)
+            assert found.earlier_arrival_us == 0.0, (where, found)
+            assert found.earlier_arrival_db == STRENGTH_FLOOR_DB, where
+            if found.refusal == "":
+                # Not asserted as exactly zero: this family's documented
+                # ceiling is 0.091 (see ``ECHO_CONFIDENCE_FLOOR``), and a
+                # low-but-nonzero score with an empty refusal is the same
+                # "ran, found nothing credible" outcome — it just found
+                # slightly less nothing.
+                assert found.confidence < ECHO_CONFIDENCE_FLOOR, (where, found)
+                empty_refusals += 1
 
-    # Both states this test protects are actually reached — otherwise the
+    # The state this test protects is actually reached — otherwise the
     # assertions above would be vacuously true.
     assert empty_refusals > 0
-    assert len(ringing_levels) > 100, len(ringing_levels)
-    # The measured ceiling the constant is calibrated against, as a
-    # tripwire: if the envelope's ringing ever gets louder than this, the
-    # 7.14 dB of headroom quoted on EARLIER_ARRIVAL_DOMINANCE_DB is stale.
-    assert max(ringing_levels) == pytest.approx(-17.14, abs=0.5), max(ringing_levels)
-    assert max(ringing_levels) < EARLIER_ARRIVAL_DOMINANCE_DB - 5.0, max(ringing_levels)
 
 
 def test_earlier_arrival_dominance_floor_sits_in_the_measured_gap():
-    """B1 — the floor is bracketed from both sides, and it is load-bearing.
+    """B1 — every figure ``EARLIER_ARRIVAL_DOMINANCE_DB`` quotes, re-derived
+    from the one ladder it names.
 
-    ``EARLIER_ARRIVAL_DOMINANCE_DB`` separates two measured populations: the
-    S0 ground plane's proud-capsule interlopers (which must refuse) from the
-    envelope's own ringing on an echo-free signal (which must not). The
-    ground-plane side is real data and lives in section F; this is the
-    synthetic half, plus the mutation check that the constant does anything
-    at all.
+    The constant separates two measured populations: the S0 ground plane's
+    proud-capsule interlopers (which must refuse — real data, pinned in
+    section F) from the band-limited envelope's own ringing on an echo-free
+    signal (which must not). This is the ringing half, plus the mutation
+    that shows the floor is load-bearing rather than decorative.
+
+    **One ladder.** ``_CALIBRATION_WRONG_READING_WINDOWS`` — the eleven
+    raised windows this file already commits for the rahmonic calibration —
+    crossed with the 60-member negative-control family, 660 readings. It is
+    reused rather than duplicated for the reason ``RAHMONIC_MARGIN`` gives:
+    a described grid is not a grid, and a figure quoted from a mixture of
+    ladders is reproducible from none of them.
     """
-    # Mutating the floor down to where ringing qualifies must re-open the
-    # defect — otherwise this constant is decoration.
-    # Seed 1 of the sigma=0.001 negative-control family at (400, 900) is one
-    # of the six that flipped before the floor existed: its envelope answers
-    # at 391.6 us — below the window — and its own ringing is found at
-    # 166.7 us, -30.8 dB.
-    raised_window = (400.0, 900.0)
-    rng = np.random.default_rng(1)
-    echo_free = np.zeros(65_536)
-    echo_free[1000] = 1.0
-    echo_free += rng.normal(0.0, 0.001, echo_free.size)
+    controls = [
+        (noise_sigma, seed)
+        for noise_sigma in (0.02, 0.001)
+        for seed in range(30)
+    ]
 
-    guarded = detect_echo(echo_free, SAMPLE_RATE, search_us=raised_window)
-    assert guarded.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, guarded
-    assert guarded.earlier_arrival_us > 0.0, (
-        "this seed must actually find ringing below the window, or the "
-        "mutation below proves nothing"
-    )
-    assert guarded.earlier_arrival_db == pytest.approx(-30.8, abs=0.5), guarded
-    assert 0.0 < guarded.tau_envelope_us < raised_window[0], guarded
+    def echo_free_ir(noise_sigma: float, seed: int) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        ir = np.zeros(65_536)
+        ir[1000] = 1.0
+        return ir + rng.normal(0.0, noise_sigma, ir.size)
 
+    def sweep() -> tuple[list[float], int, dict[tuple[float, float], int]]:
+        levels: list[float] = []
+        flips = 0
+        per_window: dict[tuple[float, float], int] = {}
+        for search_us in _CALIBRATION_WRONG_READING_WINDOWS:
+            in_window = 0
+            for noise_sigma, seed in controls:
+                found = detect_echo(
+                    echo_free_ir(noise_sigma, seed),
+                    SAMPLE_RATE,
+                    search_us=search_us,
+                )
+                if found.earlier_arrival_us > 0.0:
+                    levels.append(found.earlier_arrival_db)
+                if found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL:
+                    flips += 1
+                    in_window += 1
+            per_window[search_us] = in_window
+        return levels, flips, per_window
+
+    readings = len(_CALIBRATION_WRONG_READING_WINDOWS) * len(controls)
+    assert readings == 660
+
+    levels, flips, _per_window = sweep()
+    # The ringing population the constant is calibrated against.
+    assert len(levels) == 658, len(levels)
+    assert min(levels) == pytest.approx(-32.1297, abs=0.01), min(levels)
+    assert max(levels) == pytest.approx(-17.1365, abs=0.01), max(levels)
+    # ...and with the shipped floor, none of it is ever named as an arrival.
+    assert flips == 0
+
+    # Mutating the floor away must re-open the defect, or the constant is
+    # decoration. These counts are the ones the comment quotes.
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(spatial_combine, "EARLIER_ARRIVAL_DOMINANCE_DB", -120.0)
-        unguarded = detect_echo(echo_free, SAMPLE_RATE, search_us=raised_window)
-    assert unguarded.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, (
-        "with the dominance floor removed, echo-free ringing must be named "
-        "as an arrival again — if it is not, this test no longer proves the "
-        "floor is what prevents it"
+        unguarded_levels, unguarded_flips, unguarded_per_window = sweep()
+    assert unguarded_levels == levels, (
+        "the disclosure fields must not depend on the threshold — only the "
+        "verdict does"
     )
+    assert unguarded_flips == 21, unguarded_flips
+    worst_window, worst_count = max(
+        unguarded_per_window.items(), key=lambda item: item[1]
+    )
+    assert (worst_window, worst_count) == ((400.0, 900.0), 6), unguarded_per_window
 
-    # ...and failing dominance falls through to the *previous* verdict
-    # rather than to some third thing: same refusal, confidence and tau as
-    # the pre-dominance-floor path produced.
-    assert guarded.refusal == ""
-    assert guarded.confidence == unguarded.confidence == 0.0
-    assert guarded.tau_us == 0.0
+    # The gap, in both directions, against the shipped value. The
+    # ground-plane floor (-2.57 dB) is real data and lives in section F; the
+    # ringing ceiling is the figure measured here.
+    assert max(levels) < EARLIER_ARRIVAL_DOMINANCE_DB
+    assert EARLIER_ARRIVAL_DOMINANCE_DB - max(levels) == pytest.approx(7.14, abs=0.05)
 
-    # A synthetic interloper at the ground plane's own level still refuses,
-    # so the floor is not merely "quiet enough to never fire".
+    # And a synthetic interloper at the ground plane's own level still
+    # refuses, so the floor is not merely "quiet enough to never fire".
     loud = _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3)
     found = detect_echo(loud, SAMPLE_RATE, search_us=(150.0, 1000.0))
     assert found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, found
     assert found.earlier_arrival_db > EARLIER_ARRIVAL_DOMINANCE_DB, found
+
+
+def test_a_below_dominance_interloper_falls_back_to_the_honest_zero():
+    """B1 — the band the docstring owns: an interloper that takes the
+    envelope's answer but is too quiet to be called dominant.
+
+    The third condition is a threshold, so between it and the level at which
+    an interloper stops winning the envelope at all there is a sliver where
+    the record falls back to the silent empty-refusal outcome. That is by
+    design — the alternative is naming ringing — but the docstring promises
+    the band exists, so it is pinned rather than left as prose.
+
+    Regime: one synthetic geometry — a 145 us interloper of varying strength
+    against a real 320 us echo at r=0.3, searched (150, 1000) us in the
+    default band. Read the width as an order of magnitude, not a boundary.
+    """
+    def probe(early_r: float):
+        return detect_echo(
+            _impulse_with_two_echoes(145e-6, early_r, 320e-6, 0.3),
+            SAMPLE_RATE,
+            search_us=(150.0, 1000.0),
+        )
+
+    # Above the floor: named.
+    dominant = probe(0.34)
+    assert dominant.earlier_arrival_db == pytest.approx(-9.57, abs=0.2), dominant
+    assert dominant.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, dominant
+
+    # Inside the band: still steals the envelope's answer, still disclosed
+    # on the record, but not named — the honest zero instead.
+    for early_r, level_db in ((0.32, -10.11), (0.30, -10.69)):
+        fallen_back = probe(early_r)
+        assert fallen_back.earlier_arrival_db == pytest.approx(level_db, abs=0.2), (
+            early_r,
+            fallen_back,
+        )
+        assert fallen_back.earlier_arrival_db < EARLIER_ARRIVAL_DOMINANCE_DB
+        # It really did take the answer — that is what makes this a band
+        # rather than just "quiet things are ignored".
+        assert 0.0 < fallen_back.tau_envelope_us < 150.0, fallen_back
+        assert fallen_back.refusal == "", fallen_back
+        assert fallen_back.confidence == 0.0, fallen_back
+        # ...and the interloper is still disclosed on the fallen-back
+        # record, which is what keeps the silence from being total.
+        assert fallen_back.earlier_arrival_us == pytest.approx(145.8, abs=0.5)
+
+    # Below the band: the interloper no longer wins the envelope at all, so
+    # there is no mechanism left to name.
+    weak = probe(0.28)
+    assert weak.earlier_arrival_db == pytest.approx(-11.30, abs=0.2), weak
+    assert not 0.0 < weak.tau_envelope_us < 150.0, weak
+    assert weak.refusal == "", weak
 
 
 def test_effective_floor_is_reported_on_every_record():
@@ -2827,6 +2881,110 @@ def test_effective_floor_is_reported_on_every_record():
     assert raised.refusal == REFUSAL_ALL_ZERO_IR
     assert raised.resolution_us == 0.0
     assert raised.effective_floor_us == 0.0
+
+
+def test_disclosed_floor_is_the_boundary_the_edge_check_applies():
+    """S0-4 — the disclosed floor and the applied edge rule are one
+    boundary, checked behaviourally rather than by reading the source.
+
+    ``effective_floor_us`` exists so a consumer can say "arrivals below ~X
+    are invisible to this window". That promise is only worth anything if X
+    is the number the detector actually enforces. The two were briefly
+    computed by separate expressions 230 lines apart, agreeing by
+    coincidence; they now share one derivation, and this is the check that
+    they keep agreeing.
+
+    The contract asserted is exact and holds per record: **for any record
+    that reached the edge check at all** (i.e. at least one estimator landed
+    in the window — otherwise ``no_in_window_echo`` pre-empts it),
+    ``tau_at_window_lower_edge`` fires if and only if the lowest in-window
+    candidate is at or below that record's own ``effective_floor_us``. No
+    estimator-bias caveat is needed because the comparison is made against
+    the candidates the record reports, not against the synthetic truth.
+    """
+    reached = refused = accepted = 0
+    for band_hz in ((5000.0, 19_000.0), (2000.0, 19_000.0), (6000.0, 18_000.0)):
+        for search_us in ((120.0, 800.0), (150.0, 1000.0), (200.0, 900.0), (300.0, 800.0)):
+            for tau_us in np.arange(80.0, 520.0, 20.0):
+                for reflection in (0.15, 0.36, 0.6):
+                    found = detect_echo(
+                        _impulse_with_echo(float(tau_us) * 1e-6, reflection),
+                        SAMPLE_RATE,
+                        band_hz=band_hz,
+                        search_us=search_us,
+                    )
+                    candidates = [
+                        tau
+                        for tau in (found.tau_cepstral_us, found.tau_envelope_us)
+                        if search_us[0] <= tau <= search_us[1]
+                    ]
+                    if not candidates:
+                        continue
+                    reached += 1
+                    at_or_below_floor = min(candidates) <= found.effective_floor_us
+                    edge_refused = found.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE
+                    assert at_or_below_floor == edge_refused, (
+                        band_hz,
+                        search_us,
+                        tau_us,
+                        reflection,
+                        found,
+                    )
+                    refused += at_or_below_floor
+                    accepted += not at_or_below_floor
+
+    # Both sides of the boundary are exercised — an "iff" that only ever saw
+    # one outcome would pass without testing anything.
+    assert reached > 300, reached
+    assert refused > 50 and accepted > 50, (refused, accepted)
+
+
+def test_band_deficit_sentinel_covers_all_three_documented_causes():
+    """S0-1 — ``band_deficit_db == STRENGTH_FLOOR_DB`` means "not measured",
+    from any of the three causes its docstring lists. All three pinned.
+
+    Cause 3 is the one that matters most downstream: a regression flipping
+    the sub-bin passband from fail-**open** to fail-closed would make the
+    PR-4 wiring refuse every position in a cloud on a declared passband
+    narrower than one FFT bin, and no other test would notice.
+    """
+    ir = _impulse_with_echo(320e-6, ECHO_R)
+    passband = (150.0, 20_000.0)
+
+    # Cause 1 — no passband declared. (Also pinned by the combiner test;
+    # repeated here so all three causes are visible in one place.)
+    assert detect_echo(ir, SAMPLE_RATE).band_deficit_db == STRENGTH_FLOOR_DB
+
+    # Cause 2 — the detector returned before the screen ran. All three
+    # pre-screen refusals, each with a passband declared, so the sentinel is
+    # "not measured" rather than "not asked for".
+    pre_screen = {
+        REFUSAL_LOW_ARRIVAL_CREST: (
+            np.random.default_rng(0).normal(0.0, 1.0, 8192),
+            {},
+        ),
+        REFUSAL_WINDOW_TOO_SHORT: (np.array([0.0, 0.0, 0.0, 1.0]), {}),
+        REFUSAL_BAND_TOO_NARROW: (ir, {"band_hz": (5000.0, 5100.0)}),
+    }
+    for slug, (signal, kwargs) in pre_screen.items():
+        found = detect_echo(
+            signal, SAMPLE_RATE, signal_band_hz=passband, **kwargs
+        )
+        assert found.refusal == slug, found
+        assert found.band_deficit_db == STRENGTH_FLOOR_DB, slug
+
+    # Cause 3 — the screen ran, but the declared passband covers no bin of
+    # the segment's spectrum. At n_fft >= 4096 and 48 kHz the bins are
+    # ~11.7 Hz apart, so these are sub-bin passbands. Fail-**open**: the
+    # verdict is identical to the undeclared call, and the deficit reads
+    # not-measured rather than a fabricated number.
+    ungated = detect_echo(ir, SAMPLE_RATE)
+    for narrow in ((100.0, 105.0), (5.0, 8.0), (100.0, 103.0)):
+        found = detect_echo(ir, SAMPLE_RATE, signal_band_hz=narrow)
+        assert found.band_deficit_db == STRENGTH_FLOOR_DB, narrow
+        assert found.refusal == ungated.refusal == "", narrow
+        assert found.tau_us == pytest.approx(ungated.tau_us), narrow
+        assert found.confidence == pytest.approx(ungated.confidence), narrow
 
 
 def test_signal_band_is_plumbed_through_the_combiner_and_recorded():
@@ -3450,6 +3608,99 @@ def test_loopback_tweeter_branch_is_measured_in_its_own_passband(loopback_irs):
         assert abs(screened.band_deficit_db) < 0.5, (stimulus, screened)
         # Unchanged by declaring the passband — same verdict as without it.
         assert screened.refusal == detect_echo(ir, SAMPLE_RATE).refusal, stimulus
+
+
+@requires_s0
+def test_band_deficit_separation_depends_on_the_analysis_band(
+    ground_plane_irs, main_leg_irs, loopback_irs
+):
+    """S0-1 — the margin's dependence on ``band_hz``, including where it
+    stops working.
+
+    PR-4 will derive the analysis band from a driver contract rather than
+    leave it at the module default, so "the separation was calibrated at one
+    band" is a real limitation. Swept over six bands, on the 13 S0 acoustic
+    records (3 ground-plane, 10 main-leg, each against its own 150 Hz-20 kHz
+    declared passband) and the 3 electrical-loopback woofer records
+    (200-2000 Hz passband).
+
+    The honest side is comfortable at every band. The **residue** side is
+    not: at a band whose lower edge sits on this speaker's 2 kHz crossover,
+    the woofer's own passband is inside the band being analysed, its deficit
+    collapses to ~18 dB, and the screen misses the exact case it exists for.
+    That is a false negative degrading silently to the pre-screen behaviour,
+    not a narrowed gap — and it is why the constant's comment tells a caller
+    to keep the analysis band clear of the crossover.
+
+    An earlier revision of this test checked only that no *honest* record
+    fires, which is one-sided: it would have passed at (2000, 19000) while
+    the screen was not screening.
+
+    What this does **not** cover is a different speaker: all 13 acoustic
+    records are the same JTS3 cdhorn.
+    """
+    acoustic = [
+        (ir, S0_SUMMED_PASSBAND_HZ)
+        for ir in list(ground_plane_irs.values()) + list(main_leg_irs.values())
+    ]
+    residue = [
+        (loopback_irs[f"{stimulus}_woofer"], LOOPBACK_WOOFER_PASSBAND_HZ)
+        for stimulus in ("impulse", "sweep", "mls")
+    ]
+    assert len(acoustic) == 13
+
+    def deficits(population, band_hz):
+        return [
+            detect_echo(
+                ir, SAMPLE_RATE, band_hz=band_hz, signal_band_hz=passband
+            ).band_deficit_db
+            for ir, passband in population
+        ]
+
+    # (band, does the screen still catch stopband residue) — the table the
+    # constant's comment prints, re-derived.
+    expected_catches = {
+        DEFAULT_ECHO_BAND_HZ: True,
+        (10_000.0, 19_000.0): True,
+        (8000.0, 16_000.0): True,
+        (4000.0, 20_000.0): True,
+        (3000.0, 19_000.0): True,
+        (2000.0, 19_000.0): False,
+    }
+    honest_ceilings = []
+    for band_hz, catches in expected_catches.items():
+        honest = deficits(acoustic, band_hz)
+        stopband = deficits(residue, band_hz)
+        honest_ceilings.append(max(honest))
+
+        # The honest side never fires, at any band tried.
+        assert max(honest) < BAND_BELOW_PASSBAND_MARGIN_DB, (band_hz, max(honest))
+        # The residue side is the one that moves.
+        assert (min(stopband) > BAND_BELOW_PASSBAND_MARGIN_DB) is catches, (
+            band_hz,
+            min(stopband),
+        )
+
+    # The two rows the comment turns on.
+    default_residue = deficits(residue, DEFAULT_ECHO_BAND_HZ)
+    assert (min(default_residue), max(default_residue)) == pytest.approx(
+        (40.43, 41.98), abs=0.3
+    )
+    crossover_residue = deficits(residue, (2000.0, 19_000.0))
+    assert (min(crossover_residue), max(crossover_residue)) == pytest.approx(
+        (18.21, 18.23), abs=0.3
+    )
+    # One octave up the margin is already thin — which is why the guidance
+    # is "clear of the crossover", not "3 kHz is fine".
+    thin_residue = deficits(residue, (3000.0, 19_000.0))
+    assert min(thin_residue) - BAND_BELOW_PASSBAND_MARGIN_DB == pytest.approx(
+        1.53, abs=0.3
+    ), thin_residue
+
+    # And the honest population's own spread across all six bands, which is
+    # the number to watch when this ships against other hardware.
+    assert max(honest_ceilings) == pytest.approx(17.50, abs=0.3), honest_ceilings
+    assert BAND_BELOW_PASSBAND_MARGIN_DB - max(honest_ceilings) > 7.0
 
 
 @requires_s0

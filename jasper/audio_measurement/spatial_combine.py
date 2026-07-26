@@ -74,8 +74,10 @@ Pipeline (:func:`combine_positions`):
    the live JTS3 graph had produced a confident-looking tau out of filter
    stopband residue (``BAND_BELOW_PASSBAND_MARGIN_DB``); and the
    **earlier-dominant-arrival** rule replaces an uninformative zero with a
-   named refusal when the envelope's own answer landed below the window and
-   so was never compared to anything. The same session's
+   named refusal when the envelope's own answer landed below the window, a
+   genuine arrival is measured down there, and that arrival is loud enough
+   to have plausibly taken the answer (``EARLIER_ARRIVAL_DOMINANCE_DB`` —
+   all three conditions, not the first alone). The same session's
    ground-plane leg is why every record now carries
    ``EchoDiagnostic.effective_floor_us``: its 125-146 us arrivals sit under
    the default window's ~191 us reporting floor, and the plan's response is
@@ -562,10 +564,44 @@ RAHMONIC_MARGIN = 2.0
 #   *tweeter* branch against its own 2.5-20 kHz passband, i.e. the metric
 #   does not manufacture a deficit out of an electrical IR as such.
 #
-# 25.0 leaves 12.9 dB of headroom above the honest ceiling and 15.4 dB below
-# the residue floor — near-centred in the natural unit, which is dB. The two
-# populations are 28 dB apart, so this is a wide gap rather than a tuned
-# edge, and no honest record measured here is within 13 dB of firing.
+# 25.0 leaves 12.93 dB of headroom above the honest ceiling and 15.43 dB
+# below the residue floor — near-centred in the natural unit, which is dB.
+# The two populations are 28.36 dB apart, so this is a wide gap rather than
+# a tuned edge, and the closest any honest record comes to firing is that
+# 12.93 dB (the ground-plane leg's worst position).
+#
+# **Whose speaker.** All 16 honest acoustic records are the **same
+# speaker** — the JTS3 cdhorn — across three sessions and two mic
+# mountings. The margin has never seen a driver with a genuinely different
+# HF rolloff, so the honest population's *ceiling* is the number to watch
+# when this ships against other hardware.
+#
+# **A hard constraint on the analysis band, which PR-4 will derive from a
+# driver contract rather than leave at the default.** Re-measured on the 13
+# S0 acoustic records and the 3 loopback residue records across six bands,
+# the honest side is comfortable everywhere — individual readings span
+# 0.40-17.50 dB and the worst *per-band ceiling* is 17.50 dB, at
+# (8000, 16000), still 7.50 dB clear of the margin. The **residue** side is
+# not, and it fails in the direction that matters:
+#
+#   band            residue deficit    screen catches it?
+#   (5000, 19000)   40.43-41.98 dB     yes  (the default)
+#   (10000, 19000)  47.47-63.30 dB     yes
+#   (8000, 16000)   45.82-55.95 dB     yes
+#   (4000, 20000)   35.46-35.58 dB     yes
+#   (3000, 19000)   26.53-27.05 dB     yes, by 1.53 dB
+#   (2000, 19000)   18.21-18.23 dB     **NO**
+#
+# At an analysis band whose lower edge sits *on* this speaker's 2 kHz
+# crossover, the woofer branch's own passband is inside the band being
+# analysed, its deficit collapses below the margin, and the screen stops
+# catching the exact case it exists for. This is not a narrowed gap — it is
+# a false negative, and it degrades silently to the pre-screen behaviour
+# (the confident-looking tau out of stopband residue). The 3 kHz row shows
+# the margin is already thin one octave up. **A caller must keep the
+# analysis band clear of the crossover**; deriving it from the tweeter's
+# usable range, as PR-4 intends, does that by construction. Re-derived by
+# test_band_deficit_separation_depends_on_the_analysis_band.
 #
 # **This is not the 49.7 dB the loopback report quotes**, and the difference
 # is entirely the metric, not the signal. Three changes separate them, and
@@ -600,45 +636,54 @@ BAND_BELOW_PASSBAND_MARGIN_DB = 25.0
 #
 # **The gap this closes.** Without a level test, "is there any local maximum
 # below the window" is the whole criterion, and the band-limited envelope of
-# an echo-free impulse has plenty: its own ringing. Measured on the
+# an echo-free impulse has plenty: its own ringing.
+#
+# **The sweep is committed, not quoted.** Every figure below comes from one
+# ladder — ``_CALIBRATION_WRONG_READING_WINDOWS`` in
+# tests/test_spatial_combine.py, the eleven raised windows from (400, 900)
+# to (1000, 1600) us that the file already commits for the rahmonic
+# calibration, reused here rather than duplicated — crossed with the
 # 60-member impulse-with-no-echo family behind ``ECHO_CONFIDENCE_FLOOR``
-# (delta at unity plus white noise, sigma 0.02 and 0.001, 30 seeds each),
-# swept over eleven windows from (120, 800) to (1000, 1600) us: at the
-# **default** window nothing is found below it at all, but at raised windows
-# the ringing is found on 534 of 660 readings, and on 22 of them it flipped
-# an honest ``refusal = "" / confidence = 0`` record into a refusal naming
-# the detector's own skirt as an arrival — up to 6 of 60 at (400, 900). The
-# slug would have contradicted its own word, and the widen-the-window
-# guidance a consumer builds on it would have fired on nothing.
+# (delta at unity plus white noise, sigma 0.02 and 0.001, 30 seeds each).
+# 660 readings, re-derived on demand by
+# test_earlier_arrival_dominance_floor_sits_in_the_measured_gap (~4 s, in
+# the default lane). An earlier revision of this comment quoted counts from
+# a mixture of ladders and could not be reproduced from any one of them,
+# which is the failure mode ``RAHMONIC_MARGIN`` already names: a described
+# grid is not a grid.
 #
-# **-10.0 dB, calibrated to sit in a measured gap**, same posture as
-# ``BAND_BELOW_PASSBAND_MARGIN_DB``. Measured 2026-07-25 at the default
-# 5-19 kHz band, on the shipped statistic
-# (``EchoDiagnostic.earlier_arrival_db``):
+# Measured 2026-07-25 at the default 5-19 kHz band, on the shipped
+# statistic (``EchoDiagnostic.earlier_arrival_db``):
 #
+# * **Must not fire — echo-free ringing.** The envelope finds a below-window
+#   local maximum on **658 of 660** readings, spanning **-32.1297 to
+#   -17.1365 dB**. The ceiling is the binding figure. With the floor removed
+#   (mutated to -120 dB) those readings produce **21** ``earlier_dominant_
+#   arrival`` refusals, at most **6 of 60** in a single window, at
+#   (400, 900) — the detector's own skirt named as an arrival, and the
+#   widen-the-window guidance a consumer builds on it firing on nothing.
+#   With the shipped floor: **0 of 660**.
 # * **Must fire — the S0 ground plane, n=3: -0.64, -2.01, -2.57 dB** at
 #   125-146 us. A mic capsule left centimetres proud of the floor; the
 #   loudest thing on those records, and the reason all three measured
 #   nothing.
-# * **Must not fire — echo-free ringing, 534 readings, ceiling -17.14 dB**
-#   (floor -32.13 dB), from the sweep above. The ceiling is the binding
-#   figure; it recurs at 187.5 us across nearly every raised window on one
-#   seed, so it is a property of the envelope's skirt rather than of a
-#   lucky draw.
 #
 # -10.0 leaves **7.43 dB** of headroom below the ground-plane floor and
-# **7.14 dB** above the ringing ceiling — centred in a 14.57 dB gap.
+# **7.14 dB** above the ringing ceiling — centred in a 14.58 dB gap.
 #
 # **A positive control sits between the two, and it is why this floor is
 # not merely a noise gate.** The S0 main-leg desk cloud has a real
 # below-window arrival at 145.8 us on 4 of its 10 positions, at -14.66 to
-# -15.71 dB — a genuine boundary bounce, weaker than this floor. Every one
-# of those ten positions nonetheless measured the ~320 us rim wave at
-# confidence 0.85-0.96, so they never reach this branch at all. That is the
-# empirical content of the floor: an arrival that weak demonstrably does
-# **not** take the envelope's answer, so declining to call it dominant
-# matches what the instrument actually did. The guard does not lean on
-# "they score above zero anyway" — it would exclude them on level too.
+# -15.71 dB — a genuine boundary bounce, weaker than this floor. All ten of
+# those positions nonetheless produced a credible detection of the ~320 us
+# rim wave (confidence 0.294-0.961; nine of the ten above 0.85, cloud_04 the
+# outlier at 0.294 — see the pinned table in
+# test_main_leg_is_unchanged_and_is_the_ground_plane_s_control), so none of
+# them reaches this branch at all. That is the empirical content of the
+# floor: an arrival that weak demonstrably does **not** take the envelope's
+# answer, so declining to call it dominant matches what the instrument
+# actually did. The guard does not lean on "they score above zero anyway" —
+# it would exclude them on level too.
 EARLIER_ARRIVAL_DOMINANCE_DB = -10.0
 
 # Refusal vocabulary for EchoDiagnostic.refusal. Snake_case, self-
@@ -648,14 +693,17 @@ EARLIER_ARRIVAL_DOMINANCE_DB = -10.0
 # detector declined to measure and every estimate on the record is
 # uninformative. Consumers gate on `refusal == ""`, never on the specific
 # slug, so this vocabulary can grow without breaking them.
+# Listed in the order :func:`detect_echo` can emit them, which is also the
+# order its returns appear in the source — a reader following either can
+# check the other.
 REFUSAL_LOW_ARRIVAL_CREST = "low_arrival_crest"
 REFUSAL_WINDOW_TOO_SHORT = "analysis_window_too_short"
 REFUSAL_BAND_TOO_NARROW = "analysis_band_too_narrow"
+REFUSAL_BAND_BELOW_PASSBAND = "band_below_passband"
 REFUSAL_SEARCH_OUTSIDE_CEPSTRUM = "search_window_outside_cepstrum"
 REFUSAL_NO_IN_WINDOW_ECHO = "no_in_window_echo"
 REFUSAL_TAU_AT_WINDOW_LOWER_EDGE = "tau_at_window_lower_edge"
 REFUSAL_RAHMONIC_OF_LOWER_DELAY = "rahmonic_of_lower_delay"
-REFUSAL_BAND_BELOW_PASSBAND = "band_below_passband"
 REFUSAL_EARLIER_DOMINANT_ARRIVAL = "earlier_dominant_arrival"
 REFUSAL_ALL_ZERO_IR = "all_zero_ir"
 REFUSAL_MALFORMED_IR = "malformed_ir"
@@ -836,11 +884,13 @@ class EchoDiagnostic:
         were in-window, the 1.0 marker when only one was).
 
         ``earlier_dominant_arrival`` is later still and is *not* a third
-        exception: it fires precisely when the envelope's answer fell below
-        the window, so only one candidate was ever in-window and the marker
-        it carries is the honest one. A 1.0 there says what it always says —
-        the two were never compared — which is exactly the condition that
-        refusal exists to name.
+        exception. It requires — among other conditions — that the
+        envelope's answer fell below the window, so only one candidate was
+        ever in-window and the marker it carries is always the honest one. A
+        1.0 there says what it always says: the two were never compared,
+        which is exactly the condition that refusal exists to name. (The
+        converse does not hold — an answer below the window is necessary for
+        that refusal, not sufficient; see :func:`detect_echo`.)
 
         **Do not infer the refusal's character from that value — a late
         refusal may carry any corroboration at all.** Two scopes, kept
@@ -1056,6 +1106,16 @@ class GeometryLock:
         the minimum number of positions and still produced only the minimum
         number of usable estimates. A ten-position cloud whose verdict rests
         on two of them is the observed case (issue #1742 item 2).
+
+        **It is a cliff, not a gradient, and a consumer phrasing a verdict
+        from it must know that.** The equality is exact: with
+        ``GEOMETRY_MIN_CONFIDENT == 2``, two usable estimates out of ten is
+        thin and **three out of ten is not** — the flag goes False at three
+        even though the evidence is barely better. It is deliberately the
+        plan's rule verbatim rather than a smoothed version of it, so that
+        the shipped behaviour and the specification cannot disagree; a
+        UX layer wanting a gradient should read ``n_confident`` and
+        ``n_positions`` directly rather than expect this bit to supply one.
 
         **Disclosure, not rejection.** The two estimates were honest, the
         clustering test ran on them correctly, and nothing here scales a
@@ -1653,13 +1713,32 @@ def detect_echo(
     125-146 us — below the leg-B protocol window — which became the
     envelope's answer, was rejected as out-of-window, and forced the
     incomparable marker, so the cepstrum's honest ~320 us reading was never
-    compared to anything. When the envelope's own answer lands below
-    ``search_us`` and a genuine arrival is measured down there, the zero is
-    replaced by an ``earlier_dominant_arrival`` refusal carrying that
-    arrival's delay and level. Strictly a fallback, and gated on that
-    mechanism rather than on any threshold: it returns after every other
-    refusal, and a record that scores above zero is reported normally
-    however loud the excluded arrival is.
+    compared to anything.
+
+    **Three conditions, all of this record**: the envelope's own answer
+    lands below ``search_us``; a genuine local maximum is measured down
+    there for the refusal to name; and that arrival is louder than
+    ``EARLIER_ARRIVAL_DOMINANCE_DB`` re the direct arrival, which is what
+    earns it the word *dominant*. Then the zero is replaced by an
+    ``earlier_dominant_arrival`` refusal carrying that arrival's delay and
+    level. It is strictly a fallback — it returns after every other refusal,
+    and a record that scores above zero is reported normally however loud
+    the excluded arrival is.
+
+    **There is a band where an interloper takes the answer and is still not
+    named, and that is deliberate.** The third condition is a threshold, so
+    between it and the level at which an arrival stops being able to steal
+    the envelope's answer at all, a record falls back to the silent
+    empty-refusal outcome. Measured on one synthetic geometry — an
+    interloper at 145 us of varying strength against a real 320 us echo at
+    r=0.3, searched (150, 1000) us in the default band — that band is about
+    **0.7 dB wide**: r=0.34 reads -9.57 dB and refuses, r=0.32 and r=0.30
+    read -10.11 and -10.69 dB and fall back, and by r=0.28 (-11.30 dB) the
+    interloper no longer wins the envelope at all. The record is not silent
+    about it either way: ``earlier_arrival_us`` and ``earlier_arrival_db``
+    disclose the interloper on the fallen-back record too. One geometry is
+    all that has been measured, so read the width as an order of magnitude
+    rather than a boundary.
 
     The IR is windowed internally to the early-arrival region (see
     ``ECHO_WINDOW_SPAN_FACTOR``), so a full deconvolved IR may be passed;
@@ -1773,11 +1852,19 @@ def detect_echo(
     # — reported on every diagnostic, including refusals, so a consumer can
     # judge whether a delay is resolvable without re-deriving the band.
     resolution_us = 1e6 / (hi_hz - lo_hz)
-    # ...and the delay this window cannot report below, which is the stated
-    # lower edge plus the edge-margin dead zone. Derived here, once, so the
-    # value on the record is the one the edge check below actually applies
-    # rather than a consumer's re-derivation of it.
-    effective_floor_us = search_lo_s * 1e6 + WINDOW_EDGE_MARGIN_STEPS * resolution_us
+    # The edge-margin dead zone — **one derivation, two consumers**, which
+    # is the point of computing it here rather than at either use site. It
+    # sets the delay this window cannot report below (disclosed on every
+    # record as ``effective_floor_us``) *and* it is the boundary the
+    # ``tau_at_window_lower_edge`` check applies further down, which reads
+    # ``edge_margin_s`` off this same value. Two independent derivations of
+    # one decision boundary would agree only by coincidence, and a consumer
+    # that disclosed the floor while the detector applied something else is
+    # exactly the drift this module's SSOT rules exist to prevent. The
+    # agreement is behavioural, not asserted: see
+    # test_disclosed_floor_is_the_boundary_the_edge_check_applies.
+    edge_margin_us = WINDOW_EDGE_MARGIN_STEPS * resolution_us
+    effective_floor_us = search_lo_s * 1e6 + edge_margin_us
 
     # --- 1. Locate the direct arrival, and gate on it existing at all. ---
     # The coarse locate is argmax|ir|, which agrees with the band-limited
@@ -2009,7 +2096,9 @@ def detect_echo(
     # turns on distance to the window edge alone. Reporting the
     # incomparable-marker 1.0 here would have contradicted the record the
     # refusal exists to preserve.
-    edge_margin_s = WINDOW_EDGE_MARGIN_STEPS * resolution_us * 1e-6
+    # The same ``edge_margin_us`` the disclosed ``effective_floor_us`` was
+    # built from, in seconds — not a second derivation of it.
+    edge_margin_s = edge_margin_us * 1e-6
     at_lower_edge = (
         cepstral_in_window and tau_cepstral - search_lo_s <= edge_margin_s
     ) or (envelope_in_window and tau_envelope - search_lo_s <= edge_margin_s)
