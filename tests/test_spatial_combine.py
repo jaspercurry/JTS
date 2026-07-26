@@ -69,6 +69,7 @@ from jasper.audio_measurement.spatial_combine import (
     CORROBORATION_LOOSE,
     DEFAULT_ECHO_BAND_HZ,
     DEFAULT_ECHO_SEARCH_US,
+    EARLIER_ARRIVAL_DOMINANCE_DB,
     ECHO_CONFIDENCE_FLOOR,
     GEOMETRY_DISPERSED,
     GEOMETRY_LOCKED,
@@ -2586,35 +2587,128 @@ def test_found_nothing_credible_survives_the_earlier_arrival_refusal():
     nothing-found.
 
     Swept over the whole 60-member negative-control family
-    ``ECHO_CONFIDENCE_FLOOR`` is calibrated against, because the claim the
-    module makes about them is a claim about all 60: **none** has a
-    below-window arrival at the default window, so none can reach the new
-    refusal, while the ground plane's three all do. Asserting one lucky seed
-    would not be that claim.
+    ``ECHO_CONFIDENCE_FLOOR`` is calibrated against, **and over raised
+    windows as well as the default**, because that is where the danger is.
+    At the default window the family has no below-window local maximum at
+    all, so the refusal is unreachable by construction. Raise the window and
+    the band-limited envelope's own ringing *does* present one — 534 of 660
+    readings across the eleven windows swept in
+    ``EARLIER_ARRIVAL_DOMINANCE_DB`` — and before that constant existed, 22
+    of those flipped an honest zero into a refusal naming the detector's own
+    skirt as an arrival (up to 6 of 60 at (400, 900)).
+
+    So this test asserts the dominance floor is what keeps the refusal off
+    this family, not the accident that nothing is found at the default
+    window: where ringing *is* found, its level must fail dominance.
     """
     empty_refusals = 0
-    for noise_sigma in (0.02, 0.001):
-        for seed in range(30):
-            rng = np.random.default_rng(seed)
-            ir = np.zeros(65_536)
-            ir[1000] = 1.0
-            ir += rng.normal(0.0, noise_sigma, ir.size)
-            found = detect_echo(ir, SAMPLE_RATE)
-            assert found.earlier_arrival_us == 0.0, (noise_sigma, seed, found)
-            assert found.earlier_arrival_db == STRENGTH_FLOOR_DB, (noise_sigma, seed)
-            assert found.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, (noise_sigma, seed)
-            if found.refusal == "":
-                # Not asserted as exactly zero: this family's documented
-                # ceiling is 0.091 (see ``ECHO_CONFIDENCE_FLOOR``), and a
-                # low-but-nonzero score with an empty refusal is the same
-                # "ran, found nothing credible" outcome — it just found
-                # slightly less nothing.
-                assert found.confidence < ECHO_CONFIDENCE_FLOOR, (noise_sigma, seed, found)
-                empty_refusals += 1
-    # The state this test exists to protect is actually reached — otherwise
-    # the assertions above would be vacuously true of a family that only
-    # ever edge-refuses.
+    ringing_levels = []
+    for search_us in (
+        DEFAULT_ECHO_SEARCH_US,
+        (300.0, 1000.0),
+        (400.0, 900.0),
+        (650.0, 1000.0),
+        (800.0, 1200.0),
+    ):
+        for noise_sigma in (0.02, 0.001):
+            for seed in range(30):
+                rng = np.random.default_rng(seed)
+                ir = np.zeros(65_536)
+                ir[1000] = 1.0
+                ir += rng.normal(0.0, noise_sigma, ir.size)
+                found = detect_echo(ir, SAMPLE_RATE, search_us=search_us)
+                where = (search_us, noise_sigma, seed)
+
+                # The rule under test: never on an echo-free signal.
+                assert found.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, (
+                    where,
+                    found,
+                )
+                if search_us == DEFAULT_ECHO_SEARCH_US:
+                    # Nothing below the default window at all, on all 60.
+                    assert found.earlier_arrival_us == 0.0, (where, found)
+                    assert found.earlier_arrival_db == STRENGTH_FLOOR_DB, where
+                if found.earlier_arrival_us > 0.0:
+                    # Ringing, found. It must fail dominance — this is the
+                    # assertion the constant is load-bearing for.
+                    assert found.earlier_arrival_db <= EARLIER_ARRIVAL_DOMINANCE_DB, (
+                        where,
+                        found,
+                    )
+                    ringing_levels.append(found.earlier_arrival_db)
+                if found.refusal == "":
+                    # Not asserted as exactly zero: this family's documented
+                    # ceiling is 0.091 (see ``ECHO_CONFIDENCE_FLOOR``), and a
+                    # low-but-nonzero score with an empty refusal is the same
+                    # "ran, found nothing credible" outcome — it just found
+                    # slightly less nothing.
+                    assert found.confidence < ECHO_CONFIDENCE_FLOOR, (where, found)
+                    empty_refusals += 1
+
+    # Both states this test protects are actually reached — otherwise the
+    # assertions above would be vacuously true.
     assert empty_refusals > 0
+    assert len(ringing_levels) > 100, len(ringing_levels)
+    # The measured ceiling the constant is calibrated against, as a
+    # tripwire: if the envelope's ringing ever gets louder than this, the
+    # 7.14 dB of headroom quoted on EARLIER_ARRIVAL_DOMINANCE_DB is stale.
+    assert max(ringing_levels) == pytest.approx(-17.14, abs=0.5), max(ringing_levels)
+    assert max(ringing_levels) < EARLIER_ARRIVAL_DOMINANCE_DB - 5.0, max(ringing_levels)
+
+
+def test_earlier_arrival_dominance_floor_sits_in_the_measured_gap():
+    """B1 — the floor is bracketed from both sides, and it is load-bearing.
+
+    ``EARLIER_ARRIVAL_DOMINANCE_DB`` separates two measured populations: the
+    S0 ground plane's proud-capsule interlopers (which must refuse) from the
+    envelope's own ringing on an echo-free signal (which must not). The
+    ground-plane side is real data and lives in section F; this is the
+    synthetic half, plus the mutation check that the constant does anything
+    at all.
+    """
+    # Mutating the floor down to where ringing qualifies must re-open the
+    # defect — otherwise this constant is decoration.
+    # Seed 1 of the sigma=0.001 negative-control family at (400, 900) is one
+    # of the six that flipped before the floor existed: its envelope answers
+    # at 391.6 us — below the window — and its own ringing is found at
+    # 166.7 us, -30.8 dB.
+    raised_window = (400.0, 900.0)
+    rng = np.random.default_rng(1)
+    echo_free = np.zeros(65_536)
+    echo_free[1000] = 1.0
+    echo_free += rng.normal(0.0, 0.001, echo_free.size)
+
+    guarded = detect_echo(echo_free, SAMPLE_RATE, search_us=raised_window)
+    assert guarded.refusal != REFUSAL_EARLIER_DOMINANT_ARRIVAL, guarded
+    assert guarded.earlier_arrival_us > 0.0, (
+        "this seed must actually find ringing below the window, or the "
+        "mutation below proves nothing"
+    )
+    assert guarded.earlier_arrival_db == pytest.approx(-30.8, abs=0.5), guarded
+    assert 0.0 < guarded.tau_envelope_us < raised_window[0], guarded
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(spatial_combine, "EARLIER_ARRIVAL_DOMINANCE_DB", -120.0)
+        unguarded = detect_echo(echo_free, SAMPLE_RATE, search_us=raised_window)
+    assert unguarded.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, (
+        "with the dominance floor removed, echo-free ringing must be named "
+        "as an arrival again — if it is not, this test no longer proves the "
+        "floor is what prevents it"
+    )
+
+    # ...and failing dominance falls through to the *previous* verdict
+    # rather than to some third thing: same refusal, confidence and tau as
+    # the pre-dominance-floor path produced.
+    assert guarded.refusal == ""
+    assert guarded.confidence == unguarded.confidence == 0.0
+    assert guarded.tau_us == 0.0
+
+    # A synthetic interloper at the ground plane's own level still refuses,
+    # so the floor is not merely "quiet enough to never fire".
+    loud = _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3)
+    found = detect_echo(loud, SAMPLE_RATE, search_us=(150.0, 1000.0))
+    assert found.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, found
+    assert found.earlier_arrival_db > EARLIER_ARRIVAL_DOMINANCE_DB, found
 
 
 def test_effective_floor_is_reported_on_every_record():
@@ -3408,6 +3502,71 @@ def test_main_leg_is_unchanged_and_is_the_ground_plane_s_control(main_leg_irs):
 
 
 @requires_s0
+def test_the_report_s_deficit_decomposes_into_the_shipped_statistic(loopback_irs):
+    """S0-1 — 49.7 dB and 40.4 dB are the same signal, three metric changes
+    apart, and the difference is exact rather than hand-waved.
+
+    ``BAND_BELOW_PASSBAND_MARGIN_DB`` has to explain why it does not quote
+    the number the loopback report quotes. Enumerating *most* of the reasons
+    would leave a reader landing on an intermediate value and wondering what
+    the remainder was, so the whole chain is re-derived here on the report's
+    own IR.
+    """
+    ir = loopback_irs["sweep_woofer"]
+
+    def level_db(spectrum, freqs, lo, hi, *, power):
+        band = (freqs >= lo) & (freqs <= hi)
+        if power:
+            return 10.0 * np.log10(np.mean(np.abs(spectrum[band]) ** 2))
+        return 20.0 * np.log10(np.mean(np.abs(spectrum[band])))
+
+    # The report's frame: whole-IR spectrum, amplitude mean, 200-1500 Hz.
+    n_fft = 1 << 16
+    whole = np.abs(np.fft.rfft(ir, n_fft))
+    whole_freqs = np.fft.rfftfreq(n_fft, 1.0 / SAMPLE_RATE)
+
+    def whole_ir_deficit(lo, hi, *, power):
+        return level_db(whole, whole_freqs, lo, hi, power=power) - level_db(
+            whole, whole_freqs, 5000.0, 19_000.0, power=power
+        )
+
+    assert whole_ir_deficit(200.0, 1500.0, power=False) == pytest.approx(49.66, abs=0.05)
+    # 1. amplitude mean -> power mean.
+    assert whole_ir_deficit(200.0, 1500.0, power=True) == pytest.approx(42.97, abs=0.05)
+
+    # 2. whole IR -> the early-arrival windowed segment the gate reads.
+    peak = int(np.argmax(np.abs(ir)))
+    pre = int(round(spatial_combine.ECHO_WINDOW_PRE_S * SAMPLE_RATE))
+    span = int(
+        round(
+            spatial_combine.ECHO_WINDOW_SPAN_FACTOR
+            * DEFAULT_ECHO_SEARCH_US[1]
+            * 1e-6
+            * SAMPLE_RATE
+        )
+    )
+    segment = ir[max(0, peak - pre) : min(ir.size, peak + span)]
+    seg_fft = spatial_combine._n_fft_for(segment.size)
+    seg_spectrum = np.abs(np.fft.rfft(segment, seg_fft)) + 1e-12
+    seg_freqs = np.fft.rfftfreq(seg_fft, 1.0 / SAMPLE_RATE)
+
+    def segment_deficit(lo, hi):
+        return level_db(seg_spectrum, seg_freqs, lo, hi, power=True) - level_db(
+            seg_spectrum, seg_freqs, 5000.0, 19_000.0, power=True
+        )
+
+    assert segment_deficit(200.0, 1500.0) == pytest.approx(40.83, abs=0.05)
+    # 3. the report's 200-1500 Hz passband -> the one the gate is given.
+    assert segment_deficit(*LOOPBACK_WOOFER_PASSBAND_HZ) == pytest.approx(40.43, abs=0.05)
+
+    # ...which is exactly what the shipped statistic reports.
+    shipped = detect_echo(ir, SAMPLE_RATE, signal_band_hz=LOOPBACK_WOOFER_PASSBAND_HZ)
+    assert shipped.band_deficit_db == pytest.approx(
+        segment_deficit(*LOOPBACK_WOOFER_PASSBAND_HZ), abs=1e-9
+    )
+
+
+@requires_s0
 @requires_corpus
 def test_band_deficit_separates_honest_captures_from_stopband_residue(
     ground_plane_irs, main_leg_irs, corpus_irs, loopback_irs
@@ -3473,6 +3632,30 @@ def test_band_deficit_separates_honest_captures_from_stopband_residue(
     assert (min(main_db), max(main_db)) == pytest.approx((1.04, 6.56), abs=0.3), main_db
     gp_db = [v for k, v in honest_db.items() if k.startswith("gp_")]
     assert (min(gp_db), max(gp_db)) == pytest.approx((8.28, 12.07), abs=0.3), gp_db
+    assert (
+        honest_db["corpus_run7_tweeter"],
+        honest_db["corpus_run7_verify"],
+        honest_db["corpus_run5_verify"],
+    ) == pytest.approx((1.11, 1.54, 5.51), abs=0.3), honest_db
+
+    # The **acoustic** subset is the 16 records ``band_deficit_db``'s own
+    # docstring quotes a range for; the electrical in-band controls are a
+    # separate population and read either side of zero, so they are excluded
+    # here and asserted on their own below. Conflating the two is how a
+    # quoted minimum drifts away from the population it describes.
+    acoustic_db = {
+        name: value
+        for name, value in honest_db.items()
+        if not name.startswith("loopback_")
+    }
+    assert len(acoustic_db) == 16, sorted(acoustic_db)
+    assert min(acoustic_db, key=acoustic_db.get) == "main_cloud_06", acoustic_db
+    assert min(acoustic_db.values()) == pytest.approx(1.04, abs=0.3), acoustic_db
+    assert max(acoustic_db.values()) == pytest.approx(12.07, abs=0.3), acoustic_db
+
+    control_db = [v for k, v in honest_db.items() if k.startswith("loopback_")]
+    assert len(control_db) == 3
+    assert (min(control_db), max(control_db)) == pytest.approx((-0.17, -0.05), abs=0.1)
 
 
 @requires_s0
@@ -3539,18 +3722,30 @@ def test_ground_plane_arrivals_sit_under_the_default_window_floor(ground_plane_i
     raising the default lower edge would have hidden these captures further,
     not helped: the offline envelope scan in the S0 report is what found the
     arrivals, and a higher floor moves *away* from that.
+
+    The arrivals' own delays are **measured**, not asserted against
+    literals: read them from the same IRs through the protocol window that
+    can see them, then check they fall under the default window's floor.
+    Comparing hardcoded 125/146 against an already-pinned 191.43 would have
+    been arithmetic, not a test.
     """
     for position, ir in sorted(ground_plane_irs.items()):
         found = detect_echo(ir, SAMPLE_RATE)
         assert found.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, (position, found)
         assert found.effective_floor_us == pytest.approx(191.43, abs=0.01), position
-        # The report's arrivals are below that floor — the claim this field
-        # exists to let a consumer make, checked against the real numbers.
-        assert 125.0 < found.effective_floor_us
-        assert 146.0 < found.effective_floor_us
         # Inside the default window the interloper is not "below" anything,
         # so there is nothing to name and the field says so.
         assert found.earlier_arrival_us == 0.0, position
+
+        # The claim the field exists to let a consumer make, against this
+        # capture's own measured arrival: it is real, and this window
+        # structurally cannot report it.
+        through_protocol_window = detect_echo(
+            ir, SAMPLE_RATE, search_us=S0_PROTOCOL_SEARCH_US
+        )
+        arrival_us = through_protocol_window.earlier_arrival_us
+        assert arrival_us > 0.0, position
+        assert arrival_us < found.effective_floor_us, (position, arrival_us)
 
 
 @requires_s0

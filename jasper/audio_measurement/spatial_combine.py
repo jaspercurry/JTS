@@ -568,13 +568,23 @@ RAHMONIC_MARGIN = 2.0
 # edge, and no honest record measured here is within 13 dB of firing.
 #
 # **This is not the 49.7 dB the loopback report quotes**, and the difference
-# is the metric, not the signal: that report took 20*log10 of the *amplitude*
-# mean over the **whole** IR's 65536-point spectrum, while this gate takes
-# 10*log10 of the *power* mean over the early-arrival windowed segment the
-# cepstral stage already computes — so the gate costs no extra transform and
-# reads exactly the data the estimators are about to read. Both separate the
-# same populations; only this one is the shipped statistic, so only this
-# one's regime is quoted here.
+# is entirely the metric, not the signal. Three changes separate them, and
+# the decomposition is exact on the woofer sweep IR (re-derived by
+# test_the_report_s_deficit_decomposes_into_the_shipped_statistic):
+#
+#   49.66 dB  the report: amplitude mean (20*log10), whole 65536-point IR
+#             spectrum, passband 200-1500 Hz
+#   42.97 dB  ...taking the *power* mean (10*log10) instead — this module's
+#             estimator everywhere else, so the statistic composes
+#   40.83 dB  ...over the early-arrival **windowed segment** the cepstral
+#             stage already computes, rather than the whole IR — so the gate
+#             costs no extra transform and reads exactly the data the
+#             estimators are about to read
+#   40.43 dB  ...against the passband the gate is actually given here,
+#             200-2000 Hz rather than the report's 200-1500 Hz
+#
+# Both statistics separate the same populations; only the last is shipped,
+# so only its regime is quoted above.
 #
 # **What is NOT calibrated: a passband narrower than the analysis band, or
 # overlapping it.** Every record above declares a passband that contains or
@@ -583,6 +593,53 @@ RAHMONIC_MARGIN = 2.0
 # arithmetically well-defined deficit and no measured basis for the
 # threshold applied to it.
 BAND_BELOW_PASSBAND_MARGIN_DB = 25.0
+
+# Earlier-dominant-arrival dominance floor — how loud a below-window arrival
+# must be, relative to the direct arrival, before the detector will call it
+# **dominant** and refuse in its name.
+#
+# **The gap this closes.** Without a level test, "is there any local maximum
+# below the window" is the whole criterion, and the band-limited envelope of
+# an echo-free impulse has plenty: its own ringing. Measured on the
+# 60-member impulse-with-no-echo family behind ``ECHO_CONFIDENCE_FLOOR``
+# (delta at unity plus white noise, sigma 0.02 and 0.001, 30 seeds each),
+# swept over eleven windows from (120, 800) to (1000, 1600) us: at the
+# **default** window nothing is found below it at all, but at raised windows
+# the ringing is found on 534 of 660 readings, and on 22 of them it flipped
+# an honest ``refusal = "" / confidence = 0`` record into a refusal naming
+# the detector's own skirt as an arrival — up to 6 of 60 at (400, 900). The
+# slug would have contradicted its own word, and the widen-the-window
+# guidance a consumer builds on it would have fired on nothing.
+#
+# **-10.0 dB, calibrated to sit in a measured gap**, same posture as
+# ``BAND_BELOW_PASSBAND_MARGIN_DB``. Measured 2026-07-25 at the default
+# 5-19 kHz band, on the shipped statistic
+# (``EchoDiagnostic.earlier_arrival_db``):
+#
+# * **Must fire — the S0 ground plane, n=3: -0.64, -2.01, -2.57 dB** at
+#   125-146 us. A mic capsule left centimetres proud of the floor; the
+#   loudest thing on those records, and the reason all three measured
+#   nothing.
+# * **Must not fire — echo-free ringing, 534 readings, ceiling -17.14 dB**
+#   (floor -32.13 dB), from the sweep above. The ceiling is the binding
+#   figure; it recurs at 187.5 us across nearly every raised window on one
+#   seed, so it is a property of the envelope's skirt rather than of a
+#   lucky draw.
+#
+# -10.0 leaves **7.43 dB** of headroom below the ground-plane floor and
+# **7.14 dB** above the ringing ceiling — centred in a 14.57 dB gap.
+#
+# **A positive control sits between the two, and it is why this floor is
+# not merely a noise gate.** The S0 main-leg desk cloud has a real
+# below-window arrival at 145.8 us on 4 of its 10 positions, at -14.66 to
+# -15.71 dB — a genuine boundary bounce, weaker than this floor. Every one
+# of those ten positions nonetheless measured the ~320 us rim wave at
+# confidence 0.85-0.96, so they never reach this branch at all. That is the
+# empirical content of the floor: an arrival that weak demonstrably does
+# **not** take the envelope's answer, so declining to call it dominant
+# matches what the instrument actually did. The guard does not lean on
+# "they score above zero anyway" — it would exclude them on level too.
+EARLIER_ARRIVAL_DOMINANCE_DB = -10.0
 
 # Refusal vocabulary for EchoDiagnostic.refusal. Snake_case, self-
 # identifying, and stable: an empty string means "the detector ran to
@@ -864,12 +921,34 @@ class EchoDiagnostic:
         unknown. Those records report ``resolution_us == 0.0`` too, so the
         two agree about what was not measured.
       earlier_arrival_us: delay of the strongest **genuine local maximum of
-        the envelope below the search window** — a distinct arrival the
-        caller's window excludes. It is a reading, never a candidate: the
-        envelope's answer is chosen exactly as it always was, and this field
-        changes nothing about it. 0.0 when there is none, which is
-        unambiguous because a measured one has a strictly positive delay
-        (the same convention as ``lower_peak_us``).
+        the envelope at a delay below ``search_us[0]``**. It is a reading,
+        never a candidate: the envelope's answer is chosen exactly as it
+        always was, and this field changes nothing about it. 0.0 when there
+        is none, which is unambiguous because a measured one has a strictly
+        positive delay (the same convention as ``lower_peak_us``).
+
+        **It is not always an arrival the window strictly excluded, and the
+        difference is one sample.** This field's bound is the delay
+        (``ceil(search_lo * rate)``), while the envelope's own candidate
+        range starts at ``round(search_lo * rate)`` — so when
+        ``frac(search_lo * rate) < 0.5`` the sample at that boundary is
+        simultaneously the envelope's first candidate and a "below-window"
+        arrival by this field's reckoning. That is exactly what S0's
+        ground_plane_01/02 report: their ``earlier_arrival_us`` of 145.83 us
+        is the *same envelope sample* that produced their
+        ``tau_envelope_us`` of 137.5 / 139.4 us after parabolic refinement.
+        (ground_plane_03's 125.0 us is a genuinely different sample.)
+
+        The two definitions are deliberately **not** unified: ``round`` is
+        the estimator's own boundary, and moving it changes which sample the
+        envelope selects, which perturbs the adjudicated ``RAHMONIC_MARGIN``
+        calibration — see the rejected alternative at the
+        ``earlier_dominant_arrival`` site. Fixing that boundary is deferred
+        work that has to be done together with re-deriving that sweep. The
+        refusal is right on its merits regardless of the wrinkle: given a
+        *sample-aligned* lower edge (166.6667 us = exactly 8 samples at
+        48 kHz, so the two definitions coincide), all three ground-plane
+        positions still collapse and still refuse.
 
         It is what an ``earlier_dominant_arrival`` refusal names, and it is
         reported on every record that reached the envelope stage — same
@@ -880,6 +959,13 @@ class EchoDiagnostic:
         arrival, from the same envelope — ``strength_db``'s convention and
         units, for the same reason (a delay without a level is half a
         reading). ``STRENGTH_FLOOR_DB`` when ``earlier_arrival_us`` is 0.0.
+
+        This is the field the dominance test reads, so an
+        ``earlier_dominant_arrival`` refusal is recomputable from the
+        record: it needs ``earlier_arrival_db >
+        EARLIER_ARRIVAL_DOMINANCE_DB``. Reported whether or not it passes,
+        because a below-window arrival that failed dominance is still worth
+        seeing.
 
         Measured 2026-07-25 at the default 5-19 kHz band and the S0 leg-B
         (150, 1000) us protocol window: the three ground-plane positions
@@ -900,15 +986,26 @@ class EchoDiagnostic:
         Reported on every record that got past the screen as well, for
         ``lower_peak_ratio``'s reason: a consumer watching this creep toward
         the margin on honest captures is watching the screen's headroom
-        erode (measured 0.70-12.07 dB across the corpus and both S0 legs —
-        see ``BAND_BELOW_PASSBAND_MARGIN_DB``).
+        erode. Measured 2026-07-25 at the shipped defaults over the 16
+        honest **acoustic** records the constant is calibrated on —
+        **1.04 to 12.07 dB**, the minimum on the S0 main-leg desk cloud
+        (cloud_06) and the maximum on its ground-plane leg
+        (ground_plane_03), with the 2026-07-24/25 cdhorn corpus at
+        1.11 / 1.54 / 5.51 dB in between. The electrical in-band control is
+        a separate population reading -0.17 to -0.05 dB, and is not part of
+        that range. See ``BAND_BELOW_PASSBAND_MARGIN_DB`` for the
+        per-population breakdown.
 
-        ``STRENGTH_FLOOR_DB`` means **not measured** — no ``signal_band_hz``
-        was declared, or the detector returned before the screen ran. A
-        finite sentinel rather than ``None`` so the field stays
-        arithmetic-safe (the same choice ``strength_db`` makes), and one no
-        real reading can collide with: -120 dB would mean an analysis band
-        sitting a trillion times *above* its own passband.
+        ``STRENGTH_FLOOR_DB`` means **not measured**, from any of three
+        causes: no ``signal_band_hz`` was declared; the detector returned
+        before the screen ran (the crest, window-length and band-width
+        gates); or the screen ran but the declared passband covered no bin
+        of the segment's spectrum, which is the documented fail-open for a
+        passband narrower than one FFT bin. A finite sentinel rather than
+        ``None`` so the field stays arithmetic-safe (the same choice
+        ``strength_db`` makes), and one no real reading can collide with:
+        -120 dB would mean an analysis band sitting a trillion times
+        *above* its own passband.
     """
 
     tau_us: float
@@ -2012,16 +2109,45 @@ def detect_echo(
         # loudest thing here arrives at 146 us, below the window you
         # searched" knows to widen it.
         #
-        # **Deliberately a fallback with no threshold of its own.** The gate
-        # is the mechanism, not a calibrated margin: the envelope's answer
-        # below ``search_lo_s``, plus a genuine arrival measured down there
-        # for the refusal to name. Both are properties of this record. It
-        # cannot pre-empt any existing refusal — every one of them returns
-        # earlier — and it cannot pre-empt a credible reading, because a
-        # credible reading never reaches this branch. A capture whose
-        # envelope answered inside the window and merely failed to
-        # corroborate still reports the honest nothing-found.
-        if 0.0 < tau_envelope < search_lo_s and earlier_arrival_us > 0.0:
+        # **Three conditions, all properties of this record.** The
+        # envelope's answer below ``search_lo_s``; a genuine arrival
+        # measured down there for the refusal to name; and that arrival
+        # loud enough to deserve the word *dominant*
+        # (``EARLIER_ARRIVAL_DOMINANCE_DB``). The third is not decoration:
+        # without it the band-limited envelope's own ringing qualifies, and
+        # at raised windows it flipped 22 of 660 echo-free readings into a
+        # refusal naming the detector's skirt as an arrival. Failing any
+        # condition falls through to the honest nothing-found below, whose
+        # verdict is then byte-identical to the pre-S0 detector's.
+        #
+        # It cannot pre-empt any existing refusal — every one of them
+        # returns earlier — and it cannot pre-empt a credible reading,
+        # because a credible reading never reaches this branch.
+        #
+        # **Rejected alternative: recovering the measurement instead of
+        # naming the loss.** The obvious richer fix is to let the envelope
+        # skip the interloper and answer with the best *in-window* arrival,
+        # which on S0's ground plane recovers a real ~320 us detection on
+        # gp_03. It was implemented and measured, and it re-opens the
+        # false-lock hazard this module spent four review rounds closing:
+        # letting the envelope hunt past an excluded arrival manufactures
+        # agreement with the cepstral **rahmonic** of that same arrival. On
+        # the committed ``RAHMONIC_MARGIN`` calibration sweep (the
+        # ``JTS_RAHMONIC_CALIBRATION`` grids, windows from (400, 900) to
+        # (1000, 1600) us), the wrong-reading population grew 409 -> 506
+        # readings and its ``lower_peak_ratio`` floor fell **4.9192 ->
+        # 2.7899**, under the 1.5x ``RAHMONIC_MARGIN`` wall that sweep
+        # asserts — i.e. the screen's own headroom, not a test's opinion of
+        # it. Restricting the change to the window-bounds rounding defect
+        # below still broke it (floor 2.7899, population 439). So the
+        # recovery path is not available without re-deriving an adjudicated
+        # calibration, and the detector names what it lost instead of
+        # guessing better. Revisit only together with that calibration.
+        if (
+            0.0 < tau_envelope < search_lo_s
+            and earlier_arrival_us > 0.0
+            and earlier_arrival_db > EARLIER_ARRIVAL_DOMINANCE_DB
+        ):
             return _refused(
                 REFUSAL_EARLIER_DOMINANT_ARRIVAL,
                 resolution_us=resolution_us,
