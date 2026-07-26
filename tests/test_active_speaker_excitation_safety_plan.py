@@ -17,6 +17,7 @@ from jasper.active_speaker.excitation_safety_plan import (
     RequestedDriverExcitationPlan,
     prepare_driver_excitation_plan,
     resolve_driver_excitation_ceilings,
+    resolve_driver_measurement_band_hz,
 )
 from jasper.active_speaker.measurement import active_driver_targets
 from tests.active_speaker_fixtures import mono_output_topology
@@ -397,3 +398,74 @@ def test_upper_edge_still_bounded_by_global_ceiling_when_hard_band_is_wider():
     )
     assert band.upper_hz == pytest.approx(23_000.0)  # MAX_DRIVER_TEST_FREQUENCY_HZ
     assert band.lower_hz == pytest.approx(1800.0)
+
+
+# --- resolve_driver_measurement_band_hz (flat-linearization plan PR-4) ------
+#
+# The declared measurement_band_hz itself, separate from
+# resolve_driver_excitation_ceilings' derived excitation ceiling — PR-4's
+# contract-derived echo/null analysis band needs the declared analysis
+# WINDOW, which that function reads and validates but does not return.
+
+
+def test_resolve_driver_measurement_band_hz_returns_the_declared_window():
+    _topology, profile, targets = _profile_and_targets(
+        measurement_band=[5000, 20_000], search_band=[6000, 7000],
+    )
+    band = resolve_driver_measurement_band_hz(
+        profile, targets["tweeter"]["target_fingerprint"],
+    )
+    assert band == (5000.0, 20_000.0)
+
+
+def test_resolve_driver_measurement_band_hz_differs_from_the_excitation_ceiling():
+    # The exact case resolve_driver_excitation_ceilings' own docstring names:
+    # a tweeter whose measurement band tops out below its hard band. The
+    # excitation ceiling's upper edge is the WIDER hard-band/global-ceiling
+    # figure; the measurement band is the declared window itself.
+    _topology, profile, targets = _profile_and_targets(
+        hard_band=[1600, 20_000], measurement_band=[2000, 18_000],
+        search_band=[2100, 2500],
+    )
+    ceiling_band, _peak = resolve_driver_excitation_ceilings(
+        profile, targets["tweeter"]["target_fingerprint"],
+    )
+    measurement_band = resolve_driver_measurement_band_hz(
+        profile, targets["tweeter"]["target_fingerprint"],
+    )
+    assert measurement_band == (2000.0, 18_000.0)
+    assert ceiling_band.upper_hz == pytest.approx(20_000.0)
+    assert measurement_band[1] != ceiling_band.upper_hz
+
+
+def test_resolve_driver_measurement_band_hz_raises_when_the_field_is_missing():
+    # _target_for_request's own shape check is on the ``targets`` list, not
+    # ``profile["status"]`` (that gate belongs to
+    # prepare_driver_excitation_plan, a different caller) — so the way to
+    # reach PROFILE_NOT_CONFIRMED here is a target record missing the field
+    # itself, mirroring resolve_driver_excitation_ceilings' own identical
+    # check on the same record.
+    _topology, profile, targets = _profile_and_targets()
+    mutated = dict(profile)
+    mutated["targets"] = [
+        {**t, "measurement_band_hz": None}
+        if t.get("role") == "woofer"
+        else t
+        for t in profile["targets"]
+    ]
+    with pytest.raises(
+        ExcitationSafetyPlanError,
+        match=ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value,
+    ):
+        resolve_driver_measurement_band_hz(
+            mutated, targets["woofer"]["target_fingerprint"],
+        )
+
+
+def test_resolve_driver_measurement_band_hz_raises_on_unknown_target():
+    _topology, profile, _targets = _profile_and_targets()
+    with pytest.raises(
+        ExcitationSafetyPlanError,
+        match=ExcitationSafetyPlanRefusal.TARGET_NOT_CURRENT.value,
+    ):
+        resolve_driver_measurement_band_hz(profile, "not-a-real-fingerprint")

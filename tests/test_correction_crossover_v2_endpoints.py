@@ -935,8 +935,12 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     assert len(conductor.group_positions(PHASE_CLOUD_MEASURE)) == (
         DEFAULT_CLOUD_MEASURE_POSITIONS - 1
     )
+    # PR-4: VERIFY's own summed capture now JOINS the cloud-verify combine (it
+    # is the one anchor that DOES carry a real summed response — MEASURE's
+    # anchor never does, which is why CLOUD_MEASURE stays at N-1 above), so M
+    # positions yield M curves, not M-1.
     assert len(conductor.group_positions(PHASE_CLOUD_VERIFY)) == (
-        DEFAULT_CLOUD_VERIFY_POSITIONS - 1
+        DEFAULT_CLOUD_VERIFY_POSITIONS
     )
     # The replaced take left no position behind; the accepted retake did.
     ids = conductor.group_positions(PHASE_CLOUD_MEASURE)
@@ -966,10 +970,10 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     assert "abandon" not in volume.events
     assert backend.phases(session.session_id)[-1] == "capture_set_complete"
 
-    # The durable state discloses the cloud outcome the way PR-4 will extend.
+    # The durable state discloses the cloud outcome — PR-4's own extension.
     state = v2host.load_v2_state()
     assert set(state["cloud"]) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
-    for block in state["cloud"].values():
+    for phase, block in state["cloud"].items():
         assert block["geometry"]["locked"] in (True, False)
         # Position + attempt, so a reader can tell which take of a retaken
         # position is the one actually in the cloud.
@@ -978,6 +982,19 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
             set(entry) == {"position_id", "index", "attempt"}
             for entry in block["positions"]
         )
+        # PR-4: the honest-instrument pipeline ran (not "None" — a group that
+        # closed always gets a verdict, even a degraded one) and its /state
+        # projection agrees.
+        pipeline = block["pipeline"]
+        assert pipeline["available"] in (True, False)
+        if pipeline["available"]:
+            assert "spec" in pipeline and "null_registry" in pipeline
+        assert conductor.group_cloud_result(phase) == pipeline
+    compact = v2host.crossover_v2_status_block()["cloud"]
+    assert set(compact) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+    for entry in compact.values():
+        assert isinstance(entry["geometry_locked"], bool)
+        assert isinstance(entry["excluded_interval_count"], int)
 
 
 def test_position_retention_survives_a_retake_through_the_real_evidence_store(
@@ -1060,6 +1077,151 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     assert (
         Path(info["bundle_dir"]) / second["wav_path"]
     ).read_bytes() == b"wider-retake"
+
+
+def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
+    tmp_path,
+):
+    """Flat-linearization plan PR-4's ``publish_cloud`` seam against the REAL,
+    write-once evidence store — mirrors
+    ``test_position_retention_survives_a_retake_through_the_real_evidence_store``
+    above, proving the two-groups-in-one-session shape does not collide.
+
+    This is the mechanism deviation ``bind_cloud_publisher`` documents: the
+    work order's literal ``crossover_v2/<session>/cloud.json`` would be
+    written TWICE in one real session (once per closed group), and the store
+    refuses a repeated path — so each group gets its own
+    ``<phase>.json`` artifact instead.
+    """
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    info = open_bundle(
+        mono_output_topology(mode="active_2_way"),
+        calibration_id="calibration-test",
+        sessions_dir=tmp_path / "sessions",
+    )
+    store = CommissioningEvidenceStore.open(
+        info["bundle_dir"], expected_session_id=info["session_id"]
+    )
+    refs: dict = {}
+    publish_cloud = v2host.bind_cloud_publisher(store, "cap_cloud_session", refs)
+
+    measure_result = {
+        "available": True,
+        "geometry": {"locked": True, "reason": "geometry_locked"},
+        "null_registry": {"classification": "position_invariant"},
+        "spec": {"overall_passed": False},
+        "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-1.0, -2.0]},
+    }
+    verify_result = {
+        "available": True,
+        "geometry": {"locked": False, "reason": "geometry_insufficient_usable_estimates"},
+        "null_registry": {"classification": "insufficient_evidence"},
+        "spec": {"overall_passed": True},
+        "curve": {"freqs_hz": [100.0, 200.0], "magnitude_db": [-0.5, -0.6]},
+    }
+    publish_cloud(PHASE_CLOUD_MEASURE, measure_result)
+    publish_cloud(PHASE_CLOUD_VERIFY, verify_result)
+
+    # Both artifacts published, both fingerprints recorded — no collision.
+    assert set(refs["cloud_artifacts"]) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+    assert (
+        refs["cloud_artifacts"][PHASE_CLOUD_MEASURE]
+        != refs["cloud_artifacts"][PHASE_CLOUD_VERIFY]
+    )
+
+    artifacts_dir = (
+        Path(info["bundle_dir"]) / "evidence" / "v1" / "artifacts"
+        / "crossover_v2" / "cap_cloud_session"
+    )
+    assert sorted(p.name for p in artifacts_dir.glob("*.json")) == [
+        f"{PHASE_CLOUD_MEASURE}.json", f"{PHASE_CLOUD_VERIFY}.json",
+    ]
+    measure_on_disk = json.loads(
+        (artifacts_dir / f"{PHASE_CLOUD_MEASURE}.json").read_text()
+    )
+    assert measure_on_disk["kind"] == "jts_crossover_v2_cloud_evidence"
+    assert measure_on_disk["relay_session_id"] == "cap_cloud_session"
+    assert measure_on_disk["phase"] == PHASE_CLOUD_MEASURE
+    assert measure_on_disk["geometry"]["locked"] is True
+    assert measure_on_disk["null_registry"]["classification"] == "position_invariant"
+    assert measure_on_disk["curve"]["freqs_hz"] == [100.0, 200.0]
+    verify_on_disk = json.loads(
+        (artifacts_dir / f"{PHASE_CLOUD_VERIFY}.json").read_text()
+    )
+    assert verify_on_disk["geometry"]["locked"] is False
+    assert verify_on_disk["spec"]["overall_passed"] is True
+
+
+def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
+    """PR-4's ``/state`` surface: per band, only ``passed``; the
+    excluded-interval COUNT, not the intervals; the geometry verdict's two
+    household-relevant bits. The full per-null τ/r/evidence numbers stay in
+    the durable state's own ``pipeline`` sub-key (not re-derived here) and
+    the bundle artifact — this is the dashboard-sized read, not a third
+    owner of the same data."""
+    v2host.save_v2_state({
+        "session_id": "cap_state",
+        "cloud": {
+            PHASE_CLOUD_MEASURE: {
+                "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
+                "positions": [],
+                "pipeline": {
+                    "available": True,
+                    "geometry_guidance": "Spread the mic further.",
+                    "merged_excluded_bands_hz": [[8000.0, 9000.0], [11000.0, 12000.0]],
+                    "spec": {
+                        "overall_passed": False,
+                        "bands": [
+                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True},
+                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True},
+                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False},
+                        ],
+                    },
+                },
+            },
+            PHASE_CLOUD_VERIFY: {
+                "geometry": {"locked": False, "reason": "geometry_insufficient_usable_estimates"},
+                "positions": [],
+                "pipeline": {"available": False, "reason": "combine_failed"},
+            },
+        },
+    })
+
+    block = v2host.crossover_v2_status_block()
+    cloud = block["cloud"]
+    assert set(cloud) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+
+    measure = cloud[PHASE_CLOUD_MEASURE]
+    assert measure["geometry_locked"] is True
+    assert measure["thin_evidence"] is False
+    assert measure["geometry_guidance"] == "Spread the mic further."
+    assert measure["overall_passed"] is False
+    assert measure["excluded_interval_count"] == 2
+    assert measure["spec_bands"] == [
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True},
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True},
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False},
+    ]
+
+    # A group whose pipeline never became available (combine_failed) reports
+    # the honest "nothing to disclose" shape, never a fabricated pass.
+    verify = cloud[PHASE_CLOUD_VERIFY]
+    assert verify["geometry_locked"] is False
+    assert verify["overall_passed"] is None
+    assert verify["excluded_interval_count"] == 0
+    assert verify["spec_bands"] == []
+    assert verify["geometry_guidance"] == ""
+
+
+def test_state_cloud_block_is_none_before_any_group_closes():
+    v2host.save_v2_state({"session_id": "cap_fresh"})
+    assert v2host.crossover_v2_status_block()["cloud"] is None
 
 
 def test_a_corrupt_session_phases_list_never_reads_as_done():
@@ -1299,6 +1461,11 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
                 "positions": [
                     {"position_id": "cloud_measure_03", "index": 3, "attempt": 3}
                 ],
+                # PR-4's own addition to this block — must be just as gone
+                # after an Undo as the two PR-3b fields above it; a surviving
+                # "pipeline" hands PR-4's spec verdict for an undone session
+                # to any surface reading the durable state as if it were live.
+                "pipeline": {"available": True, "spec": {"overall_passed": True}},
             }
         },
         "candidate": {"fingerprint": "fp-1"},

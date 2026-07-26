@@ -298,6 +298,7 @@ from .correction import (
     _format_byte_count,
     _correction_evidence_status,
     check_correction_latest_bundle,
+    check_crossover_v2_cloud_pipeline,
 )
 from . import web as web
 from .web import (
@@ -615,6 +616,7 @@ __all__ = [
     "_format_byte_count",
     "_correction_evidence_status",
     "check_correction_latest_bundle",
+    "check_crossover_v2_cloud_pipeline",
     "check_conversation_history",
     "check_web_design_assets",
     "check_control_token",

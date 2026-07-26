@@ -360,6 +360,17 @@ def _envelope(
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         "candidate_review": dict(candidate_review) if candidate_review else None,
+        # Flat-linearization plan PR-4: the compact per-group honesty verdict
+        # (spec pass/fail per band, excluded-interval count, geometry verdict
+        # + its plain-language guidance copy) — the SAME projection
+        # ``crossover_v2_status_block`` serves at ``/state``, so a wizard page
+        # reading either surface sees the same numbers. ``None`` before any
+        # cloud group has closed. PR-7 draws the before/after chart from the
+        # richer decimated-curve data the durable state's own ``cloud.<phase>
+        # .pipeline`` sub-key and the bundle's ``cloud_measure.json`` /
+        # ``cloud_verify.json`` artifacts carry — this envelope key is the
+        # plain-language verdict, not the chart feed.
+        "cloud": _v2(status).get("cloud"),
     }
 
 
@@ -600,6 +611,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "progress": {"position": 0, "total": len(_STEP_IDS)},
             "applied": _applied_chip(status),
             "candidate_review": None,
+            "cloud": None,
         }
 
     v2 = _v2(status)

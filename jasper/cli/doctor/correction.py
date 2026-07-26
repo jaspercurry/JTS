@@ -404,3 +404,44 @@ def check_capture_relay() -> CheckResult:
         "(cd relay && npx wrangler deploy); other phone-mic measurements are "
         "unaffected",
     )
+
+@doctor_check(order=32.6, group="correction")
+def check_crossover_v2_cloud_pipeline() -> CheckResult:
+    """Flat-linearization plan PR-4: the last session's honest-instrument
+    cloud verdict — per group, the spec pass/fail, the excluded-interval
+    count, and whether the geometry locked.
+
+    "Not yet run" (no household has ever closed a cloud group — a fresh
+    install, or one still on a pre-PR-3b build) is a distinct, non-failing
+    state, never misreported as a clean pass — mirrors every other
+    honesty-instrument surface's own rule (crossover_v2_flow's own
+    ``group_geometry``/``group_cloud_result``: "None means not yet run, never
+    a clean verdict"). A closed group whose spec FAILED is a WARN, not a
+    FAIL: an out-of-spec speaker is a measurement finding for the household to
+    act on at ``/correction/``, not a broken daemon.
+    """
+    from jasper.web.correction_crossover_v2 import crossover_v2_status_block
+
+    label = "crossover v2 cloud pipeline"
+    block = crossover_v2_status_block()
+    cloud = (block or {}).get("cloud")
+    if not isinstance(cloud, dict) or not cloud:
+        return CheckResult(label, "ok", "no cloud-measurement session recorded yet")
+    parts: list[str] = []
+    any_fail = False
+    for phase in sorted(cloud):
+        entry = cloud[phase]
+        if not isinstance(entry, dict):
+            continue
+        overall = entry.get("overall_passed")
+        spec_text = "pass" if overall is True else "fail" if overall is False else "n/a"
+        if overall is False:
+            any_fail = True
+        parts.append(
+            f"{phase}: spec={spec_text} "
+            f"excluded_intervals={entry.get('excluded_interval_count', 0)} "
+            f"geometry_locked={bool(entry.get('geometry_locked'))}"
+        )
+    if not parts:
+        return CheckResult(label, "ok", "no closed cloud groups recorded yet")
+    return CheckResult(label, "warn" if any_fail else "ok", "; ".join(parts))

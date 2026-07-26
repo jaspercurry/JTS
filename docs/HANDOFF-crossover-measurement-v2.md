@@ -487,15 +487,32 @@ together. Design rationale:
   (`MIN_FREE_SPACE_AFTER_PUBLISH_BYTES`) was deliberately *decoupled*
   and frozen at 256 MiB — see its comment.
 - **PR-4's seam** is `combine_cloud_positions(positions)` →
-  `CombinedResponse | None`. PR-3b reads exactly one field off it
-  (`geometry`, via `cloud_geometry_verdict`); PR-4's pipeline — null
-  gate, spec curve, persistence — becomes a second reader of the same
-  call, never a second combine. `cloud_position_capture` is the
+  `CombinedResponse | None`. `cloud_position_capture` is the
   per-position assembly underneath and does not change. The
   gated-IR reconstruction those functions perform is validated against
   the S0 corpus by
   [`tests/test_crossover_v2_cloud_geometry_corpus.py`](../tests/test_crossover_v2_cloud_geometry_corpus.py)
   (`JTS_FLAT_LIN_S0`-gated), not asserted.
+
+  **Landed as shipped (2026-07-26), one mechanism deviation from the
+  pre-registered "never a second combine" contract above.** PR-3b's own
+  retry-gating call — `cloud_geometry_verdict(positions)`, still called
+  with only `positions` so its existing test doubles
+  (`test_crossover_v2_conductor.py`'s `_lock` monkeypatch) keep working
+  unmodified — and PR-4's pipeline (`_run_cloud_pipeline`, called from
+  `_close_cloud_group` once the group is NOT retried) are two SEPARATE
+  calls to `combine_cloud_positions`, not one shared object. What makes
+  this safe rather than a second, drifting implementation: every
+  `_CloudPosition` in a group carries the SAME conductor-derived
+  `echo_band_hz` / `signal_band_hz` (set once in `__init__`, threaded at
+  every construction site), so both calls are a deterministic function of
+  identical `(positions, bands)` and agree byte-for-byte in production —
+  the two consumers were kept structurally independent specifically so a
+  test double replacing one (the geometry retry decision) cannot silently
+  stop exercising the other (the null-gate/spec pipeline). The wiring
+  contract itself — the mask/geometry/registry consumed TOGETHER — is
+  `assemble_cloud_group_result`, issue #1742 item 4's single result-assembly
+  function, called once per closed group and never read from in pieces.
 
 **Flatness-verify (#1668 PR-D) — a SIBLING claim, report-only.** The same
 VERIFY capture also computes `ProgramAnalysis.flatness_tracking`: gated
@@ -573,7 +590,7 @@ most visible thing on the screen.
 
 | File | Responsibility |
 |---|---|
-| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the PR-4 combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). |
+| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). PR-4 adds the contract-derived bands (`_composed_swept_band_hz`, `_derive_cloud_echo_band_hz`, `ECHO_BAND_HF_REGIME_FLOOR_HZ`), the wiring-contract assembly (`assemble_cloud_group_result`, `group_cloud_result`), and the VERIFY-anchor join (`_retain_verify_anchor_as_cloud_position`). |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. Also owns flatness-verify (#1668 PR-D): `_flatness_tracking` / `FLATNESS_VERIFY_HI_HZ` / `FLATNESS_VERIFY_TOLERANCE_DB` — see "Flatness-verify" above. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |

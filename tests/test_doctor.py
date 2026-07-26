@@ -6058,6 +6058,90 @@ def test_correction_doctor_checks_registered():
     assert "check_sound_profile" in names
     assert "check_dsp_apply_state" in names
     assert "check_correction_latest_bundle" in names
+    assert "check_crossover_v2_cloud_pipeline" in names
+
+
+def test_check_crossover_v2_cloud_pipeline_ok_when_never_run(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(v2host, "load_v2_state", lambda: None)
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "no cloud-measurement session" in r.detail
+
+
+def test_check_crossover_v2_cloud_pipeline_reports_per_group_verdict(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": True},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {
+                            "overall_passed": True,
+                            "bands": [
+                                {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True},
+                            ],
+                        },
+                        "merged_excluded_bands_hz": [[8000.0, 9000.0]],
+                    },
+                },
+                "cloud_verify": {
+                    "geometry": {"locked": False},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {"overall_passed": False, "bands": []},
+                        "merged_excluded_bands_hz": [],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    # One group failed its spec -- WARN, not FAIL (an out-of-spec speaker is
+    # a measurement finding, not a broken daemon).
+    assert r.status == "warn"
+    assert "cloud_measure: spec=pass excluded_intervals=1 geometry_locked=True" in r.detail
+    assert "cloud_verify: spec=fail excluded_intervals=0 geometry_locked=False" in r.detail
+
+
+def test_check_crossover_v2_cloud_pipeline_ok_when_every_group_passes(monkeypatch):
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": False},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {"overall_passed": True, "bands": []},
+                        "merged_excluded_bands_hz": [],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = doctor.check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "cloud_measure: spec=pass" in r.detail
 
 
 def test_web_design_assets_warns_when_manifest_missing(

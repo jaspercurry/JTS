@@ -584,6 +584,40 @@ def resolve_driver_excitation_ceilings(
     return permitted_band, maximum_peak
 
 
+def resolve_driver_measurement_band_hz(
+    safety_profile: Mapping[str, Any], target_fingerprint: str,
+) -> tuple[float, float]:
+    """The confirmed ``measurement_band_hz`` for one driver target.
+
+    :func:`resolve_driver_excitation_ceilings` already reads and validates
+    this exact field internally (see its "Band-edge asymmetry" docstring
+    paragraph) but does not return it — its own return value is the DERIVED
+    EXCITATION ceiling, a different quantity that deliberately excludes
+    ``measurement_band[1]``. Exposed separately for
+    flat-linearization plan PR-4's contract-derived echo/null analysis band,
+    which needs the declared analysis WINDOW itself ("what the wizard tells
+    the confidence/SNR scoring to expect" — the same docstring), not the
+    excitation ceiling.
+
+    Raises the SAME ``ExcitationSafetyPlanError(PROFILE_NOT_CONFIRMED)`` as
+    ``resolve_driver_excitation_ceilings`` on the identical malformed-shape
+    check, since both functions read the same confirmed record via
+    :func:`_target_for_request`.
+    """
+    target = _target_for_request(safety_profile, target_fingerprint)
+    measurement_band = target.get("measurement_band_hz")
+    if not isinstance(measurement_band, list) or len(measurement_band) != 2:
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    lo, hi = float(measurement_band[0]), float(measurement_band[1])
+    if not (math.isfinite(lo) and math.isfinite(hi)) or not 0.0 < lo < hi:
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    return (lo, hi)
+
+
 def prepare_driver_excitation_plan(
     topology: OutputTopology,
     safety_profile: Mapping[str, Any],

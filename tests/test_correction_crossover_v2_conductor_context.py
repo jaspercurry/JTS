@@ -346,6 +346,26 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             declared_sensitivities=context.declared_sensitivities,
         )
         assert context.driver_caps_dbfs[role] == pytest.approx(admission_cap)
+    # Flat-linearization plan PR-4: the tweeter's declared measurement_band_hz
+    # (500-10_000 in this fixture's _driver() helper) resolves onto the
+    # context — the field resolve_driver_excitation_ceilings reads and
+    # validates internally but does not return.
+    assert context.tweeter_measurement_band_hz == (500.0, 10_000.0)
+
+
+def test_tweeter_measurement_band_hz_is_none_when_unresolvable(monkeypatch):
+    """The autouse stub's design draft has no ``targets`` list at all
+    (``{"driver_safety_profile": {}}``), so the REAL
+    ``resolve_driver_measurement_band_hz`` this context resolves through
+    cannot find a target record — this is a declared-metadata GAP, never a
+    reason to refuse the whole measurement session (see
+    ``resolve_conductor_context``'s own comment at the call site)."""
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+
+    context = v2host.resolve_conductor_context(_status())
+
+    assert context.tweeter_measurement_band_hz is None
 
 
 def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):

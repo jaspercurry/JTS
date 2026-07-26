@@ -1012,4 +1012,33 @@ screen's `done_title`/`done_body` from the VERIFY entry to the last
 cloud-verify entry — both behavioural-adjacent copy/shape changes on
 paths the deviation claimed were untouched.*
 
+*PR-4 (2026-07-26): the live-flow wiring lands — combine → identify_
+interference_nulls → evaluate_flat_spec, assembled by one new function,
+`assemble_cloud_group_result` (issue #1742 item 4's single consumer of
+mask ∪ geometry.locked ∪ null registry), called once per closed group from
+`_close_cloud_group`. Contract-derived bands: `signal_band_hz` is the union
+of both roles' `RoleBand.band` (`_composed_swept_band_hz`, new — no prior
+function composed across roles); `echo_band_hz` is the tweeter's confirmed
+`measurement_band_hz` (new `excitation_safety_plan.resolve_driver_
+measurement_band_hz`, since `resolve_driver_excitation_ceilings` validates
+that field internally but returns the excitation ceiling, a different
+quantity), clamped inside the passband and disclosed (not overridden) via a
+WARNING log when its lower edge falls below `ECHO_BAND_HF_REGIME_FLOOR_HZ`
+(4000 Hz — the last comfortable row of `BAND_BELOW_PASSBAND_MARGIN_DB`'s
+own pinned six-band table, `test_band_deficit_separation_depends_on_the_
+analysis_band`, N-3's own note that PR-4 would derive this from the
+tweeter's declared range). The VERIFY anchor now JOINS the cloud-verify
+group (`_retain_verify_anchor_as_cloud_position`) — M positions yield M
+curves, not M-1; the tracking verdict is untouched. Persisted to
+`crossover_v2/<session>/cloud_measure.json` / `cloud_verify.json` (**a
+mechanism deviation from the work order's literal singular `cloud.json`**:
+the evidence store is write-once and the two groups close at genuinely
+different times in one session, so a single shared path would collide on
+the second write — `bind_cloud_publisher`'s own docstring). Surfaced at
+`/state` (compact per-band pass/fail + excluded-interval count + geometry,
+`crossover_v2_status_block`'s 9th key), the envelope (same compact
+projection plus the geometry guidance copy), and a new flat `jasper-doctor`
+check (`check_crossover_v2_cloud_pipeline`). Closes issue #1742 (items 2-3
+landed in PR-2, item 1 pre-program in #1746, item 4 here).*
+
 *Last verified: 2026-07-26*

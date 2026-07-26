@@ -582,8 +582,9 @@ RAHMONIC_MARGIN = 2.0
 # HF rolloff, so the honest population's *ceiling* is the number to watch
 # when this ships against other hardware.
 #
-# **A hard constraint on the analysis band, which PR-4 will derive from a
-# driver contract rather than leave at the default.** Re-measured on the 13
+# **A hard constraint on the analysis band, which PR-4 derives from a
+# driver contract rather than leaving at the default** (`_derive_cloud_echo_band_hz`
+# in `jasper.active_speaker.crossover_v2_flow`, landed 2026-07-26). Re-measured on the 13
 # S0 acoustic records and the 3 loopback residue records across six bands,
 # the honest side is comfortable everywhere — individual readings span
 # 0.40-17.50 dB and the worst *per-band ceiling* is 17.50 dB, at
