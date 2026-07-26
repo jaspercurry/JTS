@@ -64,8 +64,12 @@ bundle rather than forking it (single source of truth).
 ```sh
 cd capture-page
 bash build.sh                                   # -> capture-page/dist/
-npx wrangler pages deploy dist --project-name jts-capture-page
+npx wrangler pages deploy dist --project-name jts-capture-page --branch=main
 ```
+
+`--branch=main` is load-bearing: without it wrangler publishes a **preview
+alias** and the production domain keeps serving the stale page (the W6.10
+Chrome-deadlock bug class). The custom domain lags the deploy by ~5 min.
 
 ### Release order (page before Pi)
 

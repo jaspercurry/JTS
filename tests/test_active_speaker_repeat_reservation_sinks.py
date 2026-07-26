@@ -135,18 +135,51 @@ def test_completing_set_after_two_refunded_transports_stores_and_persists():
     assert summary["per_repeat"][-1]["attempt"] == 5
 
 
-def test_max_reservations_fits_the_capture_plan_attempt_ceiling():
-    # Pin the lockstep the rationale comments claim: the durable reservation
-    # attempt also indexes the relay's per-plan blob table, so it must FIT that
-    # table. The direction is what matters — the two constants were both 8
-    # until the relay ceiling was raised to 32 for multi-position capture
-    # plans, and this reservation cap is an infra circuit-breaker sized against
-    # MAX_ATTEMPTS, so it deliberately does not track the relay upward.
-    # Read the source rather than import capture_relay (crypto import blocked
-    # in some CI).
-    source = Path("jasper/capture_relay/spec.py").read_text(encoding="utf-8")
-    match = re.search(
-        r"^MAX_CAPTURE_PLAN_ATTEMPTS\s*=\s*(\d+)", source, re.MULTILINE
+def _constant_from_source(path: str, name: str) -> int:
+    """Read an int constant textually.
+
+    These tests deliberately do NOT import ``jasper.capture_relay`` (a broken
+    ``cryptography``/``_cffi_backend`` blocks it in some CI containers), and
+    ``crossover_v2_flow`` is read the same way for symmetry.
+    """
+    source = Path(path).read_text(encoding="utf-8")
+    match = re.search(rf"^{name}\s*=\s*(\d+)", source, re.MULTILINE)
+    assert match is not None, f"{name} not found in {path}"
+    return int(match.group(1))
+
+
+def test_max_reservations_fits_every_budget_the_attempt_number_must_pass():
+    """The reservation attempt number flows into two DIFFERENT budgets.
+
+    Both were 8 before the relay ceiling was raised to 32 for multi-position
+    capture plans, which made a single equality assertion ambiguous about
+    which relationship it was guarding. They are separate invariants:
+
+    1. **Plan-budget fit (the binding one).** A reservation attempt becomes
+       the relay session's ``begin_capture.attempt``, and
+       ``parse_begin_capture`` rejects ``attempt > plan.max_attempts``. The v2
+       flow's plan carries ``CAPTURE_PLAN_MAX_ATTEMPTS``, so the ledger must
+       never hand out an attempt that plan cannot admit. Currently exactly
+       tight (8 <= 8) — lowering the flow's retry budget below
+       ``MAX_RESERVATIONS`` would break the flow, and this is the assertion
+       that catches it.
+    2. **Transport fit.** The plan's own budget must fit the relay's
+       blob-index space (``capture_index = attempt - 1``, valid indexes
+       ``0..MAX_CAPTURE_PLAN_ATTEMPTS-1``). With (1) this transitively keeps
+       every reservation attempt inside the blob table, which is what the
+       ``MAX_RESERVATIONS`` rationale comment claims.
+
+    ``MAX_RESERVATIONS`` is an infra circuit-breaker sized against
+    ``MAX_ATTEMPTS``, so it deliberately does not track the relay ceiling
+    upward — only these inequalities bind it.
+    """
+    flow_budget = _constant_from_source(
+        "jasper/active_speaker/crossover_v2_flow.py", "CAPTURE_PLAN_MAX_ATTEMPTS"
     )
-    assert match is not None, "MAX_CAPTURE_PLAN_ATTEMPTS not found in spec.py"
-    assert MAX_RESERVATIONS <= int(match.group(1))
+    transport_ceiling = _constant_from_source(
+        "jasper/capture_relay/spec.py", "MAX_CAPTURE_PLAN_ATTEMPTS"
+    )
+    # (1) plan-budget fit — the invariant that actually binds the v2 flow.
+    assert MAX_RESERVATIONS <= flow_budget
+    # (2) transport fit — the plan's budget must fit the relay's blob table.
+    assert flow_budget <= transport_ceiling

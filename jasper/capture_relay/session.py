@@ -260,14 +260,12 @@ def mint_session(
 
 
 def _advertised_plan_ceiling(document: Mapping[str, Any] | None) -> int | None:
-    """The relay's advertised capture-plan ceiling, or ``None`` if it has none.
+    """The ceiling a capability document advertises, or ``None`` if none usable.
 
-    ``None`` covers both "no capabilities document at all" (a pre-capacity
-    Worker) and "a document that does not carry a usable ceiling", so a caller
-    never has to distinguish a missing endpoint from a malformed one to fail
-    closed — but the two are still reported differently to the OPERATOR (this
-    refusal is a deploy-state message, not household copy), because only one
-    of them is fixed by deploying the relay."""
+    Judges ONLY the document's contents. Whether the endpoint answered at all
+    is :attr:`RelayCapabilities.served`'s job — keeping the two separate is what
+    lets the refusal below name the right operator action instead of collapsing
+    every failure into "your relay is old"."""
     if not isinstance(document, Mapping):
         return None
     value = document.get("max_capture_plan_attempts")
@@ -302,22 +300,32 @@ def _assert_relay_plan_capacity(
     plan = session.spec.capture_plan
     if plan is None or plan.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS:
         return
-    document = client.capabilities()
-    advertised = _advertised_plan_ceiling(document)
+    probe = client.capabilities()
+    advertised = _advertised_plan_ceiling(probe.document)
     if advertised is not None and advertised >= plan.max_attempts:
         return
+    # Four outcomes, four operator actions — never one message for all of them.
     if advertised is not None:
-        deployed = f"advertises a capture-plan ceiling of {advertised}"
-    elif document is None:
-        deployed = (
+        cause = f"advertises a capture-plan ceiling of {advertised}"
+        remedy = "Deploy the current relay Worker (cd relay && npx wrangler deploy)"
+    elif not probe.served:
+        cause = (
             "predates the capture-plan capacity release (it serves no "
             f"/capabilities endpoint, so its ceiling is "
             f"{LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS})"
         )
+        remedy = "Deploy the current relay Worker (cd relay && npx wrangler deploy)"
+    elif probe.document is None:
+        # Answered 2xx with something that is not a capability document at all.
+        # Deploying the Worker fixes nothing — the network path is intercepting.
+        cause = (
+            "answered /capabilities with a body that is not a capability "
+            "document (a proxy, captive portal, or WAF is likely intercepting)"
+        )
+        remedy = "Check the network path to the relay"
     else:
-        # Reachable, versioned, but broken — a different operator problem from
-        # an un-deployed relay, so say so rather than blaming the release.
-        deployed = "serves a /capabilities document with no usable ceiling"
+        cause = "serves a /capabilities document carrying no usable ceiling"
+        remedy = "Redeploy the relay Worker (cd relay && npx wrangler deploy)"
     log_event(
         logger,
         "capture_relay.plan_capacity_refused",
@@ -326,11 +334,11 @@ def _assert_relay_plan_capacity(
         required=plan.max_attempts,
         # `None` renders as `null`, distinct from any real ceiling.
         advertised=advertised,
+        served=probe.served,
     )
     raise RelayCapacityUnavailable(
-        f"the relay at {client.base_url} {deployed}, but this measurement needs "
-        f"{plan.max_attempts}. Deploy the current relay Worker "
-        "(cd relay && npx wrangler deploy) before running this measurement."
+        f"the relay at {client.base_url} {cause}, but this measurement needs "
+        f"{plan.max_attempts}. {remedy} before running this measurement."
     )
 
 

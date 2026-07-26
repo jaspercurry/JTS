@@ -1696,6 +1696,62 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
         assert plan.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
 
 
+# Golden wire bytes for the two shipped v2 capture plans, canonicalized exactly
+# the way `PiCaptureSession.capture_spec_json` serializes the enclosing spec
+# (`json.dumps(..., separators=(",", ":"))`), so these really are the bytes the
+# phone receives — not a proxy for them.
+#
+# WHAT MUST NEVER CHANGE THEM: raising the relay's transport ceiling
+# (`capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`). That is the entire point of
+# this pin — the capacity raise from 8 to 32 must be invisible to these two
+# flows, and a value-level assertion alone would not have caught a serialization
+# change that came along with it.
+#
+# WHAT LEGITIMATELY CHANGES THEM: editing a `screen` title/body/auto-advance,
+# changing `CAPTURE_PLAN_TARGET` or `CAPTURE_PLAN_MAX_ATTEMPTS`, altering
+# `CapturePlan.to_dict`'s schema, or shifting any composed program's length
+# (prelude/pilot durations, `CAPTURE_ENTRY_MARGIN_MS`) — every one of those
+# changes what a household's phone is told to do, so a failure here is a prompt
+# to confirm the change was intended, not a nuisance.
+#
+# TO UPDATE: run the assertion, read the actual digest out of the failure
+# message, and paste it here in the same commit as the intended change.
+_GOLDEN_V2_PLAN_BYTES = {
+    "3-entry": (
+        816,
+        "bc1c6c0a5c14b9c7d831c1b9c90215df1df8fd5949363d58c4682a65f4bb1e21",
+    ),
+    "1-entry": (
+        246,
+        "a8e3969419902efc2a14fb528d81b13e7e454d10b5a9e7418c5725944f77d55f",
+    ),
+}
+
+
+def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
+    """The capacity raise is invisible on the wire for both shipped flows."""
+    import hashlib
+    import json
+
+    from jasper.active_speaker.crossover_v2_flow import (
+        build_v2_capture_plan,
+        build_v2_verify_capture_plan,
+    )
+
+    plans = {
+        "3-entry": build_v2_capture_plan(_roles(), FC_HZ),
+        "1-entry": build_v2_verify_capture_plan(FC_HZ),
+    }
+    for label, plan in plans.items():
+        raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
+        expected_len, expected_sha = _GOLDEN_V2_PLAN_BYTES[label]
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        assert (len(raw), actual_sha) == (expected_len, expected_sha), (
+            f"{label} v2 capture plan wire bytes changed: "
+            f"len={len(raw)} sha256={actual_sha}"
+        )
+
+
 # --- W6.1 Finding A: cap-aware CHECK / MEASURE / VERIFY composition -------------
 #
 # The conductor fixture (CAPS) knew the caps, but the fake play seam never ran

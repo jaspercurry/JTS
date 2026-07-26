@@ -1884,27 +1884,57 @@ def test_oversized_plan_is_refused_when_the_relay_advertises_too_small_a_ceiling
     assert backend.sessions == {}
 
 
+def _capabilities_override(response: RelayResponse):
+    """A backend whose /capabilities answers with a fixed canned response."""
+
+    class Overridden(FakePlanRelayBackend):
+        def __call__(self, method, url, headers, body):
+            if urllib.parse.urlsplit(url).path == "/capabilities":
+                return response
+            return super().__call__(method, url, headers, body)
+
+    return Overridden()
+
+
 def test_oversized_plan_is_refused_on_a_malformed_capabilities_document():
     # Fail CLOSED like a missing document — but say something DIFFERENT, since
     # "your relay is broken" and "your relay is old" need different fixes.
-    class Malformed(FakePlanRelayBackend):
-        def __call__(self, method, url, headers, body):
-            if urllib.parse.urlsplit(url).path == "/capabilities":
-                return RelayResponse(
-                    200,
-                    {},
-                    json.dumps(
-                        {"schema_version": 1, "max_capture_plan_attempts": "lots"}
-                    ).encode(),
-                )
-            return super().__call__(method, url, headers, body)
-
-    backend = Malformed()
+    backend = _capabilities_override(
+        RelayResponse(
+            200,
+            {},
+            json.dumps(
+                {"schema_version": 1, "max_capture_plan_attempts": "lots"}
+            ).encode(),
+        )
+    )
     with pytest.raises(RelayCapacityUnavailable) as excinfo:
         _register_plan(backend, _sized_plan(21))
     message = str(excinfo.value)
     assert "no usable ceiling" in message
     assert "predates" not in message
+    assert "Redeploy the relay Worker" in message
+    assert backend.sessions == {}
+
+
+def test_oversized_plan_is_refused_and_names_interception_on_a_non_json_200():
+    """An HTML interstitial must not be reported as an un-deployed relay.
+
+    A captive portal / proxy / WAF answering 2xx for `/capabilities` is fixed
+    by NEITHER deploying nor redeploying the Worker, so blaming the release
+    would send the operator down the wrong path. This is the one refusal whose
+    remedy is not a wrangler command.
+    """
+    backend = _capabilities_override(
+        RelayResponse(200, {}, b"<html><body>Sign in to continue</body></html>")
+    )
+    with pytest.raises(RelayCapacityUnavailable) as excinfo:
+        _register_plan(backend, _sized_plan(21))
+    message = str(excinfo.value)
+    assert "intercepting" in message
+    assert "Check the network path to the relay" in message
+    assert "predates" not in message
+    assert "wrangler" not in message
     assert backend.sessions == {}
 
 

@@ -1056,27 +1056,37 @@ def test_pull_blob_parses_integrity_headers():
 
 
 @pytest.mark.parametrize(
-    "response",
+    ("response", "served"),
     [
-        RelayResponse(404, {}, b'{"error":"not_found"}'),
-        RelayResponse(500, {}, b'{"error":"boom"}'),
-        RelayResponse(200, {}, b"not json at all"),
-        RelayResponse(200, {}, b'["a","list"]'),
-        RelayResponse(200, {}, b""),
+        (RelayResponse(404, {}, b'{"error":"not_found"}'), False),
+        (RelayResponse(500, {}, b'{"error":"boom"}'), False),
+        # A 2xx that is not a capability document is NOT the same as a missing
+        # endpoint: something answered for the relay and it was not the relay.
+        # `served=True` is what keeps the refusal from blaming the release.
+        (RelayResponse(200, {}, b"<html>captive portal</html>"), True),
+        (RelayResponse(200, {}, b'["a","list"]'), True),
+        (RelayResponse(200, {}, b""), True),
     ],
-    ids=["pre-capacity-404", "server-error", "unparseable", "not-an-object", "empty"],
+    ids=[
+        "pre-capacity-404",
+        "server-error",
+        "html-interstitial",
+        "not-an-object",
+        "empty",
+    ],
 )
-def test_client_capabilities_reports_absence_rather_than_raising(response):
-    # `capabilities()` is a VERSION probe, so every answer that is not a usable
-    # document collapses to None and the caller fails closed. A 404 is the
-    # expected shape from a relay deployed before the endpoint existed.
+def test_client_capabilities_reports_no_document_rather_than_raising(response, served):
+    # `capabilities()` is a VERSION probe: nothing here raises, every outcome
+    # leaves the caller failing closed, and `served` preserves WHY.
     def transport(method, url, headers, body):
         assert method == "GET"
         assert url == "https://relay.test/capabilities"
         return response
 
     client = RelayClient("https://relay.test", transport=transport)
-    assert client.capabilities() is None
+    probe = client.capabilities()
+    assert probe.document is None
+    assert probe.served is served
 
 
 def test_client_capabilities_returns_the_document():
@@ -1086,7 +1096,9 @@ def test_client_capabilities_returns_the_document():
         )
 
     client = RelayClient("https://relay.test", transport=transport)
-    assert client.capabilities() == {
+    probe = client.capabilities()
+    assert probe.served is True
+    assert probe.document == {
         "schema_version": 1,
         "max_capture_plan_attempts": 32,
     }
