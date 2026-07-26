@@ -20,6 +20,8 @@ import pytest
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.session_volume_plan import (
+    DEFAULT_WALL_CLOCK_CEILING_S,
+    MAX_WALL_CLOCK_CEILING_S,
     SessionVolumeOpenResult,
     SessionVolumePlan,
     SessionVolumePlanError,
@@ -251,6 +253,39 @@ def test_wall_clock_ceiling_force_drains_stale_active(tmp_path):
     assert drained is SessionVolumeRestoreResult.EXACT_RESTORED
     assert vol.value == -6.0
     assert json.loads(p.read_text())["status"] == "resolved"
+
+
+def test_set_wall_clock_ceiling_stamps_the_next_open_and_stays_bounded(tmp_path):
+    """The ceiling is a property of the measurement about to run — a 16-capture
+    crossover cloud legitimately outlasts the 3-entry flow's default — so the
+    caller that built the plan sets it, and the OPEN session's own recorded
+    value is what ``stale_active`` reads.
+
+    Fail-closed both ways: a nonsense value is refused rather than silently
+    disabling the walked-away guarantee, and no caller can stretch the ceiling
+    past ``MAX_WALL_CLOCK_CEILING_S``.
+    """
+    p = tmp_path / "sv.json"
+    vol = FakeVolume(initial=-6.0)
+    plan = SessionVolumePlan(state_path=p, clock=lambda: 1000.0)
+    assert plan.wall_clock_ceiling_s == DEFAULT_WALL_CLOCK_CEILING_S
+
+    plan.set_wall_clock_ceiling_s(3360.0)
+    asyncio.run(plan.open(-12.0, vol.set, vol.get))
+    assert json.loads(p.read_text())["wall_clock_ceiling_s"] == 3360.0
+    # A session that would have been stale under the 1800 s default is not
+    # stale under the ceiling this plan actually opened with...
+    fresh = SessionVolumePlan(state_path=p, clock=lambda: 1000.0 + 3000.0)
+    assert fresh.stale_active() is False
+    # ...and still retires once its own ceiling passes.
+    late = SessionVolumePlan(state_path=p, clock=lambda: 1000.0 + 3400.0)
+    assert late.stale_active() is True
+
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(SessionVolumePlanError):
+            plan.set_wall_clock_ceiling_s(bad)
+    plan.set_wall_clock_ceiling_s(10 * MAX_WALL_CLOCK_CEILING_S)
+    assert plan.wall_clock_ceiling_s == MAX_WALL_CLOCK_CEILING_S
 
 
 def test_enforce_ceiling_noop_when_fresh(tmp_path):

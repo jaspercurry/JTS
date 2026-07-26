@@ -358,7 +358,16 @@ def check_capture_relay() -> CheckResult:
     same-origin capture and this reports OK/skipped. When configured, confirm the
     AEAD decrypt
     dependency is importable and the relay's /healthz is reachable (a relay
-    outage breaks NEW measurements only — existing corrections are unaffected)."""
+    outage breaks NEW measurements only — existing corrections are unaffected).
+
+    Also reports the relay's advertised capture-plan ceiling. The crossover-v2
+    cloud session emits a plan larger than the pre-capacity Worker's frozen
+    ceiling of 8, so a stale deployment refuses it — correctly and before any
+    tone plays, but only at the moment a household taps Start. Surfacing the
+    ceiling here turns that into something an operator finds during a
+    diagnostic run instead. A reachable relay whose ceiling is too small is a
+    WARN, not a fail: every measurement OTHER than the cloud still works, and
+    the remedy is one Worker deploy."""
     label = "Phone-mic relay"
     try:
         from jasper.capture_relay import health
@@ -374,10 +383,24 @@ def check_capture_relay() -> CheckResult:
             "phone-mic capture through another cloud relay)",
         )
     reachable, detail = health.probe_relay_health(base)
-    if reachable:
-        return CheckResult(label, "ok", f"{base} {detail}")
+    if not reachable:
+        # Unreachable relay: the capability probe would only repeat the same
+        # failure, so do not spend a second round-trip saying it twice.
+        return CheckResult(
+            label, "warn",
+            f"{base} {detail} — new phone-mic measurements need the relay; "
+            "existing applied corrections are unaffected",
+        )
+    from jasper.active_speaker.crossover_v2_flow import cloud_plan_max_attempts
+
+    needed = cloud_plan_max_attempts()
+    ceiling, capacity_detail = health.probe_relay_plan_capacity(base)
+    if ceiling is not None and ceiling >= needed:
+        return CheckResult(label, "ok", f"{base} {detail}, {capacity_detail}")
     return CheckResult(
         label, "warn",
-        f"{base} {detail} — new phone-mic measurements need the relay; "
-        "existing applied corrections are unaffected",
+        f"{base} {detail}, but {capacity_detail} — the crossover measurement "
+        f"needs {needed}. Deploy the current relay Worker "
+        "(cd relay && npx wrangler deploy); other phone-mic measurements are "
+        "unaffected",
     )

@@ -80,13 +80,17 @@ SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
 # `max_attempts` doubles as the RETRY budget (a retaken capture spends an
 # attempt but not a `capture_target` slot), so the cap must cover entries PLUS
 # retakes: 21 + 11 = 32, i.e. ~52 % retake headroom over the worst-case entry
-# count. That is TIGHTER than what ships today, not looser: the live v2
-# CHECK/MEASURE/VERIFY plan runs capture_target=3 against
-# `crossover_v2_flow.CAPTURE_PLAN_MAX_ATTEMPTS` = 8 (167 % headroom), and
-# `repeat_admission` allows 100 % (MAX_ATTEMPTS=4 audible vs
-# MAX_RESERVATIONS=8 total reservations). Longer sets get proportionally fewer
-# retakes each, which is the intended direction — a 21-position session that
-# needs 11 retakes has a problem retries will not fix.
+# count.
+#
+# As SHIPPED (PR-3b, N=9 after adjudication 3a): the live cloud plan is
+# capture_target=16 against `crossover_v2_flow.cloud_plan_max_attempts()` = 23,
+# i.e. ~45 % headroom — tighter than the 167 % the pre-cloud 3-entry plan
+# carried, and deliberately so. Longer sets get proportionally fewer retakes
+# each, which is the intended direction: a 21-position session that needs 11
+# retakes has a problem retries will not fix. (The 3-entry plan itself still
+# exists only as the 1-entry re-verify re-arm, which keeps
+# `CAPTURE_PLAN_MAX_ATTEMPTS` = 8.) `repeat_admission` allows 100 %
+# (MAX_ATTEMPTS=4 audible vs MAX_RESERVATIONS=8 total reservations).
 #
 # Two consequences of the raise, named here rather than discovered later:
 #   - A session may now authorize 32 blob keys instead of 8, so the storage a
@@ -1548,6 +1552,7 @@ def build_crossover_sweep_spec(
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ambient_duration_ms: int = 0,
     capture_plan: CapturePlan | None = None,
+    guided_captures: int = 0,
     default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
@@ -1588,6 +1593,22 @@ def build_crossover_sweep_spec(
     ``acknowledgement_binding`` (placement gates run per capture, exactly as
     today).
 
+    ``guided_captures`` (> 0) declares that this summed session is a GUIDED
+    SPATIAL CLOUD of that many prompted CAPTURES — the count the phone itself
+    counts down ("measurement 4 of 16"), NOT the smaller number of distinct mic
+    positions the conductor thinks in (its per-entry screens say "Spot 3 of
+    9"). The consent copy is written against captures because that is what the
+    household is promising about: one held-still sweep each. It selects the
+    consent surface to match: the placement instruction, the steps, the button, and the
+    acknowledgement policy/label all describe a walk instead of a stationary
+    mic. It exists because the stationary copy makes a whole-session promise
+    ("I will not move it") that a cloud asks the household to break on the very
+    next screen — a false consent surface, caught in review before ship. Per-
+    sweep stillness stays promised in every shape, because that one is still
+    true. **Default (``0``) is byte-identical to the pre-cloud builder**, and
+    that path stays reachable on purpose: the 1-entry re-verify re-arm really
+    does keep the mic still for its whole (single-capture) session.
+
     ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
     (Wave-2 persistence, ``jasper.correction.household_mic`` — same field
     ``build_level_ramp_spec`` already carries). W6.12: unlike ``level_ramp``,
@@ -1619,10 +1640,13 @@ def build_crossover_sweep_spec(
         int(hard_timeout_ms),
     )
     from jasper.active_speaker.capture_geometry import (
+        CLOUD_WALK_PLACEMENT_POLICY_ID,
         DRIVER_CAPTURE_GEOMETRIES,
         DRIVER_PLACEMENT_POLICY_ID,
         REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID,
         SUMMED_PLACEMENT_POLICY_ID,
+        cloud_walk_acknowledgement_label,
+        cloud_walk_placement_instruction,
         driver_placement_instruction,
         placement_acknowledgement_label,
         reference_axis_driver_acknowledgement_label,
@@ -1636,6 +1660,17 @@ def build_crossover_sweep_spec(
     geometry = str(driver_capture_geometry or "").strip().lower()
     if is_driver and geometry not in DRIVER_CAPTURE_GEOMETRIES:
         raise CaptureSpecError("driver capture geometry is unsupported")
+    # Plan SHAPE, not plan presence, selects the summed consent copy: a guided
+    # cloud asks the household to move the mic between captures, so the
+    # stationary policy's "I will not move it" promise would be false on the
+    # very first screen. ``guided_captures == 0`` (every pre-cloud caller,
+    # including the 1-entry re-verify re-arm, whose stationary promise is still
+    # TRUE) keeps the byte-identical stationary copy and policy id.
+    walk = int(guided_captures or 0)
+    if walk < 0:
+        raise CaptureSpecError("guided_captures must not be negative")
+    if walk and is_driver:
+        raise CaptureSpecError("guided_captures is a summed-capture shape")
     placement_instruction = (
         (
             reference_axis_driver_placement_instruction(driver_role)
@@ -1643,6 +1678,7 @@ def build_crossover_sweep_spec(
             else driver_placement_instruction(driver_role)
         )
         if is_driver
+        else cloud_walk_placement_instruction(walk) if walk
         else summed_placement_instruction()
     )
     button_label = (
@@ -1652,6 +1688,7 @@ def build_crossover_sweep_spec(
             else f"I’ve positioned the mic — measure {driver_label}"
         )
         if is_driver
+        else "The mic is on the mark — start measuring" if walk
         else "The mic is fixed on-axis — measure the combined drivers"
     )
     acknowledgement = (
@@ -1663,6 +1700,7 @@ def build_crossover_sweep_spec(
                     else DRIVER_PLACEMENT_POLICY_ID
                 )
                 if is_driver
+                else CLOUD_WALK_PLACEMENT_POLICY_ID if walk
                 else SUMMED_PLACEMENT_POLICY_ID
             ),
             binding_id=acknowledgement_binding,
@@ -1673,6 +1711,7 @@ def build_crossover_sweep_spec(
                     else placement_acknowledgement_label(driver_role)
                 )
                 if is_driver
+                else cloud_walk_acknowledgement_label(walk) if walk
                 else summed_acknowledgement_label()
             ),
         )
@@ -1710,7 +1749,16 @@ def build_crossover_sweep_spec(
                         if ambient_duration_ms
                         else f"Tap Start, then stay quiet for about {seconds} seconds"
                     ),
-                    "Keep the phone still until the sweep finishes",
+                    # Per-sweep stillness is true in EVERY shape — it is the
+                    # whole-session promise the cloud breaks. The guided
+                    # wording adds what happens between sweeps so the household
+                    # is not surprised by the first move prompt.
+                    (
+                        "Keep the phone still until each sweep finishes, then "
+                        "follow the on-screen prompt to move it"
+                        if walk
+                        else "Keep the phone still until the sweep finishes"
+                    ),
                 ]
             ),
             ui_level_meter("mic"),

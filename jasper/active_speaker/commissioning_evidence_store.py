@@ -51,7 +51,6 @@ from jasper.audio_measurement.null_walk import (
 from .bundles import (
     BUNDLE_FILE_MODE,
     BUNDLE_KIND,
-    DEFAULT_SESSIONS_MAX_BYTES,
     open_bundle_admission_authority,
 )
 from .commissioning_evidence import (
@@ -97,10 +96,23 @@ MAX_CAPTURE_ARTIFACT_COUNT = (
 MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES = (
     MAX_CAPTURE_ARTIFACT_COUNT * MAX_EVIDENCE_ARTIFACT_BYTES
 ) + (1024 * 1024 * 1024)
-# Keep at least one ordinary Active retention budget free. Open/current bundles
-# are intentionally retention-protected, so retention alone cannot rescue a
-# full filesystem while an authoritative run is growing.
-MIN_FREE_SPACE_AFTER_PUBLISH_BYTES = DEFAULT_SESSIONS_MAX_BYTES
+# Keep this much free after a durable evidence publish — headroom for the run
+# still in progress. Open/current bundles are intentionally retention-protected,
+# so retention alone cannot rescue a full filesystem while an authoritative run
+# is growing.
+#
+# This USED to be defined as ``bundles.DEFAULT_SESSIONS_MAX_BYTES`` and is now
+# frozen at that constant's pre-2026-07-26 value, deliberately. The two answer
+# different questions: retention asks "how much history do we keep", this asks
+# "how much room must a publish leave behind". Raising retention 256 MiB → 1 GiB
+# for the crossover-v2 position-group choreography (flat-linearization PR-3b)
+# would otherwise have quadrupled the free space a Pi must have before it may
+# publish ANY evidence — a new refusal on every SD card with under a gigabyte
+# spare, from a change that was only ever about keeping more history. 256 MiB
+# still leaves room for several times a cloud session's own evidence. Change
+# this number only when the publish-headroom argument itself changes; pinned by
+# ``tests/test_active_speaker_commissioning_evidence_store.py``.
+MIN_FREE_SPACE_AFTER_PUBLISH_BYTES = 256 * 1024 * 1024
 
 _ATTEMPT_CAPTURE_NAME_RE = re.compile(r"([0-9]{4})\.json")
 _ATTEMPT_TEMP_NAME_RE = re.compile(

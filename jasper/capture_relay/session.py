@@ -151,14 +151,31 @@ class CapturePageIncompatible(RuntimeError):
     """The public capture page does not implement this Pi's protocol."""
 
 
-class RelayCapacityUnavailable(RuntimeError):
+class RelayCapacityUnavailable(ValueError):
     """The DEPLOYED relay cannot store every blob index this plan would use.
 
-    The sibling of :class:`CapturePageIncompatible` for the other half of the
-    cross-deployment protocol: the page's skew is caught from its identity
-    event, the relay Worker's from its ``GET /capabilities`` document. Both
-    fail before any tone plays; this one fails before the spec is even
-    uploaded."""
+    The sibling of :class:`CapturePageIncompatible` in WHAT it catches — the
+    other half of the cross-deployment protocol: the page's skew is caught from
+    its identity event, the relay Worker's from its ``GET /capabilities``
+    document. Both fail before any tone plays; this one fails before the spec
+    is even uploaded.
+
+    It is deliberately NOT a sibling in base class, because the two are raised
+    at different points in the lifecycle and the base class is what routes them
+    to the right HTTP shape. ``CapturePageIncompatible`` is raised from the
+    BACKGROUND runner once a session is live, so it lands on
+    ``/status.relay = failed`` with translated copy. This one is raised in the
+    FOREGROUND, inside ``register_session``, before a session exists at all —
+    the same position every other start-time refusal occupies
+    (``_require_relay_base``, the already-in-progress guard,
+    ``CrossoverV2Refused``, ``ServerOwnedNextStepMismatch``), all of which are
+    ``ValueError`` so ``correction_setup``'s dispatcher answers a clean 400
+    carrying the message rather than a 500 with a traceback. The message names
+    the cause AND the operator action, so the 400 body is the whole answer.
+
+    PR-3b is the first release that can actually reach this path (it is the
+    first to emit a plan larger than ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``); the
+    shape was chosen here rather than left to be discovered on a stale relay."""
 
 
 class CaptureBeginRefused(RuntimeError):
@@ -259,7 +276,7 @@ def mint_session(
     )
 
 
-def _advertised_plan_ceiling(document: Mapping[str, Any] | None) -> int | None:
+def advertised_plan_ceiling(document: Mapping[str, Any] | None) -> int | None:
     """The ceiling a capability document advertises, or ``None`` if none usable.
 
     Judges ONLY the document's contents. Whether the endpoint answered at all
@@ -301,7 +318,7 @@ def _assert_relay_plan_capacity(
     if plan is None or plan.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS:
         return
     probe = client.capabilities()
-    advertised = _advertised_plan_ceiling(probe.document)
+    advertised = advertised_plan_ceiling(probe.document)
     if advertised is not None and advertised >= plan.max_attempts:
         return
     # Four outcomes, four operator actions — never one message for all of them.

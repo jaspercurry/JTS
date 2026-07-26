@@ -1079,4 +1079,21 @@ def test_total_bound_covers_the_proven_max_capture_matrix() -> None:
     assert MAX_TOTAL_AUTHORITATIVE_EVIDENCE_BYTES >= (
         MAX_CAPTURE_ARTIFACT_COUNT * MAX_EVIDENCE_ARTIFACT_BYTES
     ) + (1024 * 1024 * 1024)
-    assert MIN_FREE_SPACE_AFTER_PUBLISH_BYTES >= DEFAULT_SESSIONS_MAX_BYTES
+
+
+def test_publish_headroom_is_frozen_and_not_derived_from_retention() -> None:
+    """The publish-time free-space floor answers "how much room must a publish
+    leave behind"; ``DEFAULT_SESSIONS_MAX_BYTES`` answers "how much history do
+    we keep". They were ONE constant until the crossover-v2 position-group
+    choreography raised retention 256 MiB -> 1 GiB (flat-linearization PR-3b),
+    at which point sharing them would have quadrupled the free space a Pi must
+    have before it may publish ANY evidence — a new refusal on every SD card
+    with under a gigabyte spare, for a change that was only ever about keeping
+    more history. Frozen here at the pre-raise value, deliberately.
+    """
+    assert MIN_FREE_SPACE_AFTER_PUBLISH_BYTES == 256 * 1024 * 1024
+    assert MIN_FREE_SPACE_AFTER_PUBLISH_BYTES != DEFAULT_SESSIONS_MAX_BYTES
+    # Still comfortably above one crossover-v2 cloud session's own evidence
+    # (15 accepted captures, each bounded by MAX_EVIDENCE_ARTIFACT_BYTES), which
+    # is the run the raise was made for.
+    assert MIN_FREE_SPACE_AFTER_PUBLISH_BYTES >= 15 * MAX_EVIDENCE_ARTIFACT_BYTES

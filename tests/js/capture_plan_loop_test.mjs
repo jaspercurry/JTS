@@ -110,6 +110,12 @@ function noteText(screenEl) {
   return note ? note.textContent : "";
 }
 
+// Every note paragraph, in order — a retry screen carrying server-supplied
+// guidance renders TWO (what happened, then what to do).
+function noteTexts(screenEl) {
+  return screenEl.children.filter((c) => c.tagName === "P").map((c) => c.textContent);
+}
+
 function backLink(screenEl) {
   return screenEl.children.find((c) => c.tagName === "A") || null;
 }
@@ -336,12 +342,18 @@ function makeFakePlanClient({ target, maxAttempts, resultFor = () => ({ accepted
         const { index, attempt, verdict } = pendingResult;
         pendingResult = null;
         if (verdict.accepted) acceptedCount += 1;
+        // FIDELITY: the real runner relays the host's WHOLE verdict mapping
+        // minus `accepted` (`_poll_capture_plan`'s capture_result post), not
+        // just `error` — the v2 conductor's rejections carry `reason`,
+        // `banner`, `code`, and a position-group `prompt`. Spreading here is
+        // what lets a test see the fields the page must extract.
+        const { accepted, ...verdictFields } = verdict;
         const resultEvent = {
           phase: "capture_result",
           index,
           attempt,
-          accepted: verdict.accepted,
-          error: verdict.error,
+          accepted,
+          ...verdictFields,
         };
         if (verdict.accepted && acceptedCount >= target) {
           last = resultEvent;
@@ -509,6 +521,102 @@ async function testRejectedResultOffersTryAgainSameSlot() {
     "the retry re-uses index 1 with a fresh attempt number",
   );
   assert.deepEqual(blobPuts.map((b) => b.captureIndex), [0, 1, 2]);
+  ok();
+}
+
+// ============================================================================
+// 2a. A rejection carrying the Pi's OWN copy renders that copy, not the
+//     generic line — and a position-group geometry retake's `prompt` (the
+//     "move further out" instruction) renders as its own paragraph.
+//
+// REGRESSION PIN (round-1 review blocker B2): the page extracted only
+// `accepted`/`error` from capture_result, so the v2 conductor's `reason` /
+// `banner` / `prompt` were dropped on the floor and every rejection showed
+// "That measurement didn't pass the speaker's quality check." For a geometry
+// lock that sentence is FALSE (the capture is fine — the positions were too
+// clustered) and, worse, actionless: the operator retook from the same spot,
+// so spread never increased and the retake could not help.
+// ============================================================================
+async function testGeometryRetakeRendersTheServerSuppliedGuidance() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const REASON =
+    "These spots were too close together to tell a real dip from an echo. " +
+    "Take this one from further out and we will use it instead.";
+  const PROMPT =
+    "Same measurement, wider spot: take this one about two forearms' length " +
+    "to the LEFT of the mark, still pointed at the speaker.";
+
+  const spec = planSpec({ target: 2, maxAttempts: 4 });
+  const { client } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 4,
+    resultFor: (index, attempt) =>
+      attempt === 1
+        ? {
+            accepted: false,
+            code: "cloud_geometry_locked",
+            reason: REASON,
+            banner: "",
+            prompt: PROMPT,
+          }
+        : { accepted: true },
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+
+  // Both halves reach the household, in order: what happened, then what to do.
+  assert.deepEqual(noteTexts(ctx.screenEl), [REASON, PROMPT]);
+  assert.ok(
+    !noteTexts(ctx.screenEl).some((t) => t.includes("quality check")),
+    "the generic fallback must not appear when the Pi supplied its own copy",
+  );
+  // The status line surfaces the ACTIONABLE half — that is the one the
+  // operator has to do something about before tapping Try again.
+  assert.ok(
+    statusHistory.some((s) => String(s).includes(PROMPT)),
+    "the status line carries the move instruction",
+  );
+
+  const retry = ctx.captureRefs.buttons.find((b) => b.action === "begin_capture").el;
+  await retry._listeners.click[0]();
+  assert.equal(headingText(ctx.screenEl), "Measurement 1 of 2 ✓");
+  ok();
+}
+
+// ============================================================================
+// 2a-bis. Backwards compatibility in both directions for the same extraction:
+// a Pi that sends only `error` (every non-v2 kind, and any older build) still
+// renders exactly one paragraph with that text, and a rejection carrying
+// NOTHING still gets the generic fallback. Without this the fix above could
+// have silently required the new fields.
+// ============================================================================
+async function testRejectionCopyFallsBackWhenThePiSendsNoGuidance() {
+  statusHistory.length = 0;
+  const { onPlanStart } = await loadModule();
+  globalThis.__recorder = makeRecorder();
+  const statusEl = makeStatusEl();
+  globalThis.document = { createElement: (tag) => makeNode(tag), getElementById: () => statusEl };
+
+  const spec = planSpec({ target: 2, maxAttempts: 4 });
+  const { client } = makeFakePlanClient({
+    target: 2,
+    maxAttempts: 4,
+    resultFor: (index, attempt) => (attempt === 1 ? { accepted: false } : { accepted: true }),
+  });
+  const ctx = makeCtx(spec, client);
+
+  await onPlanStart(ctx);
+  assert.deepEqual(
+    noteTexts(ctx.screenEl),
+    ["That measurement didn't pass the speaker's quality check."],
+    "no server copy ⇒ exactly one generic paragraph, unchanged from before",
+  );
   ok();
 }
 
@@ -1928,6 +2036,8 @@ async function testConcurrentReacquireCallsCoalesceToOneAcquireNoOrphan() {
 const tests = [
   testFullAcceptedRoundTripEndsAllDone,
   testRejectedResultOffersTryAgainSameSlot,
+  testGeometryRetakeRendersTheServerSuppliedGuidance,
+  testRejectionCopyFallsBackWhenThePiSendsNoGuidance,
   testTimedOutResultPollRendersTerminalNotStaleRetry,
   testRefusedBeginRendersTerminalWithNoRetry,
   testExhaustedBudgetRendersDistinctTerminal,

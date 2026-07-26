@@ -529,6 +529,43 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     assert "phone-mic relay capture is not configured" in message
 
 
+def test_stale_relay_capacity_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
+    """``RelayCapacityUnavailable`` is a START-TIME refusal, raised inside
+    ``register_session`` before a session exists — the same position every other
+    precondition refusal occupies. Since the crossover cloud plan is the first
+    plan large enough to reach that gate, this pins the shape it answers with:
+    a clean 400 carrying the operator's remedy, not a 500 with a traceback.
+    """
+    from jasper.capture_relay.session import RelayCapacityUnavailable
+
+    # The base-class relationship IS the routing contract in this dispatcher.
+    assert issubclass(RelayCapacityUnavailable, ValueError)
+
+    def _refuse(*_a, **_k):
+        raise RelayCapacityUnavailable(
+            "the relay at https://relay.test predates the capture-plan capacity "
+            "release. Deploy the current relay Worker before running this "
+            "measurement."
+        )
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+    monkeypatch.setattr(correction_setup, "_handle_crossover_v2_relay", _refuse)
+    caplog.set_level(logging.WARNING, logger=correction_setup.logger.name)
+
+    resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
+
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    assert b"Deploy the current relay Worker" in resp
+    # And it is on the journal like every other refused start.
+    assert any(
+        r.getMessage().startswith("event=correction.crossover_v2_refused")
+        for r in caplog.records
+    )
+
+
 def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch):
     """Finding N (a): a blocked apply must not read as success. Before this
     fix, /crossover/v2/apply always answered 200 regardless of payload

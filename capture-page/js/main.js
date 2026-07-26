@@ -156,9 +156,34 @@ function setStatus(message, kind = "info") {
 // keep the screen on by hand, since the capture can run for several minutes.
 const WAKE_LOCK_HINT_TEXT = "Keep your screen on — this takes about 4 minutes.";
 
-function showWakeLockHint() {
+// Per prompted capture, on top of its own acoustic length: reading the move
+// prompt, walking the mic, settling, tapping. An allowance, not a measurement —
+// nobody has timed a household walking a cloud yet. It only has to keep the
+// estimate from reading as absurdly short; the wake lock itself is held for the
+// whole session either way.
+const WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS = 20000;
+
+// The screen-on hint's duration estimate, derived from the plan the Pi actually
+// sent rather than a constant. The hardcoded "about 4 minutes" was written for
+// the 3-capture flow; a 16-capture spatial cloud runs several times that, and a
+// household who trusts the number and lets the screen sleep loses the session.
+// No plan (the legacy level-ramp and single-capture kinds) keeps the original
+// string byte-for-byte.
+function wakeLockHintText(spec) {
+  const entries = (spec && spec.capture_plan && spec.capture_plan.entries) || null;
+  if (!Array.isArray(entries) || entries.length === 0) return WAKE_LOCK_HINT_TEXT;
+  const totalMs = entries.reduce(
+    (sum, entry) =>
+      sum + (Number(entry && entry.duration_ms) || 0) + WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS,
+    0,
+  );
+  const minutes = Math.max(1, Math.ceil(totalMs / 60000));
+  return `Keep your screen on — this takes about ${minutes} minutes.`;
+}
+
+function showWakeLockHint(spec) {
   const el = document.getElementById("wakelock-hint");
-  if (el) el.textContent = WAKE_LOCK_HINT_TEXT;
+  if (el) el.textContent = wakeLockHintText(spec);
 }
 
 function hideWakeLockHint() {
@@ -170,11 +195,13 @@ function hideWakeLockHint() {
 // best-effort and must never break the capture flow — this never throws;
 // `lock.supported` tells the caller whether a real lock was taken, exactly
 // like the wrapped function.
-async function acquireWakeLockWithHint() {
+// `spec` is optional and only sizes the fallback hint's duration estimate;
+// omitting it keeps the original constant copy.
+async function acquireWakeLockWithHint(spec = null) {
   const lock = await acquireWakeLock();
   if (lock.supported === false) {
     console.debug("capture page: screen wake lock unsupported, showing on-screen hint");
-    showWakeLockHint();
+    showWakeLockHint(spec);
   }
   return lock;
 }
@@ -1494,7 +1521,7 @@ async function reacquireSessionWakeLock(ctx) {
   if (ctx.sessionEnded || ctx.reacquiringWakeLock) return;
   ctx.reacquiringWakeLock = true;
   try {
-    const lock = await acquireWakeLockWithHint();
+    const lock = await acquireWakeLockWithHint(ctx.spec);
     if (ctx.sessionEnded) {
       try {
         await lock.release();
@@ -1634,7 +1661,7 @@ function renderPlanNext(ctx, { index, attempt, target }) {
   setStatus(`Measurement ${index} of ${target} done. Tap Next measurement when ready.`, "done");
 }
 
-function renderPlanRetry(ctx, { index, attempt, target, reason }) {
+function renderPlanRetry(ctx, { index, attempt, target, reason, prompt }) {
   // The CURRENT capture's own entry, if any — only its title informs the
   // heading; the rejection `reason` always wins the body (more important
   // than generic per-entry copy).
@@ -1644,6 +1671,14 @@ function renderPlanRetry(ctx, { index, attempt, target, reason }) {
     screenCopy.title || `Measurement ${index} of ${target} needs another try`,
   );
   const message = reason || "That measurement didn't pass the speaker's quality check.";
+  // A server-supplied `prompt` is an INSTRUCTION, not a restatement: the
+  // position-group geometry retake sends "take this one from about two
+  // forearms' length to the LEFT", which the operator has to act on before
+  // tapping Try again. It renders as its own paragraph under the reason
+  // because the two say different things (what happened / what to do), and
+  // collapsing them would bury the actionable half. Absent on every other
+  // rejection, where the generic single-paragraph shape is unchanged.
+  const guidance = prompt ? String(prompt) : "";
   const retry = button("Try again", async () => {
     retry.disabled = true;
     try {
@@ -1652,13 +1687,18 @@ function renderPlanRetry(ctx, { index, attempt, target, reason }) {
       retry.disabled = false;
     }
   });
+  const body = [el("p", { class: "cap-note", text: message })];
+  if (guidance) body.push(el("p", { class: "cap-note", text: guidance }));
   setScreen(ctx.screenEl, [
     el("h1", { class: "cap-heading", text: heading }),
-    el("p", { class: "cap-note", text: message }),
+    ...body,
     el("div", { class: "cap-actions" }, [retry, stopButtonEl()]),
   ]);
   ctx.captureRefs = { buttons: [{ action: "begin_capture", el: retry }], levelMeters: [] };
-  setStatus(`Measurement ${index} needs another try — ${message}`, "error");
+  setStatus(
+    `Measurement ${index} needs another try — ${guidance || message}`,
+    "error",
+  );
 }
 
 // A distinct soft-hold screen (§5.7): the Pi is between phases (e.g. parked
@@ -2022,9 +2062,26 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
       Number(event.index) === index &&
       Number(event.attempt) === attempt
     ) {
+      // The Pi's rejection verdict is richer than `error` alone: the v2
+      // conductor's PhaseVerdict relays `reason` (what happened, in household
+      // copy), `banner` (the short form for auto-retrying codes), `code`, and
+      // — for a position-group geometry retake — `prompt`, the "move further
+      // out" instruction that is the entire point of asking again. Before this
+      // extraction only `accepted`/`error` survived, so every one of those
+      // reached the phone and was dropped on the floor: the operator saw the
+      // generic quality-check line and retook from the SAME spot, which is the
+      // one thing that cannot fix a geometry lock.
+      //
+      // Backwards-compatible both ways: an older Pi sends none of these and
+      // the generic fallback still renders; an older page ignores the fields
+      // and behaves exactly as it does today.
       return {
         accepted: event.accepted === true,
         error: event.error ? String(event.error) : "",
+        reason: event.reason ? String(event.reason) : "",
+        banner: event.banner ? String(event.banner) : "",
+        prompt: event.prompt ? String(event.prompt) : "",
+        code: event.code ? String(event.code) : "",
       };
     }
     await delayMs(pollMs);
@@ -2301,7 +2358,16 @@ async function runPlanCapture(ctx, { index, attempt }) {
       // owns the screen (on_apply), a cancelable countdown, or the manual tap.
       advanceAfterAccepted(ctx, { index, attempt, target });
     } else {
-      renderPlanRetry(ctx, { index, attempt, target, reason: verdict.error });
+      // `error` first for the legacy shape (kinds whose host sets it), then
+      // the v2 conductor's `reason`/`banner`; `prompt` is the separate
+      // what-to-do line renderPlanRetry shows underneath.
+      renderPlanRetry(ctx, {
+        index,
+        attempt,
+        target,
+        reason: verdict.error || verdict.reason || verdict.banner,
+        prompt: verdict.prompt,
+      });
     }
   } catch (err) {
     if (!controller.aborted) {
@@ -2404,7 +2470,7 @@ async function onPlanStart(ctx) {
   // expectation. It auto-releases whenever the page hides; the visibility
   // watch below re-requests it once the phone returns, silently, unless the
   // session has already ended.
-  const wakeLock = await acquireWakeLockWithHint();
+  const wakeLock = await acquireWakeLockWithHint(ctx.spec);
   if (ctx.sessionEnded) {
     // Stop/backgrounded fired while this request was in flight — the session
     // already tore down (releasePlanSessionResources already ran). Release

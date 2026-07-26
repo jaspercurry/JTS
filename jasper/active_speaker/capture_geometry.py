@@ -28,6 +28,22 @@ DRIVER_PLACEMENT_POLICY_ID = "driver_same_distance_v1"
 # alignment evidence.
 SUMMED_PLACEMENT_POLICY_ID = "summed_reference_axis_v1"
 REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID = "driver_reference_axis_v1"
+# A THIRD summed policy, and deliberately its own id rather than a reworded
+# ``summed_reference_axis_v1``: the guided spatial cloud
+# (docs/flat-linearization-plan.md fundamental 1) asks the household for the
+# OPPOSITE whole-session promise. The stationary policy promises the mic does
+# not move between captures; this one promises the mic starts on the reference
+# axis, moves only when prompted, and holds still for the duration of each
+# sweep. Consenting to one is not consenting to the other, so they cannot share
+# an id — and the stationary id must stay reachable, because the 1-entry
+# re-verify re-arm still makes exactly the stationary promise.
+#
+# Not added to ``SUMMED_CAPTURE_GEOMETRY_BY_POLICY``: that map exists for the
+# LEGACY summed-alignment evidence path (``crossover_contract``'s
+# ``latest_summed_validations``), which the v2 conductor does not feed — it
+# writes no ``placement_proof`` at all. Adding it there would claim a
+# geometry for evidence this policy never produces.
+CLOUD_WALK_PLACEMENT_POLICY_ID = "summed_guided_cloud_v1"
 COMPARISON_SET_SCHEMA_VERSION = 2
 PLACEMENT_PROOF_SCHEMA_VERSION = 1
 DRIVER_PLACEMENT_TARGET_CM = 3.0
@@ -364,6 +380,42 @@ def summed_placement_instruction() -> str:
         "room permits. Aim it according to its calibration file, then keep the "
         "microphone and speaker completely still for every normal- and "
         "reverse-polarity combined-driver capture in this measurement set."
+    )
+
+
+def cloud_walk_placement_instruction(captures: int) -> str:
+    """Placement copy for the guided spatial cloud (``CLOUD_WALK_...`` policy).
+
+    Same starting point as :func:`summed_placement_instruction` — the mark, on
+    the tweeter axis — and the same per-sweep stillness, which is what a valid
+    capture actually needs. What it must NOT repeat is the whole-session
+    stillness promise: this session prompts the household to move the mic
+    between captures, so promising otherwise on the consent screen would be
+    asking them to agree to something the flow immediately contradicts.
+    """
+    return (
+        "Start with the microphone capsule on the tweeter axis, exactly level "
+        "with the centre of the tweeter or horn mouth, about 1 metre away when "
+        "the room permits — that spot is your mark. Aim it according to its "
+        f"calibration file. Across about {int(captures)} measurements the "
+        "phone will ask you to move it a little between sweeps and to come "
+        "back to the mark; hold it still while each sweep is playing."
+    )
+
+
+def cloud_walk_acknowledgement_label(captures: int) -> str:
+    """The promise the operator makes before a guided-cloud session.
+
+    Deliberately promises only what the cloud actually needs — the starting
+    axis, per-sweep stillness, and following the prompts — instead of the
+    stationary policy's "I will not move it", which this flow asks them to
+    break by design.
+    """
+    return (
+        "The microphone starts on the tweeter axis, level with the centre of "
+        "the tweeter or horn mouth, and I will move it only when the phone "
+        f"asks me to, holding it still while each of the {int(captures)} "
+        "sweeps plays."
     )
 
 

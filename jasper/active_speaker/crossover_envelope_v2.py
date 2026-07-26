@@ -43,6 +43,8 @@ from ..log_event import log_event
 from .crossover_v2_flow import (
     PHASE_APPLYING,
     PHASE_CHECK,
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
     PHASE_DONE,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -78,12 +80,20 @@ _STEP_LABELS = {
     "verify": "Verify",
 }
 
-# Which step is active for a given conductor phase.
+# Which step is active for a given conductor phase. The position groups
+# (flat-linearization PR-3b) do NOT add wizard steps: a household walking the
+# pre-apply cloud is still "measuring" and the post-apply cloud is still
+# "verifying" — the cloud changed how many captures each step takes, not what
+# the household is doing. Adding steps would have made the journey read as
+# longer without telling anyone anything new; the phone's own per-entry screens
+# ("Spot 4 of 8") carry the within-step progress.
 _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
+    PHASE_CLOUD_MEASURE: "measure",
     PHASE_APPLYING: "apply",
     PHASE_VERIFY: "verify",
+    PHASE_CLOUD_VERIFY: "verify",
     PHASE_DONE: "verify",
 }
 
@@ -648,12 +658,19 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     if phase == PHASE_CHECK:
         env = _envelope(
             screen="microphone_check", active_step="microphone_check",
+            # The journey-opening promise. Before the spatial cloud this said
+            # "keep it in that one spot for the whole measurement" — false as
+            # of PR-3b, and false on the FIRST screen the household reads,
+            # which is the worst place for it. The mark is still where the
+            # session starts and returns to; the moving is now named up front
+            # rather than sprung on them at the third capture.
             verdict=(
                 "Place the microphone about 1 m in front of the speaker, at "
                 "tweeter height and pointing at it — about where you'd sit to "
-                "listen (see the picture). Keep it in that one spot for the whole "
-                "measurement, then tap Start. JTS runs a quick microphone check "
-                "first."
+                "listen (see the picture). That spot is your mark. JTS runs a "
+                "quick microphone check first, then measures from the mark and "
+                "from a few nearby spots your phone will guide you to — that "
+                "is what lets it tell the speaker apart from the room."
             ),
             next_action={
                 "id": "start_v2_session",
@@ -669,6 +686,22 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             verdict=(
                 "Keep the phone still — JTS is measuring both drivers. Follow the "
                 "phone; the measurement continues automatically."
+            ),
+            next_action=None,
+            status=status,
+        )
+    elif phase == PHASE_CLOUD_MEASURE:
+        # Same wizard screen as MEASURE: the household is still measuring, and
+        # the phone (not this page) is where the per-position instructions
+        # live. What changes is the verdict copy, which has to stop telling
+        # someone to keep the phone still when the whole point of this phase is
+        # that they move it.
+        env = _envelope(
+            screen="measure", active_step="measure",
+            verdict=(
+                "JTS is measuring from a few different spots — follow the "
+                "prompts on your phone. Moving the microphone between spots is "
+                "what lets JTS tell the speaker apart from the room."
             ),
             next_action=None,
             status=status,
@@ -689,8 +722,18 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="verify", active_step="verify",
             verdict=(
-                "The crossover is applied. Keep the microphone where it was and "
-                "tap Verify on your phone to confirm the result."
+                "The crossover is applied. Put the microphone back where it "
+                "started and follow your phone to confirm the result."
+            ),
+            next_action=None,
+            status=status,
+        )
+    elif phase == PHASE_CLOUD_VERIFY:
+        env = _envelope(
+            screen="verify", active_step="verify",
+            verdict=(
+                "Checking the result from the same few spots — follow the "
+                "prompts on your phone."
             ),
             next_action=None,
             status=status,

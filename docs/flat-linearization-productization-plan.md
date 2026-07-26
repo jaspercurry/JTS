@@ -534,6 +534,49 @@ one full 15+-entry plan with a mid-cloud retake, exercising PR-3a's
 capacity end-to-end. No behavior change to CHECK/MEASURE/apply/
 restore paths (pinned by existing suites).
 
+*(Two mechanism deviations, recorded. **(a) The group is FIXED-LENGTH; there
+is no operator early-end.** The relay's plan runner completes a set at
+exactly `capture_target` accepted captures — `index == accepted_count + 1`
+and the only terminations are target-met or attempts-exhausted
+(`_poll_capture_plan`) — so a variable-length group is not expressible
+without changing that shared runner AND giving the phone an affordance to
+signal "I'm done", which this PR's own design contract rules out ("no new
+phone-side prompt mechanism"). N and M are therefore chosen
+at plan-build time and validated against `MIN`/`MAX`; the min/max remain
+meaningful as the range a caller may configure. **(b) The geometry retry is a
+bounded RETAKE of the group's last position, not two appended positions** —
+the same protocol reason: a rejected capture is the one lever that keeps a
+plan alive at the same index. A "and replacing is better physics" claim was
+made here in round 1 and is WITHDRAWN: the reviewer computed the power-mean
+counterexample, where appending a wide position to a clustered cloud fills a
+−15 dB null further than replacing does (−6.1 dB vs −7.7 dB) and lowers
+`clustered_fraction` more besides. Replacing is what the protocol permits,
+not what the estimator prefers. Both deviations are bounded by
+`GEOMETRY_RETRY_POSITIONS` and disclosed. The pre-registered relay capacity
+sizing is unaffected: the shipped plan is 16 entries / 23 attempts, worst case
+19 / 26, against the relay's 32.)*
+
+*(**A page change WAS needed after all** — the pre-registered contract's "no
+new phone-side *prompt* mechanism is needed" was true of the prompts and
+false of the retry path, and round-1 review falsified it: the deployed page
+extracted only `accepted`/`error` from `capture_result`, so the geometry
+retake's own guidance never reached the operator and every retake happened at
+the same spot. `capture-page/js/main.js` now forwards `reason`/`banner`/
+`prompt`/`code` and renders the server-supplied guidance, fail-soft in both
+directions. Source + tests land in PR-3b; the page DEPLOY is the architect's
+at ship time, page-first per the capture-page README's release ordering.)*
+
+*(**N raised 8 → 9** (adjudication 3a, round-1 review) so the delivered curve
+rests on 8 summed sweeps — fundamental 1's floor is a count of CURVES, and a
+group's anchor contributes none. Entries 15 → 16, attempts 22 → 23, ceiling
+3240 → 3360 s under the 3600 s cap.)*
+
+*(One design contract question the section left open, answered here: the
+**verify-only re-arm plan stays 1 entry** and byte-identical on the wire. It
+re-runs the single-position tracking verdict, and §5.6's session-binding rule
+means a new session's captures could never join the original cloud anyway —
+so a cloud there would be a second, unrelated cloud, not a resumption.)*
+
 **Review scope line:** "the position-group choreography on this
 branch (crossover_v2_flow.py, capture_relay, plan builders, phone
 copy, and tests)."
@@ -936,5 +979,37 @@ unblock the corpus-derived profile; registry persistence, carve-out
 disclosure surfaces, and the spec-table/open-question-8 annotations
 remain **PR-6b** in ladder order. The PR-6 section body below is
 unchanged and still describes the whole of PR-6.*
+
+*PR-3b (2026-07-26): the position-group choreography lands, and the
+**shipped main-session plan becomes the 16-entry cloud** — the intended
+product change (fundamental 1: the cloud IS the measurement), so the
+3-entry golden wire-byte pin was updated by its own documented procedure
+while the 1-entry re-verify pin stayed byte-identical. Two mechanism
+deviations (fixed-length groups, retake-based geometry retry) are
+annotated in the PR-3b section above. The combine call is minimal
+(geometry verdict only) behind `combine_cloud_positions` /
+`cloud_geometry_verdict`, which PR-4 extends as a consumer rather than
+replaces; the gated-IR assembly those functions perform is
+corpus-validated against the S0 reference construction rather than
+asserted.*
+
+*Round-1 review (2026-07-26) — 3 blockers, all phone-facing, all fixed on
+the same branch: the consent surface still promised a stationary mic (now
+parameterized by plan shape, with its own `summed_guided_cloud_v1` policy
+id; the stationary copy and policy stay reachable and byte-identical for
+the 1-entry re-verify); the geometry-retry instruction never reached the
+phone (page extraction + render fixed, see the page annotation above); and
+a retake's evidence sidecar collided with the take it replaced, leaving the
+surviving record describing the wrong capture (artifacts are now qualified
+by attempt, the prompt recorded is the one actually shown, and the
+retention seam is tested through the REAL write-once store). Behavioural
+follow-ons: geometry rejections now carry their own admission headroom so a
+retried position keeps its ordinary failure budget, and a corrupt
+`session_phases` list can no longer read as "done". Also corrected in the
+accounting below: deviation 5's "structurally identical" list omitted the
+MEASURE "this spot is the mark" addition and the relocation of the END
+screen's `done_title`/`done_body` from the VERIFY entry to the last
+cloud-verify entry — both behavioural-adjacent copy/shape changes on
+paths the deviation claimed were untouched.*
 
 *Last verified: 2026-07-26*

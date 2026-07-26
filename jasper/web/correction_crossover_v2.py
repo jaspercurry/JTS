@@ -304,7 +304,18 @@ def observe_restore() -> None:
     unmeasured state — matching the reset a pre-apply terminal failure
     already gets (:func:`_persist_terminal_failure`) — so the envelope lands
     back on the pre-measurement screen rather than a half-consistent
-    "applying" phase pointing at the now-undone candidate."""
+    "applying" phase pointing at the now-undone candidate.
+
+    Every journey field is cleared EXPLICITLY here because this mutates the
+    loaded state in place, unlike :func:`reset_v2_journey_state`, which writes
+    a whole fresh dict and so drops unlisted fields for free. That asymmetry is
+    a standing trap: a new durable field added anywhere else must be added to
+    this list by hand or it survives an Undo. Two already did — ``session_phases``
+    left a re-verify session's ``["verify"]`` behind, which
+    ``_phase_from_state`` resolved to the VERIFY screen ("The crossover is
+    applied. Put the microphone back where it started…") moments after the
+    household removed it; and ``cloud`` left a geometry verdict describing an
+    undone session for PR-4 to consume as if it were live."""
     state = load_v2_state()
     if state is None:
         return
@@ -315,6 +326,8 @@ def observe_restore() -> None:
     state["apply_blocked"] = None
     state["pre_apply_profile"] = None
     state["accepted_phases"] = []
+    state["session_phases"] = []
+    state["cloud"] = None
     state["gain_plan_db"] = None
     save_v2_state(state)
 
@@ -669,13 +682,32 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
         PHASE_DONE,
         PHASE_MEASURE,
         PHASE_VERIFY,
+        PRE_CLOUD_CAPTURE_PHASES,
     )
 
     accepted = set(
         state.get("accepted_phases") or () if isinstance(state, Mapping) else ()
     )
     applied = bool(state and state.get("applied"))
-    for phase in CAPTURE_PHASES:
+    # A session runs a SUBSET of CAPTURE_PHASES (a verify-only re-arm runs just
+    # VERIFY), so walk the subset the conductor recorded. State written before
+    # the position groups shipped has no such field, and it came from a session
+    # that ran exactly the pre-cloud three — reading it against the longer
+    # tuple would report a household mid-cloud in a session that never had one.
+    #
+    # FILTER FIRST, then decide whether anything survived: a corrupt
+    # ``["nonsense"]`` filters to the empty tuple, and treating "recorded but
+    # unrecognisable" as "recorded" would walk zero phases and fall straight
+    # through to PHASE_DONE — telling a household "Your speaker is tuned" on
+    # the strength of a garbled state file. Fail toward the honest fallback.
+    recorded = state.get("session_phases") if isinstance(state, Mapping) else None
+    known = (
+        tuple(str(p) for p in recorded if str(p) in CAPTURE_PHASES)
+        if isinstance(recorded, (list, tuple))
+        else ()
+    )
+    phases = known or PRE_CLOUD_CAPTURE_PHASES
+    for phase in phases:
         if phase not in accepted:
             if phase == PHASE_VERIFY and PHASE_MEASURE in accepted and not applied:
                 return PHASE_APPLYING
@@ -792,6 +824,36 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
     }
 
 
+def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
+    """Per-group geometry verdict + position ids, or ``None`` when no group ran.
+
+    Reads the conductor's public group surfaces only, and tolerates a conductor
+    double that has none (the persistence helper is called from test seams too).
+    """
+    from jasper.active_speaker.crossover_v2_flow import GROUP_PHASES
+
+    try:
+        session_phases = tuple(conductor.session_phases)
+    except (AttributeError, TypeError):
+        return None
+    out: dict[str, Any] = {}
+    for phase in session_phases:
+        if phase not in GROUP_PHASES:
+            continue
+        geometry = conductor.group_geometry(phase)
+        if geometry is None:
+            continue
+        out[phase] = {
+            "geometry": geometry,
+            # The SURVIVING take per position (id + attempt). A bare id list
+            # would be ambiguous after a geometry retake, where two takes share
+            # an id and only one is in the cloud; the attempt is what joins
+            # this to the per-take evidence artifacts.
+            "positions": list(conductor.group_position_takes(phase)),
+        }
+    return out or None
+
+
 def persist_conductor_state(
     conductor: Any,
     *,
@@ -804,6 +866,10 @@ def persist_conductor_state(
     state: dict[str, Any] = {
         "session_id": snap.session_id,
         "accepted_phases": list(snap.accepted_phases),
+        # The phases THIS session runs — read by ``_phase_from_state`` so a
+        # verify-only re-arm reaches "done" instead of waiting forever on a
+        # position group it never had.
+        "session_phases": list(snap.session_phases),
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "candidate": _candidate_summary(conductor.candidate),
@@ -835,6 +901,13 @@ def persist_conductor_state(
             if verify_outcome is not None else None
         ),
         "failure": {"code": failure_code} if failure_code else None,
+        # Position-group outcome (PR-3b): the closing geometry verdict and the
+        # position ids behind it, per group. Present only for groups that have
+        # CLOSED — an absent key means "still walking", never "geometry was
+        # fine". PR-4 adds the rest of the honest-instrument output (exclusion
+        # screen, null registry, spec curve) alongside this block; the geometry
+        # verdict is what PR-3b measured and so what PR-3b persists.
+        "cloud": _cloud_summary(conductor),
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             "gate_window_ms": conductor.measure_gate_window_ms,
@@ -1340,6 +1413,79 @@ def bind_evidence_publishers(
     return publish_check, publish_candidate, refs
 
 
+def bind_position_retention(
+    store: Any, relay_session_id: str, refs: dict[str, Any]
+) -> Callable[[str, Any, Mapping[str, Any]], None]:
+    """The real ``retain_position`` seam — one WAV + one JSON per cloud position.
+
+    The forensic record the position-group choreography owes: the S0 work that
+    produced this program's central finding (source-fixed vs room-fixed comb
+    attribution) was only possible because every position's RAW capture
+    survived, so a household cloud keeps the same thing rather than a derived
+    summary that cannot answer a question nobody has asked yet.
+
+    Placement follows the shipped bundle scheme —
+    ``bundles.capture_artifact_relpath("summed", group, role)`` with the TAKE
+    id (position id + attempt) as ``group``, so a cloud WAV lands beside the
+    flow's other summed captures rather than in a private layout — and the
+    metadata sidecar
+    carries the prompt the operator was given, which is the only durable record
+    of WHERE a curve was measured. ``metadata["position_id"]`` is what feeds
+    ``spatial_combine.PositionCapture.position_id``, so a flagged or outlying
+    position can be named back to the household in PR-4's report.
+
+    This function does NOT swallow failures. The evidence store is deliberately
+    strict — ``publish_json_artifact`` raises ``CommissioningEvidenceStoreError``
+    (a ``RuntimeError``) rather than silently dropping an artifact, and a WAV
+    write raises ``OSError`` — and the fail-soft boundary lives one level up, at
+    the conductor's ``_retain_cloud_position`` call site, which logs and
+    continues so a full disk cannot turn an acoustically-good position into a
+    retake. Keeping the boundary there rather than here means the strictness the
+    store was built for is preserved for every OTHER caller.
+    """
+    from jasper.active_speaker.bundles import capture_artifact_relpath
+
+    def retain_position(
+        position_id: str, result: Any, metadata: Mapping[str, Any]
+    ) -> None:
+        wav = getattr(result, "wav", None)
+        record = dict(metadata)
+        # A geometry retake re-uses its position id — same prompted spot,
+        # measured again from further out — so the id alone does NOT identify a
+        # take. The evidence store is write-once (a repeated path is a
+        # PATH_CONFLICT refusal), which would have dropped the retake's sidecar
+        # and left the REPLACED take as the only record of a curve that is not
+        # in the cloud. Qualify by attempt: every take gets its own sidecar,
+        # the superseded one stays on disk as the honest walk record, and the
+        # conductor's `group_position_takes` names which attempt survived.
+        attempt = int(record.get("attempt") or 0)
+        take_id = f"{position_id}_a{attempt:02d}"
+        if isinstance(wav, (bytes, bytearray)):
+            wav_rel = capture_artifact_relpath("summed", take_id, None)
+            wav_path = Path(store.bundle_dir) / wav_rel
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
+            wav_path.write_bytes(bytes(wav))
+            record["wav_path"] = wav_rel
+            record["wav_bytes"] = len(wav)
+        artifact = store.publish_json_artifact(
+            f"crossover_v2/{relay_session_id}/positions/{take_id}.json",
+            {
+                "schema_version": 1,
+                "kind": "jts_crossover_v2_position_evidence",
+                "relay_session_id": relay_session_id,
+                **record,
+            },
+        )
+        positions = refs.setdefault("position_artifacts", [])
+        positions.append({
+            "position_id": position_id,
+            "attempt": attempt,
+            "artifact": artifact.fingerprint,
+        })
+
+    return retain_position
+
+
 def bind_production_play(
     *,
     run_async: Any,
@@ -1384,7 +1530,7 @@ def bind_production_play(
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
     from jasper.active_speaker.crossover_v2_flow import (
-        PHASE_VERIFY,
+        SUMMED_SWEEP_PHASES,
         bind_program_playback_seams,
     )
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
@@ -1407,9 +1553,14 @@ def bind_production_play(
                 verified_program_aplay,
             )
 
-            if phase == PHASE_VERIFY:
-                # The applied production graph IS the system under test —
-                # no graph load, just the verified WAV into the lane.
+            if phase in SUMMED_SWEEP_PHASES:
+                # The LIVE production graph IS the system under test — no graph
+                # load, just the verified WAV into the lane. True for VERIFY
+                # (the applied graph) and for both position groups: a spatial
+                # cloud measures the summed system as it stands, which is the
+                # pre-apply graph for CLOUD_MEASURE and the applied one for
+                # CLOUD_VERIFY. Level safety for all three is the compose-time
+                # min-cap clamp in ``_compose_verify_program``.
                 await verified_program_aplay(
                     bundle_dir, artifact, timeout_s=60.0
                 )
@@ -2365,7 +2516,9 @@ def prepare_v2_session(
         CrossoverV2Conductor,
         V2ConductorSnapshot,
         V2FlowSeams,
+        build_v2_cloud_index_phase_map,
         build_v2_session_spec,
+        session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
 
@@ -2425,6 +2578,13 @@ def prepare_v2_session(
         publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
+        # A cloud session legitimately outlasts the 3-entry flow's walked-away
+        # ceiling; scale it from the plan this session actually emitted (never
+        # from the constants, so a caller-configured cloud is covered too) and
+        # arm it BEFORE the volume opens.
+        session_volume_plan().set_wall_clock_ceiling_s(
+            session_wall_clock_ceiling_s(spec.capture_plan)
+        )
         play = bind_production_play(
             run_async=run_async,
             camilla_factory=camilla_factory,
@@ -2454,7 +2614,14 @@ def prepare_v2_session(
                 publish_candidate=publish_candidate,
                 apply_complete=_applied_gate,
                 apply_failed=_apply_failure_gate,
+                retain_position=bind_position_retention(
+                    evidence_store, relay_session_id, refs
+                ),
             ),
+            # The conductor's index→phase map is built from the SAME function
+            # the emitted plan used, so the prompt an entry carries and the
+            # phase the conductor runs for that index can never disagree.
+            index_phase_map=build_v2_cloud_index_phase_map(),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
         )
@@ -2509,6 +2676,7 @@ def prepare_v2_verify(
         CrossoverV2Conductor,
         V2FlowSeams,
         build_v2_verify_session_spec,
+        session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
 
@@ -2572,6 +2740,13 @@ def prepare_v2_verify(
             return_url=return_url,
         )
         relay_session_id = rc.pi_session.session_id
+        # Re-arm the walked-away ceiling from THIS plan (1 entry ⇒ the plain
+        # 1800 s baseline). The volume plan is process-global, so a preceding
+        # cloud session would otherwise leave its own longer ceiling in force
+        # for a measurement that cannot possibly need it.
+        session_volume_plan().set_wall_clock_ceiling_s(
+            session_wall_clock_ceiling_s(spec.capture_plan)
+        )
         _publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )

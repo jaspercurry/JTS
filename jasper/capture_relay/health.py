@@ -92,3 +92,39 @@ def probe_relay_health(base_url: str, *, timeout: float = 2.0) -> tuple[bool, st
         return False, f"HTTP {exc.code}"
     except (urllib.error.URLError, OSError) as exc:
         return False, f"unreachable: {exc}"
+
+
+def probe_relay_plan_capacity(
+    base_url: str, *, timeout: float = 2.0
+) -> tuple[int | None, str]:
+    """The deployed relay's advertised capture-plan ceiling.
+
+    Returns ``(ceiling, human_detail)``; ``ceiling`` is ``None`` when the relay
+    answers no usable capability document — including the pre-capacity Worker,
+    which serves no ``/capabilities`` endpoint at all and whose ABSENCE is the
+    only honest version signal available (see
+    ``capture_relay.spec.LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``).
+
+    Why the doctor asks at all: the crossover-v2 cloud session emits a plan
+    larger than that legacy ceiling, so a stale Worker refuses it — correctly
+    and before any tone plays (``session._assert_relay_plan_capacity``), but
+    only at the moment a household taps Start. One extra bounded GET during a
+    diagnostic run turns that into something an operator can find and fix
+    beforehand.
+
+    Same posture as :func:`probe_relay_health`: outbound HTTPS only, bounded,
+    on-demand — never on the ``/state`` path.
+    """
+    from jasper.capture_relay.client import RelayClient
+    from jasper.capture_relay.session import advertised_plan_ceiling
+
+    try:
+        probe = RelayClient(base_url, timeout=timeout).capabilities()
+    except (OSError, ValueError, RuntimeError) as exc:
+        return None, f"capability probe failed: {exc}"
+    if not probe.served:
+        return None, "serves no /capabilities endpoint (pre-capacity relay)"
+    ceiling = advertised_plan_ceiling(probe.document)
+    if ceiling is None:
+        return None, "/capabilities carries no usable capture-plan ceiling"
+    return ceiling, f"capture-plan ceiling {ceiling}"

@@ -36,18 +36,29 @@ from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_ON_APPLY,
     AUTO_ADVANCE_TAP,
     CAPTURE_ENTRY_MARGIN_MS,
-    CAPTURE_PLAN_TARGET,
+    CLOUD_GEOMETRY_RETRY_PROMPTS,
+    CLOUD_POSITION_PROMPTS,
     COURTESY_PRELUDE_ENABLED,
+    DEFAULT_CLOUD_MEASURE_POSITIONS,
+    DEFAULT_CLOUD_VERIFY_POSITIONS,
     GAIN_CAP_BACKOFF_DB,
+    GEOMETRY_RETRY_POSITIONS,
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
+    MAX_CLOUD_MEASURE_POSITIONS,
     MEASURE_PREDICTED_RIPPLE_CEILING_DB,
+    MIN_CLOUD_MEASURE_POSITIONS,
+    MIN_CLOUD_VERIFY_POSITIONS,
     PHASE_APPLYING,
     PHASE_CHECK,
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
     PHASE_DONE,
     PHASE_MEASURE,
     PHASE_VERIFY,
     PILOT_LEVEL_DELTA_DB,
+    REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
@@ -62,11 +73,17 @@ from jasper.active_speaker.crossover_v2_flow import (
     abandon_measurement_volume,
     alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
+    _min_positions_for_two_wide_offsets,
+    assert_cloud_plan_fits_relay_capacity,
     back_off_gain,
     build_v2_capture_plan,
+    build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_capture_plan,
+    cloud_capture_target,
+    cloud_plan_max_attempts,
     open_measurement_volume,
+    session_wall_clock_ceiling_s,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -1449,27 +1466,547 @@ def test_session_death_abandons_volume():
     assert plan.abandoned == [True]
 
 
+# --- position-group choreography (flat-linearization PR-3b) ------------------
+#
+# State-walk tests over the group lifecycle, driven through the fake seams. The
+# cloud positions play the VERIFY-shaped summed program, so FakeSeams' analyze
+# dispatch (keyed on the PROGRAM's phase) returns `_verify_analysis` for them
+# with no new factory — the same reason `program_analysis` needed no new
+# dispatch branch.
+
+
+CLOUD_MAP = build_v2_cloud_index_phase_map()
+CLOUD_MEASURE_INDEXES = tuple(
+    i for i, p in sorted(CLOUD_MAP.items()) if p == PHASE_CLOUD_MEASURE
+)
+CLOUD_VERIFY_INDEXES = tuple(
+    i for i, p in sorted(CLOUD_MAP.items()) if p == PHASE_CLOUD_VERIFY
+)
+VERIFY_INDEX = next(i for i, p in CLOUD_MAP.items() if p == PHASE_VERIFY)
+
+
+def _cloud_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Conductor:
+    kwargs.setdefault("index_phase_map", CLOUD_MAP)
+    return _conductor(fakes, **kwargs)
+
+
+def _walk(conductor, indexes, start_attempt: int) -> int:
+    attempt = start_attempt
+    for index in indexes:
+        _run_phase(conductor, index, attempt)
+        attempt += 1
+    return attempt
+
+
+def test_cloud_measure_group_closes_only_after_its_last_position():
+    """One PHASE spans many indexes: accepting position 3 of 8 must not read as
+    "the pre-apply cloud is done" — the phase closes on its LAST index."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    assert c.current_phase == PHASE_CLOUD_MEASURE
+
+    for index in CLOUD_MEASURE_INDEXES[:-1]:
+        verdict = _run_phase(c, index, attempt)
+        attempt += 1
+        assert verdict["accepted"] is True
+        assert verdict["position_id"]
+        assert PHASE_CLOUD_MEASURE not in c.accepted_phases
+        assert c.current_phase == PHASE_CLOUD_MEASURE
+        assert "group_complete" not in verdict
+
+    verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+    assert verdict["accepted"] is True
+    assert verdict["group_complete"] == PHASE_CLOUD_MEASURE
+    assert verdict["geometry"]["locked"] is False
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+    # Every position is retained, in capture order, under a stable id.
+    assert c.group_positions(PHASE_CLOUD_MEASURE) == tuple(
+        f"{PHASE_CLOUD_MEASURE}_{i:02d}" for i in CLOUD_MEASURE_INDEXES
+    )
+    # The group closed, so its verdict is readable; the group that has not
+    # started reports None (never "geometry was fine").
+    assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
+    assert c.group_geometry(PHASE_CLOUD_VERIFY) is None
+    # MEASURE's own verdict is untouched — the anchor stays the design-axis
+    # single-position measurement.
+    assert c.candidate is not None
+    # Next is the apply hold, exactly as before the cloud existed.
+    assert c.current_phase == PHASE_APPLYING
+
+
+def test_cloud_position_retry_budget_is_per_position_not_per_group():
+    """Eight prompted positions are eight independent captures. Collapsing them
+    onto the phase's cumulative counter would let retakes early in a group
+    refuse a later position that has not failed at all."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+
+    first, second = CLOUD_MEASURE_INDEXES[0], CLOUD_MEASURE_INDEXES[1]
+    fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
+    verdict = _run_phase(c, first, attempt)
+    attempt += 1
+    assert verdict["accepted"] is False
+    fakes.verify = _verify_analysis
+    _run_phase(c, first, attempt)  # the retake at the SAME index is admitted
+    attempt += 1
+    # ... and the NEXT position starts with a clean budget, not the previous
+    # position's spent one.
+    c.authorize_begin(second, attempt)
+    assert c.armed_capture == (second, attempt)
+
+
+def test_cloud_position_qc_rejects_a_capture_with_no_usable_summed_response():
+    """Per-position work is light — but not absent: a position that yielded no
+    curve is not evidence, so it is retaken rather than combined."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    index = CLOUD_MEASURE_INDEXES[0]
+
+    fakes.verify = lambda program: replace(
+        _verify_analysis(program), summed_response=None,
+    )
+    verdict = _run_phase(c, index, attempt)
+    assert verdict["accepted"] is False
+    assert c.group_positions(PHASE_CLOUD_MEASURE) == ()
+
+
+def _lock(monkeypatch, *, thin: bool = False):
+    """Force the group-end geometry verdict.
+
+    ``cloud_geometry_verdict`` is a pure function of the retained positions;
+    manufacturing a genuinely position-invariant echo across a synthetic cloud
+    is ``spatial_combine``'s own test territory (and is covered there). What
+    this file owns is the CONDUCTOR's response to a verdict, so the verdict is
+    injected."""
+    import jasper.active_speaker.crossover_v2_flow as flow
+
+    monkeypatch.setattr(
+        flow, "cloud_geometry_verdict",
+        lambda positions: {
+            "locked": True, "reason": "geometry_locked", "thin_evidence": thin,
+            "n_positions": len(positions), "median_tau_us": 320.0,
+        },
+    )
+
+
+def test_geometry_locked_group_asks_for_wider_retakes_then_proceeds(monkeypatch):
+    """`geometry.locked` is the one actionable thing the geometry instrument can
+    say ("spread the mic further"), so the group asks — twice at most, then
+    proceeds with the verdict disclosed. Unbounded retrying against a
+    source-fixed defect would never terminate, because no mic move decorrelates
+    a null that does not move."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    prompts = []
+    for _ in range(GEOMETRY_RETRY_POSITIONS):
+        verdict = _run_phase(c, last, attempt)
+        attempt += 1
+        assert verdict["accepted"] is False
+        assert verdict["code"] == REASON_CLOUD_GEOMETRY_LOCKED
+        prompts.append(verdict["prompt"])
+        assert PHASE_CLOUD_MEASURE not in c.accepted_phases
+        # The too-close take leaves the cloud — that is what a RETAKE is, the
+        # only lever the fixed-length runner offers. Not a claim that dropping
+        # beats appending: that claim was withdrawn in review (appending fills
+        # the null further), so this asserts the mechanism, not a merit.
+        assert last not in {
+            int(pid.rsplit("_", 1)[1])
+            for pid in c.group_positions(PHASE_CLOUD_MEASURE)
+        }
+    # Two rungs, so the second ask is a different instruction, not a repeat.
+    assert prompts == list(CLOUD_GEOMETRY_RETRY_PROMPTS[:GEOMETRY_RETRY_POSITIONS])
+    assert len(set(prompts)) == len(prompts)
+
+    # Bounded: the third take is ACCEPTED even though geometry is still locked,
+    # with the verdict disclosed rather than the household stuck.
+    verdict = _run_phase(c, last, attempt)
+    assert verdict["accepted"] is True
+    assert verdict["geometry"]["locked"] is True
+    assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+
+
+def test_a_geometry_retried_position_keeps_its_ordinary_failure_budget(monkeypatch):
+    """S8: geometry retakes must not spend the slot's QUALITY-failure budget.
+
+    They are the conductor asking again for a GOOD capture, not the household
+    failing one. Before this, the exact sequence below — two geometry retakes,
+    then one ordinary recoverable glitch at the same position — spent four
+    attempts against a one-retry reason and raised ``CaptureBeginRefused``,
+    which is TERMINAL: a 16-capture session died at its final pre-apply
+    position over a single locate miss the household could have simply
+    retaken.
+    """
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    # Two geometry retakes — good captures, wider spots.
+    for _ in range(GEOMETRY_RETRY_POSITIONS):
+        assert _run_phase(c, last, attempt)["code"] == REASON_CLOUD_GEOMETRY_LOCKED
+        attempt += 1
+
+    # Now ONE ordinary failure at that same position.
+    monkeypatch.undo()
+    fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
+    verdict = _run_phase(c, last, attempt)
+    attempt += 1
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_LOCATE_FAILED
+
+    # ...which must still be RETRIABLE. Before the discount this raised.
+    fakes.verify = _verify_analysis
+    verdict = _run_phase(c, last, attempt)
+    assert verdict["accepted"] is True
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+
+
+def test_the_geometry_discount_is_capped_and_still_refuses_a_runaway(monkeypatch):
+    """The discount above is bounded at GEOMETRY_RETRY_POSITIONS, so a slot
+    cannot be kept alive forever by manufacturing geometry rejections — the
+    ordinary budget still bites once the forgiven attempts are used up."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    index = CLOUD_MEASURE_INDEXES[0]
+
+    # A non-terminal position (not the group's last) can only fail on quality.
+    fakes.verify = lambda program: _verify_analysis(program, locate_confidence=0.0)
+    for _ in range(REASON_REGISTRY[REASON_LOCATE_FAILED].retry_budget + 1):
+        assert _run_phase(c, index, attempt)["accepted"] is False
+        attempt += 1
+    with pytest.raises(CaptureBeginRefused):
+        c.authorize_begin(index, attempt)
+
+
+def test_thin_evidence_lock_is_disclosed_not_retried(monkeypatch):
+    """``thin_evidence`` marks a verdict resting on the bare minimum usable echo
+    estimates — a cliff, not a gradient (GeometryLock's own docstring). Spending
+    two more prompted positions on that basis buys a verdict the instrument
+    already qualifies, so a thin lock is accepted and disclosed."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    _lock(monkeypatch, thin=True)
+
+    verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+    assert verdict["accepted"] is True
+    assert verdict["geometry"]["locked"] is True
+    assert verdict["geometry"]["thin_evidence"] is True
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+
+
+def test_retain_position_seam_gets_every_accepted_position_with_its_prompt():
+    """The forensic record the choreography owes: the prompt is the only durable
+    statement of WHERE a curve was measured."""
+    retained: list = []
+    fakes = FakeSeams()
+    seams = replace(
+        fakes.seams(),
+        retain_position=lambda pid, result, meta: retained.append((pid, dict(meta))),
+    )
+    c = CrossoverV2Conductor(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=seams, index_phase_map=CLOUD_MAP,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+
+    assert [pid for pid, _m in retained] == [
+        f"{PHASE_CLOUD_MEASURE}_{i:02d}" for i in CLOUD_MEASURE_INDEXES
+    ]
+    prompts = [meta["prompt"] for _pid, meta in retained]
+    assert prompts == [p.body for p in CLOUD_POSITION_PROMPTS[: len(retained)]]
+    assert sum(1 for _pid, meta in retained if meta["wide"]) >= 2
+    for _pid, meta in retained:
+        assert meta["phase"] == PHASE_CLOUD_MEASURE
+        assert meta["session_id"] == SESSION
+        assert meta["captured_at"] > 0
+
+
+def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):
+    """B3: the sidecar's prompt is the only durable statement of WHERE a curve
+    was measured. A geometry retake follows a wider-spot rung, not the position
+    table's entry — recording the table entry would name a spot the operator
+    was explicitly told to abandon."""
+    retained: list = []
+    fakes = FakeSeams()
+    c = CrossoverV2Conductor(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(
+            fakes.seams(),
+            retain_position=lambda pid, r, meta: retained.append(dict(meta)),
+        ),
+        index_phase_map=CLOUD_MAP,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    last = CLOUD_MEASURE_INDEXES[-1]
+    _lock(monkeypatch)
+
+    _run_phase(c, last, attempt)          # original take, then geometry-rejected
+    attempt += 1
+    _run_phase(c, last, attempt)          # first wider retake, rejected again
+    attempt += 1
+    monkeypatch.undo()
+    _run_phase(c, last, attempt)          # second wider retake, accepted
+
+    takes = [m for m in retained if m["index"] == last]
+    assert len(takes) == 3
+    # The original followed the table; both retakes followed their own rung, in
+    # order, and are marked wide (a two-forearm move is a wide offset).
+    assert takes[0]["prompt"] == CLOUD_POSITION_PROMPTS[
+        len(CLOUD_MEASURE_INDEXES) - 1
+    ].body
+    assert takes[1]["prompt"] == CLOUD_GEOMETRY_RETRY_PROMPTS[0]
+    assert takes[2]["prompt"] == CLOUD_GEOMETRY_RETRY_PROMPTS[1]
+    assert takes[1]["wide"] is True and takes[2]["wide"] is True
+    # Each take carries its own attempt — what disambiguates their artifacts.
+    assert len({m["attempt"] for m in takes}) == 3
+    # Only the LAST is in the cloud.
+    surviving = c.group_position_takes(PHASE_CLOUD_MEASURE)
+    assert [t["attempt"] for t in surviving if t["index"] == last] == [
+        takes[2]["attempt"]
+    ]
+
+
+def test_retain_position_failure_never_fails_the_capture(caplog):
+    """Evidence retention is forensics, not a gate: a full disk must not turn an
+    acoustically-good position into a retake."""
+    def boom(_pid, _result, _meta):
+        raise OSError("no space left on device")
+
+    fakes = FakeSeams()
+    c = CrossoverV2Conductor(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(fakes.seams(), retain_position=boom),
+        index_phase_map=CLOUD_MAP,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    with caplog.at_level(logging.WARNING):
+        verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[0], attempt)
+    assert verdict["accepted"] is True
+    assert "crossover_v2_position_retain_failed" in caplog.text
+
+
+def test_group_combine_failure_degrades_to_an_unknown_verdict(monkeypatch):
+    """A group's captures are already-accepted evidence; a combiner failure must
+    not retroactively fail them."""
+    def explode(_captures, **_kw):
+        raise ValueError("malformed grid")
+
+    # ``cloud_geometry_verdict`` imports the combiner lazily from its own
+    # module, so patch it there rather than on the conductor's namespace.
+    monkeypatch.setattr(
+        "jasper.audio_measurement.spatial_combine.combine_positions", explode
+    )
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+    verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+    assert verdict["accepted"] is True
+    assert verdict["geometry"] == {
+        "locked": False, "reason": "combine_failed",
+        "n_positions": len(CLOUD_MEASURE_INDEXES),
+    }
+
+
+def test_cloud_session_phases_and_resume_within_the_same_session():
+    """§5.6 unchanged: a cloud group interrupted mid-way resumes only within the
+    SAME relay session. The session's own phase list rides the snapshot so a
+    reader can tell a cloud session from a verify-only re-arm."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    assert c.session_phases == (
+        PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
+        PHASE_VERIFY, PHASE_CLOUD_VERIFY,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    snap = c.snapshot()
+    assert PHASE_CLOUD_MEASURE in snap.accepted_phases
+    assert snap.session_phases == c.session_phases
+
+    resumed = CrossoverV2Conductor.hydrate(
+        snap, session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=fakes.seams(), index_phase_map=CLOUD_MAP,
+    )
+    assert PHASE_CLOUD_MEASURE in resumed.accepted_phases
+    assert resumed.current_phase == PHASE_APPLYING
+
+
+def test_a_new_relay_session_invalidates_the_whole_cloud():
+    """Mic position is unverifiable across sessions, so a fresh session restarts
+    at CHECK — the cloud is evidence like any other phase, never an exception."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+
+    fresh = CrossoverV2Conductor.hydrate(
+        c.snapshot(), session_id="cap_a_different_session",
+        source_preset=_preset(), roles_bands=_roles(), fc_hz=FC_HZ,
+        driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=fakes.seams(), index_phase_map=CLOUD_MAP,
+    )
+    assert fresh.accepted_phases == frozenset()
+    assert fresh.current_phase == PHASE_CHECK
+    assert fresh.group_positions(PHASE_CLOUD_MEASURE) == ()
+    assert fresh.group_geometry(PHASE_CLOUD_MEASURE) is None
+
+
+def test_verify_only_rearm_session_never_waits_on_a_cloud_it_has_no_captures_for():
+    """A conductor walks the phases ITS map addresses. The re-verify re-arm maps
+    one index to VERIFY, so it must reach DONE rather than sitting pending on a
+    position group that has no entry in its plan."""
+    fakes = FakeSeams()
+    c = _conductor(
+        fakes, index_phase_map={1: PHASE_VERIFY},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE),
+        applied=True,
+    )
+    assert c.session_phases == (PHASE_VERIFY,)
+    assert c.current_phase == PHASE_VERIFY
+    _run_phase(c, 1, 1)
+    assert c.current_phase == PHASE_DONE
+
+
+def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
+    """A cloud position is OFF the design axis by construction, so measured-vs-
+    predicted divergence there is the spatial variation the cloud exists to
+    sample — not a tracking error. Withholding ``predicted_sum`` means no
+    tracking claim can be made from a capture that cannot support one."""
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    _run_phase(c, CLOUD_MEASURE_INDEXES[0], attempt)
+
+    played_phase, played_program = fakes.played[-1]
+    assert played_phase == PHASE_CLOUD_MEASURE
+    # The conductor's phase and the PROGRAM's phase are different vocabularies:
+    # the program is the VERIFY-shaped summed sweep, which is exactly why
+    # `analyze_program_capture` needed no new dispatch branch.
+    assert played_program.phase == PHASE_VERIFY
+    _prog_phase, _result, priors, _geometry = fakes.analyzed[-1]
+    assert priors.predicted_sum is None
+    assert priors.crossover_fc_hz == FC_HZ
+
+
 # --- capture plan (auto-advance policy, §5.2/§5.7) ---------------------------------
 
 
 def test_capture_plan_entries_carry_auto_advance_policy():
     plan = build_v2_capture_plan(_roles(), FC_HZ)
     assert plan.schema_version == 2
-    assert plan.capture_target == CAPTURE_PLAN_TARGET
+    # The shipped plan is the CLOUD plan (flat-linearization PR-3b): CHECK,
+    # MEASURE, N-1 prompted pre-apply positions, VERIFY, M-1 post-apply ones.
+    assert plan.capture_target == cloud_capture_target() == 16
     kinds = [entry.kind_label for entry in plan.entries]
-    assert kinds == ["check", "measure", "verify"]
-    assert [entry.index for entry in plan.entries] == [0, 1, 2]
-    check, measure, verify = plan.entries
-    # One tap per session: CHECK is the tap; MEASURE auto-advances behind a
-    # visible cancelable countdown; VERIFY arms on apply.
+    assert kinds == (
+        ["check", "measure"]
+        + ["cloud_measure"] * (DEFAULT_CLOUD_MEASURE_POSITIONS - 1)
+        + ["verify"]
+        + ["cloud_verify"] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
+    )
+    assert [entry.index for entry in plan.entries] == list(range(16))
+    check, measure = plan.entries[0], plan.entries[1]
+    verify = plan.entries[DEFAULT_CLOUD_MEASURE_POSITIONS + 1]
+    assert verify.kind_label == "verify"
+    # One tap per session BEFORE the cloud: CHECK is the tap; MEASURE
+    # auto-advances behind a visible cancelable countdown; VERIFY arms on
+    # apply. Every prompted cloud position needs its own tap, because the
+    # operator has to physically move the mic between them.
     assert check.screen["auto_advance"] == AUTO_ADVANCE_TAP
     assert measure.screen["auto_advance"] == AUTO_ADVANCE_COUNTDOWN
     assert measure.screen["cancelable"] == "1"
     assert int(measure.screen["countdown_s"]) > 0
     assert verify.screen["auto_advance"] == AUTO_ADVANCE_ON_APPLY
+    for entry in plan.entries:
+        if entry.kind_label.startswith("cloud_"):
+            assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
+            assert entry.screen["body"]
+    # The END screen rides the LAST entry, which the cloud moved off VERIFY.
+    assert plan.entries[-1].screen["done_title"] == "Your speaker is tuned"
+    assert "done_title" not in verify.screen
     # Durations are per-entry (heterogeneous) and positive.
     assert all(entry.duration_ms > 0 for entry in plan.entries)
     assert len({entry.duration_ms for entry in plan.entries}) > 1
+
+
+def test_capture_plan_index_phase_map_matches_the_emitted_entries():
+    """The prompt an entry carries and the phase the conductor runs for that
+    index come from the same builder — a drift here would prompt "move left"
+    while the conductor analysed a VERIFY."""
+    plan = build_v2_capture_plan(_roles(), FC_HZ)
+    index_phase = build_v2_cloud_index_phase_map()
+    assert len(index_phase) == plan.capture_target
+    kind_for_phase = {
+        PHASE_CHECK: "check",
+        PHASE_MEASURE: "measure",
+        PHASE_CLOUD_MEASURE: "cloud_measure",
+        PHASE_VERIFY: "verify",
+        PHASE_CLOUD_VERIFY: "cloud_verify",
+    }
+    for entry in plan.entries:
+        # Entry indexes are 0-based; the relay's own index space is 1-based.
+        assert entry.kind_label == kind_for_phase[index_phase[entry.index + 1]]
+
+
+def test_cloud_prompts_front_load_the_wide_offsets():
+    """Fundamental 1's physics, pinned: >=10 cm spread decorrelates HF nulls and
+    ~30 cm+ offsets are what support the LF edge. Both groups walk the SAME
+    ordered table from the front, so the shortest group either can be
+    CONFIGURED to run — its declared MIN, not its default — must still contain
+    at least two wide moves. Reordering the table for readability would
+    silently delete the LF half of the measurement — hence this test rather
+    than a comment.
+
+    Round-2 review NEW-9: this used to compare against
+    ``DEFAULT_CLOUD_VERIFY_POSITIONS``, so ``M = 2`` was accepted and voided
+    the guarantee the test claims. Both groups now carry a floor, and both
+    floors are checked against the SAME derivation the code enforces.
+    """
+    shortest_group = min(
+        MIN_CLOUD_MEASURE_POSITIONS, MIN_CLOUD_VERIFY_POSITIONS
+    )
+    walked = CLOUD_POSITION_PROMPTS[: shortest_group - 1]
+    assert sum(1 for prompt in walked if prompt.wide) >= 2
+    # The floors are DERIVED from the table, so a reorder moves them rather
+    # than leaving a stale literal behind.
+    derived = _min_positions_for_two_wide_offsets()
+    assert MIN_CLOUD_VERIFY_POSITIONS == derived
+    assert MIN_CLOUD_MEASURE_POSITIONS >= derived
+
+
+@pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])
+def test_a_verify_group_too_short_for_two_wide_offsets_is_refused(positions):
+    """The hole NEW-9 named: nothing stopped a caller asking for a post-apply
+    group that never reaches a ~30 cm-class offset."""
+    with pytest.raises(CrossoverV2FlowError):
+        build_v2_capture_plan(_roles(), FC_HZ, cloud_verify_positions=positions)
+    # Every prompt is real household copy, and none of it leaks a measurement
+    # number into the operator's hands (the S0 owner ruling: hand-widths and
+    # forearms, never centimetres).
+    for prompt in CLOUD_POSITION_PROMPTS:
+        assert prompt.body.strip()
+        assert " cm" not in prompt.body and "centimet" not in prompt.body.lower()
 
 
 # --- courtesy-tone prelude (issue #1677): phone-contract duration ------------
@@ -1486,7 +2023,9 @@ def test_capture_plan_entries_carry_auto_advance_policy():
 def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
     assert COURTESY_PRELUDE_ENABLED is True
     plan = build_v2_capture_plan(_roles(), FC_HZ)
-    check, measure, verify = plan.entries
+    check, measure = plan.entries[0], plan.entries[1]
+    verify = plan.entries[DEFAULT_CLOUD_MEASURE_POSITIONS + 1]
+    assert verify.kind_label == "verify"
 
     from jasper.audio_measurement.program import (
         BASE_STIMULUS_PEAK_DBFS,
@@ -1515,6 +2054,12 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
     assert check.duration_ms == _program_duration_ms(nominal_check) + CAPTURE_ENTRY_MARGIN_MS
     assert measure.duration_ms == _program_duration_ms(nominal_measure) + CAPTURE_ENTRY_MARGIN_MS
     assert verify.duration_ms == _program_duration_ms(nominal_verify) + CAPTURE_ENTRY_MARGIN_MS
+    # Every cloud position plays the SAME mono summed sweep VERIFY does, so its
+    # recording window must be that program's — a shorter one would truncate
+    # the sweep and a longer one would record silence into the analysis.
+    for entry in plan.entries:
+        if entry.kind_label.startswith("cloud_"):
+            assert entry.duration_ms == verify.duration_ms
 
 
 def test_capture_plan_duration_is_longer_than_the_pre_1677_shape():
@@ -1652,7 +2197,7 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert spec.kind == "crossover_sweep"
     assert spec.capture_protocol_version == 3
     assert spec.capture_plan is not None
-    assert spec.capture_plan.capture_target == CAPTURE_PLAN_TARGET
+    assert spec.capture_plan.capture_target == cloud_capture_target()
     # Round-trips through the strict boundary validation.
     from jasper.capture_relay.spec import CaptureSpec
 
@@ -1667,9 +2212,8 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
     verbatim, which was harmless only while the two constants happened to be
     equal at 8. Raising the relay ceiling to 32 for multi-position capture
     plans would otherwise have quadrupled these shipped flows' retry budget and
-    changed their wire bytes as a side effect. Pin the budget to this flow's
-    own constant, and pin that it is strictly below the relay ceiling so the
-    plans stay storable.
+    changed their wire bytes as a side effect. Pin each flow's budget to this
+    flow's own constants, and pin that both stay storable.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         CAPTURE_PLAN_MAX_ATTEMPTS,
@@ -1684,16 +2228,84 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
     assert CAPTURE_PLAN_MAX_ATTEMPTS == LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS == 8
     assert CAPTURE_PLAN_MAX_ATTEMPTS <= MAX_CAPTURE_PLAN_ATTEMPTS
 
-    three_entry = build_v2_capture_plan(_roles(), FC_HZ)
+    cloud = build_v2_capture_plan(_roles(), FC_HZ)
     one_entry = build_v2_verify_capture_plan(FC_HZ)
-    assert three_entry.capture_target == 3
-    assert three_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
+    assert cloud.capture_target == cloud_capture_target() == 16
+    assert cloud.max_attempts == cloud_plan_max_attempts() == 23
     assert one_entry.capture_target == 1
     assert one_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
-    # Both stay at or below the legacy ceiling, so neither probes the relay's
-    # capability endpoint and both keep working against a pre-capacity Worker.
-    for plan in (three_entry, one_entry):
-        assert plan.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
+    # The re-verify re-arm stays at or below the legacy ceiling, so it never
+    # probes the relay's capability endpoint and keeps working against a
+    # pre-capacity Worker. The cloud plan is above it BY DESIGN — that probe is
+    # exactly the fail-closed gate PR-3a shipped for this plan.
+    assert one_entry.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
+    assert cloud.max_attempts > LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
+    assert cloud.max_attempts <= MAX_CAPTURE_PLAN_ATTEMPTS
+
+
+def test_worst_case_cloud_plan_fits_the_relay_index_space():
+    """The choreography constants and the relay's blob-index ceiling are
+    coupled: PR-3a sized ``MAX_CAPTURE_PLAN_ATTEMPTS`` from PR-3b's declared
+    maxima, so raising a cloud constant past what the relay can carry must fail
+    here — hardware-free — rather than stranding an operator on a refused blob
+    index at position 20."""
+    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+
+    assert_cloud_plan_fits_relay_capacity()
+    worst_entries = cloud_capture_target(
+        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+    )
+    # The work order's own arithmetic, spelled out:
+    # 2 (CHECK+MEASURE) + (N_MAX-1) + M + retries <= the relay ceiling.
+    assert (
+        2
+        + (MAX_CLOUD_MEASURE_POSITIONS - 1)
+        + DEFAULT_CLOUD_VERIFY_POSITIONS
+        + GEOMETRY_RETRY_POSITIONS
+    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
+    assert worst_entries == 19
+    assert (
+        cloud_plan_max_attempts(
+            cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+            cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+        )
+        == 26
+        <= MAX_CAPTURE_PLAN_ATTEMPTS
+    )
+
+
+@pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
+                                       MAX_CLOUD_MEASURE_POSITIONS + 1])
+def test_cloud_position_count_outside_the_declared_range_is_refused(positions):
+    with pytest.raises(CrossoverV2FlowError):
+        build_v2_capture_plan(_roles(), FC_HZ, cloud_measure_positions=positions)
+
+
+def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
+    """The walked-away guarantee survives a 16-capture session — and stays a
+    guarantee: the ceiling grows with plan length but can never be scaled
+    away."""
+    from jasper.active_speaker.session_volume_plan import (
+        DEFAULT_WALL_CLOCK_CEILING_S,
+        MAX_WALL_CLOCK_CEILING_S,
+    )
+
+    shipped = build_v2_capture_plan(_roles(), FC_HZ)
+    # 1800 + (16 - 3) * 120 = 3360 s for the shipped cloud.
+    assert session_wall_clock_ceiling_s(shipped) == 3360.0
+    biggest = build_v2_capture_plan(
+        _roles(), FC_HZ,
+        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+    )
+    # 1800 + (19 - 3) * 120 = 3720 s unclamped, so the hard cap binds.
+    assert session_wall_clock_ceiling_s(biggest) == MAX_WALL_CLOCK_CEILING_S == 3600.0
+    # The 1-entry re-verify never widens the baseline.
+    assert (
+        session_wall_clock_ceiling_s(build_v2_verify_capture_plan(FC_HZ))
+        == DEFAULT_WALL_CLOCK_CEILING_S
+    )
 
 
 # Golden wire bytes for the two shipped v2 capture plans, canonicalized exactly
@@ -1702,13 +2314,13 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
 # phone receives — not a proxy for them.
 #
 # WHAT MUST NEVER CHANGE THEM: raising the relay's transport ceiling
-# (`capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`). That is the entire point of
-# this pin — the capacity raise from 8 to 32 must be invisible to these two
-# flows, and a value-level assertion alone would not have caught a serialization
-# change that came along with it.
+# (`capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`). That is the original point
+# of this pin — the capacity raise from 8 to 32 had to be invisible to the
+# shipped flows, and a value-level assertion alone would not have caught a
+# serialization change that came along with it.
 #
 # WHAT LEGITIMATELY CHANGES THEM: editing a `screen` title/body/auto-advance,
-# changing `CAPTURE_PLAN_TARGET` or `CAPTURE_PLAN_MAX_ATTEMPTS`, altering
+# changing the plan's capture target or attempt budget, altering
 # `CapturePlan.to_dict`'s schema, or shifting any composed program's length
 # (prelude/pilot durations, `CAPTURE_ENTRY_MARGIN_MS`) — every one of those
 # changes what a household's phone is told to do, so a failure here is a prompt
@@ -1716,10 +2328,25 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
 #
 # TO UPDATE: run the assertion, read the actual digest out of the failure
 # message, and paste it here in the same commit as the intended change.
+#
+# UPDATED 2026-07-26 (flat-linearization PR-3b): the "3-entry" main-session
+# entry became the CLOUD plan — the intended product change, not drift. The
+# measurement is now the spatial cloud (plan fundamental 1), so the main
+# session emits CHECK + MEASURE + N−1 prompted pre-apply positions + VERIFY
+# + M−1 prompted post-apply positions. The re-verify re-arm plan is UNCHANGED
+# and its digest is byte-for-byte the pre-PR-3b one: it re-runs the
+# single-position tracking verdict, and evidence cannot cross relay sessions
+# anyway (§5.6), so a cloud there could never join the original one.
+#
+# RE-DERIVED 2026-07-26 (round-1 review): N 8 → 9 (adjudication 3a — the
+# delivered curve must rest on 8 summed sweeps, which is N−1, so the floor is
+# met in CURVES not positions) took the plan 15 → 16 entries, and the entry
+# titles gained the "— hold still" suffix that disambiguates them from the
+# phone's own capture counter (nit N1). Both are intended copy/shape changes.
 _GOLDEN_V2_PLAN_BYTES = {
-    "3-entry": (
-        816,
-        "bc1c6c0a5c14b9c7d831c1b9c90215df1df8fd5949363d58c4682a65f4bb1e21",
+    "cloud": (
+        3863,
+        "5b64daa1e24dafe8165a45e0ea79a3a71a8b91a52c6b25da82e6052afca452e8",
     ),
     "1-entry": (
         246,
@@ -1729,7 +2356,8 @@ _GOLDEN_V2_PLAN_BYTES = {
 
 
 def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
-    """The capacity raise is invisible on the wire for both shipped flows."""
+    """Both shipped plans' wire bytes are pinned; only an intended edit moves
+    them."""
     import hashlib
     import json
 
@@ -1739,7 +2367,7 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
     )
 
     plans = {
-        "3-entry": build_v2_capture_plan(_roles(), FC_HZ),
+        "cloud": build_v2_capture_plan(_roles(), FC_HZ),
         "1-entry": build_v2_verify_capture_plan(FC_HZ),
     }
     for label, plan in plans.items():
@@ -1750,6 +2378,34 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
             f"{label} v2 capture plan wire bytes changed: "
             f"len={len(raw)} sha256={actual_sha}"
         )
+
+
+def test_cloud_plan_stays_inside_the_relay_spec_byte_budgets():
+    """The relay caps the opaque spec at 64 KiB and each entry's screen at
+    4 KiB (`capture_relay.spec`). A 16-entry plan of product copy is nowhere
+    near either, but the margin is what makes prompt edits safe, so measure it
+    rather than assume it."""
+    import json
+    import re
+    from pathlib import Path
+
+    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES
+
+    # The 64 KiB spec cap lives in the deployed Worker, not in Python — read it
+    # from the source of truth rather than restating it here.
+    worker = Path(__file__).resolve().parents[1] / "relay" / "src" / "worker.js"
+    match = re.search(
+        r"const MAX_SPEC_BYTES = (\d+) \* 1024;", worker.read_text(encoding="utf-8")
+    )
+    assert match is not None, "relay worker no longer declares MAX_SPEC_BYTES"
+    max_spec_bytes = int(match.group(1)) * 1024
+
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding="b" * 24)
+    raw = json.dumps(spec.to_dict(), separators=(",", ":")).encode("utf-8")
+    assert len(raw) < max_spec_bytes // 4
+    for entry in spec.capture_plan.entries:
+        encoded = json.dumps(entry.screen, separators=(",", ":")).encode("utf-8")
+        assert len(encoded) < MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES // 4
 
 
 # --- W6.1 Finding A: cap-aware CHECK / MEASURE / VERIFY composition -------------
