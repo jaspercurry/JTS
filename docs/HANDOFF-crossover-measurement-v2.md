@@ -37,6 +37,21 @@ this doc is the current operational truth.
   deploy by ~5 min. See the capture-page README's release ordering —
   the page's `supported_capture_protocol_versions` must include a
   protocol before the Pi emits it.
+- **Relay Worker:** the Cloudflare Worker under
+  [`relay/`](../relay/README.md), served at `relay.jasper.tech`. It is a
+  **third independent release**, and like the page it ships **before**
+  the Pi — accepting a larger capture plan is backwards compatible,
+  emitting one is not. Deploy `cd relay && npx wrangler deploy`, then
+  verify the public artifact before touching any Pi:
+  `curl -fsS https://relay.jasper.tech/capabilities` — confirm
+  `max_capture_plan_attempts` is at least what the Pi build will emit
+  (32 as of PR-3a; the pre-capacity Worker's ceiling was 8). Only then
+  `bash scripts/deploy-to-pi.sh`. The Worker's blob-index space IS the
+  capture-plan attempt ceiling, so a stale Worker would otherwise reject
+  the ninth capture mid-session; the Pi instead reads `/capabilities` at
+  session setup and refuses before registering
+  (`event=capture_relay.plan_capacity_refused`). Full rule in
+  [`relay/README.md`](../relay/README.md) "Release order".
 
 ## Current status (2026-07-22)
 
@@ -1139,4 +1154,4 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-07-24
+Last verified: 2026-07-26

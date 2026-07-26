@@ -71,7 +71,53 @@ SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
 # this same value to indexes with a strict inequality (index >= cap rejected).
 # Keep in lockstep with `MAX_CAPTURE_PLAN_ATTEMPTS` in relay/src/worker.js
 # (pinned by tests/test_capture_relay_spec.py).
-MAX_CAPTURE_PLAN_ATTEMPTS = 8
+#
+# 32 is sized from PR-3b's DECLARED choreography defaults — design inputs from
+# docs/flat-linearization-productization-plan.md § PR-3b, not measurements.
+# Worst-case ENTRY count at that section's documented maxima:
+#     CHECK 1 + MEASURE 1 + (N-1) cloud-measure at max N=12 => 11
+#             + M=6 cloud-verify + 2 geometry-retry positions          = 21
+# `max_attempts` doubles as the RETRY budget (a retaken capture spends an
+# attempt but not a `capture_target` slot), so the cap must cover entries PLUS
+# retakes: 21 + 11 = 32, i.e. ~52 % retake headroom over the worst-case entry
+# count. That is TIGHTER than what ships today, not looser: the live v2
+# CHECK/MEASURE/VERIFY plan runs capture_target=3 against
+# `crossover_v2_flow.CAPTURE_PLAN_MAX_ATTEMPTS` = 8 (167 % headroom), and
+# `repeat_admission` allows 100 % (MAX_ATTEMPTS=4 audible vs
+# MAX_RESERVATIONS=8 total reservations). Longer sets get proportionally fewer
+# retakes each, which is the intended direction — a 21-position session that
+# needs 11 retakes has a problem retries will not fix.
+#
+# Two consequences of the raise, named here rather than discovered later:
+#   - A session may now authorize 32 blob keys instead of 8, so the storage a
+#     leaked upload_token can push inside one TTL rises from 8x to 32x that
+#     session's `max_upload_bytes`. The per-blob size cap, the per-session rate
+#     limit, and the <=1 h TTL are unchanged and remain the real bounds.
+#   - The Worker caps the OPAQUE spec at `MAX_SPEC_BYTES` (64 KiB), so a
+#     32-entry plan has ~2 KiB of spec budget per entry. That is far above the
+#     product prompt copy PR-3b emits (a title + body) but BELOW the per-entry
+#     `MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES` ceiling of 4 KiB, so a plan that
+#     spent the full per-entry screen ceiling on every entry would be refused
+#     by the relay at registration (413 `capture_spec_too_large`). The
+#     product-sized regime is pinned by tests/test_capture_relay_spec.py.
+MAX_CAPTURE_PLAN_ATTEMPTS = 32
+
+# The ceiling every relay Worker deployed BEFORE the capacity raise enforces.
+#
+# This is a FROZEN historical constant describing a deployed artifact, not a
+# tunable: it must never be bumped alongside `MAX_CAPTURE_PLAN_ATTEMPTS` (its
+# whole job is to describe what the OLD Worker does). A pre-capacity Worker has
+# no `GET /capabilities` endpoint, and the relay carried no version surface
+# before that endpoint existed — so the endpoint's ABSENCE is the only honest
+# version signal available, and the Pi reads it as exactly this ceiling.
+#
+# `register_session` refuses a larger plan at session setup rather than letting
+# the skew surface mid-session: a pre-capacity Worker rejects blob index >= 8 on
+# BOTH the phone's `PUT /blob` and the Pi's `GET /blob`, so attempt 9 would
+# 400 `bad_capture_index` after the operator had already walked eight prompted
+# positions. Plans at or below this size never probe, so every flow a
+# pre-capacity Pi could already emit keeps its exact request sequence.
+LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS = 8
 
 # The capture/upload contract mirrors the existing Pi backend so a relay-pulled
 # WAV drops into the same analysis as today's same-origin upload

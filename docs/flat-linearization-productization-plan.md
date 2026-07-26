@@ -188,8 +188,9 @@ grid — out of scope, already pinned by a lockstep test.
   `correction_bass_flow`, bench executor).
 - **No paid voice-eval, no audible playback in W1–W5.** Everything
   through PR-8 is hardware-free (pytest + corpus replay), with one
-  out-of-repo action: PR-3a's relay-Worker + capture-page deploy
-  (release ordering in that PR). Audible playback happens only in
+  out-of-repo action: PR-3a's relay-Worker deploy (release ordering in
+  that PR; *no capture-page deploy — the live page has no plan-length
+  cap, see PR-3b's annotation*). Audible playback happens only in
   the HW session, owner pinged first.
 - **The re-litigation firewall:** pulse/TDS time-selection, two-path
   inversion, cepstral echo *removal*, max-hold estimator, the
@@ -413,6 +414,28 @@ never mid-session. Deploy order per the capture-page README's
 release-ordering rule: Worker + page first (accepting larger plans is
 backwards-compatible), Pi second (emitting them).
 
+*(Mechanism deviation, recorded: the pre-registered gate —
+"the session's negotiated protocol version" — is structurally
+incapable of catching the skew it was written to catch, and PR-3a
+shipped a different one. `capture_protocol_version` is negotiated
+between the **Pi and the capture page**: the page advertises
+`supported_capture_protocol_versions` and the Pi validates it from the
+phone's identity event. The **Worker never participates** — it treats
+`capture_spec` as an opaque string it never parses (its own load-bearing
+invariant #1), so it neither reads nor reports a protocol version. A
+fresh page plus a stale Worker therefore passes protocol negotiation
+and still rejects blob index ≥ 8 mid-session, which is exactly the
+failure the contract forbids. Shipped instead: a Worker capability
+surface, `GET /capabilities` →
+`{schema_version, max_capture_plan_attempts}`, whose **absence is the
+version signal** — a Worker predating it 404s, and the Pi reads that as
+the frozen pre-capacity ceiling of 8. It is probed **before**
+`POST /sessions`, so a stale Worker never receives the oversized spec
+at all, and only plans above the legacy ceiling probe, so the shipped
+3-entry and 1-entry flows keep byte-identical wire bytes. The
+fail-closed property the contract asked for is preserved and
+strengthened; only the mechanism changed.)*
+
 **Acceptance:** spec-layer tests for >8-entry plans and the skew
 refusal; Worker-side test for the widened index space; the existing
 3-entry and 1-entry (re-verify) flows byte-identical.
@@ -424,7 +447,17 @@ gating, and tests)."
 ---
 
 ### PR-3b — Conductor position-group choreography (S1b, the instrument's front half)
-**Tier: Opus. Size: ~800–1200 diff lines across conductor/relay/web/phone copy + tests. Needs PR-3a merged AND its Worker/page deployed.**
+**Tier: Opus. Size: ~800–1200 diff lines across conductor/relay/web/phone copy + tests. Needs PR-3a merged AND its Worker deployed.**
+
+*(Pre-registered as "Worker/page deployed"; **Worker only** as shipped.
+PR-3a verified that the deployed capture page needs no redeploy for
+capacity: `capture-page/js/main.js` reads
+`maxAttempts: Math.max(1, Number(plan.max_attempts) || 1)` and renders
+`Measurement ${index} of ${target}` generically, with no plan-length
+cap anywhere in the page, so the live page already handles a 21-entry
+plan. No page file changed in PR-3a and `version.json` is untouched.
+A page deploy re-enters the picture only if PR-3b itself changes page
+code — which its own design contract says it does not need to.)*
 
 The v2 conductor
 (`jasper/active_speaker/crossover_v2_flow.py::CrossoverV2Conductor`)
@@ -859,6 +892,11 @@ PR-3b/PR-4/PR-7 that CI structurally cannot provide.
   Worker/page-first, Pi second, gated on the negotiated protocol
   version; the un-updated-Worker skew case fails closed (plan
   refused with a clear error), never mid-session.
+  *(As shipped: **Worker-first, Pi second** — no page deploy, and the
+  gate is the Worker's own `GET /capabilities` document rather than the
+  protocol version, which the Worker never sees. Full rationale in the
+  PR-3a design-contract annotation above; the fail-closed guarantee is
+  unchanged.)*
 - **`driver_spacing_m` is inert (0.0) today** — vertical-lobing
   *prediction* from declared geometry is possible future work and
   deliberately **not** in this program (80/20; RB-1 measures instead
@@ -882,7 +920,15 @@ split — the protocol caps plans at 8 entries; the existing
 the τ-ladder-vs-arrival 4–9 % gap PR-1's matcher must admit). The
 executing session updates per-PR status here as merges land.*
 
-*Ladder status: **PR-2 merged as #1749**; **PR-1 merged as #1751**.*
+*Ladder status: **PR-2 merged as #1749**; **PR-1 merged as #1751**;
+**PR-6a merged as #1753** (the owner-approved fit-side fast-track
+described below). **PR-3a** raises the relay capture-plan cap 8 → 32
+and ships a **mechanism deviation** from its pre-registered design
+contract: the gate is the Worker's own `GET /capabilities` document
+(absence = pre-capacity relay), not the negotiated protocol version,
+which the Worker structurally never sees — annotated in place in the
+PR-3a section above. It needs a **Worker deploy only**; the live
+capture page has no plan-length cap.*
 
 *Owner-approved split (2026-07-26): PR-6's fit-side half (envelope
 terms + convergence guard) fast-tracked as **PR-6a** ahead of W2 to

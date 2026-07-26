@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from jasper.capture_relay import alignment, crypto
 from jasper.capture_relay.alignment import AlignmentError, assert_alignment_confident
-from jasper.capture_relay.client import RelayClient, RelayError
+from jasper.capture_relay.client import RelayCapabilities, RelayClient, RelayError
 from jasper.capture_relay.cues import (
     MEASUREMENT_FAILED_CUE_SLUG,
     RELAY_UNREACHABLE_CUE_SLUG,
@@ -51,6 +51,7 @@ from jasper.capture_relay.session import (
     CaptureTimeout,
     PiCaptureSession,
     PlanCaptureOutcome,
+    RelayCapacityUnavailable,
     mint_session,
     register_session,
     run_capture,
@@ -95,6 +96,8 @@ __all__ = [
     "IntegrityError",
     "PiCaptureSession",
     "PlanCaptureOutcome",
+    "RelayCapabilities",
+    "RelayCapacityUnavailable",
     "RelayClient",
     "RelayError",
     "alignment",

@@ -41,9 +41,37 @@ the encryption key.
 | `POST /sessions/:id/host-event` | pull | Pi posts a host-side control event to its OWN `hostevent/<id>` object. |
 | `GET /sessions/:id/blob` | pull | Pi pulls ciphertext (+ integrity headers). Non-destructive. |
 | `DELETE /sessions/:id` | pull | Pi purges after a verified decrypt (meta + blob + event + host_event). |
+| `GET /capabilities` | none | Deployment capability document `{schema_version, max_capture_plan_attempts}` — the Pi reads it before emitting a capture plan larger than the pre-capacity ceiling of 8. See "Release order" below. |
 
-`GET /healthz` → `ok`. Sessions auto-expire at `ttl_s` (default 900 s, clamped
-60–3600) and self-delete on the next access past expiry.
+`GET /healthz` → `ok`. `GET /capabilities` → `{schema_version,
+max_capture_plan_attempts}` (see "Release order" below). Sessions auto-expire at
+`ttl_s` (default 900 s, clamped 60–3600) and self-delete on the next access past
+expiry.
+
+### Release order (Worker before Pi)
+
+The Worker and Pi packages are independent releases. A relay **capacity**
+change — the capture-plan attempt ceiling, which is also the blob-index space —
+must use this order, for the same reason the capture page ships before the Pi
+([`capture-page/README.md`](../capture-page/README.md) "Release order"):
+accepting a larger plan is backwards compatible, emitting one is not.
+
+1. Deploy the Worker: `cd relay && npx wrangler deploy`.
+2. Verify the public artifact before touching any Pi:
+   `curl -fsS https://relay.jasper.tech/capabilities`. Confirm
+   `max_capture_plan_attempts` is at least what the Pi build will emit.
+3. Only then deploy the Pi code that emits larger capture plans
+   (`bash scripts/deploy-to-pi.sh`).
+
+`GET /capabilities` is the relay's **only** version surface. A Worker deployed
+before it existed 404s, and the Pi reads that 404 as the pre-capacity ceiling of
+8, then refuses a larger plan **at session setup** — before the spec is even
+uploaded — with an error naming the deployed ceiling, the required one, and the
+`wrangler deploy` remedy (`event=capture_relay.plan_capacity_refused`). Skipping
+step 1 therefore costs a refused measurement, never a session that dies partway
+through a walked multi-position capture. Because absence is the version signal,
+this endpoint must never be removed, and `max_capture_plan_attempts` must never
+advertise more than `parseCaptureIndex` enforces.
 
 ## Hardening (plan §8)
 

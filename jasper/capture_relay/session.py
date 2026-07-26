@@ -43,7 +43,11 @@ from jasper.capture_relay.integrity import (
     capture_spec_mac,
     verify_authenticated_phone_event,
 )
-from jasper.capture_relay.spec import CapturePlanEntry, CaptureSpec
+from jasper.capture_relay.spec import (
+    LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS,
+    CapturePlanEntry,
+    CaptureSpec,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -147,6 +151,16 @@ class CapturePageIncompatible(RuntimeError):
     """The public capture page does not implement this Pi's protocol."""
 
 
+class RelayCapacityUnavailable(RuntimeError):
+    """The DEPLOYED relay cannot store every blob index this plan would use.
+
+    The sibling of :class:`CapturePageIncompatible` for the other half of the
+    cross-deployment protocol: the page's skew is caught from its identity
+    event, the relay Worker's from its ``GET /capabilities`` document. Both
+    fail before any tone plays; this one fails before the spec is even
+    uploaded."""
+
+
 class CaptureBeginRefused(RuntimeError):
     """The Pi refused a phone ``begin_capture`` request (protocol v3).
 
@@ -245,8 +259,92 @@ def mint_session(
     )
 
 
+def _advertised_plan_ceiling(document: Mapping[str, Any] | None) -> int | None:
+    """The ceiling a capability document advertises, or ``None`` if none usable.
+
+    Judges ONLY the document's contents. Whether the endpoint answered at all
+    is :attr:`RelayCapabilities.served`'s job — keeping the two separate is what
+    lets the refusal below name the right operator action instead of collapsing
+    every failure into "your relay is old"."""
+    if not isinstance(document, Mapping):
+        return None
+    value = document.get("max_capture_plan_attempts")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def _assert_relay_plan_capacity(
+    client: RelayClient, session: PiCaptureSession
+) -> None:
+    """Refuse a plan the deployed relay could not carry — BEFORE registering it.
+
+    The cross-deployment skew this closes: `MAX_CAPTURE_PLAN_ATTEMPTS` is the
+    Worker's blob-index space as well as the Pi's plan ceiling, and a relay
+    deployed before the capacity raise rejects index >= 8 on both the phone's
+    upload and the Pi's pull. Without this gate an oversized plan would fail on
+    the ninth capture — after the operator had already walked eight prompted
+    positions — which is exactly the mid-session failure the design contract
+    forbids. Refusing here, ahead of `client.register`, also means a
+    pre-capacity relay never even receives the oversized spec.
+
+    Only plans larger than ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS`` probe. Every
+    plan a pre-capacity Pi could already emit — the 3-entry driver set, the
+    1-entry re-verify — issues the identical request sequence it always has.
+
+    Dormant as shipped: no builder emits a plan this large yet
+    (``crossover_v2_flow.CAPTURE_PLAN_MAX_ATTEMPTS`` is 8), so today this
+    returns on its first line for every real session. It exists so that the
+    multi-position choreography can land as a Pi-side change against an
+    already-deployed relay."""
+    plan = session.spec.capture_plan
+    if plan is None or plan.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS:
+        return
+    probe = client.capabilities()
+    advertised = _advertised_plan_ceiling(probe.document)
+    if advertised is not None and advertised >= plan.max_attempts:
+        return
+    # Four outcomes, four operator actions — never one message for all of them.
+    if advertised is not None:
+        cause = f"advertises a capture-plan ceiling of {advertised}"
+        remedy = "Deploy the current relay Worker (cd relay && npx wrangler deploy)"
+    elif not probe.served:
+        cause = (
+            "predates the capture-plan capacity release (it serves no "
+            f"/capabilities endpoint, so its ceiling is "
+            f"{LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS})"
+        )
+        remedy = "Deploy the current relay Worker (cd relay && npx wrangler deploy)"
+    elif probe.document is None:
+        # Answered 2xx with something that is not a capability document at all.
+        # Deploying the Worker fixes nothing — the network path is intercepting.
+        cause = (
+            "answered /capabilities with a body that is not a capability "
+            "document (a proxy, captive portal, or WAF is likely intercepting)"
+        )
+        remedy = "Check the network path to the relay"
+    else:
+        cause = "serves a /capabilities document carrying no usable ceiling"
+        remedy = "Redeploy the relay Worker (cd relay && npx wrangler deploy)"
+    log_event(
+        logger,
+        "capture_relay.plan_capacity_refused",
+        session_id=session.session_id,
+        kind=session.spec.kind,
+        required=plan.max_attempts,
+        # `None` renders as `null`, distinct from any real ceiling.
+        advertised=advertised,
+        served=probe.served,
+    )
+    raise RelayCapacityUnavailable(
+        f"the relay at {client.base_url} {cause}, but this measurement needs "
+        f"{plan.max_attempts}. {remedy} before running this measurement."
+    )
+
+
 def register_session(client: RelayClient, session: PiCaptureSession) -> dict:
     """Register the session + opaque spec with the relay."""
+    _assert_relay_plan_capacity(client, session)
     result = client.register(
         session_id=session.session_id,
         capture_spec_json=session.capture_spec_json(),

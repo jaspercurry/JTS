@@ -120,6 +120,20 @@ _INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
 _PHASE_INDEX = {phase: index for index, phase in _INDEX_PHASE.items()}
 CAPTURE_PLAN_TARGET = 3
 
+# This flow's own capture retry budget: the total admission attempts a v2
+# session may spend across its entries, including retaken captures.
+#
+# It is deliberately NOT `capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`. Both
+# builders below passed that ceiling verbatim while the two happened to be
+# equal, which silently conflated a TRANSPORT limit (how many blob keys the
+# relay Worker will store for one session) with a POLICY choice (how many
+# retakes this measurement offers a household). Raising the transport ceiling
+# to 32 for multi-position capture plans separated them, and this constant
+# holds the shipped value so the 3-entry and 1-entry flows keep emitting the
+# exact same `max_attempts` on the wire. Changing it is a product decision
+# about retries, not a consequence of the relay's capacity.
+CAPTURE_PLAN_MAX_ATTEMPTS = 8
+
 # The capturing phases in order — the ones bound to the relay session's
 # evidence and invalidated on a new session (§5.6).
 CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
@@ -2554,11 +2568,7 @@ def build_v2_capture_plan(
     CHECK is the session's one required tap, MEASURE auto-advances behind a
     visible cancelable countdown, VERIFY arms on the apply-complete host event.
     """
-    from jasper.capture_relay.spec import (
-        MAX_CAPTURE_PLAN_ATTEMPTS,
-        CapturePlan,
-        CapturePlanEntry,
-    )
+    from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
     roles = tuple(roles_bands)
     # courtesy_prelude=COURTESY_PRELUDE_ENABLED on every composed program below
@@ -2637,7 +2647,7 @@ def build_v2_capture_plan(
     )
     return CapturePlan(
         capture_target=CAPTURE_PLAN_TARGET,
-        max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS,
+        max_attempts=CAPTURE_PLAN_MAX_ATTEMPTS,
         schema_version=2,
         entries=entries,
     )
@@ -2651,11 +2661,7 @@ def build_v2_verify_capture_plan(fc_hz: float) -> Any:
     the single entry requires the tap (no countdown — apply already happened).
     The hosting conductor maps relay index 1 → VERIFY via ``index_phase_map``.
     """
-    from jasper.capture_relay.spec import (
-        MAX_CAPTURE_PLAN_ATTEMPTS,
-        CapturePlan,
-        CapturePlanEntry,
-    )
+    from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
     verify = build_verify_program(
         fc_hz,
@@ -2679,7 +2685,7 @@ def build_v2_verify_capture_plan(fc_hz: float) -> Any:
     )
     return CapturePlan(
         capture_target=1,
-        max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS,
+        max_attempts=CAPTURE_PLAN_MAX_ATTEMPTS,
         schema_version=2,
         entries=(entry,),
     )
@@ -2927,6 +2933,7 @@ __all__ = [
     "PHASE_DONE",
     "CAPTURE_PHASES",
     "CAPTURE_PLAN_TARGET",
+    "CAPTURE_PLAN_MAX_ATTEMPTS",
     "V2_FIRST_BEGIN_TIMEOUT_S",
     "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
     "MEASURE_PREDICTED_RIPPLE_CEILING_DB",

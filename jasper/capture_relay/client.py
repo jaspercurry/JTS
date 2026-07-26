@@ -36,6 +36,28 @@ class RelayResponse:
 Transport = Callable[[str, str, Mapping[str, str], "bytes | None"], RelayResponse]
 
 
+@dataclass(frozen=True)
+class RelayCapabilities:
+    """The answer to a ``GET /capabilities`` probe — three distinct outcomes.
+
+    A bare ``document | None`` would conflate two of them, and the conflation
+    is not cosmetic: it would make the Pi tell an operator "your relay predates
+    this release, deploy it" when the truth is "something answered for your
+    relay and it was not the relay." Those have different fixes.
+
+    - ``served=False`` — non-2xx (a pre-capacity Worker 404s here). The relay
+      needs deploying.
+    - ``served=True, document=None`` — 2xx whose body is not a JSON object: an
+      HTML interstitial, a captive portal, a WAF challenge. Deploying the
+      Worker fixes nothing; the network path is intercepting.
+    - ``served=True, document={...}`` — a capability document. It may still not
+      carry a usable ceiling, which the caller judges.
+    """
+
+    document: dict[str, Any] | None
+    served: bool
+
+
 class RelayError(RuntimeError):
     """A relay request returned a non-2xx status."""
 
@@ -145,6 +167,38 @@ class RelayClient:
             except (ValueError, AttributeError, UnicodeDecodeError):
                 detail = resp.body[:200].decode("utf-8", "replace")
             raise RelayError(f"{what} failed: {resp.status} {detail}", resp.status, resp.body)
+
+    # -- deployment capability (unauthenticated, session-free) --
+
+    def capabilities(self) -> RelayCapabilities:
+        """Probe ``GET /capabilities`` — the relay's only version surface.
+
+        The endpoint shipped with the capture-plan capacity raise, and the
+        relay carried NO version surface before it, so a Worker deployed
+        earlier simply 404s — that absence is the only honest "which relay is
+        this?" signal that exists.
+
+        Returns a three-state answer rather than a bare optional, because the
+        three outcomes need three different operator actions (see
+        :class:`RelayCapabilities`). Every one of them fails CLOSED for a caller
+        gating on capacity — none is ever read as "probably fine". A relay that
+        cannot be reached at all still raises through the transport exactly as
+        :meth:`register` does, so it keeps reaching the existing
+        relay-unreachable failure cue instead of being silently reclassified as
+        an old deployment.
+        """
+        resp = self._transport("GET", f"{self.base_url}/capabilities", {}, None)
+        if not (200 <= resp.status < 300):
+            return RelayCapabilities(document=None, served=False)
+        try:
+            document = self._json(resp)
+        except (ValueError, UnicodeDecodeError):
+            return RelayCapabilities(document=None, served=True)
+        if not isinstance(document, dict) or not document:
+            # An empty body decodes to `{}` — a 200 that advertises nothing is
+            # not a capability document, and neither is a JSON list.
+            return RelayCapabilities(document=None, served=True)
+        return RelayCapabilities(document=document, served=True)
 
     # -- registration (optionally guarded; the Pi mints its own tokens) --
 

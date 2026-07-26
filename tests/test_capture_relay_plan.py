@@ -41,6 +41,7 @@ from jasper.capture_relay.session import (
     CaptureFailed,
     CaptureStopped,
     CaptureTimeout,
+    RelayCapacityUnavailable,
     classify_status,
     mint_session,
     parse_begin_capture,
@@ -49,6 +50,8 @@ from jasper.capture_relay.session import (
     run_capture_plan,
 )
 from jasper.capture_relay.spec import (
+    LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS,
+    MAX_CAPTURE_PLAN_ATTEMPTS,
     CapturePlan,
     CapturePlanEntry,
     build_crossover_sweep_spec,
@@ -72,11 +75,18 @@ _PAGE_V2 = {
 
 
 class FakePlanRelayBackend:
-    """In-memory transport mirroring the Worker's v3 (indexed-blob) contract."""
+    """In-memory transport mirroring the Worker's v3 (indexed-blob) contract.
 
-    def __init__(self) -> None:
+    ``plan_ceiling`` models the DEPLOYED Worker's capture-plan capacity, served
+    from ``GET /capabilities`` exactly as the real one does. ``None`` models a
+    relay deployed before that endpoint existed: it 404s, which is the only
+    version signal a pre-capacity relay ever carried.
+    """
+
+    def __init__(self, *, plan_ceiling: int | None = MAX_CAPTURE_PLAN_ATTEMPTS) -> None:
         self.sessions: dict[str, dict] = {}
         self.host_events: dict[str, list[dict]] = {}
+        self.plan_ceiling = plan_ceiling
 
     def __call__(self, method, url, headers, body):
         split = urllib.parse.urlsplit(url)
@@ -87,6 +97,17 @@ class FakePlanRelayBackend:
 
         def jr(status, obj):
             return RelayResponse(status, {}, json.dumps(obj).encode())
+
+        if parts == ["capabilities"] and method == "GET":
+            if self.plan_ceiling is None:
+                return jr(404, {"error": "not_found"})
+            return jr(
+                200,
+                {
+                    "schema_version": 1,
+                    "max_capture_plan_attempts": self.plan_ceiling,
+                },
+            )
 
         if parts == ["sessions"] and method == "POST":
             reg = json.loads(body)
@@ -1788,3 +1809,161 @@ def test_replace_based_plan_spec_matches_builder_output():
         capture_plan=CapturePlan(capture_target=3, max_attempts=4),
     )
     assert upgraded.to_dict() == built.to_dict()
+
+
+# --- cross-deployment capacity gate (PR-3a) ----------------------------------
+#
+# `MAX_CAPTURE_PLAN_ATTEMPTS` is the Worker's blob-index space as well as the
+# Pi's plan ceiling, and the two deploy independently (a Cloudflare Worker vs a
+# Pi package). These tests pin the fail-closed direction: the Pi refuses an
+# oversized plan at SESSION SETUP against a relay that cannot carry it, instead
+# of discovering the skew when the phone's ninth upload 400s mid-choreography.
+
+
+def _sized_plan(entries: int, *, max_attempts: int | None = None) -> CapturePlan:
+    return CapturePlan(
+        capture_target=entries,
+        max_attempts=max_attempts if max_attempts is not None else entries,
+        schema_version=2,
+        entries=tuple(
+            CapturePlanEntry(
+                index=i, kind_label="cloud_measure", duration_ms=20_000
+            )
+            for i in range(entries)
+        ),
+    )
+
+
+def _register_plan(backend, plan: CapturePlan, *, record: list | None = None):
+    spec = build_crossover_sweep_spec(
+        driver_label="Woofer driver",
+        driver_role="woofer",
+        acknowledgement_binding=_BINDING,
+        stimulus_duration_ms=4000,
+        capture_plan=plan,
+    )
+    session = mint_session(
+        spec, relay_base="https://relay.test", capture_origin="capture.test"
+    )
+
+    def transport(method, url, headers, body):
+        if record is not None:
+            record.append((method, urllib.parse.urlsplit(url).path))
+        return backend(method, url, headers, body)
+
+    client = RelayClient("https://relay.test", transport=transport)
+    register_session(client, session)
+    return session
+
+
+def test_oversized_plan_is_refused_against_a_pre_capacity_relay():
+    # The skew case: a Worker deployed before GET /capabilities existed. Its
+    # 404 is the version signal, and the Pi reads it as the legacy ceiling.
+    backend = FakePlanRelayBackend(plan_ceiling=None)
+    needed = LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS + 1
+    with pytest.raises(RelayCapacityUnavailable) as excinfo:
+        _register_plan(backend, _sized_plan(needed))
+    message = str(excinfo.value)
+    # Actionable: what is deployed, what is needed, and the fix.
+    assert "predates the capture-plan capacity release" in message
+    assert "no /capabilities endpoint" in message
+    assert str(LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS) in message
+    assert str(needed) in message
+    assert "wrangler deploy" in message
+    assert "https://relay.test" in message
+    # And the pre-capacity relay never received the oversized spec at all.
+    assert backend.sessions == {}
+
+
+def test_oversized_plan_is_refused_when_the_relay_advertises_too_small_a_ceiling():
+    # A relay that DOES version itself but is behind the Pi.
+    backend = FakePlanRelayBackend(plan_ceiling=16)
+    with pytest.raises(RelayCapacityUnavailable) as excinfo:
+        _register_plan(backend, _sized_plan(21))
+    assert "advertises a capture-plan ceiling of 16" in str(excinfo.value)
+    assert backend.sessions == {}
+
+
+def _capabilities_override(response: RelayResponse):
+    """A backend whose /capabilities answers with a fixed canned response."""
+
+    class Overridden(FakePlanRelayBackend):
+        def __call__(self, method, url, headers, body):
+            if urllib.parse.urlsplit(url).path == "/capabilities":
+                return response
+            return super().__call__(method, url, headers, body)
+
+    return Overridden()
+
+
+def test_oversized_plan_is_refused_on_a_malformed_capabilities_document():
+    # Fail CLOSED like a missing document — but say something DIFFERENT, since
+    # "your relay is broken" and "your relay is old" need different fixes.
+    backend = _capabilities_override(
+        RelayResponse(
+            200,
+            {},
+            json.dumps(
+                {"schema_version": 1, "max_capture_plan_attempts": "lots"}
+            ).encode(),
+        )
+    )
+    with pytest.raises(RelayCapacityUnavailable) as excinfo:
+        _register_plan(backend, _sized_plan(21))
+    message = str(excinfo.value)
+    assert "no usable ceiling" in message
+    assert "predates" not in message
+    assert "Redeploy the relay Worker" in message
+    assert backend.sessions == {}
+
+
+def test_oversized_plan_is_refused_and_names_interception_on_a_non_json_200():
+    """An HTML interstitial must not be reported as an un-deployed relay.
+
+    A captive portal / proxy / WAF answering 2xx for `/capabilities` is fixed
+    by NEITHER deploying nor redeploying the Worker, so blaming the release
+    would send the operator down the wrong path. This is the one refusal whose
+    remedy is not a wrangler command.
+    """
+    backend = _capabilities_override(
+        RelayResponse(200, {}, b"<html><body>Sign in to continue</body></html>")
+    )
+    with pytest.raises(RelayCapacityUnavailable) as excinfo:
+        _register_plan(backend, _sized_plan(21))
+    message = str(excinfo.value)
+    assert "intercepting" in message
+    assert "Check the network path to the relay" in message
+    assert "predates" not in message
+    assert "wrangler" not in message
+    assert backend.sessions == {}
+
+
+def test_oversized_plan_registers_against_a_current_relay():
+    # The happy path the whole gate exists to permit: PR-3b's worst-case entry
+    # count (21) with the full retake budget, against a deployed Worker.
+    backend = FakePlanRelayBackend()
+    plan = _sized_plan(21, max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS)
+    record: list = []
+    session = _register_plan(backend, plan, record=record)
+    assert session.session_id in backend.sessions
+    assert ("GET", "/capabilities") in record
+    stored = json.loads(backend.sessions[session.session_id]["capture_spec"])
+    assert stored["capture_plan"]["capture_target"] == 21
+    assert stored["capture_plan"]["max_attempts"] == MAX_CAPTURE_PLAN_ATTEMPTS
+
+
+@pytest.mark.parametrize("entries", [1, 3], ids=["re-verify", "driver-set"])
+def test_shipped_plan_sizes_register_without_probing_capabilities(entries):
+    """The existing 3-entry and 1-entry flows stay byte-identical on the wire.
+
+    A plan at or below the legacy ceiling issues the exact request sequence it
+    always has — no capabilities GET — so this change is invisible to every
+    flow a pre-capacity Pi could already emit, and those flows keep working
+    against a pre-capacity relay.
+    """
+    backend = FakePlanRelayBackend(plan_ceiling=None)
+    record: list = []
+    plan = _sized_plan(entries, max_attempts=LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS)
+    session = _register_plan(backend, plan, record=record)
+    assert record == [("POST", "/sessions")]
+    assert session.session_id in backend.sessions

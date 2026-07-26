@@ -1055,6 +1055,66 @@ def test_pull_blob_parses_integrity_headers():
     assert integrity == {"plaintext_len": 42, "sha256": "ab" * 32}
 
 
+@pytest.mark.parametrize(
+    ("response", "served"),
+    [
+        (RelayResponse(404, {}, b'{"error":"not_found"}'), False),
+        (RelayResponse(500, {}, b'{"error":"boom"}'), False),
+        # A 2xx that is not a capability document is NOT the same as a missing
+        # endpoint: something answered for the relay and it was not the relay.
+        # `served=True` is what keeps the refusal from blaming the release.
+        (RelayResponse(200, {}, b"<html>captive portal</html>"), True),
+        (RelayResponse(200, {}, b'["a","list"]'), True),
+        (RelayResponse(200, {}, b""), True),
+    ],
+    ids=[
+        "pre-capacity-404",
+        "server-error",
+        "html-interstitial",
+        "not-an-object",
+        "empty",
+    ],
+)
+def test_client_capabilities_reports_no_document_rather_than_raising(response, served):
+    # `capabilities()` is a VERSION probe: nothing here raises, every outcome
+    # leaves the caller failing closed, and `served` preserves WHY.
+    def transport(method, url, headers, body):
+        assert method == "GET"
+        assert url == "https://relay.test/capabilities"
+        return response
+
+    client = RelayClient("https://relay.test", transport=transport)
+    probe = client.capabilities()
+    assert probe.document is None
+    assert probe.served is served
+
+
+def test_client_capabilities_returns_the_document():
+    def transport(method, url, headers, body):
+        return RelayResponse(
+            200, {}, b'{"schema_version":1,"max_capture_plan_attempts":32}'
+        )
+
+    client = RelayClient("https://relay.test", transport=transport)
+    probe = client.capabilities()
+    assert probe.served is True
+    assert probe.document == {
+        "schema_version": 1,
+        "max_capture_plan_attempts": 32,
+    }
+
+
+def test_client_capabilities_propagates_an_unreachable_relay():
+    # An unreachable relay must NOT be silently reclassified as an old
+    # deployment — it keeps raising so it reaches the relay-unreachable cue.
+    def transport(method, url, headers, body):
+        raise OSError("no route to host")
+
+    client = RelayClient("https://relay.test", transport=transport)
+    with pytest.raises(OSError):
+        client.capabilities()
+
+
 def test_client_requires_https_base_without_custom_transport():
     # Outbound-HTTPS-only: a real client refuses a non-https base so tokens can
     # never go over http://. An injected transport (tests) bypasses the guard.
