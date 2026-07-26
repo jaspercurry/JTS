@@ -164,6 +164,24 @@ allowed_depth(f) = min(
 )
 ```
 
+**Two further terms join that `min` when — and only when — the session has
+a spatial capture cloud** (flat-linearization productization plan, PR-6a;
+that plan's interpretation call (A)). `spatial_exclusion_limit(f)` zeroes
+allowed depth on the merged honesty mask (the combiner's power-vs-median
+screen ∪ the identified-null registry), which is how the plan's "no EQ of
+interference-flagged bins, ever" reaches the fit; `position_stability_limit(f)`
+shrinks allowed depth where the cloud's cross-position band levels disagree,
+reading the standard error `σ_band/√N` through the *same* σ→depth mapping and
+per-tier tolerance table `repeatability_limit` uses. Both are optional, both
+can only narrow, and a per-driver session with no cloud composes exactly the
+five-term envelope above. Their two reason codes
+(`LIMITED_BY_SPATIAL_EXCLUSION`, `LIMITED_BY_POSITION_STABILITY`) join the
+same closed vocabulary. The exclusion is applied *after* the smoothing pass
+rather than inside it, so masking a null cannot bleed correction depth out of
+the correctable response beside it — see `compose_envelope`'s docstring in
+[`jasper/active_speaker/linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py)
+for the measured counterfactual.
+
 Correction is clamped to the envelope, which tapers smoothly (no cliffs).
 Cold-start priors: artifact 01's per-tier table (reference: full correction
 to 8 kHz, taper to zero by 16 k; consumer: 6 k/12 k; phone: 3 k/8 k) and
