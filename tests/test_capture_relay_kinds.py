@@ -20,6 +20,7 @@ from jasper.capture_relay.spec import (
     UI_COMPONENT_TYPES,
     BUILDERS,
     CaptureSpec,
+    CaptureSpecError,
     SHIPPED_KINDS,
     build_balance_burst_spec,
     build_crossover_sweep_spec,
@@ -198,6 +199,13 @@ def test_crossover_driver_rejects_unknown_capture_geometry():
 
 
 def test_crossover_summed_capture_binds_fixed_reference_axis():
+    """The STATIONARY shape — still the default, and still honest.
+
+    ``guided_captures=0`` is what every pre-cloud caller emits, including the
+    1-entry re-verify re-arm, whose "I will not move it" promise really is true
+    for its single-capture session. This copy and policy id must stay reachable
+    and unchanged; the guided-cloud variant is pinned separately below.
+    """
     spec = build_crossover_sweep_spec(
         driver_label="summed crossover",
         driver_role="summed",
@@ -213,8 +221,69 @@ def test_crossover_summed_capture_binds_fixed_reference_axis():
     assert "tweeter axis" in steps["items"][0]
     assert "level with the centre" in steps["items"][0]
     assert "completely still" in steps["items"][0]
+    assert steps["items"][2] == "Keep the phone still until the sweep finishes"
     button = next(item for item in spec.screen if item["type"] == "button")
     assert "fixed on-axis" in button["label"]
+
+
+def test_crossover_guided_cloud_never_promises_a_stationary_mic():
+    """The GUIDED shape — the consent surface a spatial cloud may honestly show.
+
+    Round-1 review blocker B1: the 16-entry cloud shipped carrying this
+    builder's stationary copy, so the first screens a household read promised
+    "I will not move it" for a session whose whole design is prompted mic
+    moves. Consent to the stationary policy is not consent to a walk, so the
+    guided shape gets its own policy id as well as its own words.
+
+    What must SURVIVE the change is the per-sweep stillness promise — that one
+    is still true, and it is the one an individual capture actually depends on.
+    """
+    spec = build_crossover_sweep_spec(
+        driver_label="crossover",
+        driver_role="summed",
+        acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+        guided_captures=16,
+    )
+
+    assert spec.acknowledgement is not None
+    assert spec.acknowledgement.id == "summed_guided_cloud_v1"
+    label = spec.acknowledgement.label
+    # Same starting axis, opposite movement promise.
+    assert "tweeter axis" in label
+    assert "level with the centre" in label
+    assert "will not move" not in label
+    assert "move it only when the phone asks me to" in label
+    assert "16" in label
+
+    steps = next(item for item in spec.screen if item["type"] == "steps")
+    assert "that spot is your mark" in steps["items"][0]
+    assert "move it a little between sweeps" in steps["items"][0]
+    assert "completely still" not in steps["items"][0]
+    # Per-sweep stillness, kept and made explicit about what follows it.
+    assert steps["items"][2] == (
+        "Keep the phone still until each sweep finishes, then follow the "
+        "on-screen prompt to move it"
+    )
+    button = next(item for item in spec.screen if item["type"] == "button")
+    assert button["label"] == "The mic is on the mark — start measuring"
+    assert "fixed on-axis" not in button["label"]
+
+
+def test_guided_captures_is_a_summed_only_shape():
+    with pytest.raises(CaptureSpecError):
+        build_crossover_sweep_spec(
+            driver_label="Woofer driver",
+            driver_role="woofer",
+            acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+            guided_captures=16,
+        )
+    with pytest.raises(CaptureSpecError):
+        build_crossover_sweep_spec(
+            driver_label="crossover",
+            driver_role="summed",
+            acknowledgement_binding="placement_abcdefghijklmnopqrstuv",
+            guided_captures=-1,
+        )
 
 
 def test_crossover_sweep_stimulus_single_sourced_from_the_kernel():

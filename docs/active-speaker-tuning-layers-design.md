@@ -107,6 +107,15 @@ visibly.
 
 ## Layer 1a concretely — UX and data flow
 
+> **Amendment (flat-linearization PR-3b, 2026-07-26).** "The household UX
+> does not change" was true of LINEARIZATION, which is what this section is
+> about — it still adds no flow, no wizard, and no sweep of its own. It is
+> no longer true of the commissioning flow as a whole: a separate change,
+> the spatial cloud, took it from ~3 captures at one position to 16 across
+> a guided walk (the "one tap" counts below moved with it). Read the claims
+> here as scoped to Layer 1a's own footprint; the flow's shape lives in
+> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md).
+
 **The household UX does not change.** One commissioning flow, the same
 phone-tap ethos (set the mic, press Go, ~3 captures, fast honest verdicts):
 CHECK → MEASURE → auto-apply → VERIFY, exactly as today. Linearization is

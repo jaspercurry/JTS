@@ -72,6 +72,15 @@ STATE_KIND = "jts_crossover_session_volume"
 # volume within a bounded window even if no close/session-death event fires.
 DEFAULT_WALL_CLOCK_CEILING_S = 1800.0
 
+# The hard cap on ANY ceiling, however a caller scales it
+# (:meth:`SessionVolumePlan.set_wall_clock_ceiling_s`). The walked-away
+# guarantee is "a speaker nobody is standing at returns to household volume
+# within a bounded window"; a longer measurement may legitimately widen that
+# window (the crossover v2 cloud walks 16 prompted captures) but nothing may
+# remove the bound. One hour is the outer edge of a plausible guided
+# measurement and comfortably inside "someone would have come back by now".
+MAX_WALL_CLOCK_CEILING_S = 3600.0
+
 # The codified measurement reference level: the fixed session volume when no
 # driver cap binds below it. -20 dB gives the least-sensitive driver a usable
 # acoustic measurement level while leaving 20 dB of digital+DSP margin under the
@@ -291,7 +300,36 @@ class SessionVolumePlan:
         # the volume cannot be treated as ready until it is recovered + reopened.
         self._opened_this_process = False
 
+    def set_wall_clock_ceiling_s(self, ceiling_s: float) -> None:
+        """Re-arm the ceiling the NEXT :meth:`open` will stamp into state.
+
+        The ceiling is a property of the measurement about to run, not of the
+        process: a 16-capture crossover cloud legitimately takes longer than
+        the 3-entry flow this default was sized for, and the caller that built
+        the plan is the only one that knows which. Setting it before ``open``
+        keeps the durable state self-describing — ``stale_active`` and the
+        force-drain read the ceiling the OPEN session recorded, so an
+        already-open session is unaffected and a hydrated one keeps whatever it
+        was opened with.
+
+        Fail-closed: a non-finite or non-positive value is refused rather than
+        silently disabling the walked-away guarantee, and the value is capped at
+        the module's own :data:`MAX_WALL_CLOCK_CEILING_S` so no caller can
+        stretch it without end.
+        """
+        value = float(ceiling_s)
+        if not math.isfinite(value) or value <= 0.0:
+            raise SessionVolumePlanError(
+                f"wall-clock ceiling must be finite and positive, got {ceiling_s!r}"
+            )
+        self._wall_clock_ceiling_s = min(value, MAX_WALL_CLOCK_CEILING_S)
+
     # --- read surfaces -------------------------------------------------------
+
+    @property
+    def wall_clock_ceiling_s(self) -> float:
+        """The ceiling the next :meth:`open` will stamp into durable state."""
+        return self._wall_clock_ceiling_s
 
     @property
     def measurement_volume_db(self) -> float | None:

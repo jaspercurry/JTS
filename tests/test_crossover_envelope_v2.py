@@ -112,13 +112,21 @@ def test_check_phase_screen():
     assert statuses["microphone_check"] == "active"
     assert env["progress"] == {"position": 2, "total": 5}
     # Item 5a (#1605): the placement guidance names the load-bearing facts —
-    # distance, tweeter height, and holding ONE spot for the whole session
-    # (one mic position spans all three captures). Substring guards, not exact
-    # wording, so copy can still be refined.
+    # distance and tweeter height. Substring guards, not exact wording, so copy
+    # can still be refined.
+    #
+    # AMENDED for the spatial cloud (flat-linearization PR-3b, round-1 review
+    # blocker B1): this screen used to promise "keep it in that one spot for
+    # the whole measurement", which the cloud makes FALSE on the very first
+    # screen the household reads. What replaces it is not silence — the
+    # starting spot is now named as the mark, and the guided moves are
+    # disclosed here rather than sprung at the third capture.
     verdict = env["verdict_text"].lower()
     assert "1 m" in verdict
     assert "tweeter height" in verdict
-    assert "whole measurement" in verdict
+    assert "mark" in verdict
+    assert "guide you to" in verdict
+    assert "whole measurement" not in verdict
 
 
 def test_measure_phase_is_phone_driven():

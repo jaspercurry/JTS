@@ -8,9 +8,11 @@
 per-driver distributed transaction with a **conductor**: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. This module owns the
-phase state machine that drives the three-capture relay session:
+phase state machine that drives the relay session — 16 captures at the shipped
+defaults, since the spatial cloud replaced the original three:
 
-    CHECK → gain solve → MEASURE → candidate → APPLYING (auto) → VERIFY → done
+    CHECK → gain solve → MEASURE → candidate → the pre-apply position group
+      → APPLYING (auto) → VERIFY → the post-apply position group → done
 
 **Owner ruling (2026-07-20): no human mid-flow Apply gate.** A hardware
 session proved the prior REVIEW/APPLY human tap a dead end — phone-only
@@ -36,7 +38,9 @@ The conductor exposes the three ``run_capture_plan`` callbacks
 (:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
 lifecycle hooks the flow needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
-relay session (a 3-entry heterogeneous ``CapturePlan`` — check/measure/verify)
+relay session (a heterogeneous ``CapturePlan`` — 16 entries at the shipped
+defaults: check / measure / the pre-apply position group / verify / the
+post-apply position group; see "position-group choreography" below)
 spans all phases; VERIFY is soft-held behind :class:`CaptureBeginDeferred`
 until the host's OWN auto-apply completes — the mechanism is unchanged from
 the pre-ruling design, only the release trigger moved from a human tap to
@@ -54,6 +58,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
@@ -112,10 +117,29 @@ PHASE_MEASURE = "measure"
 # VERIFY-armed.
 PHASE_APPLYING = "applying"
 PHASE_VERIFY = "verify"
+# The two POSITION-GROUP phases (flat-linearization PR-3b). Each spans MANY
+# capture-plan indexes — one prompted mic position per index — where every
+# other phase spans exactly one. CLOUD_MEASURE holds the pre-apply spatial
+# cloud (the N−1 summed sweeps that follow MEASURE's design-axis anchor);
+# CLOUD_VERIFY holds the post-apply one (the M−1 that follow VERIFY's
+# anchor). See ``CLOUD_POSITION_PROMPTS`` for the physics the prompts encode
+# and ``build_v2_cloud_index_phase_map`` for the index layout.
+#
+# These are CONDUCTOR phases, deliberately distinct from the EXCITATION
+# PROGRAM's own ``program.phase``: every cloud position plays the VERIFY-
+# shaped mono summed sweep (``phase="verify"``), so
+# ``program_analysis.analyze_program_capture`` routes it to ``_analyze_verify``
+# with no dispatch change and the conductor still knows which group the
+# capture belongs to. Do not conflate the two vocabularies.
+PHASE_CLOUD_MEASURE = "cloud_measure"
+PHASE_CLOUD_VERIFY = "cloud_verify"
 PHASE_DONE = "done"
 
 # Capture-plan index → phase. APPLYING is a control-page phase (no capture)
 # that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
+# This is the pre-cloud 3-entry layout, kept as the fallback for a conductor
+# constructed with no explicit ``index_phase_map``; the shipped session builds
+# its map through ``build_v2_cloud_index_phase_map``.
 _INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
 _PHASE_INDEX = {phase: index for index, phase in _INDEX_PHASE.items()}
 CAPTURE_PLAN_TARGET = 3
@@ -134,9 +158,387 @@ CAPTURE_PLAN_TARGET = 3
 # about retries, not a consequence of the relay's capacity.
 CAPTURE_PLAN_MAX_ATTEMPTS = 8
 
-# The capturing phases in order — the ones bound to the relay session's
-# evidence and invalidated on a new session (§5.6).
-CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
+# The capturing phases in CANONICAL ORDER — the ones bound to the relay
+# session's evidence and invalidated on a new session (§5.6). A given session
+# runs a SUBSET of these (a verify-only re-arm runs just ``PHASE_VERIFY``), so
+# ``CrossoverV2Conductor`` walks its own ``session_phases`` — the subset its
+# ``index_phase_map`` actually addresses, in this order — never this tuple
+# directly. Consumers that only have the persisted state read its
+# ``session_phases`` field and fall back to this tuple (see
+# ``jasper.web.correction_crossover_v2._phase_from_state``).
+CAPTURE_PHASES = (
+    PHASE_CHECK,
+    PHASE_MEASURE,
+    PHASE_CLOUD_MEASURE,
+    PHASE_VERIFY,
+    PHASE_CLOUD_VERIFY,
+)
+
+# The phases whose accepted-capture bookkeeping is PER INDEX rather than per
+# phase, because one phase spans many prompted positions.
+GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY})
+
+# What a session ran before the position groups shipped. Durable state written
+# then carries no ``session_phases`` field, and it came from a session that ran
+# exactly these three — so this, not the (now longer) ``CAPTURE_PHASES``, is the
+# honest fallback for reading such a state. Reading a pre-cloud state against
+# the full tuple would report a household mid-"cloud_measure" in a session that
+# never had one.
+PRE_CLOUD_CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
+
+# The phases whose excitation is the mono summed sweep played through the LIVE
+# production graph with no program-graph load and no play-time admission gate
+# (see ``jasper.web.correction_crossover_v2.bind_production_play``). VERIFY has
+# always been one; the two cloud groups join it because a spatial cloud measures
+# the SUMMED system — pre-apply for CLOUD_MEASURE ("what the speaker does
+# today"), post-apply for CLOUD_VERIFY. The compose-time min-cap clamp in
+# ``_compose_verify_program`` is the only level guard for all three, and its
+# argument ("a summed signal reaches every driver, so clamp to the most
+# restrictive cap") holds identically before and after apply.
+SUMMED_SWEEP_PHASES = frozenset(
+    {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+)
+
+# --------------------------------------------------------------------------- #
+# position-group choreography (flat-linearization PR-3b)
+# --------------------------------------------------------------------------- #
+#
+# docs/flat-linearization-plan.md fundamental 1: "Spatial multi-capture is THE
+# measurement... N≈8–12 gated sweeps at guided positions (≥10 cm spread for HF
+# null decorrelation; ≥~30 cm spread to support the LF edge)". These constants
+# are the product's realisation of that fundamental.
+
+# Total MIC POSITIONS in the pre-apply cloud, MEASURE's design-axis anchor
+# included — so the plan emits ``N − 1`` additional prompted positions after
+# MEASURE.
+#
+# Read that literally: the cloud carries ``N − 1`` SUMMED CURVES, not N. The
+# anchor is a per-driver MEASURE capture, so ``_analyze_measure`` produces no
+# ``summed_response`` for it to contribute and only a modelled
+# ``predicted_sum``. The same holds for the post-apply group below, where
+# VERIFY's anchor DOES capture a summed sweep but is consumed by the tracking
+# verdict rather than joined to the group.
+#
+# 9 is chosen so that ``N − 1`` = 8 CURVES, which is what
+# docs/flat-linearization-plan.md fundamental 1's "N≈8–12 gated sweeps" floor
+# actually asks for (adjudication 3a, 2026-07-26: the first draft shipped 8
+# positions ⇒ 7 curves, meeting the floor in positions but not in the thing
+# that gets combined). Beyond that floor it is a WALL-CLOCK choice, not a
+# statistical optimum: S0's stability work (6-of-10 subsets,
+# docs/flat-linearization-plan.md "S0 executed") says more positions is
+# strictly better, and the session-length ceiling is what stops us at 9. Treat
+# it as a constant, never as a promise about accuracy.
+DEFAULT_CLOUD_MEASURE_POSITIONS = 9
+# The floor a caller may configure. Below 6 the cloud stops decorrelating HF
+# nulls well enough to be worth the extra session minutes, and
+# ``CLOUD_POSITION_PROMPTS``' wide-offset guarantee (below) is specified
+# against exactly this number.
+MIN_CLOUD_MEASURE_POSITIONS = 6
+# The ceiling a caller may configure. Sized so the worst-case plan still fits
+# the relay's blob-index space — see ``assert_cloud_plan_fits_relay_capacity``,
+# which is the executable form of that claim.
+MAX_CLOUD_MEASURE_POSITIONS = 12
+# Total MIC POSITIONS in the post-apply cloud, VERIFY's anchor included — so
+# the plan emits ``M − 1`` additional prompted positions after VERIFY, and the
+# group combines ``M − 1`` curves (see the positions-are-not-curves note
+# above: VERIFY's own summed capture is consumed by the tracking verdict, which
+# is a different question than "is the speaker flat"). Smaller than the
+# pre-apply cloud on purpose: the post-apply pass grades a correction the
+# pre-apply cloud already constrained, and it is paid at the END of a long
+# session where operator patience is the binding resource.
+DEFAULT_CLOUD_VERIFY_POSITIONS = 6
+# The floor a caller may configure for the POST-apply group. It exists for the
+# same reason ``MIN_CLOUD_MEASURE_POSITIONS`` does and is enforced the same way:
+# both groups walk ``CLOUD_POSITION_PROMPTS`` from the front, so a group that
+# stops before the second wide offset carries no ~30 cm-class spread at all and
+# silently voids fundamental 1's LF-edge guarantee — which
+# ``test_cloud_prompts_front_load_the_wide_offsets`` states as a property of the
+# TABLE, not of the default. Until this floor existed, ``M = 2`` was accepted
+# and quietly broke that claim.
+#
+# DERIVED from the table (``_min_positions_for_two_wide_offsets``), never a
+# literal: reordering the prompts must move the floor with them, not leave a
+# stale number behind.
+MIN_CLOUD_VERIFY_POSITIONS = 5
+
+# How many wider-spread RETAKES of the group's last position the
+# geometry-locked check may ask for, once per group.
+#
+# Retakes rather than appended positions for ONE reason, and it is the protocol
+# rather than the physics: the relay runner completes a set at exactly
+# ``capture_target`` accepted captures with ``index == accepted_count + 1``, so
+# rejecting a capture is the only lever that keeps a plan alive at the same
+# index — appending would need a variable-length plan the shipped runner cannot
+# express.
+#
+# A "replacing is better physics" argument was made and WITHDRAWN under review
+# (2026-07-26): the reviewer computed the power-mean counterexample, where
+# APPENDING a wide position to a clustered cloud fills a −15 dB null further
+# than replacing does (−6.1 dB vs −7.7 dB) and lowers ``clustered_fraction``
+# more besides. Replacing is what the protocol permits, not what the estimator
+# prefers; if the runner ever grows variable-length sets, appending is the
+# better answer.
+#
+# Bounded on purpose: `geometry.locked` is a "spread the mic further" hint, not
+# a failure, and an unbounded loop against a genuinely position-invariant
+# defect (S0's source-fixed horn-rim comb — see the plan doc's "S0 executed"
+# §b) would never terminate, because no amount of mic movement decorrelates a
+# source-fixed null. Two retakes, then proceed and RECORD the verdict — it
+# lands in the journal and the durable v2 state's `cloud` block. Calling
+# that "disclosed" would overstate it: no household-facing surface renders
+# it yet. PR-4 owns that.
+GEOMETRY_RETRY_POSITIONS = 2
+
+# Retake headroom a cloud plan carries ABOVE its entry count and its geometry
+# retries. Deliberately the same ABSOLUTE spare the shipped 3-entry flow has
+# always had (``CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET`` = 5), not the
+# same RATIO: `capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`' own sizing note
+# says longer sets getting proportionally fewer retakes each "is the intended
+# direction — a 21-position session that needs 11 retakes has a problem retries
+# will not fix."
+CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
+
+
+@dataclass(frozen=True)
+class CloudPositionPrompt:
+    """One prompted mic move in a position group.
+
+    ``body`` is the household-facing instruction; ``wide`` marks the moves that
+    carry the plan's ~30 cm-class offset (a forearm rather than a hand-width).
+    The flag is not decoration: fundamental 1 needs ≥10 cm of spread to
+    decorrelate HF nulls and ≥~30 cm to support the LF edge, so
+    ``CLOUD_POSITION_PROMPTS`` is ORDERED to put two wide moves inside the
+    first ``MIN_CLOUD_MEASURE_POSITIONS - 1`` offsets — pinned by test, because
+    an editor reordering this table for readability would silently delete the
+    LF half of the measurement.
+    """
+
+    body: str
+    wide: bool = False
+
+
+# The prompt table, in the order a group walks it.
+#
+# Copy provenance: the validated reference is the S0 kit's ``_prompt_position``
+# table (captures/flat-linearization-20260725/s0-kit/s0_capture.py), whose
+# hand-width/forearm language was an owner request from the 2026-07-25 studio
+# session after numeric prompts ("move the mic 10 cm left") proved unusable
+# standing next to a speaker holding a mic stand. Product copy keeps that
+# register — casual, body-relative, never numeric-precision — and stays
+# hardware-blind: no horn, no JTS3, nothing that assumes a particular cabinet.
+#
+# ONE ordered table serves both groups: the pre-apply group uses
+# ``[:N - 1]`` and the post-apply group ``[:M - 1]``, so whichever group ends
+# soonest still gets the front-loaded spread. That is why the two wide moves
+# sit at offsets 3 and 4 rather than at the end, where the S0 kit (which always
+# ran all ten) could afford to put them.
+CLOUD_POSITION_PROMPTS: tuple[CloudPositionPrompt, ...] = (
+    CloudPositionPrompt("Move about one hand-width to the LEFT of the mark."),
+    CloudPositionPrompt("Now about one hand-width to the RIGHT of the mark."),
+    CloudPositionPrompt(
+        "Bigger move: about a forearm's length LEFT of the mark. Nudge the "
+        "phone a little toward the speaker as you go — like walking a small "
+        "circle around it — and keep it pointed at the speaker.",
+        wide=True,
+    ),
+    CloudPositionPrompt(
+        "Same again on the RIGHT: a forearm out, a nudge toward the speaker, "
+        "still pointed at it.",
+        wide=True,
+    ),
+    CloudPositionPrompt("Back over the mark, about a hand-width HIGHER."),
+    CloudPositionPrompt("Over the mark again, about a hand-width LOWER."),
+    CloudPositionPrompt("Two hand-widths LEFT of the mark this time."),
+    CloudPositionPrompt("Two hand-widths RIGHT of the mark."),
+    CloudPositionPrompt(
+        "Back to the mark's height, then anywhere in between you have not "
+        "used yet — a little diagonal off the mark is perfect."
+    ),
+    CloudPositionPrompt(
+        "Another big one: about a forearm's length ABOVE the mark, still "
+        "pointed at the speaker.",
+        wide=True,
+    ),
+    CloudPositionPrompt(
+        "Last big one: about a forearm's length BELOW the mark, still pointed "
+        "at the speaker.",
+        wide=True,
+    ),
+)
+
+# What the household reads during the apply hold, and the same entry's fallback
+# screen body. It carries a REPOSITION instruction because the pre-apply cloud
+# ends at a wide offset while VERIFY's tracking comparator is only meaningful
+# back on the design axis — the hold is the walk-back window.
+VERIFY_ANCHOR_HOLD_MESSAGE = (
+    "Applying the measured crossover to your speaker. While that finishes, put "
+    "the phone back on the mark — same spot, same height, pointed at the "
+    "speaker."
+)
+
+# What the geometry-locked retake asks for. Two rungs, so a second retake is a
+# genuinely different instruction rather than the same sentence twice.
+CLOUD_GEOMETRY_RETRY_PROMPTS: tuple[str, ...] = (
+    "Same measurement, wider spot: take this one about two forearms' length "
+    "to the LEFT of the mark, still pointed at the speaker.",
+    "One more, wider still: about two forearms' length to the RIGHT of the "
+    "mark, and a little higher or lower than before.",
+)
+
+
+def _min_positions_for_two_wide_offsets() -> int:
+    """Smallest group size whose walked offsets include two WIDE moves.
+
+    DERIVED from :data:`CLOUD_POSITION_PROMPTS`, never hardcoded: the whole
+    point of the wide-offset guarantee is that it survives someone reordering
+    that table, and a literal here would be the first thing to go stale if they
+    did. A group of size ``g`` walks offsets ``[:g - 1]``, so the answer is one
+    past the index of the second wide prompt.
+    """
+    wide = [i for i, prompt in enumerate(CLOUD_POSITION_PROMPTS) if prompt.wide]
+    if len(wide) < 2:
+        raise CrossoverV2FlowError(
+            "CLOUD_POSITION_PROMPTS must supply at least two wide offsets — "
+            "fundamental 1's LF edge needs ~30 cm-class spread"
+        )
+    return wide[1] + 2
+
+
+def assert_cloud_plan_fits_relay_capacity() -> None:
+    """Raise unless the WORST-CASE cloud plan fits the relay's index space.
+
+    The relay stores one blob per admitted attempt at ``capture_index =
+    attempt - 1``, so ``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`` bounds
+    entries PLUS retakes for a whole session. That ceiling was sized (PR-3a)
+    from the choreography constants above; this function is the executable
+    statement of the dependency, so raising ``MAX_CLOUD_MEASURE_POSITIONS`` or
+    ``DEFAULT_CLOUD_VERIFY_POSITIONS`` past what the relay can carry fails
+    here — loudly, in a hardware-free test — instead of stranding an operator
+    mid-cloud when a blob index is refused.
+    """
+    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+
+    entries = cloud_capture_target(
+        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+    )
+    if entries + GEOMETRY_RETRY_POSITIONS > MAX_CAPTURE_PLAN_ATTEMPTS:
+        raise CrossoverV2FlowError(
+            f"worst-case cloud plan needs {entries + GEOMETRY_RETRY_POSITIONS} "
+            f"relay blob indexes but the relay ceiling is "
+            f"{MAX_CAPTURE_PLAN_ATTEMPTS}"
+        )
+    attempts = cloud_plan_max_attempts(
+        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
+        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
+    )
+    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
+        raise CrossoverV2FlowError(
+            f"worst-case cloud plan's attempt budget {attempts} exceeds the "
+            f"relay ceiling {MAX_CAPTURE_PLAN_ATTEMPTS}"
+        )
+
+
+def _validated_cloud_counts(
+    *, cloud_measure_positions: int, cloud_verify_positions: int
+) -> tuple[int, int]:
+    n = int(cloud_measure_positions)
+    m = int(cloud_verify_positions)
+    if not MIN_CLOUD_MEASURE_POSITIONS <= n <= MAX_CLOUD_MEASURE_POSITIONS:
+        raise CrossoverV2FlowError(
+            f"cloud_measure_positions must be "
+            f"{MIN_CLOUD_MEASURE_POSITIONS}..{MAX_CLOUD_MEASURE_POSITIONS}, got {n}"
+        )
+    if m < MIN_CLOUD_VERIFY_POSITIONS:
+        raise CrossoverV2FlowError(
+            f"cloud_verify_positions must be at least "
+            f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
+        )
+    # Both groups index the SAME prompt table, so the longer of the two bounds
+    # how many offsets it must supply.
+    offsets_needed = max(n, m) - 1
+    if offsets_needed > len(CLOUD_POSITION_PROMPTS):
+        raise CrossoverV2FlowError(
+            f"cloud group needs {offsets_needed} position prompts but "
+            f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
+        )
+    return n, m
+
+
+def cloud_capture_target(
+    *,
+    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
+    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+) -> int:
+    """Accepted captures one cloud session runs: CHECK + the two groups.
+
+    ``1 + N + M`` — CHECK, then the pre-apply cloud (MEASURE's anchor plus
+    ``N − 1`` prompted positions), then the post-apply cloud (VERIFY's anchor
+    plus ``M − 1``). 16 at the shipped defaults.
+    """
+    n, m = _validated_cloud_counts(
+        cloud_measure_positions=cloud_measure_positions,
+        cloud_verify_positions=cloud_verify_positions,
+    )
+    return 1 + n + m
+
+
+def cloud_plan_max_attempts(
+    *,
+    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
+    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+) -> int:
+    """This flow's retry budget for a cloud plan (a POLICY number).
+
+    Entries + the bounded geometry retakes + ``CLOUD_RETAKE_ALLOWANCE``. Kept
+    separate from ``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`` (the relay's
+    TRANSPORT ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states:
+    conflating the two is how a transport change silently becomes a product
+    change. 23 at the shipped defaults.
+    """
+    return (
+        cloud_capture_target(
+            cloud_measure_positions=cloud_measure_positions,
+            cloud_verify_positions=cloud_verify_positions,
+        )
+        + GEOMETRY_RETRY_POSITIONS
+        + CLOUD_RETAKE_ALLOWANCE
+    )
+
+
+def build_v2_cloud_index_phase_map(
+    *,
+    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
+    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+) -> dict[int, str]:
+    """Capture-plan index → conductor phase for one cloud session.
+
+    The relay drives 1-based indexes where ``index == accepted_count + 1``
+    (``capture_relay.session._poll_capture_plan``), so this map is also the
+    running order::
+
+        1                    CHECK
+        2                    MEASURE            (design-axis anchor)
+        3 .. N+1             CLOUD_MEASURE      (N-1 prompted positions)
+        N+2                  VERIFY             (design-axis anchor, on_apply)
+        N+3 .. N+M+1         CLOUD_VERIFY       (M-1 prompted positions)
+
+    Single source of truth: ``build_v2_capture_plan`` builds its entries from
+    this same function, so an entry's prompt can never address a different
+    phase than the conductor believes it is running.
+    """
+    n, m = _validated_cloud_counts(
+        cloud_measure_positions=cloud_measure_positions,
+        cloud_verify_positions=cloud_verify_positions,
+    )
+    mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
+    for offset in range(n - 1):
+        mapping[3 + offset] = PHASE_CLOUD_MEASURE
+    mapping[n + 2] = PHASE_VERIFY
+    for offset in range(m - 1):
+        mapping[n + 3 + offset] = PHASE_CLOUD_VERIFY
+    return mapping
+
 
 # --------------------------------------------------------------------------- #
 # failure taxonomy (§5.10)
@@ -224,6 +626,17 @@ REASON_USER_STOPPED = "user_stopped"
 # rather than a generic "the measurement link timed out" claim (#1605). Same
 # TEMPLATE_SESSION_RESTART shape — a fresh session is the only way forward.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
+# Position-group choreography (flat-linearization PR-3b): the pre-apply cloud
+# closed with `spatial_combine.assess_geometry` reporting `locked` — every
+# position's echo estimate landed on the same tau, so the nulls are not moving
+# and spatial averaging cannot fill them. NOT a bad capture: the capture is
+# fine and the operator did nothing wrong. It is the one actionable thing the
+# geometry instrument can say ("spread the mic further"), so the group asks for
+# that position again from a wider spot, at most ``GEOMETRY_RETRY_POSITIONS``
+# times, and then proceeds with the verdict RECORDED (journal + durable
+# state; PR-4 owns the household surface) rather than blocking a
+# measurement on a defect no mic move can decorrelate.
+REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 
 
 @dataclass(frozen=True)
@@ -346,6 +759,23 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Applying the measured crossover took too long, so the measurement "
         "timed out before it could finish. Start over from this page to "
         "measure again — the quick microphone check runs first.",
+    ),
+    REASON_CLOUD_GEOMETRY_LOCKED: ReasonSpec(
+        REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
+        # Budget = the retake count itself. ``authorize_begin`` admits
+        # ``retry_budget + 1`` attempts at a slot before refusing, and this
+        # code is only ever raised at the group's LAST position, so a budget of
+        # GEOMETRY_RETRY_POSITIONS is exactly "the original take plus two
+        # wider ones". The conductor stops asking before this budget bites
+        # (``_geometry_retries_used``); the budget is the backstop, not the
+        # policy.
+        GEOMETRY_RETRY_POSITIONS, "",
+        # Copy names the ACTION, not the diagnosis — a household has no way to
+        # judge "the echo estimates clustered". The per-attempt wider-spot
+        # instruction rides the verdict payload's ``prompt`` field on top of
+        # this (see ``_cloud_measure_group_verdict``).
+        "These spots were too close together to tell a real dip from an echo. "
+        "Take this one from further out and we will use it instead.",
     ),
 }
 
@@ -1050,6 +1480,13 @@ class V2FlowSeams:
     publish_candidate: PublishCandidate
     apply_complete: ApplyGate
     apply_failed: ApplyFailureGate
+    # Position-group evidence retention (PR-3b), called once per ACCEPTED cloud
+    # capture with ``(position_id, capture_result, metadata)``. Optional so
+    # every pre-cloud construction site (and every conductor unit test) stays
+    # valid; ``None`` means the group runs with no durable per-position
+    # artifact, which is the correct behaviour for a conductor with no evidence
+    # store rather than a reason to fail a capture.
+    retain_position: Callable[[str, Any, Mapping[str, Any]], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -1067,6 +1504,13 @@ class V2ConductorSnapshot:
     applied: bool = False
     gain_plan_db: Mapping[str, float] | None = None
     candidate_fingerprint: str | None = None
+    # The ordered phases THIS session actually runs — the subset of
+    # ``CAPTURE_PHASES`` its ``index_phase_map`` addresses. Persisted so a
+    # host reading only the durable state can tell "verify is the last phase
+    # of a re-arm session" from "verify is followed by a post-apply cloud",
+    # which the module-global tuple cannot express. Empty on state written
+    # before PR-3b; readers fall back to ``CAPTURE_PHASES`` then.
+    session_phases: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1075,6 +1519,7 @@ class V2ConductorSnapshot:
             "applied": self.applied,
             "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
             "candidate_fingerprint": self.candidate_fingerprint,
+            "session_phases": list(self.session_phases),
         }
 
 
@@ -1105,6 +1550,130 @@ class PhaseVerdict:
             )
         out.update(self.payload)
         return out
+
+
+@dataclass(frozen=True)
+class _CloudPosition:
+    """One accepted position inside a group, retained for the group-end combine.
+
+    ``response`` is the capture's ``ProgramAnalysis.summed_response`` — a
+    ``program_analysis.DriverResponse`` carrying the calibrated, reflection-gated
+    magnitude on a linear (rfftfreq) grid plus the matching complex TF. Holding
+    the response rather than a pre-built
+    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture` is
+    deliberate: PR-4 needs the same object for the per-position work the null
+    gate and the spec curve do, and re-deriving it from a lossy intermediate
+    would be the drift this seam exists to prevent.
+    """
+
+    position_id: str
+    index: int
+    attempt: int
+    prompt: str
+    wide: bool
+    captured_at: float
+    response: Any
+    sample_rate_hz: int
+
+
+def cloud_position_capture(position: _CloudPosition) -> Any:
+    """One retained position → a :class:`spatial_combine.PositionCapture`.
+
+    **The PR-4 seam.** PR-3b calls the combiner for one thing — the geometry
+    verdict — but the input assembly is the whole assembly, so PR-4's wider
+    pipeline (``identify_interference_nulls`` → ``evaluate_flat_spec``) extends
+    the consumer, never this builder.
+
+    Regime of the ``ir`` field, stated exactly because ``detect_echo``'s answer
+    depends on it: it is the inverse rFFT of the response's **gated, calibrated**
+    complex transfer function — i.e. the impulse response AFTER
+    ``deconv.direct_arrival_window`` and the adaptive reflection gate that
+    ``program_analysis._driver_response`` applies, not the raw deconvolved IR.
+    The direct arrival is therefore present (the window places it at a fixed
+    pre-offset) and early secondary arrivals inside the gate survive, which is
+    the region ``detect_echo`` windows itself down to; LATE room reflections
+    beyond the gate are gone by construction. The S0 forensics ran the detector
+    on the ungated IR instead — ``tests/test_crossover_v2_cloud_geometry_corpus.py``
+    is the measurement that the two agree on the S0 corpus's geometry verdict,
+    rather than an assumption that they must.
+    """
+    from jasper.audio_measurement.spatial_combine import PositionCapture
+
+    response = position.response
+    freqs = np.asarray(response.freqs_hz, dtype=float)
+    magnitude = np.asarray(response.magnitude_db, dtype=float)
+    complex_tf = np.asarray(response.complex_tf)
+    # ``program_analysis._n_fft_for`` always returns a power of two (>= 8192),
+    # so the analysis grid is an even-length rfft and ``n = 2*(bins-1)``
+    # inverts it exactly rather than approximately.
+    ir = np.fft.irfft(complex_tf, n=2 * (complex_tf.size - 1))
+    return PositionCapture(
+        position_id=position.position_id,
+        freqs_hz=freqs,
+        magnitude_db=magnitude,
+        sample_rate=int(position.sample_rate_hz),
+        ir=ir,
+    )
+
+
+def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
+    """Assemble a closed group and combine it — the whole PR-4 seam.
+
+    Returns a :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`,
+    or ``None`` when the group cannot be combined (no positions, or a malformed
+    one). PR-3b reads exactly one field off it (``geometry``, via
+    :func:`cloud_geometry_verdict`); PR-4's pipeline — the power-vs-median
+    exclusion screen, the null-identification gate, the spec curve — reads the
+    rest of the SAME object, so wiring it is a second reader of this call, never
+    a second combine.
+
+    Never raises. A group's captures are already-accepted evidence and a
+    combiner failure must not retroactively fail them, so an unusable cloud is
+    a ``None`` the caller turns into an honest "unknown" rather than an
+    exception that would strand the session.
+    """
+    from jasper.audio_measurement.spatial_combine import combine_positions
+
+    if not positions:
+        return None
+    try:
+        return combine_positions([cloud_position_capture(p) for p in positions])
+    except (ValueError, TypeError, IndexError, AttributeError) as exc:
+        log_event(
+            logger, "correction.crossover_v2_cloud_combine_failed",
+            level=logging.WARNING,
+            positions=len(positions), error=str(exc),
+        )
+        return None
+
+
+def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
+    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+
+    A plain JSON-native dict, because the host persists it verbatim into the
+    durable v2 state. ``locked`` is ``False`` on every degraded path — but the
+    ``reason`` says WHICH degraded path, so "no credible echo estimates"
+    never reads the same as "the cloud combined and its nulls move".
+    """
+    if not positions:
+        return {"locked": False, "reason": "no_positions", "n_positions": 0}
+    combined = combine_cloud_positions(positions)
+    if combined is None:
+        return {
+            "locked": False,
+            "reason": "combine_failed",
+            "n_positions": len(positions),
+        }
+    geometry = combined.geometry
+    return {
+        "locked": bool(geometry.locked),
+        "reason": str(geometry.reason),
+        "n_confident": int(geometry.n_confident),
+        "n_positions": int(geometry.n_positions),
+        "median_tau_us": float(geometry.median_tau_us),
+        "clustered_fraction": float(geometry.clustered_fraction),
+        "thin_evidence": bool(geometry.thin_evidence),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1179,6 +1748,42 @@ class CrossoverV2Conductor:
         self._index_phase_map = (
             dict(index_phase_map) if index_phase_map is not None else dict(_INDEX_PHASE)
         )
+        # The ordered phases THIS session runs, and — for the position groups —
+        # which indexes each spans. Both derive from the map above so a session
+        # can never walk a phase it has no capture for (the verify-only re-arm
+        # would otherwise sit forever "pending" on a cloud group it never runs).
+        present = set(self._index_phase_map.values())
+        self._phases = tuple(p for p in CAPTURE_PHASES if p in present)
+        self._group_indexes: dict[str, tuple[int, ...]] = {
+            phase: tuple(
+                sorted(i for i, p in self._index_phase_map.items() if p == phase)
+            )
+            for phase in self._phases
+            if phase in GROUP_PHASES
+        }
+        # Per-group progress. ``_accepted`` still holds PHASES (one entry per
+        # group, added when the group CLOSES); this holds the accepted indexes
+        # inside an open group, so accepting position 3 of 8 does not read as
+        # "the pre-apply cloud is done."
+        self._group_accepted: dict[str, set[int]] = {
+            phase: set() for phase in self._group_indexes
+        }
+        # Retained per-position evidence, in capture order, keyed by group
+        # phase. The ASSEMBLY SEAM for PR-4: this list is the input
+        # ``combine_positions`` consumes, and PR-4 extends the pipeline that
+        # reads it (nulls → spec → persistence) without changing what PR-3b
+        # puts in it. Bounded by the plan's own entry count.
+        self._group_positions: dict[str, list[_CloudPosition]] = {
+            phase: [] for phase in self._group_indexes
+        }
+        # Geometry-locked retakes already spent, per group — the bound behind
+        # "up to GEOMETRY_RETRY_POSITIONS extra positions, ONCE".
+        self._geometry_retries_used: dict[str, int] = {
+            phase: 0 for phase in self._group_indexes
+        }
+        # The group's closing geometry verdict, as a plain dict for the host to
+        # persist/disclose. ``None`` until the group closes.
+        self._group_geometry: dict[str, dict[str, Any]] = {}
 
         # Programs — CHECK is composable now; MEASURE waits on the gain solve,
         # VERIFY on Fc (composable now, played only after apply).
@@ -1190,9 +1795,16 @@ class CrossoverV2Conductor:
         )
         self._verify_program = self._compose_verify_program()
 
-        # Per-phase attempt bookkeeping + the last failure reason.
+        # Per-SLOT attempt bookkeeping + the last failure reason. A slot is the
+        # phase for a single-capture phase and the ``phase:index`` pair inside a
+        # position group (``_slot_of_index``), so a rejected position spends its
+        # own retry budget instead of the whole group's.
         self._phase_attempts: dict[str, int] = {}
         self._last_reason: dict[str, str] = {}
+        # Per-slot count of geometry-locked rejections — attempts the conductor
+        # spent on GOOD captures to buy spread. Discounted from the slot's
+        # failure budget in ``authorize_begin``; see its comment.
+        self._geometry_rejections: dict[str, int] = {}
         self._armed_index: int | None = None
         # The most recent authorized (index, attempt) — the host reads it to
         # address the terminal ``capture_result`` host event at a play-seam
@@ -1392,6 +2004,22 @@ class CrossoverV2Conductor:
             measure_woofer_sweep_hi_hz=woofer_sweep_hi_hz,
         )
 
+    def _cloud_priors(self) -> MeasurementPriors:
+        """Priors for a position-group capture — deliberately WITHOUT
+        ``predicted_sum``.
+
+        VERIFY's priors carry the MEASURE-derived prediction so
+        ``_analyze_verify`` can compute the tracking comparator ("did apply do
+        what the model predicted"). A cloud position must not: the mic is
+        OFF the design axis by construction, so measured-vs-predicted
+        divergence there is the spatial variation the cloud exists to sample,
+        not a tracking error. Withholding the prior leaves
+        ``analysis.verify_tracking`` ``None``, so no tracking claim can be
+        made from a capture that cannot support one. ``flatness_tracking`` is
+        computed regardless (it needs no prior) and stays report-only.
+        """
+        return MeasurementPriors(crossover_fc_hz=self._fc_hz)
+
     # --- read surfaces -------------------------------------------------------
 
     @property
@@ -1401,12 +2029,45 @@ class CrossoverV2Conductor:
     def phase_status(self, phase: str) -> str:
         return "accepted" if phase in self._accepted else "pending"
 
+    @property
+    def session_phases(self) -> tuple[str, ...]:
+        """The ordered phases this session runs (its ``index_phase_map``'s)."""
+        return self._phases
+
     def pending_phases(self) -> tuple[str, ...]:
-        return tuple(p for p in CAPTURE_PHASES if p not in self._accepted)
+        return tuple(p for p in self._phases if p not in self._accepted)
+
+    def group_geometry(self, phase: str) -> dict[str, Any] | None:
+        """The closing geometry verdict for one position group, or ``None``.
+
+        ``None`` means the group has not closed yet (or this session has no
+        such group) — never "the geometry was fine", which is
+        ``{"locked": False, ...}``.
+        """
+        verdict = self._group_geometry.get(phase)
+        return dict(verdict) if verdict is not None else None
+
+    def group_positions(self, phase: str) -> tuple[str, ...]:
+        """Accepted position ids in one group, in capture order."""
+        return tuple(p.position_id for p in self._group_positions.get(phase, ()))
+
+    def group_position_takes(self, phase: str) -> tuple[dict[str, Any], ...]:
+        """The SURVIVING take per position — ``{position_id, index, attempt}``.
+
+        A position id alone is ambiguous once a geometry retake has happened:
+        two takes share it, and only one is in the cloud. The attempt
+        disambiguates, and it is what joins these entries to the per-take
+        evidence artifacts (which are path-qualified by attempt for exactly
+        this reason).
+        """
+        return tuple(
+            {"position_id": p.position_id, "index": p.index, "attempt": p.attempt}
+            for p in self._group_positions.get(phase, ())
+        )
 
     @property
     def current_phase(self) -> str:
-        for phase in CAPTURE_PHASES:
+        for phase in self._phases:
             if phase not in self._accepted:
                 # MEASURE accepted but not yet applied ⇒ the conductor's own
                 # auto-apply is in flight (or has failed) — no human control
@@ -1475,6 +2136,65 @@ class CrossoverV2Conductor:
             raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
         return phase
 
+    def _slot_of_index(self, index: int) -> str:
+        """The retry-budget key for one capture index.
+
+        For every single-capture phase this is the phase name itself, so the
+        CHECK/MEASURE/VERIFY bookkeeping is byte-identical to the pre-cloud
+        flow. Inside a position group it is ``phase:index``: eight prompted
+        positions are eight independent captures, and collapsing them onto one
+        cumulative counter would let a retake at position 2 refuse position 7.
+        """
+        phase = self._phase_of_index(index)
+        return f"{phase}:{index}" if phase in GROUP_PHASES else phase
+
+    def _cloud_prompt(self, phase: str, index: int) -> CloudPositionPrompt:
+        """The prompt for one group index — the SAME table the plan emitted.
+
+        A group's first PROMPTED index is its anchor's first move, so the
+        group's indexes map onto :data:`CLOUD_POSITION_PROMPTS` from the front:
+        the group's ``i``-th index (0-based) takes ``CLOUD_POSITION_PROMPTS[i]``,
+        exactly as ``build_v2_capture_plan`` enumerates them. Running off the
+        end cannot happen (``_validated_cloud_counts`` refuses a group longer
+        than the table), but a defensive fallback keeps a prompt-less capture
+        from being a crash rather than a retake.
+        """
+        offsets = self._group_indexes.get(phase, ())
+        try:
+            position = offsets.index(index)
+        except ValueError:
+            position = 0
+        if position < len(CLOUD_POSITION_PROMPTS):
+            return CLOUD_POSITION_PROMPTS[position]
+        return CloudPositionPrompt(
+            "Move the phone about a hand-width to a fresh spot you have not "
+            "used yet."
+        )
+
+    def _prompt_shown_for(self, phase: str, index: int) -> CloudPositionPrompt:
+        """The prompt the operator ACTUALLY followed for the take in hand.
+
+        Not always the table entry: after a geometry-locked rejection the phone
+        showed a wider-spot retry rung instead, so a retake's evidence must
+        record THAT instruction — the sidecar's prompt is the only durable
+        statement of where a curve was measured, and one that names a spot the
+        operator was told to abandon is worse than none.
+
+        ``_last_reason`` still holds the rejection that produced this retake
+        (``consume_capture`` clears it only on acceptance), and
+        ``_geometry_retries_used`` counts the rung that was shown, so the pair
+        identifies the instruction exactly. A wider-spread rung is ``wide`` by
+        construction — it asks for two forearms.
+        """
+        slot = self._slot_of_index(index)
+        if self._last_reason.get(slot) == REASON_CLOUD_GEOMETRY_LOCKED:
+            used = max(self._geometry_retries_used.get(phase, 1), 1)
+            rung = CLOUD_GEOMETRY_RETRY_PROMPTS[
+                min(used - 1, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
+            ]
+            return CloudPositionPrompt(rung, wide=True)
+        return self._cloud_prompt(phase, index)
+
     # --- lifecycle -----------------------------------------------------------
 
     def note_apply_complete(self) -> None:
@@ -1500,6 +2220,7 @@ class CrossoverV2Conductor:
         return V2ConductorSnapshot(
             session_id=self.session_id,
             accepted_phases=tuple(p for p in CAPTURE_PHASES if p in self._accepted),
+            session_phases=self._phases,
             applied=self._applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
             candidate_fingerprint=(
@@ -1567,10 +2288,7 @@ class CrossoverV2Conductor:
                 spec = REASON_REGISTRY.get(failure_code)
                 message = spec.message or spec.banner if spec else failure_code
                 raise CaptureBeginRefused(failure_code, message)
-            raise CaptureBeginDeferred(
-                "awaiting_apply",
-                "Applying the measured crossover to your speaker…",
-            )
+            raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
         # Budget: CUMULATIVE per phase by design — the phase's total attempt
         # count is compared against the LAST failure's retry budget, so
         # alternating reason codes cannot restart the meter (a capture that
@@ -1578,13 +2296,30 @@ class CrossoverV2Conductor:
         # forever under a literal per-code reading of the §5.10 budget
         # column). This is deliberately stricter than §5.10 read per-code;
         # the plan's `max_attempts` (8) bounds the whole session regardless.
-        # First attempt of any phase is always admitted.
-        count = self._phase_attempts.get(phase, 0) + 1
-        last = self._last_reason.get(phase)
-        if last is not None and count > REASON_REGISTRY[last].retry_budget + 1:
+        # First attempt of any slot is always admitted.
+        slot = self._slot_of_index(index)
+        count = self._phase_attempts.get(slot, 0) + 1
+        last = self._last_reason.get(slot)
+        # A geometry-locked retake is NOT a quality failure — the capture was
+        # good and the conductor asked for a wider one anyway — so it must not
+        # eat the slot's failure budget. Without this discount the sequence
+        # "geometry retake ×2, then one ordinary bad capture" spends 4 attempts
+        # against a 1-retry reason and refuses TERMINALLY, killing a 16-capture
+        # session at its last position over a single recoverable glitch. The
+        # discount is capped at GEOMETRY_RETRY_POSITIONS so a runaway geometry
+        # loop still meets the wall (``_close_cloud_group`` bounds it first;
+        # this is the backstop), and the plan's own ``max_attempts`` bounds the
+        # whole session regardless.
+        forgiven = min(
+            self._geometry_rejections.get(slot, 0), GEOMETRY_RETRY_POSITIONS
+        )
+        if (
+            last is not None
+            and count - forgiven > REASON_REGISTRY[last].retry_budget + 1
+        ):
             spec = REASON_REGISTRY[last]
             raise CaptureBeginRefused(spec.code, spec.message or spec.banner)
-        self._phase_attempts[phase] = count
+        self._phase_attempts[slot] = count
         self._armed_index = index
         self._armed_capture = (index, attempt)
         log_event(
@@ -1614,7 +2349,13 @@ class CrossoverV2Conductor:
                     "MEASURE armed before the CHECK gain solve produced a program"
                 )
             return self._measure_program
-        if phase == PHASE_VERIFY:
+        if phase in SUMMED_SWEEP_PHASES:
+            # One composed mono summed sweep serves VERIFY and both position
+            # groups: identical excitation, identical min-cap clamp, identical
+            # ``program.phase`` ("verify") so the analyzer routes it to
+            # ``_analyze_verify`` unchanged. What differs between the three is
+            # the PRIORS the conductor hands the analysis and the verdict it
+            # draws — never the sound the speaker makes.
             return self._verify_program
         raise CrossoverV2FlowError(f"no program for phase {phase!r}")
 
@@ -1623,10 +2364,12 @@ class CrossoverV2Conductor:
     ) -> dict[str, Any]:
         """Analyze one uploaded capture and advance (or reject) the phase."""
         phase = self._phase_of_index(index)
+        slot = self._slot_of_index(index)
         program = self._program_for_phase(phase)
         priors = (
             self._measure_priors() if phase == PHASE_MEASURE
             else self._verify_priors() if phase == PHASE_VERIFY
+            else self._cloud_priors() if phase in GROUP_PHASES
             else MeasurementPriors()
         )
         # The whole CaptureResult crosses the seam (not just wav bytes): the
@@ -1638,21 +2381,41 @@ class CrossoverV2Conductor:
             verdict = self._consume_check(analysis)
         elif phase == PHASE_MEASURE:
             verdict = self._consume_measure(analysis)
+        elif phase in GROUP_PHASES:
+            verdict = self._consume_cloud_position(
+                phase, index, attempt, analysis, result
+            )
         else:
             verdict = self._consume_verify(analysis)
         if verdict.accepted:
-            self._accepted.add(phase)
-            self._last_reason.pop(phase, None)
+            # A position group's PHASE is accepted only when its last index is
+            # in; a single-capture phase closes on its own acceptance. Both
+            # cases route through ``_note_accepted`` so there is one place that
+            # decides "this phase is done."
+            self._note_accepted(phase, index)
+            self._last_reason.pop(slot, None)
             self._last_failure_code = None
         elif verdict.code is not None:
-            self._last_reason[phase] = verdict.code
+            self._last_reason[slot] = verdict.code
             self._last_failure_code = verdict.code
+            if verdict.code == REASON_CLOUD_GEOMETRY_LOCKED:
+                self._geometry_rejections[slot] = (
+                    self._geometry_rejections.get(slot, 0) + 1
+                )
         log_event(
             logger, "correction.crossover_v2_result",
             session_id=self.session_id, phase=phase,
             accepted=verdict.accepted, code=verdict.code or "",
         )
         return verdict.to_relay_dict()
+
+    def _note_accepted(self, phase: str, index: int) -> None:
+        if phase not in self._group_indexes:
+            self._accepted.add(phase)
+            return
+        self._group_accepted[phase].add(index)
+        if self._group_accepted[phase] >= set(self._group_indexes[phase]):
+            self._accepted.add(phase)
 
     # --- per-phase verdicts --------------------------------------------------
     #
@@ -1824,6 +2587,205 @@ class CrossoverV2Conductor:
                 # here, not a second decision.
                 "auto_apply": True,
             },
+        )
+
+    def _consume_cloud_position(
+        self,
+        phase: str,
+        index: int,
+        attempt: int,
+        analysis: ProgramAnalysis,
+        result: Any,
+    ) -> PhaseVerdict:
+        verdict = self._cloud_position_verdict(
+            phase, index, attempt, analysis, result
+        )
+        self._safe_log_diag(
+            lambda a, v: self._log_cloud_diag(phase, index, a, v), analysis, verdict
+        )
+        return verdict
+
+    def _cloud_position_verdict(
+        self,
+        phase: str,
+        index: int,
+        attempt: int,
+        analysis: ProgramAnalysis,
+        result: Any,
+    ) -> PhaseVerdict:
+        """One prompted position: light per-capture QC, then the group check.
+
+        **Per-position work is deliberately light** (the PR-3b design
+        contract): the same locate/linearity screens every phase runs, plus
+        "did this capture yield a usable summed response". The ~40 s analyses —
+        combine, null identification, spec evaluation — run ONCE per group,
+        not once per position, or an 8-position cloud would add five minutes of
+        pure compute to a session already bounded by operator patience.
+
+        Two VERIFY gates are deliberately NOT applied here, because both assume
+        a stationary mic replaying the identical program:
+
+        * gate-comparability (a shorter gate than MEASURE's ⇒ inconclusive) —
+          a cloud position's gate legitimately differs from the anchor's, since
+          the nearest boundary changes when the mic moves. That is the
+          measurement, not a defect.
+        * the G3 pilot-transfer step — the reference it compares against is
+          "the same chain measuring the same thing"; moving the mic changes
+          the acoustic transfer by design, so a step here carries no
+          information about the recording chain drifting.
+        """
+        if not _stimulus_locate_ok(analysis):
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        if analysis.linearity_ok is False:
+            return PhaseVerdict(False, REASON_AGC_BEHAVIORAL_FAIL)
+        response = analysis.summed_response
+        if response is None:
+            # The stimulus located but no summed response came back — the
+            # capture carries no curve to combine, so it is not evidence.
+            return PhaseVerdict(False, REASON_LOCATE_FAILED)
+        prompt = self._prompt_shown_for(phase, index)
+        position = _CloudPosition(
+            position_id=f"{phase}_{index:02d}",
+            index=index,
+            attempt=attempt,
+            prompt=prompt.body,
+            wide=prompt.wide,
+            captured_at=time.time(),
+            response=response,
+            sample_rate_hz=self._verify_program.sample_rate_hz,
+        )
+        self._retain_cloud_position(phase, position, analysis, result)
+        if index != self._group_indexes[phase][-1]:
+            return PhaseVerdict(True, payload={"position_id": position.position_id})
+        return self._close_cloud_group(phase, position)
+
+    def _retain_cloud_position(
+        self,
+        phase: str,
+        position: _CloudPosition,
+        analysis: ProgramAnalysis,
+        result: Any,
+    ) -> None:
+        """Record one position in the group and hand it to the evidence seam.
+
+        Idempotent per index: a retaken position REPLACES the earlier take, so
+        a group can never carry two curves for one prompted spot.
+        """
+        retained = self._group_positions[phase]
+        retained[:] = [p for p in retained if p.index != position.index]
+        retained.append(position)
+        retained.sort(key=lambda p: p.index)
+        if self._seams.retain_position is None:
+            return
+        gating = getattr(position.response, "gating", None) or {}
+        metadata = {
+            "position_id": position.position_id,
+            "phase": phase,
+            "index": position.index,
+            "attempt": position.attempt,
+            "prompt": position.prompt,
+            "wide": position.wide,
+            "captured_at": position.captured_at,
+            "session_id": self.session_id,
+            "gate_window_ms": _gate_window_ms(position.response),
+            "validity_floor_hz": getattr(
+                position.response, "validity_floor_hz", None
+            ),
+            "gating_applied": bool(gating.get("applied")),
+            "summed_ripple_db": analysis.summed_ripple_db,
+            "glitch_detected": bool(analysis.glitch_detected),
+        }
+        try:
+            self._seams.retain_position(position.position_id, result, metadata)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            # Evidence retention is forensics, never a gate: a full disk must
+            # not turn an acoustically-good position into a retake.
+            log_event(
+                logger, "correction.crossover_v2_position_retain_failed",
+                level=logging.WARNING,
+                session_id=self.session_id, phase=phase,
+                position_id=position.position_id, exc_info=True,
+            )
+
+    def _close_cloud_group(
+        self, phase: str, position: _CloudPosition
+    ) -> PhaseVerdict:
+        """The group-end combine, and the one bounded retake it can ask for."""
+        verdict = cloud_geometry_verdict(self._group_positions[phase])
+        retries = self._geometry_retries_used[phase]
+        retry_warranted = (
+            verdict.get("locked") is True
+            # ``thin_evidence`` marks a verdict resting on the bare minimum
+            # number of usable echo estimates (see GeometryLock's docstring —
+            # it is a cliff, not a gradient). Asking an operator to walk two
+            # more positions on that basis spends real session minutes on a
+            # verdict the instrument itself qualifies, so a thin lock is
+            # disclosed and accepted rather than retried.
+            and verdict.get("thin_evidence") is not True
+            and retries < GEOMETRY_RETRY_POSITIONS
+        )
+        if retry_warranted:
+            self._geometry_retries_used[phase] = retries + 1
+            # Drop the take being replaced FROM THE CLOUD. This is what the
+            # protocol's retake lever means — the same index is measured again
+            # — not a claim that dropping beats appending (see
+            # GEOMETRY_RETRY_POSITIONS, where that claim was withdrawn). Its
+            # evidence artifact stays on disk under its own attempt-qualified
+            # path: the capture was fine, and a forensic record of what the
+            # operator actually walked is worth more than a tidy bundle.
+            retained = self._group_positions[phase]
+            retained[:] = [p for p in retained if p.index != position.index]
+            log_event(
+                logger, "correction.crossover_v2_cloud_geometry_retry",
+                session_id=self.session_id, phase=phase,
+                retry=retries + 1, of=GEOMETRY_RETRY_POSITIONS,
+                median_tau_us=verdict.get("median_tau_us"),
+                clustered_fraction=verdict.get("clustered_fraction"),
+            )
+            prompt = CLOUD_GEOMETRY_RETRY_PROMPTS[
+                min(retries, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
+            ]
+            return PhaseVerdict(
+                False, REASON_CLOUD_GEOMETRY_LOCKED,
+                payload={"prompt": prompt, "geometry": dict(verdict)},
+            )
+        self._group_geometry[phase] = verdict
+        log_event(
+            logger, "correction.crossover_v2_cloud_group_complete",
+            session_id=self.session_id, phase=phase,
+            positions=len(self._group_positions[phase]),
+            geometry_locked=bool(verdict.get("locked")),
+            geometry_reason=verdict.get("reason") or "",
+            thin_evidence=bool(verdict.get("thin_evidence")),
+            geometry_retries=retries,
+        )
+        return PhaseVerdict(
+            True,
+            payload={
+                "position_id": position.position_id,
+                "group_complete": phase,
+                "geometry": dict(verdict),
+            },
+        )
+
+    def _log_cloud_diag(
+        self,
+        phase: str,
+        index: int,
+        analysis: ProgramAnalysis,
+        verdict: PhaseVerdict,
+    ) -> None:
+        response = analysis.summed_response
+        log_event(
+            logger, "correction.crossover_v2_cloud_diag",
+            session_id=self.session_id, phase=phase, index=index,
+            accepted=verdict.accepted, code=verdict.code or "",
+            positions_in=len(self._group_positions.get(phase, ())),
+            gate_window_ms=_gate_window_ms(response),
+            validity_floor_hz=getattr(response, "validity_floor_hz", None),
+            summed_ripple_db=analysis.summed_ripple_db,
+            linearity_ok=analysis.linearity_ok,
+            glitch=analysis.glitch_detected,
         )
 
     def _consume_verify(self, analysis: ProgramAnalysis) -> PhaseVerdict:
@@ -2555,18 +3517,40 @@ def _program_duration_ms(program: ExcitationProgram) -> int:
     return int(round(program.total_samples / program.sample_rate_hz * 1000))
 
 
+def _cloud_entry_screen(
+    *, title: str, body: str, auto_advance: str,
+) -> dict[str, str]:
+    return {"title": title, "body": body, "auto_advance": auto_advance}
+
+
 def build_v2_capture_plan(
     roles_bands: Sequence[RoleBand],
     fc_hz: float,
+    *,
+    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
+    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
 ) -> Any:
-    """The 3-entry heterogeneous CapturePlan (check / measure / verify, §5.7).
+    """The heterogeneous cloud CapturePlan (§5.7 + flat-linearization PR-3b).
+
+    16 entries at the shipped defaults: CHECK, MEASURE, ``N-1`` prompted
+    pre-apply positions, VERIFY, ``M-1`` prompted post-apply positions — the
+    layout ``build_v2_cloud_index_phase_map`` documents, built from that same
+    function so prompt and phase cannot disagree.
 
     Entry durations derive from the composed programs (MEASURE sized from a
     nominal gain plan — sweep/gap lengths are gain-independent, so the duration
     is exact even before CHECK's solve) plus a lead/tail margin; each entry's
     ``screen`` carries the phase prompt AND the §5.2 auto-advance policy:
     CHECK is the session's one required tap, MEASURE auto-advances behind a
-    visible cancelable countdown, VERIFY arms on the apply-complete host event.
+    visible cancelable countdown, VERIFY arms on the apply-complete host event,
+    and every prompted cloud position requires the operator's tap — the mic has
+    to be MOVED between them, so a countdown would fire into a hand still in
+    flight.
+
+    No phone-side mechanism is new: ``CapturePlanEntry.screen`` and
+    ``AUTO_ADVANCE_TAP`` already carry per-entry copy the page renders and gates
+    on, and the deployed page reads ``max_attempts``/``capture_target``
+    generically with no plan-length cap of its own.
     """
     from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
@@ -2591,7 +3575,15 @@ def build_v2_capture_plan(
         ),
         courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
-    entries = (
+    n, m = _validated_cloud_counts(
+        cloud_measure_positions=cloud_measure_positions,
+        cloud_verify_positions=cloud_verify_positions,
+    )
+    index_phase = build_v2_cloud_index_phase_map(
+        cloud_measure_positions=n, cloud_verify_positions=m
+    )
+    verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
+    entries: list[Any] = [
         CapturePlanEntry(
             index=0,
             kind_label="check",
@@ -2612,45 +3604,107 @@ def build_v2_capture_plan(
             duration_ms=_program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS,
             screen={
                 "title": "Measuring",
-                "body": "Keep the phone still — measuring both drivers.",
+                "body": (
+                    "Keep the phone still — measuring both drivers. This spot "
+                    "is the mark; you will come back to it later."
+                ),
                 "auto_advance": AUTO_ADVANCE_COUNTDOWN,
                 "countdown_s": str(AUTO_ADVANCE_COUNTDOWN_S),
                 "cancelable": "1",
             },
         ),
+    ]
+    # The two prompted groups. ``index_phase`` is 1-based (the relay's own
+    # index space); ``CapturePlanEntry.index`` is 0-based, hence the -1.
+    cloud_measure_indexes = [
+        i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_MEASURE
+    ]
+    cloud_verify_indexes = [
+        i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_VERIFY
+    ]
+    for offset, capture_index in enumerate(cloud_measure_indexes):
+        prompt = CLOUD_POSITION_PROMPTS[offset]
+        entries.append(
+            CapturePlanEntry(
+                index=capture_index - 1,
+                kind_label="cloud_measure",
+                duration_ms=verify_ms,
+                screen=_cloud_entry_screen(
+                    # N1: the phone's own status line already counts
+                    # captures ("measurement 4 of 16"); a second,
+                    # different count in the title read as a
+                    # contradiction. Name what this number counts.
+                    title=f"Spot {offset + 2} of {n} — hold still",
+                    body=prompt.body,
+                    auto_advance=AUTO_ADVANCE_TAP,
+                ),
+            )
+        )
+    verify_index = _index_of_phase(index_phase, PHASE_VERIFY)
+    entries.append(
         CapturePlanEntry(
-            index=2,
+            index=verify_index - 1,
             kind_label="verify",
-            duration_ms=_program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS,
+            duration_ms=verify_ms,
             screen={
                 "title": "Applying",
                 # Fallback only — the live hold shows the CaptureBeginDeferred
                 # deferral's own user_message instead (authorize_begin below),
-                # which wins whenever a hold is actually in progress.
-                "body": (
-                    "JTS is applying the measured crossover to your speaker."
-                ),
+                # which wins whenever a hold is actually in progress. BOTH now
+                # carry the reposition instruction: the pre-apply cloud leaves
+                # the operator standing at a wide offset, and VERIFY's tracking
+                # comparator grades against MEASURE's design-axis prediction,
+                # so it is only meaningful captured back at the mark. The apply
+                # hold is exactly the window in which to walk back.
+                "body": VERIFY_ANCHOR_HOLD_MESSAGE,
                 "auto_advance": AUTO_ADVANCE_ON_APPLY,
-                # The phone's END screen once every capture (including this
-                # VERIFY) completes (capture-page/js/main.js's
-                # renderPlanAllDone) — owner ruling, 2026-07-20: state the
-                # outcome plainly and point at the speaker page for
-                # undo/compare, rather than the shared "All measurements
-                # done" generic copy every other capture-plan flow gets.
-                "done_title": "Your speaker is tuned",
-                "done_body": (
-                    "Verified and applied. Manage or undo on the speaker "
-                    "page."
-                ),
             },
-        ),
+        )
     )
+    for offset, capture_index in enumerate(cloud_verify_indexes):
+        prompt = CLOUD_POSITION_PROMPTS[offset]
+        last = offset == len(cloud_verify_indexes) - 1
+        screen = _cloud_entry_screen(
+            title=f"Checking spot {offset + 2} of {m} — hold still",
+            body=prompt.body,
+            auto_advance=AUTO_ADVANCE_TAP,
+        )
+        if last:
+            # The phone's END screen once every capture completes
+            # (capture-page/js/main.js's renderPlanAllDone) — owner ruling,
+            # 2026-07-20: state the outcome plainly and point at the speaker
+            # page for undo/compare, rather than the shared "All measurements
+            # done" generic copy every other capture-plan flow gets. It rides
+            # the LAST entry, which the cloud moved off VERIFY.
+            screen["done_title"] = "Your speaker is tuned"
+            screen["done_body"] = (
+                "Verified and applied. Manage or undo on the speaker page."
+            )
+        entries.append(
+            CapturePlanEntry(
+                index=capture_index - 1,
+                kind_label="cloud_verify",
+                duration_ms=verify_ms,
+                screen=screen,
+            )
+        )
     return CapturePlan(
-        capture_target=CAPTURE_PLAN_TARGET,
-        max_attempts=CAPTURE_PLAN_MAX_ATTEMPTS,
+        capture_target=cloud_capture_target(
+            cloud_measure_positions=n, cloud_verify_positions=m
+        ),
+        max_attempts=cloud_plan_max_attempts(
+            cloud_measure_positions=n, cloud_verify_positions=m
+        ),
         schema_version=2,
-        entries=entries,
+        entries=tuple(entries),
     )
+
+
+def _index_of_phase(index_phase: Mapping[int, str], phase: str) -> int:
+    for index, value in sorted(index_phase.items()):
+        if value == phase:
+            return index
+    raise CrossoverV2FlowError(f"cloud index map has no {phase} entry")
 
 
 def build_v2_verify_capture_plan(fc_hz: float) -> Any:
@@ -2711,25 +3765,82 @@ def build_v2_verify_session_spec(
     )
 
 
+def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
+    """The walked-away volume ceiling for one plan, scaled by its length.
+
+    ``session_volume_plan.DEFAULT_WALL_CLOCK_CEILING_S`` (1800 s ≈ 2× the relay
+    TTL) was sized for the 3-entry flow. A 16-capture cloud is a genuinely
+    longer session — the operator walks the mic to a new spot, reads a prompt,
+    and taps, once per position — so a fixed 1800 s would force-drain the
+    measurement volume mid-cloud and turn a good session into a
+    volume_recovery screen.
+
+    Scaling, not a bigger constant: the ceiling grows by
+    :data:`WALL_CLOCK_CEILING_PER_ENTRY_S` for every accepted capture beyond
+    the 3-entry baseline, and is hard-capped by the volume plan's own
+    ``MAX_WALL_CLOCK_CEILING_S`` (which owns that bound, since it owns the
+    walked-away guarantee). The per-entry number is a BUDGET ALLOWANCE, not a
+    measured position time — nothing has yet timed a household walking a cloud
+    (the hardware smoke after PR-4/PR-7 is where that number gets its first
+    measurement); it is deliberately generous, because the failure it guards
+    against is a false drain mid-session while the failure it trades against is
+    a walked-away speaker returning to household volume a few minutes later
+    than it might have. The restore ladder ("exact" then the -60 dBFS emergency
+    floor) and the restore-once latch are untouched.
+
+    At the shipped 16-entry cloud this is 1800 + 13*120 = 3360 s; at the
+    19-entry maximum the unclamped value would be 3720 s and the plan's hard
+    cap binds at 3600 s.
+    """
+    from jasper.active_speaker.session_volume_plan import (
+        DEFAULT_WALL_CLOCK_CEILING_S,
+        MAX_WALL_CLOCK_CEILING_S,
+    )
+
+    target = int(getattr(capture_plan, "capture_target", CAPTURE_PLAN_TARGET) or 0)
+    extra = max(0, target - CAPTURE_PLAN_TARGET)
+    return min(
+        MAX_WALL_CLOCK_CEILING_S,
+        DEFAULT_WALL_CLOCK_CEILING_S + extra * WALL_CLOCK_CEILING_PER_ENTRY_S,
+    )
+
+
+# Per accepted capture beyond the 3-entry baseline. 120 s covers a prompt read,
+# a deliberate mic move, a tap, the ~16 s sweep entry, and the upload with room
+# to spare. See ``session_wall_clock_ceiling_s`` for why it is generous and
+# what it is NOT (a measurement).
+WALL_CLOCK_CEILING_PER_ENTRY_S = 120.0
+
+
 def build_v2_session_spec(
     roles_bands: Sequence[RoleBand],
     fc_hz: float,
     *,
     acknowledgement_binding: str,
+    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
+    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
     **spec_kwargs: Any,
 ) -> Any:
-    """One relay v3 session spec spanning all three v2 phases (§5.7).
+    """One relay v3 session spec spanning every phase of a cloud session (§5.7).
 
     Rides the existing ``build_crossover_sweep_spec`` (same kind, transport,
-    and placement-acknowledgement machinery) with the 3-entry plan attached;
-    the summed fixed-on-axis placement copy is the closest shipped match to the
-    v2 single mic position (the per-entry screens carry the v2 prompts). The
-    spec-level stimulus duration is the longest entry so the per-capture
-    deadline covers every phase.
+    and placement-acknowledgement machinery) with the cloud plan attached, and
+    passes ``guided_captures`` so the spec selects the GUIDED consent copy —
+    the fixed-on-axis wording that builder emits by default promises a
+    stationary mic for the whole session, which is exactly what a cloud
+    breaks. The guided copy still names the mark as the starting point; the
+    per-entry screens carry each prompted move from there. The spec-level
+    stimulus duration is the longest entry so the per-capture deadline covers
+    every phase.
     """
     from jasper.capture_relay.spec import build_crossover_sweep_spec
 
-    plan = build_v2_capture_plan(roles_bands, fc_hz)
+    plan = build_v2_capture_plan(
+        roles_bands,
+        fc_hz,
+        cloud_measure_positions=cloud_measure_positions,
+        cloud_verify_positions=cloud_verify_positions,
+    )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     return build_crossover_sweep_spec(
         driver_label="crossover",
@@ -2737,6 +3848,10 @@ def build_v2_session_spec(
         acknowledgement_binding=acknowledgement_binding,
         stimulus_duration_ms=longest_ms,
         capture_plan=plan,
+        # The consent surface must describe the walk, not a stationary mic —
+        # the count is every capture the household is prompted through, which
+        # is the plan's own target.
+        guided_captures=plan.capture_target,
         **spec_kwargs,
     )
 

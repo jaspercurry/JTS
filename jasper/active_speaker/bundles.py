@@ -96,7 +96,20 @@ SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
 # capture it was made from, so the same ceiling bounds the copy.
 MAX_CAPTURE_WAV_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
-DEFAULT_SESSIONS_MAX_BYTES = 256 * 1024 * 1024
+# Retention ceiling for the commissioning-bundle store. Raised 256 MiB → 1 GiB
+# for the position-group choreography (flat-linearization PR-3b): a cloud
+# session retains one capture WAV per prompted position — 13 more at the
+# shipped defaults (8 pre-apply + 5 post-apply), ~1-2 MiB each — so a run is
+# ~30 MB and twelve of them no longer fit under 256 MiB. Named corner-cut, recorded in
+# docs/flat-linearization-productization-plan.md: full per-position WAVs are
+# kept rather than derived summaries, because the S0 forensics that produced
+# this program's central finding were only possible from raw WAVs. Disk is
+# cheap; the honesty is not.
+#
+# This is a RETENTION budget only. The publish-time free-space precondition
+# used to be defined as this same constant and is now frozen separately — see
+# ``commissioning_evidence_store.MIN_FREE_SPACE_AFTER_PUBLISH_BYTES``.
+DEFAULT_SESSIONS_MAX_BYTES = 1024 * 1024 * 1024
 SESSIONS_MAX_BYTES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES"
 DEFAULT_SESSIONS_MAX_BUNDLES = 12
 SESSIONS_MAX_BUNDLES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES"

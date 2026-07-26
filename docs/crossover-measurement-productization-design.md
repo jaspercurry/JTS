@@ -185,6 +185,22 @@ adds phase — the high-credibility view for a crossover product).
 > sequence.
 
 
+> **Amendment (flat-linearization PR-3b, 2026-07-26).** The
+> one-mic-position premise below — and with it "one mic position" in §1's
+> redesign-lever paragraph, the "one phone tap" per-phase bullets, the
+> "~2–3 minutes / ~3 phone taps" user-cost line, and the "only the first
+> capture of a session requires a tap" claim — described the flow until the
+> spatial cloud replaced it. The session now walks a guided cloud of 16
+> captures at the shipped defaults around ONE MARK: the mark is still ~1 m
+> on the listening axis and the parallax budget below still governs it,
+> but the mic moves between captures and each prompted position takes its
+> own tap. The reasoning preserved here is why v2 collapsed the
+> *interaction topology*, which is intact; the capture and tap counts are
+> superseded. Current operational truth:
+> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+> "Position groups"; why the cloud is necessary at all:
+> [`flat-linearization-plan.md`](flat-linearization-plan.md) fundamental 1.
+
 One mic position for the whole session: **~1 m on the listening axis**
 (tweeter height, facing the speaker; picture on the placement screen). The
 parallax budget in §3.2 assumes this placement within a tolerance window of

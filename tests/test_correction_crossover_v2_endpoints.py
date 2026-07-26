@@ -34,21 +34,29 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2_flow import (
+    DEFAULT_CLOUD_MEASURE_POSITIONS,
+    DEFAULT_CLOUD_VERIFY_POSITIONS,
     PHASE_APPLYING,
     PHASE_CHECK,
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
     PHASE_DONE,
     PHASE_MEASURE,
     PHASE_VERIFY,
     REASON_APPLY_FAILED,
+    REASON_CLOUD_GEOMETRY_LOCKED,
     CrossoverV2Conductor,
     V2FlowSeams,
+    build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_session_spec,
+    cloud_capture_target,
 )
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
@@ -158,11 +166,21 @@ class V2PhoneDriver(PhonePlanDriver):
         super().step()
 
 
-def _mint_v2_session(backend, spec, *, driver_cls=V2PhoneDriver, **driver_kwargs):
+def _mint_v2_session(
+    backend, spec, *, driver_cls=V2PhoneDriver, record=None, **driver_kwargs
+):
+    import urllib.parse as _urlparse
+
     session = mint_session(
         spec, relay_base="https://relay.test", capture_origin="capture.test"
     )
-    client = RelayClient("https://relay.test", transport=backend)
+
+    def register_transport(method, url, headers, body):
+        if record is not None:
+            record.append((method, _urlparse.urlsplit(url).path))
+        return backend(method, url, headers, body)
+
+    client = RelayClient("https://relay.test", transport=register_transport)
     register_session(client, session)
     phone = driver_cls(backend, session, **driver_kwargs) if driver_cls else None
 
@@ -185,9 +203,16 @@ def _wav(attempt: int) -> bytes:
 
 
 def _conductor(backend, session, phone, *, published, phases_seen=None,
-               analyses=None) -> CrossoverV2Conductor:
+               analyses=None, index_phase_map=None,
+               retained=None) -> CrossoverV2Conductor:
     """A real conductor whose fake play uploads the phone blob (the acoustic
-    seam) and whose fake analyze returns canned per-phase analyses."""
+    seam) and whose fake analyze returns canned per-phase analyses.
+
+    Note the analyze dispatch keys on the EXCITATION PROGRAM's phase, not the
+    conductor's: every cloud position plays the VERIFY-shaped mono summed sweep
+    (``program.phase == "verify"``), which is exactly why the analyzer needed no
+    new dispatch branch for the position groups.
+    """
     analyses = analyses or {}
 
     def play(phase: str, program: Any) -> None:
@@ -222,9 +247,40 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
             publish_candidate=lambda cand: published.append(("candidate", cand)),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
+            retain_position=(
+                None if retained is None
+                else lambda pid, result, meta: retained.append((pid, dict(meta)))
+            ),
+        ),
+        index_phase_map=(
+            build_v2_cloud_index_phase_map() if index_phase_map is None
+            else index_phase_map
         ),
         driver_spacing_m=0.15,
     )
+
+
+# The relay index VERIFY occupies in the shipped cloud plan: CHECK(1),
+# MEASURE(2), then N-1 prompted pre-apply positions.
+VERIFY_INDEX = DEFAULT_CLOUD_MEASURE_POSITIONS + 2
+
+
+def _walk_to_verify(conductor, *, persist: bool = False) -> int:
+    """Drive CHECK, MEASURE and the whole pre-apply cloud, one capture per index.
+
+    Returns the last attempt number used, so a caller can continue the global
+    attempt counter into VERIFY the way the relay runner does. Tests that are
+    ABOUT VERIFY use this rather than a hand-written 1/2/3 walk: the cloud sits
+    between MEASURE and VERIFY in the shipped plan, so a three-step walk would
+    be testing an index layout no session emits.
+    """
+    attempt = 0
+    for index in range(1, VERIFY_INDEX):
+        attempt += 1
+        conductor.consume_capture(index, attempt, CaptureResult(wav=b"fake-capture"))
+        if persist:
+            v2host.persist_conductor_state(conductor, failure_code=None)
+    return attempt
 
 
 def _run(runner, client, session):
@@ -319,7 +375,14 @@ def test_happy_path_three_phases_with_deferred_verify_release():
 
     # Durable state: done, applied, verify pass, candidate fingerprint kept.
     state = v2host.load_v2_state()
-    assert set(state["accepted_phases"]) == {PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY}
+    assert set(state["accepted_phases"]) == {
+        PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
+        PHASE_VERIFY, PHASE_CLOUD_VERIFY,
+    }
+    assert state["session_phases"] == [
+        PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE,
+        PHASE_VERIFY, PHASE_CLOUD_VERIFY,
+    ]
     assert state["applied"] is True
     assert state["verify"] == {"outcome": "pass"}
     assert state["failure"] is None
@@ -329,7 +392,16 @@ def test_happy_path_three_phases_with_deferred_verify_release():
     # rendered purely from the host-persisted status blocks (S1b).
     from jasper.active_speaker.crossover_envelope import build_crossover_envelope
 
-    assert [phase for _p, phase in phases_seen] == ["check", "measure", "verify"]
+    # The status projection walked the full cloud, in order: CHECK, MEASURE,
+    # the pre-apply cloud, the apply hold (VERIFY pending, applied still
+    # False), then the post-apply cloud. `applying` appears because the phase
+    # for the VERIFY index is projected as APPLYING until the apply lands.
+    assert [phase for _p, phase in phases_seen] == (
+        [PHASE_CHECK, PHASE_MEASURE]
+        + [PHASE_CLOUD_MEASURE] * (DEFAULT_CLOUD_MEASURE_POSITIONS - 1)
+        + [PHASE_VERIFY]
+        + [PHASE_CLOUD_VERIFY] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
+    )
     class _NoRecovery:
         needs_recovery = False
 
@@ -342,9 +414,15 @@ def test_happy_path_three_phases_with_deferred_verify_release():
             "crossover_v2": {"phase": block_phase, "needs_recovery": False},
         })
 
-    assert [_envelope_for(p)["screen"] for _s, p in phases_seen] == [
-        "microphone_check", "measure", "verify",
-    ]
+    # The wizard journey the household sees is UNCHANGED by the cloud: the
+    # position groups render inside the measure/verify screens they belong to
+    # (the phone carries the per-spot prompts), so the screen sequence still
+    # reads check → measure → verify with no new step in the ladder.
+    screens = [_envelope_for(p)["screen"] for _s, p in phases_seen]
+    assert screens[0] == "microphone_check"
+    assert set(screens[1:DEFAULT_CLOUD_MEASURE_POSITIONS + 1]) == {"measure"}
+    assert set(screens[DEFAULT_CLOUD_MEASURE_POSITIONS + 1:]) == {"verify"}
+    assert len(screens) == cloud_capture_target()
     final_block = v2host.crossover_v2_status_block()
     assert final_block["phase"] == "done"
     assert _envelope_for(final_block["phase"])["screen"] == "done"
@@ -563,7 +641,12 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
     block = v2host.crossover_v2_status_block()
-    assert block["phase"] == PHASE_VERIFY  # applied=True routes here (W6.7 ruling 3)
+    # The stop landed right after MEASURE, so the next pending phase is the
+    # pre-apply cloud — which sits INSIDE the wizard's "measure" step, not a
+    # new one. What this test is really about is the applied-keyed override
+    # below (W6.7 ruling 3): the render must stay honest ("already applied")
+    # regardless of which phase the projection reports.
+    assert block["phase"] == PHASE_CLOUD_MEASURE
     env = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
@@ -765,6 +848,274 @@ def test_review_hold_timeout_gets_its_own_reason_not_relay_timeout(monkeypatch):
     assert "took too long" in env["verdict_text"].lower()
 
 
+# --- the full cloud session, end to end through the real runner ---------------
+
+
+def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
+    """The whole shipped choreography — 16 prompted captures plus one retake —
+    driven by a scripted phone through the REAL ``run_capture_plan``, the REAL
+    conductor, and the REAL capture-relay registration.
+
+    This is the test that finally exercises PR-3a's capacity raise in anger:
+    the plan's ``max_attempts`` is above the pre-capacity relay's frozen
+    ceiling, so registration probes ``GET /capabilities`` (dormant until now,
+    since no builder emitted a plan that large), and the 17th attempt writes
+    blob index 16 — a key the old 8-index space could not have stored.
+    """
+    from jasper.capture_relay.spec import LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    assert spec.capture_plan.capture_target == cloud_capture_target() == 16
+    assert spec.capture_plan.max_attempts > LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
+
+    def on_deferred(_driver):
+        state = v2host.load_v2_state()
+        v2host.observe_apply_success(state["candidate"]["fingerprint"])
+
+    requests: list = []
+    client, session, phone = _mint_v2_session(
+        backend, spec, on_deferred=on_deferred, record=requests,
+    )
+    # The capacity gate fired at registration, ahead of POST /sessions.
+    assert ("GET", "/capabilities") in requests
+    assert requests.index(("GET", "/capabilities")) < requests.index(
+        ("POST", "/sessions")
+    )
+
+    # A REAL geometry retake (S10): the pre-apply group's last position closes
+    # the group, the injected combine reports a hard lock, and the conductor
+    # rejects that position asking for a wider one. This is the production
+    # path end to end — not a stand-in rejection that merely has the same
+    # transport shape.
+    last_cloud_measure_index = DEFAULT_CLOUD_MEASURE_POSITIONS + 1
+    locks = {"n": 0}
+
+    def one_lock(_positions):
+        locks["n"] += 1
+        return {
+            "locked": locks["n"] == 1, "reason": "geometry_locked",
+            "thin_evidence": False, "n_positions": len(_positions),
+            "median_tau_us": 320.0, "clustered_fraction": 1.0, "n_confident": 6,
+        }
+
+    monkeypatch_target = "jasper.active_speaker.crossover_v2_flow.cloud_geometry_verdict"
+    published: list = []
+    retained: list = []
+    conductor = _conductor(
+        backend, session, phone, published=published, retained=retained,
+    )
+    volume = VolumeRecorder()
+    with mock.patch(monkeypatch_target, side_effect=one_lock):
+        _run(_build_runner(conductor, volume), client, session)
+
+    assert conductor.current_phase == PHASE_DONE
+    assert conductor.verify_outcome == "pass"
+    # 16 accepted captures + the one geometry retake = 17 attempts, so the last
+    # blob rode index 16 — beyond the legacy 0..7 space entirely.
+    results = [
+        e for e in backend.host_events[session.session_id]
+        if e.get("phase") == "capture_result"
+    ]
+    assert len(results) == 17
+    assert sum(1 for e in results if e["accepted"]) == 16
+    assert max(e["attempt"] for e in results) - 1 == 16
+    rejections = [e for e in results if not e["accepted"]]
+    assert [e["index"] for e in rejections] == [last_cloud_measure_index]
+    # B2: the rejection carries its household copy AND the wider-spot
+    # instruction onto the wire, which is what the phone now renders.
+    assert rejections[0]["code"] == REASON_CLOUD_GEOMETRY_LOCKED
+    assert rejections[0]["reason"]
+    assert "forearms" in rejections[0]["prompt"]
+
+    # Both groups closed with a geometry verdict on record.
+    for phase in (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY):
+        assert phase in conductor.accepted_phases
+        assert conductor.group_geometry(phase) is not None
+    assert len(conductor.group_positions(PHASE_CLOUD_MEASURE)) == (
+        DEFAULT_CLOUD_MEASURE_POSITIONS - 1
+    )
+    assert len(conductor.group_positions(PHASE_CLOUD_VERIFY)) == (
+        DEFAULT_CLOUD_VERIFY_POSITIONS - 1
+    )
+    # The replaced take left no position behind; the accepted retake did.
+    ids = conductor.group_positions(PHASE_CLOUD_MEASURE)
+    assert len(ids) == len(set(ids))
+    # B3: BOTH takes of the retaken position reached the retention seam — the
+    # superseded one is the walk record — and they are distinguishable, because
+    # a bare position id is ambiguous once a retake shares it.
+    retaken_id = f"{PHASE_CLOUD_MEASURE}_{last_cloud_measure_index:02d}"
+    takes = [meta for pid, meta in retained if pid == retaken_id]
+    assert len(takes) == 2
+    assert takes[0]["attempt"] != takes[1]["attempt"]
+    # And the SURVIVING take is the retake, recorded with the wider-spot prompt
+    # the operator actually followed — never the original table entry, which
+    # named a spot they were told to abandon.
+    surviving = {
+        t["attempt"] for t in conductor.group_position_takes(PHASE_CLOUD_MEASURE)
+        if t["position_id"] == retaken_id
+    }
+    assert surviving == {takes[1]["attempt"]}
+    assert "forearms" in takes[1]["prompt"]
+    assert takes[1]["wide"] is True
+    assert "forearms" not in takes[0]["prompt"]
+
+    # §5.5 unchanged: exactly one volume open, exact restore on the done path.
+    assert volume.events[0] == "open"
+    assert volume.events[-1] == "close"
+    assert "abandon" not in volume.events
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+
+    # The durable state discloses the cloud outcome the way PR-4 will extend.
+    state = v2host.load_v2_state()
+    assert set(state["cloud"]) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
+    for block in state["cloud"].values():
+        assert block["geometry"]["locked"] in (True, False)
+        # Position + attempt, so a reader can tell which take of a retaken
+        # position is the one actually in the cloud.
+        assert block["positions"]
+        assert all(
+            set(entry) == {"position_id", "index", "attempt"}
+            for entry in block["positions"]
+        )
+
+
+def test_position_retention_survives_a_retake_through_the_real_evidence_store(
+    tmp_path,
+):
+    """The retention seam against the REAL, write-once store — not a lambda.
+
+    Round-1 review blocker B3: every other test substitutes a recorder for
+    ``retain_position``, so nothing exercised the store's write-once contract.
+    Against the real one, two takes of a retaken position used to collide on a
+    single path: the second write was refused (fail-soft, so the session
+    survived) and the ONLY surviving sidecar described the REPLACED take — its
+    wav, its prompt — while the curve actually in the cloud had no record at
+    all. That inverts the forensic honesty the retention bump was paid for.
+
+    What this pins: both takes persist, under distinguishable paths, each
+    describing itself.
+    """
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    info = open_bundle(
+        mono_output_topology(mode="active_2_way"),
+        calibration_id="calibration-test",
+        sessions_dir=tmp_path / "sessions",
+    )
+    assert info is not None
+    store = CommissioningEvidenceStore.open(
+        info["bundle_dir"], expected_session_id=info["session_id"]
+    )
+    refs: dict = {}
+    retain = v2host.bind_position_retention(store, "cap_retake_session", refs)
+
+    position_id = f"{PHASE_CLOUD_MEASURE}_10"
+    base = {
+        "position_id": position_id, "phase": PHASE_CLOUD_MEASURE, "index": 10,
+        "wide": False, "captured_at": 1.0, "session_id": "cap_retake_session",
+        "gate_window_ms": 8.0, "validity_floor_hz": 140.0,
+        "gating_applied": True, "summed_ripple_db": 1.0,
+        "glitch_detected": False,
+    }
+    retain(
+        position_id, CaptureResult(wav=b"first-take"),
+        {**base, "attempt": 10, "prompt": "Two hand-widths LEFT of the mark."},
+    )
+    retain(
+        position_id, CaptureResult(wav=b"wider-retake"),
+        {**base, "attempt": 11, "wide": True,
+         "prompt": "Same measurement, wider spot: two forearms' length LEFT."},
+    )
+
+    # Two artifacts, both published — the second is NOT a refused duplicate.
+    assert [entry["attempt"] for entry in refs["position_artifacts"]] == [10, 11]
+    assert len({entry["artifact"] for entry in refs["position_artifacts"]}) == 2
+
+    # The strict store namespaces every artifact under evidence/v1/artifacts/.
+    sidecars = sorted(
+        (Path(info["bundle_dir"]) / "evidence" / "v1" / "artifacts"
+         / "crossover_v2" / "cap_retake_session" / "positions").glob("*.json")
+    )
+    assert [p.name for p in sidecars] == [
+        f"{position_id}_a10.json", f"{position_id}_a11.json",
+    ]
+    first, second = (json.loads(p.read_text()) for p in sidecars)
+    # Each sidecar describes ITS OWN take: its prompt, its wav.
+    assert first["attempt"] == 10 and second["attempt"] == 11
+    assert "forearms" in second["prompt"] and "forearms" not in first["prompt"]
+    assert second["wide"] is True
+    assert first["wav_path"] != second["wav_path"]
+    for record in (first, second):
+        wav = Path(info["bundle_dir"]) / record["wav_path"]
+        assert wav.is_file() and wav.stat().st_size == record["wav_bytes"]
+    assert (
+        Path(info["bundle_dir"]) / first["wav_path"]
+    ).read_bytes() == b"first-take"
+    assert (
+        Path(info["bundle_dir"]) / second["wav_path"]
+    ).read_bytes() == b"wider-retake"
+
+
+def test_a_corrupt_session_phases_list_never_reads_as_done():
+    """S5: ``session_phases`` filters to the empty tuple on garbage, and a
+    zero-length walk falls through to PHASE_DONE — i.e. a garbled state file
+    would tell a household "Your speaker is tuned". Fail toward the fallback
+    instead."""
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK],
+        "session_phases": ["nonsense", "also-not-a-phase"],
+        "applied": False,
+    })
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_MEASURE
+
+    # A partially-recognisable list keeps only what it can name — and that IS
+    # enough to walk, so it is used rather than discarded.
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "session_phases": ["nonsense", PHASE_VERIFY],
+        "applied": True,
+    })
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_VERIFY
+
+
+def test_both_session_preparers_rearm_the_walked_away_volume_ceiling():
+    """S4: the ceiling is only correct because both preparers re-arm it from
+    their OWN plan — the volume plan is process-global, so a dropped call in
+    either one silently leaves the other's ceiling in force. Nothing enforced
+    that; this does, by reading the call out of each preparer's source.
+    """
+    import inspect
+
+    for fn in (v2host.prepare_v2_session, v2host.prepare_v2_verify):
+        source = inspect.getsource(fn)
+        assert "set_wall_clock_ceiling_s(" in source, fn.__name__
+        assert "session_wall_clock_ceiling_s(spec.capture_plan)" in source, (
+            f"{fn.__name__} must size the ceiling from the plan it emits"
+        )
+    # And the two plans really do want different ceilings, which is the whole
+    # reason the re-arm cannot be done once at import.
+    from jasper.active_speaker.crossover_v2_flow import (
+        build_v2_capture_plan,
+        build_v2_verify_capture_plan,
+        session_wall_clock_ceiling_s,
+    )
+    from jasper.active_speaker.session_volume_plan import DEFAULT_WALL_CLOCK_CEILING_S
+
+    assert session_wall_clock_ceiling_s(
+        build_v2_capture_plan(_roles(), FC_HZ)
+    ) > session_wall_clock_ceiling_s(
+        build_v2_verify_capture_plan(FC_HZ)
+    ) == DEFAULT_WALL_CLOCK_CEILING_S
+
+
 # --- verify-only re-arm (S1d: resume skips accepted phases at the relay) --------
 
 
@@ -930,10 +1281,26 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     """Mirrors observe_apply_success: the Undo path's durable-state clear
     (W6 run-8 Blocker Q) resets the flow to a clean unmeasured state rather
     than leaving a half-consistent review_apply pointing at the undone
-    candidate."""
+    candidate.
+
+    ``observe_restore`` clears in PLACE, so — unlike ``reset_v2_journey_state``,
+    which writes a fresh dict and drops unlisted fields for free — every new
+    durable field must be added to it by hand. This pin therefore grows with
+    the state: it passed unchanged while ``session_phases``/``cloud`` survived
+    an Undo, which is exactly the shape of hole it exists to catch.
+    """
     v2host.save_v2_state({
         "session_id": "cap_x",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+        "cloud": {
+            PHASE_CLOUD_MEASURE: {
+                "geometry": {"locked": True, "reason": "geometry_locked"},
+                "positions": [
+                    {"position_id": "cloud_measure_03", "index": 3, "attempt": 3}
+                ],
+            }
+        },
         "candidate": {"fingerprint": "fp-1"},
         "verify": {"outcome": "fail"},
         "applied": True,
@@ -951,7 +1318,31 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     assert state["pre_apply_profile"] is None
     assert state["accepted_phases"] == []
     assert state["gain_plan_db"] is None
+    # The two fields PR-3b added. A surviving ``session_phases`` sends
+    # ``_phase_from_state`` to the VERIFY screen — "The crossover is applied.
+    # Put the microphone back where it started…" — moments after the household
+    # removed it; a surviving ``cloud`` hands PR-4 a geometry verdict for an
+    # undone session.
+    assert state["session_phases"] == []
+    assert state["cloud"] is None
     assert v2host._applied_gate() is False
+
+
+def test_undo_after_a_re_verify_does_not_leave_the_verify_screen_standing():
+    """The reachable path NEW-2 was found on: apply → re-verify (whose session
+    runs ONLY ``verify``) → Undo. Before the fix the leftover
+    ``session_phases == ["verify"]`` made the exit screen contradict the action
+    the household had just taken."""
+    v2host.save_v2_state({
+        "session_id": "cap_reverify",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "session_phases": [PHASE_VERIFY],
+        "candidate": {"fingerprint": "fp-1"},
+        "applied": True,
+        "pre_apply_profile": {"status": "applied"},
+    })
+    v2host.observe_restore()
+    assert v2host.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
 def test_restore_refuses_when_nothing_applied():
@@ -1967,12 +2358,9 @@ def test_verify_fail_persists_expert_evidence_through_the_real_persist_path():
         backend, session, phone, published=[],
         analyses={"verify": lambda program: _verify_analysis(program, max_db=2.4)},
     )
-    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    attempt = _walk_to_verify(conductor, persist=True)
     conductor.note_apply_complete()  # arm VERIFY
-    conductor.consume_capture(3, 3, CaptureResult(wav=b"fake-verify"))
+    conductor.consume_capture(VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify"))
     v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
 
     assert conductor.verify_outcome == "fail"
@@ -2006,12 +2394,9 @@ def test_verify_flatness_persists_through_the_real_persist_path_on_pass():
             ),
         },
     )
-    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    attempt = _walk_to_verify(conductor, persist=True)
     conductor.note_apply_complete()  # arm VERIFY
-    conductor.consume_capture(3, 3, CaptureResult(wav=b"fake-verify"))
+    conductor.consume_capture(VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify"))
     v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
 
     assert conductor.verify_outcome == "pass"
@@ -2040,12 +2425,9 @@ def test_verify_flatness_persists_through_the_real_persist_path_on_fail():
             ),
         },
     )
-    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    attempt = _walk_to_verify(conductor, persist=True)
     conductor.note_apply_complete()  # arm VERIFY
-    conductor.consume_capture(3, 3, CaptureResult(wav=b"fake-verify"))
+    conductor.consume_capture(VERIFY_INDEX, attempt + 1, CaptureResult(wav=b"fake-verify"))
     v2host.persist_conductor_state(conductor, failure_code=conductor.last_failure_code)
 
     assert conductor.verify_outcome == "fail"
@@ -2150,10 +2532,7 @@ def test_apply_failure_keeps_measure_accepted_through_the_real_persist_path():
     # consume_capture is immediately followed by a persist, exactly as the
     # real relay-driven flow does — the durable file does not exist at all
     # until the first one runs.
-    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    _walk_to_verify(conductor, persist=True)
     assert conductor.current_phase == PHASE_APPLYING
 
     v2host._persist_apply_blocked({
@@ -2190,10 +2569,7 @@ def test_relay_timeout_still_resets_accepted_phases_through_the_real_persist_pat
     client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
     conductor = _conductor(backend, session, phone, published=[])
 
-    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    _walk_to_verify(conductor, persist=True)
 
     v2host._persist_terminal_failure(conductor, "relay_timeout")
 
@@ -2226,10 +2602,7 @@ def test_stop_landing_before_apply_commits_still_renders_applied_honestly():
     client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
     conductor = _conductor(backend, session, phone, published=[])
 
-    conductor.consume_capture(1, 1, CaptureResult(wav=b"fake-check"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
-    conductor.consume_capture(2, 2, CaptureResult(wav=b"fake-measure"))
-    v2host.persist_conductor_state(conductor, failure_code=None)
+    _walk_to_verify(conductor, persist=True)
     fingerprint = conductor.candidate.fingerprint
 
     # 1. The Stop lands FIRST, while the auto-apply transaction is still

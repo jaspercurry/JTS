@@ -17,8 +17,9 @@
 
 - ✅ **Crossover measurement is now the v2 conductor flow (default flipped
   2026-07-19).** The `/correction/crossover/` measurement + tuning flow is
-  the three-capture conductor (CHECK → MEASURE → automatic APPLYING →
-  VERIFY, one mic position). Its canonical operational truth — how to run it, the file
+  the conductor flow (CHECK → MEASURE → the pre-apply position group →
+  automatic APPLYING → VERIFY → the post-apply position group): a guided
+  spatial cloud of 16 captures at the shipped defaults, around one mark. Its canonical operational truth — how to run it, the file
   map, invariants, failure taxonomy, session-state paths, and the W6 bug
   catalog — lives in
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
@@ -1874,8 +1875,9 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
                              crossover; a bonded speaker fails safe to solo on its
                              next re-prove — see "Scoped crossover reset" below
 POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
-                             open ONE relay session spanning CHECK→MEASURE→VERIFY
-                             (3-entry capture plan)
+                             open ONE relay session spanning CHECK→MEASURE→the
+                             pre-apply cloud→VERIFY→the post-apply cloud
+                             (16-entry capture plan at the shipped defaults)
 POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session after
                              apply (§5.2 re-verify)
 POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate

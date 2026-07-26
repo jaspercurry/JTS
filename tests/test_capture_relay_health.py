@@ -142,9 +142,52 @@ def test_doctor_ok_when_reachable(monkeypatch):
 
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
     monkeypatch.setattr(health, "probe_relay_health", lambda *_a, **_k: (True, "reachable (ok)"))
+    monkeypatch.setattr(
+        health, "probe_relay_plan_capacity",
+        lambda *_a, **_k: (32, "capture-plan ceiling 32"),
+    )
     result = check_capture_relay()
     assert result.status == "ok"
     assert "relay.jasper.tech" in result.detail
+    assert "capture-plan ceiling 32" in result.detail
+
+
+def test_doctor_warns_when_the_deployed_relay_cannot_carry_the_cloud_plan(monkeypatch):
+    """A reachable but PRE-CAPACITY relay refuses the crossover cloud plan at
+    the moment a household taps Start (session._assert_relay_plan_capacity).
+    The doctor is where an operator should find that instead — and it is a
+    warn, not a fail: every other phone-mic measurement still works and the
+    remedy is one Worker deploy."""
+    from jasper.cli.doctor.correction import check_capture_relay
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    monkeypatch.setattr(health, "probe_relay_health", lambda *_a, **_k: (True, "reachable (ok)"))
+    monkeypatch.setattr(
+        health, "probe_relay_plan_capacity",
+        lambda *_a, **_k: (None, "serves no /capabilities endpoint (pre-capacity relay)"),
+    )
+    result = check_capture_relay()
+    assert result.status == "warn"
+    assert "pre-capacity relay" in result.detail
+    assert "wrangler deploy" in result.detail
+
+
+def test_doctor_does_not_probe_capacity_when_the_relay_is_unreachable(monkeypatch):
+    """One failure, one message: a dead relay must not spend a second
+    round-trip to say the same thing twice."""
+    from jasper.cli.doctor.correction import check_capture_relay
+
+    probes: list = []
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
+    monkeypatch.setattr(
+        health, "probe_relay_health", lambda *_a, **_k: (False, "unreachable: timeout")
+    )
+    monkeypatch.setattr(
+        health, "probe_relay_plan_capacity",
+        lambda *a, **k: probes.append(a) or (None, "unused"),
+    )
+    check_capture_relay()
+    assert probes == []
 
 
 def test_doctor_warns_when_unreachable(monkeypatch):

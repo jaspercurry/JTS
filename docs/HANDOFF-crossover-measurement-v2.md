@@ -1,8 +1,12 @@
 # Handoff: crossover measurement v2 — the conductor flow
 
 The v2 flow measures and applies a fully-active 2-way crossover's
-**level, delay, and polarity** from **three captures at one microphone
-position** and ~3 phone taps. The phone is a dumb recorder; the Pi is
+**level, delay, and polarity** from a **guided spatial cloud** — 16
+captures at the shipped defaults, walked through a handful of prompted
+microphone positions around one mark. (It was three captures at a
+single fixed position until flat-linearization PR-3b made the cloud the
+measurement; see "Position groups" below for what did and did not move.)
+The phone is a dumb recorder; the Pi is
 the conductor; the analysis is a pure function of
 `(ExcitationProgram, captured WAV)`. It replaces the legacy per-driver
 near-field procedure, which never achieved a reliable end-to-end pass
@@ -19,7 +23,11 @@ this doc is the current operational truth.
   apply → verify`. The one-liner: place the mic ~1 m in front of the
   speaker at tweeter height, tap Start, then follow the phone — apply is
   automatic (owner ruling, 2026-07-20; gotcha #18), no browser-tab step
-  in between.
+  in between. Since flat-linearization PR-3b the phone also prompts a
+  series of small mic moves inside the measure and verify steps (the
+  spatial cloud); the wizard's five screens are unchanged, because the
+  cloud changed how many captures a step takes, not what the household
+  is doing.
 - **Only flow — v2.** W5b (2026-07-24) retired the legacy per-driver
   flow and the `JASPER_CROSSOVER_FLOW` selector.
   `build_crossover_envelope` dispatches straight to
@@ -213,9 +221,33 @@ tests inject fakes.
 
 ### The capture flow
 
-One relay session (`crossover_v2:session`) spans all three captures. The
-conductor hands `authorize_begin` / `on_armed` / `consume_capture` to
-`run_capture_plan` (`jasper/capture_relay/session.py`):
+One relay session (`crossover_v2:session`) spans **16 captures** at the
+shipped defaults. The conductor hands `authorize_begin` / `on_armed` /
+`consume_capture` to `run_capture_plan`
+(`jasper/capture_relay/session.py`):
+
+| index | phase | gate | what it is |
+|---|---|---|---|
+| 1 | `check` | tap | microphone check |
+| 2 | `measure` | countdown | design-axis anchor, per-driver |
+| 3–10 | `cloud_measure` | tap each | 8 prompted pre-apply positions |
+| 11 | `verify` | on apply | design-axis anchor, summed |
+| 12–16 | `cloud_verify` | tap each | 5 prompted post-apply positions |
+
+The two `cloud_*` phases are **position groups** (flat-linearization
+PR-3b): one phase spanning many capture indexes, one prompted mic move
+each. They exist because
+[`flat-linearization-plan.md`](flat-linearization-plan.md) fundamental 1
+makes the spatial cloud *the* measurement and demotes single-point
+capture to a diagnostic — spatial averaging is what removes early
+boundary interference that gating alone cannot. Read that doc for the
+physics; this section is the operational shape.
+
+What is **not** cloud-averaged, by plan doctrine: alignment, level,
+polarity, and per-driver linearization stay single-position at the
+design-axis anchor (MEASURE). VERIFY's tracking comparator likewise
+stays at the anchor — it answers "did apply do what the model
+predicted", which a moved mic cannot answer.
 
 1. **CHECK** (~25 s, one tap). Ambient silence + two band-limited pilot
    chirps per driver at two levels (−10 dB apart). Yields the ambient
@@ -350,7 +382,13 @@ only with the linearization filters emitted (#1668 PR-D); the two land
 together. Design rationale:
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 "Decisions already made" #2 and "Execution plan" Phase 3.
-3. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
+3. **CLOUD-MEASURE** (8 × ~16 s, one tap each). The pre-apply spatial
+   cloud, between MEASURE and APPLYING: the same mono summed sweep
+   VERIFY plays, captured at prompted positions around the mark.
+   Per-position work is deliberately light — the same locate/linearity
+   screens plus "did this yield a usable summed response"; the heavy
+   pass runs once at group end. See "Position groups" below.
+4. **APPLYING** (control page, no capture — auto, since 2026-07-20). The
    conductor itself evaluates the candidate: alignment confidence
    `< ALIGNMENT_CONFIDENCE_TRUST_FLOOR` (0.6) rejects MEASURE with
    `low_alignment_confidence` (guidance to re-measure at a cleaner mic
@@ -364,11 +402,100 @@ together. Design rationale:
    failure (blocked or errored) persists `apply_failed` and the deferred
    hold is refused with the honest reason instead of holding toward a
    dishonest `relay_timeout`. See gotcha #18 for the full rationale.
-4. **VERIFY** (~15 s, auto-arms on the apply-complete host event). A mono
-   summed sweep through the **applied production graph** + a pilot pair.
-   Pass = notch-excluded, validity-floor-clamped tracking error ≤ ±1.5 dB.
-   On fail the applied graph **stays in force** (proof-checked safe) and
-   the household is offered Try again / Undo.
+5. **VERIFY** (~15 s, auto-arms on the apply-complete host event). A mono
+   summed sweep through the **applied production graph** + a pilot pair,
+   captured back at the mark (the apply hold's copy is where the
+   household is told to walk back). Pass = notch-excluded,
+   validity-floor-clamped tracking error ≤ ±1.5 dB. On fail the applied
+   graph **stays in force** (proof-checked safe) and the household is
+   offered Try again / Undo.
+
+6. **CLOUD-VERIFY** (5 × ~16 s, one tap each). The post-apply cloud,
+   walking the same prompted positions.
+
+### Position groups — the operational rules
+
+- **Constants** (`crossover_v2_flow.py`, each with its rationale in
+  place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 12),
+  `DEFAULT_CLOUD_VERIFY_POSITIONS` 6, `GEOMETRY_RETRY_POSITIONS` 2. The
+  counts are wall-clock choices, not statistical optima — S0's stability
+  data says more positions is strictly better.
+- **Positions are not curves.** Both counts include the group's anchor,
+  so each group combines `N − 1` / `M − 1` **summed curves**: MEASURE's
+  anchor is a per-driver capture with no `summed_response` at all, and
+  VERIFY's anchor does capture one but is consumed by the tracking
+  verdict rather than joined to the group. At the shipped defaults the
+  pre-apply cloud combines 8 curves and the post-apply cloud 5 — the 8 is
+  why the default is 9 and not 8 (adjudication 3a). Compare
+  those numbers, not the position counts, against
+  [`flat-linearization-plan.md`](flat-linearization-plan.md)
+  fundamental 1's "N≈8–12 gated sweeps".
+- **No new phone mechanism.** Prompts ride the shipped
+  `CapturePlanEntry.screen` + `AUTO_ADVANCE_TAP`; the deployed capture
+  page renders per-entry screens and has no plan-length cap. What the
+  cloud *did* need was relay capacity — PR-3a raised
+  `MAX_CAPTURE_PLAN_ATTEMPTS` 8 → 32 and gated emission on the Worker's
+  `GET /capabilities`. A stale Worker refuses the session at
+  registration with a clean 400 (`RelayCapacityUnavailable`, a
+  `ValueError` so the dispatcher's refusal arm answers it), and
+  `jasper-doctor`'s `check_capture_relay` reports the advertised ceiling
+  so an operator finds it before a household taps Start.
+- **Prompt copy** is `CLOUD_POSITION_PROMPTS` — hand-widths and
+  forearms, never centimetres (owner ruling, S0 studio session). The
+  ORDER is load-bearing: both groups walk the same table from the front,
+  so two wide (~forearm) offsets must sit inside the first
+  `MIN_CLOUD_MEASURE_POSITIONS − 1` entries or the LF half of the
+  measurement quietly disappears. Pinned by test.
+- **Geometry-locked retake.** At group end the conductor runs
+  `combine_positions` and reads ONE field: `geometry`. A `locked`
+  verdict that is not `thin_evidence`-qualified rejects the group's last
+  position with `cloud_geometry_locked` and a wider-spot instruction —
+  at most `GEOMETRY_RETRY_POSITIONS` times, then it accepts and
+  RECORDS the verdict — journal plus the durable state's `cloud` block.
+  No household surface renders it yet; PR-4 owns that, so do not read
+  "records" as "discloses". Bounded because a source-fixed comb (S0's horn
+  rim) never decorrelates no matter how far the mic moves. The replaced
+  take is dropped from the cloud — that is what the protocol's retake
+  lever means (the same index is measured again), not a claim that
+  dropping beats appending. That claim was made and withdrawn in review:
+  appending a wide position actually fills a null further (−6.1 dB vs
+  −7.7 dB on the reviewer's power-mean counterexample) and lowers
+  `clustered_fraction` more. Replacing is what the runner permits, not
+  what the estimator prefers.
+- **Retry budget is per POSITION, not per group.** `_slot_of_index`
+  keys attempt bookkeeping by `phase:index` inside a group and by the
+  bare phase everywhere else, so CHECK/MEASURE/VERIFY bookkeeping is
+  unchanged and a retake at position 2 cannot refuse position 7.
+- **Session budget.** `session_wall_clock_ceiling_s(plan)` scales the
+  walked-away measurement-volume ceiling with plan length
+  (1800 s + 120 s per capture beyond the 3-entry baseline = 3360 s for the
+  shipped 16-capture plan, hard-capped by
+  `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s). The
+  restore ladder and the restore-once latch are unchanged: a walked-away
+  household can never leave the speaker at measurement volume.
+- **Resume is unchanged (§5.6).** A new relay session invalidates every
+  capture phase including the clouds; a group interrupted mid-way
+  resumes only within the same session. `V2ConductorSnapshot.
+  session_phases` records which phases a session actually runs, so a
+  verify-only re-arm (still 1 entry, still byte-identical on the wire)
+  reaches DONE instead of waiting on a group it never had.
+- **Artifacts.** Every accepted cloud position writes its WAV plus a
+  metadata sidecar (prompt text, index, timestamps, QC verdict) into the
+  session bundle via `bind_position_retention`; the closing geometry
+  verdict lands in the durable state's `cloud` block. Retention rose
+  256 MiB → 1 GiB for this; the publish-time free-space floor
+  (`MIN_FREE_SPACE_AFTER_PUBLISH_BYTES`) was deliberately *decoupled*
+  and frozen at 256 MiB — see its comment.
+- **PR-4's seam** is `combine_cloud_positions(positions)` →
+  `CombinedResponse | None`. PR-3b reads exactly one field off it
+  (`geometry`, via `cloud_geometry_verdict`); PR-4's pipeline — null
+  gate, spec curve, persistence — becomes a second reader of the same
+  call, never a second combine. `cloud_position_capture` is the
+  per-position assembly underneath and does not change. The
+  gated-IR reconstruction those functions perform is validated against
+  the S0 corpus by
+  [`tests/test_crossover_v2_cloud_geometry_corpus.py`](../tests/test_crossover_v2_cloud_geometry_corpus.py)
+  (`JTS_FLAT_LIN_S0`-gated), not asserted.
 
 **Flatness-verify (#1668 PR-D) — a SIBLING claim, report-only.** The same
 VERIFY capture also computes `ProgramAnalysis.flatness_tracking`: gated
@@ -402,17 +529,23 @@ integration-verify numbers, distinctly labeled "report-only") and the
 "done"/RESULT screen (where no expert numbers rendered at all before this
 fix). Still report-only — no gating-semantics changed.
 
-**One mic position for the whole session: ~1 m on the listening axis,
-tweeter height, facing the speaker.** The placement screen encodes a
-tolerance window (~±0.3 m distance, ±10 cm height). Only the first
-capture needs a tap; CHECK auto-advances into MEASURE, and a trusted
-candidate auto-arms VERIFY with no household action in between.
+**One MARK for the whole session: ~1 m on the listening axis, tweeter
+height, facing the speaker.** The placement screen encodes a tolerance
+window (~±0.3 m distance, ±10 cm height) for that mark. The session
+starts there, returns to it for MEASURE and VERIFY, and prompts small
+moves around it for the two position groups — so the mic is stationary
+*per sweep*, never *per session*. Taps: CHECK is the one tap before any
+measuring, CHECK auto-advances into MEASURE, a trusted candidate
+auto-arms VERIFY with no household action in between, and each prompted
+cloud position needs its own tap because the household has to move the
+mic first.
 
-**Pre-capture courtesy tone (issue #1677).** Each of the three programs
-(CHECK/MEASURE/VERIFY) opens with three short ~1 kHz beeps + ~3 s of silence
+**Pre-capture courtesy tone (issue #1677).** Every capture's program
+opens with three short ~1 kHz beeps + ~3 s of silence
 from the speaker under test itself, before that phase's own content
-resumes — a "quiet please, a measurement is starting" warning per capture
-group, replacing the 2026-07-23 lab-only interim (a Mac-side `osascript
+resumes — a "quiet please, a measurement is starting" warning ahead of
+each capture (16 of them in a shipped cloud session, where it used to be
+3), replacing the 2026-07-23 lab-only interim (a Mac-side `osascript
 beep`, then a fan-in-TTS-lane 3-beep burst). It is composed as an ordinary
 prepended segment group on the SAME `ExcitationProgram` the phase already
 plays and admits — never a second playback path — so it rides the session's
@@ -440,7 +573,7 @@ most visible thing on the screen.
 
 | File | Responsibility |
 |---|---|
-| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. |
+| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the PR-4 combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
 | [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. Also owns flatness-verify (#1668 PR-D): `_flatness_tracking` / `FLATNESS_VERIFY_HI_HZ` / `FLATNESS_VERIFY_TOLERANCE_DB` — see "Flatness-verify" above. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
@@ -518,10 +651,16 @@ most visible thing on the screen.
    `handle_v2_restore` can sha-pin a restore to the prior compiled
    config even after a VERIFY re-arm.
 9. **The walked-away guarantee.** The `SessionVolumePlan` holds one
-   measurement window with an abort target, a ~1800 s wall-clock
-   ceiling, and a restore-once latch drained by close / session-death /
-   ceiling. A user who walks away can never leave the speaker pinned at
-   measurement volume. The voice-daemon measurement pause is held for
+   measurement window with an abort target, a wall-clock ceiling, and a
+   restore-once latch drained by close / session-death / ceiling. The
+   ceiling is sized from the plan the session actually emits —
+   `DEFAULT_WALL_CLOCK_CEILING_S` (1800 s) plus
+   `WALL_CLOCK_CEILING_PER_ENTRY_S` (120 s) per capture beyond the
+   3-entry baseline, hard-capped at `MAX_WALL_CLOCK_CEILING_S`
+   (3600 s) — so the 16-capture cloud gets 3360 s and the 1-entry
+   re-verify gets the bare 1800 s. **The number moves with the plan; the
+   cap is what makes the guarantee.** A user who walks away can never
+   leave the speaker pinned at measurement volume. The voice-daemon measurement pause is held for
    the *whole* session (acquired before the first volume set) so the
    idle reconciler can't revert it.
 10. **CamillaDSP safety ceiling stays.** As everywhere in the DSP
@@ -577,14 +716,14 @@ Key `event=` lines (via `jasper.log_event`):
 
 ```sh
 # Conductor phase walk (the /correction/ wizard runs under jasper-correction-web):
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored)'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(authorized|play|result|apply|apply_complete|restored|cloud_group_complete|cloud_geometry_retry)'
 # Session volume lifecycle (fail-closed):
 journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_(opened|restored|restore_failed)'
 # Calibration handoff / uncalibrated warnings:
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
 ```
 
-### Per-capture diagnostics — every CHECK/MEASURE/VERIFY logs its numbers
+### Per-capture diagnostics — every capture logs its numbers
 
 Before this, `event=correction.crossover_v2_result` carried only
 `accepted`/`code` — a failed hardware run left no numbers to look at, and
@@ -593,10 +732,13 @@ only a *glitch* MEASURE capture got a partial view via
 level, glitch captures only). `CrossoverV2Conductor` now emits one
 additional `log_event` per consumed capture, **on the accepted path AND
 every rejection**, carrying that phase's full numeric diagnostics (pure
-additive observability — none of these calls choose a verdict):
+additive observability — none of these calls choose a verdict). The two
+position groups emit `crossover_v2_cloud_diag`, which is 13 of the 16
+captures in a shipped session — grep for `check|measure|verify` alone and
+you see three:
 
 ```sh
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(check|measure|verify)_diag'
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(check|measure|verify|cloud)_diag'
 ```
 
 - `correction.crossover_v2_check_diag` — `accepted`, `code`,
@@ -1104,7 +1246,12 @@ multiplicity demands (repeat admission, geometry handoff, identity
 validation, volume restore) — the measurement *math* was never the bug
 source. v2's lever was collapsing the interaction topology, not tuning
 steps: fewer/richer captures, one mic position, zero user-facing
-leveling, all intelligence server-side in pure functions. This mirrors
+leveling, all intelligence server-side in pure functions. (History, as
+written in 2026-07: "one mic position" held until flat-linearization
+PR-3b traded it back for the spatial cloud — deliberately, because the
+plan's own evidence says a single point cannot separate the speaker
+from the room. The *interaction* lever it describes is intact; the mic
+count is not.) This mirrors
 every shipping calibrator that owns its output chain (Genelec GLM,
 Trinnov, Anthem ARC, Sonos Trueplay) — none exposes a level control;
 Dirac/REW push leveling onto the user precisely because they don't own

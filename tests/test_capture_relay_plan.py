@@ -1938,6 +1938,102 @@ def test_oversized_plan_is_refused_and_names_interception_on_a_non_json_200():
     assert backend.sessions == {}
 
 
+def _tap_position_plan(entries: int) -> CapturePlan:
+    """An N-entry plan whose every entry is a prompted, tap-gated position.
+
+    The transport shape the crossover cloud emits: one entry per prompted mic
+    move, each carrying its own screen copy and gating on the operator's tap.
+    No new phone-side mechanism is involved — ``screen`` + ``auto_advance`` are
+    the shipped per-entry fields — so this test's job is to prove the RUNNER
+    walks an arbitrary-length tap plan, index by index, exposing each entry.
+    """
+    return CapturePlan(
+        capture_target=entries,
+        max_attempts=entries + 4,
+        schema_version=2,
+        entries=tuple(
+            CapturePlanEntry(
+                index=i,
+                kind_label="cloud_measure",
+                duration_ms=16_000,
+                screen={
+                    "title": f"Spot {i + 1} of {entries}",
+                    "body": f"Move the phone to spot {i + 1}.",
+                    "auto_advance": "tap",
+                },
+            )
+            for i in range(entries)
+        ),
+    )
+
+
+@pytest.mark.parametrize("entries", [6, 15, 19])
+def test_runner_walks_an_n_entry_tap_plan_exposing_every_entry(entries):
+    backend = FakePlanRelayBackend()
+    plan = _tap_position_plan(entries)
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=plan.capture_target,
+        max_attempts=plan.max_attempts, entries=plan.entries,
+    )
+    authorize, on_armed, consume, authorized, consumed = _plan_callbacks(
+        backend, session
+    )
+    seen: list = []
+
+    def authorize_with_entry(index, attempt, entry=None):
+        seen.append((index, attempt, entry.screen["title"] if entry else None))
+        authorize(index, attempt)
+
+    outcomes = run_capture_plan(
+        client, session,
+        authorize_begin=authorize_with_entry,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert len(outcomes) == entries
+    assert all(outcome.accepted for outcome in outcomes)
+    # index == accepted_count + 1 and attempt is the GLOBAL counter, so a clean
+    # walk pairs them 1:1 — and every entry's own screen reached the callback.
+    assert seen == [
+        (i + 1, i + 1, f"Spot {i + 1} of {entries}") for i in range(entries)
+    ]
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+    # One blob key per attempt, all inside the relay's index space.
+    assert [index for index, _a, _w in consumed] == list(range(1, entries + 1))
+
+
+def test_runner_retakes_one_position_mid_plan_without_losing_the_others():
+    """A rejected position spends an attempt but not a target slot, so the phone
+    re-posts the SAME index with the next attempt — the mechanism the geometry
+    retake rides. Blob indexes follow the ATTEMPT, so a mid-plan retake shifts
+    every later blob index up by one."""
+    backend = FakePlanRelayBackend()
+    plan = _tap_position_plan(8)
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=plan.capture_target,
+        max_attempts=plan.max_attempts, entries=plan.entries,
+    )
+    authorize, on_armed, consume, authorized, consumed = _plan_callbacks(
+        # `_plan_callbacks` keys verdicts by ATTEMPT: reject the 4th, which at
+        # this point in a clean walk is position 4's first take.
+        backend, session, verdicts={4: {"accepted": False, "code": "retake"}},
+    )
+    outcomes = run_capture_plan(
+        client, session,
+        authorize_begin=authorize, on_armed=on_armed, consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True), (2, 2, True), (3, 3, True),
+        (4, 4, False), (4, 5, True),
+        (5, 6, True), (6, 7, True), (7, 8, True), (8, 9, True),
+    ]
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+
+
 def test_oversized_plan_registers_against_a_current_relay():
     # The happy path the whole gate exists to permit: PR-3b's worst-case entry
     # count (21) with the full retake budget, against a deployed Worker.

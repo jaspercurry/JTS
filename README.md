@@ -957,7 +957,8 @@ reference. Currently:
   (the only `/correction/crossover/` flow since W5b retired the legacy
   per-driver flow and the `JASPER_CROSSOVER_FLOW` selector). The conductor
   model (phone = dumb recorder, Pi = conductor, analysis = pure functions), the
-  CHECK → MEASURE → automatic APPLYING → VERIFY capture flow, the file map,
+  CHECK → MEASURE → cloud → automatic APPLYING → VERIFY → cloud capture
+  flow (a guided spatial cloud since flat-linearization PR-3b), the file map,
   invariants, failure taxonomy, session-state paths, and the W6 hardware bug
   catalog. Read this for how the flow works today; the design/decision record
   below is the "why."
