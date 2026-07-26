@@ -10,12 +10,18 @@ imported so the exclusion-interval merge rule has exactly one owner rather
 than a near-copy on each side of the seam. No I/O, no logging, no product
 policy, no CamillaDSP/emission imports. This module answers exactly one
 question -- "does this spatially-combined, 1/3-oct-smoothed magnitude curve
-meet the flat-linearization spec?" -- and nothing more. Wiring this into
+meet the flat-linearization spec?" -- and nothing more.
+:func:`spec_convergence_residual` is a second reading of that same
+evaluation, not a second question: it pools the report's own per-band
+numbers into the one scalar the plan's S3 closed loop converges on, and
+holds no threshold or loop policy of its own. Wiring either into
 `/state`, a wizard, or the conductor is later work; this module ships as a
 pure, uncalled evaluator, mirroring
 :mod:`jasper.active_speaker.linearization_envelope`'s shape (a pure module
-with zero production callers at the time it shipped -- see that module's
-docstring for the same pattern).
+with zero production callers at the time it shipped -- and one now, which is
+the whole arc of the pattern: ships pure and uncalled, gets wired later, and
+its docstring says which of the two it is TODAY. This one is still uncalled;
+check that sentence rather than trusting this one).
 
 See docs/flat-linearization-plan.md, section "The spec -- what 'flat' means
 here," for the adopted definition this module implements: reference = power
@@ -396,4 +402,120 @@ def evaluate_flat_spec(
         excluded_intervals=excluded_intervals,
         best_effort_above_hz=float(BEST_EFFORT_ABOVE_HZ),
         smoothing_fraction=int(smoothing_fraction),
+    )
+
+
+@dataclass(frozen=True)
+class ConvergenceResidual:
+    """The S3 closed loop's residual metric for one evaluation.
+
+    One number plus the two counts that make it interpretable. See
+    :func:`spec_convergence_residual` for the definition and for why the
+    counts ride along.
+
+    Args:
+      rms_db: RMS deviation over every non-excluded bin of every
+        :data:`SPEC_BANDS` band, as one pooled figure. ``None`` when no
+        band was evaluable.
+      n_bins: how many bins that RMS was computed from — the pooled
+        non-excluded spec-band bin count.
+      n_excluded: how many spec-band bins were dropped by the exclusion
+        mask. Counted across ALL bands, including any band the exclusion
+        left unevaluable.
+      evaluable: ``n_bins > 0``. False means there is no residual, not a
+        residual of zero.
+    """
+
+    rms_db: float | None
+    n_bins: int
+    n_excluded: int
+    evaluable: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rms_db": self.rms_db,
+            "n_bins": self.n_bins,
+            "n_excluded": self.n_excluded,
+            "evaluable": self.evaluable,
+        }
+
+
+def spec_convergence_residual(report: FlatSpecReport) -> ConvergenceResidual:
+    """The residual the flat-linearization plan's S3 closed loop converges
+    on: **RMS deviation over the non-excluded bins of the spec bands**,
+    pooled across all three.
+
+    An instrument landing ahead of its consumer. S3's loop policy — how
+    much improvement counts, how many iterations, when to stop — is not
+    here and must not be: this function holds no threshold and makes no
+    verdict. It reports one measurement.
+
+    **Derived from the report, not recomputed from the curve.** Every
+    question about *which bins count* — band membership and its edge rule,
+    what the exclusion mask removed, which reference level the deviation is
+    measured against — is already answered, once, by
+    :func:`evaluate_flat_spec`. Re-deriving any of it here would create a
+    second owner of the same decision and a second thing to drift, so the
+    pooled figure is reassembled from each band's own
+    :attr:`BandResult.rms_deviation_db` and its included-bin count:
+
+        rms = sqrt( sum_b n_b * rms_b**2 / sum_b n_b ),
+        n_b = band.n_bins - band.n_excluded
+
+    which is exactly the RMS over the union of those bins, because
+    ``n_b * rms_b**2`` is that band's sum of squared deviations. Pinned
+    against a direct from-the-arrays recomputation by a test.
+
+    Pooled rather than per-band because the loop needs one scalar to
+    converge on, and because per-band figures are already on the report for
+    a consumer that wants to see *where* the residual sits. Bins at or above
+    :data:`BEST_EFFORT_ABOVE_HZ` never enter it — the plan never specs them,
+    so a top octave the speaker cannot reach must not be able to stall the
+    loop.
+
+    **Why the counts are part of the answer.** A residual that fell because
+    the honesty mask grew is not convergence — it is the same speaker,
+    graded on fewer bins. ``n_bins`` and ``n_excluded`` make that visible in
+    the same record as the number, so a loop (or a reader) comparing two
+    iterations can tell an improvement from a smaller denominator. Nothing
+    here enforces that reading; it just refuses to hide it.
+
+    Returns:
+      A :class:`ConvergenceResidual`. When no band is evaluable,
+      ``rms_db`` is ``None`` and ``evaluable`` is ``False``, mirroring
+      :class:`BandResult`'s "unevaluable is a first-class outcome, not a
+      fabricated verdict" rule rather than reporting a residual of 0.0 for
+      a spectrum nothing was measured in.
+
+      **That state is unreachable from :func:`evaluate_flat_spec` today**,
+      and the guard is deliberate anyway. :data:`REFERENCE_BAND_HZ` is
+      exactly ``SPEC_BANDS[0]`` union ``SPEC_BANDS[1]``, so an evaluation
+      that did not raise on an empty reference band necessarily left at
+      least one non-excluded spec-band bin behind. A report reaching this
+      function from anywhere else — hand-built, or rehydrated from the
+      persistence the plan's PR-6b adds — carries no such guarantee, and
+      the alternative there is a ZeroDivisionError.
+    """
+    n_excluded = sum(band.n_excluded for band in report.bands)
+    # One pass, so the denominator and the numerator can never be assembled
+    # from different band sets. On a report from `evaluate_flat_spec` the
+    # `rms_deviation_db is None` filter and a zero included-bin count are the
+    # same condition; on a hand-built one they need not be, and `n_bins` must
+    # keep meaning "bins this RMS was computed from".
+    measured = [
+        (band.n_bins - band.n_excluded, band.rms_deviation_db)
+        for band in report.bands
+        if band.rms_deviation_db is not None
+    ]
+    n_bins = sum(count for count, _rms_db in measured)
+    if n_bins <= 0:
+        return ConvergenceResidual(
+            rms_db=None, n_bins=0, n_excluded=n_excluded, evaluable=False,
+        )
+    sum_squares = sum(count * rms_db ** 2 for count, rms_db in measured)
+    return ConvergenceResidual(
+        rms_db=float(np.sqrt(sum_squares / n_bins)),
+        n_bins=n_bins,
+        n_excluded=n_excluded,
+        evaluable=True,
     )

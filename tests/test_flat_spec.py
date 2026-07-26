@@ -37,10 +37,21 @@ from jasper.active_speaker.flat_spec import (
     REFERENCE_BAND_HZ,
     SPEC_BANDS,
     BandResult,
+    ConvergenceResidual,
     FlatSpecReport,
     evaluate_flat_spec,
+    spec_convergence_residual,
 )
-from jasper.audio_measurement.spatial_combine import merged_true_intervals
+from jasper.audio_measurement.interference_nulls import identify_interference_nulls
+from jasper.audio_measurement.spatial_combine import (
+    combine_positions,
+    merged_true_intervals,
+)
+from tests._flat_lin_corpus import (
+    S0_MAIN,
+    requires_s0_curves,
+    s0_position_captures,
+)
 
 # --------------------------------------------------------------------------- #
 # fixtures / helpers
@@ -671,3 +682,205 @@ def test_non_finite_spec_db_raise_value_error():
     db[0] = np.inf
     with pytest.raises(ValueError, match="finite"):
         evaluate_flat_spec(_FREQS_HZ, db)
+
+
+# --------------------------------------------------------------------------- #
+# spec_convergence_residual -- the S3 convergence guard (PR-6a)
+# --------------------------------------------------------------------------- #
+
+
+def _hand_pooled_rms(
+    spec_smoothed_db: np.ndarray, reference_db: float, indices: list[int]
+) -> float:
+    """Independent re-derivation of the pooled residual: RMS deviation over
+    the named bins, computed straight from the curve rather than from the
+    report's per-band figures the module reassembles."""
+    diffs = [float(spec_smoothed_db[i]) - reference_db for i in indices]
+    return math.sqrt(sum(d * d for d in diffs) / len(diffs))
+
+
+def test_convergence_residual_flat_curve_is_zero():
+    report = evaluate_flat_spec(_FREQS_HZ, _flat_db(-30.0))
+    residual = spec_convergence_residual(report)
+    assert isinstance(residual, ConvergenceResidual)
+    assert residual.evaluable is True
+    assert residual.rms_db == pytest.approx(0.0, abs=1e-12)
+    # Every spec-band bin counted, none excluded; the best-effort bins above
+    # 16 kHz are never in scope.
+    assert residual.n_bins == len(_BAND1_IDX + _BAND2_IDX + _BAND3_IDX) == 12
+    assert residual.n_excluded == 0
+
+
+def test_convergence_residual_matches_a_hand_computed_pooled_rms():
+    """The pooled figure equals the RMS over the union of the spec bands'
+    non-excluded bins, recomputed here from the curve. This is what pins the
+    ``sqrt(sum(n_b * rms_b**2) / sum(n_b))`` reassembly as exact rather than
+    approximately right."""
+    db = _flat_db(-30.0)
+    db[_BAND1_IDX[1]] += 2.0
+    db[_BAND2_IDX[2]] -= 3.0
+    db[_BAND3_IDX[0]] += 4.5
+    db[13] += 30.0  # best-effort region, must not move the answer
+
+    report = evaluate_flat_spec(_FREQS_HZ, db)
+    residual = spec_convergence_residual(report)
+    expected = _hand_pooled_rms(
+        db, report.reference_db, _BAND1_IDX + _BAND2_IDX + _BAND3_IDX
+    )
+    assert residual.rms_db == pytest.approx(expected, rel=1e-12)
+    assert residual.n_bins == 12
+
+
+def test_convergence_residual_honors_the_exclusion_mask():
+    """A masked bin is not merely down-weighted, it is absent -- so an
+    arbitrarily deep excluded dip cannot move the number, and the dropped
+    bins are reported."""
+    db = _flat_db(-30.0)
+    mask = np.zeros(_FREQS_HZ.shape, dtype=bool)
+    mask[_BAND3_IDX[1]] = True
+
+    clean = spec_convergence_residual(evaluate_flat_spec(_FREQS_HZ, db, mask))
+
+    db[_BAND3_IDX[1]] = -60.0
+    dipped = spec_convergence_residual(evaluate_flat_spec(_FREQS_HZ, db, mask))
+
+    assert dipped.rms_db == pytest.approx(clean.rms_db, rel=1e-12)
+    assert dipped.rms_db == pytest.approx(0.0, abs=1e-12)
+    assert dipped.n_bins == 11
+    assert dipped.n_excluded == 1
+
+
+def test_convergence_residual_counts_excluded_bins_of_an_unevaluable_band():
+    """A band the mask emptied contributes nothing to the RMS but its bins
+    still show up in ``n_excluded`` -- the whole point of carrying the
+    counts."""
+    db = _flat_db(-30.0)
+    mask = np.zeros(_FREQS_HZ.shape, dtype=bool)
+    mask[_BAND3_IDX] = True
+
+    report = evaluate_flat_spec(_FREQS_HZ, db, mask)
+    assert report.bands[2].evaluable is False
+
+    residual = spec_convergence_residual(report)
+    assert residual.evaluable is True
+    assert residual.n_bins == 8
+    assert residual.n_excluded == 4
+
+
+def test_convergence_residual_with_no_evaluable_band_is_none_not_zero():
+    """"Unevaluable is a first-class outcome" applies here too: no bins
+    means no residual, never a residual of 0.0 for a spectrum nothing was
+    measured in.
+
+    The report is built by hand because ``evaluate_flat_spec`` **cannot**
+    produce this state: :data:`REFERENCE_BAND_HZ` is exactly
+    ``SPEC_BANDS[0] union SPEC_BANDS[1]``, so a call that did not raise on
+    an empty reference band left at least one counted bin behind. The guard
+    exists for a report that arrives from somewhere else -- hand-built here,
+    rehydrated from persistence in the plan's PR-6b -- where a
+    ZeroDivisionError would be the alternative.
+    """
+    empty_band = BandResult(
+        f_lo_hz=250.0, f_hi_hz=2000.0, tolerance_db=1.5,
+        max_deviation_db=None, max_deviation_hz=None, rms_deviation_db=None,
+        n_bins=7, n_excluded=7, evaluable=False, passed=None,
+    )
+    report = FlatSpecReport(
+        reference_db=-30.0,
+        bands=(empty_band,),
+        overall_passed=False,
+        excluded_intervals=(),
+        best_effort_above_hz=BEST_EFFORT_ABOVE_HZ,
+        smoothing_fraction=3,
+    )
+    residual = spec_convergence_residual(report)
+    assert residual.rms_db is None
+    assert residual.evaluable is False
+    assert residual.n_bins == 0
+    assert residual.n_excluded == 7
+    assert residual.to_dict() == {
+        "rms_db": None, "n_bins": 0, "n_excluded": 7, "evaluable": False,
+    }
+
+
+def test_convergence_residual_ignores_the_best_effort_region():
+    """Bins at or above :data:`BEST_EFFORT_ABOVE_HZ` are never specced, so a
+    top octave the speaker cannot reach must not be able to stall the loop.
+    """
+    quiet_top = _flat_db(-30.0)
+    loud_top = quiet_top.copy()
+    loud_top[12:] += 25.0  # 16 k / 18 k / 20 k -- all best-effort
+
+    assert spec_convergence_residual(
+        evaluate_flat_spec(_FREQS_HZ, loud_top)
+    ) == spec_convergence_residual(evaluate_flat_spec(_FREQS_HZ, quiet_top))
+
+
+@requires_s0_curves
+def test_s0_convergence_residual_falls_because_the_mask_grew(s0_combined):
+    """The S0 reading, and the reason the counts are part of the record.
+
+    Measured 2026-07-26 on the S0 main leg's ten-position combined spec
+    curve (1/3-octave, the curve the plan grades). Three maskings of the
+    SAME curve -- the speaker never changed:
+
+      mask                     residual    bins    excluded
+      none                     4.6043 dB   10752          0
+      power-vs-median screen   4.6472 dB   10647        105
+      screen + null registry   3.7649 dB    7698       3054
+
+    Adding the registry drops the residual by 0.88 dB while removing 2949
+    bins from the denominator. Read alone that looks like convergence; read
+    with the counts it is visibly the 8-16 kHz band losing 54 % of its bins.
+    A loop that watched only ``rms_db`` would call that progress.
+
+    The last row is also the exactness check: the reassembled figure matches
+    a direct from-the-arrays recomputation to 1e-12 relative.
+    """
+    combined, registry = s0_combined
+    freqs, spec = combined.freqs_hz, combined.power_mean_spec_db
+
+    readings = {}
+    for label, mask in (
+        ("none", None),
+        ("screen", combined.excluded),
+        ("screen_plus_registry", combined.excluded | registry.excluded),
+    ):
+        readings[label] = spec_convergence_residual(
+            evaluate_flat_spec(freqs, spec, mask)
+        )
+
+    assert readings["none"].rms_db == pytest.approx(4.6043, abs=0.002)
+    assert readings["none"].n_bins == 10_752
+    assert readings["none"].n_excluded == 0
+
+    assert readings["screen"].rms_db == pytest.approx(4.6472, abs=0.002)
+    assert readings["screen"].n_bins == 10_647
+    assert readings["screen"].n_excluded == 105
+
+    both = readings["screen_plus_registry"]
+    assert both.rms_db == pytest.approx(3.7649, abs=0.002)
+    assert both.n_bins == 7698
+    assert both.n_excluded == 3054
+    assert readings["screen"].rms_db - both.rms_db == pytest.approx(0.88, abs=0.02)
+
+    # Exactness of the per-band reassembly, against the arrays directly.
+    mask = combined.excluded | registry.excluded
+    report = evaluate_flat_spec(freqs, spec, mask)
+    in_spec = np.zeros_like(freqs, dtype=bool)
+    for f_lo, f_hi, _tolerance in SPEC_BANDS:
+        in_spec |= (freqs >= f_lo) & (freqs < f_hi)
+    selected = in_spec & ~mask
+    direct = float(
+        np.sqrt(np.mean((spec[selected] - report.reference_db) ** 2))
+    )
+    assert both.rms_db == pytest.approx(direct, rel=1e-12)
+    assert both.n_bins == int(selected.sum())
+
+
+@pytest.fixture(scope="module")
+def s0_combined():
+    """The S0 main-leg cloud and its null registry, built once."""
+    combined = combine_positions(s0_position_captures(S0_MAIN))
+    # The band the S0 report grades the 8-16 kHz family in (REPORT.md Q1/Q2).
+    return combined, identify_interference_nulls(combined, band_hz=(5000.0, 19_000.0))

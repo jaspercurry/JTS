@@ -879,8 +879,16 @@ independent Opus adversarial review round applied — 3 blockers,
 5 should-fixes, 8 nits, all fixed (notably: the PR-3a relay-capacity
 split — the protocol caps plans at 8 entries; the existing
 `driver_class` envelope-prior interaction PR-6 must design with; and
-the τ-ladder-vs-arrival 4–9 % gap PR-1's matcher must admit). PR
-ladder not yet started. The executing session updates per-PR status
-here as merges land.*
+the τ-ladder-vs-arrival 4–9 % gap PR-1's matcher must admit). The
+executing session updates per-PR status here as merges land.*
 
-*Last verified: 2026-07-25*
+*Ladder status: **PR-2 merged as #1749**; **PR-1 merged as #1751**.*
+
+*Owner-approved split (2026-07-26): PR-6's fit-side half (envelope
+terms + convergence guard) fast-tracked as **PR-6a** ahead of W2 to
+unblock the corpus-derived profile; registry persistence, carve-out
+disclosure surfaces, and the spec-table/open-question-8 annotations
+remain **PR-6b** in ladder order. The PR-6 section body below is
+unchanged and still describes the whole of PR-6.*
+
+*Last verified: 2026-07-26*

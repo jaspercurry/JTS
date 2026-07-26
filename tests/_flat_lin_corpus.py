@@ -6,11 +6,12 @@
 
 The 2026-07-25 S0 session and the 2026-07-24/25 cdhorn corpus are
 laptop-durable and **gitignored**, so every test that reads them is
-env-gated and skips cleanly in CI. Two test modules now need the same
+env-gated and skips cleanly in CI. Several test modules now need the same
 session directories — :mod:`tests.test_spatial_combine` (the detector and
-geometry acceptance) and :mod:`tests.test_interference_nulls` (the null
-gate's) — so the loading lives here rather than in either of them: one
-deconvolution chain, one place for it to be era-exact.
+geometry acceptance), :mod:`tests.test_interference_nulls` (the null gate's)
+and :mod:`tests.test_active_speaker_linearization_envelope` (the correction
+doctrine's cloud terms) — so the loading lives here rather than in any of
+them: one deconvolution chain, one place for it to be era-exact.
 
 **Era-exact** is the load-bearing property. These WAVs were captured by
 ``captures/flat-linearization-20260725/s0-kit/s0_capture.py`` against a
@@ -25,6 +26,7 @@ same cross-correlation offset, same ``_deconvolve_window`` on the
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import wave
@@ -280,6 +282,65 @@ def s0_position_captures(
             )
         )
     return captures
+
+
+def s0_position_driver_response(
+    session_dir: Path, position_id: str
+) -> tuple[Any, float]:
+    """``(DriverResponse, fc_hz)`` for ONE S0 position, repeats attached.
+
+    The same deconvolution + calibrated gated magnitude chain
+    :func:`s0_position_captures` uses, stopped one step earlier: instead of
+    power-mean-averaging a position's repeat captures into a single curve,
+    each capture becomes its own
+    :class:`~jasper.audio_measurement.program_analysis.DriverResponse` and the
+    non-first ones are attached to the first as ``repeat_responses``. That is
+    the shape the correction envelope reads for its in-position repeat sigma
+    (:func:`jasper.active_speaker.linearization_envelope.compute_sigma_curve`),
+    which needs the occurrences separately — the averaged view cannot supply
+    it.
+
+    Every S0 position holds exactly two captures, so the returned primary
+    carries one repeat. ``role`` is ``"summed"`` because that is what the
+    session captured: a summed system sweep, not a per-driver one. A caller
+    fitting a single driver's band out of it is making a declaration about
+    the crossover, and ``fc_hz`` (read from the session's own
+    ``session.json``, not assumed) is returned so it can make that
+    declaration from the session rather than from a literal.
+    """
+    from jasper.audio_measurement import program_analysis as pa
+    from jasper.audio_measurement.calibration import parse_calibration_text
+
+    calibration = parse_calibration_text(S0_CALIBRATION.read_text())
+    _program, reference, segment, sample_rate, fc_hz = _session_program(session_dir)
+    occurrences = []
+    for _index, wav in sorted(_session_groups(session_dir)[position_id]):
+        captured = _load_wav_mono(wav)
+        full_ir, _pre_guard = pa._deconvolve_window(
+            captured,
+            segment,
+            _offset_of(captured, reference) + segment.start_sample,
+            sample_rate,
+        )
+        occurrences.append(
+            pa._driver_response(
+                "summed",
+                full_ir,
+                sample_rate,
+                calibration=calibration,
+                ambient_report=None,
+                fc_hz=fc_hz,
+                n_fft=pa._n_fft_for(full_ir),
+            )
+        )
+    primary = dataclasses.replace(
+        occurrences[0],
+        repeat_responses=tuple(
+            dataclasses.replace(occurrence, repeat_index=index + 1)
+            for index, occurrence in enumerate(occurrences[1:])
+        ),
+    )
+    return primary, fc_hz
 
 
 def loopback_irs() -> dict[str, np.ndarray]:

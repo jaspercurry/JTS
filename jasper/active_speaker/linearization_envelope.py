@@ -9,7 +9,14 @@ Pure computation only: numpy plus
 :class:`jasper.audio_measurement.program_analysis.DriverResponse`. No I/O, no
 product policy, no CamillaDSP/emission imports — this module answers "how
 many dB of correction depth is this frequency bin allowed," nothing more.
-Wiring this into the fit/apply flow is a later PR (see
+This module shipped with no production callers; **it has one now** — #1668
+PR-C wired it into the fit/apply flow, and
+``jasper.active_speaker.crossover_v2_flow``'s ``_fit_linearization`` calls
+:func:`compose_envelope` per driver role and hands the result to
+:func:`~jasper.active_speaker.linearization_fit.fit_driver_linearization`,
+whose filters are persisted and applied on hardware. Purity is still the
+contract here; being uncalled is not. Read a change to any term as a change
+to a live correction profile (see
 docs/active-speaker-tuning-layers-design.md "Layer 1a concretely").
 
 **Disambiguation — three unrelated "envelope" modules share vocabulary but
@@ -45,18 +52,39 @@ and the sigma(f) reference implementation this mirrors:
 ``captures/xover-e0-2026-07-21/sigma-seeding-20260723/compute_sigma.py``
 (session-artifact; see the ``REPORT.md`` beside it for the corpus findings
 that seeded the tier/class tables below).
+
+**Two further terms are optional and cloud-derived** (flat-linearization
+productization plan, PR-6a; the plan's interpretation call (A)). When a
+caller has a *spatial cloud* — several mic positions combined by
+:func:`~jasper.audio_measurement.spatial_combine.combine_positions` — it may
+hand :func:`compose_envelope` that cloud's honesty evidence, and the min
+above gains:
+
+    spatial_exclusion_limit(f, merged honesty intervals)
+    position_stability_limit(f, cloud BandSpread, N)
+
+Both are **narrowing only** — they enter the same ``np.min`` as everything
+else, so an envelope with them can never allow more depth than the same
+envelope without them. Both default to absent, and an absent term composes
+to output byte-identical to before they existed. They sit on opposite sides
+of the final smoothing pass, for a reason
+:func:`compose_envelope` states in full: position stability is an ordinary
+limit and is blended like one, while the exclusion is a hard verdict applied
+to the smoothed result so it cannot bleed correction depth out of the
+correctable response next to a null.
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
+from jasper.audio_measurement.spatial_combine import BandSpread
 
 from ._common import DRIVER_CLASSES
 
@@ -75,6 +103,13 @@ class ReasonCode(StrEnum):
     design doc (build-order step 2, "closed-loop verify" — a later PR).
     Keeping it in the enum now means the vocabulary never needs a breaking
     rename once that PR lands.
+
+    ``LIMITED_BY_SPATIAL_EXCLUSION`` and ``LIMITED_BY_POSITION_STABILITY``
+    are produced by :func:`compose_envelope` only when a caller supplied the
+    corresponding cloud evidence (``excluded_bands_hz`` / ``band_spread``);
+    a per-driver session with no spatial cloud never sees either, and the
+    matching terms are absent from :attr:`EnvelopeCurve.terms` entirely
+    rather than present-but-inert.
 
     ``BEYOND_MEASUREMENT_CONFIDENCE`` is likewise vocabulary-only here:
     :func:`compose_envelope` never produces it. It is produced by the
@@ -95,6 +130,8 @@ class ReasonCode(StrEnum):
     LIMITED_BY_NONLINEARITY = "envelope_limited_by_nonlinearity"
     LIMITED_BY_EXCESS_PHASE = "envelope_limited_by_excess_phase"
     LIMITED_BY_CLASS_PRIOR = "envelope_limited_by_class_prior"
+    LIMITED_BY_SPATIAL_EXCLUSION = "envelope_limited_by_spatial_exclusion"
+    LIMITED_BY_POSITION_STABILITY = "envelope_limited_by_position_stability"
     LIMITED_BY_VERIFY_DIVERGENCE = "envelope_limited_by_verify_divergence"
     BEYOND_MEASUREMENT_CONFIDENCE = "envelope_beyond_measurement_confidence"
     OUT_OF_BAND = "envelope_out_of_band"
@@ -283,6 +320,41 @@ def compute_sigma_curve(
     return np.std(stack, axis=0, ddof=1)
 
 
+def _sigma_to_depth_db(sigma_db: np.ndarray, sigma_tolerable_db: float) -> np.ndarray:
+    """``ceiling . min(1, sigma_tolerable / max(sigma, eps))`` — this module's
+    ONE sigma-to-allowed-depth mapping.
+
+    Saturates at the ceiling sentinel while sigma is small (a tight
+    measurement earns no penalty) and tapers as ``1/sigma`` past
+    ``sigma_tolerable`` (a loose one earns no permission to correct that
+    deeply). The design doc's stated direction, REPORT.md finding 5: "a
+    literal ``allowed_depth ∝ σ`` is backwards (noisier measurement must
+    never justify deeper correction)".
+
+    Two terms consume it — :func:`repeatability_limit` (in-position repeat
+    spread) and :func:`position_stability_limit` (the standard error of a
+    cross-position cloud's band level). They differ ONLY in which sigma they
+    hand in; the mapping and the per-tier tolerance table
+    (:data:`_SIGMA_TOLERABLE_DB`) are deliberately shared rather than
+    near-copied, because a second formula meaning the same thing is a second
+    formula to drift. Same instinct as
+    :mod:`jasper.audio_measurement.interference_nulls`'s
+    ``LADDER_ARRIVAL_TOLERANCE``, which is an *alias* of
+    ``GEOMETRY_CLUSTER_TOLERANCE`` rather than a second number meaning the
+    same thing — the aliasing pattern, not that constant's own width
+    argument.
+
+    **The tolerance table now has two consumers, which is a hazard as well as
+    a saving.** A retune motivated by one term silently moves the other; see
+    ``test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap``
+    for the specific one that is guarded.
+    """
+    epsilon_db = 1e-6
+    return ENVELOPE_CEILING_SENTINEL_DB * np.minimum(
+        1.0, sigma_tolerable_db / np.maximum(sigma_db, epsilon_db)
+    )
+
+
 def repeatability_limit(
     sigma_db: np.ndarray | None,
     *,
@@ -308,11 +380,7 @@ def repeatability_limit(
     _validate_tier(tier)
     if sigma_db is None:
         return np.zeros_like(grid_hz, dtype=np.float64)
-    sigma_tolerable_db = _SIGMA_TOLERABLE_DB[tier]
-    epsilon_db = 1e-6
-    return ENVELOPE_CEILING_SENTINEL_DB * np.minimum(
-        1.0, sigma_tolerable_db / np.maximum(sigma_db, epsilon_db)
-    )
+    return _sigma_to_depth_db(sigma_db, _SIGMA_TOLERABLE_DB[tier])
 
 
 def mic_trust_limit(freqs_hz: np.ndarray, *, tier: str) -> np.ndarray:
@@ -387,6 +455,257 @@ def invertibility_limit(freqs_hz: np.ndarray) -> np.ndarray:
     return np.full_like(freqs_hz, ENVELOPE_CEILING_SENTINEL_DB, dtype=np.float64)
 
 
+# --------------------------------------------------------------------------- #
+# Cloud-derived terms (flat-linearization productization plan, PR-6a)
+#
+# Both consume evidence a SPATIAL CLOUD produces and a single-position
+# capture cannot. Both are optional, both only narrow, and both are absent
+# unless the caller supplied their evidence.
+# --------------------------------------------------------------------------- #
+
+
+def _interval_mask(
+    freqs_hz: np.ndarray, intervals: Sequence[tuple[float, float]],
+) -> np.ndarray:
+    """Rasterize frequency intervals onto ``freqs_hz`` — True where a bin's
+    own cell overlaps any interval.
+
+    **The edge rule is "any overlap excludes", and it needs stating because
+    the envelope grid is coarse next to what it is rasterizing.**
+    :data:`DEFAULT_ENVELOPE_GRID_HZ` is 176 log-spaced bins, a 2.8354 % step
+    — 245.1 Hz wide at 8644.8 Hz — while the intervals arriving from a cloud
+    are computed on the combiner's own decimated analysis grid, 1.4648 Hz on
+    the S0 corpus. A bin is therefore almost never exactly covered; it is
+    *partly* covered, and the two available rules disagree by up to one bin
+    at each end of each interval. (Measured 2026-07-26 on the S0 registry's
+    three intervals, which is what that costs in practice: cell overlap
+    excludes **17** envelope bins where point-containment would exclude
+    **14** — one extra bin per interval, not two.)
+
+    This function takes the conservative rule. Each bin owns the cell between
+    the **geometric midpoints** to its two neighbours (log-domain, the same
+    convention ``_ladder_smooth`` and the fit's ``trusted_mid_hz`` use; the
+    first and last bins' outer edges mirror their own inner half-step), and
+    the bin is excluded when that cell intersects an interval **at all**.
+    The alternative — "the bin's own frequency lies inside the interval" —
+    would leave a bin whose cell is 90 % inside an identified null fully
+    correctable. The plan's non-goal is absolute ("No EQ of
+    interference-flagged bins, ever"), so a partly-covered bin resolves
+    toward exclusion. The cost is bounded at one grid bin of bandwidth at
+    each end of each interval, permanently; the alternative's cost is EQ
+    inside a null, which the whole instrument exists to prevent.
+
+    Intervals need not be sorted or disjoint (overlapping ones simply union).
+    They must each be ascending: a reversed ``(f_hi, f_lo)`` pair would
+    intersect nothing and silently under-exclude — the unsafe direction — so
+    it raises instead. That check runs before any early return, so a
+    malformed interval is reported whatever grid it was handed.
+    """
+    for f_lo, f_hi in intervals:
+        if f_hi < f_lo:
+            raise ValueError(
+                f"exclusion interval ({f_lo}, {f_hi}) is descending; intervals "
+                "must be (f_lo, f_hi) with f_lo <= f_hi"
+            )
+    mask = np.zeros_like(freqs_hz, dtype=bool)
+    if freqs_hz.size == 0 or not intervals:
+        return mask
+
+    log_f = np.log2(freqs_hz)
+    cell_lo_log = np.empty_like(log_f)
+    cell_hi_log = np.empty_like(log_f)
+    if log_f.size == 1:
+        # A one-bin grid has no neighbour to take a midpoint against; the
+        # cell degenerates to the point itself, so "any overlap" reduces to
+        # "the interval contains this frequency".
+        cell_lo_log[0] = cell_hi_log[0] = log_f[0]
+    else:
+        midpoints = 0.5 * (log_f[:-1] + log_f[1:])
+        cell_lo_log[1:] = midpoints
+        cell_hi_log[:-1] = midpoints
+        cell_lo_log[0] = log_f[0] - (midpoints[0] - log_f[0])
+        cell_hi_log[-1] = log_f[-1] + (log_f[-1] - midpoints[-1])
+    cell_lo = np.exp2(cell_lo_log)
+    cell_hi = np.exp2(cell_hi_log)
+
+    for f_lo, f_hi in intervals:
+        mask |= (cell_lo <= f_hi) & (cell_hi >= f_lo)
+    return mask
+
+
+def spatial_exclusion_limit(
+    freqs_hz: np.ndarray, excluded_bands_hz: Sequence[tuple[float, float]],
+) -> np.ndarray:
+    """Zero allowed depth on honesty-masked bins, the ceiling sentinel
+    elsewhere.
+
+    ``excluded_bands_hz`` is the plan's **merged honesty mask** as frequency
+    intervals: the union of the combiner's power-vs-median screen
+    (:attr:`~jasper.audio_measurement.spatial_combine.CombinedResponse.excluded_bands_hz`)
+    and the identified-null registry
+    (:attr:`~jasper.audio_measurement.interference_nulls.InterferenceNullReport.excluded_bands_hz`).
+    Intervals rather than a bin mask because the two producers live on the
+    combiner's analysis grid and this module lives on its own envelope grid:
+    an interval is grid-independent, and
+    :func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`
+    stays the single owner of the merge upstream. See :func:`_interval_mask`
+    for the partial-coverage rule.
+
+    The doctrine this encodes is one sentence of
+    docs/flat-linearization-plan.md's non-goals — "No EQ of
+    interference-flagged bins, ever; they are reported instead" — expressed
+    as the only thing an envelope can say: zero permission. The fit then
+    corrects the response *around* an identified null and never fills it.
+
+    **Whose blind spot this is not.** The screen catches interference some
+    positions see and others do not; the registry catches nulls every
+    position sees. Neither is complete, which is why the plan's consumers
+    take the union of both plus ``geometry.locked`` — this function receives
+    that union already formed and does not itself know which instrument
+    contributed which interval.
+    """
+    return np.where(
+        _interval_mask(freqs_hz, excluded_bands_hz), 0.0, ENVELOPE_CEILING_SENTINEL_DB
+    )
+
+
+def position_stability_limit(
+    freqs_hz: np.ndarray,
+    band_spread: Sequence[BandSpread],
+    *,
+    n_positions: int,
+    tier: str,
+) -> np.ndarray:
+    """Shrink allowed depth where the cloud's positions disagree about a
+    band's level.
+
+    The quantity handed to :func:`_sigma_to_depth_db` is the **standard error
+    of the combined level**, ``sigma_db / sqrt(n_positions)``, per octave
+    band.
+
+    **Why the standard error and not the raw spread.** What the fit corrects
+    is the cloud's *mean* — the power-mean curve — so the uncertainty that
+    should bound correction depth is the uncertainty of that mean, which is
+    the ``1/sqrt(N)`` law
+    :class:`~jasper.audio_measurement.spatial_combine.BandSpread` names in
+    its own docstring for exactly this statistic. Using the raw ``sigma_db``
+    would punish a cloud for being well dispersed, and dispersing the mic is
+    the protocol's own instruction (plan fundamental 1) — a term that bites
+    harder the better the household follows the instructions is backwards.
+
+    **Why ``sigma_db`` and not ``max_sigma_db``.** ``BandSpread`` draws the
+    line and this function keeps it: ``sigma_db`` is the *level* spread the
+    accuracy law is about, while ``max_sigma_db`` is the *structure* spread
+    and "rides comb nulls on purpose". Comb nulls are already owned, twice
+    and better, by the two instruments feeding
+    :func:`spatial_exclusion_limit` — reading ``max_sigma_db`` here would
+    re-litigate their evidence with a cruder statistic and double-count it.
+
+    **The tolerance table is shared with** :func:`repeatability_limit`
+    (:data:`_SIGMA_TOLERABLE_DB`, keyed by mic tier) because after the
+    ``sqrt(N)`` division both terms are the same kind of quantity: how well
+    is the level this fit is about to correct actually known, in dB. No
+    second table, so no second table to drift.
+
+    **Calibration — measured 2026-07-26 on the S0 corpus** (five cloud
+    groupings of the 2026-07-25 JTS3 session, at ``reference`` tier;
+    re-derived in full by
+    ``test_s0_position_stability_calibration_populations``). Per-band
+    ``sigma_db``, the ``sigma/sqrt(N)`` this function actually consumes, and
+    the limit that produces — over the seven octave bands inside
+    :data:`DEFAULT_ENVELOPE_GRID_HZ`'s 150 Hz support (250 Hz-16 kHz), all
+    ranges min-max:
+
+      grouping                      N    sigma_db      sigma/sqrt(N)  limit dB
+      main leg, all 10 positions   10    0.946-3.088   0.299-0.976    12.29-24
+      main leg, tweeter height      6    0.340-1.234   0.139-0.504    23.82-24
+      main leg, a hand-width low    4    0.964-3.029   0.482-1.514     7.92-24
+      desk front edge               3    0.306-1.735   0.177-1.002    11.98-24
+      ground plane                  3    0.362-3.173   0.209-1.832     6.55-24
+
+    Every grouping's tightest limit is its **16 kHz band** except the ground
+    plane's, whose 8 kHz band is worse; the low bands sit at the sentinel
+    throughout.
+
+    **This term's own limit depends on N, not on the driver class** — it
+    reads only the cloud and the mic tier, so the table above is
+    class-independent. **What it does to a composed envelope is not.** Both
+    regimes, measured end-to-end on the S0 replay and re-derived by
+    ``test_s0_position_stability_narrows_the_envelope_but_not_the_fit``:
+
+      declared class      bins narrowed   span            worst drop
+      compression_horn    30              5082-11434 Hz   7.03 dB
+      unknown             18              5082-8175 Hz    5.20 dB
+
+    The ``unknown`` reading is smaller and stops lower because
+    :func:`class_prior_limit` (``full_to`` 6 kHz) is already tighter than
+    this term above ~8 kHz — the class prior gets there first, so there is
+    less left for stability to take. A statement about what this term does
+    in 8-16 kHz is therefore only true of the class it was measured under,
+    which is the work order's rule and applies here too.
+
+    **Under BOTH classes it changes zero bins** of the per-bin cut cap the
+    fit actually consumes, ``min(12, allowed_depth)``, so the emitted filters
+    come out byte-identical either way: on the plan's own cloud shape
+    (fundamental 1's 8-12 positions — the ten-position main leg) the
+    standard error stays at or under 0.976 dB and the tightest limit is
+    **12.29 dB**, just above the fit's own 12 dB per-filter cut cap. A
+    protocol-following cloud pays nothing; the term is holding a ceiling
+    that is simply above where the fit was already bound. That 0.29 dB is
+    the whole margin, and it is thin — a hardware-free test
+    (``test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap``)
+    pins it against a retune of the shared tolerance table, because the
+    corpus test that measured it skips in CI.
+
+    The thin and deliberately degenerate groupings are where the term bites
+    — four positions at one height give 7.92 dB, and the three-position
+    ground-plane leg 6.55 dB, both under that cap.
+
+    There is **no measured negative population**: no S0 grouping produced a
+    cloud whose positions disagree so badly that this term dominates the
+    envelope, and this docstring does not pretend one exists. What the
+    calibration establishes is the positive side — the readings a
+    protocol-following cloud produces, that the term costs such a cloud
+    nothing at the fit's own surface, and that its limit falls as N does.
+
+    Bands the cloud did not report (outside its grid support, or under
+    ``MIN_BAND_BINS``) leave their bins at the sentinel: **no reading, no
+    additional constraint.** That is deliberately NOT the "no evidence, no
+    permission" rule :func:`repeatability_limit` applies to a missing sigma,
+    and the two cases are different. A missing repeat sigma means the
+    repeatability leg of the doctrine has no evidence at all. A missing
+    octave band means the cloud's grid did not reach it — a coverage fact
+    about the capture, already bounded by the OUT_OF_BAND pre-mask, the mic
+    tier and the class prior. Zeroing there would let a cloud that merely
+    stopped at 19 kHz silently delete the 19-20 kHz envelope for a reason
+    that has nothing to do with position stability.
+
+    Overlapping bands (the ISO octave edges very nearly abut, but clipping
+    to the grid can make two bands share a bin) take the **larger** standard
+    error, i.e. the tighter limit.
+
+    Raises:
+        ValueError: for a ``tier`` outside :data:`MIC_TIERS`, or
+            ``n_positions < 2`` (a spread across fewer than two positions is
+            undefined — ``combine_positions`` returns an empty
+            ``band_spread`` there, and a caller passing a non-empty one with
+            N < 2 has a bug worth hearing about).
+    """
+    _validate_tier(tier)
+    if n_positions < 2:
+        raise ValueError(
+            f"n_positions must be >= 2 for a cross-position spread (got {n_positions})"
+        )
+    standard_error_db = np.zeros_like(freqs_hz, dtype=np.float64)
+    root_n = math.sqrt(n_positions)
+    for band in band_spread:
+        band_mask = (freqs_hz >= band.f_lo) & (freqs_hz <= band.f_hi)
+        standard_error_db[band_mask] = np.maximum(
+            standard_error_db[band_mask], band.sigma_db / root_n
+        )
+    return _sigma_to_depth_db(standard_error_db, _SIGMA_TOLERABLE_DB[tier])
+
+
 @dataclass(frozen=True)
 class EnvelopeTerm:
     """One term's reason code paired with its full per-bin curve — the
@@ -410,7 +729,12 @@ class EnvelopeCurve:
     term's FULL, unmasked, per-bin curve (not just where it won) for
     diagnostics — e.g. showing "here's what mic-trust alone would have
     allowed at every frequency" even at bins some other term actually
-    decided. ``sigma_db`` is the sigma actually CONSUMED by the
+    decided. Its KEYS are the terms that actually composed this curve: the
+    five original ones always, plus ``LIMITED_BY_SPATIAL_EXCLUSION`` and/or
+    ``LIMITED_BY_POSITION_STABILITY`` only when the caller supplied that
+    cloud evidence — so a consumer reads the mapping to learn which
+    instruments were available, and must not assume a fixed key set.
+    ``sigma_db`` is the sigma actually CONSUMED by the
     repeatability term: by default that is :func:`compute_sigma_curve`'s
     output verbatim (``None`` when fewer than 2 occurrences existed); when
     a caller supplies ``sigma_db`` explicitly to :func:`compose_envelope`
@@ -453,6 +777,9 @@ def compose_envelope(
     driver_class: str = "unknown",
     grid_hz: np.ndarray = DEFAULT_ENVELOPE_GRID_HZ,
     sigma_db: np.ndarray | None | object = _COMPUTE,
+    excluded_bands_hz: Sequence[tuple[float, float]] | None = None,
+    band_spread: Sequence[BandSpread] | None = None,
+    n_positions: int | None = None,
 ) -> EnvelopeCurve:
     """Compose the correction envelope: the design doc's
 
@@ -467,6 +794,21 @@ def compose_envelope(
     with a hard OUT_OF_BAND pre-mask evaluated BEFORE the min, and a final
     ladder-smoothing pass so term handoffs (e.g. mic-trust's taper meeting
     class-prior's taper) have no audible cliffs.
+
+    When a caller supplies **cloud evidence**, two further terms join that
+    same min (flat-linearization productization plan, PR-6a; interpretation
+    call (A)):
+
+        spatial_exclusion_limit(f, excluded_bands_hz)
+        position_stability_limit(f, band_spread, n_positions, tier)
+
+    They are strictly narrowing — ``np.min`` cannot widen — so every claim
+    about what an envelope allows above 8 kHz remains **class-regime
+    dependent** exactly as it was: :func:`class_prior_limit` already zeroes
+    an undeclared (``unknown``, ``full_to`` 6 kHz) driver by ~12 kHz before
+    either new term exists, while a declared ``compression_horn``
+    (``full_to`` 10 kHz) still has real authority at 8.7 kHz. A behavior
+    measured under one declared class does not describe the other.
 
     ``excited_band_hz`` does double duty: it is both the pre-mask's
     excitation-coverage bound AND the ``valid_band_hz`` passed to
@@ -512,6 +854,46 @@ def compose_envelope(
     boundary, and the smoothing ladder's window would otherwise leak a
     sliver of in-band energy across that boundary in either direction.
 
+    **The exclusion is applied AFTER the smoothing pass, not before, and
+    that placement is load-bearing.** The composed curve is
+
+        allowed_depth = min(
+            ladder_smooth(min(every other term)),
+            spatial_exclusion_limit(f),
+        )
+
+    so an excluded bin still reads exactly 0.0 (0 is the minimum), while a
+    bin *outside* the mask reads exactly what it would have read with no
+    mask supplied at all — bit for bit, pinned by a test. Zeroing the
+    excluded bins BEFORE the smoothing pass instead (the treatment
+    OUT_OF_BAND gets) would blur those zeros outward across a half-octave
+    window and quietly cost the neighbourhood real correction depth.
+    Measured 2026-07-26 by mutating that one rule and nothing else, on the
+    S0 ten-position cloud at ``compression_horn`` (re-derived by
+    ``test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth``):
+    18 in-band bins lose depth, worst **6.06 dB** — the comb peak at
+    12786.4 Hz, sitting *between* the second and third identified nulls,
+    would have fallen from 9.18 to 3.12 dB of allowed depth, and the one at
+    10223.7 Hz from 15.23 to 11.09 dB. Those peaks are
+    exactly what the registry sized its intervals to keep correctable
+    (``IdentifiedNull.f_lo_hz``: half-depth width, "rather than the whole
+    flank-to-flank span because the span includes the comb *peaks*, which
+    are ordinary response the fit should still correct"), so pre-smoothing
+    would have silently undone an upstream design decision.
+
+    The asymmetry with OUT_OF_BAND is deliberate and the two cases differ:
+    an out-of-band bin's term values are not *about* anything (no excitation
+    reached it, no gate validated it), so letting them leak inward is
+    letting noise in. A spatially-excluded bin's term values are perfectly
+    ordinary; what is wrong with the bin is an interference verdict, and a
+    verdict masks, it does not taper.
+
+    Ties at the argmin resolve first-index-wins, as they always have. A bin
+    that is BOTH spatially excluded and has no repeat evidence therefore
+    reports ``LIMITED_BY_REPEATABILITY`` (the earlier term) even though
+    ``LIMITED_BY_SPATIAL_EXCLUSION`` is equally true; both readings are
+    honest, and no priority policy is invented here to pick between them.
+
     ``sigma_db`` is the seam the PR-C wiring layer uses to inject its own
     σ-composition POLICY instead of this module's default internal
     computation — the σ-seeding report's finding 5: ``σ_eff = max(
@@ -536,15 +918,42 @@ def compose_envelope(
         repeats but its partner doesn't yet, so a paired N>=3 gate isn't
         satisfied for either).
 
+    ``excluded_bands_hz`` / ``band_spread`` / ``n_positions`` are the cloud
+    seam, and every one of them defaults to absent. ``None`` — and, for the
+    two sequences, empty — means the corresponding term is **not added at
+    all**: it does not appear in :attr:`EnvelopeCurve.terms`, contributes no
+    reason code, and the returned curve is byte-identical to what this
+    function produced before either term existed (pinned by a test).
+    ``band_spread`` and ``n_positions`` must be supplied together, because a
+    spread without its N cannot be turned into the standard error
+    :func:`position_stability_limit` consumes and silently dropping the term
+    would be a footgun.
+
     Raises :class:`ValueError` for a ``mic_tier`` or ``driver_class``
     outside the closed vocabularies (:data:`MIC_TIERS` /
     :data:`DRIVER_CLASSES`) — "unknown" (class) and "phone" (tier) are
     themselves valid, closed-vocabulary members (the most conservative
-    ones), not error cases — or for an explicit ``sigma_db`` array whose
-    shape does not match ``grid_hz``.
+    ones), not error cases — for an explicit ``sigma_db`` array whose
+    shape does not match ``grid_hz``, for exactly one of
+    ``band_spread``/``n_positions`` being supplied, or for a descending
+    ``excluded_bands_hz`` interval.
     """
     _validate_tier(mic_tier)
     _validate_driver_class(driver_class)
+
+    # Paired supply, resolved once into a single narrowed value so the term
+    # construction below cannot reach a half-supplied pair.
+    stability_evidence: tuple[Sequence[BandSpread], int] | None
+    if band_spread is None and n_positions is None:
+        stability_evidence = None
+    elif band_spread is not None and n_positions is not None:
+        stability_evidence = (band_spread, n_positions)
+    else:
+        raise ValueError(
+            "band_spread and n_positions must be supplied together (got "
+            f"band_spread={'a sequence' if band_spread is not None else None}, "
+            f"n_positions={n_positions})"
+        )
 
     occurrences: tuple[DriverResponse, ...] = (primary, *primary.repeat_responses)
     known_floors = [
@@ -582,7 +991,12 @@ def compose_envelope(
             f"sigma_db must be an ndarray, None, or omitted; got {type(sigma_db)!r}"
         )
 
-    term_specs: tuple[EnvelopeTerm, ...] = (
+    # The five original terms keep their order, so an argmin tie among them
+    # resolves exactly as it always did; the optional cloud terms append.
+    # Position stability joins the SMOOTHED group -- it is an ordinary
+    # per-band limit whose octave-band steps should be blended like any other
+    # term handoff. Spatial exclusion does not; see below.
+    smoothed_terms: list[EnvelopeTerm] = [
         EnvelopeTerm(ReasonCode.LIMITED_BY_MIC_TIER, mic_trust_limit(grid_hz, tier=mic_tier)),
         EnvelopeTerm(
             ReasonCode.LIMITED_BY_REPEATABILITY,
@@ -594,7 +1008,32 @@ def compose_envelope(
             ReasonCode.LIMITED_BY_CLASS_PRIOR,
             class_prior_limit(grid_hz, driver_class=driver_class),
         ),
-    )
+    ]
+    if stability_evidence is not None and stability_evidence[0]:
+        cloud_band_spread, cloud_n_positions = stability_evidence
+        smoothed_terms.append(
+            EnvelopeTerm(
+                ReasonCode.LIMITED_BY_POSITION_STABILITY,
+                position_stability_limit(
+                    grid_hz,
+                    cloud_band_spread,
+                    n_positions=cloud_n_positions,
+                    tier=mic_tier,
+                ),
+            )
+        )
+
+    term_specs: tuple[EnvelopeTerm, ...] = tuple(smoothed_terms)
+    spatially_excluded_mask = np.zeros_like(grid_hz, dtype=bool)
+    if excluded_bands_hz:
+        spatial_term = EnvelopeTerm(
+            ReasonCode.LIMITED_BY_SPATIAL_EXCLUSION,
+            spatial_exclusion_limit(grid_hz, excluded_bands_hz),
+        )
+        # Read back off the term rather than rasterizing a second time: one
+        # owner for "which bins did the honesty mask land on".
+        spatially_excluded_mask = spatial_term.depth_db <= 0.0
+        term_specs = (*term_specs, spatial_term)
     stacked = np.stack([term.depth_db for term in term_specs])
     winning_value = np.min(stacked, axis=0)
     winning_index = np.argmin(stacked, axis=0)
@@ -611,9 +1050,18 @@ def compose_envelope(
         for i in range(n_bins)
     )
 
-    masked_depth_db = np.where(in_band_mask, winning_value, 0.0)
+    # The smoothing input is the min over the SMOOTHED terms only -- the
+    # spatial exclusion is applied to the result, not blended into it. See
+    # the docstring's "The exclusion is applied after the smoothing pass"
+    # paragraph for why that placement is load-bearing rather than cosmetic.
+    smoothable_value = np.min(
+        np.stack([term.depth_db for term in smoothed_terms]), axis=0
+    )
+    masked_depth_db = np.where(in_band_mask, smoothable_value, 0.0)
     smoothed_depth_db = _ladder_smooth(grid_hz, masked_depth_db)
-    smoothed_depth_db = np.where(in_band_mask, smoothed_depth_db, 0.0)
+    smoothed_depth_db = np.where(
+        in_band_mask & ~spatially_excluded_mask, smoothed_depth_db, 0.0
+    )
 
     terms_map: Mapping[ReasonCode, np.ndarray] = {
         term.code: term.depth_db for term in term_specs
