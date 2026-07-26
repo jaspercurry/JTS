@@ -603,10 +603,13 @@ def test_only_a_consecutive_run_counts_as_a_ladder():
     """C — the contiguity rule itself, at the level it is decided.
 
     A non-adjacent pair pins no tau: any delay dividing the gap explains it.
-    The rule that stops a fit claiming "n=3 and n=8" — the shape the S0
-    ground-plane leg produced with gaps allowed — is that only the longest
-    *consecutive* run of matched rungs is kept, and it must reach
-    ``MIN_LADDER_RUNGS``. Pinned directly because a fixture that reaches it
+    The rule that stops a fit claiming a gap-skipping shape like "n=3 and
+    n=8" is that only the longest *consecutive* run of matched rungs is
+    kept, and it must reach ``MIN_LADDER_RUNGS``. (The measured S0
+    counterfactual is the 1.8 kHz dip admitted as a skipped-rung n=0 — see
+    test_contiguity_is_what_keeps_the_1_8_khz_dip_out_of_the_registry; the
+    ground-plane leg never reaches the fit at all, per MIN_LADDER_RUNGS's
+    own retraction note.) Pinned directly because a fixture that reaches it
     end-to-end would be testing the locator's arithmetic as much as this
     rule's.
     """
