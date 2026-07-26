@@ -146,6 +146,36 @@ class RelayClient:
                 detail = resp.body[:200].decode("utf-8", "replace")
             raise RelayError(f"{what} failed: {resp.status} {detail}", resp.status, resp.body)
 
+    # -- deployment capability (unauthenticated, session-free) --
+
+    def capabilities(self) -> dict[str, Any] | None:
+        """The deployed Worker's capability document, or ``None`` when it has none.
+
+        ``GET /capabilities`` shipped with the capture-plan capacity raise. The
+        relay carried NO version surface before it, so a Worker deployed earlier
+        simply 404s — that absence is the only honest "which relay is this?"
+        signal that exists, and ``None`` is how this method reports it.
+
+        Every non-2xx status and every unparseable body maps to the same
+        ``None`` so a caller gating on capacity fails CLOSED (it refuses rather
+        than assumes). A relay that cannot be reached at all still raises
+        through the transport exactly as :meth:`register` does, so it keeps
+        reaching the existing relay-unreachable failure cue instead of being
+        silently reclassified as an old deployment.
+        """
+        resp = self._transport("GET", f"{self.base_url}/capabilities", {}, None)
+        if not (200 <= resp.status < 300):
+            return None
+        try:
+            document = self._json(resp)
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(document, dict) or not document:
+            # An empty body decodes to `{}` — a 200 that advertises nothing is
+            # "no document" for a version probe, not an empty-but-valid one.
+            return None
+        return document
+
     # -- registration (optionally guarded; the Pi mints its own tokens) --
 
     def register(

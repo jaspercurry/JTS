@@ -619,8 +619,8 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
 - `PUT    /sessions/:id/blob[?index=N]` — phone uploads `IV ‖ ciphertext` +
   integrity `{plaintext_len, sha256}` (auth: upload_token); enforce
   `max_upload_bytes` + Content-Type at the Worker; set state `ready`. The
-  optional `index` (0..7 — one slot per admitted attempt,
-  `capture_index = attempt - 1` under the 8-attempt plan cap; absent = 0 = the
+  optional `index` (0..31 — one slot per admitted attempt,
+  `capture_index = attempt - 1` under the 32-attempt plan cap; absent = 0 = the
   legacy key) stores one blob per admitted attempt of a protocol-v3 capture
   plan; one upload per index.
 - `GET    /sessions/:id/status` — Pi polls `{state, size, integrity, event,
@@ -630,6 +630,14 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   pull_token), per index for capture plans.
 - `DELETE /sessions/:id` — Pi purges (auth: pull_token), indexed blobs
   included.
+- `GET    /capabilities` — unauthenticated, session-free
+  `{schema_version, max_capture_plan_attempts}`. The relay's **only** version
+  surface, and deliberately a capability document rather than a build number:
+  what a Pi must know before committing an operator to a long capture
+  choreography is how many blob indexes this deployment will store. A Worker
+  deployed before this endpoint existed 404s, and the Pi reads that 404 as the
+  pre-capacity ceiling of 8 and refuses a larger plan at session setup — see
+  §14, which is why the Worker deploys before the Pi.
 
 ---
 
@@ -897,15 +905,28 @@ keeps its normal logging and cue policy.
 ## 14. Build and release order
 
 The numbered implementation history below is not the deployment order. The
-public page and Pi are released independently, so protocol changes ship
-**page first**: publish a page whose `version.json` supports both the old and
-new protocol, verify `https://capture.jasper.tech/version.json`, and only then
-deploy Pis that emit the new `CaptureSpec.capture_protocol_version`. The exact
-commands and old-protocol retirement step live in
-[`capture-page/README.md`](../capture-page/README.md). The page identity rides
-every phone event; the Pi logs `event=capture_relay.page_compatible` or
-`event=capture_relay.page_incompatible` before tone playback. This is the live
-pairing proof, not a guess based on the Pages dashboard.
+public page, the relay Worker, and the Pi are released independently, so
+**the Pi always goes last** — accepting a newer contract is backwards
+compatible, emitting it is not.
+
+- **Page before Pi** for a `capture_protocol_version` change: publish a page
+  whose `version.json` supports both the old and new protocol, verify
+  `https://capture.jasper.tech/version.json`, and only then deploy Pis that
+  emit the new `CaptureSpec.capture_protocol_version`. The exact commands and
+  old-protocol retirement step live in
+  [`capture-page/README.md`](../capture-page/README.md).
+- **Worker before Pi** for a relay capacity change (the capture-plan attempt
+  ceiling): deploy the Worker, verify
+  `https://relay.jasper.tech/capabilities`, and only then deploy Pis that emit
+  larger plans. Commands in [`relay/README.md`](../relay/README.md).
+
+Both skews fail closed, and each has its own live pairing proof rather than a
+dashboard guess. The page identity rides every phone event; the Pi logs
+`event=capture_relay.page_compatible` or `event=capture_relay.page_incompatible`
+before tone playback. The relay's capacity is read from `GET /capabilities` at
+session setup; an insufficient ceiling logs
+`event=capture_relay.plan_capacity_refused` and refuses the session before the
+spec is uploaded.
 
 1. **Capture-spec schema** + a Pi-side builder for `kind="room_sweep"`.
 2. **Relay** Worker + object store: the endpoint set, TTL, token gating, **dual

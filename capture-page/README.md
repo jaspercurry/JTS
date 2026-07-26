@@ -70,7 +70,10 @@ npx wrangler pages deploy dist --project-name jts-capture-page
 ### Release order (page before Pi)
 
 The Pages site and Pi packages are independent releases. A capture-protocol
-change must use this order so an upgraded Pi never reaches a stale public page:
+change must use this order so an upgraded Pi never reaches a stale public page.
+(The relay Worker is a third independent release with its own ordering rule for
+relay **capacity** changes — see [`relay/README.md`](../relay/README.md)
+"Release order". Both rules put the Pi last; neither replaces the other.)
 
 1. Add the new protocol to `version.json`'s
    `supported_capture_protocol_versions` **without removing the currently

@@ -1660,6 +1660,42 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert reparsed.capture_plan.entries == spec.capture_plan.entries
 
 
+def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves():
+    """The v2 flow's retry budget is POLICY, not the relay's transport limit.
+
+    Both builders once passed ``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS``
+    verbatim, which was harmless only while the two constants happened to be
+    equal at 8. Raising the relay ceiling to 32 for multi-position capture
+    plans would otherwise have quadrupled these shipped flows' retry budget and
+    changed their wire bytes as a side effect. Pin the budget to this flow's
+    own constant, and pin that it is strictly below the relay ceiling so the
+    plans stay storable.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        CAPTURE_PLAN_MAX_ATTEMPTS,
+        build_v2_capture_plan,
+        build_v2_verify_capture_plan,
+    )
+    from jasper.capture_relay.spec import (
+        LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS,
+        MAX_CAPTURE_PLAN_ATTEMPTS,
+    )
+
+    assert CAPTURE_PLAN_MAX_ATTEMPTS == LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS == 8
+    assert CAPTURE_PLAN_MAX_ATTEMPTS <= MAX_CAPTURE_PLAN_ATTEMPTS
+
+    three_entry = build_v2_capture_plan(_roles(), FC_HZ)
+    one_entry = build_v2_verify_capture_plan(FC_HZ)
+    assert three_entry.capture_target == 3
+    assert three_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
+    assert one_entry.capture_target == 1
+    assert one_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
+    # Both stay at or below the legacy ceiling, so neither probes the relay's
+    # capability endpoint and both keep working against a pre-capacity Worker.
+    for plan in (three_entry, one_entry):
+        assert plan.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
+
+
 # --- W6.1 Finding A: cap-aware CHECK / MEASURE / VERIFY composition -------------
 #
 # The conductor fixture (CAPS) knew the caps, but the fake play seam never ran

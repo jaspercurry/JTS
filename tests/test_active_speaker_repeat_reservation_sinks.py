@@ -135,13 +135,18 @@ def test_completing_set_after_two_refunded_transports_stores_and_persists():
     assert summary["per_repeat"][-1]["attempt"] == 5
 
 
-def test_max_reservations_matches_capture_plan_attempt_ceiling():
+def test_max_reservations_fits_the_capture_plan_attempt_ceiling():
     # Pin the lockstep the rationale comments claim: the durable reservation
-    # attempt also indexes the relay's per-plan blob table. Read the source
-    # rather than import capture_relay (crypto import blocked in some CI).
+    # attempt also indexes the relay's per-plan blob table, so it must FIT that
+    # table. The direction is what matters — the two constants were both 8
+    # until the relay ceiling was raised to 32 for multi-position capture
+    # plans, and this reservation cap is an infra circuit-breaker sized against
+    # MAX_ATTEMPTS, so it deliberately does not track the relay upward.
+    # Read the source rather than import capture_relay (crypto import blocked
+    # in some CI).
     source = Path("jasper/capture_relay/spec.py").read_text(encoding="utf-8")
     match = re.search(
         r"^MAX_CAPTURE_PLAN_ATTEMPTS\s*=\s*(\d+)", source, re.MULTILINE
     )
     assert match is not None, "MAX_CAPTURE_PLAN_ATTEMPTS not found in spec.py"
-    assert int(match.group(1)) == MAX_RESERVATIONS
+    assert MAX_RESERVATIONS <= int(match.group(1))

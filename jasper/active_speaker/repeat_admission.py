@@ -43,11 +43,19 @@ MAX_ATTEMPTS = 4
 # loop and gives a terminal distinct from acoustic insufficiency
 # (``INFRA_RETRY_EXHAUSTED``) so the envelope can say "the speaker couldn't
 # complete a pass" rather than blaming the room. With MAX_ATTEMPTS=4 audible
-# attempts this tolerates up to four refunded infra retries. Chosen to match
-# the relay's per-plan attempt ceiling (``capture_relay.spec
-# .MAX_CAPTURE_PLAN_ATTEMPTS``) so the durable reservation attempt, which
-# indexes the commissioning bundle's repeat captures, never exceeds that
-# ceiling.
+# attempts this tolerates up to four refunded infra retries.
+#
+# The load-bearing relationship with the relay is an INEQUALITY, not equality:
+# the durable reservation attempt also indexes the commissioning bundle's
+# repeat captures, so it must never exceed the relay's per-plan attempt ceiling
+# (``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS``). The two were both 8 until
+# that ceiling was raised to 32 for the multi-position capture choreography;
+# they were equal by coincidence of value, never by shared meaning. This number
+# is a per-driver infra circuit-breaker sized against MAX_ATTEMPTS above, so it
+# does NOT follow the relay ceiling upward — raising it would loosen a
+# fail-fast bound for a reason that has nothing to do with plan length. The
+# ``<=`` direction is pinned by
+# tests/test_active_speaker_repeat_reservation_sinks.py.
 MAX_RESERVATIONS = 8
 INFRA_RETRY_EXHAUSTED = "infra_retry_exhausted"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_repeat_admission.json")

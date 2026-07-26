@@ -16,6 +16,8 @@ criteria:
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from jasper.capture_relay import spec as spec_mod
@@ -683,7 +685,9 @@ def test_capture_plan_requires_protocol_three_and_vice_versa():
     [
         (0, 4, "1..max_attempts"),
         (5, 4, "1..max_attempts"),
-        (3, 9, "<= 8"),
+        # Derived, never a literal: the ceiling moved 8 -> 32 for multi-position
+        # capture plans and a hardcoded bound would have silently gone stale.
+        (3, spec_mod.MAX_CAPTURE_PLAN_ATTEMPTS + 1, "<= "),
         (True, 4, "integer"),
         (3, None, "integer"),
     ],
@@ -698,6 +702,125 @@ def test_capture_plan_bounds_are_strict(target, attempts, match):
     plan = CapturePlan(capture_target=target, max_attempts=attempts)
     with pytest.raises(CaptureSpecError, match=match):
         replace(base, capture_plan=plan).validate()
+
+
+def test_capture_plan_accepts_the_multi_position_capacity_the_choreography_needs():
+    """A plan larger than the pre-raise ceiling of 8 validates up to the new cap.
+
+    The regime pinned here is the ENTRY count PR-3b's choreography needs
+    (docs/flat-linearization-productization-plan.md § PR-3b: 21 entries at the
+    documented maxima) plus the retake budget that shares `max_attempts` — not
+    an arbitrary large number.
+    """
+    from dataclasses import replace
+
+    from jasper.capture_relay.spec import (
+        LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS,
+        MAX_CAPTURE_PLAN_ATTEMPTS,
+        CapturePlan,
+        CapturePlanEntry,
+    )
+
+    worst_case_entries = 21
+    assert worst_case_entries > LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
+    assert worst_case_entries <= MAX_CAPTURE_PLAN_ATTEMPTS
+    plan = CapturePlan(
+        capture_target=worst_case_entries,
+        max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS,
+        schema_version=2,
+        entries=tuple(
+            CapturePlanEntry(index=i, kind_label="cloud_measure", duration_ms=20_000)
+            for i in range(worst_case_entries)
+        ),
+    )
+    replace(_plan_spec(), capture_plan=plan).validate()
+
+    # Exactly at the cap is legal; one past it is refused.
+    at_cap = CapturePlan(
+        capture_target=1, max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS
+    )
+    replace(_plan_spec(), capture_plan=at_cap).validate()
+    over = CapturePlan(
+        capture_target=1, max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS + 1
+    )
+    with pytest.raises(CaptureSpecError, match="max_attempts must be <="):
+        replace(_plan_spec(), capture_plan=over).validate()
+
+
+def test_legacy_plan_ceiling_is_frozen_at_the_pre_capacity_worker_value():
+    """`LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS` describes a DEPLOYED artifact.
+
+    It is the ceiling a relay Worker published before `GET /capabilities`
+    existed, so it can never be bumped alongside the live cap — doing so would
+    make the Pi assume an un-updated relay could store indexes it will reject.
+    """
+    assert spec_mod.LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS == 8
+    assert spec_mod.LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS <= (
+        spec_mod.MAX_CAPTURE_PLAN_ATTEMPTS
+    )
+
+
+def test_max_capacity_plan_with_product_sized_prompt_copy_fits_the_worker_spec_cap():
+    """A full-capacity plan with PR-3b-sized prompt copy fits `MAX_SPEC_BYTES`.
+
+    The relay caps the OPAQUE spec at 64 KiB, which at 32 entries leaves ~2 KiB
+    of spec budget per entry — BELOW the per-entry
+    `MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES` ceiling of 4 KiB. So the cap raise
+    makes a `capture_spec_too_large` registration refusal newly reachable, and
+    the regime that must stay comfortable is the product one: a title + body +
+    auto-advance policy per entry, the shape `build_v2_capture_plan` already
+    emits. This pins that budget rather than the pathological one.
+    """
+    import json
+    from dataclasses import replace
+    from pathlib import Path
+
+    from jasper.capture_relay.spec import (
+        MAX_CAPTURE_PLAN_ATTEMPTS,
+        CapturePlan,
+        CapturePlanEntry,
+    )
+
+    worker_src = (
+        Path(__file__).resolve().parent.parent / "relay" / "src" / "worker.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"const MAX_SPEC_BYTES = ([0-9 *]+);", worker_src)
+    assert match is not None, "worker MAX_SPEC_BYTES not found"
+    max_spec_bytes = eval(match.group(1), {"__builtins__": {}})  # noqa: S307
+
+    # Copy at the upper end of what the shipped v2 entries carry (the longest
+    # live `body` is ~150 chars; allow generous headroom for a position prompt).
+    body = (
+        "Move the phone one hand-width to the LEFT of the last spot, keeping "
+        "it at about tweeter height, then tap Start. Stay quiet while JTS "
+        "measures — this one takes about twenty seconds."
+    )
+    entries = tuple(
+        CapturePlanEntry(
+            index=i,
+            kind_label="cloud_measure",
+            duration_ms=20_000,
+            screen={
+                "title": f"Position {i + 1} of {MAX_CAPTURE_PLAN_ATTEMPTS}",
+                "body": body,
+                "auto_advance": "tap",
+            },
+        )
+        for i in range(MAX_CAPTURE_PLAN_ATTEMPTS)
+    )
+    plan = CapturePlan(
+        capture_target=MAX_CAPTURE_PLAN_ATTEMPTS,
+        max_attempts=MAX_CAPTURE_PLAN_ATTEMPTS,
+        schema_version=2,
+        entries=entries,
+    )
+    spec = replace(_plan_spec(), capture_plan=plan)
+    spec.validate()
+    encoded = json.dumps(spec.to_dict(), separators=(",", ":")).encode("utf-8")
+    assert len(encoded) < max_spec_bytes, (
+        f"a full-capacity plan with product-sized prompt copy is "
+        f"{len(encoded)} B, over the relay's {max_spec_bytes} B opaque-spec cap"
+    )
 
 
 def test_capture_plan_from_dict_is_strict():

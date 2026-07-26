@@ -50,8 +50,16 @@ const MAX_SPEC_BYTES = 64 * 1024;
 // 0..MAX_CAPTURE_PLAN_ATTEMPTS-1 — the same value as the Pi-side plan attempt
 // cap, applied to indexes with a strict inequality. Keep in lockstep with
 // MAX_CAPTURE_PLAN_ATTEMPTS in jasper/capture_relay/spec.py (pinned by
-// tests/test_capture_relay_spec.py).
-const MAX_CAPTURE_PLAN_ATTEMPTS = 8;
+// tests/test_capture_relay_spec.py), which carries the full sizing rationale.
+//
+// Raised 8 → 32 for the multi-position capture choreography: 21 worst-case
+// plan captures plus an 11-attempt retake budget. This value is what
+// GET /capabilities advertises, and it is the whole reason that endpoint
+// exists — a Pi will not emit a plan larger than 8 until it has READ a
+// ceiling this large from the deployed Worker, so this Worker must be
+// deployed BEFORE the Pi that emits such plans (see relay/README.md
+// "Release order").
+const MAX_CAPTURE_PLAN_ATTEMPTS = 32;
 // Relay-control event envelopes carry setup/progress metadata: phone
 // {setup_validate:true, setup:{...}} / {armed:true, noise_floor:{...}} and host
 // {phase:"setup_validated"|"sweep_complete"}. They are not audio payloads; the
@@ -773,6 +781,30 @@ export async function handle(request, store, env) {
 
   if (parts.length === 1 && parts[0] === "healthz") {
     return new Response("ok", { status: 200, headers: cors });
+  }
+
+  // GET /capabilities — the relay's ONLY version surface, and deliberately a
+  // capability document rather than a build number: what a Pi needs to know
+  // before it commits an operator to a long capture choreography is how many
+  // blob indexes this deployment will actually store, not which commit it is.
+  // Unauthenticated and session-free, exactly like /healthz — it discloses one
+  // deployment constant that is already public in this repo.
+  //
+  // FAIL-CLOSED CONTRACT: a Worker deployed before this endpoint existed 404s
+  // here, and the Pi reads that 404 as "pre-capacity relay, ceiling 8" and
+  // REFUSES a larger plan at session setup. So this endpoint must never be
+  // removed, and `max_capture_plan_attempts` must never advertise more than
+  // parseCaptureIndex enforces — both are pinned by
+  // tests/js/relay_worker_test.mjs.
+  if (parts.length === 1 && parts[0] === "capabilities") {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405, cors);
+    }
+    return json(
+      { schema_version: 1, max_capture_plan_attempts: MAX_CAPTURE_PLAN_ATTEMPTS },
+      200,
+      cors,
+    );
   }
 
   return json({ error: "not_found" }, 404, cors);

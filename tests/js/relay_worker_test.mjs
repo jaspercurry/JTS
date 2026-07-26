@@ -892,6 +892,7 @@ const tests = [
   testCors,
   testIndexedBlobLifecycle,
   testIndexedBlobBadIndexRejected,
+  testCapabilitiesAdvertisesThePlanCeiling,
   testLegacyUploadKeepsPreIndexStatusShape,
   testDeleteAndExpiryPurgeIndexedBlobs,
   testV3HostEventPhasesRelayVerbatim,
@@ -1005,9 +1006,11 @@ async function testIndexedBlobBadIndexRejected() {
   const bytes = new Uint8Array([1, 2, 3]);
   // At/above the bound, negative, non-integer, junk: 400 on both directions,
   // so a hostile index can never mint an R2 key no attempt could ever be
-  // authorized for. "8" is the exact boundary: valid indexes are 0..7
-  // (capture_index = attempt - 1, attempt <= MAX_CAPTURE_PLAN_ATTEMPTS = 8).
-  for (const bad of ["8", "9", "-1", "1.5", "abc", "01"]) {
+  // authorized for. "32" is the exact boundary: valid indexes are 0..31
+  // (capture_index = attempt - 1, attempt <= MAX_CAPTURE_PLAN_ATTEMPTS = 32).
+  // The pre-raise boundary "8" is explicitly INSIDE the space now — this
+  // Worker must accept the indexes a widened plan will actually use.
+  for (const bad of ["32", "33", "-1", "1.5", "abc", "01"]) {
     const { res } = await putBlobAt(store, env, reg, bad, bytes);
     assert.equal(res.status, 400, `put index=${bad} rejected`);
     assert.equal((await res.json()).error, "bad_capture_index");
@@ -1020,10 +1023,55 @@ async function testIndexedBlobBadIndexRejected() {
     );
     assert.equal(getRes.status, 400, `get index=${bad} rejected`);
   }
-  // The last authorizable slot (attempt 8 → index 7) is accepted.
-  const { res: topRes } = await putBlobAt(store, env, reg, 7, bytes);
-  assert.equal(topRes.status, 200, "index 7 (attempt cap - 1) accepted");
+  // The last authorizable slot (attempt 32 → index 31) is accepted, and so is
+  // the first slot past the pre-raise ceiling (index 8) — the widened index
+  // space is what the multi-position capture choreography actually consumes.
+  for (const good of [8, 20, 31]) {
+    const { res: okRes } = await putBlobAt(store, env, reg, good, bytes);
+    assert.equal(okRes.status, 200, `index ${good} accepted`);
+    const getRes = await handle(
+      req("GET", `/sessions/${reg.session_id}/blob?index=${good}`, {
+        token: reg.pull_token,
+      }),
+      store,
+      env,
+    );
+    assert.equal(getRes.status, 200, `index ${good} pullable`);
+  }
   ok("bad capture index rejected");
+}
+
+async function testCapabilitiesAdvertisesThePlanCeiling() {
+  // The relay's ONLY version surface. A Pi refuses to emit a plan larger than
+  // the pre-raise ceiling of 8 unless it reads a large enough ceiling HERE, so
+  // this document is what makes the Worker-before-Pi release order safe: an
+  // un-updated Worker 404s and the Pi fails closed at session setup instead of
+  // stranding an operator on the ninth capture.
+  const store = makeMemoryStore();
+  const env = fixedEnv();
+  const res = await handle(req("GET", "/capabilities"), store, env);
+  assert.equal(res.status, 200);
+  const doc = await res.json();
+  assert.equal(doc.schema_version, 1);
+  assert.equal(typeof doc.max_capture_plan_attempts, "number");
+
+  // The advertised ceiling must be exactly what parseCaptureIndex enforces —
+  // advertising MORE would invite a Pi to authorize a slot this Worker then
+  // rejects mid-session, which is the whole failure this endpoint prevents.
+  const cap = doc.max_capture_plan_attempts;
+  const reg = registration();
+  await register(store, env, reg);
+  const bytes = new Uint8Array([1, 2, 3]);
+  const { res: lastOk } = await putBlobAt(store, env, reg, cap - 1, bytes);
+  assert.equal(lastOk.status, 200, "advertised ceiling - 1 is storable");
+  const { res: past } = await putBlobAt(store, env, reg, cap, bytes);
+  assert.equal(past.status, 400, "advertised ceiling itself is rejected");
+  assert.equal((await past.json()).error, "bad_capture_index");
+
+  // Unauthenticated and session-free, like /healthz — but GET only.
+  const post = await handle(req("POST", "/capabilities"), store, env);
+  assert.equal(post.status, 405);
+  ok("capabilities advertises the plan ceiling");
 }
 
 async function testLegacyUploadKeepsPreIndexStatusShape() {
