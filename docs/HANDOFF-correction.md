@@ -19,7 +19,10 @@
   2026-07-19).** The `/correction/crossover/` measurement + tuning flow is
   the conductor flow (CHECK → MEASURE → the pre-apply position group →
   automatic APPLYING → VERIFY → the post-apply position group): a guided
-  spatial cloud of 16 captures at the shipped defaults, around one mark. Its canonical operational truth — how to run it, the file
+  spatial cloud, 16 captures at the Full tier's shipped defaults or 7 on
+  the Express tier (flow-simplification PR-U1, both first-class in the
+  wizard's tier chooser), around one mark. Its canonical operational
+  truth — how to run it, the file
   map, invariants, failure taxonomy, session-state paths, and the W6 bug
   catalog — lives in
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
@@ -1877,7 +1880,10 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
 POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
                              open ONE relay session spanning CHECK→MEASURE→the
                              pre-apply cloud→VERIFY→the post-apply cloud
-                             (16-entry capture plan at the shipped defaults)
+                             (16-entry capture plan at the Full tier's shipped
+                             defaults, 7 on Express — an allowlisted `tier`
+                             body field, flow-simplification PR-U1; absent =
+                             Full)
 POST /crossover/v2/verify    v2 conductor: re-arm a verify-only relay session after
                              apply (§5.2 re-verify)
 POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
@@ -3185,7 +3191,12 @@ Internal:
 
 ---
 
-Last verified: 2026-07-19 (v2 calibration handoff page-side fix, W6.13 — see
+Last verified: 2026-07-27 (flow-simplification PR-U3 — the Status bullet's
+"16 captures" claim and the `POST /crossover/v2/session` endpoint-table entry
+now name both tiers; the tier chooser itself lives on the wizard's
+`microphone_check` screen, not documented page-by-page here — see
+[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)).
+Prior 2026-07-19 (v2 calibration handoff page-side fix, W6.13 — see
 the new Status bullet above: `setup` now piggybacks on every
 `begin_capture` post so the household-mic hint reaches
 `resolve_relay_calibration` from the CHECK-phase capture onward, and the

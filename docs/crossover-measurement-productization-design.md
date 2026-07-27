@@ -197,7 +197,9 @@ adds phase — the high-credibility view for a crossover product).
 > "~2–3 minutes / ~3 phone taps" user-cost line, and the "only the first
 > capture of a session requires a tap" claim — described the flow until the
 > spatial cloud replaced it. The session now walks a guided cloud of 16
-> captures at the shipped defaults around ONE MARK: the mark is still ~1 m
+> captures at the Full tier's shipped defaults (or 7 on the Express tier —
+> flow-simplification PR-U1/PR-U3 — the household's explicit choice on the
+> wizard's tier chooser) around ONE MARK: the mark is still ~1 m
 > on the listening axis and the parallax budget below still governs it,
 > but the mic moves between captures and each prompted position takes its
 > own tap. The reasoning preserved here is why v2 collapsed the

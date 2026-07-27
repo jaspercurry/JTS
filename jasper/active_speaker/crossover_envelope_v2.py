@@ -53,6 +53,9 @@ from .crossover_v2_flow import (
     TEMPLATE_SESSION_RESTART,
     TEMPLATE_SILENT_AUTO_RETRY,
     TEMPLATE_VERIFY_FAIL,
+    TIER_EXPRESS,
+    TIER_FULL,
+    tier_display_info,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,7 +89,9 @@ _STEP_LABELS = {
 # "verifying" — the cloud changed how many captures each step takes, not what
 # the household is doing. Adding steps would have made the journey read as
 # longer without telling anyone anything new; the phone's own per-entry screens
-# ("Spot 4 of 8") carry the within-step progress.
+# carry the within-step progress — "Measurement N of T" (the whole-session
+# counter, server-derived; flow-simplification §2.1 retired the older,
+# per-group "Spot i of n" vocabulary this comment used to name).
 _PHASE_STEP = {
     PHASE_CHECK: "microphone_check",
     PHASE_MEASURE: "measure",
@@ -490,6 +495,60 @@ def _setup_ready(status: Mapping[str, Any]) -> bool:
     return setup.get("active") is True and setup.get("status") == "ready"
 
 
+# --- tier chooser (flow-simplification §3) ------------------------------------
+
+_TIER_LABELS = {TIER_FULL: "Full measurement", TIER_EXPRESS: "Quick tune"}
+_TIER_CLAIMS = {
+    TIER_FULL: "re-checks the result across the room",
+    TIER_EXPRESS: "confirms the result at the mark",
+}
+
+
+def _recommended_tier(status: Mapping[str, Any]) -> str:
+    """Full on a first-ever commission for this topology, Quick on a re-tune
+    (flow-simplification §3 — the choice is always the household's; history
+    decides only which option carries the Recommended badge).
+
+    ``_applied_chip``'s ``"automatic"`` state is EXACTLY "an automatic
+    (v2-measured) crossover is currently valid for this topology" —
+    ``crossover_snapshot_state`` (the contract behind ``applied_crossover``)
+    is topology-scoped, refusing as ``active_applied_profile_snapshot_topology_stale``
+    the moment the topology changes — so this reuses an existing signal
+    rather than inventing new persisted state.
+    """
+    return TIER_EXPRESS if _applied_chip(status)["state"] == "automatic" else TIER_FULL
+
+
+def _tier_action(tier: str, *, recommended: bool) -> dict[str, Any]:
+    info = tier_display_info()[tier]
+    return {
+        "id": f"start_v2_session_{tier}",
+        "label": _TIER_LABELS[tier],
+        # One-line claims difference (§1.3/§3), derived from the plan shape —
+        # never a hand-written prettier figure (§1.1).
+        "description": (
+            f"About {info['estimated_minutes']} min — {info['capture_target']} "
+            f"measurements; {_TIER_CLAIMS[tier]}."
+        ),
+        "recommended": recommended,
+        "endpoint": "/correction/crossover/v2/session",
+        "body": {"tier": tier},
+    }
+
+
+def _tier_choice_actions(
+    status: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The microphone_check screen's tier chooser: both tiers first-class,
+    the recommended one primary — never a silent default (§3)."""
+    recommended = _recommended_tier(status)
+    other = TIER_FULL if recommended == TIER_EXPRESS else TIER_EXPRESS
+    return (
+        _tier_action(recommended, recommended=True),
+        [_tier_action(other, recommended=False)],
+    )
+
+
 def _envelope(
     *,
     screen: str,
@@ -544,6 +603,18 @@ def _envelope(
         # size mitigation). ``None`` before any cloud group has closed, same
         # rule as ``cloud``.
         "cloud_chart": _v2(status).get("cloud_chart"),
+        # Flow-simplification PR-U3: which commission instrument produced (or
+        # is producing) this session — ``None`` when the durable state does
+        # not say (pre-tier state, or no session yet). The chart module reads
+        # this to tell "the post-apply cloud hasn't measured yet" (full, still
+        # walking) apart from "there is no post-apply cloud coming" (express,
+        # M=1) — the same unknown-vs-default rule as ``crossover_v2_status_block``'s
+        # own ``tier`` key, copied through rather than re-derived.
+        "tier": (
+            str(_v2(status).get("tier"))
+            if isinstance(_v2(status).get("tier"), str) and _v2(status).get("tier")
+            else None
+        ),
     }
 
 
@@ -841,6 +912,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         return env
 
     if phase == PHASE_CHECK:
+        next_action, alternate_actions = _tier_choice_actions(status)
         env = _envelope(
             screen="microphone_check", active_step="microphone_check",
             # The journey-opening promise. Before the spatial cloud this said
@@ -849,20 +921,22 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             # which is the worst place for it. The mark is still where the
             # session starts and returns to; the moving is now named up front
             # rather than sprung on them at the third capture.
+            #
+            # Flow-simplification §3: the tier choice is the household's,
+            # explicitly, every session — the two actions below are BOTH
+            # first-class (never a silent default); which one is primary is
+            # only history's Recommended badge (_tier_choice_actions).
             verdict=(
                 "Place the microphone about 1 m in front of the speaker, at "
                 "tweeter height and pointing at it — about where you'd sit to "
                 "listen (see the picture). That spot is your mark. JTS runs a "
                 "quick microphone check first, then measures from the mark and "
                 "from a few nearby spots your phone will guide you to — that "
-                "is what lets it tell the speaker apart from the room."
+                "is what lets it tell the speaker apart from the room. Choose "
+                "how thorough a measurement to run below."
             ),
-            next_action={
-                "id": "start_v2_session",
-                "label": "Start measurement",
-                "endpoint": "/correction/crossover/v2/session",
-                "body": {},
-            },
+            next_action=next_action,
+            alternate_actions=alternate_actions,
             status=status,
         )
     elif phase == PHASE_MEASURE:
@@ -904,12 +978,21 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
     elif phase == PHASE_VERIFY:
+        verdict = (
+            "The crossover is applied. Put the microphone back where it "
+            "started and follow your phone to confirm the result"
+        )
+        # Express (M=1) has no post-apply cloud — this anchor is the WHOLE
+        # post-apply check, not the first of several (§1.3 degraded-claims
+        # table). Full says nothing extra here: its cloud walk follows.
+        verdict += (
+            " — this quick tune's only check, at the mark."
+            if str(v2.get("tier") or "") == TIER_EXPRESS
+            else "."
+        )
         env = _envelope(
             screen="verify", active_step="verify",
-            verdict=(
-                "The crossover is applied. Put the microphone back where it "
-                "started and follow your phone to confirm the result."
-            ),
+            verdict=verdict,
             next_action=None,
             status=status,
         )
@@ -932,25 +1015,42 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # thing on the screen, not an afterthought behind an "expert" toggle.
         verify = _mapping(v2.get("verify"))
         candidate = _mapping(v2.get("candidate"))
+        is_express = str(v2.get("tier") or "") == TIER_EXPRESS
+        # Express disclosure (flow-simplification §1.3): the household is
+        # told exactly what was verified ("confirmed at the mark") and named
+        # the upgrade path — never a claim wider than what express measured
+        # (no cross-position post-apply check exists for this tier).
+        done_verdict = (
+            "Your speaker is tuned and confirmed at the mark. If it sounds "
+            "worse than before, you can undo. Run a Full measurement for "
+            "the verified-everywhere result."
+            if is_express
+            else "Your speaker is tuned. If it sounds worse than before, you can undo."
+        )
+        alternate_actions = [
+            {
+                "id": "room",
+                "label": "Continue to Room correction",
+                "href": "/correction/room/",
+            },
+        ]
+        if is_express:
+            alternate_actions.append({
+                "id": "run_full_measurement",
+                "label": "Run a Full measurement",
+                "endpoint": "/correction/crossover/v2/session",
+                "body": {"tier": TIER_FULL},
+            })
         env = _envelope(
             screen="done", active_step="verify",
-            verdict=(
-                "Your speaker is tuned. If it sounds worse than before, you "
-                "can undo."
-            ),
+            verdict=done_verdict,
             next_action={
                 "id": "verify_undo",
                 "label": "Undo (restore previous sound)",
                 "endpoint": "/correction/crossover/v2/restore",
                 "body": {},
             },
-            alternate_actions=[
-                {
-                    "id": "room",
-                    "label": "Continue to Room correction",
-                    "href": "/correction/room/",
-                },
-            ],
+            alternate_actions=alternate_actions,
             nudges=(
                 [{"code": "crossover_v2_verified", "severity": "ok", "text": "Verified."}]
                 if verify.get("outcome") == "pass" else []
@@ -970,15 +1070,12 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env["steps"] = _step_payload("", set(_STEP_IDS))
         env["progress"] = {"position": len(_STEP_IDS), "total": len(_STEP_IDS)}
     else:
+        next_action, alternate_actions = _tier_choice_actions(status)
         env = _envelope(
             screen="microphone_check", active_step="microphone_check",
-            verdict="Start the measurement on your phone.",
-            next_action={
-                "id": "start_v2_session",
-                "label": "Start measurement",
-                "endpoint": "/correction/crossover/v2/session",
-                "body": {},
-            },
+            verdict="Choose how thorough a measurement to run below.",
+            next_action=next_action,
+            alternate_actions=alternate_actions,
             status=status,
         )
 

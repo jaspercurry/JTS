@@ -456,4 +456,86 @@ check(
   "(g) click-swallowing: runAction ran to completion and the row re-enabled",
 );
 
+// --- (h) tier chooser: description + Recommended badge (flow-simplification
+// PR-U3) render via the shared `.measurement-row` shape, and every OTHER
+// action (every scenario above — none carries `description`) renders as a
+// bare button/link, unchanged. -------------------------------------------
+const recommendedTierAction = {
+  id: "start_v2_session_full",
+  label: "Full measurement",
+  description: "About 11 min — 16 measurements; re-checks the result across the room.",
+  recommended: true,
+  endpoint: "/correction/crossover/v2/session",
+  body: { tier: "full" },
+};
+const otherTierAction = {
+  id: "start_v2_session_express",
+  label: "Quick tune",
+  description: "About 5 min — 7 measurements; confirms the result at the mark.",
+  recommended: false,
+  endpoint: "/correction/crossover/v2/session",
+  body: { tier: "express" },
+};
+render({
+  verdict_text: "Choose how thorough a measurement to run below.",
+  steps: [],
+  nudges: [],
+  relay: null,
+  next_action: recommendedTierAction,
+  alternate_actions: [otherTierAction],
+});
+const tierRows = actionRowChildren();
+check(tierRows.length === 2, "(h) tier chooser: two rows render, one per tier");
+const [primaryRow, otherRow] = tierRows;
+check(
+  primaryRow.className === "measurement-row" && otherRow.className === "measurement-row",
+  "(h) tier chooser: both wrap in the shared measurement-row shape (description present)",
+);
+const [primaryText, primaryButton] = primaryRow.children;
+const [primaryTitle, primaryMeta] = primaryText.children;
+check(
+  primaryTitle.className === "measurement-row__title",
+  "(h) tier chooser: the title paragraph uses the shared title class",
+);
+check(
+  primaryTitle.textContent === "Full measurement",
+  "(h) tier chooser: the title text is the action's label",
+);
+check(
+  primaryTitle.children.length === 1 && primaryTitle.children[0].className === "badge"
+    && primaryTitle.children[0].textContent === "Recommended",
+  "(h) tier chooser: the recommended action's title carries a Recommended badge",
+);
+check(
+  primaryMeta.className === "measurement-row__meta" && primaryMeta.textContent === recommendedTierAction.description,
+  "(h) tier chooser: the meta line is the action's one-line claims description, verbatim",
+);
+check(
+  String(primaryButton.className).includes("btn--primary"),
+  "(h) tier chooser: the recommended action's own button stays the primary control",
+);
+const [otherText] = otherRow.children;
+const [otherTitle] = otherText.children;
+check(
+  otherTitle.children.length === 0,
+  "(h) tier chooser: the non-recommended action's title carries no badge",
+);
+check(!relayLinkVisible(), "(h) tier chooser: no relay in flight, nothing to hide");
+
+// Every earlier scenario's actions had no `description` — confirm those
+// still render as bare buttons (no measurement-row wrapper introduced by
+// this change).
+render({
+  verdict_text: "Ready",
+  steps: [],
+  nudges: [],
+  relay: null,
+  next_action: nextAction,
+  alternate_actions: [],
+});
+check(
+  actionRowChildren()[0].className !== "measurement-row",
+  "(h) tier chooser: an action with no description still renders as a bare control",
+);
+
 console.log(JSON.stringify({ ok: true, passed }));

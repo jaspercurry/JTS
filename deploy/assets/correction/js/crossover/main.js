@@ -241,6 +241,32 @@ function renderCandidateReview(review) {
   );
 }
 
+// Wraps a rendered action `control` (button/link) in the shared
+// `.measurement-row` title/meta shape when the action carries a
+// `description` — a one-line claim, so far only the microphone_check
+// screen's tier chooser (flow-simplification PR-U3, crossover_envelope_v2.py's
+// `_tier_choice_actions`). Every other action on every other screen (Try
+// again, Undo, Re-measure, Continue, ...) has no `description` and this
+// returns `control` untouched — no other screen's markup changes. Reuses the
+// existing `.measurement-row`/`.measurement-row__title`/`.measurement-row__meta`
+// classes (the candidate-review rows already use them) and the shared
+// `.badge` pill (app.css) for "Recommended" — no new CSS.
+function wrapChoice(action, control) {
+  if (!action.description) return control;
+  const title = el(
+    'p',
+    {class: 'measurement-row__title', text: action.label || 'Continue'},
+    action.recommended ? [el('span', {class: 'badge', text: 'Recommended'})] : [],
+  );
+  return el('div', {class: 'measurement-row'}, [
+    el('div', {}, [
+      title,
+      el('p', {class: 'measurement-row__meta', text: action.description}),
+    ]),
+    control,
+  ]);
+}
+
 function renderActions(primary, alternates = []) {
   els.action.replaceChildren();
   const actions = [primary, ...(Array.isArray(alternates) ? alternates : [])]
@@ -248,11 +274,11 @@ function renderActions(primary, alternates = []) {
   actions.forEach((action, index) => {
     const className = index === 0 ? 'btn btn--primary' : 'btn btn--ghost';
     if (action.href) {
-      els.action.append(el('a', {
+      els.action.append(wrapChoice(action, el('a', {
         class: className,
         href: action.href,
         text: action.label || 'Continue',
-      }));
+      })));
       return;
     }
     const fields = Array.isArray(action.fields) ? action.fields : [];
@@ -264,7 +290,7 @@ function renderActions(primary, alternates = []) {
         text: action.label || 'Continue',
       });
       button.addEventListener('click', () => runAction(action, button));
-      els.action.append(button);
+      els.action.append(wrapChoice(action, button));
       return;
     }
     const form = el('form', {class: 'action-form'});

@@ -67,6 +67,25 @@ reference and the deviation metric:
 > mechanics are the work order's PR-6
 > ([`flat-linearization-productization-plan.md`](flat-linearization-productization-plan.md)),
 > shipped as the per-band carve-out disclosure in PR-6b.
+>
+> **New-horn pointer (2026-07-27, exploratory) — read as history, not a
+> contradiction.** The owner's new horn, measured on JTS3, removed the deep
+> 8–16 kHz comb this section documents: the first real cloud session under
+> the flow-simplification instrument (session `cap_4NUGqx3yIzSuv4ta2ozfKw`,
+> bundle `d5b171fa81a5`) read every null depth ≤ 1.6 dB — below the 2.5 dB
+> materiality floor, registry honestly empty — against this section's
+> 5.4–7.0 dB source-fixed figure above. That session ran with an
+> uncalibrated echo-analysis band (issue #1763, fixed by PR #1764 before
+> the flow-simplification ladder), so the 1.6 dB figure is **exploratory,
+> pending the confirmatory calibrated session** — and it is a
+> **single-speaker hardware fact about the new horn**, not a revision of
+> this section's 5.4–7.0 dB figure for the old one. The comb, the carve-out
+> policy, and the ±2.5 dB 8–16 kHz row above remain canon for any speaker
+> whose horn or baffle still combs. See
+> [`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
+> §0 for the full context — including why a comb-free source is the
+> premise that makes a smaller Express cloud honest, which does not touch
+> this doc's spec or instrument.
 
 Rationale, briefly: run 7's single-point 2–7 kHz spread at 1/3-oct was
 2.6 dB total (fits ±1.5 only about a band-local center; 3.3 dB at 1/6-oct)
@@ -910,4 +929,6 @@ JASA 1955 (sinc(kr) correlation); Müller & Massarani, JAES 2001;
 ANSI/CTA-2034; Devantier AES 5638; Olive AES 6113/6190 + US 8,311,232;
 Toole, *Sound Reproduction* 3rd ed.
 
-Last verified: 2026-07-25
+Last verified: 2026-07-27 (flow-simplification PR-U3 — added the dated
+new-horn pointer note above; the 5.4–7.0 dB comb figures and the carve-out
+policy are otherwise unchanged)

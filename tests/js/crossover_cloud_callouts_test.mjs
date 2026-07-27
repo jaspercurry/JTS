@@ -299,4 +299,57 @@ renderCloud(els, {
 });
 check(els.cloudProvenance.hidden === true, "an empty provenance note (current or unknown session) stays silent");
 
+// --- express (M=1, flow-simplification §1.3): no post-apply cloud EVER,
+// not merely "not yet" — the pending caption must not promise a curve that
+// will never appear. ---------------------------------------------------
+renderCloud(els, {
+  cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+  },
+  tier: "express",
+});
+check(els.cloud.hidden === false, "express, measure-only: section is visible (something was measured)");
+check(els.cloudPending.hidden === false, "express, measure-only: a caption is shown");
+check(
+  els.cloudPending.textContent !==
+    "The after-correction curve appears once the second measurement pass finishes.",
+  "express must not reuse the full-tier 'second pass' wording — there is no second pass",
+);
+check(
+  els.cloudPending.textContent.includes("no after-correction curve"),
+  "express says plainly there is no after-correction curve for this measurement",
+);
+check(
+  els.cloudPending.textContent.includes("Full measurement"),
+  "express names the Full-measurement upgrade path",
+);
+
+// A full-tier (or tier-unknown, e.g. pre-tier durable state) session mid-
+// cloud keeps the ordinary "still coming" wording — unchanged by this fix.
+renderCloud(els, {
+  cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+  },
+  tier: "full",
+});
+check(
+  els.cloudPending.textContent ===
+    "The after-correction curve appears once the second measurement pass finishes.",
+  "full tier keeps the ordinary 'still coming' wording",
+);
+renderCloud(els, {
+  cloud: { [CLOUD_MEASURE]: { reference_db: -27.3 } },
+  cloud_chart: {
+    [CLOUD_MEASURE]: { curve: { freqs_hz: [300, 1000], magnitude_db: [-26, -28] } },
+  },
+  tier: null,
+});
+check(
+  els.cloudPending.textContent ===
+    "The after-correction curve appears once the second measurement pass finishes.",
+  "tier-unknown (pre-tier durable state) keeps the ordinary 'still coming' wording, not the express one",
+);
+
 console.log(JSON.stringify({ ok: true, passed }));

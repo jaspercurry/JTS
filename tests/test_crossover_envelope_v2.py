@@ -108,7 +108,10 @@ def test_setup_not_ready_blocks_before_any_capture():
 def test_check_phase_screen():
     env = build_crossover_envelope_v2(_status(phase="check"))
     assert env["screen"] == "microphone_check"
-    assert env["next_action"]["id"] == "start_v2_session"
+    # Flow-simplification §3: on a fresh topology (no applied_crossover),
+    # Full is the recommended (primary) tier — the first-ever-commission
+    # case, never a silent express default.
+    assert env["next_action"]["id"] == "start_v2_session_full"
     statuses = _step_statuses(env)
     assert statuses["speaker_setup"] == "done"
     assert statuses["microphone_check"] == "active"
@@ -129,6 +132,92 @@ def test_check_phase_screen():
     assert "mark" in verdict
     assert "guide you to" in verdict
     assert "whole measurement" not in verdict
+
+
+# --- tier chooser (flow-simplification §3) --------------------------------------
+
+
+def test_check_phase_offers_both_tiers_first_class():
+    """Both tiers render every session — never a silent default. The choice
+    posts ``{tier}`` to the same session-start endpoint the old single
+    "Start measurement" button used."""
+    env = build_crossover_envelope_v2(_status(phase="check"))
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    assert set(actions) == {"start_v2_session_full", "start_v2_session_express"}
+    for action_id, tier in (
+        ("start_v2_session_full", "full"),
+        ("start_v2_session_express", "express"),
+    ):
+        action = actions[action_id]
+        assert action["endpoint"] == "/correction/crossover/v2/session"
+        assert action["body"] == {"tier": tier}
+
+
+def test_check_phase_tier_durations_and_counts_are_derived_not_hand_written():
+    """§1.1: the displayed minutes/counts must come from
+    ``tier_display_info`` (built from the two plan shapes), never a
+    hand-written prettier figure."""
+    from jasper.active_speaker.crossover_v2_flow import tier_display_info
+
+    info = tier_display_info()
+    env = build_crossover_envelope_v2(_status(phase="check"))
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    full = actions["start_v2_session_full"]
+    express = actions["start_v2_session_express"]
+    assert str(info["full"]["estimated_minutes"]) in full["description"]
+    assert str(info["full"]["capture_target"]) in full["description"]
+    assert str(info["express"]["estimated_minutes"]) in express["description"]
+    assert str(info["express"]["capture_target"]) in express["description"]
+    # The one-line claims difference (§1.3): express confirms at the mark,
+    # full re-checks across the room.
+    assert "confirms the result at the mark" in express["description"]
+    assert "re-checks the result across the room" in full["description"]
+
+
+def test_check_phase_recommends_full_on_a_first_commission():
+    """No applied_crossover at all — never measured before on this topology
+    — recommends Full (§3)."""
+    env = build_crossover_envelope_v2(_status(phase="check"))
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    assert actions["start_v2_session_full"]["recommended"] is True
+    assert actions["start_v2_session_express"]["recommended"] is False
+    assert env["next_action"]["id"] == "start_v2_session_full"
+
+
+def test_check_phase_recommends_quick_on_a_retune():
+    """An automatic crossover already valid for THIS topology
+    (``applied_crossover.owner == "automatic"``) is exactly a prior v2
+    commission — a re-tune — so Quick tune is recommended (§3)."""
+    status = {
+        "active": True,
+        "setup": {
+            "active": True,
+            "status": "ready",
+            "applied_crossover": {"valid": True, "owner": "automatic"},
+        },
+        "crossover_v2": {"phase": "check"},
+    }
+    env = build_crossover_envelope_v2(status)
+    actions = {a["id"]: a for a in [env["next_action"], *env["alternate_actions"]]}
+    assert actions["start_v2_session_express"]["recommended"] is True
+    assert actions["start_v2_session_full"]["recommended"] is False
+    assert env["next_action"]["id"] == "start_v2_session_express"
+
+
+def test_check_phase_manual_applied_still_recommends_full():
+    """A manually-authored applied crossover (never run through the guided
+    v2 flow) is NOT a prior automatic commission — still recommend Full."""
+    status = {
+        "active": True,
+        "setup": {
+            "active": True,
+            "status": "ready",
+            "applied_crossover": {"valid": True, "owner": "manual"},
+        },
+        "crossover_v2": {"phase": "check"},
+    }
+    env = build_crossover_envelope_v2(status)
+    assert env["next_action"]["id"] == "start_v2_session_full"
 
 
 def test_measure_phase_is_phone_driven():
@@ -259,6 +348,19 @@ def test_verify_phase_screen():
     assert env["screen"] == "verify"
     assert env["next_action"] is None
     assert _step_statuses(env)["verify"] == "active"
+    # Full's VERIFY anchor is followed by the post-apply cloud — no
+    # express-only disclosure here.
+    assert "only check" not in env["verdict_text"].lower()
+
+
+def test_verify_phase_express_discloses_its_the_only_check():
+    """Express (M=1) has no post-apply cloud — this VERIFY anchor is the
+    WHOLE post-apply check, not the first of several (flow-simplification
+    §1.3 degraded-claims table)."""
+    env = build_crossover_envelope_v2(_status(phase="verify", tier="express"))
+    assert env["screen"] == "verify"
+    assert "only check" in env["verdict_text"].lower()
+    assert "at the mark" in env["verdict_text"].lower()
 
 
 # --- done / RESULT screen (owner ruling, 2026-07-20) ----------------------------
@@ -288,6 +390,46 @@ def test_done_gives_undo_the_primary_action_and_continue_as_alternate():
     assert action["endpoint"] == "/correction/crossover/v2/restore"
     alternates = {a["id"]: a for a in env["alternate_actions"]}
     assert alternates["room"]["href"] == "/correction/room/"
+    assert "run_full_measurement" not in alternates
+
+
+def test_done_express_discloses_the_degraded_claim_and_the_upgrade_path():
+    """Flow-simplification §1.3: express's done screen states plainly what
+    was verified ("confirmed at the mark") and names the Full upgrade path
+    — never a claim wider than what express measured."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="express",
+        verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert env["screen"] == "done"
+    verdict = env["verdict_text"].lower()
+    assert "confirmed at the mark" in verdict
+    assert "full measurement" in verdict
+    assert env["tier"] == "express"
+    # Undo stays the primary action (owner ruling) even on the express path.
+    assert env["next_action"]["id"] == "verify_undo"
+    alternates = {a["id"]: a for a in env["alternate_actions"]}
+    assert alternates["room"]["href"] == "/correction/room/"
+    upgrade = alternates["run_full_measurement"]
+    assert upgrade["endpoint"] == "/correction/crossover/v2/session"
+    assert upgrade["body"] == {"tier": "full"}
+
+
+def test_done_full_tier_has_no_upgrade_action_and_reports_its_own_tier():
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="full",
+        verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    alternates = {a["id"]: a for a in env["alternate_actions"]}
+    assert "run_full_measurement" not in alternates
+    assert env["tier"] == "full"
+
+
+def test_envelope_tier_key_is_none_when_the_state_does_not_say():
+    """Pre-tier durable state (or no session yet) reports ``None`` — never a
+    guessed default (mirrors ``crossover_v2_status_block``'s own rule)."""
+    env = build_crossover_envelope_v2(_status(phase="measure"))
+    assert env["tier"] is None
 
 
 def test_done_candidate_review_carries_the_measured_numbers():

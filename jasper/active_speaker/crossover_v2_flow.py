@@ -92,6 +92,7 @@ from jasper.active_speaker.linearization_fit import (
     complex_correction_response,
     fit_driver_linearization,
 )
+from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
@@ -5641,7 +5642,8 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     than it might have. The restore ladder ("exact" then the -60 dBFS emergency
     floor) and the restore-once latch are untouched.
 
-    At the shipped 16-entry cloud this is 1800 + 13*120 = 3360 s; at the
+    At the Full tier's shipped 16-entry cloud this is 1800 + 13*120 = 3360 s;
+    at the Express tier's 7-entry cloud, 1800 + 4*120 = 2280 s; at the
     19-entry maximum the unclamped value would be 3720 s and the plan's hard
     cap binds at 3600 s.
     """
@@ -5663,6 +5665,52 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
 # to spare. See ``session_wall_clock_ceiling_s`` for why it is generous and
 # what it is NOT (a measurement).
 WALL_CLOCK_CEILING_PER_ENTRY_S = 120.0
+
+# A fixed, representative 2-way RoleBand pair for :func:`tier_display_info`
+# ONLY — never the household's actual excitation ceilings/topology. See that
+# function's docstring for why a representative pair is honest here.
+_DISPLAY_ROLES_BANDS = (
+    RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+    RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
+)
+_DISPLAY_FC_HZ = 1600.0
+
+
+def tier_display_info() -> dict[str, dict[str, int]]:
+    """Per-tier ``{capture_target, estimated_minutes}`` for the wizard's
+    pre-session tier chooser (flow-simplification §1.1/§3).
+
+    The chooser must show the SAME derived duration a live session's own
+    capture plan would display, never a hand-written prettier figure
+    (§1.1). But at chooser time no session exists yet, and resolving the
+    household's REAL excitation ceilings/topology
+    (:func:`~jasper.web.correction_crossover_v2.resolve_conductor_context`)
+    is refuse-if-not-ready and can regenerate the crossover preview file as
+    a side effect — wrong for a value this module computes on every ~1.5 s
+    poll of the ``microphone_check`` screen, which must render the chooser
+    regardless of whether that heavier resolution would currently succeed.
+
+    A fixed representative :class:`RoleBand` pair is honest here because
+    :func:`~jasper.audio_measurement.program.build_measure_program`'s own
+    docstring: MEASURE/VERIFY sweep durations are constants keyed by ROLE
+    NAME (``DEFAULT_WOOFER_SWEEP_S`` / ``DEFAULT_TWEETER_SWEEP_S``), not by
+    the swept band's edges or ``fc_hz`` — so any valid 2-way ``RoleBand``
+    pair reproduces the same displayed minutes any real commission on this
+    household's speaker would show. ``capture_target`` needs no audio
+    program at all — it is pure arithmetic on the resolved
+    :class:`V2PlanShape`.
+    """
+    out: dict[str, dict[str, int]] = {}
+    for tier in TIERS:
+        shape = resolve_plan_shape(tier)
+        plan = build_v2_capture_plan(
+            _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
+        )
+        out[tier] = {
+            "capture_target": shape.capture_target,
+            "estimated_minutes": plan.estimated_minutes(),
+        }
+    return out
 
 
 def build_v2_session_spec(
@@ -5910,6 +5958,7 @@ __all__ = [
     "express_cloud_measure_positions",
     "normalize_tier",
     "resolve_plan_shape",
+    "tier_display_info",
     "capture_progress_label",
     "REVERIFY_NO_REWALK_HEADLINE",
     "PhaseVerdict",

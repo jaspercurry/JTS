@@ -188,8 +188,11 @@ only when asked, holds still during sweeps — so
 keeps deriving its capture count from `plan.capture_target` (7). The
 consent screen gains one tier-derived line (quick tune vs full, with the
 derived duration) so the user knows which instrument they are consenting
-to. The stationary 1-entry re-verify copy stays byte-identical
-(`guided_captures = 0` path).
+to. (Review finding N6: an earlier draft of this section claimed the
+stationary 1-entry re-verify's consent copy "stays byte-identical" —
+false against §2.4's own "no re-walk" copy change to that exact screen;
+retired here rather than left standing next to the section that
+supersedes it. See §2.4 for what changes and why.)
 
 ---
 

@@ -20,6 +20,7 @@ import { drawCloudChart } from './chart.js';
 
 const PHASE_CLOUD_MEASURE = 'cloud_measure';
 const PHASE_CLOUD_VERIFY = 'cloud_verify';
+const TIER_EXPRESS = 'express';
 
 // The plain-language, hardware-blind caption shown while only the pre-
 // correction curve exists. A client literal (not server-owned copy): it is
@@ -28,6 +29,17 @@ const PHASE_CLOUD_VERIFY = 'cloud_verify';
 // measured number, no promise about timing.
 const VERIFY_PENDING_TEXT =
   'The after-correction curve appears once the second measurement pass finishes.';
+
+// Express (M=1, flow-simplification §1.3) has NO post-apply cloud, ever —
+// unlike full mid-session, there is no second pass coming. Reusing
+// VERIFY_PENDING_TEXT here would promise a curve that will never appear
+// (an honesty bug this module must not have): distinguished by `env.tier`,
+// which the envelope copies through from the durable state
+// (crossover_envelope_v2.py's own "tier" key).
+const EXPRESS_NO_AFTER_CURVE_TEXT =
+  'This quick tune confirms the result at the mark only — there is no ' +
+  'after-correction curve for this measurement. Run a Full measurement to ' +
+  'see one.';
 
 // The last chart draw ATTEMPTED (not necessarily successfully rendered —
 // review N-2), so a window resize can redraw without waiting for the next
@@ -133,7 +145,7 @@ function renderCallouts(container, verify) {
 // series (and a chart with three of them simply missing) would read as
 // broken rather than in-progress. Each swatch is shown only once its own
 // series is actually on the canvas.
-function updateLegend(els, payload) {
+function updateLegend(els, payload, tier) {
   const hasMeasure = Boolean(payload.measureCurve);
   const hasVerify = Boolean(payload.verifyCurve);
   const hasCorridor = payload.specBands.length > 0;
@@ -143,7 +155,11 @@ function updateLegend(els, payload) {
   els.legendCorridor.hidden = !hasCorridor;
   els.legendExcluded.hidden = !hasExcluded;
   els.cloudPending.hidden = hasVerify;
-  if (!hasVerify) els.cloudPending.textContent = VERIFY_PENDING_TEXT;
+  if (!hasVerify) {
+    els.cloudPending.textContent = tier === TIER_EXPRESS
+      ? EXPRESS_NO_AFTER_CURVE_TEXT
+      : VERIFY_PENDING_TEXT;
+  }
 }
 
 // Renders the section into `els` (the caller's DOM refs — see main.js) from
@@ -172,7 +188,7 @@ export function renderCloud(els, env) {
   els.cloudGeometry.textContent = guidance;
   els.cloudGeometry.hidden = !guidance;
 
-  updateLegend(els, payload);
+  updateLegend(els, payload, env && env.tier);
   renderCallouts(els.cloudCallouts, verify);
 
   lastChart = { canvas: els.cloudChart, payload };
