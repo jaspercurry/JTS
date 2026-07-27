@@ -763,24 +763,38 @@ def read_grouping_state(
 # are in different daemons and exchange JSON over HTTP. The C4 regression
 # (2026-06-09) was exactly this contract drifting: the producer nested the
 # snapshot under a "grouping" key while the consumer read bond_id at the top
-# level, so /unbond matched no real peer. Both sides now go through the two
-# functions below, which share GROUPING_RESPONSE_KEY — so the envelope shape
-# is defined in exactly one place and the two daemons cannot drift by
-# construction. A round-trip test locks parse(build(x)) == x.
+# level, so /unbond matched no real peer. Both sides now go through the builder
+# and paired parsers below, which share the response-key constants — so the
+# envelope shape is defined in exactly one place and the two daemons cannot
+# drift by construction. A round-trip test locks parse(build(x)) == x.
 # ----------------------------------------------------------------------
 
-# The single key the GET /grouping body nests its snapshot under. Nested
-# (rather than a bare dict) so a fail-soft read returns {"grouping": null}
-# unambiguously — None means "read failed / unknown", distinct from a real
-# disabled snapshot.
+# The two keys in the GET /grouping body. The declared/runtime grouping
+# snapshot stays nested (rather than bare) so a fail-soft read returns
+# {"grouping": null} unambiguously. ``readiness`` is the small pre-mutation
+# verdict consumed by the /rooms bond preflight; keeping it on this existing
+# grouping-domain read avoids making a tiny safety decision fetch the
+# catch-all /state aggregate.
 GROUPING_RESPONSE_KEY = "grouping"
+GROUPING_READINESS_KEY = "readiness"
 
 
-def grouping_response(grouping: dict | None) -> dict:
-    """Build the GET /grouping wire body from a snapshot (or None on a
-    fail-soft read). The PRODUCER side of the contract — used by
-    jasper-control's handler. Inverse of :func:`parse_grouping_response`."""
-    return {GROUPING_RESPONSE_KEY: grouping}
+def grouping_response(
+    grouping: dict | None,
+    *,
+    readiness: dict | None,
+) -> dict:
+    """Build the GET /grouping wire body.
+
+    ``grouping`` is the current grouping snapshot (or None on a fail-soft
+    read); ``readiness`` is the member-local preflight verdict (or None when
+    that verdict could not be derived). The PRODUCER side of the contract —
+    used by jasper-control's handler. Inverse of the two parsers below.
+    """
+    return {
+        GROUPING_RESPONSE_KEY: grouping,
+        GROUPING_READINESS_KEY: readiness,
+    }
 
 
 def parse_grouping_response(body: object) -> dict | None:
@@ -793,3 +807,23 @@ def parse_grouping_response(body: object) -> dict | None:
         return None
     inner = body.get(GROUPING_RESPONSE_KEY)
     return inner if isinstance(inner, dict) else None
+
+
+def parse_grouping_readiness(body: object) -> dict | None:
+    """Extract a valid grouping-readiness verdict from GET /grouping.
+
+    Missing, null, or malformed readiness is unknown (None), which makes the
+    bond preflight fail closed. Extra keys are preserved so the wire contract
+    can grow additively while every consumer still agrees on the required
+    ``allowed`` boolean and human-readable ``detail`` string.
+    """
+    if not isinstance(body, dict):
+        return None
+    inner = body.get(GROUPING_READINESS_KEY)
+    if not isinstance(inner, dict):
+        return None
+    if not isinstance(inner.get("allowed"), bool):
+        return None
+    if not isinstance(inner.get("detail"), str):
+        return None
+    return inner

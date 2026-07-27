@@ -344,11 +344,26 @@ def _active_speaker_volume_block() -> dict[str, Any] | None:
     return None
 
 
-def _active_speaker_grouping_block() -> dict[str, Any] | None:
+def _active_speaker_grouping_evaluation(
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Return the public grouping-readiness verdict and any blocking setup.
+
+    Both GET /grouping's preflight projection and POST /grouping/set's final
+    mutation guard call this one policy seam, so the advisory read can never
+    drift from the target-side fail-closed decision.
+    """
     setup = read_active_speaker_setup_status()
     if setup.get("active") and not setup.get("grouping_allowed", False):
-        return setup
-    return None
+        detail = str(
+            setup.get("detail")
+            or "active speaker setup is not ready for grouping"
+        )
+        return {"allowed": False, "detail": detail}, setup
+    return {"allowed": True, "detail": "ready"}, None
+
+
+def _active_speaker_grouping_block() -> dict[str, Any] | None:
+    return _active_speaker_grouping_evaluation()[1]
 
 # The high-impact mutations the control token gates (SECURITY.md).
 # The primitive remains fail-safe-open when no /var/lib/jasper/control_token file
@@ -1909,16 +1924,20 @@ def _make_handler(
             self._send_json(state)
 
         def _get_grouping(self) -> None:
-            # Multiroom grouping block, nested under "grouping" so a
-            # fail-soft read returns {"grouping": null} unambiguously.
+            # Multiroom grouping block + the small member-local readiness
+            # verdict used before a bond writes any member. Both are nested
+            # under stable keys so either read can fail soft to null without
+            # becoming indistinguishable from a real disabled/blocked value.
             # Read SERVER-SIDE by another speaker's /rooms /unbond
             # fan-out (rooms_setup._get_member_grouping) to discover which
-            # siblings share a bond_id, AND by the browser: the landing
-            # page's stereo-pair banner polls it every 10 s through
-            # nginx's exact-match /grouping proxy.
+            # siblings share a bond_id; /rooms bond preflight reads readiness
+            # from this SAME lightweight endpoint instead of downloading the
+            # catch-all /state aggregate. The browser's landing-page
+            # stereo-pair banner also polls it every 10 s through nginx's
+            # exact-match /grouping proxy.
             # NO CSRF: a read on the same no-auth LAN surface as /state
-            # and /healthz. Fail-soft like /state's grouping section —
-            # a broken read returns 200 with null rather than 500.
+            # and /healthz. Each block fails soft independently; the response
+            # remains 200 so one broken read does not hide the other.
             try:
                 grouping = read_grouping_state()
             except (
@@ -1931,11 +1950,26 @@ def _make_handler(
             ):
                 logger.exception("grouping state read failed")
                 grouping = None
+            try:
+                readiness, _blocked = _active_speaker_grouping_evaluation()
+            except (
+                AttributeError,
+                KeyError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ):
+                logger.exception("grouping readiness read failed")
+                readiness = None
             # grouping_response is the ONE home for the envelope shape; the
-            # /rooms /unbond consumer parses it via the paired
-            # parse_grouping_response (jasper/multiroom/state.py), so the
-            # two daemons can't drift (the C4 regression).
-            self._send_json(grouping_response(grouping))
+            # /rooms consumers parse it via the paired parse functions in
+            # jasper/multiroom/state.py, so producer and consumers cannot
+            # drift (the C4 regression).
+            self._send_json(grouping_response(
+                grouping,
+                readiness=readiness,
+            ))
 
         def _get_dial_status(self) -> None:
             # Heartbeat snapshot — used by jasper-doctor's

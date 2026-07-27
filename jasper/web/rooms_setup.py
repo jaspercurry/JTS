@@ -55,9 +55,12 @@ URL surface (after nginx strips the /rooms/ prefix):
                     restart voice/control (JSON body, CSRF-verified)
   POST /bond        form a stereo pair from {peer_addr}; the server mints a
                     bond id, builds the member plan, then fans the grouping
-                    config out SERVER-side to each member's jasper-control
-                    /grouping/set. Existing advanced callers may still post a
-                    full {members:[...]} body for same-bond edits.
+                    config out SERVER-side to each member's jasper-control.
+                    Before any write, every enabled member must return
+                    readiness.allowed=true from lightweight GET /grouping;
+                    POST /grouping/set rechecks the same target-side guard.
+                    Existing advanced callers may still post a full
+                    {members:[...]} body for same-bond edits.
   POST /unbond      dissolve the bond this speaker is in: disable self +
                     every sibling sharing this bond_id, SERVER-side via each
                     member's jasper-control /grouping/set (CSRF-verified)
@@ -94,12 +97,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
-from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..control import household_credential
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import DEFAULT_CROSSOVER_HZ, is_private_or_loopback_ipv4
-from ..multiroom.state import parse_grouping_response, read_grouping_state
+from ..multiroom.state import (
+    GROUPING_READINESS_KEY,
+    parse_grouping_readiness,
+    parse_grouping_response,
+    read_grouping_state,
+)
 from ..peering import config as peering_config
 from ..log_event import log_event
 from ._common import (
@@ -694,8 +701,8 @@ def lan_target(addr: str, known: set[str] | None = None) -> str | None:
     parse as a PRIVATE or loopback IPv4 — the control API is a home-LAN
     surface, never a public host, and bare hostnames are refused (no DNS
     rebind surface). Returns the host string on accept, None on refuse.
-    Shared by post_grouping_to_member (POST) and _get_member_grouping (GET)
-    so both apply the EXACT same guard.
+    Shared by post_grouping_to_member (POST) and the GET /grouping readers
+    so every peer-control operation applies the EXACT same guard.
 
     ``known`` is this host's own addresses (the self-routing set). Pass a
     precomputed set — as the fan-out callers do — to compute it ONCE per
@@ -896,59 +903,96 @@ def _fan_out_grouping(
     )
 
 
+def _get_member_grouping_response(
+    addr: str, known: set[str] | None = None, *,
+    timeout: float = CONTROL_HTTP_TIMEOUT_SEC,
+) -> tuple[dict | None, str | None]:
+    """Read ONE member's lightweight GET /grouping envelope.
+
+    This is the single target/path seam shared by the membership and readiness
+    parsers below. Same SSRF guard as the POST path. Returns ``(payload, None)``
+    on success or ``(None, household-facing reason)`` on failure; membership
+    discovery deliberately ignores the reason, while bond preflight surfaces
+    it so an old, unreachable, or malformed peer is actionable.
+    """
+    target = lan_target(addr, known)
+    if target is None:
+        return None, "speaker address is not on the private home network"
+    return _get_remote_json_result(target, "/grouping", timeout=timeout)
+
+
 def _get_member_grouping(
     addr: str, known: set[str] | None = None, *,
     timeout: float = CONTROL_HTTP_TIMEOUT_SEC,
 ) -> dict | None:
-    """Read ONE member's grouping state by GETting its jasper-control
-    ``/grouping`` (the CSRF-free read on `jasper-control`; unlike the gated
-    ``POST /grouping/set``, the ``GET`` read is genuinely unauthenticated).
-    Used by :func:`_unbond` to find which siblings share this
-    speaker's bond before dissolving it.
+    """Read and unwrap one member's grouping snapshot.
 
-    Same SSRF guard as the POST path (via :func:`lan_target`): a refused /
-    non-LAN / non-IP target returns None; ``known`` is forwarded so the
-    discovery fan-out computes the self-address set once. Returns the peer's
-    grouping dict — UNWRAPPED from the ``{"grouping": …}`` envelope that GET
-    /grouping emits (see jasper/control/server.py; the envelope lets a
-    fail-soft read return ``{"grouping": null}`` unambiguously) — or None on
-    ANY failure (refused, network error, non-2xx, malformed/truncated HTTP, a
-    body that isn't a JSON object, or a null/absent grouping block) — never
-    raises, so a single unreachable peer can't break a dissolve."""
-    target = lan_target(addr, known)
-    if target is None:
-        return None
-    parsed = _get_remote_json(target, "/grouping", timeout=timeout)
+    Used by :func:`_unbond` to find siblings sharing this speaker's bond. The
+    paired parser owns the wire shape; None on every failure so one unreachable
+    peer cannot break a dissolve.
+    """
+    parsed, _error = _get_member_grouping_response(addr, known, timeout=timeout)
     if parsed is None:
         return None
-    # Unwrap the {"grouping": …} envelope via the shared parser — the paired
-    # inverse of jasper-control's grouping_response (one home for the shape,
-    # so producer and consumer can't drift). None when absent/null/not-a-dict.
     return parse_grouping_response(parsed)
 
 
-def _get_member_active_speaker_setup(
+def _get_member_grouping_readiness(
     addr: str, known: set[str] | None = None, *,
     timeout: float = CONTROL_HTTP_TIMEOUT_SEC,
-) -> dict | None:
-    """Read one member's active-speaker setup contract from ``/state``.
+) -> tuple[dict | None, str | None]:
+    """Read one member's pre-mutation verdict from GET /grouping.
 
-    Returns None on any failure so the bond preflight can fail closed before
-    writing grouping.env anywhere.
+    The target computes this through the same policy seam as POST
+    /grouping/set's final active-speaker guard. Returns the verdict plus a
+    household-facing failure reason; every failure remains fail-closed before
+    grouping.env is written.
     """
-    target = lan_target(addr, known)
-    if target is None:
-        return None
-    if target == "127.0.0.1":
-        try:
-            return read_active_speaker_setup_status()
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-            return None
-    parsed = _get_remote_json(target, "/state", timeout=timeout)
+    parsed, error = _get_member_grouping_response(addr, known, timeout=timeout)
     if parsed is None:
-        return None
-    setup = parsed.get("active_speaker_setup")
-    return setup if isinstance(setup, dict) else None
+        return None, error
+    readiness = parse_grouping_readiness(parsed)
+    if readiness is None:
+        if GROUPING_READINESS_KEY in parsed:
+            return (
+                None,
+                "speaker could not determine grouping readiness — "
+                "open its System page for diagnostics, then retry",
+            )
+        return (
+            None,
+            "speaker software does not provide grouping readiness — "
+            "update both speakers, then retry",
+        )
+    return readiness, None
+
+
+def _get_remote_json_result(
+    target: str,
+    path: str,
+    *,
+    timeout: float,
+) -> tuple[dict | None, str | None]:
+    """GET one bounded peer JSON object with a small diagnostic result."""
+    url = f"http://{target}:{CONTROL_HTTP_PORT}{path}"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if not (200 <= r.status < 300):
+                return None, f"speaker returned HTTP {r.status}"
+            raw = _read_peer_response(r)
+            if raw is None:
+                return None, "speaker returned an oversized response"
+            parsed = json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return None, f"speaker returned HTTP {exc.code}"
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        return None, "speaker is unreachable — check its power and network"
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "speaker returned an invalid response"
+    if not isinstance(parsed, dict):
+        return None, "speaker returned an invalid response"
+    return parsed, None
 
 
 def _get_remote_json(
@@ -963,37 +1007,22 @@ def _get_remote_json(
     and domain parsing. This private transport seam only performs bounded HTTP
     and returns ``None`` for every status, transport, or decode failure.
     """
-    url = f"http://{target}:{CONTROL_HTTP_PORT}{path}"
-    req = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if not (200 <= r.status < 300):
-                return None
-            raw = _read_peer_response(r)
-            if raw is None:
-                return None
-            parsed = json.loads(raw.decode("utf-8"))
-    except (urllib.error.URLError, OSError, http.client.HTTPException,
-            UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    payload, _error = _get_remote_json_result(target, path, timeout=timeout)
+    return payload
 
 
 def _preflight_grouping_target(
     addr: str, body: dict, known: set[str] | None = None,
 ) -> tuple[bool, str]:
-    """Fail closed when an active member cannot safely join this bond."""
+    """Fail closed when a member cannot safely join this bond."""
     if not body.get("enabled"):
         return True, "disabled"
-    setup = _get_member_active_speaker_setup(addr, known)
-    if setup is None:
-        return False, "could not read active speaker setup readiness"
-    if setup.get("active") and not setup.get("grouping_allowed", False):
-        return False, (
-            str(setup.get("detail") or "")
-            or "active speaker setup is not ready for grouping"
-        )
-    return True, "ready"
+    readiness, error = _get_member_grouping_readiness(addr, known)
+    if readiness is None:
+        return False, error or "could not read grouping readiness"
+    if not readiness["allowed"]:
+        return False, readiness["detail"]
+    return True, readiness["detail"]
 
 
 def _peer_name_from_directory(addr: str) -> str:

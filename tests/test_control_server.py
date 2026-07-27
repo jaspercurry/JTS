@@ -2218,11 +2218,17 @@ def test_grouping_get_returns_grouping_block(
         "error": None,
     }
     monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: snapshot)
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda: {"active": False, "grouping_allowed": True},
+    )
 
     status, body = _get(f"{base}/grouping")
 
     assert status == 200
     assert body["grouping"] == snapshot
+    assert body["readiness"] == {"allowed": True, "detail": "ready"}
     # Cross-boundary contract: the /rooms /unbond CONSUMER must extract the
     # snapshot from the PRODUCER's actual body via the shared parser. Running
     # the real emitted body through parse_grouping_response here is what would
@@ -2230,6 +2236,57 @@ def test_grouping_get_returns_grouping_block(
     # half of the contract in isolation).
     from jasper.multiroom.state import parse_grouping_response
     assert parse_grouping_response(body) == snapshot
+
+
+def test_grouping_get_projects_readiness_under_peer_response_budget(
+    monkeypatch, server_with_coordinator,
+):
+    """The small grouping endpoint must not inherit setup diagnostics.
+
+    This binds the real producer body to the /rooms peer-reader cap. The
+    original pairing regression fetched /state and crossed that cap when an
+    unrelated diagnostic block grew; a large source snapshot here proves the
+    public readiness projection remains small with ample headroom.
+    """
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+    from jasper.web.rooms_setup import PEER_RESPONSE_MAX_BYTES
+
+    monkeypatch.setattr(
+        srv_mod,
+        "read_grouping_state",
+        lambda: {
+            "enabled": False,
+            "role": "",
+            "channel": "stereo",
+            "bond_id": "",
+            "leader_addr": "",
+            "buffer_ms": 400,
+            "codec": "flac",
+            "roster": [],
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "active": True,
+            "grouping_allowed": False,
+            "detail": "Finish active-speaker commissioning.",
+            "large_unrelated_diagnostics": "x" * PEER_RESPONSE_MAX_BYTES,
+        },
+    )
+
+    status, body = _get(f"{base}/grouping")
+    encoded = json.dumps(body).encode("utf-8")
+
+    assert status == 200
+    assert body["readiness"] == {
+        "allowed": False,
+        "detail": "Finish active-speaker commissioning.",
+    }
+    assert len(encoded) < PEER_RESPONSE_MAX_BYTES // 8
 
 
 def test_grouping_get_requires_no_csrf(monkeypatch, server_with_coordinator):
@@ -2240,11 +2297,17 @@ def test_grouping_get_requires_no_csrf(monkeypatch, server_with_coordinator):
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: {"enabled": False})
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda: {"active": False, "grouping_allowed": True},
+    )
 
     status, body = _get(f"{base}/grouping")
 
     assert status == 200
     assert body["grouping"] == {"enabled": False}
+    assert body["readiness"]["allowed"] is True
 
 
 def test_grouping_get_fails_soft_on_read_error(
@@ -2260,11 +2323,77 @@ def test_grouping_get_fails_soft_on_read_error(
         raise RuntimeError("grouping read exploded")
 
     monkeypatch.setattr(srv_mod, "read_grouping_state", boom)
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda: {"active": False, "grouping_allowed": True},
+    )
 
     status, body = _get(f"{base}/grouping")
 
     assert status == 200
     assert body["grouping"] is None
+    assert body["readiness"] == {"allowed": True, "detail": "ready"}
+
+
+def test_grouping_get_surfaces_target_side_active_speaker_block(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """The lightweight preflight and final write guard return one verdict."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    env, popens = _grouping_test_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: {"enabled": False})
+    monkeypatch.setattr(
+        srv_mod,
+        "read_active_speaker_setup_status",
+        lambda: {
+            "active": True,
+            "grouping_allowed": False,
+            "detail": "Finish active-speaker commissioning.",
+        },
+    )
+
+    status, body = _get(f"{base}/grouping")
+
+    assert status == 200
+    assert body["readiness"] == {
+        "allowed": False,
+        "detail": "Finish active-speaker commissioning.",
+    }
+
+    write_status, write_body = _post(f"{base}/grouping/set", {
+        "enabled": True,
+        "role": "leader",
+        "channel": "left",
+        "bond_id": "living-room",
+    })
+    assert write_status == 409
+    assert write_body["error"] == body["readiness"]["detail"]
+    assert not env.exists()
+    assert popens == []
+
+
+def test_grouping_get_fails_readiness_closed_without_hiding_grouping(
+    monkeypatch, server_with_coordinator,
+):
+    """A broken readiness derivation stays explicit null and grouping survives."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    snapshot = {"enabled": False}
+    monkeypatch.setattr(srv_mod, "read_grouping_state", lambda: snapshot)
+
+    def boom():
+        raise RuntimeError("active setup read exploded")
+
+    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", boom)
+
+    status, body = _get(f"{base}/grouping")
+
+    assert status == 200
+    assert body == {"grouping": snapshot, "readiness": None}
 
 
 def test_system_snapshot_audio_quality_fails_soft(
