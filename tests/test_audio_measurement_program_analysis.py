@@ -27,9 +27,7 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from fractions import Fraction
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -97,6 +95,12 @@ from jasper.audio_measurement.program_analysis import (
     predicted_branch_sum,
     solve_branch_trims,
     solve_ripple_optimal_trim,
+)
+from tests._flat_lin_corpus import (
+    CDHORN_CALIBRATION,
+    CDHORN_ROOT,
+    requires_cdhorn,
+    sweep_anchored_global_offset,
 )
 
 SR = 48_000
@@ -2190,7 +2194,9 @@ def test_one_sided_overlap_band_biases_the_level_match():
     assert gap_db(nominal, nominal) == pytest.approx(3.03, abs=0.02)
     # The shipped estimator: each branch on its own side of Fc.
     trim_w, trim_t, _lw, _lt = solve_branch_trims(
-        freqs, W, T, fc_hz, lo_hz=fc_hz / 4.0, hi_hz=fc_hz * 4.0,
+        freqs, W, T, fc_hz,
+        woofer_span_hz=(fc_hz / 4.0, fc_hz * 2.0),
+        tweeter_span_hz=(fc_hz / 2.0, fc_hz * 4.0),
     )
     assert trim_w == pytest.approx(0.0)  # woofer is the quieter (unattenuated) branch
     assert trim_t == pytest.approx(-MIRRORED_HALVES_BIAS_DB, abs=0.02)
@@ -2209,7 +2215,9 @@ def test_solve_branch_trims_recovers_a_known_sensitivity_gap(tweeter_gain_db):
     freqs = np.linspace(1.0, 24000.0, 262_144)
     W, T = _lr4_branch_magnitudes(fc_hz, freqs, tweeter_gain_db=tweeter_gain_db)
     _trim_w, trim_t, _lw, _lt = solve_branch_trims(
-        freqs, W, T, fc_hz, lo_hz=fc_hz / 4.0, hi_hz=fc_hz * 4.0,
+        freqs, W, T, fc_hz,
+        woofer_span_hz=(fc_hz / 4.0, fc_hz * 2.0),
+        tweeter_span_hz=(fc_hz / 2.0, fc_hz * 4.0),
     )
     assert trim_t == pytest.approx(
         -(tweeter_gain_db + MIRRORED_HALVES_BIAS_DB), abs=0.02
@@ -2218,25 +2226,80 @@ def test_solve_branch_trims_recovers_a_known_sensitivity_gap(tweeter_gain_db):
 
 def test_branch_level_bands_hz_are_mirrored_about_fc_and_clamped():
     """The band pair is log-symmetric about Fc by construction, capped at the
-    nominal octave, and narrowed by whichever side's validity span binds
-    first. A span that cannot straddle Fc has no level match in it at all and
-    raises — the existing catch-all seam in
-    ``jasper.web.correction_crossover_v2`` classifies that as
-    ``internal_error`` rather than shipping a guessed trim."""
+    nominal octave, and narrowed by whichever branch's own span binds first."""
     fc = 2000.0
-    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(fc, lo_hz=150.0, hi_hz=20000.0)
+    wide_w, wide_t = (150.0, 4000.0), (2000.0, 20000.0)
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+        fc, woofer_span_hz=wide_w, tweeter_span_hz=wide_t,
+    )
     assert (w_lo, w_hi, t_lo, t_hi) == pytest.approx((1000.0, 2000.0, 2000.0, 4000.0))
-    # Whichever side binds first sets the shared ratio, keeping it symmetric.
-    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(fc, lo_hz=1500.0, hi_hz=20000.0)
+    # Whichever OUTER edge binds first sets the shared ratio, keeping the two
+    # halves mirror-symmetric even when only one branch is the constraint.
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+        fc, woofer_span_hz=(1500.0, 4000.0), tweeter_span_hz=wide_t,
+    )
     assert (w_lo, w_hi, t_lo, t_hi) == pytest.approx((1500.0, 2000.0, 2000.0, 2666.6667))
-    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(fc, lo_hz=150.0, hi_hz=2500.0)
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+        fc, woofer_span_hz=wide_w, tweeter_span_hz=(2000.0, 2500.0),
+    )
     assert (w_lo, w_hi, t_lo, t_hi) == pytest.approx((1600.0, 2000.0, 2000.0, 2500.0))
     assert w_hi == t_lo == fc  # the two halves always meet exactly at Fc
     # Defaults are the nominal Fc +/- one octave.
     assert branch_level_bands_hz(fc) == ((1000.0, 2000.0), (2000.0, 4000.0))
-    for lo, hi in ((fc, 4.0 * fc), (fc / 4.0, fc), (fc, fc)):
-        with pytest.raises(ValueError, match="does not straddle"):
-            branch_level_bands_hz(fc, lo_hz=lo, hi_hz=hi)
+
+
+def test_branch_level_bands_hz_refuse_a_branch_that_does_not_reach_fc():
+    """The INNER edges are load-bearing too (PR-L3 review S2). The halves meet
+    AT Fc, so the woofer's span must reach up to Fc and the tweeter's down to
+    it. Nothing ties a declared driver band to the chosen Fc, so a tweeter
+    swept from 2.5 kHz under a 2 kHz Fc is representable — and would put
+    500 Hz of never-excited deconvolution noise inside the tweeter's own half,
+    the exact failure this estimator exists to avoid. There is no level match
+    in that capture, so it raises into the ``internal_error`` seam rather than
+    shipping a guessed trim."""
+    fc = 2000.0
+    with pytest.raises(ValueError, match="tweeter span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(150.0, 4000.0), tweeter_span_hz=(2500.0, 20000.0),
+        )
+    with pytest.raises(ValueError, match="woofer span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(150.0, 1800.0), tweeter_span_hz=(2000.0, 20000.0),
+        )
+    # A degenerate span that starts (woofer) or ends (tweeter) AT Fc leaves
+    # that branch no half at all, and is refused by the same two checks —
+    # which is why the ratio below them needs no third guard: once both spans
+    # straddle Fc it exceeds 1 by construction.
+    with pytest.raises(ValueError, match="woofer span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(fc, 4000.0), tweeter_span_hz=(2000.0, 20000.0),
+        )
+    with pytest.raises(ValueError, match="tweeter span .* does not reach Fc"):
+        branch_level_bands_hz(
+            fc, woofer_span_hz=(150.0, fc), tweeter_span_hz=(fc, fc),
+        )
+    # Touching Fc exactly from the correct side IS enough — the halves only
+    # need to meet there.
+    assert branch_level_bands_hz(
+        fc, woofer_span_hz=(1000.0, fc), tweeter_span_hz=(fc, 4000.0),
+    ) == ((1000.0, fc), (fc, 4000.0))
+
+
+def test_build_candidate_refuses_a_tweeter_swept_above_fc():
+    """The refusal reaches the candidate builder, not just the band helper:
+    a declared tweeter sweep that starts ABOVE Fc raises out of
+    ``_build_candidate`` (PR-L3 review S2), which the web layer's existing
+    catch-all classifies as ``internal_error``."""
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    with pytest.raises(ValueError, match="does not reach Fc"):
+        _build_candidate(
+            woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+            _candidate_alignment(), None,
+            tweeter_sweep_lo_hz=2500.0, woofer_sweep_hi_hz=4.0 * fc_hz,
+            woofer_sweep_lo_hz=150.0, tweeter_sweep_hi_hz=20000.0,
+        )
 
 
 def test_solve_ripple_optimal_trim_recovers_lr4_pair_from_a_biased_seed():
@@ -2586,29 +2649,11 @@ def test_rate_mismatch_is_rejected():
 # --------------------------------------------------------------------------- #
 #
 # The 2026-07-24/25 JTS3 cdhorn MEASURE captures are gitignored and
-# laptop-durable, so this skips cleanly in CI. Resolution is repo-root-relative
-# by default; a worktree checkout points at the main checkout's copy with
-#   JTS_FLAT_LIN_CORPUS=/path/to/JTS/captures/.../cdhorn-live-session
-# Same env var and same era-exact program parameters as
-# tests/test_spatial_combine.py's corpus fixture — that module is the authority
-# on what those captures were played under, and these values are copied from it.
-
-_L3_CORPUS_ENV = os.environ.get("JTS_FLAT_LIN_CORPUS", "").strip()
-L3_CORPUS = (
-    Path(_L3_CORPUS_ENV)
-    if _L3_CORPUS_ENV
-    else Path(__file__).resolve().parents[1]
-    / "captures"
-    / "flat-linearization-20260725"
-    / "cdhorn-live-session"
-)
-requires_l3_corpus = pytest.mark.skipif(
-    not L3_CORPUS.is_dir(),
-    reason=(
-        f"laptop-durable capture corpus absent: {L3_CORPUS} "
-        "(set JTS_FLAT_LIN_CORPUS to point at it)"
-    ),
-)
+# laptop-durable, so this skips cleanly in CI. Root, skip gate and the
+# era-exact sweep anchor come from tests/_flat_lin_corpus.py, shared with
+# tests/test_spatial_combine.py (this module became the corpus's second reader
+# on 2026-07-27). The era-exact program parameters below are that module's —
+# it is the authority on what these captures were played under.
 
 # What the SHIPPED (pre-PR-L3) pipeline persisted for run 5, read off the
 # session's own archived candidate JSON (``run5_candidate.json``): a tweeter
@@ -2620,34 +2665,7 @@ L3_RUN5_BROKEN_TRIM_DB = -26.5088
 L3_RUN5_FIT_FRAME_GAP_DB = 13.4440
 
 
-def _era_exact_global_offset(capture: np.ndarray, segment) -> int:
-    """The archived capture's global offset, registered on ONE SWEEP's own
-    stimulus instead of on the program's first stimulus segment.
-
-    ``_global_offset`` locates the FIRST stimulus and subtracts its schedule
-    position, which makes the reading depend on the head block's layout — and
-    2026-07-27's courtesy-tone move (#1771, `_insert_courtesy_prelude`)
-    PERMUTED that block: the prelude went from the head of the program to just
-    ahead of the first sweep, so the pilot pair moved by the prelude's length
-    (172 781 samples, 3.6 s, on this corpus) while the sweeps did not move at
-    all. Registering on the woofer sweep and subtracting its (unchanged)
-    schedule position recovers the same offset the captures were read with,
-    and both branches still use the shared schedule anchor afterwards, so
-    their relative timing is untouched.
-
-    Same technique, same reason, as ``tests/_flat_lin_corpus._sweep_anchor``.
-    """
-    from jasper.audio_measurement.program import segment_stimulus
-
-    stimulus = np.asarray(segment_stimulus(segment), dtype=np.float64)
-    n_fft = 1 << (capture.size + stimulus.size - 1).bit_length()
-    cross = np.fft.rfft(capture, n_fft) * np.conj(np.fft.rfft(stimulus, n_fft))
-    window = max(1, capture.size - stimulus.size // 2)
-    peak = int(np.argmax(np.abs(np.fft.irfft(cross, n_fft)[:window])))
-    return peak - segment.start_sample
-
-
-@requires_l3_corpus
+@requires_cdhorn
 def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypatch):
     """PR-L3 hardware regression, from the offline replay's own numbers.
 
@@ -2681,9 +2699,7 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
         return samples[::2] if channels == 2 else samples
 
     fc_hz = 2000.0
-    calibration = parse_calibration_text(
-        (L3_CORPUS.parent / "umik2-cal" / "umik2-b7343c0c625b.txt").read_text()
-    )
+    calibration = parse_calibration_text(CDHORN_CALIBRATION.read_text())
     program = build_measure_program(
         {"woofer": -6.0005, "tweeter": -15.0105},
         [
@@ -2694,8 +2710,8 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
         leading_pilot_role="woofer",
         courtesy_prelude=True,
     )
-    capture = load(sorted(glob.glob(f"{L3_CORPUS}/*run5_measure.wav"))[-1])
-    offset = _era_exact_global_offset(capture, program.segment("sweep_w"))
+    capture = load(sorted(glob.glob(f"{CDHORN_ROOT}/*run5_measure.wav"))[-1])
+    offset = sweep_anchored_global_offset(capture, program.segment("sweep_w"))
     real_global_offset = program_analysis._global_offset
     monkeypatch.setattr(
         program_analysis,
@@ -2723,7 +2739,11 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
     n_fft = _n_fft_for(irs["woofer"], irs["tweeter"])
     for role, ir in irs.items():
         _f, tf, _gate = _aligned_branch_tf(ir, SR, n_fft, calibration=calibration)
-        assert np.allclose(np.abs(tf), np.abs(responses[role].complex_tf))
+        # BYTE-identical, not merely close, and complex — the refuted claim was
+        # a "reference mismatch between the two paths", which a phase-only
+        # divergence would also be. `array_equal` on the complex arrays is the
+        # assertion that actually says what was checked.
+        assert np.array_equal(tf, responses[role].complex_tf)
 
     # The fit frame, from the shipped fit path on those same responses.
     fit_levels = {}

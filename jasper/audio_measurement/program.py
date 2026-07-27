@@ -987,10 +987,13 @@ def build_measure_program(
     behavioral-linearity evidence. ``None`` (the default) omits the leading
     pilot pair — the program starts at ``guard`` either way.
 
-    ``courtesy_prelude`` (issue #1677) OPT-IN prepends the "beep beep beep" +
-    silence warning (see the module docstring) ahead of everything above,
-    including the leading pilot pair when both are requested. ``False`` (the
-    default) is byte-identical to the pre-#1677 composer.
+    ``courtesy_prelude`` (issue #1677) OPT-IN inserts the "beep beep beep" +
+    silence warning (see the module docstring) directly in front of the first
+    SWEEP — so the leading pilot pair, which is stimulus-kind but is
+    behavioural-linearity evidence rather than the measurement the beeps
+    announce, stays AHEAD of the beeps rather than behind them (the §2.5
+    pacing move, 2026-07-27; it prepended to the whole program before that).
+    ``False`` (the default) is byte-identical to the pre-#1677 composer.
     """
     roles = _validate_roles(roles_bands)
     if len(roles) != 2:
@@ -1147,10 +1150,13 @@ def build_verify_program(
     linearity ratio check on noise rather than on AGC/gain behavior. ``None``
     is byte-identical to the pre-v2 composer.
 
-    ``courtesy_prelude`` (issue #1677) OPT-IN prepends the "beep beep beep" +
-    silence warning (see the module docstring) ahead of everything above,
-    including the leading pilot pair when both are requested. ``False`` (the
-    default) is byte-identical to the pre-#1677 composer. VERIFY has no
+    ``courtesy_prelude`` (issue #1677) OPT-IN inserts the "beep beep beep" +
+    silence warning (see the module docstring) directly in front of the first
+    SWEEP — so the leading pilot pair, which is stimulus-kind but is
+    behavioural-linearity evidence rather than the measurement the beeps
+    announce, stays AHEAD of the beeps rather than behind them (the §2.5
+    pacing move, 2026-07-27; it prepended to the whole program before that).
+    ``False`` (the default) is byte-identical to the pre-#1677 composer. VERIFY has no
     program-admission gate (it rides the applied production graph — see
     ``jasper.active_speaker.program_admission``'s ``_validate_program``), so
     the prelude's compose-time clamp (``courtesy_tone_gain_db``) is the ONLY

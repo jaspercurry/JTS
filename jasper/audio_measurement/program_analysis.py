@@ -1910,28 +1910,58 @@ def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -
 def branch_level_bands_hz(
     fc_hz: float,
     *,
-    lo_hz: float | None = None,
-    hi_hz: float | None = None,
+    woofer_span_hz: tuple[float, float] | None = None,
+    tweeter_span_hz: tuple[float, float] | None = None,
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """``((woofer_lo, woofer_hi), (tweeter_lo, tweeter_hi))`` — the two
     log-symmetric half-bands the level match reads, one per branch.
 
-    ``[lo_hz, hi_hz]`` is the span the level match is ALLOWED to look in (each
-    branch's own validity floor/ceiling, not the shared both-branches-excited
-    overlap). The returned halves are ``[Fc/ρ, Fc]`` and ``[Fc, Fc·ρ]`` with
-    the largest ``ρ ≤ OVERLAP_OCTAVE_RATIO`` that fits inside it, so the two
-    branches are always sampled mirror-symmetrically about Fc.
+    Each ``*_span_hz`` is that branch's OWN validity span: the band it was
+    excited across, narrowed by any reflection-gate floor. Not the shared
+    both-branches-excited overlap — a branch is read only where it played.
+    The returned halves are ``[Fc/ρ, Fc]`` (woofer) and ``[Fc, Fc·ρ]``
+    (tweeter) with the largest ``ρ ≤ OVERLAP_OCTAVE_RATIO`` that fits inside
+    BOTH spans, so the branches are always sampled mirror-symmetrically about
+    Fc and neither half ever reaches outside its own branch's excitation.
+
+    Both inner edges are load-bearing, not just the outer ones: the halves
+    meet AT Fc, so the woofer's span must reach UP to Fc and the tweeter's
+    DOWN to it. Nothing in the system ties a declared driver band to the
+    chosen Fc (see ``graph_safety``'s own note on that gap), so a tweeter
+    swept from 2.5 kHz under a 2 kHz Fc is representable — and would put
+    250 Hz of never-excited deconvolution noise inside the tweeter's half,
+    the exact failure :func:`solve_branch_trims` exists to avoid. That
+    configuration has no level match in it at all and raises, through the
+    catch-all seam in :mod:`jasper.web.correction_crossover_v2` that already
+    classifies an unanalysable capture as ``internal_error`` — never a
+    guessed trim on the hardware.
 
     SSOT for the band pair: :func:`solve_branch_trims` computes the levels and
     ``_build_candidate`` discloses the bands, from this one derivation.
     """
-    lo = lo_hz if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = hi_hz if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
-    ratio = min(OVERLAP_OCTAVE_RATIO, fc_hz / lo, hi / fc_hz)
-    if not (ratio > 1.0) or not math.isfinite(ratio):
+    w_lo_bound, w_hi_bound = (
+        woofer_span_hz
+        if woofer_span_hz is not None
+        else (fc_hz / OVERLAP_OCTAVE_RATIO, fc_hz)
+    )
+    t_lo_bound, t_hi_bound = (
+        tweeter_span_hz
+        if tweeter_span_hz is not None
+        else (fc_hz, fc_hz * OVERLAP_OCTAVE_RATIO)
+    )
+    if not (w_lo_bound < fc_hz <= w_hi_bound):
         raise ValueError(
-            f"level-match span [{lo}, {hi}] does not straddle Fc={fc_hz}"
+            f"woofer span [{w_lo_bound}, {w_hi_bound}] does not reach Fc={fc_hz}"
         )
+    if not (t_lo_bound <= fc_hz < t_hi_bound):
+        raise ValueError(
+            f"tweeter span [{t_lo_bound}, {t_hi_bound}] does not reach Fc={fc_hz}"
+        )
+    # ``ratio > 1`` is guaranteed by the two checks above — they require
+    # ``w_lo_bound < fc_hz`` and ``fc_hz < t_hi_bound``, so both quotients
+    # exceed 1 — and a NaN bound fails those comparisons rather than reaching
+    # here. No third guard: an unreachable raise is a claim no test can make.
+    ratio = min(OVERLAP_OCTAVE_RATIO, fc_hz / w_lo_bound, t_hi_bound / fc_hz)
     return (fc_hz / ratio, fc_hz), (fc_hz, fc_hz * ratio)
 
 
@@ -1941,16 +1971,15 @@ def solve_branch_trims(
     T: np.ndarray,
     fc_hz: float,
     *,
-    lo_hz: float | None = None,
-    hi_hz: float | None = None,
+    woofer_span_hz: tuple[float, float] | None = None,
+    tweeter_span_hz: tuple[float, float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Level-match trims: each branch read on ITS OWN side of Fc.
 
-    ``[lo_hz, hi_hz]`` (default Fc ± 1 octave) is the span the match may look
-    in; :func:`branch_level_bands_hz` splits it into the mirrored halves
-    ``[Fc/ρ, Fc]`` (woofer) and ``[Fc, Fc·ρ]`` (tweeter). Callers pass each
-    branch's OWN validity span — a branch is never read outside the band it
-    was excited and gated in.
+    Each ``*_span_hz`` is that branch's own validity span (default Fc ∓ 1
+    octave); :func:`branch_level_bands_hz` turns the pair into the mirrored
+    halves ``[Fc/ρ, Fc]`` (woofer) and ``[Fc, Fc·ρ]`` (tweeter). A branch is
+    never read outside the band it was excited and gated in.
 
     Why mirrored halves and not one shared band (PR-L3, 2026-07-27). This
     function band-power-averages ``|W|`` and ``|T|``, which is a level match
@@ -1966,19 +1995,36 @@ def solve_branch_trims(
     ``test_one_sided_overlap_band_biases_the_level_match``); on the archived
     JTS3 captures it put the measured tweeter trim 10.9 dB (2026-07-27) and
     13.1 dB (2026-07-25) below the same analysis's own per-driver
-    ``target_level_db`` frame, which is where the speaker's ~10 dB-dark
-    tweeter came from. Widening back to the nominal band is not the fix
+    ``target_level_db`` frame — the ideal-pair figure accounts for the
+    observed error to within 0.27-2.47 dB across the two sessions, the
+    remainder being each real driver's own rolloff riding on top of the
+    filter's. That is where the speaker's ~10 dB-dark tweeter came from. Widening back to the nominal band is not the fix
     either: the tweeter was never EXCITED below Fc, so those bins are
     deconvolution noise that dilutes its power mean (+3.03 dB residual bias
     on the same ideal pair). Reading each branch only on its own side removes
     both problems — residual bias +0.54 dB at ρ=2, shrinking with ρ.
 
-    Public (#1668 PR-C): the v2 conductor re-solves trims against a
-    linearized branch pair (`jasper.active_speaker.crossover_v2_flow`), so
-    this — and its sibling :func:`overlap_band_hz` — are no longer
-    module-private.
+    That remaining +0.54 dB is a KNOWN, RECORDED systematic, not a limit of
+    the method: it is the linear-frequency FFT bin grid weighting the wider
+    upper half harder. The same estimator integrated in log-frequency is
+    exactly 0.000 dB on an ideal pair (verified by quadrature during the
+    PR-L3 review). Switching to a log-measure average is deliberately NOT
+    done here: it would move every measured trim again mid-ladder, on top of
+    the 10-13 dB this change already moves, with no capture to separate the
+    two effects. Owner ruling 2026-07-27 — keep the linear average now,
+    revisit it with PR-L4's measured-vs-datasheet cross-check, which supplies
+    exactly the independent reference needed to tell a 0.5 dB estimator
+    residual from a real acoustic difference.
+
+    Public: kept module-public as the level match's SSOT — the v2 conductor
+    documents its own anchored give-back seed against this function
+    (`jasper.active_speaker.crossover_v2_flow`, "why not the old
+    solve_branch_trims seed") and the contract tests import it. Its sibling
+    :func:`overlap_band_hz` is public because the conductor CALLS it.
     """
-    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(fc_hz, lo_hz=lo_hz, hi_hz=hi_hz)
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(
+        fc_hz, woofer_span_hz=woofer_span_hz, tweeter_span_hz=tweeter_span_hz,
+    )
     level_w = _band_average_db(
         freqs, 20.0 * np.log10(np.maximum(np.abs(W), 1e-12)), w_lo, w_hi
     )
@@ -2812,24 +2858,25 @@ def _build_candidate(
     )
     # The LEVEL MATCH reads a different span from the ripple/prediction band
     # above (PR-L3): each branch on its own side of Fc, inside its OWN
-    # validity span, never the shared both-branches-excited overlap — see
-    # solve_branch_trims. The shared reflection floor still applies to the
-    # woofer's lower edge (sub-floor bins stay untrusted everywhere); the
-    # sweep bounds default to the nominal Fc-octave edges when a legacy caller
-    # supplies no sweep-segment evidence, exactly like overlap_band_hz.
-    level_lo = fc_hz / OVERLAP_OCTAVE_RATIO
-    if woofer_sweep_lo_hz is not None:
-        level_lo = max(level_lo, float(woofer_sweep_lo_hz))
-    if branch_floor_hz is not None and math.isfinite(branch_floor_hz):
-        level_lo = max(level_lo, branch_floor_hz)
-    level_hi = fc_hz * OVERLAP_OCTAVE_RATIO
-    if tweeter_sweep_hi_hz is not None:
-        level_hi = min(level_hi, float(tweeter_sweep_hi_hz))
+    # excited-and-gated span, never the shared both-branches-excited overlap
+    # — see solve_branch_trims. Each span is that branch's declared sweep
+    # band, floored by the shared reflection floor (sub-floor bins stay
+    # untrusted everywhere). A missing sweep bound falls back to the nominal
+    # Fc-octave edge, exactly like overlap_band_hz's own None handling.
+    def _span(lo_hz: float | None, hi_hz: float | None) -> tuple[float, float]:
+        lo = float(lo_hz) if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
+        hi = float(hi_hz) if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
+        if branch_floor_hz is not None and math.isfinite(branch_floor_hz):
+            lo = max(lo, branch_floor_hz)
+        return lo, hi
+
+    woofer_span = _span(woofer_sweep_lo_hz, woofer_sweep_hi_hz)
+    tweeter_span = _span(tweeter_sweep_lo_hz, tweeter_sweep_hi_hz)
     trim_w, trim_t_band_average, level_w, level_t = solve_branch_trims(
-        freqs, W, T, fc_hz, lo_hz=level_lo, hi_hz=level_hi,
+        freqs, W, T, fc_hz, woofer_span_hz=woofer_span, tweeter_span_hz=tweeter_span,
     )
     (w_band_lo, w_band_hi), (t_band_lo, t_band_hi) = branch_level_bands_hz(
-        fc_hz, lo_hz=level_lo, hi_hz=level_hi,
+        fc_hz, woofer_span_hz=woofer_span, tweeter_span_hz=tweeter_span,
     )
     # The frame ledger the 2026-07-27 forensics asked for: the level match's
     # own inputs, on every MEASURE analysis. Read beside the per-role

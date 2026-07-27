@@ -5194,14 +5194,42 @@ class CrossoverV2Conductor:
 
         # Ripple fine-tune around the anchor: the anchor sets the LEVEL, the
         # scan only polishes summed flatness near it. Same band/sign as before.
+        #
+        # ...and only where that band straddles Fc (PR-L3). This is the SAME
+        # one-sided-band hazard `program_analysis._build_candidate` guards on
+        # the raw candidate, reached through the SAME `overlap_band_hz` clamp
+        # a few lines above, and this call site is the one whose result
+        # becomes `role_attenuations_db` — the gain the emitted graph runs.
+        # On a tweeter swept from Fc the band is `[Fc, 2*Fc]`, where the
+        # woofer sits 20+ dB down its skirt: the summed ripple is the
+        # tweeter's own and barely responds to the tweeter's gain, so the
+        # scan is not measuring the handoff. It mattered less while the seed
+        # was biased and the scan's pull partly cancelled it; PR-L3 unbiased
+        # the seed, which is exactly what makes an unguarded pull dangerous
+        # here — bounded only by LINEARIZATION_TRIM_SANITY_MARGIN_DB, it can
+        # walk the applied trim up to 6 dB off a correct anchor without
+        # tripping anything. A selector that cannot see the woofer does not
+        # set the woofer's handoff level.
         assert analysis.alignment is not None  # MEASURE analyses always carry one
-        trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
-            freqs, W_lin, T_lin, self._fc_hz,
-            lo_hz=lo_clamped, hi_hz=hi,
-            seed_trim_db=anchored[tweeter_role],
-            trim_w_db=anchored[woofer_role],
-            sign=analysis.alignment.polarity_sign,
-        )
+        ripple_lin: float | None = None
+        if lo_clamped < self._fc_hz < hi:
+            trim_t_lin, ripple_lin, _seed_lin = solve_ripple_optimal_trim(
+                freqs, W_lin, T_lin, self._fc_hz,
+                lo_hz=lo_clamped, hi_hz=hi,
+                seed_trim_db=anchored[tweeter_role],
+                trim_w_db=anchored[woofer_role],
+                sign=analysis.alignment.polarity_sign,
+            )
+        else:
+            log_event(
+                logger, "correction.crossover_v2_linearization_ripple_trim_skipped",
+                session_id=self.session_id,
+                reason="ripple_band_one_sided",
+                fc_hz=round(float(self._fc_hz), 3),
+                ripple_band_hz=(round(float(lo_clamped), 1), round(float(hi), 1)),
+                anchored_trim_db={k: round(v, 3) for k, v in anchored.items()},
+            )
+            trim_t_lin = anchored[tweeter_role]
         resolved = {
             woofer_role: anchored[woofer_role], tweeter_role: float(trim_t_lin),
         }
@@ -5248,7 +5276,12 @@ class CrossoverV2Conductor:
                 # P4 telemetry (2026-07-24 review): the ripple at each trim lets
                 # live evidence distinguish "legitimate flatter optimum rejected"
                 # from "garbage correctly caught" before anyone widens the guard.
-                resolved_ripple_db=round(float(ripple_lin), 3),
+                # ``None`` is unreachable here — a skipped scan leaves the trim
+                # AT the anchor, so ``wild`` is false by construction — but the
+                # field stays honest rather than reporting a fabricated 0.0.
+                resolved_ripple_db=(
+                    round(float(ripple_lin), 3) if ripple_lin is not None else None
+                ),
                 raw_predicted_ripple_db=round(float(cand.predicted_ripple_db), 3),
             )
             # Fall back to the ANCHORED pair, NOT the raw trim — the correction
