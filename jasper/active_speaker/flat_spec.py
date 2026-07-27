@@ -14,7 +14,10 @@ meet the flat-linearization spec?" -- and nothing more.
 :func:`spec_convergence_residual` is a second reading of that same
 evaluation, not a second question: it pools the report's own per-band
 numbers into the one scalar the plan's S3 closed loop converges on, and
-holds no threshold or loop policy of its own. This module shipped as a
+holds no threshold or loop policy of its own. :func:`spec_flatness_gauge`
+is a third reading of the same kind — the household-facing "how flat is
+it" figures, every one of them lifted from the report rather than
+recomputed (plan PR-5, the spec-curve SSOT). This module shipped as a
 pure, uncalled evaluator, mirroring
 :mod:`jasper.active_speaker.linearization_envelope`'s shape (a pure module
 with zero production callers at the time it shipped -- and one now, which is
@@ -22,9 +25,12 @@ the whole arc of the pattern: ships pure and uncalled, gets wired later, and
 its docstring says which of the two it is TODAY). `evaluate_flat_spec` is
 now called by the plan's PR-4
 (:func:`jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`,
-landed 2026-07-26) against the cloud's merged honesty mask;
-`spec_convergence_residual` remains uncalled -- S3's closed loop is not yet
-built. Check the current call graph rather than trusting this sentence.
+landed 2026-07-26) against the cloud's merged honesty mask, and
+`spec_flatness_gauge` by that same function (PR-5, 2026-07-27).
+`spec_convergence_residual` is no longer uncalled either -- not because S3's
+closed loop exists (it does not), but because `spec_flatness_gauge` pools the
+gauge's RMS through it rather than owning a second pooling rule. Check the
+current call graph rather than trusting this sentence.
 
 See docs/flat-linearization-plan.md, section "The spec -- what 'flat' means
 here," for the adopted definition this module implements: reference = power
@@ -521,4 +527,138 @@ def spec_convergence_residual(report: FlatSpecReport) -> ConvergenceResidual:
         n_bins=n_bins,
         n_excluded=n_excluded,
         evaluable=True,
+    )
+
+
+@dataclass(frozen=True)
+class SpecFlatness:
+    """The household-facing "how flat is the speaker" figures for one report.
+
+    The flat-linearization plan's PR-5 (the spec-curve SSOT) makes
+    :func:`evaluate_flat_spec`'s report the ONE construction every
+    spec-facing surface reads. This is the reduction those surfaces
+    actually render: the worst deviation and where it sits, the band's own
+    tolerance, the pooled average error, and how much of the spectrum the
+    number was computed from.
+
+    Every field is **lifted from the report**, never recomputed from a
+    curve: ``max_*``/``tolerance_db`` are one :class:`BandResult`'s own
+    values verbatim, and ``rms_db``/``n_bins``/``n_excluded`` come from
+    :func:`spec_convergence_residual` (itself derived from the report). So
+    a gauge, a ledger line, and the report shown for one session are the
+    same numbers by construction, not by two code paths agreeing — the
+    MEASURE-vs-VERIFY frame-discrepancy class the plan's "S0 executed"
+    § c documents.
+
+    Args:
+      max_db: the **signed** deviation at the worst bin of the worst
+        evaluable band — the same signed convention (and the same number)
+        as :attr:`BandResult.max_deviation_db`, because "2.4 dB too loud"
+        and "2.4 dB too quiet" call for opposite corrections. ``None``
+        when no band was evaluable.
+      max_hz: that bin's frequency. ``None`` when unevaluable.
+      max_band_hz: ``(f_lo_hz, f_hi_hz)`` of the band that worst bin lives
+        in — which tolerance row the number is being judged against.
+        ``None`` when unevaluable.
+      tolerance_db: that band's tolerance. ``None`` when unevaluable.
+      rms_db: :attr:`ConvergenceResidual.rms_db` — RMS deviation pooled
+        over every non-excluded spec-band bin. ``None`` when unevaluable.
+      n_bins: how many bins the RMS was computed from.
+      n_excluded: how many spec-band bins the exclusion mask removed. With
+        ``n_bins`` this is the "graded on how much of the spectrum" pair
+        :class:`ConvergenceResidual` exists to keep visible: a deviation
+        that fell because the mask grew is the same speaker on fewer bins,
+        not an improvement. Deliberately a BIN count, not a count of
+        :attr:`FlatSpecReport.excluded_intervals`: that field spans the
+        whole axis including regions no spec band covers, so quoting it as
+        "regions excluded from grading" would count a sub-250 Hz interval
+        that was never graded in the first place.
+      evaluable: whether ANY band survived to be measured. ``False`` means
+        there is no flatness number, not a flatness of zero.
+      passed: :attr:`FlatSpecReport.overall_passed`, verbatim. **Read it
+        with** ``evaluable``: that field is ``False`` for an unmeasurable
+        spectrum too (by its own "will not report a clean bill of health
+        for a spectrum it could not fully measure" rule), so
+        ``passed=False, evaluable=False`` means "could not be measured",
+        not "failed".
+    """
+
+    max_db: float | None
+    max_hz: float | None
+    max_band_hz: tuple[float, float] | None
+    tolerance_db: float | None
+    rms_db: float | None
+    n_bins: int
+    n_excluded: int
+    evaluable: bool
+    passed: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_db": self.max_db,
+            "max_hz": self.max_hz,
+            "max_band_hz": (
+                list(self.max_band_hz) if self.max_band_hz is not None else None
+            ),
+            "tolerance_db": self.tolerance_db,
+            "rms_db": self.rms_db,
+            "n_bins": self.n_bins,
+            "n_excluded": self.n_excluded,
+            "evaluable": self.evaluable,
+            "passed": self.passed,
+        }
+
+
+def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
+    """Reduce one :class:`FlatSpecReport` to the figures a household-facing
+    flatness gauge renders (plan PR-5).
+
+    **Derived from the report, not recomputed from the curve** — the same
+    rule, and the same reason, as :func:`spec_convergence_residual`: band
+    membership, the exclusion mask's effect, and the reference level are
+    each answered exactly once, by :func:`evaluate_flat_spec`. A gauge that
+    re-derived any of them would be a second owner of the same decision,
+    which is the very failure mode this function exists to remove.
+
+    The worst band is the one whose :attr:`BandResult.max_deviation_db` has
+    the largest **absolute** value among evaluable bands; ties go to the
+    lowest band, so the choice is deterministic rather than dict-order
+    dependent. Deliberately NOT "the band that failed by the widest margin
+    relative to its own tolerance": the rendered claim is "this is how far
+    from flat the speaker measured", a dB reading, and re-ranking bands by
+    tolerance headroom would silently answer a different question.
+    """
+    residual = spec_convergence_residual(report)
+    worst: BandResult | None = None
+    worst_magnitude_db = -1.0
+    for band in report.bands:
+        if not band.evaluable or band.max_deviation_db is None:
+            continue
+        magnitude_db = abs(band.max_deviation_db)
+        # Strict `>` is what makes ties go to the LOWEST band: SPEC_BANDS is
+        # ordered low-to-high and this walks it in order.
+        if magnitude_db > worst_magnitude_db:
+            worst, worst_magnitude_db = band, magnitude_db
+    if worst is None:
+        return SpecFlatness(
+            max_db=None,
+            max_hz=None,
+            max_band_hz=None,
+            tolerance_db=None,
+            rms_db=residual.rms_db,
+            n_bins=residual.n_bins,
+            n_excluded=residual.n_excluded,
+            evaluable=False,
+            passed=report.overall_passed,
+        )
+    return SpecFlatness(
+        max_db=worst.max_deviation_db,
+        max_hz=worst.max_deviation_hz,
+        max_band_hz=(worst.f_lo_hz, worst.f_hi_hz),
+        tolerance_db=worst.tolerance_db,
+        rms_db=residual.rms_db,
+        n_bins=residual.n_bins,
+        n_excluded=residual.n_excluded,
+        evaluable=True,
+        passed=report.overall_passed,
     )

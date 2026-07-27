@@ -2782,29 +2782,22 @@ def test_verify_fail_persists_expert_evidence_through_the_real_persist_path():
     assert verify["evidence"]["tolerance_db"] == 1.5
 
 
-_FLATNESS_FIXTURE = {
-    "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
-}
+def test_verify_block_carries_no_flatness_key_after_the_pr5_rebase():
+    """The flat-linearization plan's PR-5 removed ``verify["flatness"]``.
 
-
-def test_verify_flatness_persists_through_the_real_persist_path_on_pass():
-    """Gauge fix (2026-07-24): unlike verify["evidence"] (persisted only on
-    a non-pass outcome by product design), verify["flatness"] persists
-    through the SAME real persist_conductor_state on a CLEAN PASS too. This
-    is the exact reported bug: a household watching "VERIFY PASS" for weeks
-    with zero visibility into how far from flat the summed response
-    actually was — that visibility now survives the session via the same
-    durable v2 state file the wizard polls."""
+    That key carried the retired per-VERIFY-capture construction; the spec
+    verdict is a property of the CLOUD and lives in the ``cloud`` block, so a
+    second copy under ``verify`` would be exactly the duplicated-frame shape
+    PR-5 removes. The two assertions that were the point of the retired tests
+    (a PASS still persists no ``evidence``; a FAIL still persists it, with the
+    gated number) are kept verbatim — the removal must not have disturbed
+    them."""
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
     conductor = _conductor(
         backend, session, phone, published=[],
-        analyses={
-            "verify": lambda program: replace(
-                _verify_analysis(program), flatness_tracking=_FLATNESS_FIXTURE,
-            ),
-        },
+        analyses={"verify": _verify_analysis},
     )
     attempt = _walk_to_verify(conductor, persist=True)
     conductor.note_apply_complete()  # arm VERIFY
@@ -2815,27 +2808,17 @@ def test_verify_flatness_persists_through_the_real_persist_path_on_pass():
     verify = v2host.load_v2_state()["verify"]
     assert verify["outcome"] == "pass"
     assert "evidence" not in verify  # unchanged: a pass never persists this
-    assert verify["flatness"]["max_db"] == 13.3
-    assert verify["flatness"]["rms_db"] == 4.2
-    assert verify["flatness"]["band_lo_hz"] == 150.0
-    assert verify["flatness"]["band_hi_hz"] == 16000.0
-    assert verify["flatness"]["tolerance_db"] == 3.0
+    assert "flatness" not in verify
 
 
-def test_verify_flatness_persists_through_the_real_persist_path_on_fail():
-    """Symmetric with the pass case above -- flatness is a SIBLING claim
-    that persists regardless of the integration-verify outcome, alongside
-    "evidence" when that ALSO persists (a fail)."""
+def test_verify_fail_block_still_persists_evidence_and_no_flatness():
+    """The fail-branch half of the same boundary."""
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
     conductor = _conductor(
         backend, session, phone, published=[],
-        analyses={
-            "verify": lambda program: replace(
-                _verify_analysis(program, max_db=2.4), flatness_tracking=_FLATNESS_FIXTURE,
-            ),
-        },
+        analyses={"verify": lambda program: _verify_analysis(program, max_db=2.4)},
     )
     attempt = _walk_to_verify(conductor, persist=True)
     conductor.note_apply_complete()  # arm VERIFY
@@ -2846,7 +2829,7 @@ def test_verify_flatness_persists_through_the_real_persist_path_on_fail():
     verify = v2host.load_v2_state()["verify"]
     assert verify["outcome"] == "fail"
     assert verify["evidence"]["max_db"] == 2.4
-    assert verify["flatness"]["max_db"] == 13.3
+    assert "flatness" not in verify
 
 
 def test_candidate_summary_surfaces_linearization_outcome_and_octaves():

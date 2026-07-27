@@ -136,6 +136,19 @@ def _linearization_octave_rows(
     it — "uncorrected regions show their natural deficit, never a
     pass/fail" (LinearizationFit's own docstring). Empty for a role whose
     fit never ran.
+
+    **These are FIT DIAGNOSTICS, not the measurement (flat-linearization
+    plan PR-5).** Every number here is per-driver, on the fit's own envelope
+    grid, from the single design-axis MEASURE capture — a different curve,
+    a different geometry, and a different question from the spec claim. The
+    spec-facing summary on the same screen is
+    :func:`_flatness_details_lines`, which reads the spatial cloud. PR-5
+    did not re-derive these rows (there is no per-role decomposition of a
+    summed cloud curve to re-derive them from, and the fit genuinely needs
+    to disclose what IT achieved); it made sure the two are labeled apart,
+    here and in the renderer that prints them
+    (``deploy/assets/correction/js/crossover/main.js``), so no surface
+    presents a per-driver fit residual as "the measurement".
     """
     rows: list[dict[str, Any]] = []
     for role, per_role in sorted(
@@ -241,36 +254,119 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
 
 
 def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
-    """Gauge fix (2026-07-24): the flatness-verify report-only numbers,
-    distinctly labeled from :func:`_verify_expert_details`'s integration-verify
-    lines above — that claim answers "did the crossover integrate as
-    predicted" (gates); this one answers "how far from flat is the summed
-    response, validity-floor to 16 kHz" (report-only, never a gate). Shown
-    regardless of pass/fail (see ``persist_conductor_state``'s own comment
-    on why flatness is persisted on every outcome). Empty when the
-    conductor persisted no flatness evidence (no usable validity floor this
-    capture, or no VERIFY capture yet)."""
-    flatness = _mapping(_mapping(_v2(status).get("verify")).get("flatness"))
+    """The spec-facing flatness disclosure — "how flat is the speaker" —
+    distinctly labeled from :func:`_verify_expert_details`'s
+    integration-verify lines above, which answer "did the crossover integrate
+    as predicted" and are what gates.
+
+    **Re-based onto the spec-curve SSOT (flat-linearization plan PR-5).**
+    Until PR-5 these lines rendered a per-VERIFY-capture number (one mic
+    position, its own grid, its own band mean, no interference exclusion),
+    persisted under ``verify.flatness``. They now read the CLOUD-VERIFY
+    group's spec gauge — ``spec_flatness_gauge`` of the same
+    ``evaluate_flat_spec`` report `/state`, the doctor check, and the bundle
+    artifact read (and PR-7's chart will) — copied through
+    ``_compact_cloud_status``. One construction, so the number here and the
+    number in the report are the same bytes.
+
+    ``PHASE_CLOUD_VERIFY`` only, never ``PHASE_CLOUD_MEASURE``: the pre-apply
+    cloud is the UNCORRECTED baseline that exists in order to be out of spec
+    (the same distinction PR-4's ``check_crossover_v2_cloud_pipeline`` blocker
+    fix drew), so rendering it as "how flat is your speaker" would report a
+    correct speaker as bad forever.
+
+    Empty when no cloud-verify group has closed. That is "nothing measured
+    yet", and saying nothing is the honest rendering of it; the fallback
+    vocabulary lives in :func:`_flatness_unavailable_line` for the states
+    that DO have something to say.
+    """
+    flatness = _mapping(_cloud_verify_block(status).get("flatness"))
     if not flatness:
-        return []
+        return _flatness_unavailable_line(status)
+    if not flatness.get("evaluable"):
+        # The gauge ran and could not measure — see
+        # ``flat_spec.SpecFlatness.passed``'s own "read it with evaluable"
+        # rule. Never render this as a pass or a fail.
+        return [
+            "flatness could not be measured — every spec band was excluded "
+            "or out of range"
+        ]
     lines: list[str] = []
     max_db = _finite(flatness.get("max_db"))
+    max_hz = _finite(flatness.get("max_hz"))
     tolerance_db = _finite(flatness.get("tolerance_db"))
-    if max_db is not None and tolerance_db is not None:
-        lines.append(
-            f"flatness {max_db:.2f} dB from flat "
-            f"(report-only; target {tolerance_db:.1f} dB, not yet enforced)"
+    band = flatness.get("max_band_hz")
+    band_lo = _finite(band[0]) if isinstance(band, (list, tuple)) and band else None
+    band_hi = (
+        _finite(band[1]) if isinstance(band, (list, tuple)) and len(band) == 2 else None
+    )
+    if max_db is not None:
+        where = f" at {max_hz:.0f} Hz" if max_hz is not None else ""
+        against = (
+            f" (spec {band_lo:.0f}–{band_hi:.0f} Hz, tolerance ±{tolerance_db:.1f} dB)"
+            if band_lo is not None and band_hi is not None and tolerance_db is not None
+            else ""
         )
-    elif max_db is not None:
-        lines.append(f"flatness {max_db:.2f} dB from flat (report-only)")
+        lines.append(f"flatness {max_db:+.2f} dB from the spec reference{where}{against}")
     rms_db = _finite(flatness.get("rms_db"))
     if rms_db is not None:
-        lines.append(f"flatness average error {rms_db:.2f} dB")
-    lo = _finite(flatness.get("band_lo_hz"))
-    hi = _finite(flatness.get("band_hi_hz"))
-    if lo is not None and hi is not None:
-        lines.append(f"flatness checked {lo:.0f}–{hi:.0f} Hz")
+        lines.append(f"flatness average error {rms_db:.2f} dB across the spec bands")
+    graded = flatness.get("n_bins")
+    excluded = flatness.get("n_excluded")
+    if isinstance(graded, int) and isinstance(excluded, int) and excluded > 0:
+        # Bins, not "regions": ``SpecFlatness.n_excluded``'s own docstring
+        # explains why an interval count would over-report here (it spans
+        # the whole axis, including frequencies no spec band grades).
+        lines.append(
+            f"{excluded} of {graded + excluded} spec-band bins excluded from "
+            "grading (interference, or below the measurement's validity floor)"
+        )
     return lines
+
+
+def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The compact CLOUD-VERIFY entry of the ``cloud`` block, or empty.
+
+    ``PHASE_CLOUD_VERIFY`` is spelled through the shared phase constant, not
+    a literal, so this and the conductor cannot drift apart on the key name.
+    """
+    return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_VERIFY))
+
+
+def _flatness_unavailable_line(status: Mapping[str, Any]) -> list[str]:
+    """The honest cloud-absent rendering (plan PR-5) — three distinguishable
+    states, told apart rather than collapsed into one message.
+
+    * **No cloud-verify entry at all** — the group has not closed (or this
+      session never had one, e.g. a verify-only re-arm whose prior cloud was
+      also absent). Nothing measured, nothing to say: empty.
+    * **The entry exists and its pipeline DID run, but carries no gauge** —
+      a durable state written by a build between PR-4 and PR-5, read after
+      an upgrade without a new session. The pipeline was fine; only the
+      gauge is missing. ``overall_passed`` is the tell: ``_compact_cloud_status``
+      leaves it ``None`` for an unavailable pipeline and copies the spec
+      verdict otherwise. Saying "could not be analysed" here would be a
+      false statement about a session that analysed fine.
+    * **The entry exists and its pipeline never became available** — a
+      combine or DSP-step failure. Say so, because the alternative is a
+      screen that silently looks like the session with no spec claim in it.
+
+    None of the three quotes a number: the construction did not run (or its
+    result was not recorded), so there is no spec-frame figure to give,
+    fabricated or otherwise.
+    """
+    entry = _cloud_verify_block(status)
+    if not entry:
+        return []
+    if entry.get("overall_passed") is not None:
+        return [
+            "flatness not recorded for this measurement — it predates the "
+            "spec gauge; re-measure to see it"
+        ]
+    return [
+        "flatness not available for this measurement — the spatial "
+        "measurement could not be analysed"
+    ]
 
 
 def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:

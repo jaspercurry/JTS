@@ -530,37 +530,67 @@ together. Design rationale:
   #1742 item 4's single result-assembly function, called once per closed
   group and never read from in pieces.
 
-**Flatness-verify (#1668 PR-D) — a SIBLING claim, report-only.** The same
-VERIFY capture also computes `ProgramAnalysis.flatness_tracking`: gated
-response flatness from this capture's own validity floor to 16 kHz,
-independent of `fc_hz`/`priors.predicted_sum` (`summed_response` alone) —
-see `program_analysis.FLATNESS_VERIFY_HI_HZ`'s own comment for why this is
-deliberately never folded into `verify_tracking` above. It answers a
-different question ("is the gated response flat broadband") than
-integration-verify ("did the applied crossover realize its own predicted
-summation") — the design doc's finding was that integration-verify alone
-cannot see an uncompensated tweeter rolloff, because the prediction shares
-that rolloff. Relayed alongside `tracking` in the conductor's
-`PhaseVerdict` payload (`flatness_tracking`, `None` when this capture's
-validity floor could not be established) and logged with a
-`flatness_`-prefixed field set in `event=correction.crossover_v2_verify_diag`.
-`FLATNESS_VERIFY_TOLERANCE_DB` (3.0, PROVISIONAL) is not yet a gate —
-nothing in `_verify_verdict`'s accepted/code logic reads it; a future PR-E
-wires the accept/reject threshold once bench-derived.
+**Flatness — a SIBLING claim, report-only, and since the flat-linearization
+plan's PR-5 it comes from the CLOUD, not from the VERIFY capture.** It
+answers a different question ("is the speaker flat") than integration-verify
+("did the applied crossover realize its own predicted summation") — the
+design doc's finding was that integration-verify alone cannot see an
+uncompensated tweeter rolloff, because the prediction shares that rolloff.
 
-**Gauge fix (2026-07-24): flatness now reaches a human, not just the log
-line.** Before this fix, the numbers above existed only in the ephemeral
-per-capture relay payload and the diagnostic log — a household could watch
-a clean "VERIFY PASS" for weeks with zero visibility into how far from flat
-the summed response actually was. `CrossoverV2Conductor.flatness_evidence`
-(mirroring `verify_evidence`'s own shape, but stamped on BOTH pass and fail
-— see its docstring) now persists into the durable v2 state's
-`verify.flatness` via `persist_conductor_state`, and
-`crossover_envelope_v2._flatness_details_lines` renders it into
-`expert_details` on both the verify_fail screen (alongside the
-integration-verify numbers, distinctly labeled "report-only") and the
-"done"/RESULT screen (where no expert numbers rendered at all before this
-fix). Still report-only — no gating-semantics changed.
+*History, because the shape changed twice.* #1668 PR-D computed it per
+VERIFY capture (`ProgramAnalysis.flatness_tracking`, that capture's own grid
+from its own validity floor to `FLATNESS_VERIFY_HI_HZ` = 16 kHz, graded
+against its own band mean, tolerance `FLATNESS_VERIFY_TOLERANCE_DB` = 3.0,
+PROVISIONAL and never bench-derived). The 2026-07-24 gauge fix persisted it
+to `verify.flatness` and rendered it on the verify_fail and "done" screens.
+**PR-5 retired that whole construction** — function, both constants, the
+`ProgramAnalysis` field, the `PhaseVerdict` relay, the conductor's
+`flatness_evidence` stash, the `verify.flatness` state key, and the
+`flatness_*` fields on `event=correction.crossover_v2_verify_diag`. A single
+mic position cannot answer "is the speaker flat", and having it answer
+anyway produced two disagreeing numbers per session (the plan's
+MEASURE-vs-VERIFY ledger-discrepancy class).
+
+*Current shape.* One construction: `combine_positions`' power-mean spec
+curve → the merged honesty mask (screen ∪ null registry) plus the group's
+gate-validity clamp → `flat_spec.evaluate_flat_spec` →
+`flat_spec.spec_flatness_gauge`, all inside
+`assemble_cloud_group_result`, which publishes it as the pipeline's
+`flatness` key. Every surface COPIES that dict: `_compact_cloud_status`
+(`/state` + the envelope's `cloud` block), the doctor's
+`check_crossover_v2_cloud_pipeline` detail, and
+`crossover_envelope_v2._flatness_details_lines`, which renders it into
+`expert_details` on the verify_fail and "done"/RESULT screens from
+`PHASE_CLOUD_VERIFY` only (`cloud_measure` is the uncorrected pre-apply
+baseline — rendering it would report a corrected speaker as bad forever).
+Logged once per closed group as `event=correction.crossover_v2_cloud_spec`.
+Still report-only: nothing in `_verify_verdict`'s accepted/code logic reads
+it, and the tolerances are now the spec table's own per-band values
+(`flat_spec.SPEC_BANDS`) instead of one provisional constant. Contract test:
+[`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py).
+
+*The gate-validity clamp.* `cloud_validity_floor_hz` takes the WORST
+(highest) reflection-gate floor across the group's positions — the same
+"worse of the two" rule `_measure_validity_floor_hz` applies to the driver
+branches — and bins below it are excluded from the spec evaluation, from the
+reference level as well as the deviations. It is deliberately kept OUT of
+`merged_excluded_bands_hz` (and so out of `/state`'s
+`excluded_interval_count`), which stays the honesty instruments' own
+"how much interference did we find" number; `pipeline.validity_floor_hz`
+discloses the clamp separately. Measured regime: nine of the S0 main leg's
+ten positions gate to 142.9 Hz (below the 250 Hz spec edge, so a no-op), but
+`cloud_04` collapsed to 1777.8 Hz, which moves 1009 bins out of the
+250 Hz–2 kHz band — the cost is real, pinned, and visible in the gauge's own
+`n_bins`/`n_excluded` pair.
+
+**The fit's honesty ladder is NOT this claim.** `LinearizationFit`'s
+fit/verify/observe levels (including `observe_octave_summary`, rendered by
+`crossover_envelope_v2._linearization_octave_rows`) are per-driver
+diagnostics on the fit's envelope grid from the single design-axis MEASURE
+capture. PR-5 relabeled the rendered line accordingly ("fit residual vs
+target (design-axis capture, not the spatial measurement)") so no surface
+presents a per-driver fit residual as the measurement. The two will
+legitimately disagree.
 
 **One MARK for the whole session: ~1 m on the listening axis, tweeter
 height, facing the speaker.** The placement screen encodes a tolerance
@@ -608,7 +638,7 @@ most visible thing on the screen.
 |---|---|
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | The conductor: `CrossoverV2Conductor`, `REASON_REGISTRY`, capture-plan builders (`build_v2_session_spec` / `build_v2_capture_plan` / `build_v2_verify_*`), `bind_program_playback_seams`, `derive_session_volume_db`, `open`/`abandon_measurement_volume`. Also the position-group choreography (flat-linearization PR-3b): the cloud constants + `CLOUD_POSITION_PROMPTS`, `build_v2_cloud_index_phase_map`, `cloud_capture_target` / `cloud_plan_max_attempts` / `assert_cloud_plan_fits_relay_capacity`, `session_wall_clock_ceiling_s`, and the combine seam (`cloud_position_capture` / `cloud_geometry_verdict`). PR-4 adds the contract-derived bands (`_composed_swept_band_hz`, `_derive_cloud_echo_band_hz`, `ECHO_BAND_HF_REGIME_FLOOR_HZ`) and the wiring-contract assembly (`assemble_cloud_group_result`, `group_cloud_result`). |
 | [`jasper/audio_measurement/program.py`](../jasper/audio_measurement/program.py) | Excitation-program model + composers: `ExcitationProgram`, `ProgramSegment`, `RoleBand`, `build_check_program` / `build_measure_program` / `build_verify_program`, `render_program_pcm`, `write_program_wav`, `mesm_gap_samples`. Pure data + pure composers, no safety decisions. |
-| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. Also owns flatness-verify (#1668 PR-D): `_flatness_tracking` / `FLATNESS_VERIFY_HI_HZ` / `FLATNESS_VERIFY_TOLERANCE_DB` — see "Flatness-verify" above. |
+| [`jasper/audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: `analyze_program_capture` → `ProgramAnalysis`; locate/segment, drift (ε), per-driver gated TF, GCC-PHAT polarity/confidence seed + physical-gap-lobed declaration-bounded summed-flatness refinement, prediction, VERIFY tracking. All the analysis tuning constants. It no longer owns any flatness claim — flatness-verify (#1668 PR-D) was retired here by the flat-linearization plan's PR-5 and now lives on the cloud pipeline; see "Flatness" above. |
 | [`jasper/active_speaker/session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: `session_measurement_volume_db` (the `min(−20, max(caps))` SSOT) + `SessionVolumePlan` (open/close/abandon, wall-clock ceiling, restore-once latch). |
 | [`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: `/correction/crossover/v2/*` endpoint bindings, durable v2 state, the real analyze/publish/playback seams, `resolve_conductor_context`, `handle_v2_apply` / `handle_v2_restore`, calibration resolution, `ensure_crossover_preview_ready`, `persist_conductor_state`. |
 | [`jasper/active_speaker/crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer (schema 8): step list, screen dispatch, `REASON_REGISTRY` → template copy. |
@@ -793,6 +823,12 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   `verify_tolerance_db`, `verify_gate_window_ms`, `measure_gate_window_ms`
   (the comparability pair behind `verify_inconclusive`), `validity_floor_hz`,
   `tracking_band_lo_hz`/`tracking_band_hi_hz`, `rms_db`.
+- `correction.crossover_v2_cloud_spec` — the spec verdict, once per CLOSED
+  group (not per capture): `phase`, `available`, `reason`, `spec_passed`,
+  `spec_evaluable`, `flatness_max_db`, `flatness_max_hz`, `flatness_rms_db`,
+  `spec_n_excluded`, `validity_floor_hz`. Emitted from `_run_cloud_pipeline`,
+  and since the flat-linearization plan's PR-5 it is the ONLY place a
+  flatness number is logged (see "Flatness" above).
 
 Source: the `_log_check_diag` / `_log_measure_diag` / `_log_verify_diag`
 methods on `CrossoverV2Conductor` in `crossover_v2_flow.py`, called from thin

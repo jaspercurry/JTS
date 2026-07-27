@@ -415,6 +415,18 @@ class LinearizationFit:
     disclosure as the driver's measured natural response, never as a
     pass/fail." All four are REPORT-ONLY in this PR; nothing gates on them
     yet (design doc build-order step 2, closed-loop verify, is a later PR).
+
+    **All three ladder levels are FIT DIAGNOSTICS, and the flat-linearization
+    plan's PR-5 fixed how they are labeled downstream.** Every one of them is
+    computed per-driver, on this fit's own envelope grid, from the single
+    design-axis MEASURE capture. None of them is the flat-linearization spec
+    claim — that is graded on the spatially-combined cloud curve by
+    :func:`jasper.active_speaker.flat_spec.evaluate_flat_spec`, over the spec
+    bands, with interference-flagged bins excluded. The two answer different
+    questions on different curves and will legitimately disagree; the
+    household-facing surfaces name which is which
+    (``crossover_envelope_v2._linearization_octave_rows`` vs
+    ``_flatness_details_lines``).
     """
 
     role: str

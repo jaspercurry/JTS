@@ -87,7 +87,6 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
-    FLATNESS_VERIFY_TOLERANCE_DB,
     GainPlan,
     MeasurementGeometry,
     MeasurementPriors,
@@ -1184,38 +1183,13 @@ def _verify_evidence_from_tracking(
     }
 
 
-def _flatness_evidence_from_tracking(
-    flatness: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Gauge fix (2026-07-24): the flatness-verify report-only numbers,
-    mirroring :func:`_verify_evidence_from_tracking`'s shape for the SIBLING
-    flatness claim (see ``program_analysis.FLATNESS_VERIFY_HI_HZ``'s own
-    comment — never folded into the integration-verify evidence above).
-    Unlike ``verify_evidence``, this is meant to be persisted and shown
-    REGARDLESS of pass/fail: it is the number that answers "how far from
-    flat is the summed response", independent of whether the crossover
-    integrated as predicted. Returns None when ``flatness`` carries no
-    usable max (e.g. this capture had no usable validity floor)."""
-    if not flatness:
-        return None
-    max_db = flatness.get("max_db")
-    if not isinstance(max_db, (int, float)):
-        return None
-    rms_db = flatness.get("rms_db")
-    band = flatness.get("band_hz")
-    lo = hi = None
-    if isinstance(band, (list, tuple)) and len(band) == 2:
-        lo, hi = band
-    tolerance_db = flatness.get("tolerance_db")
-    return {
-        "max_db": float(max_db),
-        "rms_db": float(rms_db) if isinstance(rms_db, (int, float)) else None,
-        "band_lo_hz": float(lo) if isinstance(lo, (int, float)) else None,
-        "band_hi_hz": float(hi) if isinstance(hi, (int, float)) else None,
-        "tolerance_db": (
-            float(tolerance_db) if isinstance(tolerance_db, (int, float)) else None
-        ),
-    }
+# (``_flatness_evidence_from_tracking`` lived here until the
+# flat-linearization plan's PR-5. It repackaged one VERIFY capture's own
+# grid-and-band-mean flatness number for the RESULT/verify_fail screens; that
+# number is retired along with ``program_analysis._flatness_tracking``, and the
+# flatness the household sees now comes from the cloud group's spec evaluation
+# — ``assemble_cloud_group_result``'s ``flatness`` key, one construction, one
+# owner. See that function and ``flat_spec.spec_flatness_gauge``.)
 
 
 # --------------------------------------------------------------------------- #
@@ -1984,8 +1958,35 @@ def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
     )
 
 
+def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None:
+    """The group's own gated validity floor — the WORST (highest) of its
+    positions' floors, or ``None`` when no position reported a usable one.
+
+    Why the worst rather than a mean or the anchor's: the combined curve is a
+    power mean ACROSS these positions, so a bin below any one position's
+    reflection-gate floor is contaminated in the average by that position's
+    truncated-window artifact (``gating.f_valid_floor_hz`` — the same
+    quantity ``_analyze_verify``'s tracking band already clamps up to, W6.9
+    forensics). Taking the highest floor is the only choice under which every
+    graded bin is inside every contributing capture's validity.
+
+    ``None`` (no position carried a finite, positive floor) means the lower
+    edge could not be verified — NOT that it is zero. Callers disclose it as
+    unknown and clamp nothing; see :func:`assemble_cloud_group_result`.
+    """
+    floors = [
+        float(getattr(p.response, "validity_floor_hz", None) or 0.0)
+        for p in positions
+    ]
+    usable = [f for f in floors if math.isfinite(f) and f > 0.0]
+    return max(usable) if usable else None
+
+
 def assemble_cloud_group_result(
-    combined: Any, *, echo_band_hz: tuple[float, float],
+    combined: Any,
+    *,
+    echo_band_hz: tuple[float, float],
+    validity_floor_hz: float | None = None,
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
     consumes the exclusion mask, ``geometry.locked``, and the null registry
@@ -2005,6 +2006,48 @@ def assemble_cloud_group_result(
     ``combined`` may be ``None`` (the group could not be combined at all --
     :func:`combine_cloud_positions`'s own honest "unknown") or a
     :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`.
+
+    **The spec-curve SSOT (plan PR-5).** The ``spec`` report this builds is
+    the ONE construction every spec-facing surface reads -- the flatness
+    gauge, the observe ledger's spec-facing summary, `/state`, and the
+    envelope all render ``flatness`` (:func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge`
+    of that same report) rather than deriving a number of their own. Nothing
+    downstream re-evaluates the curve.
+
+    **``validity_floor_hz`` clamps the spec band's lower edge.** Bins below
+    the group's gated validity floor (:func:`cloud_validity_floor_hz`) are
+    "not a measurement, they're an artifact of a truncated gate window"
+    (``_analyze_verify``'s own W6.9 comment about the tracking band), so they
+    are excluded from the spec evaluation -- from the reference level as well
+    as from every band's deviation, since a contaminated bin must not be able
+    to re-center the target either. Two properties this deliberately keeps:
+
+    * The clamp rides the evaluation's exclusion mask but **not**
+      ``merged_excluded_bands_hz``, which stays the honesty instruments'
+      own count (screen union identified nulls). ``excluded_interval_count``
+      on `/state` is the "how much interference did we find" number and must
+      not silently absorb a gate artifact. ``validity_floor_hz`` is reported
+      alongside so a reader can tell the two apart in ``spec.n_excluded``.
+    * A ``None`` floor clamps NOTHING and is reported as ``None``. The
+      alternative -- withholding the whole gauge, which is what the retired
+      per-capture ``_flatness_tracking`` did when a capture had no floor --
+      would throw away the 2-16 kHz evidence over an unverified lower edge.
+
+    Regime, measured on the S0 main leg 2026-07-27 (``test_flat_spec_ssot.py``
+    pins both halves): the spec table's lower edge is 250 Hz and NINE of that
+    session's ten positions gate to 142.9 Hz, where the clamp changes no
+    graded number at all -- every band figure, the reference level, the
+    verdict, and the whole gauge are byte-identical (only the report-wide
+    ``excluded_intervals`` gains the sub-250 Hz region it removed, which is
+    why the gauge quotes spec-band BIN counts and not an interval count). The
+    tenth, ``cloud_04``, collapsed to **1777.8 Hz** -- so the group floor is
+    1777.8 Hz and the clamp moves **1009 bins** out of the 250 Hz-2 kHz band,
+    re-centres the reference on what survives, and takes the pooled RMS from
+    3.76 dB to 3.15 dB. That is the same speaker graded on fewer bins, not a
+    better one, which is exactly what ``n_bins``/``n_excluded`` on the gauge
+    exist to keep visible. One collapsed gate in a group is therefore
+    expensive by design: the alternative is grading bins that one contributing
+    capture cannot support.
 
     **Fail-soft, named, not absolute** (S4 review finding, 2026-07-26 --
     corrected from an earlier "any exception is caught" overclaim). Catches
@@ -2030,7 +2073,10 @@ def assemble_cloud_group_result(
     if combined is None:
         return {"available": False, "reason": "combine_failed"}
     try:
-        from jasper.active_speaker.flat_spec import evaluate_flat_spec
+        from jasper.active_speaker.flat_spec import (
+            evaluate_flat_spec,
+            spec_flatness_gauge,
+        )
         from jasper.audio_measurement.interference_nulls import (
             identify_interference_nulls,
         )
@@ -2040,8 +2086,16 @@ def assemble_cloud_group_result(
         merged_mask = np.asarray(combined.excluded, dtype=bool) | np.asarray(
             null_report.excluded, dtype=bool
         )
+        # The honesty mask is what the instruments found; the spec mask adds
+        # the gate-validity clamp on top (see this function's docstring for
+        # why the two stay distinguishable).
+        spec_mask = merged_mask
+        if validity_floor_hz is not None and math.isfinite(validity_floor_hz):
+            spec_mask = merged_mask | (
+                np.asarray(combined.freqs_hz, dtype=float) < float(validity_floor_hz)
+            )
         spec_report = evaluate_flat_spec(
-            combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
+            combined.freqs_hz, combined.power_mean_spec_db, spec_mask,
         )
         geometry_dict = {
             "locked": bool(combined.geometry.locked),
@@ -2064,6 +2118,16 @@ def assemble_cloud_group_result(
             ],
             "null_registry": _null_registry_to_dict(null_report),
             "spec": spec_report.to_dict(),
+            # PR-5: the spec-facing gauge — a pure reduction of the SAME
+            # ``spec`` report above, carried here so no downstream surface
+            # has to (or may) derive its own. Byte-identical wherever it is
+            # rendered, because there is one number, copied.
+            "flatness": spec_flatness_gauge(spec_report).to_dict(),
+            "validity_floor_hz": (
+                float(validity_floor_hz)
+                if validity_floor_hz is not None and math.isfinite(validity_floor_hz)
+                else None
+            ),
             "echo_band_hz": list(echo_band_hz),
             "curve": _decimate_curve_for_json(
                 combined.freqs_hz, combined.power_mean_spec_db,
@@ -2241,12 +2305,10 @@ class CrossoverV2Conductor:
         # verdicts (locate/agc/gate/level-shift) leave it None so no half-empty
         # disclosure renders.
         self._verify_evidence: dict[str, Any] | None = None
-        # Gauge fix (2026-07-24): the flatness-verify report-only numbers
-        # (#1668 PR-D), stashed the SAME moment as ``_verify_evidence``
-        # above but never gated on pass/fail — see
-        # ``_flatness_evidence_from_tracking``'s own docstring for why this
-        # must be visible on a PASS too, not just the verify_fail screen.
-        self._flatness_evidence: dict[str, Any] | None = None
+        # (``_flatness_evidence`` lived here until PR-5. The flatness a
+        # household sees is now the cloud-verify group's spec verdict, read
+        # off ``group_cloud_result(PHASE_CLOUD_VERIFY)["flatness"]`` — no
+        # per-attempt stash, because it is not a per-attempt claim.)
         self._last_failure_code: str | None = None
         # G3 (measurement-honesty gate, 2026-07-22): the FIRST usable VERIFY
         # attempt's per-role pilot transfer becomes the reference every LATER
@@ -2433,8 +2495,10 @@ class CrossoverV2Conductor:
         divergence there is the spatial variation the cloud exists to sample,
         not a tracking error. Withholding the prior leaves
         ``analysis.verify_tracking`` ``None``, so no tracking claim can be
-        made from a capture that cannot support one. ``flatness_tracking`` is
-        computed regardless (it needs no prior) and stays report-only.
+        made from a capture that cannot support one. The flatness/spec claim
+        needs no prior at all — since PR-5 it is made ONCE per group, on the
+        combined cloud (:func:`assemble_cloud_group_result`), never per
+        position.
         """
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)
 
@@ -2516,13 +2580,6 @@ class CrossoverV2Conductor:
     def verify_evidence(self) -> dict[str, Any] | None:
         """The verify_fail expert-disclosure numbers (#1605), or None."""
         return dict(self._verify_evidence) if self._verify_evidence else None
-
-    @property
-    def flatness_evidence(self) -> dict[str, Any] | None:
-        """Gauge fix (2026-07-24): the flatness-verify report-only numbers
-        (#1668 PR-D), or None. Distinct from ``verify_evidence`` — this
-        SIBLING claim never gates and is set on both PASS and FAIL."""
-        return dict(self._flatness_evidence) if self._flatness_evidence else None
 
     @property
     def applied(self) -> bool:
@@ -3225,7 +3282,7 @@ class CrossoverV2Conductor:
         # Scoped claim: a NAMED-family exception cannot cost the accept; the
         # residual propagates by design.
         try:
-            self._run_cloud_pipeline(phase, combined)
+            self._run_cloud_pipeline(phase, combined, positions)
         except (OSError, RuntimeError, TypeError, ValueError, IndexError, AttributeError):
             log_event(
                 logger, "correction.crossover_v2_cloud_pipeline_call_failed",
@@ -3241,19 +3298,47 @@ class CrossoverV2Conductor:
             },
         )
 
-    def _run_cloud_pipeline(self, phase: str, combined: Any) -> None:
+    def _run_cloud_pipeline(
+        self, phase: str, combined: Any, positions: Sequence[_CloudPosition],
+    ) -> None:
         """PR-4: the honest-instrument pipeline, run once per CLOSED group.
 
         ``combined`` is the SAME object ``_close_cloud_group`` just derived
         its retry-gating verdict from — ONE combine per group close (S3
         review finding, 2026-07-26), never a second call to
-        :func:`combine_cloud_positions`.
+        :func:`combine_cloud_positions`. ``positions`` is that same group's
+        retained list, read for exactly one thing: its gated validity floor
+        (:func:`cloud_validity_floor_hz`), which clamps the spec band's lower
+        edge (plan PR-5).
 
         Never raises and never affects the accepted verdict already decided
         above — this is diagnostic/disclosure machinery, not a capture gate.
         """
-        self._group_cloud_result[phase] = assemble_cloud_group_result(
-            combined, echo_band_hz=self._cloud_echo_band_hz,
+        result = assemble_cloud_group_result(
+            combined,
+            echo_band_hz=self._cloud_echo_band_hz,
+            validity_floor_hz=cloud_validity_floor_hz(positions),
+        )
+        self._group_cloud_result[phase] = result
+        # PR-5: the spec verdict a session's journal carries. It replaces the
+        # per-VERIFY-capture ``flatness_*`` fields ``_log_verify_diag`` used
+        # to log from the retired capture-grid construction — same operator
+        # question, answered by the instrument that can actually answer it,
+        # logged once per group instead of once per capture.
+        flatness = result.get("flatness") if result.get("available") else None
+        flatness = flatness if isinstance(flatness, Mapping) else {}
+        log_event(
+            logger, "correction.crossover_v2_cloud_spec",
+            session_id=self.session_id, phase=phase,
+            available=bool(result.get("available")),
+            reason=str(result.get("reason") or ""),
+            spec_passed=flatness.get("passed"),
+            spec_evaluable=flatness.get("evaluable"),
+            flatness_max_db=flatness.get("max_db"),
+            flatness_max_hz=flatness.get("max_hz"),
+            flatness_rms_db=flatness.get("rms_db"),
+            spec_n_excluded=flatness.get("n_excluded"),
+            validity_floor_hz=result.get("validity_floor_hz"),
         )
         if self._seams.publish_cloud is not None:
             try:
@@ -3310,10 +3395,6 @@ class CrossoverV2Conductor:
         # comparison below carries expert-disclosure evidence (#1605); the
         # early returns must not surface a prior attempt's numbers.
         self._verify_evidence = None
-        # Gauge fix (2026-07-24): same reset discipline for the flatness
-        # SIBLING stash — an early return here must not leave a PRIOR
-        # attempt's flatness number visible for THIS attempt.
-        self._flatness_evidence = None
         if not _stimulus_locate_ok(analysis):
             return PhaseVerdict(False, REASON_LOCATE_FAILED)
         if analysis.linearity_ok is False:
@@ -3359,22 +3440,6 @@ class CrossoverV2Conductor:
             return PhaseVerdict(False, REASON_VERIFY_LEVEL_SHIFT)
         tracking = analysis.verify_tracking or {}
         self._verify_evidence = _verify_evidence_from_tracking(tracking)
-        # Gauge fix (2026-07-24): stash the flatness-verify report-only
-        # numbers the SAME moment as verify_evidence above, on every VERIFY
-        # attempt that reaches here — never gated on the pass/fail decided
-        # below, so persist_conductor_state can show it regardless of
-        # outcome (see _flatness_evidence_from_tracking's own docstring).
-        self._flatness_evidence = _flatness_evidence_from_tracking(
-            analysis.flatness_tracking
-        )
-        # Flatness-verify (#1668 PR-D): a SIBLING report, relayed alongside
-        # integration-verify's own tracking on BOTH branches below. Never
-        # consulted by accepted/code — see FLATNESS_VERIFY_HI_HZ's own
-        # comment for why the two claims stay separate (design doc
-        # "Verification splits into two named claims").
-        flatness_payload = (
-            dict(analysis.flatness_tracking) if analysis.flatness_tracking else None
-        )
         # Notch-aware, validity-floor-clamped comparator (W6.7 ruling 1 + W6.9
         # forensics): gate on the NOTCH-EXCLUDED max, not the raw full-band
         # max — and both are now computed over `tracking["tracking_band_hz"]`,
@@ -3396,17 +3461,13 @@ class CrossoverV2Conductor:
             self._verify_outcome = "fail"
             return PhaseVerdict(
                 False, REASON_VERIFY_OUT_OF_TOLERANCE,
-                payload={
-                    "tracking": dict(tracking),
-                    "flatness_tracking": flatness_payload,
-                },
+                payload={"tracking": dict(tracking)},
             )
         self._verify_outcome = "pass"
         return PhaseVerdict(
             True, payload={
                 "measurement_phase": PHASE_VERIFY,
                 "tracking": dict(tracking),
-                "flatness_tracking": flatness_payload,
             }
         )
 
@@ -3593,16 +3654,10 @@ class CrossoverV2Conductor:
             analysis.summed_response.validity_floor_hz
             if analysis.summed_response is not None else None
         )
-        # Flatness-verify (#1668 PR-D): a SIBLING claim, logged with its own
-        # flatness_-prefixed fields alongside integration-verify's above —
-        # never folded into the tracking_*/rms_db/max_db fields (see
-        # FLATNESS_VERIFY_HI_HZ's own comment).
-        flatness = analysis.flatness_tracking or {}
-        flatness_band = flatness.get("band_hz")
-        flatness_band_lo_hz: float | None = None
-        flatness_band_hi_hz: float | None = None
-        if isinstance(flatness_band, (list, tuple)) and len(flatness_band) == 2:
-            flatness_band_lo_hz, flatness_band_hi_hz = flatness_band[0], flatness_band[1]
+        # (The ``flatness_*`` fields this line carried until PR-5 came from
+        # the retired per-capture construction. The spec verdict is logged
+        # once per closed group instead — ``correction.crossover_v2_cloud_spec``
+        # in ``_run_cloud_pipeline``.)
         # Measurement-honesty gate G3's own diagnostics: the current
         # attempt's raw pilot transfer (re-derived fresh, read-only — never
         # the mutated conductor state) and the step vs baseline
@@ -3619,11 +3674,6 @@ class CrossoverV2Conductor:
             tracking_band_lo_hz=tracking_band_lo_hz,
             tracking_band_hi_hz=tracking_band_hi_hz,
             rms_db=tracking.get("rms_db"),
-            flatness_rms_db=flatness.get("rms_db"),
-            flatness_max_db=flatness.get("max_db"),
-            flatness_tolerance_db=FLATNESS_VERIFY_TOLERANCE_DB,
-            flatness_band_lo_hz=flatness_band_lo_hz,
-            flatness_band_hi_hz=flatness_band_hi_hz,
             pilot_transfer_db=(
                 round(pilot_transfer_db, 3) if pilot_transfer_db is not None else None
             ),
