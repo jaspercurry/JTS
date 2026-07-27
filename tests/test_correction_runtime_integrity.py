@@ -141,6 +141,85 @@ def test_runtime_integrity_flags_outputd_content_fill_without_any_xrun(monkeypat
     assert report.snapshots[-1]["outputd"]["content"]["partial_periods"] == 6
 
 
+def test_runtime_integrity_flags_shm_ring_empty_reads(monkeypatch):
+    """The ring topology must arm the SAME gate as the ALSA content hop.
+
+    outputd drives exactly one content source per box, and the SHM ring is the
+    resolved default on eligible stereo topologies — so a gate that only read
+    `content.empty_periods` was inert on the default topology. Here the ALSA
+    counters never move and the ring's do.
+    """
+    from jasper.correction import runtime_integrity
+
+    content = {"pcm": "content", "frames_read": 1_000, "xrun_count": 0,
+               "empty_periods": 0, "partial_periods": 0}
+    outputd_statuses = iter([
+        {
+            "content": dict(content),
+            "dac": {"pcm": "dac", "frames_written": 1_000, "xrun_count": 0},
+            "shm_ring": {"enabled": True, "empty_reads": 7, "startup_empty_reads": 2},
+        },
+        {
+            "content": dict(content, frames_read=2_000),
+            "dac": {"pcm": "dac", "frames_written": 2_000, "xrun_count": 0},
+            "shm_ring": {"enabled": True, "empty_reads": 9, "startup_empty_reads": 2},
+        },
+    ])
+    monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(
+        runtime_integrity, "_read_outputd_status", lambda: next(outputd_statuses),
+    )
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
+    report = RuntimeIntegrityReport("abc123")
+    report.record_snapshot(
+        "sweep_start", capture_kind="measurement", position_index=0, camilla_status=None,
+    )
+
+    issues = report.record_snapshot(
+        "sweep_complete", capture_kind="measurement", position_index=0, camilla_status=None,
+    )
+
+    fill = next(i for i in issues if i["code"] == "outputd_content_fill_increased")
+    assert fill["details"]["deltas"] == {"ring_empty_reads": 2}
+    assert report.snapshots[-1]["outputd"]["shm_ring"]["empty_reads"] == 9
+
+
+def test_runtime_integrity_ignores_ring_counters_when_ring_is_disabled(monkeypatch):
+    """A box on the ALSA hop reports `shm_ring: {enabled: false}` with no
+    counters; the gate must not invent keys or trip on their absence."""
+    from jasper.correction import runtime_integrity
+
+    outputd_statuses = iter([
+        {
+            "content": {"pcm": "c", "frames_read": 1_000, "xrun_count": 0,
+                        "empty_periods": 4, "partial_periods": 5},
+            "dac": {"pcm": "dac", "frames_written": 1_000, "xrun_count": 0},
+            "shm_ring": {"enabled": False},
+        },
+        {
+            "content": {"pcm": "c", "frames_read": 2_000, "xrun_count": 0,
+                        "empty_periods": 4, "partial_periods": 5},
+            "dac": {"pcm": "dac", "frames_written": 2_000, "xrun_count": 0},
+            "shm_ring": {"enabled": False},
+        },
+    ])
+    monkeypatch.setattr(runtime_integrity, "_read_fanin_status", lambda: None)
+    monkeypatch.setattr(
+        runtime_integrity, "_read_outputd_status", lambda: next(outputd_statuses),
+    )
+    monkeypatch.setattr(runtime_integrity, "_read_loadavg_1m", lambda: None)
+    report = RuntimeIntegrityReport("abc123")
+    report.record_snapshot(
+        "sweep_start", capture_kind="measurement", position_index=0, camilla_status=None,
+    )
+    issues = report.record_snapshot(
+        "sweep_complete", capture_kind="measurement", position_index=0, camilla_status=None,
+    )
+
+    assert [i["code"] for i in issues] == []
+    assert report.snapshots[-1]["outputd"]["shm_ring"] == {"enabled": False}
+
+
 def test_runtime_integrity_quiet_when_content_fill_counters_hold(monkeypatch):
     from jasper.correction import runtime_integrity
 
