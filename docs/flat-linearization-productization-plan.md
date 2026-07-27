@@ -1068,12 +1068,44 @@ the first "Try again" tap — fixed with an unconditional carry-forward when
 the conductor's own session has no group phase, mirroring
 `pre_apply_profile`'s existing unconditional pattern instead. S3: the
 pipeline's "second combine, deterministically identical" design was
-measured at 5.6-6.2 s per combine and reversed to a single combine per
-group close. S4: `assemble_cloud_group_result`'s "any exception is caught"
-docstring overclaim corrected to name the actual caught family and state
-the residual honestly; an outer wrap at the `_close_cloud_group` call site
-makes "a pipeline exception cannot cost the group its accept" structurally
-true. S5: two more "PR-4 renders it" overclaims (this doc and the module)
+measured at seconds-per-combine (3-6 s across runs/hosts on the S0
+ten-position corpus) and reversed to a single combine per group close. S4:
+`assemble_cloud_group_result`'s "any exception is caught" docstring
+overclaim corrected to name the actual caught family and state the residual
+honestly; an outer wrap at the `_close_cloud_group` call site makes a
+NAMED-family pipeline exception unable to cost the group its accept — the
+residual (a KeyError, or anything outside that family) still propagates by
+design. S5: two more "PR-4 renders it" overclaims (this doc and the module)
 corrected to "PR-4 carries it; PR-7 renders it".*
 
-*Last verified: 2026-07-26*
+*Round-2 review (2026-07-27) — 1 blocker, 2 should-fixes, 5 nits, all fixed
+on the same branch. BLOCKER: `check_crossover_v2_cloud_pipeline` warned on
+ANY closed group's spec failure, including `cloud_measure` — the PRE-APPLY,
+uncorrected baseline that exists in order to be out of spec — so a
+perfectly corrected speaker warned forever. Fixed to gate the warn on
+`cloud_verify`'s verdict only; `cloud_measure`'s verdict still appears in
+the detail text. SF-1: `_compact_cloud_status` defaulted
+`excluded_interval_count` to `0` and `geometry_guidance` to `""` when the
+pipeline never became available — `0` reads as a fabricated "no
+interference found" rather than "unknown". Fixed: `None` when unavailable
+(doctor prints `n/a`); `geometry_guidance` is now computed directly from
+the geometry verdict, so a locked group's guidance survives an unrelated
+downstream pipeline failure instead of disappearing with it. SF-2: the B1
+carry-forward escaped `observe_restore`'s enumerated clears — an Undo left
+`evidence.cloud_artifacts` behind for the next verify-only re-arm to
+resurrect. Fixed by clearing `evidence` wholesale in `observe_restore`
+(matching `reset_v2_journey_state`'s existing precedent of always nulling
+it), not a surgical per-key delete. Nits: the outer-wrap comment's
+"structurally true" claim narrowed to the named family it actually catches,
+with a pinned test for the KeyError residual; the "5.6-6.2 s" figure
+(measured 3.14 s on a re-run of the same corpus) restated as a 3-6 s regime
+at all four sites, and the retry arithmetic corrected (`GEOMETRY_RETRY_POSITIONS
+= 2` allows 3 close attempts, so the pre-fix worst case was 6 combines, not
+"4x"); a stale "reads ONE field: geometry" bullet in the HANDOFF doc
+brought in line with its own later correction; the `no_positions` /
+`combine_failed` reason-string divergence between `cloud_geometry_verdict`
+and `_geometry_verdict_from_combined` documented rather than silently left
+inconsistent; and the B1 fix's inverse (a session WITH a group phase must
+overwrite, not inherit, a stale prior cloud) pinned by test.*
+
+*Last verified: 2026-07-27*

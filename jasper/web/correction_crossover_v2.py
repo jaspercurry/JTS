@@ -310,12 +310,21 @@ def observe_restore() -> None:
     loaded state in place, unlike :func:`reset_v2_journey_state`, which writes
     a whole fresh dict and so drops unlisted fields for free. That asymmetry is
     a standing trap: a new durable field added anywhere else must be added to
-    this list by hand or it survives an Undo. Two already did — ``session_phases``
-    left a re-verify session's ``["verify"]`` behind, which
+    this list by hand or it survives an Undo. Three already did —
+    ``session_phases`` left a re-verify session's ``["verify"]`` behind, which
     ``_phase_from_state`` resolved to the VERIFY screen ("The crossover is
     applied. Put the microphone back where it started…") moments after the
-    household removed it; and ``cloud`` left a geometry verdict describing an
-    undone session for PR-4 to consume as if it were live."""
+    household removed it; ``cloud`` left a geometry verdict describing an
+    undone session for PR-4 to consume as if it were live; and ``evidence``
+    (SF-2 review finding, 2026-07-27) left a stale ``cloud_artifacts`` fingerprint
+    map behind for ``persist_conductor_state``'s own group-phase-less carry-
+    forward (the B1 fix) to resurrect on the very next verify-only re-arm.
+    Cleared wholesale, not by surgically deleting ``cloud_artifacts`` alone —
+    :func:`reset_v2_journey_state` already treats the WHOLE ``evidence`` key
+    as journey-scoped (nulled there unconditionally, applied or not), no other
+    reader expects it to survive past the live measurement/apply flow it is
+    written during, and a key-by-key deletion would leave this exact hole open
+    for the next field someone adds under ``evidence``."""
     state = load_v2_state()
     if state is None:
         return
@@ -329,6 +338,7 @@ def observe_restore() -> None:
     state["session_phases"] = []
     state["cloud"] = None
     state["gain_plan_db"] = None
+    state["evidence"] = None
     save_v2_state(state)
 
 
@@ -724,7 +734,24 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     the durable state's own ``pipeline`` sub-key (:func:`_cloud_summary`) and
     the bundle artifact (:func:`bind_cloud_publisher`) — this is the
     dashboard-sized read, not a third owner of the same data.
+
+    ``excluded_interval_count`` is ``None`` — not ``0`` — when the pipeline
+    never successfully became available (SF-1 review finding, 2026-07-27):
+    ``0`` reads as "the honest-instrument pipeline looked and found no
+    interference", a fabricated-clean claim this program forbids when the
+    pipeline simply never ran (a combine or DSP-step failure — see
+    :func:`~jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`'s
+    own ``available: False`` shape). ``geometry_guidance`` is computed
+    directly from the ``geometry`` verdict via
+    :func:`~jasper.active_speaker.crossover_v2_flow._geometry_guidance_copy`
+    rather than read out of the pipeline's own copy of it, because geometry
+    locking is decided and RECORDED before the pipeline ever runs (see
+    ``_close_cloud_group``) — a locked group's "spread the mic further"
+    guidance must survive an unrelated downstream DSP failure, not disappear
+    with it.
     """
+    from jasper.active_speaker.crossover_v2_flow import _geometry_guidance_copy
+
     if not isinstance(cloud_state, Mapping):
         return None
     out: dict[str, Any] = {}
@@ -738,10 +765,10 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
         entry: dict[str, Any] = {
             "geometry_locked": bool(geometry.get("locked")),
             "thin_evidence": bool(geometry.get("thin_evidence")),
-            "geometry_guidance": "",
+            "geometry_guidance": _geometry_guidance_copy(geometry),
             "spec_bands": [],
             "overall_passed": None,
-            "excluded_interval_count": 0,
+            "excluded_interval_count": None,
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")
@@ -761,7 +788,6 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             entry["excluded_interval_count"] = (
                 len(merged) if isinstance(merged, list) else 0
             )
-            entry["geometry_guidance"] = str(pipeline.get("geometry_guidance") or "")
         out[str(phase)] = entry
     return out or None
 

@@ -1653,11 +1653,16 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     PR-4's pipeline (:func:`assemble_cloud_group_result`) reads the rest of
     the SAME object. Never a second combine — see S3 review finding
     (2026-07-26): an earlier revision of this wiring called this function
-    twice per group close (once through :func:`cloud_geometry_verdict`, once
-    from the pipeline), which measured at 5.6-6.2 s per call on a laptop
-    (interpreter-bound ``smooth_fractional_octave``), duplicated per close and
-    up to 4x with geometry retries — real operator seconds for a claim
-    (byte-for-byte determinism) that was true but not worth paying for.
+    TWICE per close attempt (once through :func:`cloud_geometry_verdict` for
+    the retry gate, once more from the pipeline) — measured seconds-per-combine
+    (3-6 s across runs/hosts on the S0 ten-position corpus; interpreter-bound
+    ``smooth_fractional_octave``, worse on a Pi 5 — N2 review finding,
+    2026-07-27: an earlier "5.6-6.2 s" point figure did not reproduce across
+    hosts, so this states the regime instead of a false-precision number).
+    ``GEOMETRY_RETRY_POSITIONS = 2`` allows up to 3 close attempts per group
+    (2 retries + the accepting close), so the pre-fix worst case was 3 × 2 =
+    6 combines, not the earlier "4x" claim — real operator seconds for a
+    claim (byte-for-byte determinism) that was true but not worth paying for.
 
     Never raises. A group's captures are already-accepted evidence and a
     combiner failure must not retroactively fail them, so an unusable cloud is
@@ -1735,6 +1740,20 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
     ``positions`` (the corpus acceptance test; any future direct caller) —
     the conductor itself does NOT call this (see
     :meth:`CrossoverV2Conductor._close_cloud_group`'s own single combine).
+
+    **Reason-string divergence, documented not silently left (N4 review
+    finding, 2026-07-27).** An empty ``positions`` short-circuits HERE with
+    ``reason="no_positions"`` before ever reaching the combiner, while
+    :func:`_geometry_verdict_from_combined` called directly with a
+    ``combined=None`` and ``n_positions=0`` (e.g. because
+    ``combine_cloud_positions([])`` was called some other way) reports
+    ``reason="combine_failed"`` for the exact same "there were zero
+    positions" fact. Unreachable through the conductor today (a group only
+    closes with at least its just-captured position already retained), but
+    the two functions disagree on naming WHICH degraded path a caller hit —
+    the entire point of a ``reason`` field — so this wrapper owns disclosing
+    the split rather than leaving a future reader to discover it by diffing
+    the two bodies.
     """
     if not positions:
         return {"locked": False, "reason": "no_positions", "n_positions": 0}
@@ -3125,10 +3144,15 @@ class CrossoverV2Conductor:
         Combines the group's retained positions exactly ONCE (S3 review
         finding, 2026-07-26: an earlier revision called
         ``combine_cloud_positions`` a second time from the pipeline step
-        below, measured at 5.6-6.2 s per call on a laptop and up to 4x per
-        group with geometry retries — real operator seconds this wiring
-        does not need to spend). Both the retry-gating verdict AND the
-        honest-instrument pipeline read the SAME ``combined`` object.
+        below — measured seconds-per-combine, 3-6 s across runs/hosts on the
+        S0 ten-position corpus, worse on a Pi 5 (N2 review finding,
+        2026-07-27: restated from an earlier "5.6-6.2 s" point figure that
+        did not reproduce across hosts). With ``GEOMETRY_RETRY_POSITIONS = 2``
+        allowing up to 3 close attempts per group, the pre-fix worst case was
+        3 × 2 = 6 combines, not the earlier "4x" claim — real operator
+        seconds this wiring does not need to spend). Both the retry-gating
+        verdict AND the honest-instrument pipeline read the SAME ``combined``
+        object.
         """
         positions = self._group_positions[phase]
         combined = combine_cloud_positions(positions)
@@ -3190,8 +3214,16 @@ class CrossoverV2Conductor:
         # the publish_cloud seam (OSError, RuntimeError, TypeError, ValueError
         # -- the same family every other evidence-publish boundary in this
         # file uses) each guard their own step; this wrap is the outer
-        # backstop making the invariant structurally true rather than merely
-        # usually true, at the one call site that matters.
+        # backstop for that SAME six-member named family (N1 review finding,
+        # 2026-07-27: the prior wording claimed this was unconditional --
+        # "structurally true rather than merely usually true" -- which
+        # overclaimed past what the code does. A KeyError, or anything else
+        # outside these six names, is NOT caught here either and propagates
+        # uncaught exactly as assemble_cloud_group_result's own docstring
+        # discloses -- pinned by
+        # test_an_unnamed_exception_family_still_propagates_through_the_outer_wrap).
+        # Scoped claim: a NAMED-family exception cannot cost the accept; the
+        # residual propagates by design.
         try:
             self._run_cloud_pipeline(phase, combined)
         except (OSError, RuntimeError, TypeError, ValueError, IndexError, AttributeError):

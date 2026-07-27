@@ -1570,6 +1570,39 @@ def test_a_cloud_pipeline_exception_never_costs_the_group_its_accept(monkeypatch
     assert c.group_cloud_result(PHASE_CLOUD_MEASURE) is None
 
 
+def test_an_unnamed_exception_family_still_propagates_through_the_outer_wrap(
+    monkeypatch,
+):
+    """N1 review finding (2026-07-27): ``_close_cloud_group``'s own comment
+    used to claim its outer wrap around ``_run_cloud_pipeline`` made the
+    "pipeline exception cannot cost the accept" invariant "structurally true
+    rather than merely usually true" — unconditionally. It is not: the wrap
+    only catches the same six named types
+    (OSError, RuntimeError, TypeError, ValueError, IndexError, AttributeError)
+    ``assemble_cloud_group_result``'s own docstring discloses.
+    ``test_a_cloud_pipeline_exception_never_costs_the_group_its_accept``
+    (immediately above) proves a NAMED family (``RuntimeError``) is caught;
+    this proves the complementary residual — a ``KeyError``, outside that
+    family, is NOT caught here either and propagates straight through
+    ``_close_cloud_group``, costing the group its accept (no ``PhaseVerdict``
+    is ever returned; the whole ``consume_capture`` call raises).
+    """
+    import jasper.active_speaker.crossover_v2_flow as flow
+
+    def _boom(*_a, **_k):
+        raise KeyError("synthetic unnamed-family pipeline bug")
+
+    monkeypatch.setattr(flow, "assemble_cloud_group_result", _boom)
+
+    fakes = FakeSeams()
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
+
+    with pytest.raises(KeyError):
+        _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+
+
 def test_close_cloud_group_calls_the_combiner_exactly_once(monkeypatch):
     """S3 review finding, 2026-07-26 (timing sanity). The round-1 draft of
     this wiring called :func:`combine_cloud_positions` TWICE per group close

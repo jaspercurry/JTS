@@ -420,7 +420,18 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     a clean verdict"). A closed group whose spec FAILED is a WARN, not a
     FAIL: an out-of-spec speaker is a measurement finding for the household to
     act on at ``/correction/``, not a broken daemon.
+
+    Only ``PHASE_CLOUD_VERIFY``'s spec verdict gates the warn (BLOCKER review
+    finding, 2026-07-27). ``PHASE_CLOUD_MEASURE`` is the PRE-APPLY cloud — the
+    uncorrected baseline that EXISTS in order to be out of spec — so gating
+    on "any phase" meant a perfectly corrected speaker warned FOREVER: the
+    pre-apply grade never changes no matter how good the fix is (reviewer
+    reproduced against the real S0 corpus through this exact check). VERIFY's
+    grade is the post-apply, household-actionable one. MEASURE's own verdict
+    is still reported in the detail text below — never hidden, it just does
+    not drive the warn.
     """
+    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
     from jasper.web.correction_crossover_v2 import crossover_v2_status_block
 
     label = "crossover v2 cloud pipeline"
@@ -436,11 +447,13 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
             continue
         overall = entry.get("overall_passed")
         spec_text = "pass" if overall is True else "fail" if overall is False else "n/a"
-        if overall is False:
+        if phase == PHASE_CLOUD_VERIFY and overall is False:
             any_fail = True
+        excluded = entry.get("excluded_interval_count")
+        excluded_text = "n/a" if excluded is None else str(excluded)
         parts.append(
             f"{phase}: spec={spec_text} "
-            f"excluded_intervals={entry.get('excluded_interval_count', 0)} "
+            f"excluded_intervals={excluded_text} "
             f"geometry_locked={bool(entry.get('geometry_locked'))}"
         )
     if not parts:

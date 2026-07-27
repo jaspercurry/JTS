@@ -447,7 +447,12 @@ together. Design rationale:
   `MIN_CLOUD_MEASURE_POSITIONS − 1` entries or the LF half of the
   measurement quietly disappears. Pinned by test.
 - **Geometry-locked retake.** At group end the conductor runs
-  `combine_positions` and reads ONE field: `geometry`. A `locked`
+  `combine_cloud_positions` once and reads its `geometry` field for this
+  retake decision (N3 review finding, 2026-07-27: this bullet's prior
+  "reads ONE field" wording was stale against the "Landed as shipped"
+  paragraph further down, which is the current, accurate description — the
+  SAME combined result also feeds PR-4's honest-instrument pipeline, not
+  just this retake gate). A `locked`
   verdict that is not `thin_evidence`-qualified rejects the group's last
   position with `cloud_geometry_locked` and a wider-spot instruction —
   at most `GEOMETRY_RETRY_POSITIONS` times, then it accepts and
@@ -505,10 +510,15 @@ together. Design rationale:
   this wiring called `combine_cloud_positions` a SECOND time from the
   pipeline step (justified then as "byte-for-byte deterministic, so it
   agrees with the retry-gating call anyway"); round-1 review measured the
-  actual cost — 5.6-6.2 s per combine on a laptop (interpreter-bound
-  `smooth_fractional_octave`), doubled per group close and up to 4x with
-  geometry retries — and reversed it: real operator seconds are not worth
-  spending on a claim that was true but unnecessary to rely on.
+  actual cost — seconds-per-combine, 3-6 s across runs/hosts on the S0
+  ten-position corpus (interpreter-bound `smooth_fractional_octave`, worse
+  on a Pi 5) — and reversed it: real operator seconds are not worth
+  spending on a claim that was true but unnecessary to rely on. With
+  `GEOMETRY_RETRY_POSITIONS = 2` allowing up to 3 close attempts per group
+  (2 retries + the accepting close), the pre-fix worst case was 3 × 2 = 6
+  combines (round-2 review, 2026-07-27, correcting an earlier "up to 4x"
+  claim, and restating the earlier "5.6-6.2 s" point figure as a regime —
+  it did not reproduce across hosts/runs).
   `cloud_geometry_verdict(positions)` (PR-3b's original seam) is now a
   positions-only convenience wrapper the conductor itself does not call
   (kept for `test_crossover_v2_cloud_geometry_corpus.py` and any other
@@ -1324,4 +1334,4 @@ The default flipped to `v2` on 2026-07-19. W5b (2026-07-24) then deleted the
 legacy flow and the `JASPER_CROSSOVER_FLOW` selector outright — v2 is the only
 crossover-measurement flow now.
 
-Last verified: 2026-07-26
+Last verified: 2026-07-27

@@ -430,3 +430,66 @@ def test_the_real_s0_cloud_is_identified_and_excluded_by_the_full_assembly():
     )
     assert screen_only_band.n_excluded == 0
     assert merged_excluded_in_band > screen_only_band.n_excluded
+
+
+@corpus.requires_s0_curves
+def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch):
+    """BLOCKER review finding (2026-07-27), against REAL hardware data rather
+    than a synthetic monkeypatch: the reviewer verified on the real S0
+    corpus, through the shipped doctor, that a perfectly corrected speaker
+    warned forever, because ``cloud_measure`` — the PRE-APPLY, uncorrected
+    baseline — never passes its spec by construction. This mirrors that
+    scripted run as a pinned, repeatable test.
+
+    The S0 main-leg cloud genuinely fails its spec (``overall_passed`` is
+    ``False`` in all three bands — this is real measured data, not a rigged
+    number), so it stands in for a real ``cloud_measure`` block exactly as
+    it would appear in a household's durable state. Paired with a synthetic
+    PASSING ``cloud_verify`` (no second real corrected-speaker corpus
+    exists), the doctor must report OK, not WARN — the pre-apply grade is
+    diagnostic, never the gate.
+    """
+    from types import SimpleNamespace
+
+    from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
+    from jasper.web import correction_crossover_v2 as v2host
+
+    echo_band_hz = (5000.0, 19_000.0)
+    captures = corpus.s0_position_captures(corpus.S0_MAIN)
+    combined = combine_positions(
+        captures, echo_band_hz=echo_band_hz,
+        signal_band_hz=corpus.S0_SUMMED_PASSBAND_HZ,
+    )
+    real_measure_result = assemble_cloud_group_result(combined, echo_band_hz=echo_band_hz)
+    assert real_measure_result["spec"]["overall_passed"] is False, (
+        "this test's whole premise is a REAL pre-apply spec failure"
+    )
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state",
+        lambda: {
+            "cloud": {
+                "cloud_measure": {
+                    "geometry": {"locked": bool(combined.geometry.locked)},
+                    "pipeline": real_measure_result,
+                },
+                "cloud_verify": {
+                    "geometry": {"locked": False},
+                    "pipeline": {
+                        "available": True,
+                        "spec": {"overall_passed": True, "bands": []},
+                        "merged_excluded_bands_hz": [],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+
+    r = check_crossover_v2_cloud_pipeline()
+
+    assert r.status == "ok"
+    assert "cloud_measure: spec=fail" in r.detail
+    assert "cloud_verify: spec=pass" in r.detail
