@@ -633,6 +633,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      and rpi-swap zram sizing.
    - Disable WiFi power-save on the active wlan0 connection (nmcli)
      so AirPlay's unicast UDP stream avoids radio-sleep stalls.
+   - Repair stored measurement-mic calibrations fetched under the wrong
+     sign convention (vendor files state the mic's response; the
+     correction is its negation). Keyed on each record's own stored
+     convention, so it is idempotent and never touches a household's
+     uploaded file or an already-correct record.
    - Remove stale legacy audio-topology state (audio_topology.env,
      dmix-era asound.conf backups); fan-in is the only topology.
    - Remove legacy self-signed HTTPS artifacts (the old
@@ -1645,6 +1650,54 @@ _build_firmware_if_stale() {
 }
 
 
+migrate_calibration_sign_convention() {
+    # A measurement mic's vendor calibration file (miniDSP UMIK, Dayton)
+    # states the MICROPHONE'S RESPONSE; the correction JTS applies is its
+    # negation. Records fetched before 2026-07-27 were stored claiming the
+    # opposite, so every measurement they calibrated carried twice the
+    # file's value with the wrong sign. New fetches are fixed at the source
+    # (jasper.audio_measurement.calibration.SUPPORTED_MODELS); this repairs
+    # what is already on disk. Keyed on each record's own stored convention,
+    # so it is idempotent and can never double-negate a correct record, and
+    # it is a no-op on a speaker that never fetched a vendor calibration.
+    if [[ ! -x "${INSTALL_DIR}/.venv/bin/python" ]]; then
+        # Pre-venv ordering (or a failed runtime install): say so rather than
+        # returning silently, so "no line in the transcript" never has to be
+        # read as either "nothing to repair" or "step vanished".
+        echo "  mic calibration sign convention: skipped (no ${INSTALL_DIR}/.venv/bin/python yet)"
+        return 0
+    fi
+    local output
+    if output="$("${INSTALL_DIR}/.venv/bin/python" - <<'PY' 2>&1
+from jasper.audio_measurement.calibration import migrate_stored_sign_conventions
+
+counts = migrate_stored_sign_conventions()
+# `uploads_untouched` is the household-visible number the doctor's
+# "uploaded calibration sign" advisory follows up on: uploaded records carry
+# the household's OWN sign declaration and are never flipped here.
+print(
+    "repaired={} scanned={} already_response={} uploads_untouched={} "
+    "unreadable={} write_failed={}".format(
+        counts["migrated_rederived"] + counts["migrated_negated"],
+        counts["scanned"],
+        counts["already_response"],
+        counts["skipped_not_vendor"],
+        counts["unreadable"],
+        counts["write_failed"],
+    )
+)
+PY
+    )"; then
+        echo "  mic calibration sign convention: ${output}"
+    else
+        # Non-fatal: a household with no stored vendor calibration loses
+        # nothing, and aborting a deploy over a metadata repair would be a
+        # worse outcome than a loud line. Records stay as they were.
+        echo "  WARNING: mic calibration sign-convention migration failed: ${output}"
+    fi
+}
+
+
 install_journald_persistent_storage() {
     # Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
     # which forces Storage=volatile. With the kernel watchdog reaping wedged
@@ -2405,6 +2458,7 @@ main() {
         reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
+        migrate_calibration_sign_convention  # vendor mic cal files are response curves
         ensure_output_hardware_state
         render_outputd_cutover_config
         ensure_outputd_camilla_statefile
@@ -2452,6 +2506,7 @@ main() {
     reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper
+    migrate_calibration_sign_convention  # vendor mic cal files are response curves
     ensure_output_hardware_state
     render_outputd_cutover_config
     ensure_outputd_camilla_statefile

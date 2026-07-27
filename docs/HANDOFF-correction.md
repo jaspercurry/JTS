@@ -1092,6 +1092,29 @@
   `jasper.correction.acoustic_quality.analyze_capture` before target normalization
   and PEQ design. Storage lives under
   `/var/lib/jasper/correction/calibration_mics/`.
+
+  **Sign convention (fixed 2026-07-27).** A measurement mic's calibration
+  file states the MICROPHONE'S RESPONSE, so `correction_db` is its
+  negation. Each vendor declares this in `SUPPORTED_MODELS`
+  (`jasper/audio_measurement/calibration.py`) and the `/correction/`
+  upload card defaults to the same reading; the phone relay page has no
+  sign control and the Pi states the convention for it. Until 2026-07-27
+  every vendor-fetched record was stored claiming the opposite, which
+  biased each measurement by exactly twice the file's value, with the wrong
+  sign. Measured on the live JTS3 UMIK-2 file: mean +1.71 dB / max +1.84 dB
+  of over-cut across 2.8–8 kHz, reversing to a mean −1.14 dB under-cut over
+  11–16 kHz (one of the confirmed contributors in
+  `docs/linearization-integrity-plan.md`). `migrate_stored_sign_conventions`
+  repairs already-stored vendor records on every deploy: keyed on each
+  record's own stored convention (so it can never double-negate a correct
+  one), re-derived from the retained raw file, and never applied to a
+  household's manual upload, whose convention is the household's own
+  declaration. Uploads made before the fix took a wrong-way default and are
+  the household's to review — `jasper-doctor`'s "uploaded calibration sign"
+  advisory lists them. The migration runs one way only
+  (`correction` → `response`); reversing a vendor's declaration would need
+  its own opposite-direction migration, because the vendor cache serves a
+  stored record ahead of any re-fetch.
 - ✅ **Phase 2.4 — observability and quality floor.**
   Implemented 2026-05-25. Adds shared bundle helpers
   (`jasper.correction.bundles`), capture-quality assessment before

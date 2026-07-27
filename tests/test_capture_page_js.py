@@ -427,6 +427,34 @@ def test_capture_page_serial_models_match_pi_registry_keys():
         assert stale not in main_js
 
 
+def test_capture_page_upload_never_declares_a_sign_convention():
+    """The phone's calibration upload posts exactly {mode, filename, content}.
+
+    Because it declares no sign convention, the Pi does not read one from a
+    relay setup: `_relay_calibration_from_setup` in
+    ``jasper/web/correction_setup.py`` states the ecosystem convention
+    outright (`DEFAULT_SIGN_CONVENTION`) instead of defaulting a key nobody
+    sends. That pairing is the invariant this test guards — the day the page
+    grows a sign control, this fails, and whoever adds it must wire the Pi
+    side rather than have the phone's declaration silently ignored (the
+    version-skew failure that would put a household's measurements back on
+    the wrong sign with no signal).
+    """
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    offenders = [
+        f"capture-page/js/main.js:{n}: {line.strip()}"
+        for n, line in enumerate(main_js.splitlines(), start=1)
+        if "sign_convention" in line
+    ]
+    assert not offenders, (
+        "the capture page now declares a sign convention; wire it through "
+        "_relay_calibration_from_setup in jasper/web/correction_setup.py in "
+        "the same change, or the household's declaration is silently ignored:"
+        + "\n".join(["", *offenders])
+    )
+
+
 def test_capture_page_preflights_guided_setup_before_start():
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
 

@@ -34,9 +34,11 @@ verdict reaching zero user-facing surfaces.
   else re-fetch by serial; never silently double-negate an already-correct
   record — key the migration on the stored convention field.
 - The `/correction/` upload UI's sign default and help copy; decide the
-  phone-relay upload sign field (today dead code — the relay spec rejects
-  the key) — either wire it through `DEFAULT_SETUP_CALIBRATION_KEYS`
-  properly or remove the dead branch, not the current half-state.
+  phone-relay upload sign field (today dead code — the capture page never
+  posts the key, so the Pi's read of it is *unreachable*; the relay spec's
+  `DEFAULT_SETUP_CALIBRATION_KEYS` allowlist governs the OUTBOUND prefill
+  hint and never sees the inbound setup) — either wire it through properly
+  or remove the dead branch, not the current half-state.
 - Contract test: a real-shaped UMIK fixture asserting the stored
   `correction_db` is the negated response, plus a call-site audit test
   (no production caller on the wrong default).

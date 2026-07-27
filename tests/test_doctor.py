@@ -5443,6 +5443,46 @@ def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
     assert "missing" in r.detail
 
 
+def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
+    monkeypatch, tmp_path,
+):
+    """Vendor records are repaired automatically on deploy; an UPLOADED
+    record's convention is the household's own declaration, so the doctor
+    surfaces it for review instead of anyone flipping it silently."""
+    from jasper.audio_measurement import calibration as cal
+
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+    cal.store_calibration(
+        text="20 -1\n1000 0\n20000 2\n", provider="manual_upload",
+        model="other", label="Lab mic", source="uploaded:lab.txt",
+        sign_convention="correction", root=tmp_path,
+    )
+    cal.store_calibration(  # a vendor record: not this check's business
+        text="20 -1\n1000 0\n20000 2\n", provider="minidsp",
+        model="minidsp_umik2", label="UMIK-2", source="vendor_lookup",
+        serial="810-8494", sign_convention="correction", root=tmp_path,
+    )
+
+    r = doctor.check_correction_uploaded_calibration_sign()
+    assert r.status == "warn"
+    assert "Lab mic" in r.detail
+    assert "1 uploaded calibration(s)" in r.detail
+    assert "/correction/" in r.detail
+
+    # An upload that already declares the response convention is clean, and
+    # the check never fails the doctor either way.
+    cal.store_calibration(
+        text="20 -3\n1000 0\n20000 4\n", provider="manual_upload",
+        model="other", label="Other mic", source="uploaded:other.txt",
+        sign_convention="response", root=tmp_path,
+    )
+    assert doctor.check_correction_uploaded_calibration_sign().status == "warn"
+
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "empty"))
+    clean = doctor.check_correction_uploaded_calibration_sign()
+    assert clean.status == "ok"
+
+
 def test_check_correction_current_config_reports_missing_config(
     monkeypatch, tmp_path,
 ):
