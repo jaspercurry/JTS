@@ -186,21 +186,48 @@ drift), demeaned residual 32.2 predicted vs 32.357 observed, and the
 primary-sweep W↔T misalignment drove `delay_us` +15 → −847.6 µs and
 `predicted_ripple_db` 4.4 → 16.8.
 
-Attribution: **capture side, not the Pi.** Zero `event=outputd.xrun`, zero
-fanin/kernel events in the playback window (50 xruns elsewhere that day, so
-the Pi-side mechanism was instrumented and simply did not fire);
-CamillaDSP's only short-read burst during that playback was ~9 s BEFORE the
-step and the same storm is present under captures that passed. The
-recorder (`JtsMonoRecorder`, `deploy/assets/shared/js/measurement-audio.js`)
-concatenates `process()` blocks with no timing accounting, so a browser-side
-timeline break is spliced in silently — and because the worklet only ever
-appends whole 128-frame quanta, a 64-sample step must originate *upstream*
-of it, in the device→AudioContext path where Chrome resamples. Open
-mitigations (neither shipped): worklet `currentFrame` accounting to catch
-worklet-level drops at source, and step-aware recovery using the N=3
-redundancy already paid for. `_locate_discontinuity` now names the step
-(size + which segment it landed after) on every capture — see the
-diagnostics section below.
+Attribution: **the leading hypothesis is Pi-side playback fill — and
+`event=outputd.xrun` does NOT rule it out.** An earlier pass on this issue
+concluded "capture side" from the absence of xrun lines in the playback
+window; that inference is invalid, and the owner refuted it directly by
+hearing audible tears during sweeps launched from the **command line**,
+with no browser in the path at all.
+
+The mechanism: on a short content read `jasper-outputd` zero-fills the
+deficit and still writes a full period to the DAC
+(`read_content_period` → `out[active..].fill(0)`,
+`rust/jasper-outputd/src/alsa_backend.rs`). That INSERTS
+`requested − frames` samples into the emitted timeline — audible as a brief
+tear, and an *arbitrary* frame count rather than a fixed granule, so a
+64-frame fill is entirely ordinary. Production confirms the insertion is
+real: `dac_frames_written` exceeds `frames_read` by thousands of frames
+(8,576 → 10,752 → 12,928 across three consecutive log lines on 2026-07-27).
+
+**Why the journal looked clean: the `event=outputd.xrun` eprintln fires ONLY
+in the `EPIPE`/`ESTRPIPE` branch.** Partial-period fills and `EAGAIN` empty
+periods increment `content_partial_period_count` /
+`content_empty_period_count` and log *nothing* — those counters surface only
+as fields on a later line that some other condition happened to emit
+(visible in the data: `empty_periods` climbs by 2 while `count` climbs by 1).
+The exact sample-inserting event is structurally silent. Compounding it,
+`jasper/correction/runtime_integrity.py` — the layer whose whole job is
+"did the audio path glitch during this capture?" — gates on `xrun_count`
+and never reads the partial/empty period counters, so a measurement that
+spans a fill passes its integrity check.
+
+On this box the fills are metronomic: an xrun event every ~17.5 minutes all
+day (2176 frames per event ≈ 43 ppm of accumulated clock offset between the
+content producer and the DAC). The last event before the 2026-07-27 session
+was 12:39:40; +17.5 min lands inside the failing capture's playback window.
+NOT proof for that capture — outputd restarted around the session (counter
+reset 89 → 1) and the counters were never sampled then — but the signature,
+the arbitrary fill size, and the audible tears all fit.
+
+Open work: **make the fill observable** (log partial/empty fills; expose the
+counters so `runtime_integrity` can gate a capture on them) — issue #1768 —
+and step-aware recovery using the N=3 redundancy already paid for.
+`_locate_discontinuity` now names the step (size + which segment it landed
+after) on every capture — see the diagnostics section below.
 
 **Measurement-honesty gates (2026-07-22 night).** Three additive acceptance
 gates convert the corrupted-capture signatures above into honest
