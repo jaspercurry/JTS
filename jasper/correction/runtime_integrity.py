@@ -161,11 +161,21 @@ def _outputd_summary(status: dict[str, Any] | None) -> dict[str, Any] | None:
         raw = status.get(name)
         section = raw if isinstance(raw, dict) else {}
         frames_key = "frames_read" if name == "content" else "frames_written"
-        return {
+        summary = {
             "pcm": section.get("pcm"),
             frames_key: section.get(frames_key),
             "xrun_count": section.get("xrun_count"),
         }
+        if name == "content":
+            # The zero-fill counters (issue #1768). outputd zero-fills a short
+            # content read and still writes a full period, INSERTING samples
+            # into the emitted timeline — the mechanism behind #1765's spliced
+            # capture. These are the counters that move on that path;
+            # `xrun_count` only moves on EPIPE/ESTRPIPE, so gating on it alone
+            # let a corrupted capture pass this very check.
+            summary["empty_periods"] = section.get("empty_periods")
+            summary["partial_periods"] = section.get("partial_periods")
+        return summary
 
     return {
         "content": _section("content"),
@@ -317,6 +327,29 @@ def _outputd_xrun_counts(snapshot: dict[str, Any]) -> dict[str, int] | None:
     return counts or None
 
 
+def _outputd_content_fill_counts(snapshot: dict[str, Any]) -> dict[str, int] | None:
+    """The outputd content zero-fill counters (issue #1768).
+
+    A short content read is zero-filled and still written to the DAC, so each
+    of these INSERTS samples into what the speaker emitted — audible as a tear,
+    and it displaces the rest of the program in time. That is exactly what
+    corrupts a measurement capture, and it is invisible to ``xrun_count``,
+    which only moves on ``EPIPE``/``ESTRPIPE``.
+    """
+    outputd = snapshot.get("outputd")
+    if not isinstance(outputd, dict):
+        return None
+    content = outputd.get("content")
+    if not isinstance(content, dict):
+        return None
+    counts: dict[str, int] = {}
+    for name in ("empty_periods", "partial_periods"):
+        value = _as_int(content.get(name))
+        if value is not None:
+            counts[name] = value
+    return counts or None
+
+
 def _delta_issues(
     previous: dict[str, Any] | None,
     current: dict[str, Any],
@@ -355,6 +388,29 @@ def _delta_issues(
                     "previous": prev_outputd,
                     "current": cur_outputd,
                     "deltas": deltas,
+                    "label": current.get("label"),
+                },
+            ))
+    prev_fill = _outputd_content_fill_counts(previous)
+    cur_fill = _outputd_content_fill_counts(current)
+    if prev_fill is not None and cur_fill is not None:
+        fill_deltas = {
+            name: cur_fill[name] - prev_fill[name]
+            for name in cur_fill.keys() & prev_fill.keys()
+            if cur_fill[name] > prev_fill[name]
+        }
+        if fill_deltas:
+            issues.append(RuntimeIssue(
+                code="outputd_content_fill_increased",
+                severity="warn",
+                message=(
+                    "final audio path zero-filled a short content read during "
+                    "measurement (inserts samples into the emitted timeline)"
+                ),
+                details={
+                    "previous": prev_fill,
+                    "current": cur_fill,
+                    "deltas": fill_deltas,
                     "label": current.get("label"),
                 },
             ))

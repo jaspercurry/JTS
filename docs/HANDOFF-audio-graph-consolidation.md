@@ -152,6 +152,27 @@ CamillaDSP `enable_rate_adjust` is off; the blocking one-clock chain bounds
 latency through the Ring A/B capacities instead. Stays: snapclient
 sample-stuffing on bonded chains.
 
+**What `direct` mode costs today, measured (jts3, 2026-07-27, issue #1768).**
+On the legacy aloop content hop nothing absorbs the content-producer-vs-DAC
+offset, so it accumulates until the capture ring drains and outputd zero-fills
+a short read. On jts3 that is **metronomic: one fill event every ~17.5 minutes,
+all day** — `count` +1 / `empty_periods` +2 / `partial_periods` +2 each time,
+~2176 frames inserted per event over ~1050 s ≈ **43 ppm**, the expected
+crystal-vs-crystal offset between two free-running clocks. Each fill INSERTS
+samples into the emitted timeline: audible as a brief tear (owner-reported on
+CLI-launched sweeps), and it displaces the rest of the program in time — which
+is how it corrupted a crossover MEASURE capture (#1765) as a clean
++64-sample splice.
+
+This is a *reason for the ring graph*, not an argument for reviving
+`rate_match` (row C above — rejected in tuning, deleted P5c): a second rate
+matcher inside an already DAC-paced domain is the duplicate-clock class the
+end state forbids. The one-clock ring graph removes the aloop content hop and
+with it the offset that has to be absorbed at all. Until a box is on the ring
+graph, the fill is expected on `direct` — it is now *observable* rather than
+silent (`event=outputd.content_fill`, plus the
+`outputd_content_fill_increased` measurement-integrity gate).
+
 ### H. Legacy cushion recipes
 
 The lab resampler geometry `TARGET_FRAMES=256 + WARMUP_CUSHION_FRAMES=256`
