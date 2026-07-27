@@ -232,7 +232,21 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
     """The verify_fail screen's collapsed expert numbers (#1605): the gated
     level error against its limit, the average error, and the band checked.
     Empty when the conductor persisted no tracking evidence (an early-return
-    verify verdict — locate/agc/gate/level-shift — never reaches them)."""
+    verify verdict — locate/agc/gate/level-shift — never reaches them).
+
+    **Flat-linearization plan PR-5/N-4 framing.** These lines and
+    :func:`_flatness_details_lines`'s are two DIFFERENT constructions that
+    land in the same collapsed disclosure (``expert_details`` concatenates
+    both): this comparator answers "did apply do what the model predicted"
+    on the single design-axis capture grid
+    (:func:`~jasper.active_speaker.crossover_v2_flow._analyze_verify`'s
+    measured-vs-``predicted_sum``), while the flatness lines answer "is the
+    speaker flat" on the spatial cloud. Both used to print an unqualified
+    "average error X dB", which read as one number when they are not — the
+    ``tracking`` prefix here is the one-word disambiguator (mirroring how the
+    flatness line already says "flatness average error"), not a
+    re-derivation of either number.
+    """
     evidence = _mapping(_mapping(_v2(status).get("verify")).get("evidence"))
     if not evidence:
         return []
@@ -245,7 +259,7 @@ def _verify_expert_details(status: Mapping[str, Any]) -> list[str]:
         lines.append(f"level error {max_db:.2f} dB")
     rms_db = _finite(evidence.get("rms_db"))
     if rms_db is not None:
-        lines.append(f"average error {rms_db:.2f} dB")
+        lines.append(f"tracking average error {rms_db:.2f} dB")
     lo = _finite(evidence.get("tracking_band_lo_hz"))
     hi = _finite(evidence.get("tracking_band_hi_hz"))
     if lo is not None and hi is not None:
@@ -514,12 +528,18 @@ def _envelope(
         # + its plain-language guidance copy) — the SAME projection
         # ``crossover_v2_status_block`` serves at ``/state``, so a wizard page
         # reading either surface sees the same numbers. ``None`` before any
-        # cloud group has closed. PR-7 draws the before/after chart from the
-        # richer decimated-curve data the durable state's own ``cloud.<phase>
-        # .pipeline`` sub-key and the bundle's ``cloud_measure.json`` /
-        # ``cloud_verify.json`` artifacts carry — this envelope key is the
-        # plain-language verdict, not the chart feed.
+        # cloud group has closed. This key is the plain-language verdict, not
+        # the chart feed — see ``cloud_chart`` below.
         "cloud": _v2(status).get("cloud"),
+        # PR-7: the before/after chart's own feed — the decimated combined
+        # curve per phase, projected by
+        # ``jasper.web.correction_crossover_v2._chart_cloud_status`` and
+        # carried here unchanged (mirrors the "cloud" key's copy-through
+        # pattern one line up). Kept off the ``cloud`` key above so the
+        # dashboard-sized `/state` and doctor reads never pay for curve
+        # arrays neither consumes. ``None`` before any cloud group has
+        # closed, same rule as ``cloud``.
+        "cloud_chart": _v2(status).get("cloud_chart"),
     }
 
 

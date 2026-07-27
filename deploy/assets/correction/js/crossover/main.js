@@ -5,6 +5,7 @@
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
 import { renderRelayQr } from '/assets/shared/js/qr.js';
 import { jtsConfirm } from '/assets/shared/js/dialog.js';
+import { renderCloud, redrawCloudChart } from './cloud.js';
 
 const els = {
   verdict: document.getElementById('crossover-verdict'),
@@ -14,6 +15,11 @@ const els = {
   nudges: document.getElementById('crossover-nudges'),
   review: document.getElementById('crossover-review'),
   reviewBody: document.getElementById('crossover-review-body'),
+  cloud: document.getElementById('crossover-cloud'),
+  cloudProvenance: document.getElementById('crossover-cloud-provenance'),
+  cloudChart: document.getElementById('crossover-cloud-chart'),
+  cloudGeometry: document.getElementById('crossover-cloud-geometry'),
+  cloudCallouts: document.getElementById('crossover-cloud-callouts'),
   action: document.getElementById('crossover-action'),
   relay: document.getElementById('crossover-relay'),
   relayStatus: document.getElementById('crossover-relay-status'),
@@ -422,6 +428,7 @@ function render(env) {
   renderSteps(env.steps);
   renderNudges(env.nudges, env.expert_details);
   renderCandidateReview(env.candidate_review);
+  renderCloud(els, env);
   // On the review screen the show_during_relay primary (Apply) owns the phone —
   // keep the relay live for polling/Stop but hide its connect link/QR.
   const suppressConnectAffordance = Boolean(
@@ -624,6 +631,17 @@ if (typeof document !== 'undefined') {
       schedulePoll(RETRY_MS);
     });
   });
+}
+
+// Redraw the before/after chart on resize/orientation change — without this
+// the canvas's drawing surface stays at whatever size it had on the last
+// poll (mirrors deploy/assets/correction/js/main.js's scheduleChartRedraw).
+// Guarded separately from the `document` check above: the small per-feature
+// test harnesses for this page (tests/js/crossover_*_test.mjs) stub
+// `globalThis.document` but not `globalThis.window`.
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', redrawCloudChart);
+  window.addEventListener('orientationchange', redrawCloudChart);
 }
 
 refresh().catch((error) => {

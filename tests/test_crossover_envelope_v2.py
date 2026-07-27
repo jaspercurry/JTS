@@ -497,7 +497,12 @@ def test_verify_fail_folds_tracking_numbers_behind_expert_details():
     assert env["screen"] == "verify_fail"
     details = env["expert_details"]
     assert "level error 2.34 dB (limit 1.5 dB)" in details
-    assert "average error 0.81 dB" in details
+    # PR-5/N-4: "tracking" disambiguates this from the flatness gauge's own
+    # "flatness average error" line when both land in the same collapsed
+    # disclosure (see test_verify_fail_folds_spec_flatness_alongside_
+    # integration_evidence below) — same number, framed so a reader can tell
+    # which construction it belongs to.
+    assert "tracking average error 0.81 dB" in details
     assert "checked 1000–4000 Hz" in details
     # Primary copy stays the short reason message — the numbers are NOT in it.
     assert "2.34" not in env["verdict_text"]
@@ -554,12 +559,17 @@ def test_verify_fail_folds_spec_flatness_alongside_integration_evidence():
     details = env["expert_details"]
     # Integration-verify: unchanged, still there.
     assert "level error 2.34 dB (limit 1.5 dB)" in details
+    # PR-5/N-4: the two "average error" lines are the actual sibling claim
+    # this test's docstring describes — pin that they read distinctly (each
+    # carries its own one-word prefix) rather than as one unqualified number
+    # appearing twice.
+    assert "tracking average error 0.81 dB" in details
+    assert "flatness average error 1.37 dB across the spec bands" in details
     # Flatness: spec-framed, signed, located — and never says "limit".
     assert (
         "flatness -4.85 dB from the spec reference at 11480 Hz "
         "(spec 8000–16000 Hz, tolerance ±2.5 dB)"
     ) in details
-    assert "flatness average error 1.37 dB across the spec bands" in details
     assert (
         "42 of 942 spec-band bins excluded from grading (interference, or "
         "below the measurement's validity floor)"

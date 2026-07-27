@@ -1288,13 +1288,14 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
                     "merged_excluded_bands_hz": [[8000.0, 9000.0], [11000.0, 12000.0]],
                     "spec": {
                         "overall_passed": False,
+                        "reference_db": -27.27,
                         "bands": [
                             {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
-                             "max_deviation_db": 1.02},
+                             "max_deviation_db": 1.02, "tolerance_db": 1.5},
                             {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
-                             "max_deviation_db": -1.41},
+                             "max_deviation_db": -1.41, "tolerance_db": 2.0},
                             {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
-                             "max_deviation_db": -4.85},
+                             "max_deviation_db": -4.85, "tolerance_db": 2.5},
                         ],
                     },
                     "flatness": {
@@ -1332,18 +1333,21 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     )
     assert measure["overall_passed"] is False
     assert measure["excluded_interval_count"] == 2
-    # Per-band ``max_deviation_db`` rides along (flat-linearization PR-5, N-3):
-    # `/state` is what a chart reads, and per-band numbers missing from the
-    # only projection a page sees is the pressure that grows a second
-    # derivation downstream.
+    # Per-band ``max_deviation_db``/``tolerance_db`` ride along
+    # (flat-linearization PR-5 N-3 / PR-7): `/state` is what a chart reads,
+    # and per-band numbers missing from the only projection a page sees is
+    # the pressure that grows a second derivation downstream.
     assert measure["spec_bands"] == [
         {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
-         "max_deviation_db": 1.02},
+         "max_deviation_db": 1.02, "tolerance_db": 1.5},
         {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
-         "max_deviation_db": -1.41},
+         "max_deviation_db": -1.41, "tolerance_db": 2.0},
         {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
-         "max_deviation_db": -4.85},
+         "max_deviation_db": -4.85, "tolerance_db": 2.5},
     ]
+    # PR-7: the report-level reference the tolerance corridor is centered on
+    # rides the entry too, copied verbatim like everything else here.
+    assert measure["reference_db"] == -27.27
     # The gauge is copied verbatim; the clamp is separable from interference
     # on this live surface (PR-5 SF-2), so a reader can tell a combed room
     # apart from one capture's collapsed gate.
@@ -1365,6 +1369,8 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     # Same rule for the two PR-5 keys: unavailable means unknown, never a
     # fabricated zero or a floor of 0 Hz.
     assert verify["flatness"] is None
+    # PR-7: same rule again for the chart's own reference level.
+    assert verify["reference_db"] is None
     assert verify["validity_floor_hz"] is None
 
 
@@ -1409,6 +1415,74 @@ def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran(
 def test_state_cloud_block_is_none_before_any_group_closes():
     v2host.save_v2_state({"session_id": "cap_fresh"})
     assert v2host.crossover_v2_status_block()["cloud"] is None
+
+
+def test_cloud_summary_stamps_the_producing_session_id():
+    """PR-7's provenance marker: ``_cloud_summary`` stamps each closed
+    phase's dict with the CONDUCTOR's own session id, so a later carry-
+    forward (``persist_conductor_state``'s B1 branch, which copies this
+    whole per-phase dict verbatim) can still say which session actually
+    produced it — see ``_compact_cloud_status``'s ``provenance_note``."""
+    fake = SimpleNamespace(
+        session_id="cap_producer_session",
+        session_phases=(PHASE_CLOUD_MEASURE,),
+        group_geometry=lambda phase: {"locked": True, "reason": "geometry_locked"},
+        group_position_takes=lambda phase: [],
+        group_cloud_result=lambda phase: {
+            "available": True, "spec": {"overall_passed": True},
+        },
+    )
+    summary = v2host._cloud_summary(fake)
+    assert summary[PHASE_CLOUD_MEASURE]["session_id"] == "cap_producer_session"
+
+
+def test_provenance_note_reflects_whether_the_group_matches_the_active_session():
+    """The household-facing half of the same marker
+    (``_compact_cloud_status``'s ``provenance_note``, PR-7). Three states,
+    told apart rather than collapsed: the stamped producer matches the
+    caller's current session (nothing to say — the chart is fresh); it
+    disagrees (a group carried forward from an earlier session — say so);
+    or there is no stamp at all (a durable state written before this marker
+    existed — unknown, not stale, so an upgrade cannot manufacture a false
+    warning for data nobody ever mis-attributed)."""
+    pipeline = {"available": True, "spec": {"overall_passed": True, "bands": []}}
+    stamped_state = {
+        PHASE_CLOUD_VERIFY: {
+            "geometry": {"locked": False},
+            "positions": [],
+            "pipeline": pipeline,
+            "session_id": "cap_producer_session",
+        },
+    }
+
+    fresh = v2host._compact_cloud_status(
+        stamped_state, current_session_id="cap_producer_session",
+    )
+    assert fresh[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
+
+    stale = v2host._compact_cloud_status(
+        stamped_state, current_session_id="cap_rearm_session",
+    )
+    assert stale[PHASE_CLOUD_VERIFY]["provenance_note"] == (
+        "This chart is from a previous session's measurement — "
+        "re-measure to see this session's own result."
+    )
+
+    legacy_state = {
+        PHASE_CLOUD_VERIFY: {
+            "geometry": {"locked": False}, "positions": [], "pipeline": pipeline,
+        },
+    }
+    legacy = v2host._compact_cloud_status(
+        legacy_state, current_session_id="cap_rearm_session",
+    )
+    assert legacy[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
+
+    # Backward compatibility: an existing caller that never passes
+    # current_session_id at all (every test seam before this PR) still gets
+    # the honest "unknown" reading, not a crash or a fabricated verdict.
+    no_current = v2host._compact_cloud_status(stamped_state)
+    assert no_current[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
 
 
 def test_verify_rearm_does_not_blank_the_persisted_cloud_block(monkeypatch):

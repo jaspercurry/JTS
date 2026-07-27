@@ -280,3 +280,73 @@
 @media (max-width: 30rem) {
   .wizard-step__label { display: none; }
 }
+
+/* Before/after cloud chart (flat-linearization plan PR-7). Canvas fillStyle/
+ * strokeStyle cannot reference `var(--token)` directly, so the drawing module
+ * reads these through `getComputedStyle()` at draw time instead of
+ * hardcoding hex — the one indirection that keeps the chart on the same
+ * design tokens as the rest of the page (and any future palette change) with
+ * zero JS edits. Scoped to this page rather than `app.css`: no other page
+ * draws this chart. */
+.crossover-page {
+  --crossover-chart-measure: var(--status-danger);
+  --crossover-chart-verify: var(--status-ok);
+  --crossover-chart-corridor: var(--primary);
+  --crossover-chart-excluded: var(--muted);
+}
+
+.crossover-chart-wrap {
+  width: 100%;
+  max-width: 640px;
+  margin: 0.8rem 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+canvas#crossover-cloud-chart { display: block; width: 100%; height: 240px; }
+
+.crossover-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  list-style: none;
+  margin: 0.4rem 0 0.6rem;
+  padding: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.crossover-chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.crossover-chart-legend__swatch {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 2px;
+  display: inline-block;
+}
+.crossover-chart-legend__swatch--measure { background: var(--crossover-chart-measure); }
+.crossover-chart-legend__swatch--verify { background: var(--crossover-chart-verify); }
+.crossover-chart-legend__swatch--corridor {
+  background: var(--crossover-chart-corridor);
+  opacity: 0.35;
+}
+.crossover-chart-legend__swatch--excluded {
+  background: var(--crossover-chart-excluded);
+  opacity: 0.45;
+}
+
+/* Anomaly callouts (plain language first; the plan's τ/r vocabulary stays in
+ * the .candidate-provenance <details> reused from the review screen above). */
+.crossover-callout {
+  margin: 0 0 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--status-warn) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 30%, transparent);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+.crossover-callout:last-child { margin-bottom: 0; }
+.crossover-callout > .candidate-provenance { margin-top: 0.35rem; }

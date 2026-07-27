@@ -102,6 +102,12 @@ globalThis.__renderRelayQr = (container, text) => {
 };
 function lastRelayQrCall() { return relayQrCalls[relayQrCalls.length - 1] || null; }
 
+// PR-7's before/after visualization (./cloud.js) is out of scope for this
+// harness — it only pins the Stop-measurement flow — so a no-op stands in,
+// same shape as the __renderRelayQr stub above.
+globalThis.__renderCloud = () => {};
+globalThis.__redrawCloudChart = () => {};
+
 const here = dirname(fileURLToPath(import.meta.url));
 let source = readFileSync(
   resolve(here, "../../deploy/assets/correction/js/crossover/main.js"),
@@ -113,7 +119,9 @@ source = source.replace(
 );
 source =
   "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON; " +
-  "const renderRelayQr = globalThis.__renderRelayQr;\n" + source;
+  "const renderRelayQr = globalThis.__renderRelayQr; " +
+  "const renderCloud = globalThis.__renderCloud; " +
+  "const redrawCloudChart = globalThis.__redrawCloudChart;\n" + source;
 const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
 if (bootStart < 0) throw new Error("crossover module boot call not found");
 source = source.slice(0, bootStart).concat(
