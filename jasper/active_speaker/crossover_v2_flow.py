@@ -8,8 +8,9 @@
 per-driver distributed transaction with a **conductor**: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. This module owns the
-phase state machine that drives the relay session — 16 captures at the shipped
-defaults, since the spatial cloud replaced the original three:
+phase state machine that drives the relay session — 16 captures at the FULL
+tier's shipped defaults (7 on the express tier, ``TIER_EXPRESS``), since the
+spatial cloud replaced the original three:
 
     CHECK → gain solve → MEASURE → the pre-apply position group → fit +
       candidate → APPLYING (auto) → VERIFY → the post-apply position group
@@ -55,9 +56,10 @@ The conductor exposes the three ``run_capture_plan`` callbacks
 (:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
 lifecycle hooks the flow needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
-relay session (a heterogeneous ``CapturePlan`` — 16 entries at the shipped
-defaults: check / measure / the pre-apply position group / verify / the
-post-apply position group; see "position-group choreography" below)
+relay session (a heterogeneous ``CapturePlan`` — 16 entries at the full tier's
+shipped defaults, 7 on express: check / measure / the pre-apply position group /
+verify / the post-apply position group, which express omits entirely; see
+"position-group choreography" below)
 spans all phases; VERIFY is soft-held behind :class:`CaptureBeginDeferred`
 until the host's OWN auto-apply completes — the mechanism is unchanged from
 the pre-ruling design, only the release trigger moved from a human tap to
@@ -321,18 +323,37 @@ CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 class CloudPositionPrompt:
     """One prompted mic move in a position group.
 
-    ``body`` is the household-facing instruction; ``wide`` marks the moves that
-    carry the plan's ~30 cm-class offset (a forearm rather than a hand-width).
-    The flag is not decoration: fundamental 1 needs ≥10 cm of spread to
-    decorrelate HF nulls and ≥~30 cm to support the LF edge, so
-    ``CLOUD_POSITION_PROMPTS`` is ORDERED to put two wide moves inside the
-    first ``MIN_CLOUD_MEASURE_POSITIONS - 1`` offsets — pinned by test, because
-    an editor reordering this table for readability would silently delete the
-    LF half of the measurement.
+    Split into ``headline`` + ``detail`` by the flow-simplification redesign
+    (§2.1): the step screen shows ONE imperative sentence where the counter
+    used to be, with at most one short supporting clause under it. Before the
+    split this was a single 2-3 sentence paragraph rendered as muted 0.9 rem
+    body text under a headline that was just a counter — the inversion the
+    owner asked for. ``detail`` may be empty; ``text`` re-joins the two for
+    the durable evidence sidecar, which wants the whole instruction the
+    operator actually followed rather than only its first sentence.
+
+    ``wide`` marks the moves that carry the plan's ~30 cm-class offset (a
+    forearm rather than a hand-width). The flag is not decoration: fundamental
+    1 needs ≥10 cm of spread to decorrelate HF nulls and ≥~30 cm to support
+    the LF edge, so ``CLOUD_POSITION_PROMPTS`` is ORDERED to put two wide
+    moves inside the first ``MIN_CLOUD_MEASURE_POSITIONS - 1`` offsets —
+    pinned by test, because an editor reordering this table for readability
+    would silently delete the LF half of the measurement.
     """
 
-    body: str
+    headline: str
+    detail: str = ""
     wide: bool = False
+
+    @property
+    def text(self) -> str:
+        """Headline + detail as one string — the evidence sidecar's ``prompt``.
+
+        The sidecar is the only durable statement of WHERE a curve was
+        measured, so it records the complete instruction, not the screen's
+        headline slot alone.
+        """
+        return f"{self.headline} {self.detail}".strip() if self.detail else self.headline
 
 
 # The prompt table, in the order a group walks it.
@@ -351,35 +372,36 @@ class CloudPositionPrompt:
 # sit at offsets 3 and 4 rather than at the end, where the S0 kit (which always
 # ran all ten) could afford to put them.
 CLOUD_POSITION_PROMPTS: tuple[CloudPositionPrompt, ...] = (
-    CloudPositionPrompt("Move about one hand-width to the LEFT of the mark."),
-    CloudPositionPrompt("Now about one hand-width to the RIGHT of the mark."),
+    CloudPositionPrompt("Move one hand-width LEFT of the mark."),
+    CloudPositionPrompt("Now move one hand-width RIGHT of the mark."),
     CloudPositionPrompt(
-        "Bigger move: about a forearm's length LEFT of the mark. Nudge the "
-        "phone a little toward the speaker as you go — like walking a small "
-        "circle around it — and keep it pointed at the speaker.",
+        "Move a forearm's length LEFT of the mark.",
+        "Step a little toward the speaker as you go, and keep the phone "
+        "pointed at it.",
         wide=True,
     ),
     CloudPositionPrompt(
-        "Same again on the RIGHT: a forearm out, a nudge toward the speaker, "
-        "still pointed at it.",
+        "Now the same on the RIGHT: a forearm's length out.",
+        "A step toward the speaker again, phone still pointed at it.",
         wide=True,
     ),
-    CloudPositionPrompt("Back over the mark, about a hand-width HIGHER."),
-    CloudPositionPrompt("Over the mark again, about a hand-width LOWER."),
-    CloudPositionPrompt("Two hand-widths LEFT of the mark this time."),
-    CloudPositionPrompt("Two hand-widths RIGHT of the mark."),
+    CloudPositionPrompt("Come back over the mark, one hand-width HIGHER."),
+    CloudPositionPrompt("Now over the mark again, one hand-width LOWER."),
+    CloudPositionPrompt("Move two hand-widths LEFT of the mark."),
+    CloudPositionPrompt("Now move two hand-widths RIGHT of the mark."),
     CloudPositionPrompt(
-        "Back to the mark's height, then anywhere in between you have not "
-        "used yet — a little diagonal off the mark is perfect."
+        "Come back to the mark's height, then step to a spot you have not "
+        "used yet.",
+        "A little diagonal off the mark is perfect.",
     ),
     CloudPositionPrompt(
-        "Another big one: about a forearm's length ABOVE the mark, still "
-        "pointed at the speaker.",
+        "Raise the phone a forearm's length ABOVE the mark.",
+        "Keep it pointed at the speaker.",
         wide=True,
     ),
     CloudPositionPrompt(
-        "Last big one: about a forearm's length BELOW the mark, still pointed "
-        "at the speaker.",
+        "Now lower it a forearm's length BELOW the mark.",
+        "Keep it pointed at the speaker.",
         wide=True,
     ),
 )
@@ -392,6 +414,15 @@ VERIFY_ANCHOR_HOLD_MESSAGE = (
     "Applying the measured crossover to your speaker. While that finishes, put "
     "the phone back on the mark — same spot, same height, pointed at the "
     "speaker."
+)
+
+# The one sentence the 1-entry re-verify re-arm leads with, on BOTH of its
+# surfaces (the consent screen's steps and the plan entry's own instruction).
+# Flow-simplification §2.4: the 2026-07-27 hardware session abandoned this
+# recovery because nothing on screen said it was one sweep rather than another
+# walk. Kept as a constant so the two surfaces cannot drift apart.
+REVERIFY_NO_REWALK_HEADLINE = (
+    "One sweep, back at the mark — you do NOT need to redo the walk."
 )
 
 # What the geometry-locked retake asks for. Two rungs, so a second retake is a
@@ -420,6 +451,178 @@ def _min_positions_for_two_wide_offsets() -> int:
             "fundamental 1's LF edge needs ~30 cm-class spread"
         )
     return wide[1] + 2
+
+
+# --------------------------------------------------------------------------- #
+# commission tiers (flow-simplification §1)
+# --------------------------------------------------------------------------- #
+
+# The two named plan SHAPES a household can consent to. A tier is not a
+# loosened floor — it is a distinct, validated (N, M) pair with its own rules,
+# so ``MIN_CLOUD_MEASURE_POSITIONS`` (the FULL tier's validated floor) never
+# moves to accommodate express.
+TIER_FULL = "full"
+TIER_EXPRESS = "express"
+TIERS = (TIER_FULL, TIER_EXPRESS)
+DEFAULT_TIER = TIER_FULL
+
+# Express's post-apply group: VERIFY's design-axis anchor and nothing else. An
+# ``M = 1`` plan emits NO cloud-verify entries, so express makes no
+# cross-position post-apply claim at all — it verifies tracking at the mark
+# (``VERIFY_TOLERANCE_DB``, unchanged) and says so. See the degraded-claims
+# table in docs/flat-linearization-flow-simplification-plan.md §1.3.
+EXPRESS_CLOUD_VERIFY_POSITIONS = 1
+
+
+def express_cloud_measure_positions() -> int:
+    """Express's pre-apply group size — DERIVED, never the literal 5.
+
+    Express walks the shortest prompted cloud that still contains BOTH of
+    :data:`CLOUD_POSITION_PROMPTS`' wide (~30 cm-class) moves, which is
+    exactly what :func:`_min_positions_for_two_wide_offsets` computes and
+    exactly why :data:`MIN_CLOUD_VERIFY_POSITIONS` is derived the same way: if
+    the table's wide moves are ever reordered, express must move with them
+    rather than silently ship one-wide and void fundamental 1's LF-edge
+    guarantee.
+    """
+    return _min_positions_for_two_wide_offsets()
+
+
+@dataclass(frozen=True)
+class V2PlanShape:
+    """The RESOLVED (tier, N, M) triple — one value, threaded everywhere.
+
+    Before this existed, ``prepare_v2_session`` called
+    :func:`build_v2_session_spec` and :func:`build_v2_cloud_index_phase_map`
+    with independent defaults and passed counts to neither: two functions that
+    MUST agree, agreeing only by luck. Resolving once and threading the result
+    closes that desync hazard by construction — the plan the phone is handed
+    and the index→phase map the conductor walks are derived from the same
+    object or they are not built at all.
+    """
+
+    tier: str
+    cloud_measure_positions: int
+    cloud_verify_positions: int
+
+    @property
+    def capture_target(self) -> int:
+        """Accepted captures this shape runs (``1 + N + M``)."""
+        return 1 + self.cloud_measure_positions + self.cloud_verify_positions
+
+    @property
+    def max_attempts(self) -> int:
+        """This shape's admission budget (entries + geometry retakes + spare)."""
+        return self.capture_target + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
+
+    @property
+    def has_cloud_verify_group(self) -> bool:
+        """Whether this shape emits a post-apply position GROUP at all.
+
+        ``False`` for express (``M = 1``): VERIFY's anchor is the last entry,
+        so the plan's end-screen copy rides IT rather than a group tail.
+        """
+        return self.cloud_verify_positions > 1
+
+
+def normalize_tier(tier: Any) -> str:
+    """Allowlist a household-supplied tier id; empty/absent means FULL.
+
+    Deliberately strict about the value and lenient about absence: an unset
+    tier is every pre-tier caller (and the wizard before PR-U3 ships its
+    chooser), which must keep getting the full instrument; an UNKNOWN tier is
+    a caller asking for an instrument this build does not have, which must
+    fail loudly rather than silently measure something else.
+    """
+    name = str(tier or "").strip().lower()
+    if not name:
+        return DEFAULT_TIER
+    if name not in TIERS:
+        raise CrossoverV2FlowError(
+            f"unknown commission tier {name!r} (expected one of {', '.join(TIERS)})"
+        )
+    return name
+
+
+def resolve_plan_shape(
+    tier: Any = None,
+    *,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
+) -> V2PlanShape:
+    """Resolve (and validate) one plan shape from a tier and optional counts.
+
+    Express admits EXACTLY (:func:`express_cloud_measure_positions`,
+    :data:`EXPRESS_CLOUD_VERIFY_POSITIONS`) — it is a named shape, not a
+    configurable range, so an explicit count that disagrees is a caller bug
+    rather than a preference. Full keeps the shipped ranges
+    (``MIN_CLOUD_MEASURE_POSITIONS..MAX_CLOUD_MEASURE_POSITIONS``,
+    ``M >= MIN_CLOUD_VERIFY_POSITIONS``).
+    """
+    name = normalize_tier(tier)
+    if name == TIER_EXPRESS:
+        n = express_cloud_measure_positions()
+        m = EXPRESS_CLOUD_VERIFY_POSITIONS
+        for label, wanted, got in (
+            ("cloud_measure_positions", n, cloud_measure_positions),
+            ("cloud_verify_positions", m, cloud_verify_positions),
+        ):
+            if got is not None and int(got) != wanted:
+                raise CrossoverV2FlowError(
+                    f"the express tier is a fixed shape: {label} must be "
+                    f"{wanted}, got {int(got)}"
+                )
+        # Still routed through the shared table-length check below, so a
+        # shortened prompt table fails here rather than at entry-build time.
+        _validated_cloud_counts(
+            cloud_measure_positions=n, cloud_verify_positions=m, tier=name,
+        )
+        return V2PlanShape(
+            tier=name, cloud_measure_positions=n, cloud_verify_positions=m,
+        )
+    n, m = _validated_cloud_counts(
+        cloud_measure_positions=(
+            DEFAULT_CLOUD_MEASURE_POSITIONS
+            if cloud_measure_positions is None
+            else cloud_measure_positions
+        ),
+        cloud_verify_positions=(
+            DEFAULT_CLOUD_VERIFY_POSITIONS
+            if cloud_verify_positions is None
+            else cloud_verify_positions
+        ),
+        tier=name,
+    )
+    return V2PlanShape(tier=name, cloud_measure_positions=n, cloud_verify_positions=m)
+
+
+def _shape_from_kwargs(
+    plan_shape: V2PlanShape | None,
+    *,
+    tier: Any = None,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
+) -> V2PlanShape:
+    """One resolved shape from either a pre-resolved value or loose kwargs.
+
+    Passing both is refused rather than silently preferring one: the whole
+    point of :class:`V2PlanShape` is that two surfaces cannot disagree about
+    the shape, and a caller handing over two sources of truth has already lost
+    that guarantee.
+    """
+    loose = (tier, cloud_measure_positions, cloud_verify_positions)
+    if plan_shape is not None:
+        if any(value is not None for value in loose):
+            raise CrossoverV2FlowError(
+                "pass either plan_shape or explicit tier/position counts, "
+                "never both"
+            )
+        return plan_shape
+    return resolve_plan_shape(
+        tier,
+        cloud_measure_positions=cloud_measure_positions,
+        cloud_verify_positions=cloud_verify_positions,
+    )
 
 
 def assert_cloud_plan_fits_relay_capacity() -> None:
@@ -458,20 +661,33 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
 
 
 def _validated_cloud_counts(
-    *, cloud_measure_positions: int, cloud_verify_positions: int
+    *,
+    cloud_measure_positions: int,
+    cloud_verify_positions: int,
+    tier: str = DEFAULT_TIER,
 ) -> tuple[int, int]:
+    """Validate one (N, M) pair AGAINST ITS TIER's rules.
+
+    The FULL tier keeps the shipped ranges verbatim. Express is checked
+    against its own derived shape instead — the range rules would reject it
+    (that is the point: express is a distinct named plan, not a loosened
+    floor), and :func:`resolve_plan_shape` has already pinned N and M to the
+    derived constants before calling here. What both tiers share is the
+    prompt-table length check below, which is a property of the TABLE.
+    """
     n = int(cloud_measure_positions)
     m = int(cloud_verify_positions)
-    if not MIN_CLOUD_MEASURE_POSITIONS <= n <= MAX_CLOUD_MEASURE_POSITIONS:
-        raise CrossoverV2FlowError(
-            f"cloud_measure_positions must be "
-            f"{MIN_CLOUD_MEASURE_POSITIONS}..{MAX_CLOUD_MEASURE_POSITIONS}, got {n}"
-        )
-    if m < MIN_CLOUD_VERIFY_POSITIONS:
-        raise CrossoverV2FlowError(
-            f"cloud_verify_positions must be at least "
-            f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
-        )
+    if tier != TIER_EXPRESS:
+        if not MIN_CLOUD_MEASURE_POSITIONS <= n <= MAX_CLOUD_MEASURE_POSITIONS:
+            raise CrossoverV2FlowError(
+                f"cloud_measure_positions must be "
+                f"{MIN_CLOUD_MEASURE_POSITIONS}..{MAX_CLOUD_MEASURE_POSITIONS}, got {n}"
+            )
+        if m < MIN_CLOUD_VERIFY_POSITIONS:
+            raise CrossoverV2FlowError(
+                f"cloud_verify_positions must be at least "
+                f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
+            )
     # Both groups index the SAME prompt table, so the longer of the two bounds
     # how many offsets it must supply.
     offsets_needed = max(n, m) - 1
@@ -485,26 +701,31 @@ def _validated_cloud_counts(
 
 def cloud_capture_target(
     *,
-    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
-    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+    plan_shape: V2PlanShape | None = None,
+    tier: Any = None,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
 ) -> int:
     """Accepted captures one cloud session runs: CHECK + the two groups.
 
     ``1 + N + M`` — CHECK, then the pre-apply cloud (MEASURE's anchor plus
     ``N − 1`` prompted positions), then the post-apply cloud (VERIFY's anchor
-    plus ``M − 1``). 16 at the shipped defaults.
+    plus ``M − 1``). 16 at the full tier's shipped defaults, 7 for express.
     """
-    n, m = _validated_cloud_counts(
+    return _shape_from_kwargs(
+        plan_shape,
+        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
-    )
-    return 1 + n + m
+    ).capture_target
 
 
 def cloud_plan_max_attempts(
     *,
-    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
-    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+    plan_shape: V2PlanShape | None = None,
+    tier: Any = None,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
 ) -> int:
     """This flow's retry budget for a cloud plan (a POLICY number).
 
@@ -512,22 +733,22 @@ def cloud_plan_max_attempts(
     separate from ``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`` (the relay's
     TRANSPORT ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states:
     conflating the two is how a transport change silently becomes a product
-    change. 23 at the shipped defaults.
+    change. 23 at the full tier's shipped defaults, 14 for express.
     """
-    return (
-        cloud_capture_target(
-            cloud_measure_positions=cloud_measure_positions,
-            cloud_verify_positions=cloud_verify_positions,
-        )
-        + GEOMETRY_RETRY_POSITIONS
-        + CLOUD_RETAKE_ALLOWANCE
-    )
+    return _shape_from_kwargs(
+        plan_shape,
+        tier=tier,
+        cloud_measure_positions=cloud_measure_positions,
+        cloud_verify_positions=cloud_verify_positions,
+    ).max_attempts
 
 
 def build_v2_cloud_index_phase_map(
     *,
-    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
-    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+    plan_shape: V2PlanShape | None = None,
+    tier: Any = None,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
 ) -> dict[int, str]:
     """Capture-plan index → conductor phase for one cloud session.
 
@@ -541,14 +762,20 @@ def build_v2_cloud_index_phase_map(
         N+2                  VERIFY             (design-axis anchor, on_apply)
         N+3 .. N+M+1         CLOUD_VERIFY       (M-1 prompted positions)
 
+    At ``M = 1`` (the express tier) the last line is empty: VERIFY's anchor is
+    the final index and the session runs no post-apply group at all.
+
     Single source of truth: ``build_v2_capture_plan`` builds its entries from
     this same function, so an entry's prompt can never address a different
     phase than the conductor believes it is running.
     """
-    n, m = _validated_cloud_counts(
+    shape = _shape_from_kwargs(
+        plan_shape,
+        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
+    n, m = shape.cloud_measure_positions, shape.cloud_verify_positions
     mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
     for offset in range(n - 1):
         mapping[3 + offset] = PHASE_CLOUD_MEASURE
@@ -1515,6 +1742,15 @@ class V2ConductorSnapshot:
     # which the module-global tuple cannot express. Empty on state written
     # before PR-3b; readers fall back to ``CAPTURE_PHASES`` then.
     session_phases: tuple[str, ...] = ()
+    # WHICH INSTRUMENT produced this session (:data:`TIER_FULL` /
+    # :data:`TIER_EXPRESS`). Empty string means UNKNOWN — state written before
+    # tiers existed, or a conductor constructed without one — and readers must
+    # render it as unknown rather than assuming full, the same
+    # unknown-vs-default discipline ``echo_band_provenance`` carries (issue
+    # #1763): the two tiers make materially different claims (§1.3), so
+    # guessing one would attach a post-apply cross-position claim to a result
+    # that never measured across positions.
+    tier: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1524,6 +1760,7 @@ class V2ConductorSnapshot:
             "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
+            "tier": self.tier,
         }
 
 
@@ -2477,6 +2714,7 @@ def assemble_cloud_group_result(
     echo_band_hz: tuple[float, float],
     echo_band_provenance: Mapping[str, Any] | None = None,
     validity_floor_hz: float | None = None,
+    tier: str = "",
 ) -> dict[str, Any]:
     """The wiring contract (issue #1742 item 4) -- THE single function that
     consumes the exclusion mask, ``geometry.locked``, and the null registry
@@ -2694,6 +2932,12 @@ def assemble_cloud_group_result(
                 if isinstance(echo_band_provenance, Mapping)
                 else None
             ),
+            # WHICH INSTRUMENT measured this group (flow-simplification §1.2).
+            # ``None`` means unknown, never a guessed default — same
+            # discipline as ``echo_band_provenance`` directly above, and for
+            # the same reason: the two tiers make materially different claims,
+            # so a reader that cannot tell them apart must say so.
+            "tier": str(tier) or None,
             "curve": _decimate_curve_for_json(
                 combined.freqs_hz, combined.power_mean_spec_db,
             ),
@@ -2736,6 +2980,7 @@ class CrossoverV2Conductor:
         driver_caps_dbfs: Mapping[str, float],
         session_volume_db: float,
         seams: V2FlowSeams,
+        tier: str = "",
         driver_spacing_m: float = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
@@ -2751,6 +2996,12 @@ class CrossoverV2Conductor:
         if len(roles) != 2:
             raise CrossoverV2FlowError("the v2 conductor is a 2-way flow")
         self.session_id = str(session_id)
+        # Which INSTRUMENT this session is running. Empty = unknown (a caller
+        # that never declared one), never silently ``TIER_FULL`` — see
+        # ``V2ConductorSnapshot.tier`` for why guessing is the dishonest
+        # option. Validated so an unknown id fails at construction rather than
+        # riding into the durable state and out to `/state`.
+        self._tier = normalize_tier(tier) if tier else ""
         self._preset = source_preset
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
@@ -2834,6 +3085,14 @@ class CrossoverV2Conductor:
         # the group closes, mirroring that dict's own "never confuse
         # not-yet-run with a clean verdict" rule.
         self._group_cloud_result: dict[str, dict[str, Any]] = {}
+        # The group's most recent COMBINE, held from its geometry close until
+        # the household confirms past it (flow-simplification §2.6 —
+        # ``confirm_cloud_measure_group``). Only CLOUD_MEASURE ever populates
+        # it, because only that group's close fits a correction. Held rather
+        # than recomputed because a combine is 2.7-6 s of real operator time
+        # (see ``_close_cloud_group``); overwritten if a voluntary retake
+        # re-closes the group, so the confirm always fits the newest evidence.
+        self._group_combined: dict[str, Any] = {}
 
         # Programs — CHECK is composable now; MEASURE waits on the gain solve,
         # VERIFY on Fc (composable now, played only after apply).
@@ -3151,6 +3410,11 @@ class CrossoverV2Conductor:
         )
 
     @property
+    def tier(self) -> str:
+        """The commission tier this session runs, or ``""`` when undeclared."""
+        return self._tier
+
+    @property
     def current_phase(self) -> str:
         for phase in self._phases:
             if phase not in self._accepted:
@@ -3311,6 +3575,7 @@ class CrossoverV2Conductor:
                 getattr(self._candidate, "fingerprint", None)
                 if self._candidate is not None else None
             ),
+            tier=self._tier,
         )
 
     @classmethod
@@ -3766,7 +4031,7 @@ class CrossoverV2Conductor:
             position_id=f"{phase}_{index:02d}",
             index=index,
             attempt=attempt,
-            prompt=prompt.body,
+            prompt=prompt.text,
             wide=prompt.wide,
             captured_at=time.time(),
             response=response,
@@ -3859,6 +4124,16 @@ class CrossoverV2Conductor:
             # disclosed and accepted rather than retried.
             and verdict.get("thin_evidence") is not True
             and retries < GEOMETRY_RETRY_POSITIONS
+            # …and never AFTER the group has already recorded a verdict. A
+            # VOLUNTARY retake (§2.6) re-enters this close with the group
+            # already closed, and the retry branch below DROPS the take at
+            # this index — which, on a voluntary retake, is the only copy
+            # (``_retain_cloud_position`` replaced the original in place).
+            # Dropping it would leave the household with LESS evidence than
+            # before they chose to redo a spot, which is the one thing the
+            # retake contract promises can never happen. So: re-combine, keep
+            # the verdict honest with the new take, and accept.
+            and phase not in self._group_geometry
         )
         if retry_warranted:
             self._geometry_retries_used[phase] = retries + 1
@@ -3944,24 +4219,85 @@ class CrossoverV2Conductor:
             "geometry": dict(verdict),
         }
         if phase == PHASE_CLOUD_MEASURE:
-            # The pre-apply cloud is closed and its honesty verdict is in hand;
-            # THIS is where the correction is now fitted, published, and handed
-            # to auto-apply. Deliberately OUTSIDE the fail-soft wrap above: the
-            # pipeline is diagnostic machinery and must never cost the group
-            # its accept, but the candidate build is the session's product —
-            # a failure there is a real failure and propagates, exactly as it
-            # did when this ran at MEASURE.
-            payload.update(self._close_measure_cloud_candidate(combined))
+            # The pre-apply cloud's geometry verdict and disclosure pipeline are
+            # in hand — but the FIT no longer runs here. Flow-simplification
+            # §2.6: firing fit + auto-apply on this acceptance made the final
+            # prompted position the one spot in the whole session a household
+            # could not choose to redo, because the speaker was already being
+            # retuned by the time the "Retake" control could have been tapped.
+            # The fit moves to :meth:`confirm_cloud_measure_group`, which the
+            # host calls when the household confirms PAST the final position.
+            # No trust gate moved: the fit still runs only after the full
+            # cloud, under the same gates — one user tap now sits in front of
+            # it. Stash the combine so the confirm does not pay for a second
+            # one (measured 2.7-6 s, see this method's own docstring).
+            self._group_combined[phase] = combined
+            payload["awaiting_confirm"] = True
         return PhaseVerdict(True, payload=payload)
+
+    def cloud_measure_group_awaiting_confirm(self) -> bool:
+        """Whether the pre-apply cloud is walked but not yet confirmed.
+
+        True exactly between the final prompted position's acceptance and the
+        household's confirmation past it — the window in which a voluntary
+        retake of that position is still meaningful (§2.6).
+        """
+        return (
+            PHASE_CLOUD_MEASURE in self._group_combined
+            and self._candidate is None
+        )
+
+    def confirm_cloud_measure_group(self, index: int) -> dict[str, Any] | None:
+        """Close out the pre-apply cloud once the household confirms past it.
+
+        **This is the group-close seam** (§2.6). ``index`` is the 1-based wire
+        index of the begin that carries the confirmation — in practice VERIFY's,
+        posted when the household taps through the "all spots done" screen.
+        Returns the same ``{candidate, auto_apply}`` payload
+        :meth:`_close_cloud_group` used to fold into the final position's
+        verdict, so the host fires the identical auto-apply it always did;
+        returns ``None`` when there is nothing to confirm.
+
+        Why a separate method the HOST calls, rather than folding it into
+        :meth:`authorize_begin`: admission stays bookkeeping — budget, defer,
+        refuse — and the one call that fits a correction and hands it to the
+        apply transaction stays visible at the host boundary, next to the
+        ``persist_conductor_state`` that must precede the apply thread.
+
+        Fires at most once per session: the guard is ``self._candidate``, which
+        :meth:`_publish_measure_candidate` sets. A raise leaves it unset, so a
+        genuinely retryable failure can be retried; a session with no cloud
+        group (the 3-entry shape, the verify-only re-arm) never has anything
+        stashed and always returns ``None``.
+        """
+        if not self.cloud_measure_group_awaiting_confirm():
+            return None
+        last_index = self._group_indexes[PHASE_CLOUD_MEASURE][-1]
+        if int(index) <= last_index:
+            # A begin still INSIDE the group (a retake of the final position)
+            # is not a confirmation — it is the household using the window
+            # this seam exists to keep open.
+            return None
+        log_event(
+            logger, "correction.crossover_v2_cloud_group_confirmed",
+            session_id=self.session_id, phase=PHASE_CLOUD_MEASURE,
+            positions=len(self._group_positions[PHASE_CLOUD_MEASURE]),
+            confirmed_at_index=int(index),
+        )
+        return self._close_measure_cloud_candidate(
+            self._group_combined[PHASE_CLOUD_MEASURE]
+        )
 
     def _close_measure_cloud_candidate(self, combined: Any) -> dict[str, Any]:
         """Fit, build, publish, and hand the candidate to auto-apply.
 
         The relocated tail of :meth:`_measure_verdict` (owner decision,
-        2026-07-27). It runs once, at the CLOUD_MEASURE group close, and
-        returns the two payload keys the host's ``consume()`` seam reads —
-        which keys on ``accepted`` plus ``auto_apply`` and never on a phase, so
-        it fires here with no host change at all.
+        2026-07-27). It runs once per session, driven by
+        :meth:`confirm_cloud_measure_group` (flow-simplification §2.6 moved
+        the trigger from the final position's ACCEPTANCE to the household's
+        confirmation past it), and returns the two payload keys the host's
+        auto-apply wiring reads — which keys on ``auto_apply`` and never on a
+        phase.
 
         **The fit now consumes the cloud** (plan interpretation call (A), the
         wiring half of PR-6): :func:`_cloud_fit_evidence` turns this group's
@@ -4000,17 +4336,16 @@ class CrossoverV2Conductor:
         # comment in ``__init__``).
         #
         # **Why releasing cannot strand a re-delivered capture.** Releasing
-        # makes a SECOND close of this group raise instead of rebuilding, so it
-        # is only safe if a second close cannot happen — and it cannot: the
-        # relay's plan loop admits a begin only at
-        # ``(accepted_count + 1, attempts_used + 1)`` and dedupes already-
-        # ``processed`` (index, attempt) pairs, so once this close is accepted
-        # the index never goes backwards. The geometry retake is not a
-        # counter-example either: a retried close returns REJECTED from
-        # ``_close_cloud_group`` well before this method is reached, so a
-        # retaken group reaches here exactly once, on the close that accepts.
-        # Left in place on a raise — that session is already failing, and the
-        # conductor is about to be discarded.
+        # makes a SECOND call raise instead of rebuilding, so it is only safe
+        # if a second call cannot happen — and it cannot: the sole caller
+        # (``confirm_cloud_measure_group``) refuses once ``self._candidate`` is
+        # set, which the line above does. Neither retake shape is a
+        # counter-example: a GEOMETRY retake returns REJECTED from
+        # ``_close_cloud_group`` well before any confirm, and a VOLUNTARY
+        # retake (§2.6) is only admitted while the confirm has not happened,
+        # so it re-closes the group and re-stashes the combine without ever
+        # reaching here twice. Left in place on a raise — that session is
+        # already failing, and the conductor is about to be discarded.
         self._measure_analysis = None
         return payload
 
@@ -4136,6 +4471,7 @@ class CrossoverV2Conductor:
             echo_band_hz=self._cloud_echo_band.band_hz,
             echo_band_provenance=self._cloud_echo_band.disclosure(),
             validity_floor_hz=cloud_validity_floor_hz(positions),
+            tier=self._tier,
         )
         self._group_cloud_result[phase] = result
         # PR-5: the spec verdict a session's journal carries. It replaces the
@@ -4959,25 +5295,55 @@ def _program_duration_ms(program: ExcitationProgram) -> int:
     return int(round(program.total_samples / program.sample_rate_hz * 1000))
 
 
+def capture_progress_label(index: int, capture_target: int) -> str:
+    """The ONE counter a step screen shows — "Measurement N of T".
+
+    Server-derived and whole-session, per the flow-simplification redesign
+    (§2.1). It replaces BOTH of the two counters the household used to read at
+    once: the per-group "Spot i of n" that headlined each cloud entry, and the
+    phone's own ``#status`` line, which counted the same walk differently and
+    read as a contradiction. ``index`` is the entry's 1-based WIRE index (the
+    relay's own index space), not the 0-based ``CapturePlanEntry.index``.
+    """
+    return f"Measurement {int(index)} of {int(capture_target)}"
+
+
 def _cloud_entry_screen(
-    *, title: str, body: str, auto_advance: str,
+    *, progress: str, title: str, body: str, auto_advance: str,
 ) -> dict[str, str]:
-    return {"title": title, "body": body, "auto_advance": auto_advance}
+    return {
+        "progress": progress,
+        "title": title,
+        "body": body,
+        "auto_advance": auto_advance,
+    }
 
 
 def build_v2_capture_plan(
     roles_bands: Sequence[RoleBand],
     fc_hz: float,
     *,
-    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
-    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+    plan_shape: V2PlanShape | None = None,
+    tier: Any = None,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
 ) -> Any:
     """The heterogeneous cloud CapturePlan (§5.7 + flat-linearization PR-3b).
 
-    16 entries at the shipped defaults: CHECK, MEASURE, ``N-1`` prompted
-    pre-apply positions, VERIFY, ``M-1`` prompted post-apply positions — the
-    layout ``build_v2_cloud_index_phase_map`` documents, built from that same
-    function so prompt and phase cannot disagree.
+    16 entries at the full tier's shipped defaults (7 for express): CHECK,
+    MEASURE, ``N-1`` prompted pre-apply positions, VERIFY, ``M-1`` prompted
+    post-apply positions — the layout ``build_v2_cloud_index_phase_map``
+    documents, built from that same function so prompt and phase cannot
+    disagree.
+
+    **Screen grammar (flow-simplification §2.1).** Every entry's ``screen``
+    carries ``progress`` (the one server-derived counter), ``title`` (ONE
+    imperative instruction) and ``body`` (at most one supporting clause). The
+    VERIFY entry is the deliberate exception: its ``title``/``body`` stay the
+    apply-hold copy an old cached page renders during the hold, and the
+    post-apply confirmation instruction rides the NEW ``confirm_title`` /
+    ``confirm_body`` keys such a page ignores (§2.2). Screens are an opaque
+    ``str -> str`` map, so none of this is a relay/protocol change.
 
     Entry durations derive from the composed programs (MEASURE sized from a
     nominal gain plan — sweep/gap lengths are gain-independent, so the duration
@@ -5017,13 +5383,14 @@ def build_v2_capture_plan(
         ),
         courtesy_prelude=COURTESY_PRELUDE_ENABLED,
     )
-    n, m = _validated_cloud_counts(
+    shape = _shape_from_kwargs(
+        plan_shape,
+        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
-    index_phase = build_v2_cloud_index_phase_map(
-        cloud_measure_positions=n, cloud_verify_positions=m
-    )
+    index_phase = build_v2_cloud_index_phase_map(plan_shape=shape)
+    target = shape.capture_target
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
     entries: list[Any] = [
         CapturePlanEntry(
@@ -5031,12 +5398,12 @@ def build_v2_capture_plan(
             kind_label="check",
             duration_ms=_program_duration_ms(check) + CAPTURE_ENTRY_MARGIN_MS,
             screen={
-                "title": "Microphone check",
-                "body": (
-                    "Place the phone about 1 m in front of the speaker at "
-                    "tweeter height, then tap Start. Stay quiet — JTS listens "
-                    "to the room first."
+                "progress": capture_progress_label(1, target),
+                "title": (
+                    "Stand the phone about 1 m in front of the speaker, at "
+                    "tweeter height."
                 ),
+                "body": "Stay quiet — JTS listens to the room first.",
                 "auto_advance": AUTO_ADVANCE_TAP,
             },
         ),
@@ -5045,11 +5412,9 @@ def build_v2_capture_plan(
             kind_label="measure",
             duration_ms=_program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS,
             screen={
-                "title": "Measuring",
-                "body": (
-                    "Keep the phone still — measuring both drivers. This spot "
-                    "is the mark; you will come back to it later."
-                ),
+                "progress": capture_progress_label(2, target),
+                "title": "Keep the phone still — this spot is the mark.",
+                "body": "Measuring both drivers; you will come back here later.",
                 "auto_advance": AUTO_ADVANCE_COUNTDOWN,
                 "countdown_s": str(AUTO_ADVANCE_COUNTDOWN_S),
                 "cancelable": "1",
@@ -5072,56 +5437,87 @@ def build_v2_capture_plan(
                 kind_label="cloud_measure",
                 duration_ms=verify_ms,
                 screen=_cloud_entry_screen(
-                    # N1: the phone's own status line already counts
-                    # captures ("measurement 4 of 16"); a second,
-                    # different count in the title read as a
-                    # contradiction. Name what this number counts.
-                    title=f"Spot {offset + 2} of {n} — hold still",
-                    body=prompt.body,
+                    progress=capture_progress_label(capture_index, target),
+                    title=prompt.headline,
+                    body=prompt.detail,
                     auto_advance=AUTO_ADVANCE_TAP,
                 ),
             )
         )
     verify_index = _index_of_phase(index_phase, PHASE_VERIFY)
+    verify_screen: dict[str, str] = {
+        "progress": capture_progress_label(verify_index, target),
+        "title": "Applying",
+        # Fallback only — the live hold shows the CaptureBeginDeferred
+        # deferral's own user_message instead (authorize_begin below),
+        # which wins whenever a hold is actually in progress. BOTH carry
+        # the reposition instruction: the pre-apply cloud leaves
+        # the operator standing at a wide offset, and VERIFY's tracking
+        # comparator grades against MEASURE's design-axis prediction,
+        # so it is only meaningful captured back at the mark. The apply
+        # hold is exactly the window in which to walk back.
+        #
+        # DELIBERATELY NOT repurposed into the redesign's instruction slot
+        # (§2.1/§2.2): ``validate_capture_page`` enforces a build-stamp
+        # FORMAT and never a minimum build, so a phone carrying a cached
+        # pre-redesign bundle is admitted and renders these two as the hold
+        # heading. Repurposing them would make that page show a walk-back
+        # instruction as its "Applying" heading. The post-apply confirmation
+        # copy therefore rides the new keys below, which an old page ignores.
+        "body": VERIFY_ANCHOR_HOLD_MESSAGE,
+        "auto_advance": AUTO_ADVANCE_ON_APPLY,
+        # The step-11 fix (§2.2): the tone must not fire the moment the apply
+        # lands, racing the household's walk back to the mark. The entry KEEPS
+        # ``AUTO_ADVANCE_ON_APPLY`` (so the runner's ``begin_budget`` hold
+        # semantics stay live); what changes is that the page renders these
+        # two once authorization arrives and waits for the tap before arming.
+        # That wait sits in the runner's ``awaiting_arm`` phase, whose budget
+        # is ``DEFAULT_TIMEOUT_S`` (120 s) — comfortably past the 60 s
+        # acceptance criterion.
+        "confirm_title": "Back on the mark, holding still?",
+        "confirm_body": "Same spot, same height, pointed at the speaker.",
+    }
+    # The phone's END screen once every capture completes
+    # (capture-page/js/main.js's renderPlanAllDone reads the FINAL wire
+    # index's entry) — owner ruling, 2026-07-20: state the outcome plainly and
+    # point at the speaker page for undo/compare, rather than the shared "All
+    # measurements done" generic copy every other capture-plan flow gets.
+    #
+    # WHICH entry is last depends on the tier: the full plan ends on the
+    # post-apply group's tail, express (M = 1) ends on VERIFY itself. Express
+    # also says LESS, because it verified less — it confirmed the result at
+    # the mark and made no cross-position post-apply claim at all (§1.3).
+    done_screen = {
+        "done_title": "Your speaker is tuned",
+        "done_body": (
+            "Verified and applied. Manage or undo on the speaker page."
+            if shape.has_cloud_verify_group
+            else "Confirmed at the mark and applied. Run a Full measurement "
+            "for the verified-everywhere result, or manage this one on the "
+            "speaker page."
+        ),
+    }
+    if not shape.has_cloud_verify_group:
+        verify_screen.update(done_screen)
     entries.append(
         CapturePlanEntry(
             index=verify_index - 1,
             kind_label="verify",
             duration_ms=verify_ms,
-            screen={
-                "title": "Applying",
-                # Fallback only — the live hold shows the CaptureBeginDeferred
-                # deferral's own user_message instead (authorize_begin below),
-                # which wins whenever a hold is actually in progress. BOTH now
-                # carry the reposition instruction: the pre-apply cloud leaves
-                # the operator standing at a wide offset, and VERIFY's tracking
-                # comparator grades against MEASURE's design-axis prediction,
-                # so it is only meaningful captured back at the mark. The apply
-                # hold is exactly the window in which to walk back.
-                "body": VERIFY_ANCHOR_HOLD_MESSAGE,
-                "auto_advance": AUTO_ADVANCE_ON_APPLY,
-            },
+            screen=verify_screen,
         )
     )
     for offset, capture_index in enumerate(cloud_verify_indexes):
         prompt = CLOUD_POSITION_PROMPTS[offset]
         last = offset == len(cloud_verify_indexes) - 1
         screen = _cloud_entry_screen(
-            title=f"Checking spot {offset + 2} of {m} — hold still",
-            body=prompt.body,
+            progress=capture_progress_label(capture_index, target),
+            title=prompt.headline,
+            body=prompt.detail,
             auto_advance=AUTO_ADVANCE_TAP,
         )
         if last:
-            # The phone's END screen once every capture completes
-            # (capture-page/js/main.js's renderPlanAllDone) — owner ruling,
-            # 2026-07-20: state the outcome plainly and point at the speaker
-            # page for undo/compare, rather than the shared "All measurements
-            # done" generic copy every other capture-plan flow gets. It rides
-            # the LAST entry, which the cloud moved off VERIFY.
-            screen["done_title"] = "Your speaker is tuned"
-            screen["done_body"] = (
-                "Verified and applied. Manage or undo on the speaker page."
-            )
+            screen.update(done_screen)
         entries.append(
             CapturePlanEntry(
                 index=capture_index - 1,
@@ -5131,12 +5527,8 @@ def build_v2_capture_plan(
             )
         )
     return CapturePlan(
-        capture_target=cloud_capture_target(
-            cloud_measure_positions=n, cloud_verify_positions=m
-        ),
-        max_attempts=cloud_plan_max_attempts(
-            cloud_measure_positions=n, cloud_verify_positions=m
-        ),
+        capture_target=target,
+        max_attempts=shape.max_attempts,
         schema_version=2,
         entries=tuple(entries),
     )
@@ -5156,6 +5548,12 @@ def build_v2_verify_capture_plan(fc_hz: float) -> Any:
     original session has died: the household explicitly chose "Try again," so
     the single entry requires the tap (no countdown — apply already happened).
     The hosting conductor maps relay index 1 → VERIFY via ``index_phase_map``.
+
+    **The copy leads with how cheap this is (§2.4).** The 2026-07-27 hardware
+    session ABANDONED this recovery because the screen never said that "Try
+    again" is one sweep rather than another walk — the household read it as
+    re-doing the whole cloud and stopped instead. Saying the cheap thing
+    loudly is the fix; nothing about the measurement changed.
     """
     from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
@@ -5171,11 +5569,9 @@ def build_v2_verify_capture_plan(fc_hz: float) -> Any:
         kind_label="verify",
         duration_ms=_program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS,
         screen={
-            "title": "Verify",
-            "body": (
-                "Keep the phone where it was for the measurement, then tap "
-                "Verify."
-            ),
+            "progress": capture_progress_label(1, 1),
+            "title": REVERIFY_NO_REWALK_HEADLINE,
+            "body": "Put the phone back on the mark and hold it still.",
             "auto_advance": AUTO_ADVANCE_TAP,
         },
     )
@@ -5193,7 +5589,12 @@ def build_v2_verify_session_spec(
     acknowledgement_binding: str,
     **spec_kwargs: Any,
 ) -> Any:
-    """The relay v3 spec for a verify-only re-arm session (§5.2 re-verify)."""
+    """The relay v3 spec for a verify-only re-arm session (§5.2 re-verify).
+
+    Its consent steps LEAD with :data:`REVERIFY_NO_REWALK_HEADLINE` — the same
+    sentence the plan entry's own instruction carries — because the 2026-07-27
+    hardware session abandoned this recovery for want of it (§2.4).
+    """
     from jasper.capture_relay.spec import build_crossover_sweep_spec
 
     plan = build_v2_verify_capture_plan(fc_hz)
@@ -5203,6 +5604,7 @@ def build_v2_verify_session_spec(
         acknowledgement_binding=acknowledgement_binding,
         stimulus_duration_ms=plan.entries[0].duration_ms,
         capture_plan=plan,
+        reverify_lead=REVERIFY_NO_REWALK_HEADLINE,
         **spec_kwargs,
     )
 
@@ -5259,8 +5661,10 @@ def build_v2_session_spec(
     fc_hz: float,
     *,
     acknowledgement_binding: str,
-    cloud_measure_positions: int = DEFAULT_CLOUD_MEASURE_POSITIONS,
-    cloud_verify_positions: int = DEFAULT_CLOUD_VERIFY_POSITIONS,
+    plan_shape: V2PlanShape | None = None,
+    tier: Any = None,
+    cloud_measure_positions: int | None = None,
+    cloud_verify_positions: int | None = None,
     **spec_kwargs: Any,
 ) -> Any:
     """One relay v3 session spec spanning every phase of a cloud session (§5.7).
@@ -5274,15 +5678,20 @@ def build_v2_session_spec(
     per-entry screens carry each prompted move from there. The spec-level
     stimulus duration is the longest entry so the per-capture deadline covers
     every phase.
+
+    ``plan_shape`` is the ONE resolved (tier, N, M) value the caller also
+    threads into :func:`build_v2_cloud_index_phase_map` — see
+    :class:`V2PlanShape` for why that matters.
     """
     from jasper.capture_relay.spec import build_crossover_sweep_spec
 
-    plan = build_v2_capture_plan(
-        roles_bands,
-        fc_hz,
+    shape = _shape_from_kwargs(
+        plan_shape,
+        tier=tier,
         cloud_measure_positions=cloud_measure_positions,
         cloud_verify_positions=cloud_verify_positions,
     )
+    plan = build_v2_capture_plan(roles_bands, fc_hz, plan_shape=shape)
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     return build_crossover_sweep_spec(
         driver_label="crossover",
@@ -5294,6 +5703,10 @@ def build_v2_session_spec(
         # the count is every capture the household is prompted through, which
         # is the plan's own target.
         guided_captures=plan.capture_target,
+        # …and which INSTRUMENT that walk is, so the announcement screen can
+        # say "quick tune" vs "full measurement" without the spec builder
+        # re-deriving a shape it does not own (§1.4 / §2.3).
+        guided_tier=shape.tier,
         **spec_kwargs,
     )
 
@@ -5479,6 +5892,17 @@ __all__ = [
     "abandon_measurement_volume",
     "V2ConductorSnapshot",
     "V2FlowSeams",
+    "V2PlanShape",
+    "TIER_FULL",
+    "TIER_EXPRESS",
+    "TIERS",
+    "DEFAULT_TIER",
+    "EXPRESS_CLOUD_VERIFY_POSITIONS",
+    "express_cloud_measure_positions",
+    "normalize_tier",
+    "resolve_plan_shape",
+    "capture_progress_label",
+    "REVERIFY_NO_REWALK_HEADLINE",
     "PhaseVerdict",
     "ReasonSpec",
     "REASON_REGISTRY",

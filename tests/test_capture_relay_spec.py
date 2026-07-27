@@ -600,6 +600,95 @@ def test_ui_builders_emit_expected_shapes():
     assert ui_button("Go") == {"type": "button", "label": "Go", "action": "begin_capture"}
 
 
+def test_no_crossover_consent_screen_ships_a_dead_level_meter():
+    """Flow-simplification §2.3: ``updateLevelMeters`` on the capture page is
+    fed ONLY by the level-ramp protocol, so the meter this builder used to emit
+    never moved on any crossover consent screen — and a meter that never moves
+    reads as a broken mic. Removed from every crossover shape (per-driver,
+    stationary summed, and the guided cloud alike), which is deliberately wide.
+
+    The BUILDER stays: the level-ramp flow genuinely uses it, and
+    ``test_ui_builders_emit_expected_shapes`` above pins its shape.
+    """
+    binding = "placement_abcdefghijklmnopqrstuv"
+    shapes = {
+        "per-driver": dict(driver_label="Woofer driver", driver_role="woofer"),
+        "summed-stationary": dict(driver_label="crossover", driver_role="summed"),
+        "guided-cloud": dict(
+            driver_label="crossover", driver_role="summed", guided_captures=16,
+        ),
+    }
+    for label, kwargs in shapes.items():
+        spec = build_crossover_sweep_spec(acknowledgement_binding=binding, **kwargs)
+        types = [component["type"] for component in spec.screen]
+        assert "level_meter" not in types, label
+    # The level-ramp consent screen still has one, so this is not a blanket
+    # deletion of the component vocabulary.
+    assert any(
+        component["type"] == "level_meter" for component in build_level_ramp_spec().screen
+    )
+
+
+def test_a_summed_consent_heading_does_not_repeat_its_own_driver_label():
+    """§2.3: the v2 cloud passes ``driver_label="crossover"`` into a heading
+    template written for per-driver captures, which the household read as
+    "Crossover — crossover". A summed capture measures the speaker."""
+    binding = "placement_abcdefghijklmnopqrstuv"
+    summed = build_crossover_sweep_spec(
+        driver_label="crossover", driver_role="summed",
+        acknowledgement_binding=binding,
+    )
+    heading = next(c for c in summed.screen if c["type"] == "heading")
+    assert heading["text"] == "Tune your speaker"
+    # A per-driver capture keeps its label — there it is genuinely informative.
+    driver = build_crossover_sweep_spec(
+        driver_label="Woofer driver", driver_role="woofer",
+        acknowledgement_binding=binding,
+    )
+    driver_heading = next(c for c in driver.screen if c["type"] == "heading")
+    assert driver_heading["text"] == "Crossover — Woofer driver"
+
+
+def test_the_displayed_duration_estimate_matches_the_capture_pages_own():
+    """§1.1: server-side consent copy and the phone's wake-lock hint must never
+    quote different durations for one session, so the server derives from the
+    SAME per-capture allowance the page uses. Read the page's constant out of
+    its source rather than restating it here — the page is where the household
+    sees the number.
+    """
+    import re
+    from pathlib import Path
+
+    from jasper.capture_relay.spec import (
+        CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS,
+        CapturePlan,
+        CapturePlanEntry,
+    )
+
+    page = Path(__file__).resolve().parents[1] / "capture-page" / "js" / "main.js"
+    match = re.search(
+        r"const WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS = (\d+);",
+        page.read_text(encoding="utf-8"),
+    )
+    assert match is not None, "the capture page no longer declares the allowance"
+    assert CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS == int(match.group(1))
+
+    # …and the arithmetic itself: sum(duration + allowance), ceil to minutes.
+    plan = CapturePlan(
+        capture_target=2,
+        max_attempts=3,
+        schema_version=2,
+        entries=(
+            CapturePlanEntry(index=0, kind_label="a", duration_ms=40_000),
+            CapturePlanEntry(index=1, kind_label="b", duration_ms=20_000),
+        ),
+    )
+    assert plan.estimated_minutes() == 2  # (40+20+40) s → 1.67 min → ceil 2
+    # A plan with no entry table has nothing to estimate from — never a fake 0
+    # minutes presented as a duration; callers treat 0 as "say nothing".
+    assert CapturePlan(capture_target=3, max_attempts=4).estimated_minutes() == 0
+
+
 def test_contract_constants_are_self_consistent():
     # The default theme must itself satisfy the allowlist.
     assert spec_mod.DEFAULT_THEME["accent"] in spec_mod.THEME_ACCENTS

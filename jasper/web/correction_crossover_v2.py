@@ -1023,6 +1023,11 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         needs_recovery = True  # unreadable volume state fails closed
     block: dict[str, Any] = {
         "phase": _phase_from_state(state),
+        # The commission tier behind whatever this block reports, or ``None``
+        # when the durable state does not say (pre-tier state, or a session
+        # that declared none). Never defaulted to "full" — see
+        # ``persist_conductor_state``.
+        "tier": (str((state or {}).get("tier") or "") or None),
         "candidate": (state or {}).get("candidate"),
         "verify": (state or {}).get("verify"),
         "failure": (state or {}).get("failure"),
@@ -1215,6 +1220,14 @@ def persist_conductor_state(
         # verify-only re-arm reaches "done" instead of waiting forever on a
         # position group it never had.
         "session_phases": list(snap.session_phases),
+        # WHICH INSTRUMENT produced this state (flow-simplification §1.2).
+        # Empty string means unknown — state written before tiers existed, or
+        # a session that never declared one — and every reader must render it
+        # as unknown rather than assuming "full": express makes no
+        # cross-position post-apply claim at all, so guessing would attach a
+        # claim the measurement never made (the same unknown-vs-default rule
+        # ``echo_band_provenance`` carries, issue #1763).
+        "tier": snap.tier,
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "candidate": _candidate_summary(conductor.candidate),
@@ -1263,6 +1276,14 @@ def persist_conductor_state(
         "evidence": dict(evidence) if evidence else None,
     }
     prior = load_v2_state() or {}
+    # A conductor that declares no tier of its own — the verify-only re-arm
+    # (``prepare_v2_verify``), which re-runs one tracking capture against an
+    # ALREADY-applied result — must not erase which instrument produced that
+    # result. Carried forward unconditionally, exactly like ``cloud`` below
+    # and for the same reason: the re-arm runs under a brand-new relay session
+    # id, so a session-scoped guard would drop it on the first "Try again".
+    if not state["tier"] and prior.get("tier"):
+        state["tier"] = str(prior["tier"])
     # The applied flag is host-durable (set by the apply endpoint) — never
     # regressed by a conductor snapshot that predates it.
     if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
@@ -2270,6 +2291,28 @@ def build_v2_run_and_consume(
             with stop_lock:
                 if stop_event.is_set():
                     raise CaptureStopped("capture stopped")
+            # The group-close seam (flow-simplification §2.6). A begin for an
+            # index PAST the walked pre-apply cloud is the household confirming
+            # through the "all spots done" screen, and THAT — not the final
+            # position's acceptance — is what fits the correction and starts
+            # the apply. Doing it here rather than inside
+            # ``conductor.authorize_begin`` keeps admission bookkeeping-only
+            # and keeps the fit next to the ``persist_conductor_state`` that
+            # must precede the apply thread (``handle_v2_apply`` reads the
+            # candidate off the durable state, not off this object).
+            #
+            # Ordering with the deferral below is load-bearing and is why this
+            # runs FIRST: the very begin that confirms is VERIFY's, which
+            # ``conductor.authorize_begin`` then parks on the apply hold. Were
+            # the order reversed the deferral would return before the fit ever
+            # ran and the hold would never be released.
+            confirmed = conductor.confirm_cloud_measure_group(index)
+            if confirmed:
+                persist_conductor_state(
+                    conductor, failure_code=None, evidence=evidence_refs,
+                )
+                if confirmed.get("auto_apply"):
+                    _fire_auto_apply(conductor.candidate)
             conductor.authorize_begin(index, attempt, entry)
 
         def _post_sweep_phase_best_effort(phase: str) -> None:
@@ -2976,17 +3019,32 @@ def prepare_v2_session(
     hydrated through :meth:`CrossoverV2Conductor.hydrate` with the NEW relay
     session id — a prior session's CHECK/MEASURE evidence is invalidated per
     §5.6 (and logged); the fresh session starts at CHECK.
+
+    ``raw["tier"]`` selects the commission instrument (flow-simplification
+    §3): the wizard posts the household's explicit choice, an absent value
+    means the full instrument, and an unrecognised one is refused before any
+    relay registration rather than silently measured as something else. It is
+    resolved into ONE :class:`V2PlanShape` here, which is then threaded into
+    both the emitted spec and the conductor's index→phase map — the two
+    surfaces that must agree about the walk and used to reach their defaults
+    independently.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         CrossoverV2Conductor,
+        CrossoverV2FlowError,
         V2ConductorSnapshot,
         V2FlowSeams,
         build_v2_cloud_index_phase_map,
         build_v2_session_spec,
+        resolve_plan_shape,
         session_wall_clock_ceiling_s,
     )
     from jasper.capture_relay import correction_adapter
 
+    try:
+        plan_shape = resolve_plan_shape(raw.get("tier") if raw else None)
+    except CrossoverV2FlowError as exc:
+        raise CrossoverV2Refused(str(exc)) from exc
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
@@ -3029,6 +3087,7 @@ def prepare_v2_session(
             context.roles_bands,
             context.fc_hz,
             acknowledgement_binding=acknowledgement_binding,
+            plan_shape=plan_shape,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         rc = correction_adapter.open_capture(
@@ -3086,10 +3145,12 @@ def prepare_v2_session(
                     evidence_store, relay_session_id, refs
                 ),
             ),
-            # The conductor's index→phase map is built from the SAME function
-            # the emitted plan used, so the prompt an entry carries and the
+            tier=plan_shape.tier,
+            # The conductor's index→phase map is built from the SAME resolved
+            # plan shape the emitted spec used — not merely the same function
+            # at its own defaults — so the prompt an entry carries and the
             # phase the conductor runs for that index can never disagree.
-            index_phase_map=build_v2_cloud_index_phase_map(),
+            index_phase_map=build_v2_cloud_index_phase_map(plan_shape=plan_shape),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,

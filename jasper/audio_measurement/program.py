@@ -38,10 +38,20 @@ sweep through the applied production graph. Per-driver sequencing lives in the
 WAV channels so the CamillaDSP commissioning graph stays static and provable.
 
 **Courtesy-tone prelude (issue #1677).** Each composer takes an opt-in
-``courtesy_prelude`` flag that PREPENDS a short "beep beep beep" + ~3 s of
-silence ahead of the program's existing content -- a pre-capture "quiet
-please" warning played from the speaker under test itself, once per capture
-group (CHECK/MEASURE/VERIFY each get their own). It rides the SAME admitted
+``courtesy_prelude`` flag that splices a short "beep beep beep" + ~3 s of
+silence in DIRECTLY AHEAD OF THE PROGRAM'S FIRST STIMULUS -- a pre-capture
+"quiet please" warning played from the speaker under test itself, once per
+capture group (CHECK/MEASURE/VERIFY each get their own).
+
+*Placement is the message* (flow-simplification plan §2.5): the prelude used
+to be prepended to the WHOLE program, which left the CHECK ambient window,
+the behavioural-linearity pilot pair, and the pre-sweep guard sitting between
+the beeps and the sound they announce -- on hardware, "three beeps, a long
+gap, then the sweep". Each composer now names the cursor in front of its own
+first stimulus, so the interval from the last beep to the first audible
+measurement content is :data:`COURTESY_TONE_TRAILING_SILENCE_S` and nothing
+more (:func:`courtesy_beep_to_stimulus_gap_s` derives it from any composed
+program; a composition test pins it). It rides the SAME admitted
 playback as the stimulus that follows it -- never a second, unguarded
 playback path (see AGENTS.md's ``/sound/`` Combined-test-wedge cautionary
 tale) -- because the prelude is just more segments on the one
@@ -54,7 +64,7 @@ introduces is absorbed by the existing relative-offset locate math (the same
 mechanism that already tolerated sweep-composition PR-A lengthening
 MEASURE). It IS real, audible content though, so it belongs to the broader
 ``KNOWN_AUDIBLE_KINDS`` set program-admission's out-of-segment-energy check
-must expect rather than flag as a leak. See ``_prepend_courtesy_prelude``
+must expect rather than flag as a leak. See ``_insert_courtesy_prelude``
 for the segment shape and ``courtesy_tone_gain_db`` for the level derivation
 (never louder than the channel's own loudest scheduled stimulus, never
 positive).
@@ -700,30 +710,75 @@ def courtesy_tone_stimulus(segment: ProgramSegment):
     return tone
 
 
-def _prepend_courtesy_prelude(
+def courtesy_beep_to_stimulus_gap_s(program: ExcitationProgram) -> float | None:
+    """Seconds from the LAST courtesy beep to the first stimulus after it.
+
+    The acceptance criterion of the §2.5 pacing fix, made computable: this
+    must be :data:`COURTESY_TONE_TRAILING_SILENCE_S` — the settle the owner
+    specified — and nothing more, for every composed program that carries a
+    prelude. Returns ``None`` for a program with no courtesy prelude, or one
+    whose prelude has no stimulus after it at all (which would be a
+    composition bug, not a pacing question).
+
+    Derived from the schedule rather than from the constants, so a composer
+    that quietly reinstated a lead-in between the beeps and the stimulus fails
+    the test that reads this instead of silently lengthening the wait again.
+    """
+    beeps = [seg for seg in program.segments if seg.kind == KIND_COURTESY_TONE]
+    if not beeps:
+        return None
+    beep_end = max(seg.start_sample + seg.n_samples for seg in beeps)
+    starts = [
+        seg.start_sample
+        for seg in program.segments
+        if seg.kind in STIMULUS_KINDS and seg.start_sample >= beep_end
+    ]
+    if not starts:
+        return None
+    return (min(starts) - beep_end) / program.sample_rate_hz
+
+
+def _insert_courtesy_prelude(
     segments: list[ProgramSegment],
     total_samples: int,
     *,
+    at_sample: int,
     channels: int,
     downstream_gain_db: float,
 ) -> tuple[list[ProgramSegment], int]:
-    """Prepend the courtesy-tone prelude to an already-composed segment list,
-    shifting every existing segment later by the prelude's length.
+    """Splice the courtesy-tone prelude in at ``at_sample``, shifting the rest.
 
     One tone segment per program channel (so the warning is audible on every
-    driver path, not just one role's), all starting at sample 0 and playing
+    driver path, not just one role's), all starting together and playing
     simultaneously, followed by one shared trailing-silence gap
-    (:data:`COURTESY_TONE_TRAILING_SILENCE_S`) before the program's original
+    (:data:`COURTESY_TONE_TRAILING_SILENCE_S`) before the program's remaining
     content resumes untouched (same segment IDs, kinds, gains — only later).
+    Everything scheduled BEFORE ``at_sample`` keeps its position.
+
+    **Why an insertion point rather than a plain prepend (§2.5).** The #1677
+    prelude originally went in front of the WHOLE program, so the beeps were
+    followed by the ~3 s settle AND then everything the program needs before
+    its first sweep — the CHECK ambient window (12 s), the behavioural-
+    linearity pilot pair (~2.6 s), the pre-sweep guard. On hardware that read
+    as "three beeps, a long gap, then the sweep", which is exactly what the
+    beeps must not mean: their whole message is "the sweep is imminent, go
+    quiet now". Each composer therefore hands the cursor that sits directly in
+    front of its first STIMULUS content, so the interval from the last beep to
+    the first audible measurement content is the settle and nothing else.
+    Composition order is free for the analysis, which locates every segment by
+    its recorded offset (``program_analysis._locate_segments``) and anchors on
+    whichever stimulus segment comes first — still the pilot pair in every
+    program, before and after this move.
 
     Each channel's tone gain is derived from THAT channel's own loudest
-    already-scheduled stimulus (:func:`courtesy_tone_gain_db`), so the tone
+    scheduled stimulus (:func:`courtesy_tone_gain_db`), so the tone
     can never exceed what the channel is already about to play, independent
     of how the two drivers' levels relate to each other. A channel with no
     stimulus segments at all (should not happen for a real program) gets no
     tone rather than an undefined reference level.
     """
     tone_n = _courtesy_tone_n_samples()
+    at = int(at_sample)
     tone_segments: list[ProgramSegment] = []
     for channel in range(channels):
         channel_gains = [
@@ -738,7 +793,7 @@ def _prepend_courtesy_prelude(
             kind=KIND_COURTESY_TONE,
             role=None,
             channel=channel,
-            start_sample=0,
+            start_sample=at,
             n_samples=tone_n,
             f1_hz=COURTESY_TONE_BEEP_HZ,
             f2_hz=COURTESY_TONE_BEEP_HZ,
@@ -746,10 +801,15 @@ def _prepend_courtesy_prelude(
             effective_peak_dbfs=gain_db + downstream_gain_db,
         ))
     gap_n = _seconds_to_samples(COURTESY_TONE_TRAILING_SILENCE_S, PROGRAM_SAMPLE_RATE_HZ)
-    gap_seg = _silence("courtesy_gap", tone_n, gap_n)
+    gap_seg = _silence("courtesy_gap", at + tone_n, gap_n)
     prelude_n = tone_n + gap_n
-    shifted = [replace(seg, start_sample=seg.start_sample + prelude_n) for seg in segments]
-    return [*tone_segments, gap_seg, *shifted], total_samples + prelude_n
+    head = [seg for seg in segments if seg.start_sample < at]
+    tail = [
+        replace(seg, start_sample=seg.start_sample + prelude_n)
+        for seg in segments
+        if seg.start_sample >= at
+    ]
+    return [*head, *tone_segments, gap_seg, *tail], total_samples + prelude_n
 
 
 def build_check_program(
@@ -796,6 +856,11 @@ def build_check_program(
     ambient_n = _seconds_to_samples(ambient_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("ambient", cursor, ambient_n))
     cursor += ambient_n
+    # The room-listening window is a LEAD-IN, so the courtesy beeps go after
+    # it (§2.5): the ambient measurement is what the program needs before its
+    # first stimulus, and putting 12 s of it between the beeps and the pilots
+    # is precisely the "long gap" the beeps promised would not be there.
+    prelude_at = cursor
 
     gap_n = _seconds_to_samples(pilot_gap_s, PROGRAM_SAMPLE_RATE_HZ)
     for rb in roles:
@@ -827,8 +892,9 @@ def build_check_program(
             cursor += gap_n
 
     if courtesy_prelude:
-        segments, cursor = _prepend_courtesy_prelude(
-            segments, cursor, channels=channels, downstream_gain_db=downstream_gain_db,
+        segments, cursor = _insert_courtesy_prelude(
+            segments, cursor, at_sample=prelude_at, channels=channels,
+            downstream_gain_db=downstream_gain_db,
         )
     return _finalize(PHASE_CHECK, channels, segments, cursor)
 
@@ -977,6 +1043,11 @@ def build_measure_program(
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("guard", cursor, guard_n))
     cursor += guard_n
+    # Everything the program needs before its first SWEEP — the pilot pair and
+    # the guard silence — is lead-in, so the beeps land here (§2.5). The
+    # prelude's own trailing settle then sits directly in front of the first
+    # sweep, which is what the beeps are announcing.
+    prelude_at = cursor
 
     def _sweep(segment_id: str, rb: RoleBand, f1: float, f2: float, dur: float) -> ProgramSegment:
         seg = _stimulus(
@@ -1013,8 +1084,9 @@ def build_measure_program(
     cursor += tail_n
 
     if courtesy_prelude:
-        segments, cursor = _prepend_courtesy_prelude(
-            segments, cursor, channels=channels, downstream_gain_db=downstream_gain_db,
+        segments, cursor = _insert_courtesy_prelude(
+            segments, cursor, at_sample=prelude_at, channels=channels,
+            downstream_gain_db=downstream_gain_db,
         )
     return _finalize(PHASE_MEASURE, channels, segments, cursor)
 
@@ -1100,6 +1172,9 @@ def build_verify_program(
     guard_n = _seconds_to_samples(guard_s, PROGRAM_SAMPLE_RATE_HZ)
     segments.append(_silence("guard", cursor, guard_n))
     cursor += guard_n
+    # Same lead-in rule as MEASURE (§2.5): pilots + guard, then the beeps,
+    # then the settle, then the sweep they are announcing.
+    prelude_at = cursor
 
     sweep = _stimulus(
         segment_id="sweep_verify",
@@ -1121,8 +1196,9 @@ def build_verify_program(
     cursor += tail_n
 
     if courtesy_prelude:
-        segments, cursor = _prepend_courtesy_prelude(
-            segments, cursor, channels=1, downstream_gain_db=downstream_gain_db,
+        segments, cursor = _insert_courtesy_prelude(
+            segments, cursor, at_sample=prelude_at, channels=1,
+            downstream_gain_db=downstream_gain_db,
         )
     return _finalize(PHASE_VERIFY, 1, segments, cursor)
 

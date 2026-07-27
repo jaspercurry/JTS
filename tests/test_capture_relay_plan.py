@@ -226,6 +226,12 @@ class PhonePlanDriver:
         # None) so every existing test's begin() payload stays
         # byte-identical; set to model that fix's shape.
         self.setup = setup
+        # Wire indexes this phone asks to RE-measure once, immediately after
+        # they are accepted (flow-simplification §2.6's "Retake this
+        # measurement" control). Empty for every pre-retake test, so their
+        # scripts stay byte-identical.
+        self.retake_indexes: set[int] = set()
+        self.retakes_posted: list[tuple[int, int]] = []
 
     def _post(self, event):
         self.sequence += 1
@@ -236,10 +242,14 @@ class PhonePlanDriver:
             sequence=self.sequence,
         )
 
-    def begin(self, index, attempt):
+    def begin(self, index, attempt, *, retake=False):
         self.begun = (index, attempt)
+        begin_capture = {"index": index, "attempt": attempt}
+        if retake:
+            begin_capture["retake"] = True
+            self.retakes_posted.append((index, attempt))
         event = {
-            "begin_capture": {"index": index, "attempt": attempt},
+            "begin_capture": begin_capture,
             "capture_page": self.page,
         }
         if self.setup is not None:
@@ -257,10 +267,15 @@ class PhonePlanDriver:
 
     def arm(self):
         index, attempt = self.begun
+        begin_capture = {"index": index, "attempt": attempt}
+        if (index, attempt) in self.retakes_posted:
+            # The real page re-sends its begin payload verbatim on ``armed``,
+            # marker included — the runner must compare slot identity only.
+            begin_capture["retake"] = True
         self._post(
             {
                 "armed": True,
-                "begin_capture": {"index": index, "attempt": attempt},
+                "begin_capture": begin_capture,
                 "capture_page": self.page,
                 "acknowledgement": self._acknowledgement(),
                 "device": {"label": "UMIK-1"},
@@ -297,7 +312,17 @@ class PhonePlanDriver:
                 self.abort()
                 return
             index, attempt = key
-            if host.get("accepted"):
+            if host.get("accepted") and index in self.retake_indexes:
+                # Once per index: the household tapping "Retake this
+                # measurement" on the capture that just completed.
+                self.retake_indexes.discard(index)
+                self.begin(index, attempt + 1, retake=True)
+            elif (index, attempt) in self.retakes_posted:
+                # A retake's slot is accepted either way — an accepted retake
+                # replaced the take, a rejected one left the original standing
+                # — so the page moves on rather than re-trying the slot.
+                self.begin(index + 1, attempt + 1)
+            elif host.get("accepted"):
                 self.begin(index + 1, attempt + 1)
             else:
                 self.begin(index, attempt + 1)
@@ -1107,6 +1132,74 @@ def test_on_apply_hold_collapses_at_its_own_budget_when_phone_vanishes():
     assert clock["t"] < 120.0
 
 
+def test_on_apply_entry_tolerates_a_long_tap_delay_between_authorize_and_arm():
+    """The VERIFY hold-then-tap contract's host-side half (§2.2).
+
+    Once the apply lands and the begin is ADMITTED, the redesigned page does
+    not arm immediately — it renders the walk-back confirmation and waits for
+    the household's tap. That wait sits in ``awaiting_arm``, whose budget is
+    the general ``timeout_s`` (``DEFAULT_TIMEOUT_S`` = 120 s in production),
+    NOT the tighter apply-hold budget the deferral used. Pin that a 60 s delay
+    — the acceptance criterion — is comfortably tolerated, so the page's
+    begin-first ordering cannot be undone by a budget nobody re-checked.
+    """
+    from jasper.capture_relay.session import DEFAULT_TIMEOUT_S, REVIEW_HOLD_BUDGET_S
+
+    tap_delay_s = 60.0
+    # The criterion only means anything because the apply-hold budget is
+    # SHORTER than the tap: sitting in awaiting_begin instead would die.
+    assert REVIEW_HOLD_BUDGET_S < tap_delay_s < DEFAULT_TIMEOUT_S
+
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(
+        backend, capture_target=2, max_attempts=4, entries=_review_plan_entries()
+    )
+    clock, monotonic, sleep = _steady_clock()
+    authorized_at: dict[int, float] = {}
+
+    def authorize(index, _attempt):
+        authorized_at.setdefault(index, clock["t"])
+
+    def on_armed(state):
+        attempt = state.begin_capture["attempt"]
+        backend.phone_upload(
+            session.session_id, session.content_key, _wav(attempt), index=attempt - 1
+        )
+
+    real_step = phone.step
+
+    def step_taps_late_on_the_verify_entry(host_index=2):
+        host = backend.sessions[session.session_id]["host_event"] or {}
+        key = (host.get("index"), host.get("attempt"))
+        if (
+            host.get("phase") == "capture_authorized"
+            and key == (host_index, 2)
+            and clock["t"] < authorized_at.get(host_index, 0.0) + tap_delay_s
+        ):
+            return  # the household is walking back to the mark
+        real_step()
+
+    phone.step = step_taps_late_on_the_verify_entry
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=lambda _i, _a, _r: {"accepted": True},
+        timeout_s=DEFAULT_TIMEOUT_S,
+        poll_interval_s=0.0,
+        sleep=sleep,
+        monotonic=monotonic,
+    )
+
+    assert [(o.index, o.attempt, o.accepted) for o in outcomes] == [
+        (1, 1, True),
+        (2, 2, True),
+    ]
+    assert clock["t"] >= authorized_at[2] + tap_delay_s
+
+
 def test_first_begin_timeout_widens_only_the_first_window():
     # The first begin (reading placement instructions) gets first_begin_timeout_s,
     # not the general timeout_s — a v2 fold-in so Chrome doesn't die reading the
@@ -1207,6 +1300,223 @@ def test_replayed_begin_for_finished_attempt_is_refused():
     assert refusal["code"] == "begin_replayed"
     # Capture 1 was consumed before the replay — its verdict is untouched.
     assert [(i, a) for (i, a, _w) in consumed] == [(1, 1)]
+
+
+# --- voluntary retakes (flow-simplification §2.6) -----------------------------
+
+
+def test_a_voluntary_retake_re_measures_the_just_accepted_slot():
+    """The ONE admitted extra begin shape, end-to-end through the real runner.
+
+    A begin for ``accepted_count`` carrying ``retake: true`` is admitted, runs
+    the full authorize → arm → upload → verdict path for that slot, and — this
+    is the load-bearing part — does NOT advance ``accepted_count``. The set
+    still needs its full ``capture_target`` distinct slots afterwards, so a
+    retake can never finish a session early.
+    """
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(backend, max_attempts=5)
+    phone.retake_indexes = {2}
+    authorize, on_armed, consume, authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert [(o.index, o.attempt, o.accepted, o.retake) for o in outcomes] == [
+        (1, 1, True, False),
+        (2, 2, True, False),
+        (2, 3, True, True),  # the retake — same slot, next attempt
+        (3, 4, True, False),  # …and the set still runs its third slot
+    ]
+    assert authorized == [(1, 1), (2, 2), (2, 3), (3, 4)]
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+
+
+def test_a_rejected_retake_leaves_the_original_take_standing():
+    """Fail-safe: choosing to redo a measurement can never cost you the one
+    you already had.
+
+    The runner half of that promise is that a rejected retake neither rewinds
+    ``accepted_count`` nor re-opens the slot — the session simply carries on to
+    the next capture with the original take still counted. (The host half —
+    REPLACING retained evidence only on acceptance — is the v2 conductor's,
+    pinned in tests/test_crossover_v2_conductor.py.)
+    """
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_plan_session(backend, max_attempts=5)
+    phone.retake_indexes = {2}
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session, verdicts={3: {"accepted": False, "code": "clipped"}},
+    )
+
+    outcomes = run_capture_plan(
+        client,
+        session,
+        authorize_begin=authorize,
+        on_armed=on_armed,
+        consume_capture=consume,
+        **_run_kwargs(),
+    )
+
+    assert [(o.index, o.attempt, o.accepted, o.retake) for o in outcomes] == [
+        (1, 1, True, False),
+        (2, 2, True, False),
+        (2, 3, False, True),  # the retake failed…
+        (3, 4, True, False),  # …and slot 2 stayed accepted regardless
+    ]
+    assert backend.phases(session.session_id)[-1] == "capture_set_complete"
+
+
+def _scripted_begin_client(backend, session, script):
+    """A relay client whose every status poll first lets ``script`` post one
+    phone event.
+
+    ``script(host_event, post)`` is called with the Pi's latest host event and
+    a ``post(payload)`` helper that signs and places a phone event; it returns
+    nothing. Lets a test drive an exact begin sequence — including begins a
+    well-behaved page would never send — without a full scripted phone.
+    """
+    seq = itertools.count(1)
+
+    def post(payload):
+        backend.phone_post(
+            session.session_id,
+            {**payload, "capture_page": dict(_PAGE_V3)},
+            session=session,
+            sequence=next(seq),
+        )
+
+    def transport(method, url, headers, body):
+        if method == "GET" and urllib.parse.urlsplit(url).path.endswith("/status"):
+            script(backend.sessions[session.session_id]["host_event"] or {}, post)
+        return backend(method, url, headers, body)
+
+    return RelayClient("https://relay.test", transport=transport)
+
+
+def test_an_unmarked_begin_for_the_just_accepted_slot_is_still_refused():
+    """The retake shape is opt-in and explicit: without the marker, a begin for
+    an already-accepted index is the same out-of-order refusal it always was.
+
+    This is what keeps an OLD page — which never sends the key — behaving
+    exactly as it did before the contract grew.
+    """
+    backend = FakePlanRelayBackend()
+    _client, session, _phone = _mint_plan_session(backend, driver=False)
+    sent: set[str] = set()
+
+    def script(host, post):
+        phase = host.get("phase")
+        if "begin" not in sent:
+            sent.add("begin")
+            post({"begin_capture": {"index": 1, "attempt": 1}})
+        elif phase == "capture_authorized" and "arm" not in sent:
+            sent.add("arm")
+            post({
+                "armed": True,
+                "begin_capture": {"index": 1, "attempt": 1},
+                "acknowledgement": {
+                    "schema_version": 1,
+                    "id": session.spec.acknowledgement.id,
+                    "binding_id": session.spec.acknowledgement.binding_id,
+                    "accepted": True,
+                },
+            })
+        elif phase == "capture_result" and "again" not in sent:
+            sent.add("again")
+            # Slot 1 is accepted; re-begin it with NO retake marker.
+            post({"begin_capture": {"index": 1, "attempt": 2}})
+
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+    with pytest.raises(CaptureFailed):
+        run_capture_plan(
+            _scripted_begin_client(backend, session, script),
+            session,
+            authorize_begin=authorize,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(),
+        )
+
+    refusal = backend.sessions[session.session_id]["host_event"]
+    assert refusal["phase"] == "capture_refused"
+    assert refusal["code"] == "begin_out_of_order"
+
+
+def test_a_retake_is_refused_once_the_next_captures_begin_has_been_seen():
+    """The retake window is "while awaiting the next entry's begin", and it
+    really does shut.
+
+    The case this guards is the v2 crossover apply hold: the household's
+    "continue" tap posts the NEXT entry's begin, which the conductor DEFERS
+    while the correction is fitted and applied. The runner stays in
+    ``awaiting_begin`` throughout, so without this guard a late retake would
+    still parse as ``index == accepted_count`` and land evidence after the
+    cloud it belongs to had already been fitted.
+    """
+    backend = FakePlanRelayBackend()
+    _client, session, _phone = _mint_plan_session(backend, driver=False)
+    sent: set[str] = set()
+    deferrals: list[int] = []
+
+    def script(host, post):
+        phase = host.get("phase")
+        if "begin" not in sent:
+            sent.add("begin")
+            post({"begin_capture": {"index": 1, "attempt": 1}})
+        elif phase == "capture_authorized" and "arm" not in sent:
+            sent.add("arm")
+            post({
+                "armed": True,
+                "begin_capture": {"index": 1, "attempt": 1},
+                "acknowledgement": {
+                    "schema_version": 1,
+                    "id": session.spec.acknowledgement.id,
+                    "binding_id": session.spec.acknowledgement.binding_id,
+                    "accepted": True,
+                },
+            })
+        elif phase == "capture_result" and "next" not in sent:
+            sent.add("next")
+            post({"begin_capture": {"index": 2, "attempt": 2}})
+        elif phase == "capture_deferred" and "late" not in sent:
+            sent.add("late")
+            post({"begin_capture": {"index": 1, "attempt": 3, "retake": True}})
+
+    authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
+        backend, session
+    )
+
+    def authorize_deferring_slot_2(index, attempt):
+        if index == 2:
+            deferrals.append(attempt)
+            raise CaptureBeginDeferred("awaiting_apply", "Applying…")
+        authorize(index, attempt)
+
+    with pytest.raises(CaptureFailed):
+        run_capture_plan(
+            _scripted_begin_client(backend, session, script),
+            session,
+            authorize_begin=authorize_deferring_slot_2,
+            on_armed=on_armed,
+            consume_capture=consume,
+            **_run_kwargs(),
+        )
+
+    assert deferrals, "the next entry's begin must actually have been seen"
+    refusal = backend.sessions[session.session_id]["host_event"]
+    assert refusal["phase"] == "capture_refused"
+    assert refusal["code"] == "begin_out_of_order"
 
 
 @pytest.mark.parametrize(
@@ -1679,7 +1989,15 @@ def test_v2_single_capture_ignores_a_begin_capture_field():
 def test_parse_begin_capture_schema_is_strict():
     assert parse_begin_capture(
         {"index": 2, "attempt": 3}, capture_target=3, max_attempts=4
-    ) == (2, 3)
+    ) == (2, 3, False)
+    # The voluntary-retake marker (flow-simplification §2.6) is the ONE
+    # optional key, and only in its single true shape — a page that means "not
+    # a retake" omits it, so there is exactly one wire shape per meaning.
+    assert parse_begin_capture(
+        {"index": 2, "attempt": 3, "retake": True},
+        capture_target=3,
+        max_attempts=4,
+    ) == (2, 3, True)
     for payload in (
         None,
         [],
@@ -1691,6 +2009,10 @@ def test_parse_begin_capture_schema_is_strict():
         {"index": 4, "attempt": 4},  # index beyond capture_target
         {"index": 1, "attempt": 5},  # attempt beyond max_attempts
         {"index": 3, "attempt": 2},  # slot before its attempt
+        {"index": 1, "attempt": 1, "retake": False},  # omit it instead
+        {"index": 1, "attempt": 1, "retake": "yes"},
+        {"index": 1, "attempt": 1, "retake": 1},
+        {"index": 1, "attempt": 1, "retake": True, "extra": True},
     ):
         with pytest.raises(CaptureBeginRefused) as ei:
             parse_begin_capture(payload, capture_target=3, max_attempts=4)

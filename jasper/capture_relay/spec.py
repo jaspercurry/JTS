@@ -82,10 +82,11 @@ SUPPORTED_CAPTURE_PROTOCOL_VERSIONS = (1, 2, 3)
 # retakes: 21 + 11 = 32, i.e. ~52 % retake headroom over the worst-case entry
 # count.
 #
-# As SHIPPED (PR-3b, N=9 after adjudication 3a): the live cloud plan is
-# capture_target=16 against `crossover_v2_flow.cloud_plan_max_attempts()` = 23,
-# i.e. ~45 % headroom — tighter than the 167 % the pre-cloud 3-entry plan
-# carried, and deliberately so. Longer sets get proportionally fewer retakes
+# As SHIPPED (PR-3b, N=9 after adjudication 3a): the live FULL-tier cloud plan
+# is capture_target=16 against `crossover_v2_flow.cloud_plan_max_attempts()` =
+# 23, i.e. ~45 % headroom — tighter than the 167 % the pre-cloud 3-entry plan
+# carried, and deliberately so. The express tier (flow-simplification §1.1) is
+# a strictly smaller draw on the same ceiling: capture_target=7 against 14. Longer sets get proportionally fewer retakes
 # each, which is the intended direction: a 21-position session that needs 11
 # retakes has a problem retries will not fix. (The 3-entry plan itself still
 # exists only as the 1-entry re-verify re-arm, which keeps
@@ -419,6 +420,16 @@ CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION = 2
 # relay's opaque-spec contract.
 MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES = 4096
 
+# Per-capture allowance the DISPLAYED session-duration estimate adds on top of
+# each entry's own ``duration_ms`` — reading the prompt, moving the mic, and
+# tapping. It MIRRORS the capture page's ``WAKE_LOCK_PER_CAPTURE_OVERHEAD_MS``
+# (``capture-page/js/main.js``), which is the surface a household actually
+# reads the number on; server-side consent copy derives from the same value so
+# the two cannot quote different durations for one session. Deliberately
+# generous — this is a display promise, not a measurement. Drift between the
+# two constants is pinned by test.
+CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS = 20_000
+
 
 @dataclass(frozen=True)
 class CapturePlanEntry:
@@ -554,6 +565,30 @@ class CapturePlan:
             schema_version=_as_int(data, "schema_version", default=1),
             entries=entries,
         )
+
+    def estimated_minutes(self) -> int:
+        """Whole minutes this plan is DISPLAYED as taking, ``0`` when unknown.
+
+        Deliberately the phone's own arithmetic, not a second estimate: the
+        capture page already shows this number in its wake-lock fallback hint
+        (``capture-page/js/main.js``'s ``wakeLockHintText`` — every entry's
+        ``duration_ms`` plus :data:`CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS` of
+        allowance, ``ceil`` to minutes, floored at 1). Server-side consent copy
+        that quotes a duration MUST derive it here rather than hand-writing a
+        prettier figure, or the household reads two different promises about
+        the same session (flow-simplification §1.1).
+
+        This is a conservative DISPLAY number — audio plus a generous
+        per-capture allowance for reading a prompt, moving the mic, and
+        tapping — never a measurement of real wall clock.
+        """
+        if not self.entries:
+            return 0
+        total_ms = sum(
+            int(entry.duration_ms) + CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS
+            for entry in self.entries
+        )
+        return max(1, -(-total_ms // 60_000))
 
     def entry_for_index(self, index: int) -> CapturePlanEntry | None:
         """The entry for a 1-based ``begin_capture.index`` (SPEC W2.3).
@@ -1537,6 +1572,33 @@ def build_sync_marker_spec(
     ).validate()
 
 
+# Household-facing names for the two commission tiers. The ids themselves
+# (``crossover_v2_flow.TIER_FULL`` / ``TIER_EXPRESS``) are the flow's
+# vocabulary; this is the only place they become copy, and an id with no entry
+# here contributes no line rather than leaking a raw slug onto a consent
+# screen.
+_GUIDED_TIER_LABELS = {"full": "Full measurement", "express": "Quick tune"}
+
+
+def _guided_tier_step(
+    guided_tier: str, walk: int, capture_plan: CapturePlan | None,
+) -> str:
+    """The one tier line a guided consent screen adds, or ``""``.
+
+    Both numbers are DERIVED — the capture count from the plan the household
+    is about to walk, the duration from :meth:`CapturePlan.estimated_minutes`
+    (the phone's own arithmetic). Nothing here is hand-written, so this line
+    and the phone's wake-lock hint can never quote different sessions.
+    """
+    label = _GUIDED_TIER_LABELS.get(str(guided_tier or "").strip().lower())
+    if not label or not walk or capture_plan is None:
+        return ""
+    minutes = capture_plan.estimated_minutes()
+    if not minutes:
+        return ""
+    return f"{label}: {walk} measurements, about {minutes} minutes"
+
+
 def build_crossover_sweep_spec(
     *,
     driver_label: str = "driver",
@@ -1553,6 +1615,8 @@ def build_crossover_sweep_spec(
     ambient_duration_ms: int = 0,
     capture_plan: CapturePlan | None = None,
     guided_captures: int = 0,
+    guided_tier: str = "",
+    reverify_lead: str = "",
     default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
@@ -1608,6 +1672,20 @@ def build_crossover_sweep_spec(
     true. **Default (``0``) is byte-identical to the pre-cloud builder**, and
     that path stays reachable on purpose: the 1-entry re-verify re-arm really
     does keep the mic still for its whole (single-capture) session.
+
+    ``guided_tier`` names WHICH guided instrument the household is consenting
+    to (flow-simplification §1.4). It adds exactly one line to the consent
+    steps — the tier and the plan's own DERIVED duration
+    (:meth:`CapturePlan.estimated_minutes`, the same arithmetic the phone
+    displays) — so a household can tell a quick tune from a full measurement
+    before the first tone rather than by counting prompts afterwards. Only
+    meaningful alongside ``guided_captures``; ignored otherwise, and omitting
+    it keeps the pre-tier copy byte-identical.
+
+    ``reverify_lead`` is an OPT-IN first step for the 1-entry re-verify re-arm
+    (§2.4): the recovery is one sweep back at the mark, and the 2026-07-27
+    hardware session abandoned it because no screen said so. Empty (every
+    other caller) is byte-identical.
 
     ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
     (Wave-2 persistence, ``jasper.correction.household_mic`` — same field
@@ -1722,6 +1800,34 @@ def build_crossover_sweep_spec(
         raise CaptureSpecError(
             "a crossover capture_plan requires an acknowledgement_binding"
         )
+    steps: list[str] = []
+    if reverify_lead:
+        # §2.4 — the cheap thing, said first and loudest.
+        steps.append(str(reverify_lead))
+    tier_line = _guided_tier_step(guided_tier, walk, capture_plan)
+    if tier_line:
+        steps.append(tier_line)
+    steps.extend(
+        [
+            placement_instruction,
+            (
+                "Tap Start and stay quiet while JTS measures the room "
+                f"noise, then plays about {seconds} seconds of sweep"
+                if ambient_duration_ms
+                else f"Tap Start, then stay quiet for about {seconds} seconds"
+            ),
+            # Per-sweep stillness is true in EVERY shape — it is the
+            # whole-session promise the cloud breaks. The guided
+            # wording adds what happens between sweeps so the household
+            # is not surprised by the first move prompt.
+            (
+                "Keep the phone still until each sweep finishes, then "
+                "follow the on-screen prompt to move it"
+                if walk
+                else "Keep the phone still until the sweep finishes"
+            ),
+        ]
+    )
     return CaptureSpec(
         kind="crossover_sweep",
         duration_ms=duration_ms,
@@ -1739,29 +1845,24 @@ def build_crossover_sweep_spec(
         ),
         theme=build_theme(accent=accent, font=font),
         screen=(
-            ui_heading(f"Crossover — {driver_label}"),
-            ui_steps(
-                [
-                    placement_instruction,
-                    (
-                        "Tap Start and stay quiet while JTS measures the room "
-                        f"noise, then plays about {seconds} seconds of sweep"
-                        if ambient_duration_ms
-                        else f"Tap Start, then stay quiet for about {seconds} seconds"
-                    ),
-                    # Per-sweep stillness is true in EVERY shape — it is the
-                    # whole-session promise the cloud breaks. The guided
-                    # wording adds what happens between sweeps so the household
-                    # is not surprised by the first move prompt.
-                    (
-                        "Keep the phone still until each sweep finishes, then "
-                        "follow the on-screen prompt to move it"
-                        if walk
-                        else "Keep the phone still until the sweep finishes"
-                    ),
-                ]
+            # A SUMMED capture measures the speaker, not a named driver, so
+            # ``driver_label`` there is whatever the caller had to hand — the
+            # v2 cloud passed the literal "crossover" and the household read
+            # "Crossover — crossover" (flow-simplification §2.3). Name what is
+            # about to happen instead; the per-driver flows keep their label,
+            # which is genuinely informative for them.
+            ui_heading(
+                f"Crossover — {driver_label}" if is_driver else "Tune your speaker"
             ),
-            ui_level_meter("mic"),
+            ui_steps(steps),
+            # (``ui_level_meter("mic")`` used to sit here. It was dead on
+            # EVERY crossover consent screen — the v2 cloud, the legacy
+            # per-driver sweeps, and the 1-entry re-verify alike — because the
+            # page's ``updateLevelMeters`` is fed only by the level-ramp
+            # protocol, so this component never moved. Removed rather than
+            # wired: a meter that never moves reads as a broken mic. The
+            # ``ui_level_meter`` BUILDER stays — the level-ramp flow still
+            # uses it.)
             ui_button(button_label, action="begin_capture"),
             ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the recording."),

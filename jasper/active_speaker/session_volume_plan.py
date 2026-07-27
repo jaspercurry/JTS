@@ -76,7 +76,7 @@ DEFAULT_WALL_CLOCK_CEILING_S = 1800.0
 # (:meth:`SessionVolumePlan.set_wall_clock_ceiling_s`). The walked-away
 # guarantee is "a speaker nobody is standing at returns to household volume
 # within a bounded window"; a longer measurement may legitimately widen that
-# window (the crossover v2 cloud walks 16 prompted captures) but nothing may
+# window (the crossover v2 cloud walks up to 16 prompted captures) but nothing may
 # remove the bound. One hour is the outer edge of a plausible guided
 # measurement and comfortably inside "someone would have come back by now".
 MAX_WALL_CLOCK_CEILING_S = 3600.0
@@ -304,7 +304,7 @@ class SessionVolumePlan:
         """Re-arm the ceiling the NEXT :meth:`open` will stamp into state.
 
         The ceiling is a property of the measurement about to run, not of the
-        process: a 16-capture crossover cloud legitimately takes longer than
+        process: a full-tier 16-capture crossover cloud legitimately takes longer than
         the 3-entry flow this default was sized for, and the caller that built
         the plan is the only one that knows which. Setting it before ``open``
         keeps the durable state self-describing — ``stale_active`` and the

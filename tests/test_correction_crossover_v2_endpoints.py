@@ -278,6 +278,11 @@ def _walk_to_verify(conductor, *, persist: bool = False) -> int:
     ABOUT VERIFY use this rather than a hand-written 1/2/3 walk: the cloud sits
     between MEASURE and VERIFY in the shipped plan, so a three-step walk would
     be testing an index layout no session emits.
+
+    The walk ends with the CONFIRM (flow-simplification §2.6 — the fit and the
+    candidate now land on the household's confirmation past the cloud, which
+    rides VERIFY's own begin), so a caller still holds a built candidate at
+    the end exactly as it did before that move.
     """
     attempt = 0
     for index in range(1, VERIFY_INDEX):
@@ -285,6 +290,9 @@ def _walk_to_verify(conductor, *, persist: bool = False) -> int:
         conductor.consume_capture(index, attempt, CaptureResult(wav=b"fake-capture"))
         if persist:
             v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.confirm_cloud_measure_group(VERIFY_INDEX)
+    if persist:
+        v2host.persist_conductor_state(conductor, failure_code=None)
     return attempt
 
 
@@ -694,10 +702,17 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     a dishonest "nothing happened, start over" (SF1(c)).
 
     The abort point moved with the 2026-07-27 timing move — from result 2
-    (MEASURE) to result 10 (the CLOUD_MEASURE group's last position, which is
-    where the fit, the candidate, and the auto-apply trigger now live). The
-    interleaving under test is unchanged; only the capture that fires the
-    apply is later."""
+    (MEASURE) to result 10 (the CLOUD_MEASURE group's last position) — and
+    moved once more with flow-simplification §2.6, which put the fit and the
+    auto-apply on the household's CONFIRM past the cloud rather than on that
+    position's acceptance. The apply therefore fires while VERIFY's begin is
+    being admitted, so the earliest post-apply Stop the scripted phone can
+    express is after VERIFY's own result. The interleaving under test is
+    unchanged; only the capture that fires the apply is later.
+
+    (Aborting at result 10 instead is a DIFFERENT case — abandonment BEFORE
+    the confirm, which §2.6 requires to leave the speaker untouched. It has
+    its own test below.)"""
     _skip_purge_grace(monkeypatch)
     monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
 
@@ -710,9 +725,9 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec)
-    # Abort right after the CLOUD_MEASURE group's closing result — the capture
-    # that now builds the candidate and fires the auto-apply.
-    phone.abort_after_results = 10
+    # Abort right after VERIFY's result — the first result that follows the
+    # confirm which builds the candidate and fires the auto-apply.
+    phone.abort_after_results = 11
 
     def _abort_stopped(reason="stopped"):
         PhonePlanDriver.abort(phone, "stopped")
@@ -740,13 +755,12 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
     block = v2host.crossover_v2_status_block()
-    # The stop landed right after the pre-apply cloud CLOSED, so that phase is
-    # accepted and the next pending one is VERIFY (not "applying" — the apply
-    # already landed, which is the whole premise here). What this test is
-    # really about is the applied-keyed override below (W6.7 ruling 3): the
-    # render must stay honest ("already applied") regardless of which phase
-    # the projection reports.
-    assert block["phase"] == PHASE_VERIFY
+    # The stop landed right after VERIFY, so the next pending phase is the
+    # post-apply cloud (not "applying" — the apply already landed, which is the
+    # whole premise here). What this test is really about is the applied-keyed
+    # override below (W6.7 ruling 3): the render must stay honest ("already
+    # applied") regardless of which phase the projection reports.
+    assert block["phase"] == PHASE_CLOUD_VERIFY
     assert PHASE_CLOUD_MEASURE in state["accepted_phases"]
     env = build_crossover_envelope_v2({
         "active": True,
@@ -757,6 +771,59 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     assert "already applied" in env["verdict_text"].lower()
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Undo (restore previous sound)" in labels
+
+
+def test_abandoning_before_the_confirm_leaves_the_speaker_untouched(monkeypatch):
+    """Flow-simplification §2.6's safety consequence, at the host boundary.
+
+    Before the group-close move, the FINAL cloud position's acceptance fitted
+    the correction and started the apply — so a household that walked the whole
+    cloud and then stopped had already had their speaker retuned. Now the fit
+    waits for their confirmation past that position, and stopping instead of
+    confirming must leave the DSP alone entirely: no candidate published, no
+    apply invoked, nothing durable claiming applied.
+    """
+    _skip_purge_grace(monkeypatch)
+    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
+    calls: list = []
+    monkeypatch.setattr(
+        v2host,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: calls.append(raw) or {
+            "status": "applied"
+        },
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    # Stop right after the pre-apply cloud's LAST position — walked in full,
+    # never confirmed.
+    phone.abort_after_results = 10
+
+    def _abort_stopped(reason="stopped"):
+        PhonePlanDriver.abort(phone, "stopped")
+
+    phone.abort = _abort_stopped
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    runner = _build_runner(
+        conductor, VolumeRecorder(),
+        run_async=lambda coro, **kw: None,
+        camilla_factory=lambda: None,
+    )
+    with pytest.raises(CaptureAborted) as excinfo:
+        _run(runner, client, session)
+
+    assert excinfo.value.reason == "stopped"
+    assert calls == []  # the DSP mutation was never invoked
+    # …and no CANDIDATE was even published (the CHECK gain plan is a different
+    # artifact and legitimately rides the same recorder).
+    assert [kind for kind, _payload in published] == ["check"]
+    state = v2host.load_v2_state()
+    assert state.get("applied") is not True
+    assert state.get("candidate") is None
+    assert state["failure"] == {"code": "user_stopped"}
 
 
 # --- relay-session death: timeout + abort (S1c) ---------------------------------
@@ -1836,6 +1903,56 @@ def test_prepare_refuses_when_volume_needs_recovery():
             {}, status={}, run_async=None, camilla_factory=None
         )
     assert "recover" in str(excinfo.value)
+
+
+def test_prepare_refuses_an_unknown_tier_before_touching_anything():
+    """Flow-simplification §3: the wizard posts the household's explicit tier.
+    An id this build does not have must be refused BEFORE any relay
+    registration or volume mutation, not silently measured as something else —
+    so the gate runs ahead of every other one in the preparer.
+    """
+    class _Ready:
+        needs_recovery = False
+
+    v2host.set_volume_plan_for_tests(_Ready())
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.prepare_v2_session(
+            {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None
+        )
+    assert "unknown commission tier" in str(excinfo.value)
+
+
+def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
+    """§1.2's whole point: the emitted plan and the conductor's index→phase map
+    come from ONE resolved shape, so a tier can never reach one and not the
+    other. Read the preparer's own source rather than trusting the call site to
+    stay wired — this is the desync the shape value exists to prevent.
+    """
+    import inspect
+
+    source = inspect.getsource(v2host.prepare_v2_session)
+    assert 'resolve_plan_shape(raw.get("tier")' in source
+    assert "build_v2_session_spec(" in source and "plan_shape=plan_shape" in source
+    assert "build_v2_cloud_index_phase_map(plan_shape=plan_shape)" in source
+    assert "tier=plan_shape.tier," in source
+
+
+def test_the_tier_rides_the_durable_state_and_state_block():
+    """§1.2: `/state` can tell WHICH instrument produced a result, and an
+    unknown one reads as unknown rather than as "full" — the
+    ``echo_band_provenance`` discipline (issue #1763)."""
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK],
+        "tier": "express",
+    })
+    assert v2host.crossover_v2_status_block()["tier"] == "express"
+    # State written before tiers existed says nothing, and nothing is invented.
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK],
+    })
+    assert v2host.crossover_v2_status_block()["tier"] is None
 
 
 def test_apply_endpoint_requires_current_candidate():
