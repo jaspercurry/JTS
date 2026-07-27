@@ -696,11 +696,44 @@ plumbing/tests/wizard copy. The bass session's lane
   gates) + the combiner/screen estimator module (power mean, median
   cross-check, exclusion mask, cepstral τ detector). Offline-replayable
   against S0's corpus before it touches the live flow.
+
+  > **S1 landed (2026-07-25/26).** The combiner/screen estimator module
+  > (`combine_positions`/`detect_echo`/`assess_geometry` in
+  > `jasper/audio_measurement/spatial_combine.py`) shipped offline-first
+  > via #1741, then the orthogonal interference-null identification gate
+  > (`identify_interference_nulls`,
+  > `jasper/audio_measurement/interference_nulls.py`) via **PR-1, #1751**,
+  > and `detect_echo` hardening (`band_below_passband`,
+  > `earlier_dominant_arrival`, thin-evidence lock, `effective_floor_us`
+  > disclosure) via **PR-2, #1749**. The conductor position-group
+  > choreography shipped via **PR-3a, #1754** (relay capture-plan
+  > capacity) and **PR-3b, #1755** (the choreography itself — the
+  > shipped main-session plan becomes the 16-entry cloud). See
+  > `flat-linearization-productization-plan.md`'s PR ladder for the
+  > mechanism deviations recorded against each.
 - **S2 — Spec + gauges.** Spec bands/tolerances/1-3-oct evaluation;
   exclusion-aware flatness gauges; VERIFY widened from the ~2·Fc
   integration band to the full spec band; wizard + `/state` surfacing. The
   observe ledger, fit working curve, gauges, and VERIFY all consume one
   shared curve construction (kills the frame-discrepancy class for good).
+
+  > **S2 landed (2026-07-26/27).** The live-flow wiring (combine →
+  > identify_interference_nulls → evaluate_flat_spec, assembled by
+  > `assemble_cloud_group_result`) shipped via **PR-4, #1756**; the
+  > shared spec-curve construction (one `combine_positions` spec curve →
+  > one `evaluate_flat_spec` call → one `flat_spec.spec_flatness_gauge`
+  > reduction, consumed byte-identically by `/state`, the envelope, the
+  > doctor, and the wizard) shipped via **PR-5, #1757**, retiring
+  > `_flatness_tracking`'s separate per-capture construction. The
+  > exclusion-aware fit envelope (`compose_envelope`'s cloud-derived
+  > `spatial_exclusion_limit` / `position_stability_limit`) shipped via
+  > **PR-6a, #1753**; the carve-out disclosure half (null registry →
+  > spec-band disclosure with τ/r/rung/depth, plus the owner's fit-timing
+  > move to the pre-apply group's close) shipped via **PR-6b, #1760**.
+  > Before/after wizard visualization + anomaly callouts — the "wizard +
+  > `/state` surfacing" above — shipped via **PR-7, #1761**. VERIFY's
+  > widening from the ~2·Fc integration band to the full spec band is
+  > part of the PR-5 construction above.
 - **S3 — Closed loop.** measure → fit (existing cut-domain engine +
   anchored give-back, now fed the combined curve) → apply → re-measure →
   residual trim; convergence + divergence/rollback policy on the existing

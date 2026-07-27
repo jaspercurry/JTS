@@ -977,10 +977,21 @@ described below); **PR-3b merged as #1755**; **PR-4 merged as #1756**
 — both halves: the carve-out disclosure (own paragraph below) AND the
 blocker it hit, resolved by the owner's timing-move decision (the fit now
 runs at CLOUD_MEASURE group close instead of MEASURE accept), not left
-reported-and-blocked; **PR-7** (this branch — see its own paragraph below
-for the two review-confirmed deviations from its section's literal
-wording) not yet merged at time of writing. **PR-3a** raises the relay
-capture-plan cap 8 → 32
+reported-and-blocked; **PR-7 merged as #1761** (before/after cloud
+visualization + anomaly callouts — see its own paragraph below for the
+two review-confirmed deviations from its section's literal wording).
+**PR-8 (docs closeout) — this PR.** Kit parity fixes executed
+laptop-side, not part of this repo diff (`captures/` is gitignored):
+`grade_prediction_6` flipped to the FAIL "S0 executed" § c documents,
+with a third refusal shape (`earlier_dominant_arrival`, shipped by PR-2
+after § c was written) added to the same energy-discriminator gate as
+`clean_no_echo`/an edge refusal; a leg-B-only session directory now
+borrows its leg-A energy reference from a sibling session via a new
+`--leg-a-session` flag; `_confident_taus`/`effective_floor_us` now
+import the shipped `usable_echo_estimates`/
+`EchoDiagnostic.effective_floor_us` rather than re-deriving them. Both
+SCORECARDs re-run and verified; kit README updated in place. **PR-3a**
+raises the relay capture-plan cap 8 → 32
 and ships a **mechanism deviation** from its pre-registered design
 contract: the gate is the Worker's own `GET /capabilities` document
 (absence = pre-capacity relay), not the negotiated protocol version,
@@ -997,6 +1008,32 @@ unchanged and still describes the whole of PR-6. (PR-6b shipped all of it —
 the carve-out disclosure and both annotations first, then, after an
 owner-approved timing move cleared a session-ordering blocker, the fit wiring
 and the registry-into-the-candidate. See the PR-6b paragraphs below.)*
+
+*PR-2 review (2026-07-25) — three rounds. R1: 1 blocker — the
+`earlier_dominant_arrival` refusal had no dominance criterion, so the
+band-limited envelope's own ringing qualified as an "arrival" at raised
+windows (21 of 660 echo-free readings flipped into a false refusal, on
+the committed `_CALIBRATION_WRONG_READING_WINDOWS` ladder — the earlier
+"22" was a mixed-ladder figure R2 itself retracted);
+calibrated to `EARLIER_ARRIVAL_DOMINANCE_DB = -10 dB` against a measured
+14.58 dB gap between genuine early arrivals and ringing. R2: 1 blocker,
+4 should-fixes — stale prose still denied the very threshold R1 had just
+added, and the calibration sweep behind that threshold was uncommitted
+(evidence asserted without a pinned artifact). R3: mechanical closures
+only.*
+
+*PR-1 review (2026-07-25) — one round: 0 blockers, 3 should-fixes, 5
+nits. The `MIN_LADDER_RUNGS` counterfactual the section's own acceptance
+criteria named could not be reproduced as stated and was re-derived as
+the actual failure mode: a single-rule mutation that removes only the
+1.8 kHz dip from the candidate set. A stale sibling docstring was caught
+at architect closure.*
+
+*PR-6a review (2026-07-26) — one round: 0 blockers, 4 should-fixes, 3
+nits. All six design adjudications from the PR-6a section upheld:
+σ/√N pooling, post-smooth exclusion ordering, any-overlap
+rasterization, the honest zero-gain restatement, the convergence-guard
+derivation, and the doc paragraph describing it.*
 
 *PR-3b (2026-07-26): the position-group choreography lands, and the
 **shipped main-session plan becomes the 16-entry cloud** — the intended
