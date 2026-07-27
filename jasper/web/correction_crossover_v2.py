@@ -735,6 +735,33 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     the bundle artifact (:func:`bind_cloud_publisher`) — this is the
     dashboard-sized read, not a third owner of the same data.
 
+    ``flatness`` (plan PR-5) is the spec-facing gauge, copied VERBATIM from
+    the pipeline's own ``flatness`` key — the reduction
+    :func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge` made of the
+    same ``spec`` report the ``spec_bands`` above project. It rides the
+    compact block because the envelope's expert disclosure
+    (``crossover_envelope_v2._flatness_details_lines``) renders from THIS
+    projection, and copying is what makes the gauge, the ledger line, and the
+    persisted report byte-identical rather than merely consistent. ``None``
+    when the pipeline never became available — the same "never a fabricated
+    clean reading" rule as ``excluded_interval_count`` below.
+
+    ``validity_floor_hz`` rides alongside it for one reason: without it a
+    live surface cannot tell WHY ``flatness.n_excluded`` is large. The
+    interference instruments and the gate-validity clamp both remove
+    spec-band bins, and only the honesty instruments' removals are counted
+    by ``excluded_interval_count`` — so a reader seeing 4063 excluded bins
+    and 5 excluded intervals needs the floor to separate "the room combed
+    this speaker" from "one capture's gate collapsed". ``None`` means either
+    no position reported a usable floor or the pipeline never ran; it never
+    means zero.
+
+    ``spec_bands`` carries each band's own ``max_deviation_db`` (N-3): the
+    per-band numbers are what a chart labels, and their absence from the
+    only projection a page reads is exactly the pressure that grows a second
+    derivation somewhere downstream. Copied from the report like everything
+    else here — this stays a projection, never an owner.
+
     ``excluded_interval_count`` is ``None`` — not ``0`` — when the pipeline
     never successfully became available (SF-1 review finding, 2026-07-27):
     ``0`` reads as "the honest-instrument pipeline looked and found no
@@ -769,6 +796,8 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             "spec_bands": [],
             "overall_passed": None,
             "excluded_interval_count": None,
+            "flatness": None,
+            "validity_floor_hz": None,
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")
@@ -779,6 +808,7 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
                     "f_lo_hz": b.get("f_lo_hz"),
                     "f_hi_hz": b.get("f_hi_hz"),
                     "passed": b.get("passed"),
+                    "max_deviation_db": b.get("max_deviation_db"),
                 }
                 for b in bands
                 if isinstance(b, Mapping)
@@ -787,6 +817,13 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             merged = pipeline.get("merged_excluded_bands_hz")
             entry["excluded_interval_count"] = (
                 len(merged) if isinstance(merged, list) else 0
+            )
+            flatness = pipeline.get("flatness")
+            # Copied, never re-derived — see this function's docstring.
+            entry["flatness"] = dict(flatness) if isinstance(flatness, Mapping) else None
+            floor = pipeline.get("validity_floor_hz")
+            entry["validity_floor_hz"] = (
+                float(floor) if isinstance(floor, (int, float)) else None
             )
         out[str(phase)] = entry
     return out or None
@@ -860,7 +897,14 @@ def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]
     fit engine, achieved-minus-target dB at each octave center), read
     straight off the live candidate's own rich ``linearization`` dict. Empty
     for a role whose fit never ran (ineligible/fit_failed/no fit) — nothing
-    to disclose."""
+    to disclose.
+
+    A pure projection: this reads the fit's numbers and re-keys them, it has
+    never derived a curve of its own. What the flat-linearization plan's PR-5
+    changed is the FRAME these travel under — they are per-driver fit
+    diagnostics from the design-axis capture, not the spec measurement, and
+    ``crossover_envelope_v2._linearization_octave_rows`` (which renders them)
+    carries the full reasoning."""
     out: dict[str, dict[str, float]] = {}
     for role, fit in (linearization or {}).items():
         if not isinstance(fit, Mapping):
@@ -978,18 +1022,14 @@ def persist_conductor_state(
                     if (verify_outcome != "pass" and conductor.verify_evidence)
                     else {}
                 ),
-                # Gauge fix (2026-07-24): the flatness-verify report-only
-                # numbers, persisted on EVERY outcome (pass or fail) —
-                # unlike "evidence" above, flatness is a SIBLING claim that
-                # never gates, so it must not disappear on a pass (that was
-                # the reported bug: a household could watch "VERIFY PASS"
-                # for weeks with no visibility into how far from flat the
-                # summed response actually was).
-                **(
-                    {"flatness": dict(conductor.flatness_evidence)}
-                    if conductor.flatness_evidence
-                    else {}
-                ),
+                # (A "flatness" key lived here until the flat-linearization
+                # plan's PR-5, carrying the retired per-VERIFY-capture
+                # construction. It is gone rather than repointed: the spec
+                # verdict is a property of the CLOUD, so it belongs in the
+                # "cloud" block below and nowhere else — a second copy under
+                # "verify" is exactly the duplicated-frame shape PR-5 exists
+                # to remove. A state file written by an older build may still
+                # carry the stale key; nothing reads it.)
             }
             if verify_outcome is not None else None
         ),

@@ -960,169 +960,60 @@ def test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return():
     assert c.verify_evidence is None
 
 
-# --- flatness-verify relay (#1668 PR-D) — a SIBLING report, never a gate --------
+# --- PR-5: the retired per-capture flatness relay --------------------------------
+#
+# The flat-linearization plan's PR-5 removed ``ProgramAnalysis.flatness_tracking``
+# and the conductor's ``flatness_evidence`` stash: one VERIFY capture graded on
+# its own grid against its own band mean was a SECOND construction of "is the
+# speaker flat", disagreeing with the spatial cloud's spec evaluation by however
+# much a single mic position differs from the cloud. The claim now has exactly
+# one owner (``assemble_cloud_group_result``'s ``flatness`` key). What stays
+# pinned here is the boundary that made the removal safe: the VERIFY verdict
+# never consulted flatness, so removing it changed no accept/code.
 
 
-def test_verify_flatness_tracking_relays_without_changing_accepted_or_code():
-    """flatness_tracking rides BOTH PhaseVerdict branches as a report-only
-    SIBLING of integration-verify's own tracking — accepted/code stay
-    governed EXCLUSIVELY by the pre-existing tracking/max_db logic,
-    unchanged by this addition (design doc "Verification splits into two
-    named claims": one must never imply the other)."""
+def test_verify_payload_carries_tracking_only_no_flatness_claim():
+    """PASS and FAIL branches both relay integration-verify's tracking and
+    nothing else — no flatness key, on either branch, in either direction.
+
+    The accepted/code assertions are byte-for-byte the ones the retired
+    relay test made (``test_verify_flatness_tracking_relays_without_changing_
+    accepted_or_code``): they were the point of that test, and they are
+    unchanged by the removal, which is the property worth keeping."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     c.note_apply_complete()
 
-    flatness = {
-        "band_hz": [150.0, 16000.0], "rms_db": 0.8, "max_db": 2.1, "tolerance_db": 3.0,
-    }
-
-    def _with_flatness(program, **kwargs):
-        return replace(_verify_analysis(program, **kwargs), flatness_tracking=flatness)
-
-    # Pass branch: identical accepted/code to the no-flatness baseline
-    # (test_verify_out_of_tolerance_and_inconclusive's own clean re-verify);
-    # flatness_tracking is simply present alongside it.
-    fakes.verify = lambda program: _with_flatness(program)
+    fakes.verify = _verify_analysis
     verdict = _run_phase(c, 3, 3)
     assert verdict["accepted"] is True
-    assert verdict["flatness_tracking"] == flatness
+    assert "flatness_tracking" not in verdict
+    assert verdict["tracking"]["max_db_notch_excluded"] is not None
 
-    # Fail branch (out-of-tolerance — the SAME trigger
-    # test_verify_out_of_tolerance_and_inconclusive uses): the failure
-    # code/template are UNCHANGED, and flatness_tracking travels here too.
-    fakes.verify = lambda program: _with_flatness(program, max_db=2.4)
+    fakes.verify = lambda program: _verify_analysis(program, max_db=2.4)
     verdict = _run_phase(c, 3, 4)
     assert verdict["accepted"] is False
     assert verdict["code"] == "verify_out_of_tolerance"
     assert verdict["template"] == "verify_fail"
-    assert verdict["flatness_tracking"] == flatness
+    assert "flatness_tracking" not in verdict
 
 
-def test_verify_flatness_tracking_absent_relays_as_explicit_none():
-    """When the ProgramAnalysis carries no flatness_tracking (the field's
-    own default — e.g. a capture whose validity floor could not be
-    established), the relay payload key is explicit None, not silently
-    dropped and not a phantom empty dict."""
+def test_conductor_exposes_no_per_capture_flatness_evidence():
+    """The stash and its property are gone, not repointed — a household-facing
+    flatness number must come from the cloud group's spec verdict
+    (``group_cloud_result``), never from a per-VERIFY-attempt stash that a
+    verify-only re-arm would silently re-derive from one position."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     _run_phase(c, 2, 2)
     c.note_apply_complete()
 
-    fakes.verify = _verify_analysis  # flatness_tracking defaults to None
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    assert "flatness_tracking" in verdict
-    assert verdict["flatness_tracking"] is None
-
-
-# --- gauge fix (2026-07-24): conductor.flatness_evidence property --------------
-
-
-def test_flatness_evidence_set_on_pass_not_just_fail():
-    """Unlike verify_evidence (persisted only for a non-pass outcome, by
-    product design), flatness_evidence must be available on a PASS too —
-    the reported bug was a household watching a clean "VERIFY PASS" for
-    weeks with zero visibility into how far from flat the summed response
-    actually was."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    flatness = {
-        "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
-    }
-
-    def _with_flatness(program, **kwargs):
-        return replace(_verify_analysis(program, **kwargs), flatness_tracking=flatness)
-
-    fakes.verify = lambda program: _with_flatness(program)
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    assert c.verify_outcome == "pass"
-    evidence = c.flatness_evidence
-    assert evidence is not None
-    assert evidence["max_db"] == 13.3
-    assert evidence["rms_db"] == 4.2
-    assert evidence["band_lo_hz"] == 150.0
-    assert evidence["band_hi_hz"] == 16000.0
-    assert evidence["tolerance_db"] == 3.0
-
-
-def test_flatness_evidence_also_set_on_fail():
-    """Symmetric with the pass case above — flatness is a SIBLING claim
-    that never depends on the integration-verify outcome (design doc
-    "Verification splits into two named claims")."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    flatness = {
-        "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
-    }
-
-    def _with_flatness(program, **kwargs):
-        return replace(_verify_analysis(program, **kwargs), flatness_tracking=flatness)
-
-    fakes.verify = lambda program: _with_flatness(program, max_db=2.4)
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is False
-    assert c.verify_outcome == "fail"
-    evidence = c.flatness_evidence
-    assert evidence is not None
-    assert evidence["max_db"] == 13.3
-
-
-def test_flatness_evidence_none_when_flatness_tracking_absent():
-    """No usable validity floor this capture -> flatness_tracking defaults
-    to None on ProgramAnalysis -> flatness_evidence stays None too (no
-    phantom numbers)."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    fakes.verify = _verify_analysis  # flatness_tracking defaults to None
-    verdict = _run_phase(c, 3, 3)
-    assert verdict["accepted"] is True
-    assert c.flatness_evidence is None
-
-
-def test_flatness_evidence_reset_on_early_return():
-    """Mirrors verify_evidence's own reset-on-early-return discipline
-    (test_verify_evidence_carried_on_tolerance_verdict_reset_on_early_return):
-    a verdict that never reaches the tracking comparison resets both
-    evidence stashes to None, so no stale flatness number leaks into a
-    later attempt's disclosure."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 2)
-    c.note_apply_complete()
-
-    flatness = {
-        "band_hz": [150.0, 16000.0], "rms_db": 4.2, "max_db": 13.3, "tolerance_db": 3.0,
-    }
-    fakes.verify = lambda program: replace(
-        _verify_analysis(program, max_db=2.4), flatness_tracking=flatness,
-    )
-    _run_phase(c, 3, 3)
-    assert c.flatness_evidence is not None
-
-    # Early-return (gate-comparability inconclusive) never reaches the
-    # tracking numbers.
-    fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
-    _run_phase(c, 3, 4)
-    assert c.verify_outcome == "inconclusive"
-    assert c.flatness_evidence is None
+    fakes.verify = _verify_analysis
+    assert _run_phase(c, 3, 3)["accepted"] is True
+    assert not hasattr(c, "flatness_evidence")
 
 
 # --- measurement-honesty gate G3: verify inter-attempt pilot consistency --------

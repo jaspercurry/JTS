@@ -29,6 +29,8 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     build_crossover_envelope_v2,
 )
 from jasper.active_speaker.crossover_v2_flow import (
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
     REASON_REGISTRY,
     REASON_AGC_BEHAVIORAL_FAIL,
     REASON_APPLY_FAILED,
@@ -507,12 +509,35 @@ def test_verify_fail_folds_tracking_numbers_behind_expert_details():
     assert bare["expert_details"] == []
 
 
-def test_verify_fail_folds_flatness_numbers_alongside_integration_evidence():
-    """Gauge fix (2026-07-24): flatness is a SIBLING claim, distinctly
-    labeled from the integration-verify numbers above — both travel in the
-    SAME collapsed disclosure since verify_fail only has the one mechanism.
-    "report-only" in the flatness line is the honesty label distinguishing
-    it from the gated "limit" line right above it."""
+# The compact ``cloud`` block shape ``_compact_cloud_status`` serves — the ONE
+# place a household-facing flatness number comes from since the
+# flat-linearization plan's PR-5 (the spec-curve SSOT). The numbers here are a
+# ``spec_flatness_gauge`` dict verbatim; tests/test_flat_spec_ssot.py is what
+# pins that a REAL pipeline produces this shape and that every surface shows
+# the same bytes.
+def _cloud_flatness_status(**overrides):
+    flatness = {
+        "max_db": -4.85, "max_hz": 11480.0, "max_band_hz": [8000.0, 16000.0],
+        "tolerance_db": 2.5, "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
+        "evaluable": True, "passed": False,
+    }
+    flatness.update(overrides)
+    return {
+        PHASE_CLOUD_VERIFY: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_passed": False,
+            "excluded_interval_count": 3, "flatness": flatness,
+        },
+    }
+
+
+def test_verify_fail_folds_spec_flatness_alongside_integration_evidence():
+    """PR-5: flatness is a SIBLING claim, distinctly labeled from the
+    integration-verify numbers above — both travel in the SAME collapsed
+    disclosure since verify_fail only has the one mechanism. The flatness
+    lines now name the SPEC frame (which band, which tolerance, where the
+    worst bin sits) rather than the retired capture-grid one; the
+    integration line is untouched."""
     env = build_crossover_envelope_v2(_status(
         phase="verify",
         failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
@@ -523,47 +548,120 @@ def test_verify_fail_folds_flatness_numbers_alongside_integration_evidence():
                 "tracking_band_lo_hz": 1000.0, "tracking_band_hi_hz": 4000.0,
                 "tolerance_db": 1.5,
             },
-            "flatness": {
-                "max_db": 13.3, "rms_db": 4.2,
-                "band_lo_hz": 187.0, "band_hi_hz": 16000.0, "tolerance_db": 3.0,
-            },
         },
+        cloud=_cloud_flatness_status(),
     ))
     details = env["expert_details"]
     # Integration-verify: unchanged, still there.
     assert "level error 2.34 dB (limit 1.5 dB)" in details
-    # Flatness: report-only, distinctly labeled — never says "limit".
-    assert "flatness 13.30 dB from flat (report-only; target 3.0 dB, not yet enforced)" in details
-    assert "flatness average error 4.20 dB" in details
-    assert "flatness checked 187–16000 Hz" in details
+    # Flatness: spec-framed, signed, located — and never says "limit".
+    assert (
+        "flatness -4.85 dB from the spec reference at 11480 Hz "
+        "(spec 8000–16000 Hz, tolerance ±2.5 dB)"
+    ) in details
+    assert "flatness average error 1.37 dB across the spec bands" in details
+    assert (
+        "42 of 942 spec-band bins excluded from grading (interference, or "
+        "below the measurement's validity floor)"
+    ) in details
     assert not any("limit" in line and "flatness" in line for line in details)
 
 
-def test_done_folds_flatness_numbers_on_a_pass():
-    """The reported bug, closed: a household on the "Your speaker is tuned"
-    RESULT screen (a clean PASS — no verify.evidence ever shows here, by
-    unchanged product design) now sees the flatness number too, instead of
-    silently watching a passing VERIFY with no visibility into how far from
-    flat the summed response actually was."""
+def test_done_folds_spec_flatness_on_a_pass():
+    """The reported bug stays closed: a household on the "Your speaker is
+    tuned" RESULT screen (a clean PASS — no verify.evidence ever shows here,
+    by unchanged product design) still sees the flatness number, now sourced
+    from the spatial cloud's spec verdict."""
     env = build_crossover_envelope_v2(_status(
         phase="done",
-        verify={
-            "outcome": "pass",
-            "flatness": {
-                "max_db": 13.3, "rms_db": 4.2,
-                "band_lo_hz": 187.0, "band_hi_hz": 16000.0, "tolerance_db": 3.0,
-            },
-        },
+        verify={"outcome": "pass"},
+        cloud=_cloud_flatness_status(
+            max_db=1.21, max_hz=402.0, max_band_hz=[250.0, 2000.0],
+            tolerance_db=1.5, passed=True,
+        ),
         candidate=_candidate_summary(),
     ))
     assert env["screen"] == "done"
     details = env["expert_details"]
-    assert "flatness 13.30 dB from flat (report-only; target 3.0 dB, not yet enforced)" in details
+    assert (
+        "flatness +1.21 dB from the spec reference at 402 Hz "
+        "(spec 250–2000 Hz, tolerance ±1.5 dB)"
+    ) in details
 
 
-def test_done_expert_details_empty_when_no_flatness_evidence():
+def test_done_expert_details_empty_when_no_cloud_group_closed():
+    """No cloud-verify entry at all — a session still walking, or one that
+    never had a group. Nothing measured, so nothing is said: PR-5's
+    cloud-absent rule forbids inventing a spec-frame number here."""
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+    ))
+    assert env["expert_details"] == []
+
+
+def test_done_says_unavailable_when_the_cloud_pipeline_failed():
+    """The middle cloud-absent state: the group closed but its pipeline never
+    became available (a combine or DSP-step failure). Say so — never a
+    number, and never the same silence as the no-group case."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+        cloud={PHASE_CLOUD_VERIFY: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_passed": None,
+            "excluded_interval_count": None, "flatness": None,
+        }},
+    ))
+    assert env["expert_details"] == [
+        "flatness not available for this measurement — the spatial "
+        "measurement could not be analysed"
+    ]
+
+
+def test_done_distinguishes_a_pre_gauge_record_from_a_failed_pipeline():
+    """A durable state written between PR-4 and PR-5 has a WORKING pipeline
+    (``overall_passed`` is a real verdict) but no gauge key. Telling that
+    household "the spatial measurement could not be analysed" would be a
+    false statement about a session that analysed fine — the two states get
+    different copy, and neither invents a number."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+        cloud={PHASE_CLOUD_VERIFY: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_passed": True,
+            "excluded_interval_count": 2, "flatness": None,
+        }},
+    ))
+    assert env["expert_details"] == [
+        "flatness not recorded for this measurement — it predates the "
+        "spec gauge; re-measure to see it"
+    ]
+
+
+def test_done_says_unmeasurable_when_the_gauge_ran_but_found_no_bins():
+    """The gauge ran and could not measure (every spec band excluded or out
+    of range). ``passed`` is False there by ``FlatSpecReport.overall_passed``'s
+    own rule, so this must never render as a fail."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+        cloud=_cloud_flatness_status(
+            max_db=None, max_hz=None, max_band_hz=None, tolerance_db=None,
+            rms_db=None, n_bins=0, evaluable=False, passed=False,
+        ),
+    ))
+    assert env["expert_details"] == [
+        "flatness could not be measured — every spec band was excluded "
+        "or out of range"
+    ]
+
+
+def test_cloud_measure_flatness_never_renders_as_the_speakers_flatness():
+    """``cloud_measure`` is the PRE-APPLY, uncorrected baseline that exists in
+    order to be out of spec — the same distinction PR-4's doctor blocker
+    drew. Rendering it here would report a correctly-corrected speaker as bad
+    forever, so only ``cloud_verify`` feeds the gauge."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
+        cloud={PHASE_CLOUD_MEASURE: _cloud_flatness_status()[PHASE_CLOUD_VERIFY]},
     ))
     assert env["expert_details"] == []
 

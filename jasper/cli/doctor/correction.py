@@ -451,8 +451,18 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
             any_fail = True
         excluded = entry.get("excluded_interval_count")
         excluded_text = "n/a" if excluded is None else str(excluded)
+        # PR-5: the worst deviation, from the same spec report ``overall``
+        # above came from — "spec=fail" alone cannot tell an operator apart a
+        # speaker 0.1 dB over its tolerance from one 9 dB over. Read, never
+        # re-derived (``_compact_cloud_status``'s ``flatness`` is a verbatim
+        # copy of ``spec_flatness_gauge``'s dict).
+        flatness = entry.get("flatness")
+        worst = flatness.get("max_db") if isinstance(flatness, dict) else None
+        worst_text = (
+            f" worst={worst:+.2f}dB" if isinstance(worst, (int, float)) else ""
+        )
         parts.append(
-            f"{phase}: spec={spec_text} "
+            f"{phase}: spec={spec_text}{worst_text} "
             f"excluded_intervals={excluded_text} "
             f"geometry_locked={bool(entry.get('geometry_locked'))}"
         )

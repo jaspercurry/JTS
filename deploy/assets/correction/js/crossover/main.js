@@ -196,10 +196,18 @@ function renderCandidateReview(review) {
   // every other screen looks the same.
   const outcomeText = LINEARIZATION_OUTCOME_TEXT[review.linearization_outcome];
   if (outcomeText) details.push(outcomeText);
-  // Gauge fix (2026-07-24): per-role top-octave deficits (measured vs fit
-  // target, achieved-minus-target dB) — the number that says "the top
-  // octave is 9 dB down and nothing corrected it." Uncorrected regions show
-  // their natural deficit here, never a pass/fail.
+  // Gauge fix (2026-07-24): per-role top-octave deficits (achieved minus fit
+  // target, dB) — the number that says "the top octave is 9 dB down and
+  // nothing corrected it." Uncorrected regions show their natural deficit
+  // here, never a pass/fail.
+  //
+  // Relabelled by the flat-linearization plan's PR-5: these are per-driver
+  // FIT DIAGNOSTICS from the single design-axis capture, not the spec
+  // measurement. The spec claim on this same screen comes from the spatial
+  // cloud (the "flatness ..." expert lines, built server-side by
+  // crossover_envelope_v2._flatness_details_lines). The earlier wording
+  // "measured vs fit target" led with "measured", which reads as the
+  // measurement — the frame the two constructions must not share.
   const octaveRows = Array.isArray(review.linearization_octaves) ?
     review.linearization_octaves : [];
   octaveRows.forEach((row) => {
@@ -207,7 +215,9 @@ function renderCandidateReview(review) {
     if (!bands.length) return;
     const parts = bands.map((band) =>
       `${Math.round(Number(band.hz) / 1000)}k ${Number(band.delta_db).toFixed(1)} dB`);
-    details.push(`${row.role} measured vs fit target: ${parts.join(', ')}`);
+    details.push(
+      `${row.role} fit residual vs target (design-axis capture, not the ` +
+      `spatial measurement): ${parts.join(', ')}`);
   });
   if (details.length) {
     rows.push(el('details', {class: 'candidate-provenance'}, [

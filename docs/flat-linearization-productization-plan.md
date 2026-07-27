@@ -1108,4 +1108,92 @@ and `_geometry_verdict_from_combined` documented rather than silently left
 inconsistent; and the B1 fix's inverse (a session WITH a group phase must
 overwrite, not inherit, a stale prior cloud) pinned by test.*
 
+*PR-5 (2026-07-27): the spec-curve SSOT lands. `combine_positions`' spec
+curve, evaluated once by `evaluate_flat_spec` against the merged honesty mask,
+reduced once by the new pure `flat_spec.spec_flatness_gauge`, and published as
+`assemble_cloud_group_result`'s `flatness` key — which `/state`, the envelope,
+the doctor detail, and the wizard's expert disclosure all **copy**, so the
+frame-consistency contract (`tests/test_flat_spec_ssot.py`) is byte-identity by
+construction rather than by two code paths agreeing. Interpretation call (B)
+honoured: `_analyze_verify`'s measured-vs-`predicted_sum` comparator is
+untouched and now carries the comment stating why (both sides of that
+comparison share one design-axis geometry, which is the whole basis of the
+claim; feeding it a spatially-averaged curve would read cloud variation as a
+tracking error in the one gate that gates). No gating verdict changed —
+`max_db_notch_excluded`, `verify_inconclusive`'s gate-comparability rule, and
+the `overlap_band_hz` tracking window are all as they were.*
+
+*Three mechanism deviations from the PR-5 section's literal wording, all
+recorded rather than silently taken. **(a) `_flatness_tracking` was RETIRED,
+not re-based in place.** The section says "evaluated on the combined spec curve
+… replacing its capture-grid/band-mean framing", and the replacement cannot
+live where the function lived: `_analyze_verify` runs per capture, the anchor
+VERIFY capture is consumed BEFORE the cloud-verify group closes, and
+`program_analysis` (an `audio_measurement` module) cannot import
+`active_speaker.flat_spec` without inverting the layering. So the function,
+`FLATNESS_VERIFY_HI_HZ` (superseded by `flat_spec.BEST_EFFORT_ABOVE_HZ`),
+`FLATNESS_VERIFY_TOLERANCE_DB` (the never-bench-derived 3.0, superseded by the
+spec table's per-band tolerances), `ProgramAnalysis.flatness_tracking`, its
+`PhaseVerdict` relay, the conductor's `flatness_evidence` stash, and the
+`verify.flatness` state key are all gone; the claim is made once per group on
+the cloud. Keeping a per-capture flatness number under any name would have
+preserved the exact second construction the PR exists to remove. **(b) The
+candidate/envelope gauges had no private curve re-derivation to re-base.**
+`_candidate_octave_summary` and `_linearization_octave_rows` are pure
+projections of `LinearizationFit.observe_octave_summary`, and a summed cloud
+curve has no per-role decomposition to re-derive them from. What was wrong was
+the FRAME, so PR-5 applied the treatment the section's own next bullet
+prescribes for the fit ladder: relabeled, in the docstrings and in the rendered
+line ("`<role>` fit residual vs target (design-axis capture, not the spatial
+measurement)" — the old text led with "measured"). `_flatness_details_lines`
+IS re-based, onto the shared gauge. **(c) The gauge quotes spec-band BIN
+counts, not an interval count.** An interval count spans the whole axis
+including frequencies no spec band grades, so "N regions excluded from
+grading" would have over-reported the moment the validity clamp removed a
+sub-250 Hz region — caught by the contract test's own byte-identity assertion.*
+
+*Measured regime for the validity-floor clamp, stated because it is not free:
+`cloud_validity_floor_hz` takes the group's WORST (highest) gate floor, mirroring
+`_measure_validity_floor_hz`'s existing "worse of the two branches" rule, and
+those bins leave the spec evaluation (deviations AND reference — a
+non-measurement must not re-centre the target either). On the S0 main leg nine
+of ten positions gate to 142.9 Hz, below the 250 Hz spec edge, so the clamp is
+a no-op there. `cloud_04` collapsed to **1777.8 Hz**, and clamping at that floor
+costs, all pinned by `tests/test_flat_spec_ssot.py`: **1009 bins** leave the
+250 Hz–2 kHz band (7698 → 6689 graded); the reference re-centres
+**−27.2670 → −28.3166 dB**; the **headline `max_db` moves −8.9399 → −7.8903 dB,
+i.e. +1.0495 dB in the FLATTERING direction** — exactly the reference shift,
+because the worst bin (15999.7 Hz) survives the clamp and its deviation tracks
+the reference one-for-one, so the first number the ledger line prints moves
+*further* than the RMS does; the pooled RMS moves 3.7649 → 3.1524 dB; and the
+250 Hz–2 kHz **band verdict FLIPS**, +4.1637 dB (fail) → −1.2855 dB (pass),
+since `passed` is `abs(max) ≤ tolerance` (overall stays False only because the
+other two bands fail on their own). The **direction is response-shape dependent
+and measured on this corpus only** — here the removed region sat above the
+surviving reference, so dropping it flattered what was left; a speaker with a
+quiet sub-floor region moves the other way. None of it is the speaker
+improving: it is the same speaker on fewer bins, which is exactly why
+`n_bins`/`n_excluded` ride on the gauge. The clamp is deliberately kept OUT of
+`merged_excluded_bands_hz` (and so out of `/state`'s
+`excluded_interval_count`), which stays the honesty instruments' own "how much
+interference did we find" count; the clamp is disclosed separately as
+`validity_floor_hz`, carried through `_compact_cloud_status` to `/state`, the
+envelope, and the doctor so a live surface can separate a combed room from a
+collapsed gate. A group with no usable floor clamps nothing and reports `None` —
+withholding the whole gauge over an unverified lower edge would throw away the
+2–16 kHz evidence.*
+
+*Deferred alternative, recorded (review SF-3): the honest third option is
+**per-position, per-bin validity masking inside `combine_positions`** — mask
+each position's contribution below that position's OWN floor and combine the
+survivors, so nine good captures keep contributing at 500 Hz instead of one bad
+one costing the whole band for the group. It is strictly better than a
+group-wide clamp and is deferred only because it is a `spatial_combine`
+signature and estimator change (the power mean would need per-bin weights), not
+a wiring one — out of PR-5's scope. **Revisit trigger:** a real session where
+one collapsed gate meaningfully shrinks the graded band. The S0 `cloud_04` case
+above already IS that evidence, so this is queued on measured grounds rather
+than speculation; it is a scope call, not a doubt about whether it is worth
+doing.*
+
 *Last verified: 2026-07-27*

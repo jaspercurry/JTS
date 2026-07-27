@@ -169,11 +169,14 @@ render({
     text === (
       "alignment confidence 0.71; candidate cand-proof; " +
       "driver linearization: fitted; " +
-      "woofer measured vs fit target: 8k -0.3 dB, 12k -1.1 dB, 16k -4.7 dB; " +
-      "tweeter measured vs fit target: 8k -0.1 dB."
+      "woofer fit residual vs target (design-axis capture, not the spatial " +
+      "measurement): 8k -0.3 dB, 12k -1.1 dB, 16k -4.7 dB; " +
+      "tweeter fit residual vs target (design-axis capture, not the spatial " +
+      "measurement): 8k -0.1 dB."
     ),
     "'fitted' + a known octave payload render the exact enum prose and " +
-    "the '8k -X.X dB' formatting per role",
+    "the '8k -X.X dB' formatting per role, under the flat-linearization " +
+    "PR-5 label that names these as FIT diagnostics, not the measurement",
     { got: text },
   );
 }
