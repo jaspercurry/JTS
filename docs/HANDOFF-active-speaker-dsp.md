@@ -52,16 +52,16 @@ this doc called "Layer A." Layer 1a is new: the fit engine landed
 2026-07-23 (#1668 PR-A/B/C —
 [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) +
 [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py)).
-**As of this writing, MEASURE computes and persists a per-driver
-linearization curve on the measured candidate, but nothing yet emits
-it into the CamillaDSP baseline graph** — wiring a per-role
-linearization filter stage into `emit_active_speaker_baseline_config`
-is the next phase. Do not assume linearization is audible yet; check
-the design doc's "Execution plan for the implementing session" for
-current phase status. Layers 3 and 4 (room correction, preference)
-are unchanged from before and already land on the active graph for a
-solo speaker — see "Layer Boundary" implementation status in the
-appendix, still accurate.
+**Layer 1a now emits (#1668 PR-D): `baseline_profile` threads the
+fitted per-role filters (`linearization_fit.linearization_filters_by_role`)
+into the applied CamillaDSP graph — but the emitted curve is not yet
+hardware-validated.** Do not assume linearization has been confirmed
+audible; [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+"Current status" owns the emission's validation state, and the design
+doc's "Execution plan for the implementing session" owns phase status.
+Layers 3 and 4 (room correction, preference) are unchanged from before
+and already land on the active graph for a solo speaker — see "Layer
+Boundary" implementation status in the appendix, still accurate.
 
 ### The two commissioning surfaces
 
@@ -77,22 +77,23 @@ Two web surfaces, two different jobs, run in sequence:
    `jasper.active_speaker.{staging,startup_load,commission_ramp,
    calibration_level,safe_playback,bringup,playback}`.
 2. **`/correction/crossover/`** — measures and applies crossover
-   level/delay/polarity (and, once wired, linearization). **The
-   default flow is v2** (selector `JASPER_CROSSOVER_FLOW`, default
-   `v2` since 2026-07-19 — see
+   level/delay/polarity and linearization. **v2 is the only flow** —
+   see
    [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
-   canonical for this flow's file map and invariants). v2 replaced the
-   legacy near-field/null-depth/gated-summed triad described at length
-   in the appendix below: **that legacy flow is opt-out only**
-   (`JASPER_CROSSOVER_FLOW=legacy`, case-insensitive/trimmed; any other
-   value fails safe to v2), is deprecated, and
-   is scheduled for deletion (W5b). Do not treat the appendix's
-   "Consumer Wizard Triad," "Delay, Phase, and Null Verification," or
-   the Wave 1-3 commissioning-receipt narrative as current — they
-   describe the legacy flow's `jasper.active_speaker.commissioning_*`
-   family (`commissioning_run.py`, `commissioning_host.py`,
-   `commissioning_receipt.py`, `driver_acoustics.py`, and siblings),
-   which is still in the tree but is not what a fresh install runs.
+   canonical for this flow's file map and invariants. W5b (2026-07-24)
+   deleted the legacy near-field/null-depth/gated-summed triad
+   described at length in the appendix below, along with the
+   `JASPER_CROSSOVER_FLOW` selector that used to choose between the
+   two; a stale `JASPER_CROSSOVER_FLOW=legacy` carried on an old box
+   now selects nothing (`build_crossover_envelope` in
+   [`crossover_envelope.py`](../jasper/active_speaker/crossover_envelope.py)
+   dispatches straight to v2). Do not treat the appendix's "Consumer
+   Wizard Triad," "Delay, Phase, and Null Verification," or the Wave
+   1-3 commissioning-receipt narrative as the current flow. Some of the
+   machinery they describe outlived it — the `CrossoverLevelLease` and
+   the capture geometry are shared with v2
+   ([HANDOFF-correction.md](HANDOFF-correction.md) owns which parts
+   survive) — but the flow that drove it is gone.
 
 ### File map (entry points only)
 
@@ -107,9 +108,8 @@ above; this is only the entry points:
 | [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py) | Compiles and applies the durable active-speaker baseline; owns the candidate/promote lifecycle below. |
 | [`jasper/active_speaker/staging.py`](../jasper/active_speaker/staging.py), [`startup_load.py`](../jasper/active_speaker/startup_load.py), [`commission_ramp.py`](../jasper/active_speaker/commission_ramp.py) | `/sound/` topology-setup substrate: stage a muted graph, load it, run the per-driver by-ear ramp. |
 | [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py) | Classifies saved topology against the running/candidate CamillaDSP graph; the doctor's fail-closed authority. |
-| [`jasper/active_speaker/crossover_flow.py`](../jasper/active_speaker/crossover_flow.py) | The `JASPER_CROSSOVER_FLOW` v2/legacy selector. No product policy. |
 | [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py), [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The v2 conductor and the Layer 1a fit/envelope. Full map: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md) "File map". |
-| `jasper/active_speaker/commissioning_*.py`, [`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py) | Legacy flow only (the Wave 1-3 nine-state receipt lifecycle). Opt-in, deprecated. |
+| `jasper/active_speaker/commissioning_*.py`, [`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py) | Substrate built for the deleted legacy Wave 1-3 nine-state receipt lifecycle. Not a selectable flow any more; parts still back v2 (`commissioning_run` → `correction_crossover_backend`, `driver_acoustics`'s sweep constants → `web_measurement.capture_sweep_meta`). |
 
 ### Key invariants
 
@@ -242,7 +242,8 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > *the* measurement protocol (superseded by v2 — see "Current
 > Operational Truth" above), the Wave 1-3 commissioning-receipt
 > lifecycle presented as the live commissioning path (it is the
-> legacy flow's machinery, opt-in only), and the "Staged,
+> legacy flow's machinery, and W5b deleted that flow — see "The two
+> commissioning surfaces" above), and the "Staged,
 > hardware-verified build sequence" presented as in-progress (the
 > transport it describes is now design-of-record and mostly built).
 > Read this appendix for the narrative and the reasoning behind
@@ -2569,3 +2570,10 @@ verbatim as historical narrative and was not independently re-verified in
 this pass beyond the corrections called out in its own status note; treat its
 file paths, line numbers, and "what's shipped" claims as of their original
 dates, not current.)
+
+Correction (2026-07-27): one entry in the manifest above is superseded — the
+"v2/legacy crossover-flow split (crossover_flow.py, JASPER_CROSSOVER_FLOW)"
+was retired by W5b hours after f59d5a776 was checked, so that file is deleted
+and the selector selects nothing (see "The two commissioning surfaces"). The
+`Last verified` date is deliberately NOT bumped: this footer records what was
+checked at f59d5a776, and correcting one entry is not a re-read of the doc.
