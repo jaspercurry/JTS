@@ -584,6 +584,22 @@ What exists:
   journal spam. The dashboard labels the two xrun
   counters as content/DAC, since a content-capture recovery is a
   different risk from a physical-output recovery.
+  A short content read is zero-filled and a full period is still written,
+  so it INSERTS `requested - frames` samples into the emitted timeline —
+  audible as a brief tear, and it displaces the rest of the program in
+  time. Every such fill emits `event=outputd.content_fill` with
+  `source=partial|empty|eagain|xrun_recovered`, `frames_short`, and the
+  running counters, rate-limited to one line per second (the overflow
+  arrives as `suppressed=` on the next line). Before #1768 only the
+  `EPIPE`/`ESTRPIPE` branch printed, so the paths that actually insert were
+  structurally silent — which is how a corrupted crossover MEASURE capture
+  (#1765) and audible sweep tears both went unattributed. Note the fill is
+  the EXPECTED steady state on `content_bridge=direct` (nothing absorbs the
+  content-producer-vs-DAC offset there), so `jasper-doctor` deliberately
+  does not warn on it; the measurement path gates on it instead via
+  `runtime_integrity`'s `outputd_content_fill_increased`. Cadence evidence:
+  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+  §G.
   Outputd's local control socket accepts one newline-delimited command per
   connection. Command reads are capped at 256 bytes and at a two-second total
   monotonic deadline (not a resettable per-byte timeout); oversized, invalid
