@@ -180,21 +180,21 @@ ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 # Overlap band for trims / alignment / ripple: Fc ± 1 octave.
 OVERLAP_OCTAVE_RATIO = 2.0
 
-# Ripple-optimal trim solve (#1667): solve_branch_trims band-energy-averages
-# |W| and |T| over the overlap band, which is systematically biased whenever
-# the two driver sweeps only overlap on one side of Fc (e.g. the tweeter
-# sweep starts AT Fc, so the whole evaluation band sits inside the woofer's
-# own rolloff skirt, and the woofer's filter attenuation drags the level-
-# match target down with it — issue #1667's root cause). The fix keeps that
-# band-average as a SEED and re-solves for the trim that minimizes the
-# summed response's ripple instead (see solve_ripple_optimal_trim).
+# Ripple-optimal trim POLISH (#1667, scoped by PR-L3): re-solve the tweeter
+# trim for minimum summed-response ripple, seeded by solve_branch_trims'
+# band-average level match. #1667 introduced it to absorb that level match's
+# one-sided-band bias; PR-L3 removed the bias at its source instead (see
+# solve_branch_trims), so this is now a flatness polish on an already-correct
+# level — and `_build_candidate` runs it only where its own evaluation band
+# straddles Fc, since a band that cannot see the woofer cannot express the
+# handoff level.
 #
 # Search window: the seed +/- this many dB, at this step. Issue #1667's own
-# hardware corpus (jts3, 5 replayed runs) observed a 1.7-6.3 dB band-average
-# bias; +/-10 dB leaves headroom beyond that range on both sides so the scan
-# is never truncated at its own edge for a real capture, while
-# RIPPLE_TRIM_SANITY_MARGIN_DB below still catches a result that wanders
-# implausibly far from a real level match.
+# hardware corpus (jts3, 5 replayed runs) observed a 1.7-6.3 dB gap between
+# the seed and the ripple optimum; +/-10 dB leaves headroom beyond that range
+# on both sides so the scan is never truncated at its own edge for a real
+# capture, while RIPPLE_TRIM_SANITY_MARGIN_DB below still catches a result
+# that wanders implausibly far from a real level match.
 RIPPLE_TRIM_SEARCH_WINDOW_DB = 10.0
 RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
 
@@ -620,13 +620,21 @@ class CrossoverCandidate:
     selected_ripple`` — evidence only, so a slightly negative value is honest
     (the snap is chosen for comb-lobe correctness, not ripple).
 
-    ``trim_db`` is the APPLIED trim (#1667: ripple-optimal where the sanity
-    guard trusts it, otherwise the band-average fallback); ``trim_band_average_db``
-    preserves ``solve_branch_trims``'s own band-average result — the SEED the
-    ripple-optimal search started from — so replay/forensics can always see
-    both, even when they coincide. ``None`` only for a legacy/test
-    construction site built before this field existed; ``_build_candidate``
-    always sets it.
+    ``trim_db`` is the APPLIED trim (#1667: ripple-optimal where the polish
+    ran and the sanity guard trusts it, otherwise the band-average fallback);
+    ``trim_band_average_db`` preserves ``solve_branch_trims``'s own
+    level-match result — the SEED the ripple-optimal search started from — so
+    replay/forensics can always see both, even when they coincide. ``None``
+    only for a legacy/test construction site built before this field existed;
+    ``_build_candidate`` always sets it.
+
+    Frame note (PR-L3, 2026-07-27): both values changed meaning. Before, the
+    level match band-averaged BOTH branches over the shared overlap band,
+    which on a tweeter-swept-from-Fc speaker measured the woofer's crossover
+    skirt and put the tweeter trim 10.9-13.1 dB too negative on the archived
+    JTS3 captures. A candidate persisted before that fix carries the old
+    frame; it is evidence, not config, and is not migrated — a speaker
+    commissioned under it keeps its old trim until re-commissioned.
     """
 
     trim_db: Mapping[str, float]
@@ -1899,6 +1907,34 @@ def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -
     return float(np.max(band_db) - np.min(band_db))
 
 
+def branch_level_bands_hz(
+    fc_hz: float,
+    *,
+    lo_hz: float | None = None,
+    hi_hz: float | None = None,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """``((woofer_lo, woofer_hi), (tweeter_lo, tweeter_hi))`` — the two
+    log-symmetric half-bands the level match reads, one per branch.
+
+    ``[lo_hz, hi_hz]`` is the span the level match is ALLOWED to look in (each
+    branch's own validity floor/ceiling, not the shared both-branches-excited
+    overlap). The returned halves are ``[Fc/ρ, Fc]`` and ``[Fc, Fc·ρ]`` with
+    the largest ``ρ ≤ OVERLAP_OCTAVE_RATIO`` that fits inside it, so the two
+    branches are always sampled mirror-symmetrically about Fc.
+
+    SSOT for the band pair: :func:`solve_branch_trims` computes the levels and
+    ``_build_candidate`` discloses the bands, from this one derivation.
+    """
+    lo = lo_hz if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
+    hi = hi_hz if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
+    ratio = min(OVERLAP_OCTAVE_RATIO, fc_hz / lo, hi / fc_hz)
+    if not (ratio > 1.0) or not math.isfinite(ratio):
+        raise ValueError(
+            f"level-match span [{lo}, {hi}] does not straddle Fc={fc_hz}"
+        )
+    return (fc_hz / ratio, fc_hz), (fc_hz, fc_hz * ratio)
+
+
 def solve_branch_trims(
     freqs: np.ndarray,
     W: np.ndarray,
@@ -1908,22 +1944,47 @@ def solve_branch_trims(
     lo_hz: float | None = None,
     hi_hz: float | None = None,
 ) -> tuple[float, float, float, float]:
-    """Level-match trims over ``[lo_hz, hi_hz]`` (default: Fc ± 1 octave).
+    """Level-match trims: each branch read on ITS OWN side of Fc.
 
-    ``lo_hz``/``hi_hz`` let a caller narrow the band away from the nominal
-    overlap — the candidate's gating-consistent trim solve (`_build_candidate`)
-    clamps ``lo_hz`` up to a branch's validity floor when a room reflection
-    gates it tighter than the nominal band.
+    ``[lo_hz, hi_hz]`` (default Fc ± 1 octave) is the span the match may look
+    in; :func:`branch_level_bands_hz` splits it into the mirrored halves
+    ``[Fc/ρ, Fc]`` (woofer) and ``[Fc, Fc·ρ]`` (tweeter). Callers pass each
+    branch's OWN validity span — a branch is never read outside the band it
+    was excited and gated in.
+
+    Why mirrored halves and not one shared band (PR-L3, 2026-07-27). This
+    function band-power-averages ``|W|`` and ``|T|``, which is a level match
+    only when each branch is weighted symmetrically about Fc. It was called
+    with the SHARED both-branches-excited overlap band, whose lower edge
+    :func:`overlap_band_hz` clamps UP to the tweeter's sweep floor. On a real
+    2-way whose tweeter sweep starts AT Fc (JTS3: Fc 2 kHz, tweeter swept
+    2-20 kHz) that clamp leaves ``[Fc, 2Fc]`` — entirely on the side where the
+    woofer is inside its crossover skirt and the tweeter is climbing into its
+    passband. The result is not a level match but a skirt-depth measurement.
+    On an ideal LR4 pair with two EQUAL-sensitivity drivers, ``[Fc, 2Fc]``
+    returns **+10.59 dB** instead of 0 (closed form, pinned by
+    ``test_one_sided_overlap_band_biases_the_level_match``); on the archived
+    JTS3 captures it put the measured tweeter trim 10.9 dB (2026-07-27) and
+    13.1 dB (2026-07-25) below the same analysis's own per-driver
+    ``target_level_db`` frame, which is where the speaker's ~10 dB-dark
+    tweeter came from. Widening back to the nominal band is not the fix
+    either: the tweeter was never EXCITED below Fc, so those bins are
+    deconvolution noise that dilutes its power mean (+3.03 dB residual bias
+    on the same ideal pair). Reading each branch only on its own side removes
+    both problems — residual bias +0.54 dB at ρ=2, shrinking with ρ.
 
     Public (#1668 PR-C): the v2 conductor re-solves trims against a
     linearized branch pair (`jasper.active_speaker.crossover_v2_flow`), so
     this — and its sibling :func:`overlap_band_hz` — are no longer
-    module-private. No logic changed in this rename.
+    module-private.
     """
-    lo = lo_hz if lo_hz is not None else fc_hz / OVERLAP_OCTAVE_RATIO
-    hi = hi_hz if hi_hz is not None else fc_hz * OVERLAP_OCTAVE_RATIO
-    level_w = _band_average_db(freqs, 20.0 * np.log10(np.maximum(np.abs(W), 1e-12)), lo, hi)
-    level_t = _band_average_db(freqs, 20.0 * np.log10(np.maximum(np.abs(T), 1e-12)), lo, hi)
+    (w_lo, w_hi), (t_lo, t_hi) = branch_level_bands_hz(fc_hz, lo_hz=lo_hz, hi_hz=hi_hz)
+    level_w = _band_average_db(
+        freqs, 20.0 * np.log10(np.maximum(np.abs(W), 1e-12)), w_lo, w_hi
+    )
+    level_t = _band_average_db(
+        freqs, 20.0 * np.log10(np.maximum(np.abs(T), 1e-12)), t_lo, t_hi
+    )
     target = min(level_w, level_t)  # attenuate the louder branch
     return target - level_w, target - level_t, level_w, level_t
 
@@ -1947,18 +2008,23 @@ def solve_ripple_optimal_trim(
     regularized toward the seed on a flat minimum (#1667; flat-minimum
     regularization is a follow-up architect review).
 
-    ``solve_branch_trims`` matches band-AVERAGE levels, which is biased
-    whenever the evaluation band sits inside one branch's own filter
-    rolloff (the tweeter sweep starting AT Fc is the real-world case: the
-    whole band then lives inside the woofer's LR4 skirt, and the woofer's
-    own attenuation drags the level-match target — and so the tweeter's
-    solved trim — down with it). The fix is the OBJECTIVE, not the band:
-    instead of matching levels, scan the tweeter trim and keep whichever
+    Instead of matching levels, scan the tweeter trim and keep whichever
     value minimizes the SUMMED branch response's ripple (max-min dB) over
-    the SAME ``[lo_hz, hi_hz]`` band the band-average solve used — reusing
-    :func:`predicted_branch_sum` and :func:`_ripple_db` exactly as
-    ``predicted_ripple_db`` elsewhere on the candidate already does, rather
-    than inventing a second flatness metric.
+    ``[lo_hz, hi_hz]`` — reusing :func:`predicted_branch_sum` and
+    :func:`_ripple_db` exactly as ``predicted_ripple_db`` elsewhere on the
+    candidate already does, rather than inventing a second flatness metric.
+
+    #1667 introduced this as a fix for ``solve_branch_trims``' bias when the
+    evaluation band sat inside one branch's own filter rolloff ("the fix is
+    the OBJECTIVE, not the band"). PR-L3 found that insufficient — on that
+    same one-sided geometry the summed ripple is the tweeter's own and
+    barely responds to the tweeter's gain, so the scan recovered only a
+    fraction of the error — and fixed the BAND at its source instead
+    (``solve_branch_trims`` now reads each branch on its own side of Fc).
+    This function is therefore a flatness POLISH on an already-correct
+    level, and ``_build_candidate`` runs it only where ``[lo_hz, hi_hz]``
+    straddles Fc. Its own contract is unchanged: it optimizes ripple over
+    whatever band it is handed.
 
     The woofer/reference branch's trim (``trim_w_db``) is held FIXED —
     ripple depends only on the RELATIVE gain between branches, so scanning
@@ -2674,6 +2740,7 @@ def _analyze_measure(
         woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
         seg_w.role, seg_t.role, alignment, calibration,
         tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
+        woofer_sweep_lo_hz=seg_w.f1_hz, tweeter_sweep_hi_hz=seg_t.f2_hz,
         alignment_delay_bounds_us=priors.alignment_delay_bounds_us,
     )
     if candidate.alignment_seed_ripple_db is not None:
@@ -2714,6 +2781,8 @@ def _build_candidate(
     *,
     tweeter_sweep_lo_hz: float | None = None,
     woofer_sweep_hi_hz: float | None = None,
+    woofer_sweep_lo_hz: float | None = None,
+    tweeter_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -2741,33 +2810,91 @@ def _build_candidate(
         if branch_floor_hz is not None and math.isfinite(branch_floor_hz)
         else lo
     )
-    trim_w, trim_t_band_average, _lw, _lt = solve_branch_trims(
-        freqs, W, T, fc_hz, lo_hz=lo_clamped, hi_hz=hi,
+    # The LEVEL MATCH reads a different span from the ripple/prediction band
+    # above (PR-L3): each branch on its own side of Fc, inside its OWN
+    # validity span, never the shared both-branches-excited overlap — see
+    # solve_branch_trims. The shared reflection floor still applies to the
+    # woofer's lower edge (sub-floor bins stay untrusted everywhere); the
+    # sweep bounds default to the nominal Fc-octave edges when a legacy caller
+    # supplies no sweep-segment evidence, exactly like overlap_band_hz.
+    level_lo = fc_hz / OVERLAP_OCTAVE_RATIO
+    if woofer_sweep_lo_hz is not None:
+        level_lo = max(level_lo, float(woofer_sweep_lo_hz))
+    if branch_floor_hz is not None and math.isfinite(branch_floor_hz):
+        level_lo = max(level_lo, branch_floor_hz)
+    level_hi = fc_hz * OVERLAP_OCTAVE_RATIO
+    if tweeter_sweep_hi_hz is not None:
+        level_hi = min(level_hi, float(tweeter_sweep_hi_hz))
+    trim_w, trim_t_band_average, level_w, level_t = solve_branch_trims(
+        freqs, W, T, fc_hz, lo_hz=level_lo, hi_hz=level_hi,
+    )
+    (w_band_lo, w_band_hi), (t_band_lo, t_band_hi) = branch_level_bands_hz(
+        fc_hz, lo_hz=level_lo, hi_hz=level_hi,
+    )
+    # The frame ledger the 2026-07-27 forensics asked for: the level match's
+    # own inputs, on every MEASURE analysis. Read beside the per-role
+    # `target_level_db` in `correction.crossover_v2_linearization_giveback`
+    # (the fit frame for the SAME capture) — a large disagreement between the
+    # two is the signature of a level-frame defect.
+    log_event(
+        logger, "program_analysis.branch_level_match",
+        woofer_role=woofer_role, tweeter_role=tweeter_role,
+        fc_hz=round(float(fc_hz), 3),
+        level_w_db=round(float(level_w), 3), level_t_db=round(float(level_t), 3),
+        woofer_band_hz=(round(w_band_lo, 1), round(w_band_hi, 1)),
+        tweeter_band_hz=(round(t_band_lo, 1), round(t_band_hi, 1)),
+        trim_band_average_db=round(float(trim_t_band_average), 3),
     )
     # #1667: re-solve the tweeter trim for minimum summed-response ripple
     # instead of trusting the band-average level match on its own — see
     # solve_ripple_optimal_trim's docstring for why band-average is biased.
     # Guarded: a result implausibly far from the band-average seed is
     # distrusted and discarded (never a wild applied trim).
-    trim_t_ripple, _ripple_t_ripple, _seed = solve_ripple_optimal_trim(
-        freqs, W, T, fc_hz,
-        lo_hz=lo_clamped, hi_hz=hi,
-        seed_trim_db=trim_t_band_average,
-        trim_w_db=trim_w,
-        sign=alignment.polarity_sign,
-    )
-    if abs(trim_t_ripple - trim_t_band_average) > RIPPLE_TRIM_SANITY_MARGIN_DB:
+    #
+    # ...but ONLY where summed ripple can express a level at all (PR-L3).
+    # The scan's objective is the ripple of ``W + s·T`` over the SHARED
+    # both-branches-excited band, and #1667's own corpus was entirely
+    # tweeter-sweep-starts-at-Fc geometry, where that band is one-sided: the
+    # woofer is 20+ dB down its skirt across it, so the sum is the tweeter
+    # alone and its ripple barely responds to the tweeter's own gain. What
+    # the scan "recovered" there (1.7-6.3 dB per #1667's table) was a slice
+    # of the band-average bias PR-L3 has now removed at the source, and with
+    # an unbiased seed the same objective pulls the OTHER way: replayed on
+    # the archived 2026-07-25 JTS3 run-5 MEASURE capture it moved the trim
+    # 7.9 dB back down (-12.368 → -20.268) and only the sanity guard stopped
+    # it. A selector that cannot see the woofer must not set the woofer's
+    # handoff level, so it is skipped rather than guarded on that geometry.
+    ripple_band_straddles_fc = lo_clamped < fc_hz < hi
+    if ripple_band_straddles_fc:
+        trim_t_ripple, _ripple_t_ripple, _seed = solve_ripple_optimal_trim(
+            freqs, W, T, fc_hz,
+            lo_hz=lo_clamped, hi_hz=hi,
+            seed_trim_db=trim_t_band_average,
+            trim_w_db=trim_w,
+            sign=alignment.polarity_sign,
+        )
+        if abs(trim_t_ripple - trim_t_band_average) > RIPPLE_TRIM_SANITY_MARGIN_DB:
+            log_event(
+                logger, "program_analysis.ripple_trim_rejected",
+                level=logging.WARNING,
+                woofer_role=woofer_role, tweeter_role=tweeter_role,
+                band_average_trim_db=round(trim_t_band_average, 3),
+                ripple_optimal_trim_db=round(trim_t_ripple, 3),
+                margin_db=RIPPLE_TRIM_SANITY_MARGIN_DB,
+            )
+            trim_t = trim_t_band_average
+        else:
+            trim_t = trim_t_ripple
+    else:
         log_event(
-            logger, "program_analysis.ripple_trim_rejected",
-            level=logging.WARNING,
+            logger, "program_analysis.ripple_trim_skipped",
             woofer_role=woofer_role, tweeter_role=tweeter_role,
+            reason="ripple_band_one_sided",
+            fc_hz=round(float(fc_hz), 3),
+            ripple_band_hz=(round(float(lo_clamped), 1), round(float(hi), 1)),
             band_average_trim_db=round(trim_t_band_average, 3),
-            ripple_optimal_trim_db=round(trim_t_ripple, 3),
-            margin_db=RIPPLE_TRIM_SANITY_MARGIN_DB,
         )
         trim_t = trim_t_band_average
-    else:
-        trim_t = trim_t_ripple
     delay_us = alignment.delay_us
     seed_ripple_db = None
     flatness_improvement_db = None

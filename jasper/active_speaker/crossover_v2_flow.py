@@ -5168,6 +5168,14 @@ class CrossoverV2Conductor:
         # under-returning seed shipped twice. The core-band anchor makes
         # give-back ≈ spend by construction, so the scan no longer has to fight
         # the seed and the guard no longer blocks the correction.
+        #
+        # PR-L3 (2026-07-27) fixed the overlap-band frame that paragraph
+        # describes — `solve_branch_trims` now reads each branch on its own
+        # side of Fc — but the anchor stays: the argument for it was never
+        # only the band, it is that measured give-back beats any solver
+        # prediction for restoring a corrected branch's own level. What DID
+        # change is `raw_trim` underneath it, which carried 10.9-13.1 dB of
+        # frame error into every anchored trim on the JTS3 captures.
         raw_trim = dict(cand.trim_db)
         anchored_unnormalized = {
             role: float(raw_trim.get(role, 0.0) + fits[role].correction_giveback_db)
@@ -5208,6 +5216,15 @@ class CrossoverV2Conductor:
             raw_trim_db={k: round(v, 3) for k, v in raw_trim.items()},
             anchored_trim_db={k: round(v, 3) for k, v in anchored.items()},
             normalize_shift_db=round(float(normalize_shift_db), 3),
+            # The FIT frame's own per-role level, beside the TRIM frame this
+            # line already carries (PR-L3 forensics). `raw_trim_db` should
+            # track the negated difference of these two; a large disagreement
+            # means the level match and the fit are measuring different
+            # things, which is exactly what shipped the 10 dB-dark tweeter.
+            target_level_db={
+                role: round(float(fits[role].target_level_db), 3)
+                for role in (woofer_role, tweeter_role)
+            },
         )
 
         # The guard now measures the SCAN's drift from the anchor — the anchor

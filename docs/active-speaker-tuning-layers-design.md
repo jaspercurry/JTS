@@ -25,9 +25,11 @@ the owner heard immediately as "missing sparkle" while every VERIFY passed —
 because VERIFY's band caps at 2·Fc AND it is a tracking metric against a
 prediction that shares the rolloff. The gap is a missing, nameable layer:
 **driver linearization**. Two secondary findings ride along: the trim solve
-band-averages inside the woofer's rolloff skirt (#1667, ≈3.4 dB horn
-over-attenuation), and the apply transaction can activate without durably
-promoting (#1666).
+band-averages inside the woofer's rolloff skirt (#1667, estimated ≈3.4 dB
+horn over-attenuation at the time — PR-L3's 2026-07-27 offline replay of the
+archived JTS3 captures measured the real figure at **10.9–13.1 dB** and fixed
+the frame at its source; see HANDOFF-crossover-measurement-v2.md), and the
+apply transaction can activate without durably promoting (#1666).
 
 ## The five layers
 
@@ -457,6 +459,11 @@ HANDOFF-crossover-measurement-v2.md's trim-solve section. The
 linearized-path trim is correct only with the linearization filters
 emitted (PR-D); the two land together. JTS3 hardware re-verify against
 the listening ladder's ripple-optimal stop remains open) + re-verify.
+**Superseded 2026-07-27 by PR-L3**: changing the OBJECTIVE was not enough —
+the band itself was the defect. `solve_branch_trims` now reads each branch
+on its own side of Fc, and the ripple polish runs only where its band
+straddles Fc. Hardware re-verify still open, now against the corrected
+frame.
 Phase 4+ — #1669 (3-way), #1671 (passive UX), #1665 (component entry —
 the driver-class/geometry/pad declaration schema + envelope wiring landed
 2026-07-24 out of sequence, ahead of this phase order; hardware validation
