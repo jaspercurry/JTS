@@ -998,6 +998,13 @@ reference. Currently:
   derived duration, an explicit user-facing tier chooser, per-measurement
   Retake/Next/Stop, and the courtesy-tone pacing fix). Executes as its own
   small PR ladder on top of the shipped instrument.
+- [`linearization-integrity-plan.md`](docs/linearization-integrity-plan.md)
+  — **Fix work order (2026-07-27)** for the commissioned-profile darkness
+  found by the iLoud comparison session: the mic-calibration sign
+  convention, the shelf slope/Q realization bug, the measured-trim frame
+  defect, the missing accountability assertions (inter-driver realized
+  level, prediction-gated auto-apply, applied-implies-graded), and the
+  evidence-gated boost doctrine with delta-probe verification.
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — **Design proposal / decision record (shipped 2026-07-19)** for making the
   `/correction/crossover/` measurement + tuning flow flexible for non-expert
