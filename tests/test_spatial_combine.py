@@ -3873,13 +3873,32 @@ def test_main_leg_is_unchanged_and_is_the_ground_plane_s_control(main_leg_irs):
     mic mounting is the whole difference, and it is the difference between a
     reading and a refusal.
     """
-    # Per-position (tau, confidence) exactly as s0-analysis/REPORT.md Q1.
+    # Per-position (tau, confidence) as s0-analysis/REPORT.md Q1, with the two
+    # entries the 2026-07-27 alignment fix moved.
+    #
+    # RE-PINNED 2026-07-27 (flow-simplification PR-U1). This reader used to
+    # locate an archived capture by cross-correlating the WHOLE composed
+    # program against it, which made the deconvolution window depend on every
+    # segment's placement rather than on the sweep it actually deconvolves —
+    # see ``_flat_lin_corpus._sweep_anchor``. Anchoring on the sweep changed
+    # exactly two of these ten positions, and BOTH moved toward a stronger
+    # detection rather than a weaker one:
+    #
+    #   cloud_04  319.3 us @ 0.294  ->  315.7 us @ 0.949
+    #   cloud_09  322.6 us @ 0.851  ->  333.4 us @ 0.852
+    #
+    # cloud_04 was the single weakest reading in the S0 report's own table —
+    # low enough that ``test_interference_nulls`` pinned it as sitting BELOW
+    # the corroboration confidence floor. Re-aligned it corroborates like its
+    # neighbours. The eight unchanged positions are the control: a reader that
+    # had simply started reading something else would not have left them
+    # bit-identical.
     expected = {
         "cloud_01": (310.4, 0.919), "cloud_02": (327.1, 0.893),
-        "cloud_03": (328.6, 0.877), "cloud_04": (319.3, 0.294),
+        "cloud_03": (328.6, 0.877), "cloud_04": (315.7, 0.949),
         "cloud_05": (318.6, 0.956), "cloud_06": (321.9, 0.938),
         "cloud_07": (323.5, 0.926), "cloud_08": (317.8, 0.899),
-        "cloud_09": (322.6, 0.851), "cloud_10": (321.0, 0.961),
+        "cloud_09": (333.4, 0.852), "cloud_10": (321.0, 0.961),
     }
     assert set(main_leg_irs) == set(expected)
 
@@ -3895,11 +3914,16 @@ def test_main_leg_is_unchanged_and_is_the_ground_plane_s_control(main_leg_irs):
         if found.earlier_arrival_us > 0.0:
             with_earlier[position] = (found.earlier_arrival_us, found.earlier_arrival_db)
 
-    assert len(with_earlier) == 4, with_earlier
+    # RE-PINNED 2026-07-27 with the alignment fix above: three of these ten,
+    # not four. The one that left the set is cloud_04 — the position whose
+    # whole-program-aligned read was the table's weakest (confidence 0.294),
+    # and whose sweep-aligned read no longer carries a below-window arrival at
+    # all. The remaining three are unchanged to the sample.
+    assert len(with_earlier) == 3, with_earlier
     assert all(us == pytest.approx(145.8, abs=0.5) for us, _db in with_earlier.values())
     levels = [db for _us, db in with_earlier.values()]
     assert min(levels) == pytest.approx(-15.71, abs=0.3), with_earlier
-    assert max(levels) == pytest.approx(-14.66, abs=0.3), with_earlier
+    assert max(levels) == pytest.approx(-14.75, abs=0.3), with_earlier
     # The contrast that matters: a desk-cloud interloper is ~12 dB quieter
     # than a proud-capsule one, and none of these ten is refused for it.
     assert max(levels) < -10.0, with_earlier

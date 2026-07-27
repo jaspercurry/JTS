@@ -33,6 +33,7 @@ from jasper.audio_measurement.program import (
     COURTESY_TONE_BEEP_GAP_S,
     COURTESY_TONE_MARGIN_DB,
     COURTESY_TONE_TRAILING_SILENCE_S,
+    courtesy_beep_to_stimulus_gap_s,
     KIND_COURTESY_TONE,
     KIND_SILENCE,
     KIND_SUMMED_SWEEP,
@@ -460,20 +461,27 @@ def test_check_courtesy_prelude_layout_and_gains():
         _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
     )
     ids = [s.segment_id for s in prog.segments]
-    assert ids[:3] == ["courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap"]
-    assert ids[3] == "ambient"
-    assert ids[3:] == [s.segment_id for s in build_check_program(
+    # Flow-simplification §2.5: the room-listening window is LEAD-IN, so the
+    # beeps land after it and directly in front of the first stimulus. Before
+    # this, a 12 s ambient window sat between the beeps and any sound.
+    assert ids[:4] == [
+        "ambient", "courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap",
+    ]
+    assert ids[4] == "pilot_woofer_lo"
+    legacy_ids = [s.segment_id for s in build_check_program(
         _roles(), ambient_s=1.0, pilot_duration_s=0.5,
     ).segments]
+    assert ids[:1] + ids[4:] == legacy_ids
 
     tone0 = prog.segment("courtesy_tone_ch0")
     tone1 = prog.segment("courtesy_tone_ch1")
     gap = prog.segment("courtesy_gap")
+    ambient = prog.segment("ambient")
     assert tone0.kind == KIND_COURTESY_TONE and tone1.kind == KIND_COURTESY_TONE
     assert tone0.role is None and tone1.role is None
     assert tone0.channel == 0 and tone1.channel == 1
-    # Both tones start at sample 0 -- they play simultaneously.
-    assert tone0.start_sample == 0 and tone1.start_sample == 0
+    # Both tones start together -- they play simultaneously, now after ambient.
+    assert tone0.start_sample == tone1.start_sample == ambient.n_samples
     assert tone0.n_samples == tone1.n_samples
     expected_tone_s = (
         COURTESY_TONE_BEEP_COUNT * COURTESY_TONE_BEEP_DURATION_S
@@ -484,13 +492,14 @@ def test_check_courtesy_prelude_layout_and_gains():
     )
     # The trailing gap follows immediately, sized to the fixed silence window.
     assert gap.kind == KIND_SILENCE
-    assert gap.start_sample == tone0.n_samples
+    assert gap.start_sample == tone0.start_sample + tone0.n_samples
     assert gap.n_samples == pytest.approx(
         COURTESY_TONE_TRAILING_SILENCE_S * PROGRAM_SAMPLE_RATE_HZ, abs=2,
     )
-    # "ambient" (the original first segment) starts right after the prelude.
-    ambient = prog.segment("ambient")
-    assert ambient.start_sample == tone0.n_samples + gap.n_samples
+    # The first pilot -- CHECK's first stimulus -- starts right after the gap.
+    assert prog.segment("pilot_woofer_lo").start_sample == (
+        gap.start_sample + gap.n_samples
+    )
 
     # Level derivation: CHECK's loudest per-channel stimulus is the "hi"
     # pilot (base_peak_dbfs + 0), so each channel's tone is exactly
@@ -502,9 +511,14 @@ def test_check_courtesy_prelude_layout_and_gains():
     assert tone0.effective_peak_dbfs == pytest.approx(tone0.gain_db)
 
 
-def test_measure_courtesy_prelude_shifts_everything_after_it_unchanged():
-    """Every segment after the prelude keeps its id/kind/gain/duration; only
-    ``start_sample`` moves by exactly the prelude's length."""
+def test_measure_courtesy_prelude_shifts_only_what_follows_it():
+    """Everything BEFORE the splice point keeps its position; everything after
+    keeps its id/kind/gain/duration and moves by exactly the prelude's length.
+
+    §2.5 put the splice point after the lead-in (the pilot pair and the guard
+    silence) rather than in front of the whole program, so the settle the beeps
+    promise sits directly against the first sweep.
+    """
     kwargs = dict(
         sweep_durations={"woofer": 0.6, "tweeter": 0.5},
         leading_pilot_gains_db=(-21.0, -11.0),
@@ -514,19 +528,29 @@ def test_measure_courtesy_prelude_shifts_everything_after_it_unchanged():
         _gain_plan(), _roles(), courtesy_prelude=True, **kwargs,
     )
     ids = [s.segment_id for s in prog.segments]
-    assert ids[:3] == ["courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap"]
-    assert ids[3:] == [s.segment_id for s in legacy.segments]
+    lead_in = [
+        "pilot_woofer_lo", "pilot_gap_woofer_lo",
+        "pilot_woofer_hi", "pilot_gap_woofer_hi", "guard",
+    ]
+    assert ids[:5] == lead_in
+    assert ids[5:8] == ["courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap"]
+    assert ids[:5] + ids[8:] == [s.segment_id for s in legacy.segments]
 
     tone0 = prog.segment("courtesy_tone_ch0")
     gap = prog.segment("courtesy_gap")
     prelude_n = tone0.n_samples + gap.n_samples
-    for old_seg, new_seg in zip(legacy.segments, prog.segments[3:]):
+    # The lead-in did not move at all…
+    for old_seg, new_seg in zip(legacy.segments[:5], prog.segments[:5]):
+        assert new_seg == old_seg
+    # …and everything after the splice moved by exactly the prelude.
+    for old_seg, new_seg in zip(legacy.segments[5:], prog.segments[8:]):
         assert new_seg.kind == old_seg.kind
         assert new_seg.gain_db == old_seg.gain_db
         assert new_seg.n_samples == old_seg.n_samples
         assert new_seg.channel == old_seg.channel
         assert new_seg.role == old_seg.role
         assert new_seg.start_sample == old_seg.start_sample + prelude_n
+    # The prelude is a REORDER, not a lengthening: same total as before §2.5.
     assert prog.total_samples == legacy.total_samples + prelude_n
 
     # Level derivation, per channel: ch0 (woofer) sees BOTH the leading pilot
@@ -537,12 +561,15 @@ def test_measure_courtesy_prelude_shifts_everything_after_it_unchanged():
     assert tone1.gain_db == pytest.approx(-13.0 - COURTESY_TONE_MARGIN_DB)
 
 
-def test_measure_courtesy_prelude_without_leading_pilot_still_prepends():
+def test_measure_courtesy_prelude_without_leading_pilot_still_splices():
     """The prelude is independent of the (separate) leading-pilot opt-in --
-    MEASURE's own reference is then each channel's sweep gain alone."""
+    MEASURE's own reference is then each channel's sweep gain alone, and the
+    splice point is simply the guard silence with no pilots ahead of it."""
     prog = build_measure_program(_gain_plan(), _roles(), courtesy_prelude=True)
     ids = [s.segment_id for s in prog.segments]
-    assert ids[:4] == ["courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap", "guard"]
+    assert ids[:5] == [
+        "guard", "courtesy_tone_ch0", "courtesy_tone_ch1", "courtesy_gap", "sweep_w",
+    ]
     tone0 = prog.segment("courtesy_tone_ch0")
     tone1 = prog.segment("courtesy_tone_ch1")
     assert tone0.gain_db == pytest.approx(-11.0 - COURTESY_TONE_MARGIN_DB)
@@ -556,7 +583,9 @@ def test_verify_courtesy_prelude_layout_and_gain():
     )
     assert prog.channels == 1
     ids = [s.segment_id for s in prog.segments]
-    assert ids[:3] == ["courtesy_tone_ch0", "courtesy_gap", "pilot_summed_lo"]
+    assert ids[:2] == ["pilot_summed_lo", "pilot_gap_summed_lo"]
+    assert ids[4:7] == ["guard", "courtesy_tone_ch0", "courtesy_gap"]
+    assert ids[7] == "sweep_verify"
     tone = prog.segment("courtesy_tone_ch0")
     assert tone.channel == 0
     # Loudest content on the (only) channel is the -9 dBFS pilot-hi/sweep tie.
@@ -565,6 +594,44 @@ def test_verify_courtesy_prelude_layout_and_gain():
     # Opt-out (default) stays the exact legacy mono layout.
     legacy = build_verify_program(1600.0, sweep_s=1.0)
     assert [s.segment_id for s in legacy.segments] == ["guard", "sweep_verify", "tail"]
+
+
+@pytest.mark.parametrize("phase", ["check", "measure", "verify"])
+def test_the_beeps_are_followed_by_the_settle_and_nothing_else(phase):
+    """The §2.5 acceptance criterion, DERIVED from the composed schedule.
+
+    "Three beeps, then quite a long gap, then the sweep" was the owner's
+    hardware observation. The beeps mean "the sweep is imminent, go quiet
+    now", so the interval from the last beep to the first audible measurement
+    content must be the settle the owner specified and nothing more — every
+    lead-in the program needs (the room-listening window, the
+    behavioural-linearity pilot pair, the pre-stimulus guard) belongs AHEAD of
+    them.
+
+    Derived rather than asserted against a hand-computed number, so a composer
+    that quietly reinstates a lead-in between the beeps and the stimulus fails
+    here instead of silently lengthening the wait again.
+    """
+    programs = {
+        "check": lambda: build_check_program(
+            _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
+        ),
+        "measure": lambda: build_measure_program(
+            _gain_plan(), _roles(),
+            sweep_durations={"woofer": 0.6, "tweeter": 0.5},
+            leading_pilot_gains_db=(-21.0, -11.0),
+            courtesy_prelude=True,
+        ),
+        "verify": lambda: build_verify_program(
+            1600.0, sweep_s=1.0, leading_pilot_gains_db=(-19.0, -9.0),
+            courtesy_prelude=True,
+        ),
+    }
+    prog = programs[phase]()
+    gap_s = courtesy_beep_to_stimulus_gap_s(prog)
+    assert gap_s == pytest.approx(COURTESY_TONE_TRAILING_SILENCE_S, abs=1e-3)
+    # A program with no prelude has no interval to report — never a fake 0.
+    assert courtesy_beep_to_stimulus_gap_s(build_verify_program(1600.0)) is None
 
 
 @pytest.mark.parametrize(

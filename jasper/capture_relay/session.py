@@ -29,7 +29,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.cues import classify_failure_cue
@@ -1074,29 +1074,65 @@ def _poll_until_capture(
 # --- Session-spanning plan runner (protocol v3, SPEC W2.3) ---------------------
 
 
+class BeginCapture(NamedTuple):
+    """One parsed ``begin_capture`` request.
+
+    ``retake`` is the VOLUNTARY-retake marker (flow-simplification §2.6): the
+    household asking to re-measure the capture that JUST completed, because
+    they sneezed, a truck passed, or they were not where they meant to be. It
+    is a shape the ordering contract admits, never permission to skip it — see
+    ``_poll_capture_plan``. A page that never sends the key parses as ``False``
+    and behaves exactly as it did before the key existed.
+    """
+
+    # ``index`` shadows ``tuple.index`` — legal at runtime (NamedTuple fields
+    # win over the inherited method) and the right domain name here, since the
+    # wire field this parses IS ``begin_capture.index``. mypy reports the
+    # shadowing as an assignment error, so it is silenced at the one line that
+    # causes it rather than by renaming the field away from its own protocol.
+    index: int  # type: ignore[assignment]
+    attempt: int
+    retake: bool = False
+
+
+BEGIN_CAPTURE_RETAKE_KEY = "retake"
+
+
 def parse_begin_capture(
     payload: Any,
     *,
     capture_target: int,
     max_attempts: int,
-) -> tuple[int, int]:
-    """Strictly parse a phone ``begin_capture`` request into (index, attempt).
+) -> BeginCapture:
+    """Strictly parse a phone ``begin_capture`` request.
 
     Shape validation only — ordering and the Pi-owned attempt budget are
     enforced by the plan runner plus the host's injected admission
     (``repeat_admission``). ``index`` is the 1-based measurement slot
     (``"Measurement N of {capture_target}"``); ``attempt`` is the 1-based
-    admission attempt whose blob rides relay ``capture_index = attempt - 1``.
-    Raises ``CaptureBeginRefused`` (code ``begin_malformed``) on any drift —
-    no Postel-style liberality on an authenticated control field."""
+    admission attempt whose blob rides relay ``capture_index = attempt - 1``;
+    the optional ``retake`` flag (see :class:`BeginCapture`) must be literally
+    ``true`` when present. Raises ``CaptureBeginRefused`` (code
+    ``begin_malformed``) on any drift — no Postel-style liberality on an
+    authenticated control field."""
     if not isinstance(payload, Mapping):
         raise CaptureBeginRefused(
             "begin_malformed", "begin_capture must be an object"
         )
-    if set(payload) != {"index", "attempt"}:
+    keys = set(payload)
+    if keys not in ({"index", "attempt"},
+                    {"index", "attempt", BEGIN_CAPTURE_RETAKE_KEY}):
         raise CaptureBeginRefused(
             "begin_malformed",
-            "begin_capture must carry exactly index and attempt",
+            "begin_capture must carry index and attempt, and at most retake",
+        )
+    retake = payload.get(BEGIN_CAPTURE_RETAKE_KEY, False)
+    if BEGIN_CAPTURE_RETAKE_KEY in keys and retake is not True:
+        # Only the literal ``true`` — a page that means "not a retake" omits
+        # the key rather than sending a falsey value, so there is exactly one
+        # wire shape per meaning.
+        raise CaptureBeginRefused(
+            "begin_malformed", "begin_capture.retake must be true when present"
         )
     index = payload.get("index")
     attempt = payload.get("attempt")
@@ -1119,7 +1155,7 @@ def parse_begin_capture(
         raise CaptureBeginRefused(
             "begin_malformed", "begin_capture.index cannot exceed attempt"
         )
-    return index, attempt
+    return BeginCapture(index, attempt, bool(retake))
 
 
 def _plan_blob_ready(state: PollState, capture_index: int) -> bool:
@@ -1152,6 +1188,12 @@ class PlanCaptureOutcome:
     accepted: bool
     verdict: dict[str, Any]
     result: CaptureResult
+    # Whether this attempt was a VOLUNTARY retake of an already-accepted slot
+    # (flow-simplification §2.6). Reporting only — the runner has already
+    # applied the one behavioural consequence (an accepted retake replaces
+    # rather than counts). Defaulted so every existing constructor call and
+    # every reader that ignores it is unaffected.
+    retake: bool = False
 
 
 def run_capture_plan(
@@ -1196,6 +1238,30 @@ def run_capture_plan(
     ``run_capture``. Accepted captures the host already committed durably
     (ledger writes inside ``consume_capture``) persist across a later abort or
     Stop; this runner never rolls them back.
+
+    **Voluntary retakes (flow-simplification §2.6).** The ordering contract
+    above admits EXACTLY one extra shape: a begin for ``accepted_count`` — the
+    slot that just completed — carrying ``retake: true``
+    (:class:`BeginCapture`), on the next attempt number, and only while the
+    begin for the next entry has not been seen yet. It exists so a household
+    can re-measure a spot simply because they want to (they sneezed, a truck
+    passed) rather than only when the Pi rejected it. What it deliberately
+    does NOT do:
+
+    * ``accepted_count`` never rewinds, and an accepted retake never advances
+      it — the slot was counted once and stays counted, so the completion
+      check and every index→phase lookup are untouched.
+    * The capture flows through the normal authorize → arm → upload → verdict
+      path for that slot. REPLACING the retained evidence on acceptance is the
+      host's job (the v2 conductor's position retention is already per-index
+      idempotent), which is also why a rejected or abandoned retake leaves the
+      original take standing: nothing was dropped on its behalf.
+    * The attempt budget is the plan's own ``max_attempts`` — a retake spends
+      an attempt like any other admission, so the feature is bounded by
+      construction with no second budget to reason about.
+
+    A page that never sends the marker cannot reach any of it, and the relay
+    Worker stays byte-opaque throughout (the marker is payload).
 
     **Per-capture entries (schema_version 2, additive — crossover-
     measurement-productization-design.md §5.7).** When
@@ -1341,6 +1407,15 @@ def _poll_capture_plan(
     accepted_count = 0
     attempts_used = 0
     current: tuple[int, int] | None = None
+    # Whether the in-flight attempt is a VOLUNTARY retake of the just-accepted
+    # slot (§2.6). It changes exactly one thing downstream: an accepted retake
+    # must NOT advance ``accepted_count``, because the slot it re-measures was
+    # already counted — double-counting would finish the set one capture early.
+    current_retake = False
+    # Whether the begin for the NEXT entry has already been seen this slot
+    # (admitted, or parked on a deferral). Closes the retake window; cleared
+    # each time ``accepted_count`` advances, which opens the next one.
+    next_begin_seen = False
     processed: set[tuple[int, int]] = set()
     # S2 dedupe: the last (index, code) deferral already logged + posted to
     # the phone. The phone re-posts the same begin every ~1.5s during a hold,
@@ -1414,7 +1489,7 @@ def _poll_capture_plan(
             begin_handled_sequence = sequence
             if state.begin_capture is not None:
                 try:
-                    index, attempt = parse_begin_capture(
+                    index, attempt, wants_retake = parse_begin_capture(
                         state.begin_capture,
                         capture_target=plan_target,
                         max_attempts=plan_max_attempts,
@@ -1449,7 +1524,24 @@ def _poll_capture_plan(
                         "begin_out_of_order",
                         "a capture attempt is already in progress",
                     )
-                elif pair != (accepted_count + 1, attempts_used + 1):
+                elif pair != (accepted_count + 1, attempts_used + 1) and not (
+                    # The ONE additional admitted shape (flow-simplification
+                    # §2.6): a VOLUNTARY retake of the capture that just
+                    # completed. It is a begin for ``accepted_count`` — the
+                    # just-accepted slot, never a rewind of the counter — on
+                    # the next attempt number, marked as a retake so an
+                    # ordinary out-of-order begin stays refused, and admitted
+                    # ONLY while the runner is still waiting for the next
+                    # entry's begin. Once that next begin has been seen
+                    # (admitted OR parked on a deferral, e.g. the apply hold
+                    # the household's "continue" tap starts), the window is
+                    # shut: work has moved on, and a late retake would land
+                    # evidence after the group it belongs to was consumed.
+                    wants_retake
+                    and accepted_count > 0
+                    and not next_begin_seen
+                    and pair == (accepted_count, attempts_used + 1)
+                ):
                     refuse_begin_order(
                         index,
                         attempt,
@@ -1461,6 +1553,19 @@ def _poll_capture_plan(
                     )
                 else:
                     raise_if_stopped()
+                    # A retake never advances ``accepted_count``, so the slot
+                    # it re-measures stays accepted throughout — the
+                    # completion check, the index→phase lookups, and the
+                    # host's own bookkeeping are all untouched by it.
+                    #
+                    # Read off the MARKER rather than inferred from the index:
+                    # the two are equivalent here (only the retake branch above
+                    # can admit ``index == accepted_count``), but an inference
+                    # that is only true because of a condition twenty lines up
+                    # is the kind that stops being true after an edit.
+                    is_retake = wants_retake and index == accepted_count
+                    if not is_retake:
+                        next_begin_seen = True
                     entry = plan.entry_for_index(index)
                     try:
                         _call_with_optional_entry(
@@ -1555,6 +1660,7 @@ def _poll_capture_plan(
                         last_deferral = None
                         processed.add(pair)
                         current = pair
+                        current_retake = is_retake
                         attempts_used = attempt
                         armed_fired = False
                         phase = "awaiting_arm"
@@ -1567,6 +1673,11 @@ def _poll_capture_plan(
                             session_id=session.session_id,
                             index=index,
                             attempt=attempt,
+                            # An admitted retake and an ordinary begin look
+                            # identical by (index, attempt) alone once you are
+                            # reading a journal after the fact — say which it
+                            # was at ADMISSION time, not only in plan_result.
+                            retake=is_retake,
                         )
                         client.post_host_event(
                             session.session_id,
@@ -1584,13 +1695,20 @@ def _poll_capture_plan(
             context_pair: tuple[int, int] | None = None
             if context is not None:
                 try:
-                    context_pair = parse_begin_capture(
+                    parsed = parse_begin_capture(
                         context,
                         capture_target=plan_target,
                         max_attempts=plan_max_attempts,
                     )
                 except CaptureBeginRefused:
                     context_pair = None
+                else:
+                    # Compare the SLOT identity only: the page re-sends the
+                    # begin payload verbatim on ``armed``, so a retake's
+                    # context legitimately carries the retake marker too, and
+                    # the marker is an admission input, not part of "which
+                    # capture is armed".
+                    context_pair = (parsed.index, parsed.attempt)
             if context_pair != current:
                 raise CaptureFailed(
                     "armed event does not carry the authorized capture context"
@@ -1682,10 +1800,17 @@ def _poll_capture_plan(
                         accepted=accepted,
                         verdict=verdict,
                         result=result,
+                        retake=current_retake,
                     )
                 )
-                if accepted:
+                if accepted and not current_retake:
+                    # A retake re-measures a slot that is ALREADY counted, so
+                    # its acceptance replaces evidence rather than adding a
+                    # capture (the swap is the host's — see the v2 conductor's
+                    # per-index position retention). Counting it here would
+                    # complete the set one capture short of the plan.
                     accepted_count += 1
+                    next_begin_seen = False
                 log_event(
                     logger,
                     "capture_relay.plan_result",
@@ -1693,6 +1818,7 @@ def _poll_capture_plan(
                     index=index,
                     attempt=attempt,
                     accepted=accepted,
+                    retake=current_retake,
                 )
                 client.post_host_event(
                     session.session_id,

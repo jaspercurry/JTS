@@ -51,12 +51,14 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_VERIFY,
     REASON_APPLY_FAILED,
     REASON_CLOUD_GEOMETRY_LOCKED,
+    TIER_EXPRESS,
     CrossoverV2Conductor,
     V2FlowSeams,
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_session_spec,
     cloud_capture_target,
+    resolve_plan_shape,
 )
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
@@ -203,7 +205,7 @@ def _wav(attempt: int) -> bytes:
 
 
 def _conductor(backend, session, phone, *, published, phases_seen=None,
-               analyses=None, index_phase_map=None,
+               analyses=None, index_phase_map=None, tier="",
                retained=None, on_play=None) -> CrossoverV2Conductor:
     """A real conductor whose fake play uploads the phone blob (the acoustic
     seam) and whose fake analyze returns canned per-phase analyses.
@@ -245,6 +247,7 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
         fc_hz=FC_HZ,
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
+        tier=tier,
         seams=V2FlowSeams(
             play=play,
             analyze=analyze,
@@ -278,6 +281,11 @@ def _walk_to_verify(conductor, *, persist: bool = False) -> int:
     ABOUT VERIFY use this rather than a hand-written 1/2/3 walk: the cloud sits
     between MEASURE and VERIFY in the shipped plan, so a three-step walk would
     be testing an index layout no session emits.
+
+    The walk ends with the CONFIRM (flow-simplification §2.6 — the fit and the
+    candidate now land on the household's confirmation past the cloud, which
+    rides VERIFY's own begin), so a caller still holds a built candidate at
+    the end exactly as it did before that move.
     """
     attempt = 0
     for index in range(1, VERIFY_INDEX):
@@ -285,6 +293,9 @@ def _walk_to_verify(conductor, *, persist: bool = False) -> int:
         conductor.consume_capture(index, attempt, CaptureResult(wav=b"fake-capture"))
         if persist:
             v2host.persist_conductor_state(conductor, failure_code=None)
+    conductor.confirm_cloud_measure_group(VERIFY_INDEX)
+    if persist:
+        v2host.persist_conductor_state(conductor, failure_code=None)
     return attempt
 
 
@@ -479,30 +490,41 @@ def test_auto_apply_fires_exactly_once_on_trusted_measure_and_arms_verify(monkey
     assert v2host.load_v2_state()["applied"] is True
 
 
-def test_auto_apply_fires_at_the_cloud_measure_group_close_not_at_measure(monkeypatch):
-    """The 2026-07-27 timing move, proved end to end through the REAL
+def test_auto_apply_fires_on_the_confirm_past_the_cloud_not_on_any_capture(monkeypatch):
+    """The §2.6 group-close seam, proved end to end through the REAL
     ``run_capture_plan`` + conductor + ``_fire_auto_apply`` wiring.
 
-    Owner decision: the fit, the candidate build, and the auto-apply trigger
-    move from MEASURE's accept to the CLOUD_MEASURE group close, so the fit can
-    consume the spatial cloud's honesty verdict instead of preceding it by
-    eight captures. The 2026-07-20 "automatic, no human tap" ruling is
-    unchanged — only the trigger point moves.
+    The trigger has moved twice and this pins where it landed. Originally the
+    fit and apply fired on MEASURE's accept; the 2026-07-27 timing move put
+    them on the CLOUD_MEASURE group close so the fit could consume the cloud's
+    honesty verdict; flow-simplification §2.6 moved them once more, off a
+    capture verdict entirely and onto the household's CONFIRMATION past the
+    walked cloud — which is what keeps the final prompted position retakeable.
+    The 2026-07-20 "automatic, no human tap" ruling is unchanged: the confirm
+    is a tap to continue, never a tap to approve a correction.
 
-    Three things are asserted at once, because they are one property:
+    Four things are asserted at once, because they are one property:
 
-    * **ordering** — no candidate and no apply exist at the START of capture 10
-      (the group's last position, still un-consumed), and both exist by the
-      start of capture 11 (VERIFY). Capture 10 is the only capture between
-      them, so it is the one that fired;
-    * **the host seam needed no change** — ``consume()`` keys on ``accepted`` +
-      ``auto_apply`` and never on a phase, so the flag simply arrives on a
-      later verdict and ``handle_v2_apply`` is still called exactly once, with
-      the published candidate's own fingerprint;
+    * **ordering** — no candidate and no apply exist at the start of capture
+      10 (the group's last position) NOR at its acceptance; both exist by the
+      start of capture 11 (VERIFY). Nothing between them is a capture, so the
+      only thing that can have fired them is VERIFY's own begin;
+    * **the seam is `authorize`, not `consume`** — ``consume()`` no longer has
+      an ``auto_apply`` branch at all, so this cannot pass by the old
+      mechanism. Asserted directly on the source, since a wiring test that
+      would also pass against the deleted path proves nothing;
+    * ``handle_v2_apply`` is still called exactly once, with the published
+      candidate's own fingerprint;
     * **VERIFY still gates on the apply** — its begin is held (§5.2's
-      ``on_apply``) and only releases once the transaction lands, which is now
-      a REAL wait rather than a formality, and the session still reaches DONE.
+      ``on_apply``) and only releases once the transaction lands, and the
+      session still reaches DONE.
     """
+    import inspect
+
+    # The old mechanism is gone, not merely unused: nothing keys on the flag.
+    consume_source = inspect.getsource(v2host.build_v2_run_and_consume)
+    assert 'verdict.get("auto_apply")' not in consume_source
+    assert "confirm_cloud_measure_group" in consume_source
     calls: list[dict] = []
 
     def _fake_handle_v2_apply(raw, run_async, camilla_factory):
@@ -529,6 +551,25 @@ def test_auto_apply_fires_at_the_cloud_measure_group_close_not_at_measure(monkey
     conductor = _conductor(
         backend, session, phone, published=published, on_play=_on_play,
     )
+    # The state the instant capture 10 is ACCEPTED — after its verdict is
+    # persisted, before VERIFY's begin. The old mechanism fired here; the seam
+    # under test fires one begin later, and nothing between the two is a
+    # capture, so this snapshot is what discriminates them.
+    # Read off the conductor rather than the durable file, so the snapshot does
+    # not depend on where the host happens to persist: under the OLD mechanism
+    # ``_close_cloud_group`` built the candidate inside this very call, so
+    # ``conductor.candidate`` would already be set here.
+    accepted_10_state: tuple[bool, bool] | None = None
+    real_consume = conductor.consume_capture
+
+    def _watched_consume(index, attempt, result, entry=None):
+        nonlocal accepted_10_state
+        verdict = real_consume(index, attempt, result, entry)
+        if index == 10 and verdict.get("accepted"):
+            accepted_10_state = (conductor.candidate is not None, conductor.applied)
+        return verdict
+
+    conductor.consume_capture = _watched_consume  # type: ignore[method-assign]
     volume = VolumeRecorder()
     runner = _build_runner(
         conductor, volume,
@@ -545,12 +586,15 @@ def test_auto_apply_fires_at_the_cloud_measure_group_close_not_at_measure(monkey
     assert by_index[11][0] == PHASE_VERIFY
 
     # MEASURE has been consumed for eight captures by now and STILL produced
-    # no candidate and no apply — the move's whole point.
+    # no candidate and no apply — the timing move's original point.
     for index in range(3, 11):
         _phase, candidate_present, applied = by_index[index]
         assert candidate_present is False, index
         assert applied is False, index
-    # Capture 10 is consumed; by VERIFY's play both exist.
+    # …and capture 10's own ACCEPTANCE does not fire them either — that is the
+    # §2.6 change, and it is what leaves the final position retakeable. Only
+    # by VERIFY's begin (the confirm) do both exist.
+    assert accepted_10_state == (False, False)
     assert by_index[11][1] is True
     assert by_index[11][2] is True
 
@@ -560,6 +604,145 @@ def test_auto_apply_fires_at_the_cloud_measure_group_close_not_at_measure(monkey
     assert len(calls) == 1
     assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
     assert v2host.load_v2_state()["applied"] is True
+
+
+def test_an_express_session_runs_end_to_end_through_the_real_runner(monkeypatch):
+    """The express tier, walked in full — the shape nothing else exercises.
+
+    Every other test here drives the 16-capture full tier, so express's own
+    structural claims (flow-simplification §1.1/§1.2) were only ever asserted
+    against a plan object. This runs one through the REAL
+    ``run_capture_plan`` + conductor + apply wiring and pins the four things
+    that are different about it:
+
+    * **M = 1 reaches DONE.** A session with no post-apply group must not sit
+      forever pending a ``cloud_verify`` phase it never had;
+    * **the confirm seam fires at the express group's own tail**, not at some
+      index inherited from the full tier's layout;
+    * **the done screen rides VERIFY**, which is the last entry the runner
+      completes on this tier — ``renderPlanAllDone`` reads that entry, so a
+      done screen left on the absent group would strand the household on
+      generic copy;
+    * the apply still happens exactly once, under the same gates.
+    """
+    calls: list[dict] = []
+
+    def _fake_handle_v2_apply(raw, run_async, camilla_factory):
+        calls.append(dict(raw))
+        v2host.observe_apply_success(raw["expected_candidate_fingerprint"])
+        return {"status": "applied"}
+
+    monkeypatch.setattr(v2host, "handle_v2_apply", _fake_handle_v2_apply)
+
+    shape = resolve_plan_shape(TIER_EXPRESS)
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+    )
+    assert spec.capture_plan.capture_target == 7
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(backend, spec)
+    published: list = []
+    conductor = _conductor(
+        backend, session, phone, published=published, tier=TIER_EXPRESS,
+        index_phase_map=build_v2_cloud_index_phase_map(plan_shape=shape),
+    )
+    confirmed_at: list[int] = []
+    real_confirm = conductor.confirm_cloud_measure_group
+
+    def _watched_confirm(index):
+        payload = real_confirm(index)
+        if payload:
+            confirmed_at.append(index)
+        return payload
+
+    conductor.confirm_cloud_measure_group = _watched_confirm  # type: ignore[method-assign]
+    _run(
+        _build_runner(
+            conductor, VolumeRecorder(),
+            run_async=lambda coro, **kw: None,
+            camilla_factory=lambda: None,
+        ),
+        client,
+        session,
+    )
+
+    # The session really ran all seven and finished.
+    assert conductor.current_phase == PHASE_DONE
+    assert conductor.verify_outcome == "pass"
+    assert PHASE_CLOUD_VERIFY not in conductor.session_phases
+    # The confirm fired once, on the begin PAST the express group's tail.
+    express_verify_index = 1 + shape.cloud_measure_positions + 1
+    assert confirmed_at == [express_verify_index] == [7]
+    # …and the apply followed it, exactly once.
+    candidate = next(cand for kind, cand in published if kind == "candidate")
+    assert len(calls) == 1
+    assert calls[0] == {"expected_candidate_fingerprint": candidate.fingerprint}
+    assert v2host.load_v2_state()["applied"] is True
+    assert v2host.crossover_v2_status_block()["tier"] == TIER_EXPRESS
+
+    # The end screen rides the entry the runner actually finishes on.
+    last_entry = spec.capture_plan.entries[-1]
+    assert last_entry.kind_label == "verify"
+    assert last_entry.index + 1 == express_verify_index
+    assert last_entry.screen["done_title"] == "Your speaker is tuned"
+
+
+def test_abandoning_an_express_session_before_the_confirm_leaves_the_dsp_alone(
+    monkeypatch,
+):
+    """§2.6's abandonment guarantee on the EXPRESS path too.
+
+    Express reaches the confirm four captures sooner than full does, so its
+    "walked the whole cloud, then stopped" window is a different (and much
+    likelier) moment. Stopping there must still leave the speaker untouched.
+    """
+    _skip_purge_grace(monkeypatch)
+    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
+    calls: list = []
+    monkeypatch.setattr(
+        v2host,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: calls.append(raw) or {
+            "status": "applied"
+        },
+    )
+
+    shape = resolve_plan_shape(TIER_EXPRESS)
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding=_BINDING, plan_shape=shape,
+    )
+    backend = FakePlanRelayBackend()
+    client, session, phone = _mint_v2_session(backend, spec)
+    # Stop right after the express cloud's LAST position (capture 6 of 7).
+    phone.abort_after_results = 1 + shape.cloud_measure_positions
+
+    def _abort_stopped(reason="stopped"):
+        PhonePlanDriver.abort(phone, "stopped")
+
+    phone.abort = _abort_stopped
+    published: list = []
+    conductor = _conductor(
+        backend, session, phone, published=published,
+        index_phase_map=build_v2_cloud_index_phase_map(plan_shape=shape),
+    )
+    with pytest.raises(CaptureAborted) as excinfo:
+        _run(
+            _build_runner(
+                conductor, VolumeRecorder(),
+                run_async=lambda coro, **kw: None,
+                camilla_factory=lambda: None,
+            ),
+            client,
+            session,
+        )
+
+    assert excinfo.value.reason == "stopped"
+    assert calls == []
+    assert [kind for kind, _payload in published] == ["check"]
+    state = v2host.load_v2_state()
+    assert state.get("applied") is not True
+    assert state.get("candidate") is None
+    assert state["failure"] == {"code": "user_stopped"}
 
 
 def test_no_run_async_or_camilla_factory_means_no_auto_apply_attempt(monkeypatch):
@@ -694,10 +877,17 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     a dishonest "nothing happened, start over" (SF1(c)).
 
     The abort point moved with the 2026-07-27 timing move — from result 2
-    (MEASURE) to result 10 (the CLOUD_MEASURE group's last position, which is
-    where the fit, the candidate, and the auto-apply trigger now live). The
-    interleaving under test is unchanged; only the capture that fires the
-    apply is later."""
+    (MEASURE) to result 10 (the CLOUD_MEASURE group's last position) — and
+    moved once more with flow-simplification §2.6, which put the fit and the
+    auto-apply on the household's CONFIRM past the cloud rather than on that
+    position's acceptance. The apply therefore fires while VERIFY's begin is
+    being admitted, so the earliest post-apply Stop the scripted phone can
+    express is after VERIFY's own result. The interleaving under test is
+    unchanged; only the capture that fires the apply is later.
+
+    (Aborting at result 10 instead is a DIFFERENT case — abandonment BEFORE
+    the confirm, which §2.6 requires to leave the speaker untouched. It has
+    its own test below.)"""
     _skip_purge_grace(monkeypatch)
     monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
 
@@ -710,9 +900,9 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     client, session, phone = _mint_v2_session(backend, spec)
-    # Abort right after the CLOUD_MEASURE group's closing result — the capture
-    # that now builds the candidate and fires the auto-apply.
-    phone.abort_after_results = 10
+    # Abort right after VERIFY's result — the first result that follows the
+    # confirm which builds the candidate and fires the auto-apply.
+    phone.abort_after_results = 11
 
     def _abort_stopped(reason="stopped"):
         PhonePlanDriver.abort(phone, "stopped")
@@ -740,13 +930,12 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
     block = v2host.crossover_v2_status_block()
-    # The stop landed right after the pre-apply cloud CLOSED, so that phase is
-    # accepted and the next pending one is VERIFY (not "applying" — the apply
-    # already landed, which is the whole premise here). What this test is
-    # really about is the applied-keyed override below (W6.7 ruling 3): the
-    # render must stay honest ("already applied") regardless of which phase
-    # the projection reports.
-    assert block["phase"] == PHASE_VERIFY
+    # The stop landed right after VERIFY, so the next pending phase is the
+    # post-apply cloud (not "applying" — the apply already landed, which is the
+    # whole premise here). What this test is really about is the applied-keyed
+    # override below (W6.7 ruling 3): the render must stay honest ("already
+    # applied") regardless of which phase the projection reports.
+    assert block["phase"] == PHASE_CLOUD_VERIFY
     assert PHASE_CLOUD_MEASURE in state["accepted_phases"]
     env = build_crossover_envelope_v2({
         "active": True,
@@ -757,6 +946,59 @@ def test_stop_after_apply_start_preserves_applied_and_surfaces_undo(monkeypatch)
     assert "already applied" in env["verdict_text"].lower()
     labels = [a["label"] for a in env["alternate_actions"]]
     assert "Undo (restore previous sound)" in labels
+
+
+def test_abandoning_before_the_confirm_leaves_the_speaker_untouched(monkeypatch):
+    """Flow-simplification §2.6's safety consequence, at the host boundary.
+
+    Before the group-close move, the FINAL cloud position's acceptance fitted
+    the correction and started the apply — so a household that walked the whole
+    cloud and then stopped had already had their speaker retuned. Now the fit
+    waits for their confirmation past that position, and stopping instead of
+    confirming must leave the DSP alone entirely: no candidate published, no
+    apply invoked, nothing durable claiming applied.
+    """
+    _skip_purge_grace(monkeypatch)
+    monkeypatch.setattr(v2host, "threading", _ThreadingModuleWithSyncThread())
+    calls: list = []
+    monkeypatch.setattr(
+        v2host,
+        "handle_v2_apply",
+        lambda raw, run_async, camilla_factory: calls.append(raw) or {
+            "status": "applied"
+        },
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec)
+    # Stop right after the pre-apply cloud's LAST position — walked in full,
+    # never confirmed.
+    phone.abort_after_results = 10
+
+    def _abort_stopped(reason="stopped"):
+        PhonePlanDriver.abort(phone, "stopped")
+
+    phone.abort = _abort_stopped
+    published: list = []
+    conductor = _conductor(backend, session, phone, published=published)
+    runner = _build_runner(
+        conductor, VolumeRecorder(),
+        run_async=lambda coro, **kw: None,
+        camilla_factory=lambda: None,
+    )
+    with pytest.raises(CaptureAborted) as excinfo:
+        _run(runner, client, session)
+
+    assert excinfo.value.reason == "stopped"
+    assert calls == []  # the DSP mutation was never invoked
+    # …and no CANDIDATE was even published (the CHECK gain plan is a different
+    # artifact and legitimately rides the same recorder).
+    assert [kind for kind, _payload in published] == ["check"]
+    state = v2host.load_v2_state()
+    assert state.get("applied") is not True
+    assert state.get("candidate") is None
+    assert state["failure"] == {"code": "user_stopped"}
 
 
 # --- relay-session death: timeout + abort (S1c) ---------------------------------
@@ -1836,6 +2078,56 @@ def test_prepare_refuses_when_volume_needs_recovery():
             {}, status={}, run_async=None, camilla_factory=None
         )
     assert "recover" in str(excinfo.value)
+
+
+def test_prepare_refuses_an_unknown_tier_before_touching_anything():
+    """Flow-simplification §3: the wizard posts the household's explicit tier.
+    An id this build does not have must be refused BEFORE any relay
+    registration or volume mutation, not silently measured as something else —
+    so the gate runs ahead of every other one in the preparer.
+    """
+    class _Ready:
+        needs_recovery = False
+
+    v2host.set_volume_plan_for_tests(_Ready())
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.prepare_v2_session(
+            {"tier": "turbo"}, status={}, run_async=None, camilla_factory=None
+        )
+    assert "unknown commission tier" in str(excinfo.value)
+
+
+def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
+    """§1.2's whole point: the emitted plan and the conductor's index→phase map
+    come from ONE resolved shape, so a tier can never reach one and not the
+    other. Read the preparer's own source rather than trusting the call site to
+    stay wired — this is the desync the shape value exists to prevent.
+    """
+    import inspect
+
+    source = inspect.getsource(v2host.prepare_v2_session)
+    assert 'resolve_plan_shape(raw.get("tier")' in source
+    assert "build_v2_session_spec(" in source and "plan_shape=plan_shape" in source
+    assert "build_v2_cloud_index_phase_map(plan_shape=plan_shape)" in source
+    assert "tier=plan_shape.tier," in source
+
+
+def test_the_tier_rides_the_durable_state_and_state_block():
+    """§1.2: `/state` can tell WHICH instrument produced a result, and an
+    unknown one reads as unknown rather than as "full" — the
+    ``echo_band_provenance`` discipline (issue #1763)."""
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK],
+        "tier": "express",
+    })
+    assert v2host.crossover_v2_status_block()["tier"] == "express"
+    # State written before tiers existed says nothing, and nothing is invented.
+    v2host.save_v2_state({
+        "session_id": "cap_x",
+        "accepted_phases": [PHASE_CHECK],
+    })
+    assert v2host.crossover_v2_status_block()["tier"] is None
 
 
 def test_apply_endpoint_requires_current_candidate():

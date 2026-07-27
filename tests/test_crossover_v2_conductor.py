@@ -60,13 +60,18 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
+    REVERIFY_NO_REWALK_HEADLINE,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
+    TIER_EXPRESS,
+    TIER_FULL,
+    VERIFY_ANCHOR_HOLD_MESSAGE,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
     _SIGMA_TOLERABLE_DB,
     CrossoverV2Conductor,
     CrossoverV2FlowError,
     V2FlowSeams,
+    V2PlanShape,
     _analysis_json,
     _compose_sigma_db,
     _program_duration_ms,
@@ -80,9 +85,12 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_capture_plan,
+    build_v2_verify_session_spec,
     cloud_capture_target,
     cloud_plan_max_attempts,
+    express_cloud_measure_positions,
     open_measurement_volume,
+    resolve_plan_shape,
     session_wall_clock_ceiling_s,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -338,9 +346,26 @@ def _capture() -> CaptureResult:
 
 
 def _run_phase(conductor, index, attempt) -> dict:
+    # Mirrors the production host's own authorize wrapper
+    # (``correction_crossover_v2.build_v2_run_and_consume``): the household's
+    # confirmation past a walked pre-apply cloud rides the NEXT entry's begin,
+    # and THAT is what fits the correction (flow-simplification §2.6). A begin
+    # with nothing to confirm is a no-op, so every non-cloud walk is unchanged.
+    conductor.confirm_cloud_measure_group(index)
     conductor.authorize_begin(index, attempt)
     conductor.on_armed()
     return conductor.consume_capture(index, attempt, _capture())
+
+
+def _confirm_cloud(conductor, index) -> dict:
+    """The confirm seam's own payload — ``{candidate_fingerprint, auto_apply}``.
+
+    Same call ``_run_phase`` makes; used directly by tests that assert on what
+    the confirm produces rather than merely that the walk continues. One-shot
+    by construction, so calling it here and again inside a later
+    ``_run_phase`` is safe.
+    """
+    return conductor.confirm_cloud_measure_group(index) or {}
 
 
 # --- happy path -----------------------------------------------------------------
@@ -1419,9 +1444,16 @@ def test_cloud_measure_group_closes_only_after_its_last_position():
     # started reports None (never "geometry was fine").
     assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
     assert c.group_geometry(PHASE_CLOUD_VERIFY) is None
-    # MEASURE's own verdict is untouched — the anchor stays the design-axis
-    # single-position measurement.
+    # …but the FIT has NOT run yet (flow-simplification §2.6): the geometry
+    # close is a per-capture verdict, the fit waits for the household's
+    # confirmation past the final position, so that position stays retakeable.
+    assert verdict["awaiting_confirm"] is True
+    assert c.candidate is None
+    assert c.cloud_measure_group_awaiting_confirm() is True
+    # The confirm — the next entry's begin — is what builds the candidate.
+    assert _confirm_cloud(c, VERIFY_INDEX)["auto_apply"] is True
     assert c.candidate is not None
+    assert c.cloud_measure_group_awaiting_confirm() is False
     # Next is the apply hold, exactly as before the cloud existed.
     assert c.current_phase == PHASE_APPLYING
 
@@ -1484,8 +1516,12 @@ def _comb_cloud_analysis_factory():
 
 
 def _walk_measure_cloud_to_close(c, *, start_attempt: int = 1) -> dict:
-    """CHECK → MEASURE → every pre-apply cloud position, returning the CLOSING
-    verdict.
+    """CHECK → MEASURE → every pre-apply cloud position → the CONFIRM.
+
+    Returns the closing verdict MERGED with the confirm's own payload, which is
+    where ``candidate_fingerprint``/``auto_apply`` live since
+    flow-simplification §2.6 moved the fit off the final position's acceptance
+    and onto the household's confirmation past it.
 
     A position-invariant cloud legitimately trips PR-3b's geometry-locked
     retake (that is the point of the verdict), so the last index is re-walked
@@ -1499,7 +1535,7 @@ def _walk_measure_cloud_to_close(c, *, start_attempt: int = 1) -> dict:
         verdict = _run_phase(c, last, attempt)
         attempt += 1
         if verdict["accepted"]:
-            return verdict
+            return {**verdict, **_confirm_cloud(c, VERIFY_INDEX)}
     raise AssertionError("the cloud-measure group never closed")
 
 
@@ -1508,9 +1544,14 @@ def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
 
     MEASURE still ACCEPTS — every trust gate it owns is unchanged and still
     fires there — but it no longer produces a candidate, a fingerprint, or the
-    ``auto_apply`` flag. All three appear on the verdict that closes the
-    pre-apply cloud, eight captures later, which is the first moment the fit
-    has a cloud verdict to consume.
+    ``auto_apply`` flag. All three appear once the pre-apply cloud is walked
+    AND confirmed, eight captures later, which is the first moment the fit has
+    a cloud verdict to consume.
+
+    Flow-simplification §2.6 moved the trigger one tap further: the final
+    position's ACCEPTANCE closes the geometry and stashes the combine, and the
+    household's confirmation past it is what fits. So the candidate appears on
+    the confirm, not on that last verdict.
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -1534,8 +1575,18 @@ def test_the_candidate_is_built_at_the_cloud_group_close_not_at_measure():
     verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
     assert verdict["accepted"] is True
     assert verdict["group_complete"] == PHASE_CLOUD_MEASURE
-    assert verdict["auto_apply"] is True
-    assert verdict["candidate_fingerprint"] == c.candidate.fingerprint
+    # Walked, not yet confirmed: no fit, no publish, nothing applied — so a
+    # household that stops here leaves the speaker untouched.
+    assert "auto_apply" not in verdict
+    assert c.candidate is None
+    assert fakes.published_candidates == []
+
+    confirmed = _confirm_cloud(c, VERIFY_INDEX)
+    assert confirmed["auto_apply"] is True
+    assert confirmed["candidate_fingerprint"] == c.candidate.fingerprint
+    assert len(fakes.published_candidates) == 1
+    # A second confirm is a no-op — the fit fires exactly once per session.
+    assert c.confirm_cloud_measure_group(VERIFY_INDEX) is None
     assert len(fakes.published_candidates) == 1
     # And the apply hold is next, exactly as it was when this fired at MEASURE.
     assert c.current_phase == PHASE_APPLYING
@@ -1549,8 +1600,10 @@ def test_only_the_pre_apply_group_close_fires_a_candidate_across_a_whole_session
     already-applied speaker, on evidence gathered through the correction it
     would be re-deriving.
 
-    Walks all 16 captures and asserts ``auto_apply`` appears on exactly one
-    verdict, at index 10, with exactly one publish for the whole session.
+    Walks all 16 captures and asserts ``auto_apply`` appears exactly once for
+    the whole session — on the CONFIRM that follows the pre-apply cloud
+    (flow-simplification §2.6), never on a capture verdict and never again on
+    the post-apply group's own close — with exactly one publish.
     """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
@@ -1561,13 +1614,15 @@ def test_only_the_pre_apply_group_close_fires_a_candidate_across_a_whole_session
     for index in sorted(CLOUD_MAP):
         if index == VERIFY_INDEX:
             fakes.apply_done = True  # the host's auto-apply landed
+        # The confirm rides each begin, exactly as the host wires it.
+        if c.confirm_cloud_measure_group(index):
+            auto_apply_at.append(index)
         verdict = _run_phase(c, index, attempt)
         attempt += 1
         assert verdict["accepted"] is True, index
-        if verdict.get("auto_apply"):
-            auto_apply_at.append(index)
+        assert "auto_apply" not in verdict, index
 
-    assert auto_apply_at == [CLOUD_MEASURE_INDEXES[-1]] == [10]
+    assert auto_apply_at == [VERIFY_INDEX] == [11]
     assert len(fakes.published_candidates) == 1
     # The post-apply group DID close — this is not a vacuous pass.
     assert PHASE_CLOUD_VERIFY in c.accepted_phases
@@ -1755,17 +1810,21 @@ def test_a_group_close_with_no_retained_measure_analysis_fails_honestly():
     session_id`` is never true there and hydrate always takes the
     fresh-start-at-CHECK branch (§5.6). This pins what happens if that ever
     stops being true: an honest raise (the host maps it to
-    ``internal_error``, a real terminal screen) rather than a group accept
+    ``internal_error``, a real terminal screen) rather than a silent confirm
     with no ``auto_apply``, which would leave VERIFY's ``on_apply`` hold
     waiting on an apply that can never come.
+
+    Since flow-simplification §2.6 the raise lands on the CONFIRM rather than
+    on the final position's capture — the fit moved, the honesty did not.
     """
     fakes = FakeSeams()
     c = _cloud_conductor(fakes, accepted_phases=(PHASE_CHECK, PHASE_MEASURE))
     assert c.current_phase == PHASE_CLOUD_MEASURE
 
     attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], 1)
+    assert _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)["accepted"] is True
     with pytest.raises(CrossoverV2FlowError, match="no retained MEASURE analysis"):
-        _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+        c.confirm_cloud_measure_group(VERIFY_INDEX)
 
 
 def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(caplog):
@@ -1773,12 +1832,13 @@ def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(ca
 
     ``_close_cloud_group``'s wrap protects the diagnostic PIPELINE, not the
     candidate build — the build is the session's product and is allowed to
-    fail the capture. But ``_note_accepted`` runs in ``consume_capture`` AFTER
-    ``_close_cloud_group`` returns, so a raise unwinds before the phase is
-    marked accepted. The result is honest and non-durable, and this pins it so
-    nobody later reads the wrap's "the accept is already decided" comment as a
-    promise it does not make: the group-complete line IS in the journal, the
-    geometry verdict IS on the conductor, and the phase is NOT accepted.
+    fail. Since flow-simplification §2.6 split the two, the split is visible
+    here: the CAPTURES all succeeded and the group is genuinely accepted, and
+    it is the household's CONFIRM — the fit — that raises. The host maps that
+    to ``internal_error``; nothing durable claims a candidate.
+
+    Pinned so nobody later reads the wrap's "the accept is already decided"
+    comment as a promise it does not make.
     """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
@@ -1792,12 +1852,14 @@ def test_a_candidate_build_failure_leaves_the_group_journalled_but_unaccepted(ca
     attempt = _walk(c, (1, 2), 1)
     attempt = _walk(c, CLOUD_MEASURE_INDEXES[:-1], attempt)
 
+    assert _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)["accepted"] is True
     with pytest.raises(RuntimeError, match="synthetic publish-seam failure"):
-        _run_phase(c, CLOUD_MEASURE_INDEXES[-1], attempt)
+        c.confirm_cloud_measure_group(VERIFY_INDEX)
 
     assert "event=correction.crossover_v2_cloud_group_complete" in caplog.text
     assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
-    assert PHASE_CLOUD_MEASURE not in c.accepted_phases
+    # The WALK completed and is recorded as such; only the fit failed.
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
     # No half-published candidate is left readable on the conductor either:
     # the seam raised before it could be handed anywhere, and the fingerprint
     # never reached a verdict payload.
@@ -2157,7 +2219,7 @@ def test_retain_position_seam_gets_every_accepted_position_with_its_prompt():
         f"{PHASE_CLOUD_MEASURE}_{i:02d}" for i in CLOUD_MEASURE_INDEXES
     ]
     prompts = [meta["prompt"] for _pid, meta in retained]
-    assert prompts == [p.body for p in CLOUD_POSITION_PROMPTS[: len(retained)]]
+    assert prompts == [p.text for p in CLOUD_POSITION_PROMPTS[: len(retained)]]
     assert sum(1 for _pid, meta in retained if meta["wide"]) >= 2
     for _pid, meta in retained:
         assert meta["phase"] == PHASE_CLOUD_MEASURE
@@ -2199,7 +2261,7 @@ def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):
     # order, and are marked wide (a two-forearm move is a wide offset).
     assert takes[0]["prompt"] == CLOUD_POSITION_PROMPTS[
         len(CLOUD_MEASURE_INDEXES) - 1
-    ].body
+    ].text
     assert takes[1]["prompt"] == CLOUD_GEOMETRY_RETRY_PROMPTS[0]
     assert takes[2]["prompt"] == CLOUD_GEOMETRY_RETRY_PROMPTS[1]
     assert takes[1]["wide"] is True and takes[2]["wide"] is True
@@ -2369,7 +2431,10 @@ def test_capture_plan_entries_carry_auto_advance_policy():
     for entry in plan.entries:
         if entry.kind_label.startswith("cloud_"):
             assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
-            assert entry.screen["body"]
+            # The redesign's grammar (§2.1): the INSTRUCTION is the title, the
+            # supporting clause is the body and may legitimately be empty.
+            assert entry.screen["title"]
+            assert "body" in entry.screen
     # The END screen rides the LAST entry, which the cloud moved off VERIFY.
     assert plan.entries[-1].screen["done_title"] == "Your speaker is tuned"
     assert "done_title" not in verify.screen
@@ -2397,6 +2462,286 @@ def test_capture_plan_index_phase_map_matches_the_emitted_entries():
         assert entry.kind_label == kind_for_phase[index_phase[entry.index + 1]]
 
 
+# --- commission tiers + the retake/confirm contract (flow-simplification) ----
+
+
+def test_express_is_a_derived_shape_not_a_loosened_floor():
+    """§1.2: express is a distinct NAMED plan, validated on its own terms.
+
+    Its N comes from the prompt table (both wide offsets, no more), its M is 1
+    (no post-apply group at all), and the FULL tier's validated floor
+    ``MIN_CLOUD_MEASURE_POSITIONS`` does not move to accommodate it — the same
+    counts are still refused when asked for as a full-tier configuration.
+    """
+    express = resolve_plan_shape(TIER_EXPRESS)
+    assert express == V2PlanShape(
+        tier=TIER_EXPRESS,
+        cloud_measure_positions=express_cloud_measure_positions(),
+        cloud_verify_positions=1,
+    )
+    assert (express.capture_target, express.max_attempts) == (7, 14)
+    assert express.has_cloud_verify_group is False
+    # The full tier is unchanged, and would REFUSE express's own counts.
+    full = resolve_plan_shape()
+    assert full.tier == TIER_FULL
+    assert (full.capture_target, full.max_attempts) == (16, 23)
+    assert full.has_cloud_verify_group is True
+    with pytest.raises(CrossoverV2FlowError):
+        resolve_plan_shape(
+            TIER_FULL,
+            cloud_measure_positions=express.cloud_measure_positions,
+            cloud_verify_positions=1,
+        )
+    # Express is a fixed shape, so an explicit count that disagrees is refused
+    # rather than quietly honoured.
+    with pytest.raises(CrossoverV2FlowError):
+        resolve_plan_shape(TIER_EXPRESS, cloud_measure_positions=6)
+
+
+def test_an_unknown_tier_is_refused_and_an_absent_one_means_full():
+    """Allowlist, not a guess: absence is the non-breaking default, an
+    unrecognised id is a caller asking for an instrument this build does not
+    have and must fail loudly rather than measure something else."""
+    assert resolve_plan_shape(None).tier == TIER_FULL
+    assert resolve_plan_shape("").tier == TIER_FULL
+    assert resolve_plan_shape("  EXPRESS  ").tier == TIER_EXPRESS
+    for bogus in ("quick", "Full measurement", "expres", "0"):
+        with pytest.raises(CrossoverV2FlowError):
+            resolve_plan_shape(bogus)
+
+
+def test_one_resolved_shape_feeds_both_the_spec_and_the_index_phase_map():
+    """The desync hazard this value exists to close: the emitted plan and the
+    conductor's index→phase map must be derived from the SAME shape, not from
+    two functions that happen to share defaults."""
+    shape = resolve_plan_shape(TIER_EXPRESS)
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding="b" * 24, plan_shape=shape,
+    )
+    index_phase = build_v2_cloud_index_phase_map(plan_shape=shape)
+    plan = spec.capture_plan
+    assert plan.capture_target == len(index_phase) == shape.capture_target
+    assert sorted(index_phase) == [e.index + 1 for e in plan.entries]
+    # Handing over two sources of truth at once is refused outright.
+    with pytest.raises(CrossoverV2FlowError):
+        build_v2_cloud_index_phase_map(plan_shape=shape, cloud_measure_positions=9)
+
+
+def test_an_express_plan_emits_no_cloud_verify_and_ends_on_verify():
+    """§1.1/§1.2: an ``M = 1`` plan has no post-apply group, so the phone's END
+    screen must ride the VERIFY entry — ``renderPlanAllDone`` reads the FINAL
+    wire index's entry, and a done screen left on a group that does not exist
+    would leave the household on the generic "All measurements done" copy.
+
+    The done copy is also HONEST about what express verified: at the mark, not
+    across the room, with the upgrade path named (§1.3).
+    """
+    plan = build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS)
+    kinds = [entry.kind_label for entry in plan.entries]
+    assert kinds == ["check", "measure"] + ["cloud_measure"] * 4 + ["verify"]
+    assert "cloud_verify" not in kinds
+    last = plan.entries[-1]
+    assert last.kind_label == "verify"
+    assert last.screen["done_title"] == "Your speaker is tuned"
+    assert "Run a Full measurement" in last.screen["done_body"]
+    assert "verified-everywhere" in last.screen["done_body"]
+    # The full plan's done copy stays where it was, and claims more.
+    full_last = build_v2_capture_plan(_roles(), FC_HZ).entries[-1]
+    assert full_last.kind_label == "cloud_verify"
+    assert "Run a Full measurement" not in full_last.screen["done_body"]
+    # An express session is a strictly smaller draw on the relay's ceiling.
+    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+
+    assert plan.max_attempts == 14 <= MAX_CAPTURE_PLAN_ATTEMPTS
+    # …and on the walked-away volume ceiling: 1800 + (7-3)*120.
+    assert session_wall_clock_ceiling_s(plan) == 2280.0
+
+
+def test_every_entry_carries_the_one_server_derived_counter():
+    """§2.1: "Measurement N of T" is the ONLY counter, it is server-derived,
+    and it counts the whole session — the per-group "Spot i of n" vocabulary
+    is retired (it disagreed with the phone's own count on screen)."""
+    for tier in (TIER_FULL, TIER_EXPRESS):
+        plan = build_v2_capture_plan(_roles(), FC_HZ, tier=tier)
+        target = plan.capture_target
+        assert [entry.screen["progress"] for entry in plan.entries] == [
+            f"Measurement {i} of {target}" for i in range(1, target + 1)
+        ]
+        for entry in plan.entries:
+            assert "Spot " not in entry.screen.get("title", "")
+            assert "hold still" not in entry.screen.get("title", "")
+
+
+def test_the_verify_entry_keeps_its_hold_copy_and_adds_confirm_keys():
+    """§2.2's fallback-safety rule, made executable.
+
+    ``validate_capture_page`` admits a phone carrying a cached pre-redesign
+    bundle, and that page renders the VERIFY entry's ``title``/``body`` as the
+    apply-hold heading. So the confirmation instruction rides NEW keys it
+    ignores, and the entry KEEPS ``auto_advance=on_apply`` so the runner's own
+    hold budget stays live.
+    """
+    verify = next(
+        e
+        for e in build_v2_capture_plan(_roles(), FC_HZ).entries
+        if e.kind_label == "verify"
+    )
+    assert verify.screen["auto_advance"] == AUTO_ADVANCE_ON_APPLY
+    assert verify.screen["title"] == "Applying"
+    assert verify.screen["body"] == VERIFY_ANCHOR_HOLD_MESSAGE
+    assert verify.screen["confirm_title"] == "Back on the mark, holding still?"
+    assert verify.screen["confirm_body"]
+    # The confirmation copy is NOT reachable through the old page's keys.
+    assert "mark" not in verify.screen["title"]
+
+
+def test_a_voluntary_retake_replaces_the_take_and_never_loses_the_original():
+    """§2.6's fail-safe, at the conductor's own surface.
+
+    An ACCEPTED retake of an already-accepted position replaces the retained
+    take (retention is per-index idempotent); a REJECTED one never reaches
+    retention at all, so the original take stands. Either way the group stays
+    accepted and the position count never changes.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+    retaken = CLOUD_MEASURE_INDEXES[1]
+    before = {t["index"]: t["attempt"] for t in c.group_position_takes(
+        PHASE_CLOUD_MEASURE
+    )}
+
+    # An accepted retake REPLACES: same position, newer attempt.
+    assert _run_phase(c, retaken, attempt)["accepted"] is True
+    after = {t["index"]: t["attempt"] for t in c.group_position_takes(
+        PHASE_CLOUD_MEASURE
+    )}
+    assert set(after) == set(before)
+    assert after[retaken] == attempt > before[retaken]
+    attempt += 1
+
+    # A rejected retake KEEPS the original — you can never end up with less
+    # evidence than you had by choosing to redo a spot.
+    fakes.verify = lambda program: replace(
+        _verify_analysis(program), linearity_ok=False
+    )
+    assert _run_phase(c, retaken, attempt)["accepted"] is False
+    kept = {t["index"]: t["attempt"] for t in c.group_position_takes(
+        PHASE_CLOUD_MEASURE
+    )}
+    assert kept == after
+    assert PHASE_CLOUD_MEASURE in c.accepted_phases
+
+
+def test_a_retake_after_the_group_closed_never_drops_the_only_take(monkeypatch):
+    """The specific way a voluntary retake could have cost evidence.
+
+    The geometry-retry branch DROPS the take at the retaken index — that is
+    what "the same index is measured again" means for a REJECTION. After a
+    VOLUNTARY retake the replacement is the only copy of that position, so
+    firing that branch would leave the household with fewer positions than
+    before they chose to redo a spot.
+
+    Discriminating by construction: the group closes CLEAN (0 geometry retries
+    spent, so the ``retries < GEOMETRY_RETRY_POSITIONS`` bound is not what
+    stops it), and only then is the verdict forced to ``locked``. Without the
+    "group already recorded a verdict" guard this retake is rejected and its
+    position vanishes.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes)
+    attempt = _walk(c, (1, 2), 1)
+    attempt = _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    assert c._geometry_retries_used[PHASE_CLOUD_MEASURE] == 0
+    assert c.group_geometry(PHASE_CLOUD_MEASURE) is not None
+    positions_before = c.group_positions(PHASE_CLOUD_MEASURE)
+    assert len(positions_before) == len(CLOUD_MEASURE_INDEXES)
+
+    _lock(monkeypatch)
+    late = CLOUD_MEASURE_INDEXES[-1]
+    retake = _run_phase(c, late, attempt)
+    assert retake["accepted"] is True
+    assert "code" not in retake
+    assert c.group_positions(PHASE_CLOUD_MEASURE) == positions_before
+    # The re-combined verdict IS recorded honestly — the guard suppresses the
+    # retry request, never the measurement.
+    assert c.group_geometry(PHASE_CLOUD_MEASURE)["locked"] is True
+
+
+def test_the_tier_rides_the_snapshot_and_the_pipeline_payload():
+    """§1.2: every consumer can tell which instrument produced a result, and an
+    UNDECLARED tier reads as unknown rather than as "full" (the
+    ``echo_band_provenance`` discipline, issue #1763)."""
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    c = _cloud_conductor(fakes, tier=TIER_EXPRESS)
+    assert c.tier == TIER_EXPRESS
+    assert c.snapshot().tier == TIER_EXPRESS
+    assert c.snapshot().to_dict()["tier"] == TIER_EXPRESS
+    _walk_measure_cloud_to_close(c)
+    assert c.group_cloud_result(PHASE_CLOUD_MEASURE)["tier"] == TIER_EXPRESS
+
+    undeclared = _cloud_conductor(FakeSeams())
+    assert undeclared.tier == ""
+    assert undeclared.snapshot().tier == ""
+    with pytest.raises(CrossoverV2FlowError):
+        _cloud_conductor(FakeSeams(), tier="turbo")
+
+
+def test_the_reverify_plan_leads_with_the_no_re_walk_sentence():
+    """§2.4: the 2026-07-27 session ABANDONED this recovery because no screen
+    said it is one sweep rather than another walk. Both of its surfaces — the
+    consent steps and the entry instruction — now lead with the same
+    sentence, from one constant so they cannot drift."""
+    plan = build_v2_verify_capture_plan(FC_HZ)
+    assert plan.capture_target == 1
+    assert plan.entries[0].screen["title"] == REVERIFY_NO_REWALK_HEADLINE
+    assert "do NOT need to redo the walk" in REVERIFY_NO_REWALK_HEADLINE
+
+    spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding="b" * 24)
+    steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
+    assert steps[0] == REVERIFY_NO_REWALK_HEADLINE
+
+
+def test_the_summed_consent_heading_names_the_job_not_crossover_crossover():
+    """§2.3: the v2 cloud passed ``driver_label="crossover"`` into a heading
+    template built for per-driver captures, so the household read
+    "Crossover — crossover". A summed capture measures the speaker, not a
+    named driver."""
+    spec = build_v2_session_spec(
+        _roles(), FC_HZ, acknowledgement_binding="b" * 24,
+    )
+    heading = next(c for c in spec.screen if c["type"] == "heading")
+    assert heading["text"] == "Tune your speaker"
+
+
+def test_the_consent_tier_line_derives_its_counts_and_duration():
+    """§1.4/§1.1: the consent screen names WHICH instrument, with numbers
+    derived from the plan — never hand-written. The duration is the phone's
+    OWN estimate (``CapturePlan.estimated_minutes``), so the consent screen and
+    the wake-lock hint cannot quote different sessions."""
+    for tier, label, target in (
+        (TIER_FULL, "Full measurement", 16),
+        (TIER_EXPRESS, "Quick tune", 7),
+    ):
+        spec = build_v2_session_spec(
+            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier=tier,
+        )
+        minutes = spec.capture_plan.estimated_minutes()
+        steps = next(c for c in spec.screen if c["type"] == "steps")["items"]
+        assert steps[0] == f"{label}: {target} measurements, about {minutes} minutes"
+    # The two tiers really are the 11/5 the plan doc quotes.
+    assert build_v2_capture_plan(_roles(), FC_HZ).estimated_minutes() == 11
+    assert (
+        build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS).estimated_minutes()
+        == 5
+    )
+
+
 def test_cloud_prompts_front_load_the_wide_offsets():
     """Fundamental 1's physics, pinned: >=10 cm spread decorrelates HF nulls and
     ~30 cm+ offsets are what support the LF edge. Both groups walk the SAME
@@ -2410,6 +2755,12 @@ def test_cloud_prompts_front_load_the_wide_offsets():
     ``DEFAULT_CLOUD_VERIFY_POSITIONS``, so ``M = 2`` was accepted and voided
     the guarantee the test claims. Both groups now carry a floor, and both
     floors are checked against the SAME derivation the code enforces.
+
+    Flow-simplification §1.2 adds a THIRD number to the same derivation: the
+    express tier's pre-apply group size. Express exists precisely because a
+    4-position walk still picks up both wide moves for free, so a reorder that
+    pushed the second wide move later must move express with it rather than
+    ship a silently one-wide "quick tune".
     """
     shortest_group = min(
         MIN_CLOUD_MEASURE_POSITIONS, MIN_CLOUD_VERIFY_POSITIONS
@@ -2421,6 +2772,12 @@ def test_cloud_prompts_front_load_the_wide_offsets():
     derived = _min_positions_for_two_wide_offsets()
     assert MIN_CLOUD_VERIFY_POSITIONS == derived
     assert MIN_CLOUD_MEASURE_POSITIONS >= derived
+    assert express_cloud_measure_positions() == derived
+    # …and the express plan really does walk two wide moves at that size.
+    express = resolve_plan_shape(TIER_EXPRESS)
+    express_walk = CLOUD_POSITION_PROMPTS[: express.cloud_measure_positions - 1]
+    assert sum(1 for prompt in express_walk if prompt.wide) == 2
+    assert len(express_walk) == 4
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])
@@ -2433,8 +2790,8 @@ def test_a_verify_group_too_short_for_two_wide_offsets_is_refused(positions):
     # number into the operator's hands (the S0 owner ruling: hand-widths and
     # forearms, never centimetres).
     for prompt in CLOUD_POSITION_PROMPTS:
-        assert prompt.body.strip()
-        assert " cm" not in prompt.body and "centimet" not in prompt.body.lower()
+        assert prompt.headline.strip()
+        assert " cm" not in prompt.text and "centimet" not in prompt.text.lower()
 
 
 # --- courtesy-tone prelude (issue #1677): phone-contract duration ------------
@@ -2771,20 +3128,41 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
 # met in CURVES not positions) took the plan 15 → 16 entries, and the entry
 # titles gained the "— hold still" suffix that disambiguates them from the
 # phone's own capture counter (nit N1). Both are intended copy/shape changes.
+#
+# UPDATED 2026-07-27 (flow-simplification PR-U1): the screen GRAMMAR changed on
+# every entry of both shipped plans — each now carries the one server-derived
+# counter (`progress`), the instruction as `title`, and the supporting clause
+# as `body` (§2.1); the VERIFY entry additionally gained the
+# `confirm_title`/`confirm_body` keys the post-apply tap renders (§2.2), and
+# the 1-entry re-verify leads with the "you do NOT need to redo the walk"
+# sentence (§2.4). All intended copy changes. Program DURATIONS deliberately
+# did NOT move: the §2.5 courtesy-tone fix reorders where the prelude is
+# spliced without changing its length, so every `duration_ms` is byte-identical
+# to the pre-fix plan — a useful independent check that the pacing change is a
+# reorder and not a lengthening.
+#
+# ADDED 2026-07-27: a third `"express"` pin. The express tier is a second
+# SHIPPED plan shape (N=5, M=1 — flow-simplification §1.1), so it earns the
+# same protection the full plan has: a change to its copy, counts, or the
+# M=1 done-screen placement must be an intended edit, not drift.
 _GOLDEN_V2_PLAN_BYTES = {
     "cloud": (
-        3863,
-        "5b64daa1e24dafe8165a45e0ea79a3a71a8b91a52c6b25da82e6052afca452e8",
+        3897,
+        "435ac318d59f97fc1181a4d0903426a9b16984c9d5dd17bb1b0dc409a18f4557",
+    ),
+    "express": (
+        2107,
+        "b85b2be3302109cfd878ffe9c48bc133e3baa38c720faed07aac1fdb06d129ed",
     ),
     "1-entry": (
-        246,
-        "a8e3969419902efc2a14fb528d81b13e7e454d10b5a9e7418c5725944f77d55f",
+        324,
+        "0c5ad1d3ec654fe9b8c20ca5945481f44b87d11cb5ab06fe2b5488acda8ef411",
     ),
 }
 
 
 def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
-    """Both shipped plans' wire bytes are pinned; only an intended edit moves
+    """Every shipped plan's wire bytes are pinned; only an intended edit moves
     them."""
     import hashlib
     import json
@@ -2796,6 +3174,7 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
 
     plans = {
         "cloud": build_v2_capture_plan(_roles(), FC_HZ),
+        "express": build_v2_capture_plan(_roles(), FC_HZ, tier=TIER_EXPRESS),
         "1-entry": build_v2_verify_capture_plan(FC_HZ),
     }
     for label, plan in plans.items():
