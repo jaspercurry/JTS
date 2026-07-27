@@ -182,34 +182,54 @@ immutable recomposition snapshot. So nothing changes until the next
 re-emission — and then the *same stored design* is realized at the Q it was
 always modelled at. Concretely:
 
-- **`/sound/` taste EQ.** Next save/apply re-emits `sound_current.yml`.
+- **`/sound/` taste EQ — changes on the next DEPLOY, with no user action.**
+  `install.sh` runs `jasper-sound reconcile-current-dsp` on every deploy;
+  `reconcile_sound_dsp_state` re-renders the graph and compares it to the
+  on-disk YAML with only the id header stripped, so `slope:` versus `q:`
+  makes them unequal → `status=reconciled` → the new graph is written *and*
+  loaded. (An earlier `/sound/` save/apply gets there first if one happens.)
   Shelf bands move toward the curve the graph has always drawn, by an
   amount that grows with the band's gain (peak deviation over 20 Hz–20 kHz):
   the Harman-style and B&K-style tilt shelves 0.52 / 1.17 dB (they were the
   only shelves carrying `slope: 3.0`), their bass shelves 0.60 / 0.45 dB,
   and a Simple or Advanced shelf driven to the ±12 dB limit up to 1.87 dB.
-  A household that voiced a profile by ear on an old build may want to
-  re-touch it; the graph it was voiced against did not move.
+  Like every shelf change this is a *tilt* about the corner, not an offset:
+  the band above moves one way and the band below the other. A household
+  that voiced a profile by ear on an old build may want to re-touch it; the
+  graph it was voiced against did not move.
 - **Active speaker (the load-bearing case).** The next write of the
   baseline graph — an Apply, or a recomposition triggered by saving room /
   preference EQ — realizes the linearization shelves at their designed Q.
-  On the 2026-07-27 JTS3 profile (a −11 dB tweeter Highshelf) that is up to
-  1.7 dB of the tweeter-band deficit returning. **This is the fix working**:
-  the speaker moves toward what the fit designed, not away from it. It is
-  also not the whole 7–11 dB deficit — the rest is tracked in
+  The 2026-07-27 JTS3 profile carried a **−11 dB Lowshelf at 4419 Hz**
+  (`as_tweeter_linearization_shelf`; the CD-horn backbone is a Lowshelf, not
+  a Highshelf). Its correction is antisymmetric about that corner:
+  **±1.70 dB, 3.40 dB peak-to-peak** — up to **+1.70 dB** above the corner
+  (+0.63…+1.70 dB across 5–12 kHz, +1.65 dB at 6912 Hz where `peak_2` sits)
+  and up to **−1.70 dB** below it (minimum near 2.5 kHz). So the tweeter
+  band gains up to 1.7 dB of its deficit back while the shoulder below the
+  corner comes down by as much. **This is the fix working**: the speaker
+  moves toward what the fit designed, not away from it. It is also not the
+  whole 7–11 dB deficit — the rest is tracked in
   [linearization-integrity-plan.md](linearization-integrity-plan.md).
 - **The pre-existing drift guard fires, by design.** Until that re-emission
   happens, a speaker still running an old-build graph will not match the
   recomposed expectation, so
   `setup_status._applied_layer_a_binding` reports `mismatch` and Room
-  correction is blocked with "Apply that crossover again before Room
-  correction." That is the honest state — the loaded graph really is not
-  the one the applied profile now describes — and re-applying clears it.
+  correction is blocked with "The sound pipeline loaded on this speaker does
+  not match the applied manual profile. Apply that crossover again before
+  Room correction." That is the honest state — the loaded graph really is
+  not the one the applied profile now describes — and re-applying clears it.
+  The copy is deliberately cause-neutral: this drift comes from the emitter
+  changing under an untouched profile, not from anyone editing a crossover.
 - **Observable.** The write-time journal line carries the transition:
   `journalctl -u jasper-control | grep event=active_speaker_baseline_config_written`
   → `linearization_shelves=<n> shelf_q=0.7071068`. A graph written by an
-  older build has neither field. The live YAML is self-describing too: a
-  fixed shelf reads `q: 0.7071068`, an old one `slope: 6.0000`.
+  older build has neither field. For the `/sound/` side the signal is the
+  deploy transcript itself: `event=sound.reconcile_current_dsp
+  result=reconciled` on a deploy that changed no profile means the render
+  moved, which on the first deploy after this change is the shelf-Q
+  re-emission. The live YAML is self-describing in both cases: a fixed
+  shelf reads `q: 0.7071068`, an old one `slope: 6.0000`.
 
 ### Gain staging — boosts boost
 

@@ -242,8 +242,14 @@ def _acoustic_commissioning_status(
             if layer_a_binding.get("status") == "mismatch"
             else "active_applied_profile_graph_unverifiable"
         )
+        # Cause-neutral on purpose: the loaded graph can also drift from the
+        # applied profile because the EMITTER changed under it (a JTS upgrade
+        # that spells a filter differently -- e.g. the PR-L2 shelf-Q fix),
+        # not only because someone edited the crossover. Naming the crossover
+        # as the thing that changed would send a household looking for an edit
+        # nobody made. The remedy is the same either way: re-apply.
         detail = (
-            "The crossover currently loaded on this speaker does not match the "
+            "The sound pipeline loaded on this speaker does not match the "
             "applied manual profile. Apply that crossover again before Room "
             "correction."
             if reason == "active_applied_profile_graph_mismatch"

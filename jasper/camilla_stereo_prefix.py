@@ -68,9 +68,16 @@ def emit_filter_spec(spec: FilterSpec) -> list[str]:
     choke point for that invariant: every shelf JTS emits (taste-EQ curve
     presets, Simple bands, Advanced bands, and the Layer-1a linearization
     shelf / CD-horn backbone / trailing taper) reaches CamillaDSP through here,
-    so no caller can express a shelf the model cannot see. CamillaDSP accepts
-    ``q`` OR ``slope`` and rejects both together; ``SHELF_Q`` is the honest one.
-    See ``SHELF_Q`` for the ``slope: 6`` defect this replaced (PR-L2).
+    so no caller can express a shelf the model cannot see.
+
+    CamillaDSP's ``ShelfSteepness`` is a ``#[serde(untagged)]`` enum with no
+    ``deny_unknown_fields``, so it does NOT reject a shelf carrying both ``q``
+    and ``slope`` -- it matches the ``Q`` variant first and silently ignores
+    the ``slope`` (the README's "only one of q and slope" is a convention, not
+    an enforced one). Do not rely on CamillaDSP to catch a double-specified
+    shelf. What this codebase relies on instead is structural: ``FilterSpec``
+    has no steepness field at all, so this emitter cannot write one. See
+    ``SHELF_Q`` for the ``slope: 6`` defect this replaced (PR-L2).
     """
     lines = [
         f"  {spec.name}:",

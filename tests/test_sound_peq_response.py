@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 
 from jasper.sound import GAINLESS_BIQUAD_TYPES, build_sound_filters
-from jasper.camilla_config_contract import SHELF_Q
+from jasper.camilla_config_contract import SHELF_Q, SHELF_Q_EMIT_DECIMALS
 from jasper.camilla_stereo_prefix import emit_filter_spec as _emit_filter_spec
 import numpy as np
 import pytest
@@ -368,20 +368,33 @@ def test_camilladsp_butterworth_shelf_is_slope_12_not_slope_6():
 
 
 def test_shelf_emission_precision_keeps_realized_inside_parity_tolerance():
-    """Why SHELF_Q is spelled at 7 decimals, not the shared 4-decimal ``fmt``.
+    """Why SHELF_Q is spelled at ``SHELF_Q_EMIT_DECIMALS``, not the shared
+    4-decimal ``fmt``.
 
     The emitted literal is what CamillaDSP builds from, so its rounding is a
     real (if tiny) realization error. Pin that it stays an order of magnitude
-    inside the 1e-6 dB parity tolerance the other two legs use — and that the
-    4-decimal spelling would not have.
+    inside the 1e-6 dB parity tolerance the other two legs use — and that a
+    coarser spelling would not have.
+
+    Both arms are DERIVED from ``SHELF_Q_EMIT_DECIMALS``, so lowering the
+    constant fails this test rather than sliding past it on a hardcoded 4.
     """
     freqs = list(np.geomspace(200.0, 20000.0, 400))
+
+    def realized(decimals):
+        return _camilladsp_shelf_db(
+            "Highshelf",
+            4000.0,
+            -11.0,
+            q=float(f"{SHELF_Q:.{decimals}f}"),
+            at_freqs=freqs,
+        )
+
     exact = _camilladsp_shelf_db("Highshelf", 4000.0, -11.0, q=SHELF_Q, at_freqs=freqs)
-    emitted = _camilladsp_shelf_db(
-        "Highshelf", 4000.0, -11.0, q=FIXTURE["shelf_emission"]["value"], at_freqs=freqs
-    )
-    coarse = _camilladsp_shelf_db(
-        "Highshelf", 4000.0, -11.0, q=round(SHELF_Q, 4), at_freqs=freqs
-    )
+    emitted = realized(SHELF_Q_EMIT_DECIMALS)
+    coarser = realized(SHELF_Q_EMIT_DECIMALS - 3)
     assert max(abs(a - b) for a, b in zip(exact, emitted)) < 2e-7  # measured 1.3e-7
-    assert max(abs(a - b) for a, b in zip(exact, coarse)) > 1e-6  # measured 4.6e-5
+    assert max(abs(a - b) for a, b in zip(exact, coarser)) > 1e-6  # measured 4.6e-5
+    # The fixture's literal must be that same spelling — it is what the JS
+    # parity leg evaluates CamillaDSP at.
+    assert FIXTURE["shelf_emission"]["value_str"] == f"{SHELF_Q:.{SHELF_Q_EMIT_DECIMALS}f}"
