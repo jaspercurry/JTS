@@ -51,14 +51,14 @@ filters:
     parameters:
       type: Lowshelf
       freq: 105.0000
-      slope: 6.0000
+      q: 0.7071068
       gain: 4.0000
   sound_curve_harman_tilt:
     type: Biquad
     parameters:
       type: Highshelf
       freq: 3500.0000
-      slope: 3.0000
+      q: 0.7071068
       gain: -2.0000
 
 mixers:

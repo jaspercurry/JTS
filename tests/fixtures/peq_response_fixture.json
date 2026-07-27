@@ -50,7 +50,7 @@
       "type": "Lowshelf",
       "freq": 105.0,
       "gain_db": 4.0,
-      "q": 1.0,
+      "q": null,
       "db": [
         3.994555,
         3.972596,
@@ -67,7 +67,7 @@
       "type": "Highshelf",
       "freq": 3500.0,
       "gain_db": -3.0,
-      "q": 1.0,
+      "q": null,
       "db": [
         -0.0,
         -0.0,
@@ -147,6 +147,80 @@
         -1e-06,
         -0.0
       ]
+    },
+    {
+      "type": "Highshelf",
+      "freq": 3500.0,
+      "gain_db": -11.0,
+      "q": null,
+      "db": [
+        -0.0,
+        -0.0,
+        -1e-06,
+        -1.1e-05,
+        -0.000141,
+        -0.087526,
+        -5.5,
+        -10.958307,
+        -10.999784
+      ]
+    },
+    {
+      "type": "Lowshelf",
+      "freq": 200.0,
+      "gain_db": -11.0,
+      "q": null,
+      "db": [
+        -10.998582,
+        -10.992827,
+        -10.886871,
+        -10.055649,
+        -5.5,
+        -0.022504,
+        -0.000141,
+        -0.0,
+        -0.0
+      ]
+    },
+    {
+      "type": "Highshelf",
+      "freq": 12000.0,
+      "gain_db": -6.0,
+      "q": null,
+      "db": [
+        -0.0,
+        -0.0,
+        -0.0,
+        -0.0,
+        -0.0,
+        -0.00012,
+        -0.019109,
+        -3.0,
+        -5.966766
+      ]
+    },
+    {
+      "type": "Lowshelf",
+      "freq": 105.0,
+      "gain_db": 8.0,
+      "q": null,
+      "db": [
+        7.98794,
+        7.939415,
+        7.149985,
+        4.0,
+        0.628988,
+        0.001109,
+        7e-06,
+        0.0,
+        0.0
+      ]
     }
-  ]
+  ],
+  "shelf_emission": {
+    "param": "q",
+    "value": 0.7071068,
+    "value_str": "0.7071068",
+    "note": "The exact CamillaDSP shelf steepness jasper.camilla_stereo_prefix.emit_filter_spec writes. Butterworth is q=1/sqrt(2), equivalently slope: 12 (CamillaDSP's own lowshelf_slope_vs_q test) -- NOT slope: 6, which is what this codebase emitted until 2026-07-27."
+  }
 }

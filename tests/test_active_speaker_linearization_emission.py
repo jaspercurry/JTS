@@ -31,7 +31,10 @@ from jasper.active_speaker.camilla_yaml import (
     driver_linearization_shelf_name,
     driver_linearization_taper_name,
 )
-from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
+from jasper.active_speaker.linearization_fit import (
+    MAX_FILTERS_PER_DRIVER,
+    _HIGHSHELF_Q,
+)
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
@@ -141,11 +144,15 @@ def test_linearization_chain_order_after_crossover_before_bass_extension():
     ]
 
 
-def test_linearization_shelf_uses_fixed_highshelf_slope():
-    """The Highshelf FilterSpec must carry the fixed slope (6.0) equivalent
-    to the fit engine's fixed Butterworth Q — CamillaDSP's Highshelf reads
-    ``slope``, not ``q``, so getting this wrong would silently emit a
-    DIFFERENT shelf shape than the fit engine designed."""
+def test_linearization_shelf_uses_the_fit_engines_butterworth_q():
+    """The emitted Highshelf must carry the fit engine's own Butterworth Q as
+    CamillaDSP's ``q``, and no ``slope``.
+
+    Getting this wrong emits a DIFFERENT shelf than the fit designed, and
+    invisibly: the fit's realization gate, residual, and VERIFY prediction all
+    evaluate the Butterworth shelf. That is exactly what ``slope: 6.0`` did
+    here until 2026-07-27 (CamillaDSP's Butterworth is ``slope: 12``; at
+    ``slope: 6`` the realized Q falls with gain — 0.476 at -11 dB)."""
     preset = _preset()
     text = emit_active_speaker_baseline_config(
         preset, playback_device=ACTIVE_PCM,
@@ -156,8 +163,8 @@ def test_linearization_shelf_uses_fixed_highshelf_slope():
     assert params["type"] == "Highshelf"
     assert params["freq"] == pytest.approx(6500.0)
     assert params["gain"] == pytest.approx(-4.0)
-    assert params["slope"] == pytest.approx(6.0)
-    assert "q" not in params
+    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
+    assert "slope" not in params
 
 
 def test_linearization_lowshelf_led_chain_order():
@@ -181,9 +188,9 @@ def test_linearization_lowshelf_led_chain_order():
     ]
 
 
-def test_linearization_lowshelf_uses_fixed_shelf_slope():
-    """The Lowshelf FilterSpec must carry the same fixed slope (6.0) as the
-    Highshelf — CamillaDSP reads ``slope``, not ``q``, for both shelf types."""
+def test_linearization_lowshelf_uses_the_same_butterworth_q():
+    """The CD-horn Lowshelf backbone carries the same Butterworth ``q`` as the
+    Highshelf — one shelf steepness for both types, no ``slope``."""
     preset = _preset()
     text = emit_active_speaker_baseline_config(
         preset, playback_device=ACTIVE_PCM,
@@ -194,8 +201,8 @@ def test_linearization_lowshelf_uses_fixed_shelf_slope():
     assert params["type"] == "Lowshelf"
     assert params["freq"] == pytest.approx(8200.0)
     assert params["gain"] == pytest.approx(-9.0)
-    assert params["slope"] == pytest.approx(6.0)
-    assert "q" not in params
+    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
+    assert "slope" not in params
 
 
 def test_linearization_taper_gets_its_own_name_and_definition():
@@ -222,7 +229,46 @@ def test_linearization_taper_gets_its_own_name_and_definition():
     assert params["type"] == "Highshelf"
     assert params["freq"] == pytest.approx(20500.0)
     assert params["gain"] == pytest.approx(-5.0)
-    assert params["slope"] == pytest.approx(6.0)
+    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
+    assert "slope" not in params
+
+
+def test_baseline_write_logs_the_shelf_realization(tmp_path, caplog):
+    """The write-time event dates the PR-L2 emission change per speaker.
+
+    Re-emitting an ALREADY-APPLIED profile changes what the speaker plays (the
+    same stored design is finally realized at the Q it was designed at), so the
+    transition has to be legible after the fact — ``grep
+    event=active_speaker_baseline_config_written``. Pinned because
+    docs/HANDOFF-sound-preferences.md tells operators to look for these fields.
+    """
+    preset = _preset()
+    out = tmp_path / "baseline.yml"
+    with caplog.at_level("INFO", logger="jasper.active_speaker.camilla_yaml"):
+        emit_active_speaker_baseline_config(
+            preset,
+            playback_device=ACTIVE_PCM,
+            out_path=out,
+            linearization={
+                "tweeter": [_lowshelf(), _peak(6000.0, -4.0), _taper()],
+                "woofer": [_peak(300.0, -2.0)],
+            },
+        )
+    written = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=active_speaker_baseline_config_written" in record.getMessage()
+    ]
+    assert len(written) == 1
+    # Two shelf-slot filters on the tweeter (backbone + taper), none on the
+    # woofer's peak-only chain.
+    assert "linearization_shelves=2" in written[0]
+    assert f"shelf_q={_HIGHSHELF_Q:.7f}" in written[0]
+    # ...and the field reports what the file actually carries.
+    params = yaml.safe_load(out.read_text())["filters"][
+        driver_linearization_shelf_name("tweeter")
+    ]["parameters"]
+    assert params["q"] == pytest.approx(_HIGHSHELF_Q, abs=5e-8)
 
 
 def test_linearization_peak_carries_its_own_q():

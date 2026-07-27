@@ -40,7 +40,7 @@ filters:
     parameters:
       type: Lowshelf
       freq: 60.0000
-      slope: 6.0000
+      q: 0.7071068
       gain: 3.0000
   sound_simple_bass:
     type: Biquad
@@ -54,7 +54,7 @@ filters:
     parameters:
       type: Highshelf
       freq: 10000.0000
-      slope: 6.0000
+      q: 0.7071068
       gain: 3.0000
 
 mixers:

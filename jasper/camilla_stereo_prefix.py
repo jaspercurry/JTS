@@ -39,6 +39,8 @@ from typing import Iterable, Sequence
 
 from jasper.camilla_config_contract import (
     GAINLESS_BIQUAD_TYPES,
+    SHELF_Q,
+    SHELF_Q_EMIT_DECIMALS,
     FilterSpec,
     PeqFilter,
     total_positive_boost_db,
@@ -59,6 +61,16 @@ def emit_filter_spec(spec: FilterSpec) -> list[str]:
 
     Leaf ``fmt``/Peaking emission is shared (``jasper.camilla_emit``); this
     shelf/gainless dispatch is the preference-EQ assembly's own concern.
+
+    **Every shelf is spelled with CamillaDSP's ``q`` steepness, at the constant
+    :data:`~jasper.camilla_config_contract.SHELF_Q`** — the same Butterworth Q
+    every evaluator in this codebase draws a shelf at. This is the single
+    choke point for that invariant: every shelf JTS emits (taste-EQ curve
+    presets, Simple bands, Advanced bands, and the Layer-1a linearization
+    shelf / CD-horn backbone / trailing taper) reaches CamillaDSP through here,
+    so no caller can express a shelf the model cannot see. CamillaDSP accepts
+    ``q`` OR ``slope`` and rejects both together; ``SHELF_Q`` is the honest one.
+    See ``SHELF_Q`` for the ``slope: 6`` defect this replaced (PR-L2).
     """
     lines = [
         f"  {spec.name}:",
@@ -68,7 +80,7 @@ def emit_filter_spec(spec: FilterSpec) -> list[str]:
         f"      freq: {fmt(spec.freq)}",
     ]
     if spec.biquad_type in {"Lowshelf", "Highshelf"}:
-        lines.append(f"      slope: {fmt(spec.slope or 6.0)}")
+        lines.append(f"      q: {SHELF_Q:.{SHELF_Q_EMIT_DECIMALS}f}")
         lines.append(f"      gain: {fmt(spec.gain)}")
     elif spec.biquad_type in GAINLESS_BIQUAD_TYPES:
         # Highpass/Lowpass/Notch shape the response without a gain term.
