@@ -600,6 +600,19 @@ What exists:
   `runtime_integrity`'s `outputd_content_fill_increased`. Cadence evidence:
   [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
   §G.
+  That gate is **topology-agnostic by construction**: the run loop drives
+  exactly one content source per box (SHM ring | content bridge | ALSA
+  content hop), so it reads the ALSA hop's `empty_periods`/`partial_periods`
+  AND the ring's `empty_reads`/`startup_empty_reads` (reported as
+  `ring_*` in the issue details). Reading one family only would leave the gate
+  inert on the other topology — and since the ring is the resolved default on
+  eligible stereo topologies, that would have been the common case. Note the
+  asymmetry in *journal* coverage: the ALSA hop emits
+  `event=outputd.content_fill` because it had no other runtime surface, while
+  the ring path stays journal-quiet on purpose — it already publishes
+  `writer_alive`, `occupancy`, and heartbeat age in `/state`, and a dead
+  writer makes EVERY period empty, so a per-fill line there would be a
+  sustained one-per-second stream rather than a diagnostic.
   Outputd's local control socket accepts one newline-delimited command per
   connection. Command reads are capped at 256 bytes and at a two-second total
   monotonic deadline (not a resettable per-byte timeout); oversized, invalid

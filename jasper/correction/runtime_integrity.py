@@ -177,9 +177,23 @@ def _outputd_summary(status: dict[str, Any] | None) -> dict[str, Any] | None:
             summary["partial_periods"] = section.get("partial_periods")
         return summary
 
+    # The SHM ring is the OTHER content source: `jasper-outputd`'s run loop
+    # picks exactly one of ring | content-bridge | ALSA content per box, and
+    # the ring is the resolved default on eligible stereo topologies. Its
+    # empty reads are the same event class as the ALSA hop's empty periods
+    # (no content available ⇒ silence emitted), so the gate below has to see
+    # both carriers or it is inert on whichever topology it does not read.
+    ring_raw = status.get("shm_ring")
+    ring = ring_raw if isinstance(ring_raw, dict) else {}
+    ring_summary = {"enabled": bool(ring.get("enabled", False))}
+    if ring_summary["enabled"]:
+        ring_summary["empty_reads"] = ring.get("empty_reads")
+        ring_summary["startup_empty_reads"] = ring.get("startup_empty_reads")
+
     return {
         "content": _section("content"),
         "dac": _section("dac"),
+        "shm_ring": ring_summary,
     }
 
 
@@ -328,25 +342,43 @@ def _outputd_xrun_counts(snapshot: dict[str, Any]) -> dict[str, int] | None:
 
 
 def _outputd_content_fill_counts(snapshot: dict[str, Any]) -> dict[str, int] | None:
-    """The outputd content zero-fill counters (issue #1768).
+    """Counters for silence outputd INSERTED into the emitted timeline (#1768).
 
-    A short content read is zero-filled and still written to the DAC, so each
-    of these INSERTS samples into what the speaker emitted — audible as a tear,
-    and it displaces the rest of the program in time. That is exactly what
-    corrupts a measurement capture, and it is invisible to ``xrun_count``,
-    which only moves on ``EPIPE``/``ESTRPIPE``.
+    A content period it could not fill from the source is zero-filled and
+    still written to the DAC, so each of these displaces the rest of the
+    program in time — audible as a tear, and exactly what corrupts a
+    measurement capture. All of it is invisible to ``xrun_count``, which only
+    moves on ``EPIPE``/``ESTRPIPE``.
+
+    **Topology-agnostic on purpose.** `jasper-outputd`'s run loop drives
+    exactly ONE content source per box — SHM ring, content bridge, or the ALSA
+    content hop — and the ring is the resolved default on eligible stereo
+    topologies. The ALSA hop reports ``empty_periods``/``partial_periods``;
+    the ring reports ``empty_reads``/``startup_empty_reads``. Reading only one
+    family would leave this gate silently inert on the other topology, which
+    is the shape of bug it exists to catch. The ring keys are prefixed so a
+    reader of the issue details can tell which carrier moved.
+
+    (``startup_empty_reads`` counts only pre-first-slot priming, so it cannot
+    move mid-stream — a delta there means the reader re-attached DURING the
+    capture, which invalidates it just as surely.)
     """
     outputd = snapshot.get("outputd")
     if not isinstance(outputd, dict):
         return None
-    content = outputd.get("content")
-    if not isinstance(content, dict):
-        return None
     counts: dict[str, int] = {}
-    for name in ("empty_periods", "partial_periods"):
-        value = _as_int(content.get(name))
-        if value is not None:
-            counts[name] = value
+    content = outputd.get("content")
+    if isinstance(content, dict):
+        for name in ("empty_periods", "partial_periods"):
+            value = _as_int(content.get(name))
+            if value is not None:
+                counts[name] = value
+    ring = outputd.get("shm_ring")
+    if isinstance(ring, dict) and ring.get("enabled"):
+        for name in ("empty_reads", "startup_empty_reads"):
+            value = _as_int(ring.get(name))
+            if value is not None:
+                counts[f"ring_{name}"] = value
     return counts or None
 
 
