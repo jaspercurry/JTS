@@ -446,6 +446,16 @@ def _offset_invariant_rms_and_max(
     Mean-centering makes the comparison level-offset-invariant: a uniform gain
     difference between measured and predicted (e.g. mic sensitivity, session
     volume) does not by itself read as a tracking error.
+
+    **Pass a REAL prediction.** Because the error is mean-centered, a CONSTANT
+    ``predicted`` array (all-zero, or any other constant) collapses this into
+    plain flatness-vs-band-mean on ``measured`` alone — which is precisely the
+    retired per-capture flatness construction the flat-linearization plan's
+    PR-5 removed (see ``program_analysis``'s comment near ``ANALYSIS_KIND``).
+    That reading is single-position, exclusion-blind, and is NOT the speaker's
+    flatness; ``active_speaker.flat_spec`` owns that claim on the spatial
+    cloud. Use this comparator only where both sides are real curves being
+    compared against each other.
     """
     error = measured - predicted
     error -= float(np.mean(error))

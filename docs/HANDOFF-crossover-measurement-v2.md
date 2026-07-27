@@ -576,12 +576,31 @@ branches — and bins below it are excluded from the spec evaluation, from the
 reference level as well as the deviations. It is deliberately kept OUT of
 `merged_excluded_bands_hz` (and so out of `/state`'s
 `excluded_interval_count`), which stays the honesty instruments' own
-"how much interference did we find" number; `pipeline.validity_floor_hz`
-discloses the clamp separately. Measured regime: nine of the S0 main leg's
-ten positions gate to 142.9 Hz (below the 250 Hz spec edge, so a no-op), but
-`cloud_04` collapsed to 1777.8 Hz, which moves 1009 bins out of the
-250 Hz–2 kHz band — the cost is real, pinned, and visible in the gauge's own
-`n_bins`/`n_excluded` pair.
+"how much interference did we find" number; `validity_floor_hz` discloses the
+clamp separately and is carried through `_compact_cloud_status` onto `/state`,
+the envelope, and the doctor, so a live surface can tell a combed room apart
+from one capture's collapsed gate.
+
+Measured cost on the S0 main leg (all pinned by
+[`tests/test_flat_spec_ssot.py`](../tests/test_flat_spec_ssot.py)): nine of
+ten positions gate to 142.9 Hz — below the 250 Hz spec edge, so the clamp is a
+no-op and changes no graded number. `cloud_04` collapsed to 1777.8 Hz, and
+clamping there moves **1009 bins** out of the 250 Hz–2 kHz band, re-centres
+the reference **−27.2670 → −28.3166 dB**, moves the **headline `max_db`
+−8.9399 → −7.8903 dB (+1.0495 dB, the flattering direction — exactly the
+reference shift, since the worst bin survives the clamp)**, moves the pooled
+RMS 3.7649 → 3.1524 dB, and **flips the 250 Hz–2 kHz band verdict** from
++4.1637 dB (fail) to −1.2855 dB (pass). The headline number therefore moves
+*further* than the RMS, and the direction is response-shape dependent —
+measured on this corpus, not a property of the clamp. It is the same speaker
+graded on fewer bins, visible in the gauge's own `n_bins`/`n_excluded` pair.
+
+*Deferred alternative:* per-position, per-bin validity masking inside
+`combine_positions` (mask each position below its own floor, keep the other
+positions' good data) is strictly better and is deferred only because it is a
+`spatial_combine` signature/estimator change, not a wiring one. Revisit
+trigger: a real session where one collapsed gate meaningfully shrinks the
+graded band — the `cloud_04` case above is already that evidence.
 
 **The fit's honesty ladder is NOT this claim.** `LinearizationFit`'s
 fit/verify/observe levels (including `observe_octave_summary`, rendered by

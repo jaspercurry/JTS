@@ -1188,11 +1188,21 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
                     "spec": {
                         "overall_passed": False,
                         "bands": [
-                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True},
-                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True},
-                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False},
+                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
+                             "max_deviation_db": 1.02},
+                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
+                             "max_deviation_db": -1.41},
+                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
+                             "max_deviation_db": -4.85},
                         ],
                     },
+                    "flatness": {
+                        "max_db": -4.85, "max_hz": 11480.0,
+                        "max_band_hz": [8000.0, 16000.0], "tolerance_db": 2.5,
+                        "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
+                        "evaluable": True, "passed": False,
+                    },
+                    "validity_floor_hz": 187.5,
                 },
             },
             PHASE_CLOUD_VERIFY: {
@@ -1221,11 +1231,24 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     )
     assert measure["overall_passed"] is False
     assert measure["excluded_interval_count"] == 2
+    # Per-band ``max_deviation_db`` rides along (flat-linearization PR-5, N-3):
+    # `/state` is what a chart reads, and per-band numbers missing from the
+    # only projection a page sees is the pressure that grows a second
+    # derivation downstream.
     assert measure["spec_bands"] == [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False},
+        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "passed": True,
+         "max_deviation_db": 1.02},
+        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "passed": True,
+         "max_deviation_db": -1.41},
+        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "passed": False,
+         "max_deviation_db": -4.85},
     ]
+    # The gauge is copied verbatim; the clamp is separable from interference
+    # on this live surface (PR-5 SF-2), so a reader can tell a combed room
+    # apart from one capture's collapsed gate.
+    assert measure["flatness"]["max_db"] == -4.85
+    assert measure["flatness"]["rms_db"] == 1.37
+    assert measure["validity_floor_hz"] == 187.5
 
     # A group whose pipeline never became available (combine_failed) reports
     # the honest "nothing to disclose" shape, never a fabricated pass --
@@ -1238,6 +1261,10 @@ def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
     assert verify["excluded_interval_count"] is None
     assert verify["spec_bands"] == []
     assert verify["geometry_guidance"] == ""
+    # Same rule for the two PR-5 keys: unavailable means unknown, never a
+    # fabricated zero or a floor of 0 Hz.
+    assert verify["flatness"] is None
+    assert verify["validity_floor_hz"] is None
 
 
 def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran():

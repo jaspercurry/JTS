@@ -2027,27 +2027,64 @@ def assemble_cloud_group_result(
       own count (screen union identified nulls). ``excluded_interval_count``
       on `/state` is the "how much interference did we find" number and must
       not silently absorb a gate artifact. ``validity_floor_hz`` is reported
-      alongside so a reader can tell the two apart in ``spec.n_excluded``.
+      alongside so a reader can tell the two apart in ``spec.n_excluded`` --
+      and it is carried all the way to the LIVE surfaces, not just the
+      durable state and the bundle: ``_compact_cloud_status`` projects it
+      onto `/state`, the envelope, and the doctor's read. Without that a page
+      seeing a large ``n_excluded`` could not distinguish a combed room from
+      one capture's collapsed gate.
     * A ``None`` floor clamps NOTHING and is reported as ``None``. The
       alternative -- withholding the whole gauge, which is what the retired
       per-capture ``_flatness_tracking`` did when a capture had no floor --
       would throw away the 2-16 kHz evidence over an unverified lower edge.
 
     Regime, measured on the S0 main leg 2026-07-27 (``test_flat_spec_ssot.py``
-    pins both halves): the spec table's lower edge is 250 Hz and NINE of that
-    session's ten positions gate to 142.9 Hz, where the clamp changes no
-    graded number at all -- every band figure, the reference level, the
+    pins every figure below): the spec table's lower edge is 250 Hz and NINE
+    of that session's ten positions gate to 142.9 Hz, where the clamp changes
+    no graded number at all -- every band figure, the reference level, the
     verdict, and the whole gauge are byte-identical (only the report-wide
     ``excluded_intervals`` gains the sub-250 Hz region it removed, which is
     why the gauge quotes spec-band BIN counts and not an interval count). The
-    tenth, ``cloud_04``, collapsed to **1777.8 Hz** -- so the group floor is
-    1777.8 Hz and the clamp moves **1009 bins** out of the 250 Hz-2 kHz band,
-    re-centres the reference on what survives, and takes the pooled RMS from
-    3.76 dB to 3.15 dB. That is the same speaker graded on fewer bins, not a
-    better one, which is exactly what ``n_bins``/``n_excluded`` on the gauge
-    exist to keep visible. One collapsed gate in a group is therefore
-    expensive by design: the alternative is grading bins that one contributing
-    capture cannot support.
+    tenth, ``cloud_04``, collapsed to **1777.8 Hz**, so the group floor is
+    1777.8 Hz and the clamp:
+
+    * moves **1009 bins** out of the 250 Hz-2 kHz band;
+    * **re-centres the reference** -27.2670 -> -28.3166 dB (-1.0495 dB),
+      because the reference is a power mean over non-excluded 250 Hz-8 kHz
+      bins and the clamp removed the loud low end of it;
+    * moves the HEADLINE ``max_db`` -8.9399 -> -7.8903 dB, i.e. **+1.0495 dB
+      in the FLATTERING direction** -- exactly the reference shift, because
+      the worst bin (15999.7 Hz) survives the clamp, so its deviation moves
+      one-for-one with the reference. This is the first number the ledger
+      line prints and it moves FURTHER than the RMS does;
+    * takes the pooled RMS 3.7649 -> 3.1524 dB (-0.6125 dB);
+    * **flips the 250 Hz-2 kHz band verdict**, +4.1637 dB (fail) ->
+      -1.2855 dB (pass), since ``BandResult.passed`` is
+      ``abs(max_deviation_db) <= tolerance_db``. Overall stays False here
+      only because the other two bands still fail on their own.
+
+    Direction is **response-shape dependent, not a property of the clamp**:
+    on THIS corpus the removed region sat above the surviving reference, so
+    dropping it lowered the reference and flattered every surviving
+    deviation. A speaker whose sub-floor region is quiet would move the other
+    way. Do not generalize the sign.
+
+    None of that is the speaker improving -- it is the same speaker graded on
+    fewer bins, which is exactly what ``n_bins``/``n_excluded`` on the gauge
+    exist to keep visible (``ConvergenceResidual``'s own rule). One collapsed
+    gate in a group is therefore expensive by design.
+
+    **Deferred alternative, recorded rather than dismissed:** the honest
+    third option is per-position, per-bin validity masking INSIDE
+    ``combine_positions`` -- mask each position's contribution below that
+    position's OWN floor and combine the survivors, so nine good captures
+    keep contributing at 500 Hz instead of one bad one costing the band. It
+    is strictly better than a group-wide clamp and is out of scope here only
+    because it is a ``spatial_combine`` signature and estimator change (the
+    power mean would need per-bin weights), not a wiring one. Revisit
+    trigger: a real session where one collapsed gate meaningfully shrinks the
+    graded band -- the S0 ``cloud_04`` case above is that evidence already,
+    so this is queued on measured grounds, not speculation.
 
     **Fail-soft, named, not absolute** (S4 review finding, 2026-07-26 --
     corrected from an earlier "any exception is caught" overclaim). Catches

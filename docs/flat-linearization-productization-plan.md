@@ -1158,14 +1158,42 @@ sub-250 Hz region — caught by the contract test's own byte-identity assertion.
 those bins leave the spec evaluation (deviations AND reference — a
 non-measurement must not re-centre the target either). On the S0 main leg nine
 of ten positions gate to 142.9 Hz, below the 250 Hz spec edge, so the clamp is
-a no-op there; `cloud_04` collapsed to **1777.8 Hz**, which moves 1009 bins out
-of the 250 Hz–2 kHz band and takes the pooled RMS from 3.76 dB to 3.15 dB —
-the same speaker on fewer bins, which is exactly why `n_bins`/`n_excluded` ride
-on the gauge. The clamp is deliberately kept OUT of `merged_excluded_bands_hz`
-(and so out of `/state`'s `excluded_interval_count`), which stays the honesty
-instruments' own "how much interference did we find" count; the clamp is
-disclosed separately as `pipeline.validity_floor_hz`. A group with no usable
-floor clamps nothing and reports `None` — withholding the whole gauge over an
-unverified lower edge would throw away the 2–16 kHz evidence.*
+a no-op there. `cloud_04` collapsed to **1777.8 Hz**, and clamping at that floor
+costs, all pinned by `tests/test_flat_spec_ssot.py`: **1009 bins** leave the
+250 Hz–2 kHz band (7698 → 6689 graded); the reference re-centres
+**−27.2670 → −28.3166 dB**; the **headline `max_db` moves −8.9399 → −7.8903 dB,
+i.e. +1.0495 dB in the FLATTERING direction** — exactly the reference shift,
+because the worst bin (15999.7 Hz) survives the clamp and its deviation tracks
+the reference one-for-one, so the first number the ledger line prints moves
+*further* than the RMS does; the pooled RMS moves 3.7649 → 3.1524 dB; and the
+250 Hz–2 kHz **band verdict FLIPS**, +4.1637 dB (fail) → −1.2855 dB (pass),
+since `passed` is `abs(max) ≤ tolerance` (overall stays False only because the
+other two bands fail on their own). The **direction is response-shape dependent
+and measured on this corpus only** — here the removed region sat above the
+surviving reference, so dropping it flattered what was left; a speaker with a
+quiet sub-floor region moves the other way. None of it is the speaker
+improving: it is the same speaker on fewer bins, which is exactly why
+`n_bins`/`n_excluded` ride on the gauge. The clamp is deliberately kept OUT of
+`merged_excluded_bands_hz` (and so out of `/state`'s
+`excluded_interval_count`), which stays the honesty instruments' own "how much
+interference did we find" count; the clamp is disclosed separately as
+`validity_floor_hz`, carried through `_compact_cloud_status` to `/state`, the
+envelope, and the doctor so a live surface can separate a combed room from a
+collapsed gate. A group with no usable floor clamps nothing and reports `None` —
+withholding the whole gauge over an unverified lower edge would throw away the
+2–16 kHz evidence.*
+
+*Deferred alternative, recorded (review SF-3): the honest third option is
+**per-position, per-bin validity masking inside `combine_positions`** — mask
+each position's contribution below that position's OWN floor and combine the
+survivors, so nine good captures keep contributing at 500 Hz instead of one bad
+one costing the whole band for the group. It is strictly better than a
+group-wide clamp and is deferred only because it is a `spatial_combine`
+signature and estimator change (the power mean would need per-bin weights), not
+a wiring one — out of PR-5's scope. **Revisit trigger:** a real session where
+one collapsed gate meaningfully shrinks the graded band. The S0 `cloud_04` case
+above already IS that evidence, so this is queued on measured grounds rather
+than speculation; it is a scope call, not a doubt about whether it is worth
+doing.*
 
 *Last verified: 2026-07-27*

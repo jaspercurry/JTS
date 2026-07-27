@@ -746,6 +746,22 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     when the pipeline never became available — the same "never a fabricated
     clean reading" rule as ``excluded_interval_count`` below.
 
+    ``validity_floor_hz`` rides alongside it for one reason: without it a
+    live surface cannot tell WHY ``flatness.n_excluded`` is large. The
+    interference instruments and the gate-validity clamp both remove
+    spec-band bins, and only the honesty instruments' removals are counted
+    by ``excluded_interval_count`` — so a reader seeing 4063 excluded bins
+    and 5 excluded intervals needs the floor to separate "the room combed
+    this speaker" from "one capture's gate collapsed". ``None`` means either
+    no position reported a usable floor or the pipeline never ran; it never
+    means zero.
+
+    ``spec_bands`` carries each band's own ``max_deviation_db`` (N-3): the
+    per-band numbers are what a chart labels, and their absence from the
+    only projection a page reads is exactly the pressure that grows a second
+    derivation somewhere downstream. Copied from the report like everything
+    else here — this stays a projection, never an owner.
+
     ``excluded_interval_count`` is ``None`` — not ``0`` — when the pipeline
     never successfully became available (SF-1 review finding, 2026-07-27):
     ``0`` reads as "the honest-instrument pipeline looked and found no
@@ -781,6 +797,7 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             "overall_passed": None,
             "excluded_interval_count": None,
             "flatness": None,
+            "validity_floor_hz": None,
         }
         if pipeline.get("available") is True:
             spec = pipeline.get("spec")
@@ -791,6 +808,7 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
                     "f_lo_hz": b.get("f_lo_hz"),
                     "f_hi_hz": b.get("f_hi_hz"),
                     "passed": b.get("passed"),
+                    "max_deviation_db": b.get("max_deviation_db"),
                 }
                 for b in bands
                 if isinstance(b, Mapping)
@@ -803,6 +821,10 @@ def _compact_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
             flatness = pipeline.get("flatness")
             # Copied, never re-derived — see this function's docstring.
             entry["flatness"] = dict(flatness) if isinstance(flatness, Mapping) else None
+            floor = pipeline.get("validity_floor_hz")
+            entry["validity_floor_hz"] = (
+                float(floor) if isinstance(floor, (int, float)) else None
+            )
         out[str(phase)] = entry
     return out or None
 

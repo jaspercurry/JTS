@@ -27,6 +27,7 @@ Two layers, mirroring ``test_crossover_v2_cloud_pipeline.py``:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -351,13 +352,20 @@ def _durable_cloud_block(result, *, phase: str = PHASE_CLOUD_VERIFY) -> dict:
     }
 
 
-def _walk_every_surface(result) -> dict:
-    """One pipeline result → every spec-facing surface's view of it.
+def _walk_every_surface(result, monkeypatch) -> dict:
+    """One pipeline result → EVERY spec-facing surface's view of it.
 
     Walks the REAL functions in the real order the host uses:
     ``assemble_cloud_group_result`` → ``_cloud_summary``'s durable shape →
     ``_compact_cloud_status`` (`/state`) → ``build_crossover_envelope_v2``
-    (the wizard envelope + its rendered ledger line).
+    (the wizard envelope + its rendered ledger line) → the shipped doctor
+    check (N-1: the doctor is a spec-facing surface too, so "every surface"
+    has to include it rather than be quietly scoped to three).
+
+    The doctor reads through ``crossover_v2_status_block`` (its own import,
+    resolved at call time), so it is reached by patching the durable-state
+    loader underneath it — the same seam PR-4's own doctor corpus test uses
+    — rather than by handing it a pre-built block.
     """
     compact = _compact_cloud_status(_durable_cloud_block(result))
     envelope = build_crossover_envelope_v2({
@@ -369,18 +377,34 @@ def _walk_every_surface(result) -> dict:
             "cloud": compact,
         },
     })
+
+    from jasper.cli.doctor import correction as doctor_correction
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "load_v2_state", lambda: {"cloud": _durable_cloud_block(result)}
+    )
+    monkeypatch.setattr(
+        v2host, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
+    )
+    doctor = doctor_correction.check_crossover_v2_cloud_pipeline()
+
     return {
         "pipeline": result["flatness"],
         "state": compact[PHASE_CLOUD_VERIFY]["flatness"],
         "envelope": envelope["cloud"][PHASE_CLOUD_VERIFY]["flatness"],
         "ledger_lines": envelope["expert_details"],
         "state_overall_passed": compact[PHASE_CLOUD_VERIFY]["overall_passed"],
+        "state_validity_floor_hz": compact[PHASE_CLOUD_VERIFY]["validity_floor_hz"],
+        "state_spec_bands": compact[PHASE_CLOUD_VERIFY]["spec_bands"],
+        "doctor_detail": doctor.detail,
         "spec": result["spec"],
+        "pipeline_validity_floor_hz": result.get("validity_floor_hz"),
     }
 
 
 def _assert_one_number_everywhere(views: dict) -> None:
-    """The contract: gauge, ledger, spec report, and the VERIFY-phase
+    """The contract: gauge, ledger, spec report, doctor, and the VERIFY-phase
     flatness block are the SAME bytes, from one construction."""
     canonical = json.dumps(views["pipeline"], sort_keys=True)
     assert json.dumps(views["state"], sort_keys=True) == canonical
@@ -400,24 +424,42 @@ def _assert_one_number_everywhere(views: dict) -> None:
     assert gauge["passed"] == spec["overall_passed"]
     assert views["state_overall_passed"] == spec["overall_passed"]
 
+    # SF-2: the clamp is separable from interference on the LIVE surface, not
+    # only in the durable state — otherwise a reader seeing a large
+    # n_excluded cannot tell a combed room from a collapsed gate.
+    assert views["state_validity_floor_hz"] == views["pipeline_validity_floor_hz"]
+
+    # N-3: per-band numbers reach `/state` verbatim, so a chart never needs a
+    # second derivation to label a band.
+    assert [b["max_deviation_db"] for b in views["state_spec_bands"]] == [
+        b["max_deviation_db"] for b in spec["bands"]
+    ]
+    assert [b["passed"] for b in views["state_spec_bands"]] == [
+        b["passed"] for b in spec["bands"]
+    ]
+
     # And the household-facing line prints those digits, not a re-derivation.
     rendered = " ".join(views["ledger_lines"])
     assert f"{gauge['max_db']:+.2f} dB" in rendered
     assert f"{gauge['max_hz']:.0f} Hz" in rendered
     assert f"{gauge['rms_db']:.2f} dB" in rendered
 
+    # N-1: the doctor quotes the same worst deviation, to the digit.
+    assert f"worst={gauge['max_db']:+.2f}dB" in views["doctor_detail"]
 
-def test_the_gauge_the_ledger_the_spec_report_and_verify_are_one_number():
+
+def test_the_gauge_the_ledger_the_spec_report_and_verify_are_one_number(monkeypatch):
     """THE frame-consistency contract test (plan PR-5 acceptance).
 
     Kills the MEASURE-vs-VERIFY ledger-discrepancy class: for one session,
-    every spec-facing surface shows byte-identical numbers because there is
-    one construction and the rest is copying.
+    every spec-facing surface — gauge, `/state`, envelope ledger line, doctor
+    detail, and the spec report itself — shows byte-identical numbers because
+    there is one construction and the rest is copying.
     """
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
     assert result["available"] is True
-    _assert_one_number_everywhere(_walk_every_surface(result))
+    _assert_one_number_everywhere(_walk_every_surface(result, monkeypatch))
 
 
 def test_the_pre_apply_cloud_never_supplies_the_household_flatness_line():
@@ -485,7 +527,7 @@ def _s0_combined():
 
 
 @corpus.requires_s0_curves
-def test_the_real_s0_session_shows_one_number_at_every_surface():
+def test_the_real_s0_session_shows_one_number_at_every_surface(monkeypatch):
     """The frame-consistency contract against hardware data, through PR-4's
     own pipeline outputs.
 
@@ -502,7 +544,7 @@ def test_the_real_s0_session_shows_one_number_at_every_surface():
     """
     result = assemble_cloud_group_result(_s0_combined(), echo_band_hz=S0_ECHO_BAND_HZ)
     assert result["available"] is True
-    views = _walk_every_surface(result)
+    views = _walk_every_surface(result, monkeypatch)
     _assert_one_number_everywhere(views)
 
     gauge = views["pipeline"]
@@ -514,11 +556,15 @@ def test_the_real_s0_session_shows_one_number_at_every_surface():
     assert gauge["n_bins"] == 7698
     assert gauge["n_excluded"] == 3054
     assert gauge["passed"] is False
+    # The reference the deviations are measured against, pinned because the
+    # clamp test below moves it and the headline number moves WITH it.
+    assert result["spec"]["reference_db"] == pytest.approx(-27.2670, abs=5e-4)
+    assert result["validity_floor_hz"] is None
 
 
 @corpus.requires_s0_curves
-def test_the_real_s0_worst_position_floor_clamps_the_low_band():
-    """The clamp's measured regime, stated rather than assumed.
+def test_the_real_s0_worst_position_floor_clamps_the_low_band(monkeypatch):
+    """The clamp's measured cost, stated and pinned rather than assumed.
 
     Nine of the S0 main leg's ten positions gate down to 142.86 Hz — below
     the spec table's 250 Hz edge, so the clamp would be a no-op. The tenth,
@@ -527,14 +573,28 @@ def test_the_real_s0_worst_position_floor_clamps_the_low_band():
     mean ACROSS positions, every bin below that carries cloud_04's
     truncated-window artifact at 1/10 weight.
 
-    The cost is real and is the point of measuring it: clamping at the
-    group's worst floor moves 1009 bins of the 250 Hz-2 kHz band out of the
-    evaluation, re-centres the reference on what is left, and changes the
-    pooled RMS from 3.76 dB to 3.15 dB. That is not an improvement in the
-    speaker — it is the same speaker graded on fewer bins, which is exactly
-    why ``n_bins``/``n_excluded`` ride on the gauge
-    (``ConvergenceResidual``'s own "a residual that fell because the mask
-    grew is not convergence" rule).
+    Clamping at the group's worst floor therefore costs, measured 2026-07-27:
+
+    * 1009 bins leave the 250 Hz-2 kHz band (7698 -> 6689 graded);
+    * the reference re-centres -27.2670 -> -28.3166 dB;
+    * the HEADLINE ``max_db`` moves -8.9399 -> -7.8903 dB — **+1.0495 dB in
+      the flattering direction**, exactly the reference shift, because the
+      worst bin (15999.7 Hz) survives the clamp and its deviation tracks the
+      reference one-for-one. It moves FURTHER than the RMS does, and it is
+      the first number the ledger line prints;
+    * the pooled RMS moves 3.7649 -> 3.1524 dB (-0.6125 dB);
+    * and the 250 Hz-2 kHz band **VERDICT FLIPS**, +4.1637 dB (fail) ->
+      -1.2855 dB (pass), because ``passed`` is ``abs(max) <= tolerance``.
+
+    The direction is response-shape dependent and measured on THIS corpus
+    only: the removed region sat above the surviving reference here, so
+    dropping it flattered everything left. A speaker whose sub-floor region
+    is quiet would move the other way — the sign does not generalize.
+
+    None of it is the speaker improving; it is the same speaker graded on
+    fewer bins, which is exactly why ``n_bins``/``n_excluded`` ride on the
+    gauge (``ConvergenceResidual``'s own "a residual that fell because the
+    mask grew is not convergence" rule).
     """
     combined = _s0_combined()
     floors = {
@@ -557,10 +617,39 @@ def test_the_real_s0_worst_position_floor_clamps_the_low_band():
     assert (
         clamped["flatness"]["n_bins"] == unclamped["flatness"]["n_bins"] - 1009
     )
+
+    # The reference re-centring, and the headline number that rides it.
+    assert clamped["spec"]["reference_db"] == pytest.approx(-28.3166, abs=5e-4)
+    assert clamped["flatness"]["max_db"] == pytest.approx(-7.8903, abs=5e-4)
+    reference_shift = (
+        clamped["spec"]["reference_db"] - unclamped["spec"]["reference_db"]
+    )
+    max_shift = clamped["flatness"]["max_db"] - unclamped["flatness"]["max_db"]
+    assert reference_shift == pytest.approx(-1.0495, abs=5e-4)
+    # Equal and opposite: the worst bin survives the clamp, so the headline
+    # number is displaced by exactly the reference, no more and no less.
+    assert max_shift == pytest.approx(-reference_shift, abs=1e-9)
+    # And it moves FURTHER than the RMS — the number a reader sees first is
+    # the number the clamp perturbs most.
+    rms_shift = clamped["flatness"]["rms_db"] - unclamped["flatness"]["rms_db"]
     assert clamped["flatness"]["rms_db"] == pytest.approx(3.1524, abs=5e-4)
+    assert abs(max_shift) > abs(rms_shift)
+
+    # The band VERDICT flip, not merely a number shift.
+    low_before = unclamped["spec"]["bands"][0]
+    low_after = clamped["spec"]["bands"][0]
+    assert (low_before["f_lo_hz"], low_before["f_hi_hz"]) == (250.0, 2000.0)
+    assert low_before["max_deviation_db"] == pytest.approx(4.1637, abs=5e-4)
+    assert low_before["passed"] is False
+    assert low_after["max_deviation_db"] == pytest.approx(-1.2855, abs=5e-4)
+    assert low_after["passed"] is True
+    # Overall still fails — the other two bands fail on their own merits, so
+    # the flip is visible per band rather than flattering the whole verdict.
+    assert clamped["spec"]["overall_passed"] is False
+
     # The interference accounting is untouched by a gate artifact.
     assert (
         clamped["merged_excluded_bands_hz"] == unclamped["merged_excluded_bands_hz"]
     )
     # And the whole walk still shows one number, clamped or not.
-    _assert_one_number_everywhere(_walk_every_surface(clamped))
+    _assert_one_number_everywhere(_walk_every_surface(clamped, monkeypatch))
